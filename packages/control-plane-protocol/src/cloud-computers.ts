@@ -218,10 +218,14 @@ const secret = z
 const pinnedImage = z
   .string()
   .max(512)
-  .regex(/^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}$/u);
+  .regex(/^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}(?![\s\S])/u);
 
 export const CloudComputerBootReleaseSchema = z.strictObject({
-  version: CloudComputerReleaseSchema.shape.version,
+  version: z
+    .string()
+    .max(79)
+    .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?![\s\S])/u)
+    .refine((value) => value !== "0.0.0"),
   images: z.strictObject({
     host: pinnedImage,
     runner: pinnedImage,
@@ -232,18 +236,26 @@ export const CloudComputerBootReleaseSchema = z.strictObject({
   }),
 });
 export const CloudComputerEgressSchema = z.strictObject({
-  url: httpsUrl.refine((value) => {
-    const url = new URL(value);
-    return url.pathname === "/" && !url.search && !url.hash;
-  }),
-  username: secret.max(255),
-  password: secret.max(255),
+  url: z
+    .string()
+    .regex(/^https:\/\/(?:\[[a-fA-F0-9:.]+\]|[a-zA-Z0-9.-]+)(?::[0-9]{1,5})?\/?(?![\s\S])/u)
+    .pipe(httpsUrl.refine((value) => new URL(value).port !== "0")),
+  username: secret.max(255).refine((value) => value.trim() !== "" && !value.includes(":")),
+  password: secret.max(255).refine((value) => value.trim() !== ""),
 });
 
 export const CloudComputerEgressResponseSchema = z.strictObject({
   egress: CloudComputerEgressSchema.optional(),
 });
 export const cloudComputerEgressPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/egress`;
+
+export const CloudComputerBackupReportSchema = z.strictObject({
+  completedAt: z.iso.datetime(),
+  snapshotId: CloudComputerSnapshotSchema,
+});
+export type CloudComputerBackupReport = z.infer<typeof CloudComputerBackupReportSchema>;
+export const cloudComputerBackupReportPath = (id: CloudComputerId) =>
+  `/v1/cloud-computers/${id}/backup`;
 
 export const CloudComputerBootRequestSchema = z.strictObject({
   hostname: CloudComputerHostnameSchema,
@@ -359,6 +371,7 @@ const cloudComputerViewFields = {
   region: CloudComputerRegionSchema.optional(),
   egressAddress: CloudComputerEgressAddressSchema.optional(),
   renewsAt: z.iso.datetime().optional(),
+  lastBackupAt: z.iso.datetime().optional(),
   deletion: CloudComputerDeletionSchema.optional(),
 };
 const cloudComputerReasonFields = {

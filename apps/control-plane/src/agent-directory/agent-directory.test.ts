@@ -125,6 +125,22 @@ describe("agent directory mutations and signed GET route", () => {
     expect(afterRemove.entries.map((entry) => entry.id)).toEqual(["errand"]);
   });
 
+  it("refuses a valid entry that would exhaust the signed response budget", () => {
+    const snapshot: AgentDirectorySnapshot = {
+      revision: 1,
+      entries: Array.from({ length: 250 }, (_, index) => ({
+        id: `platform-${index}`,
+        displayName: "Platform",
+        origins: Array.from({ length: 16 }, (_, suffix) =>
+          `https://${"a".repeat(58)}.${"b".repeat(58)}.platform-${index}-${suffix}.example`),
+      })),
+    };
+    expect(() => applyAgentDirectoryChange(snapshot, {
+      kind: "add",
+      input: { id: "new-platform", displayName: "New platform", origins: ["https://new.example"] },
+    }, fixedNow)).toThrow("Signed agent directory would exceed its byte limit");
+  });
+
   it("serves a signed directory that verifies with Account's published JWKS and reflects rising revisions", async () => {
     const accountKey = await makeEd25519Jwk("account-key-1");
     const jwks: JSONWebKeySet = { keys: [accountKey.jwk] };
@@ -152,7 +168,7 @@ describe("agent directory mutations and signed GET route", () => {
       const first = await app.inject({ method: "GET", url: agentDirectoryPath });
       expect(first.statusCode).toBe(200);
       expect(first.headers["cache-control"]).toBe(agentDirectoryCacheControl);
-      expect(first.headers.etag).toBe('"agent-directory-r1"');
+      expect(first.headers.etag).toBeUndefined();
 
       const parsedFirst = AgentDirectoryResponseSchema.parse(first.json());
       const header = decodeProtectedHeader(parsedFirst.assertion);
@@ -190,7 +206,7 @@ describe("agent directory mutations and signed GET route", () => {
 
       const second = await app.inject({ method: "GET", url: agentDirectoryPath });
       expect(second.statusCode).toBe(200);
-      expect(second.headers.etag).toBe('"agent-directory-r2"');
+      expect(second.headers.etag).toBeUndefined();
       const parsedSecond = AgentDirectoryResponseSchema.parse(second.json());
       const verifiedSecond = await jwtVerify(parsedSecond.assertion, resolveKey, {
         algorithms: ["EdDSA"],

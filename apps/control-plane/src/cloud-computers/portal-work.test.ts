@@ -133,7 +133,7 @@ describe("Cloud Computer website page: work Homes and the Account's newer facts"
           id,
           egress: "pending",
           status: "suspended",
-          reason: "Your organization paused this Cloud Computer.",
+          reason: "Your organization suspended this Cloud Computer.",
           reasonCode: "cloud-computer-work-managed",
         },
         new Set(),
@@ -152,7 +152,7 @@ describe("Cloud Computer website page: work Homes and the Account's newer facts"
     expect(managed).not.toContain('href="/cloud-computer/billing"');
   });
 
-  it("shows region, browser address and renewal only when the Account knows them", () => {
+  it("shows region, Browser IP and renewal only when the Account knows them", () => {
     const known = landing({
       id,
       egress: "assigned",
@@ -163,6 +163,7 @@ describe("Cloud Computer website page: work Homes and the Account's newer facts"
       renewsAt: "2026-12-20T00:00:00.000Z",
     });
     expect(known).toContain("Ashburn, Virginia");
+    expect(known).toContain('class="place__name">Browser IP</span>');
     expect(known).toContain("203.0.113.7");
     expect(known).toContain(words(cloudWords("cloud.renews", { date: "December 20, 2026" })));
     const unknown = landing({
@@ -172,7 +173,7 @@ describe("Cloud Computer website page: work Homes and the Account's newer facts"
       address: "https://me.home.example.test",
     });
     expect(unknown).not.toContain(words(cloudWords("cloud.region")));
-    expect(unknown).not.toContain(words(cloudWords("cloud.ip.address")));
+    expect(unknown).not.toContain('class="place__name">Browser IP</span>');
     expect(unknown).not.toContain("Renews");
   });
 

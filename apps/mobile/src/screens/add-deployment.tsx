@@ -25,7 +25,7 @@ export function AccountIdentityRow(props: {
   readonly issuer: string;
 }): ReactNode {
   return (
-    <View accessibilityLabel={`Opensteer Account ${props.email}`} style={styles.accountRow}>
+    <View accessibilityLabel={`Opensteer account ${props.email}`} style={styles.accountRow}>
       <View style={styles.accountMark}>
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="title" tone="ember">
           {deploymentInitial(props.email)}
@@ -136,7 +136,7 @@ export function AddDeploymentScreen(): ReactNode {
           return;
         }
         if (clientIssue(error, { operation: "action", label: "sign in" }) !== null)
-          setFailure("Couldn't sign in to your Opensteer Account.");
+          setFailure("Couldn't sign in to your Opensteer account.");
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {

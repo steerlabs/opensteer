@@ -12,7 +12,10 @@ import {
 
 const unavailable = {
   ok: false,
-  failure: { kind: "unavailable", message: "This build of Opensteer has no Opensteer Account." },
+  failure: {
+    kind: "unavailable",
+    message: "Sign-in isn’t available in this version of Opensteer.",
+  },
 } as const;
 
 function account(context: DesktopBridgeContext, event: Parameters<DesktopBridgeHandler>[0]) {

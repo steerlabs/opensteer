@@ -77,7 +77,7 @@ export function StartFreshScreen({
           </Fact>
           <Fact icon="phone" title="Pair your devices again">
             This computer gets a new identity, so your phone and other devices connect to it again.
-            The old entry in your Opensteer Account can be removed.
+            The old entry in your Opensteer account can be removed.
           </Fact>
         </ul>
         {error ? (

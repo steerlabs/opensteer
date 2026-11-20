@@ -1,7 +1,11 @@
-import { whoLines } from "../thread/agent-session-model.js";
 import { classifyClientFailure } from "@opensteer/client/connections";
 import {
   accessModeOptions,
+  agentClaim,
+  agentConsentHeading,
+  agentWhoOriginLine,
+  toggleDraftResource,
+  workWords,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
@@ -112,7 +116,7 @@ function AgentAuthorization(props: {
       .then((result) => {
         if (controller.signal.aborted) return;
         setLoad({ kind: "ready", consent: result });
-        setLabel((current) => current || result.clientName);
+        setLabel((current) => current || agentClaim(result.clientName, 120));
       })
       .catch((failure: unknown) => {
         if (controller.signal.aborted) return;
@@ -179,7 +183,7 @@ function AgentAuthorization(props: {
       const classified = classifyClientFailure(failure);
       if (classified.code === "conflict") setLoad({ kind: "answered" });
       else if (classified.code === "not_found")
-        setLoad({ kind: "expired", agent: consent.clientName });
+        setLoad({ kind: "expired", agent: null });
       // A lost answer may have decided it; only a refusal says it didn't.
       else
         setError(
@@ -224,19 +228,20 @@ function AgentAuthorization(props: {
       />
     );
   const { consent } = load;
-  const agent = label.trim() || consent.clientName;
   const identity = connectedAgentIdentity(
     {
-      label: agent,
+      label,
       clientName: consent.clientName,
       ...(consent.identity ? { identity: consent.identity } : {}),
       ...(consent.identityAtConsent ? { identityAtConsent: consent.identityAtConsent } : {}),
     },
     consent.redirectUri,
   );
-  const who = whoLines(identity.who, { consent: true });
+  const who = identity.who;
+  const heading = agentConsentHeading(who);
+  const agent = heading.mark ? heading.title : workWords("who.thisAgent");
   const disabled = busy !== null;
-  const context = { agent, home, browser, apps, plugins, disabled };
+  const context = { agent, home, browser, chromeTabs: consent, apps, plugins, disabled };
   const openDevices = () => {
     setSheet(null);
     navigation.navigate("SettingsDevices", { deploymentId: props.deploymentId });
@@ -253,7 +258,7 @@ function AgentAuthorization(props: {
         }
         label={label}
         mark={
-          grantsAvailable ? { providerId: identity.providerId, initial: identity.initial } : null
+          heading.mark ? { providerId: identity.providerId, initial: heading.title[0] ?? "A" } : null
         }
         mode={mode}
         modes={accessModeOptions}
@@ -270,20 +275,17 @@ function AgentAuthorization(props: {
                   mode,
                   onScope: (scope) => setDraft({ ...chosen, scope }),
                   onOpen: setSheet,
+                  onChromeTab: (resource, on) => setDraft(toggleDraftResource(chosen, resource, on)),
                   onTasks: (tasks) => setDraft({ ...chosen, tasks }),
                 }),
                 agentModeSection({ mode, disabled, onMode: setMode }),
               ]
             : null
         }
-        title={
-          grantsAvailable
-            ? agentWords("consent.title", { agent })
-            : agentWords("consent.legacyTitle", { agent: consent.clientName })
-        }
+        title={heading.title}
         who={{
-          heading: who.heading,
-          detail: who.detail,
+          heading: heading.claim ?? workWords("who.verifiedAs", { name: heading.title }),
+          origins: who.origins.length ? who.origins.map(agentWhoOriginLine) : [who.detail],
           verified: who.verified,
           warning: who.warning,
         }}

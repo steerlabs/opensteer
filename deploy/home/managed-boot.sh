@@ -25,8 +25,9 @@ jq -e '
 ' "$spec" >/dev/null 2>&1 || fail "Invalid managed boot spec."
 id=$(jq -r .cloudComputerId "$spec")
 origin=$(jq -r .accountOrigin "$spec")
+temporary=''
 response=$(mktemp)
-trap 'rm -f -- "$response"' EXIT
+trap 'rm -f -- "$response" "${temporary:-}"' EXIT
 body=$(jq -ce --rawfile token "$token_file" '
   {hostname, bootstrapToken: ($token | sub("\r?\n$"; ""))} |
   select(.bootstrapToken | test("^[A-Za-z0-9_.-]{1,2048}$"))
@@ -56,10 +57,10 @@ jq -e --arg hostname "$(jq -r .hostname "$spec")" --arg origin "${origin%/}" --a
     type == "string" and length <= 2048 and test("^https://[a-zA-Z0-9.:/_=%+-]+$"))) and
   (.restoreSnapshot == null or (.restoreSnapshot | type == "string" and test("^[0-9a-f]{8,64}$"))) and
   (.setupCodeDigest | type == "string" and test("^[0-9a-f]{64}$")) and
-  (.release | (.images as $images |
-    ["host", "runner", "browser-runtime", "browser-egress", "channel-runtime", "gateway"] |
-    all(.[]; $images[.] | secret))) and
-  (.egress == null or (.egress | (.url|secret) and (.username|secret) and (.password|secret))) and
+  (.release | (.version | type == "string" and length <= 79 and . != "0.0.0" and
+    test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\z")) and
+    (.images | keys == ["browser-egress", "browser-runtime", "channel-runtime", "gateway", "host", "runner"] and
+      all(.[]; type == "string" and length <= 512 and test("^[a-z0-9./_:-]+@sha256:[0-9a-f]{64}\\z")))) and
   (.managedHome == null or (.managedHome |
     (.cloudComputerId == $id) and
     (.generation | type == "number" and . >= 1 and . == floor) and
@@ -77,6 +78,8 @@ jq -e --arg hostname "$(jq -r .hostname "$spec")" --arg origin "${origin%/}" --a
     .repository == ("s3:" + .endpoint + "/" + .bucket + "/" + .prefix) and
     (.password|secret) and (.accessKeyId|secret) and (.secretAccessKey|secret))
 ' "$response" >/dev/null 2>&1 || fail "The Account returned invalid Home boot configuration."
-tmp=$(mktemp "${destination}.XXXXXX")
-install -m 0600 "$response" "$tmp"
-mv -f -- "$tmp" "$destination"
+temporary="$destination.new"
+install -m 0600 "$response" "$temporary"
+sync "$temporary"
+mv -f -- "$temporary" "$destination"
+sync "$(dirname -- "$destination")"

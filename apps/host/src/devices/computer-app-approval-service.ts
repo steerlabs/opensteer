@@ -812,6 +812,7 @@ export class ComputerAppApprovalService {
                 {
                   name: connection.computer.app.displayName,
                   bundleId: connection.computer.app.bundleId,
+                  teamId: connection.computer.app.teamId,
                   access: connection.computer.access,
                   status: connection.computer.blockedAt
                     ? ("blocked" as const)

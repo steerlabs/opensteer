@@ -557,7 +557,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(failedLine(error, "Couldn't sign in to your Opensteer Account."));
+        setFailure(failedLine(error, "Couldn't sign in to your Opensteer account."));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -625,7 +625,7 @@ export function DeploymentsScreen(): ReactNode {
       row.name,
       `${row.kindLabel}\n${row.origin}${
         row.accountManaged
-          ? "\n\nThis deployment is managed by your Opensteer Account. Remove it from the Account to stop it appearing here."
+          ? "\n\nThis deployment is managed by your Opensteer account. Remove it from the Account to stop it appearing here."
           : ""
       }`,
       [{ text: "Done" }],

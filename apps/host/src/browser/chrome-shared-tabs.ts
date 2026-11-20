@@ -1,5 +1,21 @@
-import { OpensteerError, type BrowserSourceId, type UserId } from "@opensteer/core";
-import type { OpensteerStore } from "@opensteer/database";
+import { randomUUID } from "node:crypto";
+import {
+  OpensteerError,
+  TabIdSchema,
+  type BrowserSourceId,
+  type DeviceId,
+  type Tab,
+  type ThreadId,
+  type UserId,
+} from "@opensteer/core";
+import {
+  authorizeTarget,
+  executionAccess,
+  type ExecutionAuthority,
+  type OpensteerStore,
+  type sharedChromeAttempts,
+  type AuthoritySubject,
+} from "@opensteer/database";
 import { createBrowserSessionId, type BrowserSessionId } from "@opensteer/protocol";
 import {
   type BrowserSourceTabPart,
@@ -9,6 +25,7 @@ import {
 import {
   boundedJsonSize,
   SessionCdpRouter,
+  SessionCdpRouterError,
   type StandardCdpAttachment,
 } from "@opensteer/browser-runtime-core";
 import {
@@ -18,7 +35,7 @@ import {
   type BrowserUsePort,
   type BrowserUseTarget,
 } from "../browser-use/browser-repl-service.js";
-import { ChromeTabBackend } from "./chrome-tab-backend.js";
+import { ChromeTabBackend, ChromeTabReplyLost } from "./chrome-tab-backend.js";
 import {
   StandardCdpTickets,
   standardCdpConnectPrefix,
@@ -30,17 +47,24 @@ import { routerStandardTransport } from "./standard-cdp-transport.js";
 type SourceFrame =
   | BrowserSourceTabPart<"tab.event" | "tab.result">
   | BrowserSourceTabShared
-  | BrowserSourceTabUnshared;
+  | BrowserSourceTabUnshared
+  | { type: "tab.detached"; shareId: string };
 type ChromeSource = {
   readonly sourceId: BrowserSourceId;
   readonly ownerId: UserId;
   readonly name: string;
+  readonly deviceId?: DeviceId;
+  readonly detachReceipts?: boolean;
+  readonly detaching: Map<string, PromiseWithResolvers<boolean>>;
   readonly backend: ChromeTabBackend;
   readonly router: SessionCdpRouter;
   readonly shares: Map<string, Share>;
+  stopping: boolean;
 };
 type Share = {
   info: BrowserSourceTabShared;
+  readonly createdAt: string;
+  updatedAt: string;
   readonly source: ChromeSource;
   readonly group: Group;
   readonly clients: Set<StandardCdpAttachment>;
@@ -50,7 +74,29 @@ type Group = {
   readonly sessionId: BrowserSessionId;
   readonly clients: Set<StandardCdpAttachment>;
   binding?: string;
+  taskId?: ThreadId;
+  attempt?: ChromeAttempt;
+  closing: Set<Promise<void>>;
+  opening: number;
+  readonly detaching: Set<Promise<void>>;
+  detachUnconfirmed: boolean;
 };
+
+type ChromeAttempt = {
+  readonly id: string;
+  readonly connectionId: string;
+  readonly grantRevision: number;
+  readonly source: ChromeSource;
+  readonly root: string;
+  readonly ready: Promise<void>;
+  finishing?: Promise<void>;
+};
+type DeviceAccess = (
+  ownerId: UserId,
+  deviceId: DeviceId,
+  list: boolean,
+  person: boolean,
+) => Promise<string>;
 
 export interface ChromeSharedTab {
   readonly tabId: string;
@@ -70,35 +116,44 @@ const forbidden = (message: string) => new OpensteerError({ code: "forbidden", m
 const unavailable = () => forbidden("This Chrome tab is no longer shared.");
 const maxSharesPerChrome = 64;
 
-export async function admitOwnChromeTabBinding(
-  store: Pick<OpensteerStore, "admitExecution">,
-  authority: CdpAuthority,
-): Promise<void> {
-  const execution = await store.admitExecution({
-    ownerUserId: authority.ownerId,
-    subject: { kind: "binding", bindingId: authority.agentBindingId },
-  });
-  if (execution.agentConnection || execution.mode !== "full-access")
-    throw forbidden(
-      "Shared Chrome tabs are available to the person's own agents with full access.",
-    );
-  if (execution.runId && !execution.runMode) throw forbidden("This agent task has ended.");
-}
-
 export class ChromeSharedTabs {
   readonly standardCdpTickets = new StandardCdpTickets();
   readonly #sources = new Map<BrowserSourceId, ChromeSource>();
   readonly #shares = new Map<string, Share>();
-  readonly #admit: (authority: CdpAuthority) => Promise<void>;
+  readonly #attempts = new Map<string, ChromeAttempt>();
+  readonly #store: Pick<OpensteerStore, "admitExecution">;
+  readonly #receipts: ReturnType<typeof sharedChromeAttempts> | undefined;
+  readonly #device: DeviceAccess;
+  readonly #changed: (ownerId: UserId) => void;
+  readonly #onError: (error: unknown) => void;
 
-  constructor(store: Pick<OpensteerStore, "admitExecution">) {
-    this.#admit = (authority) => admitOwnChromeTabBinding(store, authority);
+  constructor(
+    store: Pick<OpensteerStore, "admitExecution">,
+    options: {
+      readonly attempts?: ReturnType<typeof sharedChromeAttempts>;
+      readonly device?: DeviceAccess;
+      readonly changed?: (ownerId: UserId) => void;
+      readonly onError?: (error: unknown) => void;
+    } = {},
+  ) {
+    this.#store = store;
+    this.#receipts = options.attempts;
+    this.#device =
+      options.device ??
+      (async () => {
+        throw unavailable();
+      });
+    this.#changed = options.changed ?? (() => {});
+    this.#onError =
+      options.onError ?? ((error) => console.error("Shared Chrome cleanup failed", error));
   }
 
   connectSource(options: {
     sourceId: BrowserSourceId;
     ownerId: UserId;
     name: string;
+    deviceId?: DeviceId;
+    detachReceipts?: boolean;
     write: (frame: BrowserSourceTabPart<"tab.command">) => boolean;
     fail: () => void;
   }): { receive(frame: SourceFrame): void; close(): void } {
@@ -109,13 +164,17 @@ export class ChromeSharedTabs {
       backend,
       router: new SessionCdpRouter(backend),
       shares: new Map(),
+      detaching: new Map(),
+      stopping: false,
     };
     this.#sources.set(options.sourceId, source);
     return {
       receive: (frame) => {
         if (this.#sources.get(source.sourceId) !== source) return;
-        if (frame.type === "tab.shared") this.#share(source, frame);
-        else if (frame.type === "tab.unshared") this.#unshare(source, frame.shareId);
+        if (frame.type === "tab.shared") {
+          if (!source.stopping) this.#share(source, frame);
+        } else if (frame.type === "tab.unshared") void this.#unshare(source, frame.shareId);
+        else if (frame.type === "tab.detached") source.detaching.get(frame.shareId)?.resolve(true);
         else backend.read(frame);
       },
       close: () => {
@@ -125,17 +184,79 @@ export class ChromeSharedTabs {
   }
 
   async listForBinding(authority: CdpAuthority): Promise<readonly ChromeSharedTab[]> {
-    await this.#authorize(authority);
-    return [...this.#shares.values()]
-      .filter((share) => share.source.ownerId === authority.ownerId)
-      .map(({ info, source, group }) => ({
-        tabId: info.shareId,
-        sourceId: source.sourceId,
-        chromeName: source.name,
-        title: info.title,
-        url: info.url,
-        occupiedBy: group.binding ?? null,
+    const entries = await this.#visible(authority.ownerId, this.#subject(authority));
+    return entries
+      .filter(
+        ({ share }) => !share.group.binding || share.group.binding === authority.agentBindingId,
+      )
+      .map(({ share, computerName }) => ({
+        tabId: share.info.shareId,
+        sourceId: share.source.sourceId,
+        chromeName: computerName ?? share.source.name,
+        title: share.info.title,
+        url: share.info.url,
+        occupiedBy: share.group.binding ?? null,
       }));
+  }
+
+  async tabPlaces(ownerId: UserId, subject: AuthoritySubject): Promise<Tab[]> {
+    return (await this.#visible(ownerId, subject)).flatMap(({ share, computerName, execution }) => {
+      const computerId = share.source.deviceId;
+      if (!computerId || !computerName) return [];
+      const { group } = share;
+      if (
+        execution.actor === "agent" &&
+        group.binding &&
+        (subject.kind === "binding"
+          ? group.binding !== subject.bindingId
+          : group.attempt?.connectionId !== execution.agentConnection?.agentConnectionId)
+      )
+        return [];
+      const taskId = group.taskId;
+      return [
+        {
+          tabId: TabIdSchema.parse(share.info.shareId),
+          kind: "page",
+          title: share.info.title,
+          url: share.info.url,
+          profile: null,
+          computer: { computerId, name: computerName },
+          sharedByPerson: { sourceId: share.source.sourceId, computerName },
+          groupId: null,
+          state: "open",
+          usedBy:
+            taskId && (execution.actor === "person" || execution.threadId === taskId)
+              ? [{ taskId }]
+              : [],
+          openedBy: "person",
+          createdAt: share.createdAt,
+          updatedAt: share.updatedAt,
+        },
+      ];
+    });
+  }
+
+  async #visible(ownerId: UserId, subject: AuthoritySubject) {
+    const execution = await this.#store.admitExecution({ ownerUserId: ownerId, subject });
+    const sources = await Promise.all(
+      [...this.#sources.values()].map(async (source) => {
+        try {
+          return { source, computerName: await this.#authorizeSource(execution, source, true) };
+        } catch (error) {
+          if (error instanceof OpensteerError && error.code !== "internal") return null;
+          throw error;
+        }
+      }),
+    );
+    return sources.flatMap((entry) =>
+      entry && this.#sources.get(entry.source.sourceId) === entry.source
+        ? [...entry.source.shares.values()].map((share) => ({
+            share,
+            execution,
+            computerName: entry.computerName,
+          }))
+        : [],
+    );
   }
 
   async issueStandardCdpTicket(input: {
@@ -144,7 +265,7 @@ export class ChromeSharedTabs {
     readonly ttl?: number;
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: "session" }> {
     const share = this.#shares.get(input.tabId);
-    await this.#requireAccess(input.authority, share);
+    const execution = await this.#requireAccess(input.authority, share);
     const { source, info, group } = share!;
     const ticket = this.standardCdpTickets.issue({
       ...input,
@@ -156,14 +277,18 @@ export class ChromeSharedTabs {
         profileBindingId: null,
         runtimeId: source.sourceId,
         placementKey: info.shareId,
-        grantRevision: null,
-        agentConnectionId: null,
+        grantRevision: execution.agentConnection?.grantRevision ?? null,
+        agentConnectionId: execution.agentConnection?.agentConnectionId ?? null,
       },
     });
     return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode: "session" };
   }
 
-  async attachStandardCdpForAgent(claims: StandardCdpTicketClaims, signal: AbortSignal) {
+  async attachStandardCdpForAgent(
+    claims: StandardCdpTicketClaims,
+    signal: AbortSignal,
+    admissionSignal?: AbortSignal,
+  ) {
     const named = claims.sharedChromeTab;
     const share = named && this.#shares.get(named.tabId);
     if (
@@ -172,54 +297,86 @@ export class ChromeSharedTabs {
       share.group.sessionId !== claims.browserSessionId
     )
       throw unavailable();
-    const verify = () => this.#requireAccess(claims.authority, share);
-    await verify();
-    signal.throwIfAborted();
+    const verify = async () => {
+      const execution = await this.#requireAccess(claims.authority, share);
+      if (
+        (execution.agentConnection?.grantRevision ?? null) !== claims.facts.grantRevision ||
+        (execution.agentConnection?.agentConnectionId ?? null) !== claims.facts.agentConnectionId
+      )
+        throw unavailable();
+      return execution;
+    };
+    const admitting = admissionSignal ? AbortSignal.any([signal, admissionSignal]) : signal;
+    admitting.throwIfAborted();
+    const execution = await verify();
+    admitting.throwIfAborted();
     const overflow = new AbortController();
-    const client = this.#open(share, claims.authority.agentBindingId, () => overflow.abort(1013));
+    const client = await this.#open(
+      share,
+      claims.authority.agentBindingId,
+      execution,
+      admitting,
+      () => overflow.abort(1013),
+    );
     const life = AbortSignal.any([signal, overflow.signal, client.signal]);
     const close = () => client.close();
     life.addEventListener("abort", close, { once: true });
-    return { ...routerStandardTransport(client, "session", life), reauthorize: verify };
+    if (life.aborted) close();
+    return {
+      ...routerStandardTransport(client, "session", life),
+      reauthorize: async () => {
+        await verify();
+      },
+    };
   }
 
   browserUsePort(
     authorityForContext: (contextKey: string) => Promise<CdpAuthority>,
+    rootTabId?: string,
   ): BrowserUsePort<ReplTarget> {
     const openPages = new Map<string, Map<string, ReplTarget>>();
+    const within = (share: Share) =>
+      !rootTabId || share.group === this.#shares.get(rootTabId)?.group;
     const access = async (call: BrowserUseCall, share?: Share) => {
       call.signal.throwIfAborted();
       const authority = await authorityForContext(call.contextKey);
-      if (share) await this.#requireAccess(authority, share);
+      const execution =
+        share && within(share) ? await this.#requireAccess(authority, share) : undefined;
+      if (share && !execution) throw unavailable();
       call.signal.throwIfAborted();
-      return authority;
+      return { authority, execution };
     };
     return {
       listPages: async (call) => {
-        const list = await this.listForBinding(await access(call));
-        const pages = list.map((tab) => ({
-          tabId: tab.tabId,
-          url: tab.url,
-          title: tab.title,
-          profile: `Chrome · ${tab.chromeName}`,
-        }));
+        const list = await this.listForBinding((await access(call)).authority);
+        const pages = list
+          .filter(({ tabId }) => {
+            const share = this.#shares.get(tabId);
+            return share && within(share);
+          })
+          .map((tab) => ({
+            tabId: tab.tabId,
+            url: tab.url,
+            title: tab.title,
+            profile: `Chrome · ${tab.chromeName}`,
+          }));
         this.#serialize(pages, call);
         return pages;
       },
       openPage: async (tabId, call) => {
         const share = this.#shares.get(tabId);
         if (!share) throw unavailable();
-        const authority = await access(call, share);
-        const entries = openPages.get(call.contextKey) ?? new Map<string, ReplTarget>();
-        const existing = entries.get(tabId);
+        const { authority, execution } = await access(call, share);
+        const existing = openPages.get(call.contextKey)?.get(tabId);
         if (existing) return existing;
-        const client = this.#open(share, authority.agentBindingId);
+        const client = await this.#open(share, authority.agentBindingId, execution!, call.signal);
         try {
           const target = (await client.send({
             method: "Target.attachToTarget",
             parameters: { targetId: share.info.targetId, flatten: true },
           })) as { sessionId: string };
           call.signal.throwIfAborted();
+          if (client.signal.aborted) throw unavailable();
           const opened = {
             tabId,
             targetId: share.info.targetId,
@@ -227,6 +384,7 @@ export class ChromeSharedTabs {
             client,
             share,
           };
+          const entries = openPages.get(call.contextKey) ?? new Map<string, ReplTarget>();
           const current = entries.get(tabId);
           if (current) {
             client.close();
@@ -254,11 +412,14 @@ export class ChromeSharedTabs {
       command: async (target, method, params, sessionId, call) => {
         await access(call, target.share);
         this.#serialize(params ?? {}, call);
+        if (target.client.signal.aborted) throw unavailable();
         try {
           const result = await target.client.send({
             method,
             ...(params ? { parameters: params } : {}),
-            sessionId: sessionId ?? target.sessionId,
+            ...(sessionId === undefined && method === "Browser.getVersion"
+              ? {}
+              : { sessionId: sessionId ?? target.sessionId }),
             replyBudget: {
               maxBytes: call.maxBytes,
               maxDepth: call.maxDepth,
@@ -268,8 +429,16 @@ export class ChromeSharedTabs {
           call.signal.throwIfAborted();
           return this.#serialize(result ?? null, call);
         } catch (error) {
+          if (error instanceof ChromeTabReplyLost || target.client.signal.aborted)
+            throw new OpensteerError({
+              code: "conflict",
+              reason: "outcome-unknown",
+              message: "Chrome did not confirm the command outcome.",
+            });
           if (call.signal.aborted) throw call.signal.reason;
           if (error instanceof BrowserUseCdpError) throw error;
+          if (error instanceof SessionCdpRouterError && error.code === "forbidden")
+            throw forbidden("This CDP operation is unavailable on a shared Chrome tab.");
           throw new Error("Shared Chrome command failed.", { cause: error });
         }
       },
@@ -297,23 +466,50 @@ export class ChromeSharedTabs {
     };
   }
 
-  closeForBinding(agentBindingId: string, _reason: string): void {
+  async closeForBinding(agentBindingId: string, _reason: string): Promise<void> {
     this.standardCdpTickets.revoke(agentBindingId);
-    for (const { source, group, info } of this.#shares.values()) {
-      if (group.binding !== agentBindingId || group.root !== info.shareId) continue;
+    await Promise.all(
+      [...this.#shares.values()]
+        .filter(
+          ({ group, info }) => group.binding === agentBindingId && group.root === info.shareId,
+        )
+        .map(({ source, group }) => {
+          source.backend.stopSharing(group.root);
+          return this.#unshare(source, group.root);
+        }),
+    );
+  }
+
+  async stopAttempt(id: string): Promise<void> {
+    const attempt = this.#attempts.get(id);
+    if (!attempt) return;
+    if (attempt.finishing) return attempt.finishing;
+    attempt.source.backend.stopSharing(attempt.root);
+    await this.#unshare(attempt.source, attempt.root);
+  }
+
+  async stopSource(sourceId: BrowserSourceId): Promise<void> {
+    const source = this.#sources.get(sourceId);
+    if (!source) return;
+    source.stopping = true;
+    const closing = [...this.#attempts.values()]
+      .filter((attempt) => attempt.source === source && attempt.finishing)
+      .map((attempt) => attempt.finishing);
+    for (const { info, group } of source.shares.values()) {
+      if (info.shareId !== group.root) continue;
       source.backend.stopSharing(group.root);
-      this.#unshare(source, group.root);
+      closing.push(this.#unshare(source, group.root));
     }
+    await Promise.all(closing);
   }
 
   closeForSource(sourceId: BrowserSourceId): void {
     const source = this.#sources.get(sourceId);
     if (!source) return;
     this.#sources.delete(sourceId);
-    for (const share of source.shares.values()) {
-      if (share.info.shareId === share.group.root) source.backend.stopSharing(share.info.shareId);
-      this.#unshare(source, share.info.shareId);
-    }
+    for (const receipt of source.detaching.values()) receipt.resolve(false);
+    for (const share of source.shares.values())
+      if (share.info.shareId === share.group.root) void this.#unshare(source, share.info.shareId);
     source.backend.close();
     void source.router.close();
   }
@@ -322,41 +518,181 @@ export class ChromeSharedTabs {
     for (const id of this.#sources.keys()) this.closeForSource(id);
   }
 
-  async #authorize(authority: CdpAuthority): Promise<void> {
+  #subject(authority: CdpAuthority): AuthoritySubject {
     if (authority.expiresAt !== undefined && authority.expiresAt <= Date.now()) throw unavailable();
-    await this.#admit(authority);
+    return { kind: "binding", bindingId: authority.agentBindingId };
   }
 
-  async #requireAccess(authority: CdpAuthority, expected: Share | undefined): Promise<void> {
+  async #authorizeSource(execution: ExecutionAuthority, source: ChromeSource, list: boolean) {
+    if (
+      source.stopping ||
+      source.ownerId !== execution.ownerUserId ||
+      authorizeTarget(execution, { kind: "chrome-tabs", sourceId: source.sourceId }) !==
+        "read-write"
+    )
+      throw unavailable();
+    if (
+      execution.actor !== "person" &&
+      ((execution.runId && !execution.runMode) ||
+        (!execution.agentConnection && execution.mode !== "full-access") ||
+        (execution.agentConnection &&
+          !list &&
+          executionAccess(execution) !== "read-write" &&
+          !(
+            execution.subject.kind === "binding" &&
+            execution.subject.bindingId.startsWith("session:") &&
+            execution.mode === "approval-required"
+          )))
+    )
+      throw forbidden("This task's access mode does not allow shared Chrome control.");
+    if (
+      execution.agentConnection &&
+      (!source.deviceId || !source.detachReceipts || !this.#receipts)
+    )
+      throw unavailable();
+    return source.deviceId
+      ? this.#device(source.ownerId, source.deviceId, list, execution.actor === "person")
+      : null;
+  }
+
+  async #requireAccess(
+    authority: CdpAuthority,
+    expected: Share | undefined,
+  ): Promise<ExecutionAuthority> {
     if (!expected || expected.source.ownerId !== authority.ownerId) throw unavailable();
-    await this.#authorize(authority);
+    const execution = await this.#store.admitExecution({
+      ownerUserId: authority.ownerId,
+      subject: this.#subject(authority),
+    });
+    await this.#authorizeSource(execution, expected.source, false);
     if (this.#shares.get(expected.info.shareId) !== expected) throw unavailable();
     if (expected.group.binding && expected.group.binding !== authority.agentBindingId)
       throw forbidden("Another agent is using this shared Chrome tab.");
+    if (
+      expected.group.attempt &&
+      expected.group.attempt.grantRevision !== execution.agentConnection?.grantRevision
+    )
+      throw unavailable();
+    return execution;
   }
 
-  #open(share: Share, binding: string, onOverflow?: () => void): StandardCdpAttachment {
+  async #open(
+    share: Share,
+    binding: string,
+    execution: ExecutionAuthority,
+    signal: AbortSignal,
+    onOverflow?: () => void,
+  ): Promise<StandardCdpAttachment> {
     const { source, group } = share;
-    if (this.#shares.get(share.info.shareId) !== share) throw unavailable();
-    if (group.binding && group.binding !== binding)
-      throw forbidden("Another agent is using this shared Chrome tab.");
-    const client = source.router.openStandardClient(group.sessionId, {
-      wholeContext: false,
-      ...(onOverflow ? { onOverflow } : {}),
-    });
+    const check = () => {
+      signal.throwIfAborted();
+      if (this.#shares.get(share.info.shareId) !== share) throw unavailable();
+      if (group.binding && group.binding !== binding)
+        throw forbidden("Another agent is using this shared Chrome tab.");
+    };
+    check();
+    if (group.attempt?.finishing) throw unavailable();
+    group.opening++;
     group.binding = binding;
-    group.clients.add(client);
-    share.clients.add(client);
-    client.signal.addEventListener(
-      "abort",
-      () => {
-        group.clients.delete(client);
-        share.clients.delete(client);
-        if (!group.clients.size) delete group.binding;
-      },
-      { once: true },
-    );
-    return client;
+    if (execution.threadId) group.taskId = execution.threadId;
+    const connection = execution.agentConnection;
+    if (connection && !group.attempt) {
+      const { agentConnectionId: connectionId, grantRevision } = connection;
+      const id = randomUUID();
+      const attempt = {
+        id,
+        connectionId,
+        grantRevision,
+        source,
+        root: group.root,
+        ready: this.#receipts!.open({
+          id,
+          connectionId,
+          grantRevision,
+          ownerId: source.ownerId,
+          mode: execution.mode,
+          threadId: execution.threadId,
+        }),
+      };
+      group.attempt = attempt;
+      this.#attempts.set(id, attempt);
+    }
+    try {
+      await group.attempt?.ready;
+      await Promise.all(group.closing);
+      check();
+      if (group.attempt?.finishing) throw unavailable();
+      const client = source.router.openStandardClient(group.sessionId, {
+        wholeContext: false,
+        ...(onOverflow ? { onOverflow } : {}),
+      });
+      group.clients.add(client);
+      share.clients.add(client);
+      this.#changed(source.ownerId);
+      client.signal.addEventListener(
+        "abort",
+        () => {
+          group.clients.delete(client);
+          share.clients.delete(client);
+          group.closing.add(client.settled);
+          void client.settled
+            .then(() => {
+              group.closing.delete(client.settled);
+              return this.#releaseGroup(source, group);
+            })
+            .catch(this.#onError);
+        },
+        { once: true },
+      );
+      return client;
+    } finally {
+      group.opening--;
+      void this.#releaseGroup(source, group).catch(this.#onError);
+    }
+  }
+
+  async #releaseGroup(source: ChromeSource, group: Group): Promise<void> {
+    if (
+      group.opening ||
+      group.clients.size ||
+      group.closing.size ||
+      group.detaching.size ||
+      !source.shares.has(group.root)
+    )
+      return;
+    if (group.attempt) {
+      const detached =
+        !group.detachUnconfirmed &&
+        [...source.shares.values()]
+          .filter((share) => share.group === group)
+          .map((share) => source.backend.detachedCleanly(share.info.shareId))
+          .every(Boolean);
+      if (!detached) {
+        source.backend.stopSharing(group.root);
+        await this.#unshare(source, group.root);
+        return;
+      }
+      await this.#finish(group.attempt, Promise.resolve(true));
+      if (group.clients.size || group.closing.size) return;
+    }
+    delete group.attempt;
+    delete group.binding;
+    delete group.taskId;
+    this.#changed(source.ownerId);
+  }
+
+  #finish(attempt: ChromeAttempt, evidence: Promise<boolean>): Promise<void> {
+    attempt.finishing ??= (async () => {
+      try {
+        await attempt.ready;
+      } catch {
+        return;
+      }
+      await this.#receipts!.finish(attempt.connectionId, attempt.id, await evidence);
+    })().then(() => {
+      this.#attempts.delete(attempt.id);
+    });
+    return attempt.finishing;
   }
 
   #share(source: ChromeSource, info: BrowserSourceTabShared): void {
@@ -369,6 +705,8 @@ export class ChromeSharedTabs {
       )
         throw unavailable();
       old.info = info;
+      old.updatedAt = new Date().toISOString();
+      this.#changed(source.ownerId);
       source.backend.update(info);
       return;
     }
@@ -379,25 +717,69 @@ export class ChromeSharedTabs {
       root: info.shareId,
       sessionId: createBrowserSessionId(),
       clients: new Set<StandardCdpAttachment>(),
+      closing: new Set<Promise<void>>(),
+      opening: 0,
+      detaching: new Set<Promise<void>>(),
+      detachUnconfirmed: false,
     };
     if (!opener)
       source.router.registerSession(group.sessionId, info.targetId, async () => false, "/");
-    const share = { info, group, source, clients: new Set<StandardCdpAttachment>() };
+    const createdAt = new Date().toISOString();
+    const share = {
+      info,
+      group,
+      source,
+      createdAt,
+      updatedAt: createdAt,
+      clients: new Set<StandardCdpAttachment>(),
+    };
     source.shares.set(info.shareId, share);
     this.#shares.set(info.shareId, share);
     source.backend.update(info);
+    this.#changed(source.ownerId);
   }
 
-  #unshare(source: ChromeSource, tabId: string): void {
+  #unshare(source: ChromeSource, tabId: string): Promise<void> {
     const share = source.shares.get(tabId);
-    if (!share) return;
+    if (!share) return Promise.resolve();
+    const { group } = share;
+    const root = group.root === tabId;
+    const attempt = group.attempt;
+    const evidence = attempt && Promise.withResolvers<boolean>();
+    if (evidence) source.detaching.set(tabId, evidence);
     source.shares.delete(tabId);
     this.#shares.delete(tabId);
     for (const client of share.clients) client.close();
-    if (share.group.root === tabId) void source.router.unregisterSession(share.group.sessionId);
+    if (root) void source.router.unregisterSession(group.sessionId);
     for (const child of source.shares.values())
-      if (child.info.openerShareId === tabId) this.#unshare(source, child.info.shareId);
+      if (child.info.openerShareId === tabId) void this.#unshare(source, child.info.shareId);
+    source.backend.detachedCleanly(tabId);
     source.backend.remove(tabId);
+    this.#changed(source.ownerId);
+    if (!attempt || !evidence) return Promise.resolve();
+    const timer = setTimeout(() => evidence.resolve(false), 10_000);
+    timer.unref();
+    if (this.#sources.get(source.sourceId) !== source) evidence.resolve(false);
+    const observed = evidence.promise.then((detached) => {
+      clearTimeout(timer);
+      source.detaching.delete(tabId);
+      return detached;
+    });
+    if (root) {
+      const allDetached = Promise.all([observed, ...group.detaching]).then(
+        ([detached]) => detached === true && !group.detachUnconfirmed,
+      );
+      const finishing = this.#finish(attempt, allDetached);
+      void finishing.catch(this.#onError);
+      return finishing;
+    }
+    const settled = observed.then((detached) => {
+      group.detachUnconfirmed ||= !detached;
+      group.detaching.delete(settled);
+      void this.#releaseGroup(source, group).catch(this.#onError);
+    });
+    group.detaching.add(settled);
+    return settled;
   }
 
   #serialize(value: unknown, budget: BrowserUseBudget): string {

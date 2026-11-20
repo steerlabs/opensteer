@@ -103,7 +103,7 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
           : null;
     if (saved === null) {
       setSaving(false);
-      setError("Sign in to your Opensteer Account to set your name.");
+      setError("Sign in to your Opensteer account to set your name.");
       return;
     }
     void saved
@@ -151,7 +151,7 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
         : {
             text: unavailable
               ? target === "account"
-                ? "Sign in to your Opensteer Account to set your name."
+                ? "Sign in to your Opensteer account to set your name."
                 : "Open your Opensteer to set your name."
               : clearable
                 ? "Your agent calls you by this name. It stays on your computer until you sign in."

@@ -77,10 +77,13 @@ export async function liveAgentConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
-): Promise<AgentConnectionAuthority> {
+): Promise<AgentConnectionAuthority & {
+  readonly cleanupMinimumGrantRevision: number | null;
+  readonly cleanupMaximumMode: ThreadAccessMode | null;
+}> {
   const row = await database
     .selectFrom("agentConnections")
-    .select(["id", "grant", "grantRevision", "consentVersion", "accessMode"])
+    .select(["id", "grant", "grantRevision", "consentVersion", "accessMode", "cleanupMinimumGrantRevision", "cleanupMaximumMode"])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
     .where("revokedAt", "is", null)
@@ -94,6 +97,8 @@ export async function liveAgentConnection(
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
+    cleanupMinimumGrantRevision: row.cleanupMinimumGrantRevision,
+    cleanupMaximumMode: row.cleanupMaximumMode,
   };
 }
 
@@ -102,10 +107,21 @@ export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
-): Promise<AgentConnectionAuthority> {
+) {
   const connection = await liveAgentConnection(database, ownerUserId, agentConnectionId);
   if (!agentGrantAllowsTasks(connection.grant)) throw forbidden(tasksWithdrawnMessage);
   return connection;
+}
+
+export function meetsConnectionFloor(
+  connection: Awaited<ReturnType<typeof liveAgentConnection>>,
+  revision: number | null,
+  mode: ThreadAccessMode | null,
+): boolean {
+  const floor = connection.cleanupMinimumGrantRevision;
+  return floor === null || (revision !== null && (revision > floor ||
+    (revision === floor && (connection.cleanupMaximumMode === null ||
+      (mode !== null && threadAccessModeAtMost(mode, connection.cleanupMaximumMode))))));
 }
 
 /**
@@ -468,7 +484,12 @@ export async function resolveResourceAccess(
       ? { threadId: input.threadId }
       : {}),
   });
-  const runAccess = integrationAccessCeilingForRun(execution.mode);
+  // A session's effects are each decided by the session pipeline before hand-off (structural
+  // read, full-access, the reviewer or the person), so its mode is not a second ceiling here.
+  const runAccess =
+    execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:")
+      ? "read-write"
+      : integrationAccessCeilingForRun(execution.mode);
   const grantAccess = input.grantTarget
     ? authorizeTarget(execution, input.grantTarget)
     : selectedGrantOf(execution)

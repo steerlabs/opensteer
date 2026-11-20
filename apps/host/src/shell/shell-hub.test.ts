@@ -164,7 +164,7 @@ describe("ShellHub admission", () => {
     context.tokens.authenticate.mockRejectedValueOnce(new Error("binding gone"));
     await expect(connect()).rejects.toMatchObject({
       code: "run_invalid",
-      message: "This Run has ended.",
+      message: "This task has ended.",
     });
 
     context.store.state.present = false;
@@ -262,7 +262,7 @@ describe("ShellHub admission", () => {
       }),
     ).rejects.toMatchObject({
       code: "too_many_sessions",
-      message: `This Run already has ${machineAccessMaxRunSessions} open connections.`,
+      message: `This task already has ${machineAccessMaxRunSessions} open connections.`,
     });
 
     const [first] = pending;
@@ -626,7 +626,7 @@ describe("ShellHub grant revocation", () => {
       "run-ended",
     );
 
-    await expect(opening.connecting).rejects.toThrow("This Run has ended.");
+    await expect(opening.connecting).rejects.toThrow("This task has ended.");
     if (opening.open.type !== "host.shell.session.open") throw new Error("unreachable");
     await expect(context.hub.claimDataSocket(opening.open.dataTicket)).rejects.toThrow();
     expect(context.store.state.activated).toEqual([]);
@@ -1019,19 +1019,40 @@ describe("ShellHub shutdown", () => {
     expect(context.store.state.events.get(session.sessionId)).toEqual([{ kind: "truncated" }]);
   });
 
-  it("refuses an agent's shell to a computer whose person stopped agents, saying so", async () => {
-    const context = harness({ agentsStopped: true });
-    await expect(
-      context.hub.connect({
-        signal: new AbortController().signal,
-        target: context.target,
-        token: "caller-token",
-      }),
-    ).rejects.toMatchObject({
-      code: "target_offline",
-      message: expect.stringMatching(/^Agents are stopped on .+ by its person\./u),
+  it.each([false, true])(
+    "reports a stopped computer before shell reachability (connected: %s)",
+    async (connected) => {
+      const context = harness({ agentsStopped: true });
+      if (!connected) context.hub.detach(context.peer, "transport-disconnected");
+      await expect(
+        context.hub.connect({
+          signal: new AbortController().signal,
+          target: context.target,
+          token: "caller-token",
+        }),
+      ).rejects.toMatchObject({
+        code: "device-stopped",
+        context: { machineId: context.target, capability: "files" },
+        message: expect.stringMatching(/^Agents are stopped on .+\. Wait until/u),
+      });
+      expect(context.peer.sent).toEqual([]);
+    },
+  );
+
+  it("keeps the stopped reason if the device refuses a shell after the Home admitted it", async () => {
+    const context = harness();
+    const { open, connecting } = await openSession(context);
+    await context.hub.handleMessage(context.peer, context.stream, {
+      ...context.stream.fence,
+      type: "runner.shell.session.rejected",
+      sessionId: open.sessionId,
+      error: { code: "computer_stopped", message: "Agents stopped." },
     });
-    expect(context.peer.sent).toEqual([]);
+
+    await expect(connecting).rejects.toMatchObject({
+      code: "device-stopped",
+      message: "Agents are stopped on example-mac. Wait until the person resumes them there.",
+    });
   });
 
   it("tells a caller that arrives after shutdown that Opensteer is going away", async () => {

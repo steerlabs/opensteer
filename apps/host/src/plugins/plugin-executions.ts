@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  AgentSessionIdSchema,
   OpensteerError,
+  type ThreadId,
   threadAccessModeAtMost,
   type RequestId,
   type RequestPresentation,
@@ -18,7 +21,7 @@ import {
   commitPersonalMutation,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { callerLineage, type AgentCaller, type RunCaller } from "../mcp/agent-caller.js";
+import { callerLineage, type AgentCaller, type ConnectionCaller, type RunCaller } from "../mcp/agent-caller.js";
 import { pluginCaller, type PluginAuthority } from "./plugin-authority.js";
 import {
   JsonSchema,
@@ -37,6 +40,7 @@ export class PluginExecutions {
   readonly #changes = new EventEmitter();
   readonly #drivers = new Set<string>();
   readonly #answers = new Set<string>();
+  readonly #submissions = new Map<string, AbortController>();
   #reports: Promise<void> = Promise.resolve();
   readonly options: {
     service: PluginService;
@@ -67,14 +71,16 @@ export class PluginExecutions {
     let row = await this.options.records.execution(execution.id);
     if (!row) {
       const caller = this.options.authority.caller(execution.caller);
-      if (!caller || caller.kind === "connection") return;
-      const thread = caller.kind === "run" ? caller.thread : caller.anchor;
+      const session = this.options.authority.session(execution.caller);
+      if (!caller || callerLineage(caller) || (caller.kind === "connection" && !session)) return;
+      const threadId = caller.kind === "run" ? caller.thread.id
+        : caller.kind === "program" ? caller.anchor.id : session!.operation.taskId;
       const context = pluginCaller(caller);
-      const lineage = callerLineage(caller);
       await this.options.records.insert({
         id: execution.id,
         ownerUserId: caller.userId,
-        threadId: thread.id,
+        threadId,
+        ...(session ? { agentSessionId: session.operation.sessionId } : {}),
         runId: caller.kind === "run" ? caller.claims.runId : null,
         occurrenceId:
           caller.kind === "program" && caller.program.kind === "trigger"
@@ -84,15 +90,8 @@ export class PluginExecutions {
           caller.kind === "program" && caller.program.kind === "watch"
             ? caller.program.activationId
             : null,
-        ...(lineage
-          ? {
-              connectionId: lineage.agentConnectionId,
-              admittedGrantRevision: lineage.revision,
-              admittedAccessMode: caller.accessMode,
-            }
-          : {}),
         caller: execution.caller,
-        mode: context.mode,
+        mode: session ? "automatic" : context.mode,
         state: "running",
         requestId: null,
         interactionId: null,
@@ -103,10 +102,11 @@ export class PluginExecutions {
       row = await this.options.records.execution(execution.id);
     }
     if (!row) return;
-    if (row.connectionId && terminal.has(execution.state) && !row.terminalEvidenceAt) {
+    if (row.caller !== execution.caller) return;
+    if (row.connectionId && execution.drained && !row.terminalEvidenceAt) {
       await this.options.store.database
         .updateTable("pluginExecutions")
-        .set({ terminalEvidenceAt: new Date() })
+        .set({ terminalEvidenceAt: new Date(), contactLostAt: null })
         .where("id", "=", row.id)
         .where("terminalEvidenceAt", "is", null)
         .execute();
@@ -168,26 +168,62 @@ export class PluginExecutions {
   ) {
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, operation);
-    return this.#invoke(caller, () =>
-      operation === "call"
-        ? this.options.service.call(
-            z
-              .object({
-                calls: z.union([
-                  z.object({ path: z.string(), input: JsonSchema }),
-                  z.array(z.object({ path: z.string(), input: JsonSchema })),
-                ]),
-              })
-              .parse(input),
-            context,
-            signal,
-          )
-        : this.options.service.execute(
-            z.object({ code: z.string() }).parse(input),
-            context,
-            signal,
-          ),
-    );
+    const call = operation === "call" ? z.object({ calls: z.union([
+      z.object({ path: z.string(), input: JsonSchema }),
+      z.array(z.object({ path: z.string(), input: JsonSchema })).min(1),
+    ]) }).parse(input) : undefined;
+    const program = operation === "execute" ? z.object({ code: z.string().max(65536) }).parse(input) : undefined;
+    const invoke = (executionId?: string, lifetime = signal, beforeSend?: () => Promise<void>) => this.#invoke(caller, () => call
+      ? this.options.service.call({ ...call, ...(executionId ? { executionId } : {}) }, context, lifetime, beforeSend)
+      : this.options.service.execute({ ...program!, ...(executionId ? { executionId } : {}) }, context, lifetime, beforeSend), executionId);
+    const lineage = callerLineage(caller);
+    if (!lineage) return invoke();
+    const id = randomUUID();
+    const submission = new AbortController();
+    this.#submissions.set(id, submission);
+    try {
+      const session = this.options.authority.session(context.caller);
+      const mode = session?.operation.mode ?? caller.accessMode;
+      const assertConnection = async (database: OpensteerStore["database"], lock: boolean) => {
+        const connection = await database.selectFrom("agentConnections")
+          .select(["grantRevision", "accessMode"])
+          .where("id", "=", lineage.agentConnectionId)
+          .where("userId", "=", caller.userId)
+          .where("revokedAt", "is", null)
+          .where("tokenHash", "is not", null)
+          .where("expiresAt", ">", new Date())
+          .$if(lock, (query) => query.forShare()).executeTakeFirst();
+        if (!connection || connection.grantRevision !== lineage.revision ||
+          !threadAccessModeAtMost(mode, connection.accessMode) || (caller.kind === "connection" && !session))
+          throw new OpensteerError({ code: "forbidden", message: "Plugin authority ended before execution." });
+      };
+      await commitPersonalMutation(this.options.store.database, async (tx) => {
+        await assertConnection(tx, true);
+        await new PluginAgentStore(tx).insert({
+          id, ownerUserId: caller.userId,
+          threadId: caller.kind === "run" ? caller.thread.id : caller.kind === "program" ? caller.anchor.id : session!.operation.taskId,
+          agentSessionId: session?.operation.sessionId ?? null,
+          runId: caller.kind === "run" ? caller.claims.runId : null,
+          occurrenceId: caller.kind === "program" && caller.program.kind === "trigger" ? caller.program.occurrenceId : null,
+          watchActivationId: caller.kind === "program" && caller.program.kind === "watch" ? caller.program.activationId : null,
+          connectionId: lineage.agentConnectionId,
+          admittedGrantRevision: lineage.revision,
+          admittedAccessMode: mode,
+          caller: context.caller, mode: context.mode, state: "running", requestId: null,
+          interactionId: null, handoff: false, result: null, reason: null,
+        });
+      });
+      try {
+        return await invoke(id, AbortSignal.any([submission.signal, ...(signal ? [signal] : [])]),
+          () => assertConnection(this.options.store.database, false));
+      } catch (error) {
+        if (!this.options.service.executionWasSent(id))
+          await this.#record({ id, caller: context.caller, state: "cancelled", interaction: null, drained: true });
+        throw error;
+      }
+    } finally {
+      this.#submissions.delete(id);
+    }
   }
   async #invoke(caller: AgentCaller, work: () => Promise<PluginExecution>, executionId?: string) {
     try {
@@ -262,7 +298,10 @@ export class PluginExecutions {
       }
       const presentation: RequestPresentation = {
         kind: kind === "plugin.approval" ? "choice" : "external",
-        title: `${detail.plugin.name}: ${tool}`.slice(0, 240),
+        title: (row.agentSessionId
+          ? `${detail.plugin.name} needs your input`
+          : `${detail.plugin.name}: ${tool}`
+        ).slice(0, 240),
         detail:
           kind === "plugin.approval"
             ? "Review the exact arguments below. Earlier code in this tool or program may already have run."
@@ -292,7 +331,9 @@ export class PluginExecutions {
               originatingThreadId: previous.threadId,
               requestedBy: previous.ownerUserId,
               requiredActor: "owner",
-              ...(previous.runId
+              ...(previous.agentSessionId
+                ? { originatingAgentSessionId: previous.agentSessionId }
+                : previous.runId
                 ? { originatingRunId: previous.runId }
                 : previous.occurrenceId
                   ? { originatingOccurrenceId: previous.occurrenceId }
@@ -376,6 +417,41 @@ export class PluginExecutions {
               " Earlier calls may have taken effect. Check current state before starting new work; never rerun blindly."
             : `Waiting on the person in Needs you. Do not repeat or poll. After the person answers, call plugin_resume({executionId:${JSON.stringify(row.id)}}).`,
     };
+  }
+  async sessionExecution(caller: ConnectionCaller, id: string, taskId: ThreadId) {
+    const row = await this.#owned(caller, id);
+    const agentSessionId = row.agentSessionId;
+    if (!agentSessionId || row.threadId !== taskId || row.connectionId !== caller.connectionId)
+      throw new OpensteerError({ code: "forbidden", message: "Plugin execution is unavailable to this caller." });
+    return { ...row, agentSessionId };
+  }
+  async resumeSession(caller: ConnectionCaller, id: string, taskId: ThreadId, signal: AbortSignal) {
+    return this.#drive(id, async () => {
+      const row = await this.sessionExecution(caller, id, taskId);
+      if (terminal.has(row.state)) return this.result(row);
+      const session = this.options.authority.session(row.caller);
+      if (!session) throw new OpensteerError({ code: "conflict", message: pluginInterruptedReason });
+      session.signal = signal;
+      try {
+        return await this.#resume(caller, row, signal);
+      } finally {
+        delete session.signal;
+      }
+    });
+  }
+  async stopSession(bindingId: string) {
+    const session = AgentSessionIdSchema.safeParse(bindingId.slice("session:".length));
+    if (!bindingId.startsWith("session:") || !session.success) return;
+    const rows = await this.options.store.database
+      .selectFrom("pluginExecutions")
+      .selectAll()
+      .where("agentSessionId", "=", session.data)
+      .where("terminalEvidenceAt", "is", null)
+      .execute();
+    await Promise.all(rows.map(async (row) => {
+      const result = await this.#stopExecution(row);
+      if (result) await this.#record(result);
+    }));
   }
   async resume(caller: AgentCaller, id: string, signal?: AbortSignal) {
     return this.#drive(id, async () => {
@@ -685,21 +761,20 @@ export class PluginExecutions {
             `Plugin authority changed. ${pluginInterruptedReason}`,
           );
   }
-  async stopConnectionExecution(id: string, connectionId: string): Promise<void> {
+  async stopConnectionExecution(id: string, connectionId: string): Promise<void | "ended"> {
     const row = await this.options.records.execution(id);
     if (
       !row ||
       (row.connectionId !== null && row.connectionId !== connectionId) ||
-      row.terminalEvidenceAt ||
-      row.contactLostAt
+      row.terminalEvidenceAt
     )
       return;
-    const result = await this.options.service.cancel(
-      { execution: id },
-      this.#context(row),
-      AbortSignal.timeout(3_000),
-    );
-    await this.#record(result);
+    if (await this.#stopExecution(row)) return "ended";
+  }
+  #stopExecution(row: PluginExecutionRecord) {
+    const submission = this.#submissions.get(row.id);
+    submission?.abort();
+    return this.options.service.stopExecution(row.id, this.#context(row), Boolean(submission));
   }
   async #cancel(row: PluginExecutionRecord) {
     await this.#end(

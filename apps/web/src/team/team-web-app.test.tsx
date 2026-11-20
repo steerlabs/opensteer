@@ -133,7 +133,7 @@ describe("a team's own web app", () => {
     const node = await render();
     expect(node.textContent).toContain("Sign in to your team");
 
-    await act(async () => button(node, "Continue with Opensteer Account")?.click());
+    await act(async () => button(node, "Continue with Opensteer account")?.click());
     await act(async () => {
       await vi.waitFor(() => expect(assign).toHaveBeenCalled(), { timeout: 2_000 });
     });
@@ -156,7 +156,7 @@ describe("a team's own web app", () => {
     act(() => root?.unmount());
     root = null;
     node = await render();
-    await act(async () => button(node, "Continue with Opensteer Account")?.click());
+    await act(async () => button(node, "Continue with Opensteer account")?.click());
     expect(assign).toHaveBeenCalled();
     expect(
       JSON.parse(
@@ -370,7 +370,7 @@ it("keeps a signed-out knowledge link through Account sign-in at the root", asyn
   vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
   let node = await render();
   await act(async () => button(node, "Sign in here instead")?.click());
-  await act(async () => button(node, "Continue with Opensteer Account")?.click());
+  await act(async () => button(node, "Continue with Opensteer account")?.click());
   const signIn = requests.find(({ path }) => path.endsWith("/auth.oidc.begin"));
   expect(JSON.parse(String(signIn?.init?.body)).returnPath).toBe("/");
   act(() => root?.unmount());

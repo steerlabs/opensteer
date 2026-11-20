@@ -51,6 +51,7 @@ const CdpRequestSchema = z.strictObject({
 
 interface CdpAuthority {
   readonly agentBindingId: string;
+  readonly bindingGeneration?: number;
   readonly environmentId?: EnvironmentId;
   readonly ownerId: UserId;
 }
@@ -88,19 +89,27 @@ export function registerAgentCdpBridge(
   tokens: RunToolTokenService,
   _tabs?: unknown,
 ): void {
+  type AgentCdpScope = RunToolScope & { readonly lineage: boolean };
   const route = {
-    authenticate: (token: string) => tokens.authenticate(token),
-    authority: (scope: RunToolScope) => ({
+    authenticate: async (token: string): Promise<AgentCdpScope> => {
+      const { claims, lineage } = await tokens.authenticateExecution(token);
+      return { ...claims, lineage: Boolean(lineage?.agentConnectionId) };
+    },
+    authority: (scope: AgentCdpScope) => ({
       agentBindingId: `run:${scope.runId}`,
       ownerId: scope.requestedBy,
+      ...(scope.lineage ? { bindingGeneration: scope.bindingGeneration } : {}),
     }),
     browser,
     ownsSession: false,
     // An agent's browser connection lasts as long as its Run's grant, which a
     // long Run outlives its first token by.
-    reauthorize: (scope: RunToolScope) => tokens.reauthorize(scope),
+    reauthorize: async (scope: AgentCdpScope) => {
+      await tokens.reauthorize(scope);
+      return scope;
+    },
   };
-  registerCdpRoute<RunToolScope>(app, {
+  registerCdpRoute<AgentCdpScope>(app, {
     ...route,
     backend: "actions",
     path: hostInternalRoutePaths.browserSessionActions,
@@ -109,6 +118,7 @@ export function registerAgentCdpBridge(
     const connection = await authenticateConnection(request, route);
     const sessionId = BrowserSessionIdSchema.parse(connection.sessionId);
     try {
+      if (connection.scope.lineage) await route.reauthorize(connection.scope);
       return await browser.agentBackend({ ...route.authority(connection.scope), sessionId });
     } catch (error) {
       if (error instanceof BrowserCdpConnectionEnded)
@@ -116,11 +126,11 @@ export function registerAgentCdpBridge(
       throw error;
     }
   });
-  registerCdpRoute<RunToolScope>(app, {
+  registerCdpRoute<AgentCdpScope>(app, {
     ...route,
     path: hostInternalRoutePaths.browserSessionCdp,
   });
-  registerCdpRoute<RunToolScope>(app, {
+  registerCdpRoute<AgentCdpScope>(app, {
     ...route,
     path: hostInternalRoutePaths.browserCdp,
   });
@@ -180,7 +190,7 @@ export async function runBrowserCapability(
   if (!run)
     throw new OpensteerError({
       code: "forbidden",
-      message: "This Run's browser access has ended.",
+      message: "This task's browser access has ended.",
     });
   const execution = await store.admitExecution({
     ownerUserId: claims.requestedBy,
@@ -240,7 +250,18 @@ async function authenticateConnection<Scope>(
   return { scope, sessionId, token };
 }
 
-const lineageSockets = new WeakMap<CdpRouteOptions<unknown>["browser"], Map<WebSocket, string>>();
+const lineageSockets = new WeakMap<CdpRouteOptions<unknown>["browser"], Map<WebSocket, {
+  readonly authority: CdpAuthority;
+  readonly close: () => Promise<void>;
+}>>();
+
+export async function drainLegacyRunCdp(browser: BrowserService, runId: string, generation: number): Promise<void> {
+  await Promise.all([...(lineageSockets.get(browser) ?? [])].flatMap(([socket, binding]) => {
+    if (binding.authority.agentBindingId !== `run:${runId}` || binding.authority.bindingGeneration !== generation) return [];
+    socket.terminate();
+    return [binding.close()];
+  }));
+}
 
 export async function closeLegacyCdpForConnection(
   browser: BrowserService,
@@ -248,8 +269,12 @@ export async function closeLegacyCdpForConnection(
   resolveLineage: OpensteerStore["bindingAgentConnectionId"],
 ): Promise<void> {
   await Promise.all(
-    [...(lineageSockets.get(browser) ?? [])].map(async ([socket, bindingId]) => {
-      if ((await resolveLineage(bindingId)) === connectionId) socket.terminate();
+    [...(lineageSockets.get(browser) ?? [])].map(async ([socket, binding]) => {
+      const bindingId = binding.authority.agentBindingId;
+      if (!bindingId.startsWith("run:") && (await resolveLineage(bindingId)) === connectionId) {
+        socket.terminate();
+        await binding.close();
+      }
     }),
   );
 }
@@ -275,10 +300,12 @@ function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<
         sockets = new Map();
         lineageSockets.set(options.browser, sockets);
       }
-      const active = sockets;
-      active.set(socket, options.authority(connection.scope).agentBindingId);
-      socket.once("close", () => active.delete(socket));
-      attachCdpSocket(socket, options, connection);
+      const authority = options.authority(connection.scope);
+      const close = attachCdpSocket(socket, options, connection);
+      sockets.set(socket, { authority, close });
+      socket.once("close", () => {
+        void close().then(() => sockets.delete(socket), () => undefined);
+      });
     },
   );
 }
@@ -296,7 +323,7 @@ function attachCdpSocket<Scope>(
     readonly sessionId: string | undefined;
     readonly token: string;
   },
-): void {
+): () => Promise<void> {
   const authority = options.authority(connection.scope);
   let disconnected = false;
   let commands = Promise.resolve();
@@ -311,6 +338,11 @@ function attachCdpSocket<Scope>(
   expirationTimer?.unref();
   let ownedSessionOpened = false;
   const attachmentPromise = (async () => {
+    if (authority.bindingGeneration !== undefined) {
+      await options.reauthorize?.(connection.scope);
+      if (disconnected || socket.readyState !== socket.OPEN)
+        throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    }
     let sessionId: BrowserSessionId | undefined;
     if (connection.sessionId !== undefined) {
       const parsed = BrowserSessionIdSchema.safeParse(connection.sessionId);
@@ -355,9 +387,9 @@ function attachCdpSocket<Scope>(
     const channels = new Set<string>();
     const attaching = new Set<Promise<unknown>>();
     return {
-      close: () => {
+      close: async () => {
         // The runtime owns input release; enqueue detach before retiring this Host attachment.
-        void Promise.allSettled(attaching).then(async () => {
+        await Promise.allSettled(attaching).then(async () => {
           await Promise.allSettled(
             [...channels].map(async (sessionId) => {
               const pending = await attached.dispatch({
@@ -404,33 +436,27 @@ function attachCdpSocket<Scope>(
   // A client that never sends a command still learns why it cannot connect.
   let refusalTimer: NodeJS.Timeout | undefined;
   attachmentPromise.then(
-    (attachment) => {
-      if (disconnected) attachment.close();
-    },
+    () => {},
     (error: unknown) => {
+      if (disconnected) return;
       refusalTimer = setTimeout(() => closeSocket(socket, error), 10_000);
       refusalTimer.unref();
     },
   );
-  const close = () => {
-    if (disconnected) return;
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (closing) return closing;
     disconnected = true;
     if (expirationTimer) clearTimeout(expirationTimer);
     if (refusalTimer) clearTimeout(refusalTimer);
-    void attachmentPromise.then((attachment) => attachment.close()).catch(() => undefined);
-    if (options.ownsSession) {
-      void attachmentPromise
-        .catch(() => undefined)
-        .then(() =>
-          ownedSessionOpened
-            ? options.browser.closeTriggerSessionsForBinding(authority.agentBindingId)
-            : undefined,
-        )
-        .catch(() => undefined);
-    }
+    closing = attachmentPromise.then((attachment) => attachment.close(), () => undefined)
+      .then(async () => {
+        if (options.ownsSession && ownedSessionOpened)
+          await options.browser.closeTriggerSessionsForBinding(authority.agentBindingId);
+      });
+    return closing;
   };
-  socket.once("close", close);
-  socket.once("error", close);
+  socket.once("error", () => { void close().catch(() => undefined); });
   socket.on("message", (raw, isBinary) => {
     if (isBinary) {
       closeSocket(socket, new Error("CDP messages must be JSON text"));
@@ -539,6 +565,7 @@ function attachCdpSocket<Scope>(
       })
       .catch((error) => closeSocket(socket, error));
   });
+  return close;
 }
 
 function bearerToken(headers: IncomingHttpHeaders): string {

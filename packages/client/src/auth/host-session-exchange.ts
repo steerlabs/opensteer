@@ -372,7 +372,7 @@ function accountFailure(error: unknown): HostSessionExchangeError {
     if (error.status === 401) {
       return new HostSessionExchangeError(
         "account-required",
-        "Sign in to your Opensteer Account again to reconnect this Opensteer.",
+        "Sign in to your Opensteer account again to reconnect this Opensteer.",
       );
     }
     if (error.status === 403 || error.status === 404) {
@@ -381,7 +381,7 @@ function accountFailure(error: unknown): HostSessionExchangeError {
   }
   return new HostSessionExchangeError(
     "unavailable",
-    "The Opensteer Account could not authorize this Opensteer right now.",
+    "The Opensteer account could not authorize this Opensteer right now.",
   );
 }
 

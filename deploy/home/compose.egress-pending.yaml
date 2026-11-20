@@ -1,7 +1,4 @@
 services:
   browser-egress:
     environment:
-      # The proxy rejects loopback upstream addresses before opening a connection.
-      OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL: https://127.0.0.1:443
-      OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME: pending
-      OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD: pending
+      OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED: "true"

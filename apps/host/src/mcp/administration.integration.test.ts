@@ -4,7 +4,7 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
-import { BrowserSourceStore } from "@opensteer/database";
+import { AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { randomUUID } from "node:crypto";
@@ -25,13 +25,23 @@ import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
-function mcp(dependencies: AdministrationDependencies, userId: UserId) {
+async function mcp(dependencies: AdministrationDependencies, userId: UserId) {
+  const connections = new AgentConnectionStore(dependencies.store.database);
+  const connection = await connections.create({
+    userId,
+    label: "Administration test",
+    clientName: "Administration test",
+    accessMode: "full-access",
+    resource: "https://home.test",
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  await connections.activate(connection.id, randomUUID());
   const caller: AgentCaller = {
     kind: "connection",
     grant: { scope: "everything" },
     grantRevision: 1,
-    connectionId: "administration-test",
-    key: "connection:administration-test",
+    connectionId: connection.id,
+    key: `connection:${connection.id}`,
     userId,
     accessMode: "full-access",
   };
@@ -45,6 +55,7 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
     publicUrl: new URL("http://127.0.0.1"),
   });
   return {
+    connection,
     service,
     call: async (name: string, input: Record<string, unknown>, operationKey = randomUUID()) => {
       const result = await service.callTool("token", name, input, { operationKey });
@@ -59,7 +70,7 @@ function realtime() {
 }
 
 async function retryAfterPersonChange(
-  agent: ReturnType<typeof mcp>,
+  agent: Awaited<ReturnType<typeof mcp>>,
   name: string,
   input: Record<string, unknown>,
   change: () => Promise<unknown>,
@@ -79,6 +90,37 @@ async function retryAfterPersonChange(
 }
 
 describeStore("MCP administration", (it) => {
+  for (const [name, change] of [
+    ["mode lowered", { accessMode: "approval-required" }],
+    ["grant narrowed", { grant: { scope: "selected", tasks: true, resources: [] } }],
+  ] as const) {
+    it(`refuses settings writes and replays with stale MCP authority after ${name}`, async ({
+      storeFixture: fixture,
+    }) => {
+      const run = await fixture.createRunFixture("settings-fence");
+      const agent = await mcp({
+        store: fixture.store,
+        realtime: { broadcast: vi.fn() },
+      } as unknown as AdministrationDependencies, run.userId);
+      try {
+        const key = randomUUID();
+        const command = { action: "rename", computerId: run.runnerId, name: "Before" };
+        await agent.call("computer_update", command, key);
+        await new AgentConnectionStore(fixture.database).update(run.userId, {
+          connectionId: agent.connection.id, expectedRevision: 1, ...change,
+        });
+        await expect(agent.call("computer_update", command, key))
+          .rejects.toMatchObject({ code: "forbidden" });
+        await expect(agent.call("computer_update", { ...command, name: "After" }))
+          .rejects.toMatchObject({ code: "forbidden" });
+        expect(await fixture.database.selectFrom("runners").select("name")
+          .where("id", "=", run.runnerId).executeTakeFirstOrThrow()).toEqual({ name: "Before" });
+      } finally {
+        await agent.service.close();
+      }
+    });
+  }
+
   for (const action of [
     "rename",
     "disable",
@@ -120,7 +162,7 @@ describeStore("MCP administration", (it) => {
         } as unknown as AdministrationDependencies,
         vi.fn(),
       );
-      const agent = mcp(service.dependencies, run.userId);
+      const agent = await mcp(service.dependencies, run.userId);
       const common = {
         environmentId: run.environmentId,
         harnessInstanceId: run.harnessInstance.id,
@@ -289,7 +331,7 @@ describeStore("MCP administration", (it) => {
       onHistoryChanged: (ownerId, profileId) =>
         rt.hub.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
     });
-    const agent = mcp(
+    const agent = await mcp(
       {
         store: f.store,
         browser,
@@ -405,7 +447,7 @@ describeStore("MCP administration", (it) => {
       preferredSourceId: sourceId,
     };
     await sources.upsertGrant(site);
-    const agent = mcp(
+    const agent = await mcp(
       {
         store: f.store,
         browser,
@@ -452,7 +494,7 @@ describeStore("MCP administration", (it) => {
   }) => {
     const run = await f.startRunFixture("session-retry");
     const sessionId = ShellSessionIdSchema.parse(`shs_${randomUUID()}`);
-    const agent = mcp(
+    const agent = await mcp(
       {
         store: f.store,
         shellControl: {
@@ -576,7 +618,7 @@ describeStore("MCP administration", (it) => {
       .selectFrom("clientSyncState")
       .select("resourceRevisions")
       .executeTakeFirstOrThrow();
-    const agent = mcp(deps as unknown as AdministrationDependencies, run.userId);
+    const agent = await mcp(deps as unknown as AdministrationDependencies, run.userId);
     try {
       await retryAfterPersonChange(
         agent,
@@ -630,7 +672,7 @@ describeStore("MCP administration", (it) => {
 
       onChanged: changed,
     });
-    const agent = mcp(
+    const agent = await mcp(
       {
         store: f.store,
         channels: { service: channels },

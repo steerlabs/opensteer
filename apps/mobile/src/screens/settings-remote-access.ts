@@ -123,7 +123,7 @@ export function remoteAccessSections(
             detail:
               view.state === "on-private"
                 ? (view.address ?? "")
-                : "Your own VPN or network, instead of your Opensteer Account",
+                : "Your own VPN or network, instead of your Opensteer account",
             onPress: () => act({ kind: "private" }),
           },
         ]

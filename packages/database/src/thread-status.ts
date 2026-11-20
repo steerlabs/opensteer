@@ -1,5 +1,6 @@
 import {
   SequenceSchema,
+  type AgentSessionEndReason,
   type AgentSessionId,
   contentSaysSomething,
   utf8Prefix,
@@ -13,6 +14,7 @@ import {
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { taskLineMaxLength } from "@opensteer/protocol";
+import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import { sql, type Kysely, type Transaction, type UpdateObject } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
@@ -64,6 +66,37 @@ export async function writeThreadSummary(
           where agent_sessions.thread_id = threads.id and agent_sessions.status = 'active'
         )`.as("agentSessionId"),
       )
+      // The task's one session, ended or not, and the connection it worked for.
+      .returning(
+        sql<{
+          sessionId: AgentSessionId;
+          status: "active" | "ended";
+          endReason: AgentSessionEndReason | null;
+          connection: {
+            id: string;
+            label: string;
+            clientName: string;
+            redirectUri: string | null;
+            clientFingerprint: string | null;
+            identityAtConsent: unknown;
+          };
+        } | null>`(
+          select json_build_object(
+            'sessionId', agent_sessions.id,
+            'status', agent_sessions.status,
+            'endReason', agent_sessions.end_reason,
+            'connection', json_build_object(
+              'id', agent_connections.id,
+              'label', agent_connections.label,
+              'clientName', agent_connections.client_name,
+              'redirectUri', agent_connections.redirect_uri,
+              'clientFingerprint', agent_connections.client_fingerprint,
+              'identityAtConsent', agent_connections.identity_at_consent))
+          from agent_sessions
+          join agent_connections on agent_connections.id = agent_sessions.connection_id
+          where agent_sessions.thread_id = threads.id
+        )`.as("externalWork"),
+      )
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
     const view = {
@@ -84,6 +117,7 @@ export async function writeThreadSummary(
       harnessInstanceId: row.harnessInstanceId,
       runQueued: row.runQueued,
       ...(row.agentSessionId ? { agentSessionId: row.agentSessionId } : {}),
+      ...(row.externalWork ? { externalWork: externalWorkView(row.externalWork) } : {}),
     };
     const thread = row.removedAt
       ? undefined
@@ -315,4 +349,40 @@ export async function threadMutationHead(tx: Tx, threadId: ThreadId) {
     .limit(1)
     .executeTakeFirstOrThrow();
   return SequenceSchema.parse(state.sequence);
+}
+
+/** A session task's connection as clients name it: no credential, only what the Home proved. */
+function externalWorkView(work: {
+  readonly sessionId: AgentSessionId;
+  readonly status: "active" | "ended";
+  readonly endReason: AgentSessionEndReason | null;
+  readonly connection: {
+    readonly id: string;
+    readonly label: string;
+    readonly clientName: string;
+    readonly redirectUri: string | null;
+    readonly clientFingerprint: string | null;
+    readonly identityAtConsent: unknown;
+  };
+}) {
+  const { connection } = work;
+  let redirectOrigin: string | null = null;
+  try {
+    redirectOrigin = connection.redirectUri ? new URL(connection.redirectUri).origin : null;
+  } catch {
+    redirectOrigin = null;
+  }
+  const identity = AgentConnectionIdentityAtConsentSchema.safeParse(connection.identityAtConsent);
+  return {
+    sessionId: work.sessionId,
+    status: work.status,
+    endReason: work.endReason,
+    connection: {
+      id: connection.id,
+      label: connection.label,
+      clientName: connection.clientName,
+      client: { fingerprint: connection.clientFingerprint, redirectOrigin },
+      ...(identity.success ? { identityAtConsent: identity.data } : {}),
+    },
+  };
 }

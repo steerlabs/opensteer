@@ -36,7 +36,7 @@ const noAccountTeams: AccountTeamsClient = {
 };
 
 function noAccount(): Error {
-  return new Error("This build has no Opensteer Account, so it can't create teams.");
+  return new Error("This build has no Opensteer account, so it can't create teams.");
 }
 
 /**

@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../../identity/auth.js";
 import { SignedTokenService } from "../../identity/host-keys.js";
@@ -130,6 +130,30 @@ describe("stateless MCP registration", () => {
     });
   }
   const challenge = createHash("sha256").update("x".repeat(64)).digest("base64url");
+  it("sanitizes the client name in an older signed registration", async () => {
+    const redirectUri = "https://client.example/cb";
+    const body = Buffer.from(JSON.stringify({
+      v: 1,
+      issuer: origin + "/oauth/mcp",
+      name: "  Legacy   \u202Eclient\u2028",
+      redirects: [redirectUri],
+    })).toString("base64url");
+    const signature = sign(null, Buffer.from(`opensteer-mcp-client-v1.${body}`), pair.privateKey);
+    const request = oauth();
+    const path = await request.authorize(origin, {
+      client_id: `${body}.${signature.toString("base64url")}`,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    const id = new URL(path, origin).searchParams.get("request")!;
+    expect(await request.consent(id, createId("user"))).toMatchObject({
+      clientName: "Legacy client",
+      identityAtConsent: { kind: "unverified", clientName: "Legacy client" },
+    });
+  });
+
   it("survives a Host restart without a client registry and binds registration to its issuer", async () => {
     const registered = oauth().register(origin, {
       client_name: "Example",

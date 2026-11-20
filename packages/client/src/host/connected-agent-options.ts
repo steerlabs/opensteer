@@ -5,6 +5,7 @@ import {
   type AgentGrantResource,
 } from "@opensteer/core";
 import type {
+  AgentConnectionConsent,
   ApprovedComputerApp,
   MachineSummary,
   PluginsInstalledView,
@@ -24,6 +25,36 @@ export interface ProfileOption {
   /** Its Device and whether it is reachable now; null for a profile not opened anywhere yet. */
   readonly device: { readonly name: string; readonly online: boolean } | null;
   readonly detail: string;
+}
+
+export type ChromeTabGrantCatalog = Pick<
+  AgentConnectionConsent,
+  "chromeTabs" | "chromeTabsNeedPairing"
+>;
+
+export function chromeTabGrantOptions(catalog?: ChromeTabGrantCatalog) {
+  const options = (catalog?.chromeTabs ?? []).flatMap(({ sourceId, computerName, paired }) =>
+    paired
+      ? [{
+          resource: { kind: "chrome-tabs" as const, sourceId },
+          name: agentWords("consent.chromeTabs.label", { device: computerName }),
+        }]
+      : [],
+  );
+  return {
+    options,
+    needsPairing: options.length === 0 && (catalog?.chromeTabsNeedPairing === true ||
+      catalog?.chromeTabs?.some(({ paired }) => !paired) === true),
+  };
+}
+
+export async function readChromeTabGrantCatalog(
+  client: Pick<HostClient, "rpc">,
+  signal?: AbortSignal,
+): Promise<ChromeTabGrantCatalog> {
+  return unwrapRpcResult(
+    await client.rpc["browser.sources.get"]({}, signal ? { signal } : undefined),
+  );
 }
 
 /** A Device a new dedicated profile can be kept on. */

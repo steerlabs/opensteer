@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
 import {
+  readChromeTabGrantCatalog,
   readAgentAppOptions,
   readAgentPluginOptions,
   type AppOption,
@@ -90,4 +91,9 @@ export function useAgentPluginOptions(
   wanted: boolean,
 ): AgentOptionsRead<PluginOptions> {
   return useLazyRead(client, wanted, readAgentPluginOptions);
+}
+
+export function useChromeTabGrantCatalog(client: HostClient | null, wanted: boolean) {
+  const result = useLazyRead(client, wanted, readChromeTabGrantCatalog);
+  return result.status === "ready" ? result.data : undefined;
 }

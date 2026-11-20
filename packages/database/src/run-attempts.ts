@@ -48,6 +48,7 @@ export async function recordAttemptDispatch(
   input: {
     readonly attemptId: RunAttemptId;
     readonly bindingGeneration: number;
+    readonly connectionId?: string | null;
     readonly modelSelection: ModelSelection;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
@@ -57,6 +58,7 @@ export async function recordAttemptDispatch(
     .updateTable("runAttempts")
     .set({
       bindingGeneration: input.bindingGeneration,
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       dispatchedAt: new Date(),
       modelSelection: jsonValue(input.modelSelection),
       runnerBootId: input.runnerBootId,
@@ -73,6 +75,7 @@ export async function recordAttemptDispatch(
 export async function supersedeCurrentAttempt(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
+  reason: "steer_restart" | "recovery" = "steer_restart",
 ): Promise<{ readonly successor: RunAttemptRow; readonly superseded: RunAttemptRow | null }> {
   const current = await currentRunAttempt(transaction, runId);
   // The current attempt has not been sent yet: it is the replacement itself.
@@ -91,7 +94,7 @@ export async function supersedeCurrentAttempt(
     .values({
       id: createId("runAttempt"),
       ordinal: current.ordinal + 1,
-      reason: "steer_restart",
+      reason,
       runId,
       status: "current",
     })

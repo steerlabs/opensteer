@@ -14,7 +14,7 @@ import {
   type ConnectedAgentStatus,
   type HostClient,
 } from "@opensteer/client/host";
-import { useConnectedAgents } from "@opensteer/client/react";
+import { useChromeTabGrantCatalog, useConnectedAgents } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
@@ -44,6 +44,7 @@ export function ConnectedAgentPage({
   const shell = useShell();
   const navigate = useNavigate();
   const agents = useConnectedAgents(client);
+  const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   const [edit, setEdit] = useState<Edit | null>(null);
@@ -77,7 +78,6 @@ export function ConnectedAgentPage({
   const detail = connectedAgentDetail(connection, names, {
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
-    withdrawnAt: snapshot.agentWork?.withdrawn?.[connection.id],
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.
@@ -149,7 +149,6 @@ export function ConnectedAgentPage({
       </div>
       <AgentWhoLine who={who} />
       <AgentWithdrawnNotice
-        agent={agent}
         onDisconnect={busy ? null : () => setConfirming("disconnect")}
         who={who}
       />
@@ -179,6 +178,7 @@ export function ConnectedAgentPage({
           <AgentGrantEditor
             agent={agent}
             browser={browser}
+            chromeTabs={chromeTabs}
             client={client}
             disabled={busy}
             draft={draft}

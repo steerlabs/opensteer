@@ -95,11 +95,11 @@ describe("under a device's switches", () => {
   it("says connected agents also need a profile or app chosen, and why switches can't change", () => {
     const switches = deviceSwitches(machine({}), { devicesAvailable: true });
     expect(deviceSwitchesFooter(switches)).toBe(
-      "Connected agents also need you to choose this Device’s profile or app for them.",
+      "Connected agents also need you to choose this device’s profile or app for them.",
     );
     const older = deviceSwitches(machine({}), { devicesAvailable: false });
     expect(deviceSwitchesFooter(older)).toBe(
-      "Update Opensteer on your Mac to change Browser and Apps. Connected agents also need you to choose this Device’s profile or app for them.",
+      "Update Opensteer on your Mac to change Browser and Apps. Connected agents also need you to choose this device’s profile or app for them.",
     );
     const home = deviceSwitches(
       machine({
@@ -112,7 +112,7 @@ describe("under a device's switches", () => {
     // A Home Mac's Apps switch is real, so the footer belongs under it too.
     expect(home.rows.some(({ fixed }) => !fixed)).toBe(true);
     expect(deviceSwitchesFooter(home)).toBe(
-      "Your Opensteer lives on this Mac, so it can't be removed. Connected agents also need you to choose this Device’s profile or app for them.",
+      "Your Opensteer lives on this Mac, so it can't be removed. Connected agents also need you to choose this device’s profile or app for them.",
     );
   });
 

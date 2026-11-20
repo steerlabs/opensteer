@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentOperationViewSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
   DeviceDriverGenerationSchema,
@@ -469,6 +470,10 @@ export const DeviceMachineSessionBindCommandSchema = z.strictObject({
 });
 export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessionBindCommandSchema>;
 
+const AgentOperationPageSchema = z.object({
+  operations: z.array(AgentOperationViewSchema).max(100),
+  nextBefore: z.string().max(200).nullable(),
+});
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,
   IphoneScreenDetachCommandSchema,
@@ -1853,6 +1858,24 @@ const hostApiGroup3 = defineRpc({
       /** Present on Homes with grants. Legacy readers still see only active connections. */
       endedConnections: z.array(AgentConnectionSchema).optional(),
     }),
+  ),
+  /** A connected agent's direct operations, newest first, paged. */
+  "connections.activity": declaration(
+    "GET",
+    z.strictObject({
+      connectionId: AgentConnectionIdSchema,
+      before: z.string().min(1).max(200).optional(),
+    }),
+    AgentOperationPageSchema,
+  ),
+  /** One task's direct operations, newest first, paged; empty for any other task. */
+  "threads.activity": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      before: z.string().min(1).max(200).optional(),
+    }),
+    AgentOperationPageSchema,
   ),
   "connections.authorization.get": declaration(
     "GET",

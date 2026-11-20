@@ -89,6 +89,7 @@ export class WatchSupervisor {
   readonly #executionRoot: string;
   readonly #privateRoot: string;
   readonly #watches = new Map<TriggerWatchActivationId, ActiveWatch>();
+  readonly #stopped = new Map<string, "ended" | "never-seen">();
   readonly #agentHome: AgentHomeAccess;
   readonly #statusTimer: NodeJS.Timeout;
   #closed = false;
@@ -144,6 +145,33 @@ export class WatchSupervisor {
     await stopped;
   }
 
+  async stopAttempt(
+    activationId: TriggerWatchActivationId,
+    generation: number,
+    sink: RunnerMessageSink,
+  ): Promise<import("@opensteer/protocol").AttemptStopState> {
+    const stopped = this.#reconcileTail.then(async () => {
+      const key = `${activationId}:${generation}`;
+      const prior = this.#stopped.get(key);
+      if (prior) return prior;
+      const active = this.#watches.get(activationId);
+      if (!active || active.desired.executionGeneration !== generation) {
+        this.#stopped.set(key, "never-seen");
+        return "never-seen" as const;
+      }
+      active.sink = sink;
+      try {
+        await this.#stop(active, true);
+        this.#watches.delete(activationId);
+        return "ended" as const;
+      } catch {
+        return "still-ending" as const;
+      }
+    });
+    this.#reconcileTail = stopped.then(() => undefined, () => undefined);
+    return stopped;
+  }
+
   async #applyReconcile(
     command: Extract<
       import("@opensteer/protocol").RunnerCommand,
@@ -166,22 +194,24 @@ export class WatchSupervisor {
         next.revisionId !== active.desired.revisionId
       ) {
         active.sink = sink;
-        await this.#stop(active, true);
-        this.#watches.delete(activationId);
+        try {
+          await this.#stop(active, true);
+          this.#watches.delete(activationId);
+        } catch {
+          continue;
+        }
       }
     }
     for (const item of command.desired) {
+      if (this.#stopped.has(`${item.activationId}:${item.executionGeneration}`)) continue;
       const existing = this.#watches.get(item.activationId);
       if (existing) {
+        if (existing.abort.signal.aborted ||
+          existing.desired.executionGeneration !== item.executionGeneration) continue;
         existing.desired = item;
         existing.sink = sink;
         await this.#writeCapabilities(existing);
         this.#armLease(existing);
-        if (existing.observed === "expired" || existing.observed === "stopped") {
-          existing.abort = new AbortController();
-          existing.observed = "starting";
-          existing.task = this.#run(existing);
-        }
         await this.#report(existing);
         continue;
       }
@@ -531,7 +561,10 @@ export class WatchSupervisor {
       stdoutTail: watchTailText(active.stdoutTail),
       type: "runner.watch-status",
     };
-    if (message.observed === "stopped") this.#onStopped?.(message);
+    if (message.observed === "stopped" || message.observed === "expired") {
+      this.#stopped.set(`${message.activationId}:${message.executionGeneration}`, "ended");
+      this.#onStopped?.(message);
+    }
     await active.sink.send(message).catch(() => undefined);
   }
 }

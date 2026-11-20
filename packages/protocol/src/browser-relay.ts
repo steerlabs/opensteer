@@ -1,4 +1,9 @@
-import { StandardCdpChunkSchema, StandardCdpModeSchema } from "./standard-cdp.js";
+import {
+  StandardCdpChunkSchema,
+  StandardCdpLeaseEvidenceSchema,
+  StandardCdpLeaseReconciliationSchema,
+  StandardCdpModeSchema,
+} from "./standard-cdp.js";
 import { encodeFrameEnvelope, decodeFrameEnvelope } from "@opensteer/browser-core/bytes";
 import { IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
@@ -123,6 +128,11 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...relayRequestBase, type: z.literal("browser.health.request") }),
   z.strictObject({
     ...relayRequestBase,
+    type: z.literal("browser.standard-cdp.reconcile"),
+    lease: StandardCdpLeaseReconciliationSchema.optional(),
+  }),
+  z.strictObject({
+    ...relayRequestBase,
     attachTicket: z
       .string()
       .max(16_384)
@@ -159,6 +169,11 @@ export type RoutedHostToBrowserRelayMessage = Extract<
 >;
 
 const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...relayRequestBase,
+    ...StandardCdpLeaseEvidenceSchema.shape,
+    type: z.literal("browser.standard-cdp.reconciled"),
+  }),
   LocalProfileInventorySchema,
   LocalProfileDeletionResultSchema,
   RunnerAuxiliaryHeartbeatSchema,

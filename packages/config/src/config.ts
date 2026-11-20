@@ -2,6 +2,7 @@ import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protoc
 import { deploymentPolicy, hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
+  BackgroundModelChoiceSchema,
   DeploymentIdSchema,
   DeploymentKindSchema,
   DeploymentShapeSchema,
@@ -12,6 +13,7 @@ import {
   opensteerHostNativeOAuthClients,
   RunnerIdSchema,
   RuntimeModeSchema,
+  type BackgroundModelChoice,
   type DeploymentId,
   type DeploymentShape,
   type EnvironmentId,
@@ -179,6 +181,7 @@ const configuredSecret = (maximumLength: number) =>
 const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
+  OPENSTEER_AGENT_REVIEW_MODEL: optionalPath,
   OPENSTEER_STRICT_INSTALLATION: z.enum(["true", "false"]).default("false"),
   OPENSTEER_HOST_INSTANCE_PATH: optionalPath,
   OPENSTEER_TEAM_FILE_STORE: z.enum(["local", "gcs"]).default("local"),
@@ -286,6 +289,7 @@ export interface HostConfig {
   };
   readonly accountBundlePath: string;
   readonly authSecret: string;
+  readonly agentReviewModel?: BackgroundModelChoice;
   readonly strictInstallation?: boolean;
   readonly hostInstancePath?: string;
   readonly teamFileStore?: { kind: "local" } | { kind: "gcs"; bucket: string; prefix: string };
@@ -728,6 +732,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         }
       : {}),
     authSecret: parsed.OPENSTEER_AUTH_SECRET,
+    ...(parsed.OPENSTEER_AGENT_REVIEW_MODEL
+      ? {
+          agentReviewModel: BackgroundModelChoiceSchema.parse(
+            JSON.parse(parsed.OPENSTEER_AGENT_REVIEW_MODEL),
+          ),
+        }
+      : {}),
     strictInstallation: parsed.OPENSTEER_STRICT_INSTALLATION === "true",
     ...(parsed.OPENSTEER_HOST_INSTANCE_PATH
       ? { hostInstancePath: parsed.OPENSTEER_HOST_INSTANCE_PATH }

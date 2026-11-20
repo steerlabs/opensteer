@@ -60,10 +60,14 @@ For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE` during install. The egress
 proxy alone receives those credentials through file mounts. A bring-your-own
-Home without an upstream makes direct public-network connections. A managed
-Home blocks proxied browser traffic until an upstream is assigned. Chromium
-keeps its implicit loopback bypass for local app servers. The pod firewall also blocks private and
-link-local destinations outside loopback.
+Home without an upstream makes direct public-network connections. On a managed
+Home, public page loads use the assigned upstream's stable IP, not the VM's IP.
+These loads fail closed while the upstream is missing or broken. Chromium disables
+QUIC and non-proxied WebRTC UDP and keeps loopback access for local app servers.
+The proxy refuses SMTP ports for HTTP and CONNECT. These are browser settings,
+not a boundary against an agent that controls Chromium. Task shells intentionally
+use the VM's public IP. The pod firewall blocks private and link-local destinations
+outside loopback, including instance metadata.
 
 Task shells run in bubblewrap. The Runner identity and its enrollment and
 browser bridge secret mounts are under the masked Runner data directory. The
@@ -126,9 +130,11 @@ Home is ready.
 Before switching to a new release, the updater pulls its images, records both
 image sets, and saves `update-database.dump` in the root-only configuration
 directory. An interrupted or unhealthy candidate rolls back to the previous
-images. Opensteer migrations must keep the immediately preceding release
-compatible with the new schema. The database dump is a manual recovery point
-if that compatibility breaks. Managed updates require digest-pinned images.
+images only. Migrations are expand-only and must keep the preceding Host compatible.
+The dump is a consistent, last-resort copy for manual recovery. It does not include
+writes made after the dump. Managed updates take only digest-pinned images from
+the stored Account HTTPS feed and refuse a local manifest. PostgreSQL has its own
+fixed digest; inherited Compose variables cannot override images or volume selection.
 Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates
 on a bring-your-own Home, or supply a manifest to `update` directly. The Account
 can set `releaseManifestUrl` in the managed boot response to schedule updates.
@@ -143,11 +149,17 @@ with the image digests. The Home Provisioner downloads and verifies one installe
 file, then passes the root-only boot spec and the separate root-only token file
 with `--boot-spec … --bootstrap-token-file …`. The installer exchanges the token
 using the contract in [managed-boot.sh](managed-boot.sh). The systemd installer
-keeps its checkpoint across reboots and retries the exchange and completion
-with backoff until the Account accepts completion or rejects the token. It
-sends the running Home's identity only after all seven services are healthy.
+keeps the first accepted boot configuration across reboots. It sends the running
+Home's identity only after all seven services are healthy and retries an ambiguous
+completion with the same identity. The Account revokes the single-use token on
+completion. The installer removes its local token files after acknowledgement or
+terminal refusal and stops the pod on refusal. Provider instance user data and
+cloud-init's cached copy can still contain the spent token; neither provides new
+boot authority after completion. Cleanup resumes on the next installer run if
+power is lost after the terminal outcome.
 For a managed replacement, `restoreSnapshot` stages and verifies the snapshot
-before starting the restored identity. Each managed Home gets a separate S3
+before starting the restored identity. The Account claims the new generation for
+the same linked owner; enrolled services keep their restored credentials. Each managed Home gets a separate S3
 principal scoped to its backup prefix. A work Home's optional organization and
 assignment marker is passed to the Host as `OPENSTEER_MANAGED_HOME_WORK_JSON`.
 
@@ -157,6 +169,17 @@ HTTP Basic using that generation's Account OIDC credentials. When the Account
 assigns an upstream, maintenance writes the three secret files under the
 root-only configuration directory and recreates the egress proxy. An
 interrupted change resumes at the next maintenance tick.
+
+## Known limits
+
+`--source-stopped` is an operator acknowledgement, not a fencing mechanism for
+manual restores on two machines. The managed provisioner separately verifies the
+predecessor is off. Some secret mounts are readable by the receiving service user;
+some service processes and backup helpers load credentials into their own environment.
+The task sandbox, separate mounts and PID isolation keep that state out of task shells.
+The pod checks both firewall families before admitting sibling services and repairs
+rule drift at maintenance time, not continuously. A manual root-level rule change
+can therefore briefly leave an existing pod unprotected.
 
 Use Ubuntu 24.04 LTS with Bash, systemd, cloud-init, CA certificates, curl, and
 standard archive and checksum utilities for the managed bootstrap. The

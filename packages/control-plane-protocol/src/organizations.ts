@@ -128,12 +128,12 @@ export const WorkAuditRecordSchema = z.discriminatedUnion("kind", [
     ...session,
     operationId: localId,
     toolFamily: z.enum(["tasks", "browser", "computer", "plugins", "settings"]),
-    targetKind: z.enum(["task", "browser-profile", "computer-app", "plugin", "settings"]),
+    targetKind: z.enum(["task", "browser-profile", "chrome-tabs", "computer-app", "device", "plugin", "settings"]),
     grantedResourceId: localId.nullable(),
     effectiveMode: ThreadAccessModeSchema,
     grantId: GrantIdSchema,
     grantRevision: WorkPolicyRevisionSchema,
-    policyRevision: WorkPolicyRevisionSchema,
+    policyRevision: sequence,
     decidedBy: z.enum(["owner", "policy", "device", "system"]),
     handedOffAt: instant.nullable(),
     outcome: z.enum(["allowed", "denied", "completed", "failed", "stopped"]),
@@ -155,6 +155,7 @@ export const WorkAuditRecordSchema = z.discriminatedUnion("kind", [
     kind: z.literal("device.switch_changed"),
     ...device,
     enabled: z.enum(["enabled", "disabled"]),
+    switch: z.enum(["apps", "browser", "commands", "forwarding"]).optional(),
   }),
   z.strictObject({ ...recordBase, kind: z.literal("owner.signed_in"), ownerId: UserIdSchema }),
   z.strictObject({ ...recordBase, kind: z.literal("owner.signed_out"), ownerId: UserIdSchema }),
@@ -165,6 +166,13 @@ export const WorkAuditRecordSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type WorkAuditRecord = z.infer<typeof WorkAuditRecordSchema>;
+export const workAuditRecordKinds = WorkAuditRecordSchema.options.map((record) => record.shape.kind.value);
+export const EffectiveWorkPolicySchema = WorkPolicySchema.extend({
+  organizationName: OrganizationNameSchema,
+  appliedRevision: sequence,
+  auditRecordKinds: z.array(z.enum(workAuditRecordKinds)),
+});
+export type EffectiveWorkPolicy = z.infer<typeof EffectiveWorkPolicySchema>;
 export const WorkAuditPushSchema = z
   .strictObject({
     assignmentId: WorkAssignmentIdSchema,
@@ -331,6 +339,7 @@ export const accountOrganizationsPath = "/v1/account/organizations";
 export const organizationWorkPath = "/v1/work-assignments";
 export const WorkAuditFlushRequestSchema = z.strictObject({ assertion: z.jwt() });
 export const workAuditFlushPath = "/v1/managed-home/work-audit/flush";
+export const workPolicyChangedPath = "/v1/managed-home/work-policy/changed";
 export const WorkAuditFlushClaimsSchema = z.strictObject({
   tokenUse: z.literal("opensteer-work-audit-flush"),
   iss: z.url(),
@@ -339,4 +348,8 @@ export const WorkAuditFlushClaimsSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   iat: z.number().int().nonnegative(),
   exp: z.number().int().positive(),
+});
+
+export const WorkPolicyChangedClaimsSchema = WorkAuditFlushClaimsSchema.extend({
+  tokenUse: z.literal("opensteer-work-policy-changed"),
 });

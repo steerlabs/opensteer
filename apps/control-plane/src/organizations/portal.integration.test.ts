@@ -358,7 +358,7 @@ integration("Organization website pages", () => {
       seats: "1",
     });
     expect(refused.status).toBe(409);
-    expect(refused.body).toContain("Offboard assignments before reducing seats");
+    expect(refused.body).toContain("Offboard work Homes before reducing seats.");
   });
 
   it("invites by email; only the invited, verified address can accept", async () => {
@@ -432,7 +432,7 @@ integration("Organization website pages", () => {
       action: "remove",
     });
     expect(live.status).toBe(409);
-    expect(live.body).toContain("Offboard the member’s assignment before removing them");
+    expect(live.body).toContain("Offboard the member’s work Home before removing them.");
     expect(
       (await post(`/organizations/${id}/members`, admin, { accountId: member.id, action: "admin" }))
         .status,
@@ -505,7 +505,8 @@ integration("Organization website pages", () => {
     });
     expect(saved.status).toBe(303);
     const shown = await page(`/organizations/${id}/policy`, admin);
-    expect(shown.body).toContain(escapeHtml(orgWords("org.policy.revision", { revision: 2 })));
+    expect(shown.body).toContain("Version 2");
+    expect(shown.body).toContain("Most a connected agent may do on its own");
     expect(shown.body).toContain('<option value="auto" selected>');
     expect(shown.body).toMatch(/name="allowTasks" value="on" checked/u);
     expect(shown.body).not.toMatch(/name="allowEverything" value="on" checked/u);
@@ -618,6 +619,10 @@ integration("Organization website pages", () => {
       ),
     );
     expect(shown.body).toContain("Screenshots");
+    expect(shown.body).toContain("A connected agent started working");
+    expect(shown.body).toContain("A policy version was applied");
+    expect(shown.body).not.toContain("agentSessionId");
+    expect(shown.body).not.toContain("grantRevision");
     const download = await page(`/organizations/${id}/audit/${assignment}/export.jsonl`, admin);
     expect(download.status).toBe(200);
     expect(download.headers.get("content-type")).toContain("application/x-ndjson");

@@ -114,6 +114,7 @@ import {
   callTools,
   searchCatalog,
   describeCatalog,
+  resolveCatalogTools,
   skills,
   SearchInput,
   SkillsInput,
@@ -550,8 +551,10 @@ export async function startEngine(
             driving: boolean;
             driverDone: ReturnType<typeof Promise.withResolvers<void>>;
             direct: boolean;
+            drain?: PromiseWithResolvers<void>;
           }
         >();
+        const stoppedExecutions = new Map<string, string>();
         const manager = yield* makeExecutions(
           {
             timeoutMs: config.limits.timeoutMs,
@@ -574,7 +577,7 @@ export async function startEngine(
                   reason: "Interaction expired",
                 };
                 report(record.view);
-                executions.delete(record.view.id);
+                if (!record.drain) executions.delete(record.view.id);
               }
             },
           },
@@ -592,12 +595,13 @@ export async function startEngine(
           readIcon,
           manager,
           executions,
+          stoppedExecutions,
           pages,
           blobs,
         };
       }),
     );
-    const { engine, owner, accountAdapter, catalog, readIcon, manager, executions, blobs } =
+    const { engine, owner, accountAdapter, catalog, readIcon, manager, executions, stoppedExecutions, blobs } =
       composed;
     /** The icons of the catalog as last read, so reading them never reads the feed again. */
     let catalogIcons: readonly unknown[] | undefined;
@@ -668,12 +672,16 @@ export async function startEngine(
         },
         direct,
       );
-    const update = (record: { view: PluginExecution }, value: Partial<PluginExecution>) => {
+    const update = (record: { view: PluginExecution; drain?: PromiseWithResolvers<void>; scopeDrained?: boolean }, value: Partial<PluginExecution>) => {
       record.view = { ...record.view, ...value };
       if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
         delete record.view.result;
+      if (record.scopeDrained && !["running", "waiting", "answered"].includes(record.view.state)) {
+        stoppedExecutions.set(record.view.id, record.view.caller);
+        record.view.drained = true;
+      }
       report(record.view);
-      if (!["running", "waiting", "answered"].includes(record.view.state))
+      if ((!record.drain || record.view.drained) && !["running", "waiting", "answered"].includes(record.view.state))
         executions.delete(record.view.id);
       return record.view;
     };
@@ -1294,11 +1302,17 @@ export async function startEngine(
               client: OAuthClientId.make(operations.removeOAuthApp.input.parse(raw).client),
               owner,
             });
+          case "resolveTools":
           case "search":
           case "describe": {
             // This response's inventory, which the backend marks each blocked app and tool from.
             const providers = yield* Effect.cached(callback("providers", context));
             const discovery = backend(context, undefined, false, () => providers);
+            if (operation === "resolveTools")
+              return yield* resolveCatalogTools(
+                discovery,
+                operations.resolveTools.input.parse(raw).paths,
+              );
             const result =
               operation === "search"
                 ? yield* searchCatalog(discovery, Schema.decodeUnknownSync(SearchInput)(raw))
@@ -1336,8 +1350,14 @@ export async function startEngine(
           }
           case "call":
           case "execute": {
-            const id = randomUUID();
+            const executionId = operation === "call" ? operations.call.input.parse(raw).executionId
+              : operations.execute.input.parse(raw).executionId;
+            const id = executionId ?? randomUUID();
+            if (stoppedExecutions.has(id) || executions.has(id))
+              return yield* Effect.fail(new PluginServiceError("invalid", "Execution already stopped or running"));
             const controller = new AbortController();
+            const drain = executionId ? Promise.withResolvers<void>() : undefined;
+            let managerStarted = false;
             const record = {
               view: {
                 id,
@@ -1350,7 +1370,14 @@ export async function startEngine(
               driving: true,
               driverDone: Promise.withResolvers<void>(),
               direct: operation === "call",
+              scopeDrained: false,
+              ...(drain ? { drain } : {}),
             };
+            if (drain) void drain.promise.then(() => {
+              record.scopeDrained = true;
+              if (["running", "waiting", "answered"].includes(record.view.state)) return;
+              update(record, { drained: true });
+            });
             executions.set(id, record);
             report(record.view);
             const abort = () => controller.abort();
@@ -1371,6 +1398,7 @@ export async function startEngine(
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
+                        drain ? { id, onAdmitted: () => { managerStarted = true; }, onDrained: drain.resolve } : undefined,
                       )
                       .pipe(
                         Effect.provideService(CurrentPluginRequest, {
@@ -1401,6 +1429,7 @@ export async function startEngine(
               );
               return yield* completed(record, result, catalog);
             } finally {
+              if (!managerStarted) drain?.resolve();
               record.driving = false;
               record.driverDone.resolve();
               signal.removeEventListener("abort", abort);
@@ -1418,6 +1447,13 @@ export async function startEngine(
                 ? operations.answer.input.parse(raw)
                 : operations.resume.input.parse(raw);
             const record = executions.get(input.execution);
+            if (!record && operation === "cancel") {
+              const prior = stoppedExecutions.get(input.execution);
+              if (!prior || prior === context.caller) {
+                stoppedExecutions.set(input.execution, context.caller);
+                return { id: input.execution, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+              }
+            }
             if (
               !record ||
               record.context.caller !== context.caller ||
@@ -1429,6 +1465,13 @@ export async function startEngine(
             if (operation === "cancel") {
               record.controller.abort();
               yield* Effect.promise(() => record.driverDone.promise);
+              if (record.drain) {
+                yield* manager.drain(context.caller, record.view.id);
+                yield* Effect.promise(() => record.drain!.promise);
+                stoppedExecutions.set(record.view.id, context.caller);
+                executions.delete(record.view.id);
+                return { id: record.view.id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+              }
               if (record.view.interaction)
                 yield* manager.discard(
                   context.caller,

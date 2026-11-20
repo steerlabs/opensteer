@@ -256,7 +256,7 @@ export function cloudComputerLandingBody(input: {
     ${deletionNotes(computer.deletion)}
     <h2 class="section-title">${escapeHtml(cloudWords("cloud.plan.title"))}</h2>
     <p class="lead">${escapeHtml(cloudComputerPriceLine(state.plan, "en-US").line)}${computer.renewsAt ? `<br>${escapeHtml(cloudWords("cloud.renews", { date: day(computer.renewsAt) }))}` : ""}</p>
-    ${managed ? "" : `<a class="btn btn--block" href="${cloudComputerBillingPortalPath}">${escapeHtml(cloudWords("cloud.plan.manage"))}</a>`}
+    ${managed ? "" : `<a class="btn btn--block" href="${cloudComputerBillingPortalPath}">${escapeHtml(cloudWords("cloud.web.manageBilling"))}</a>`}
     <div class="cloud-computer__power">${power}</div>${workCards(state.work)}`,
   );
 }
@@ -286,9 +286,22 @@ function deletionNotes(deletion?: CloudComputerDeletion): string {
   return cloudComputerDeletionLines(deletion).map(note).join("");
 }
 
-/** Region and the browser's public address, when the Account knows them; nothing otherwise. */
 function details(computer: CloudComputerView): string {
+  const backup = computer.lastBackupAt;
   return `${
+    backup
+      ? row({
+          icon: "clock",
+          title: cloudWords("cloud.backup.reported"),
+          detail:
+            new Intl.DateTimeFormat("en-US", {
+              dateStyle: "medium",
+              timeStyle: "short",
+              timeZone: "UTC",
+            }).format(new Date(backup)) + " UTC",
+        })
+      : ""
+  }${
     computer.region
       ? row({ icon: "clock", title: cloudWords("cloud.region"), detail: computer.region.label })
       : ""
@@ -429,7 +442,7 @@ export function cloudComputerRefusal(
       ? "cloud.web.next.unavailable"
       : /checkout in progress/iu.test(message)
         ? "cloud.web.next.inProgress"
-        : /already has a Cloud Computer/iu.test(message)
+        : /already (?:has|have) a Cloud Computer/iu.test(message)
           ? "cloud.web.next.subscribed"
           : /expired/iu.test(message)
             ? "cloud.web.next.expired"

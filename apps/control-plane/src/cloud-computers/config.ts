@@ -62,7 +62,7 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
           return z.NEVER;
         }
       })
-      .pipe(CloudComputerBootReleaseSchema.merge(CloudComputerReleaseSchema)),
+      .pipe(CloudComputerReleaseSchema.merge(CloudComputerBootReleaseSchema)),
   );
   return {
     provisionerEmail: read(

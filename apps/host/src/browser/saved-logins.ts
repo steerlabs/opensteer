@@ -15,7 +15,7 @@ import type {
 } from "@opensteer/protocol";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
 import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
-import type { PasswordSignInService } from "./password-sign-in-service.js";
+import type { PasswordSignInService, SessionSignInScope } from "./password-sign-in-service.js";
 import {
   PasswordsOffers,
   type PasswordsOffer,
@@ -47,7 +47,8 @@ export type CardUseInput = AgentCall & { readonly tabId: BrowserSurfaceId };
 type Passwords = Pick<
   PasswordSignInService,
   "join" | "probe" | "probeCard" | "replayResult" | "request" | "requestCard"
->;
+> &
+  Partial<Pick<PasswordSignInService, "requestForSession" | "replaySessionResult">>;
 
 /**
  * Agents' way into Opensteer Passwords: saved logins and cards, each released
@@ -100,6 +101,53 @@ export class SavedLoginService {
       probe: (ownerId, site) => this.#passwords.probe(ownerId, site),
       wake: (offer) => this.#wake(offer),
     });
+  }
+
+  async useSessionCredential(input: {
+    readonly credential: "login" | "card";
+    readonly scope: SessionSignInScope;
+    readonly target: BrowserSignInTarget;
+    readonly reason: string;
+    readonly site: string;
+    readonly ownerId: UserId;
+    readonly taskId: ThreadId;
+  }) {
+    const site = parseSignInSite(input.site);
+    const target = input.target;
+    if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
+    if (!target.main) return unavailable(site, "main-browser-required");
+    if (input.credential === "card" ? !target.cardFill || !target.computer : !target.signIn)
+      return unavailable(site, "runtime-outdated");
+    if (!this.#passwords.requestForSession) return unavailable(site, "unsupported");
+    if (!(await input.scope.authorized())) return unavailable(site, "stopped");
+    if (input.credential === "card") {
+      const available = await this.#passwords.probeCard(input.ownerId);
+      if (available !== "has-card")
+        return { status: "unavailable" as const, site, reason: available };
+    } else {
+      const available = await this.#passwords.probe(input.ownerId, site);
+      if (available !== "has-login") return unavailable(site, availabilityReason(available));
+    }
+    return this.#passwords.requestForSession({
+      ...(input.credential === "card"
+        ? { credential: "card" as const, cardRunnerId: target.computer!.runnerId }
+        : {}),
+      site,
+      ownerId: input.ownerId,
+      reason: input.reason,
+      deploymentId: target.deploymentId,
+      threadId: input.taskId,
+      callId: input.scope.operationId,
+      scope: input.scope.operationId,
+      direct: input.scope,
+      sessionId: target.sessionId,
+      surfaceId: target.tabId,
+      admitStart: () => this.#admit(input.scope.sessionId, target.sessionId, site),
+    });
+  }
+
+  replaySessionCredential(operationId: string) {
+    return this.#passwords.replaySessionResult?.(operationId);
   }
 
   async useSavedLogin(unscoped: SavedLoginInput): Promise<SavedLoginResult> {
@@ -291,7 +339,7 @@ export class SavedLoginService {
   }
 
   /** In-memory, so a restart forgets it; the admission ledger still bounds each Run. */
-  #admit(runId: RunId, target: string, site: string): boolean {
+  #admit(runId: string, target: string, site: string): boolean {
     return admitSignIn(this.#calls, this.#now(), { runId, target, site });
   }
 

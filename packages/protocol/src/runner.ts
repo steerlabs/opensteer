@@ -337,9 +337,21 @@ const ExecuteTriggerSchema = runnerCommandBase.extend({
   type: z.literal("trigger.execute"),
 });
 
+export const attemptStopStateCapability = "attempt-stop-state-v1" as const;
+const AttemptStopSchema = z.strictObject({
+  id: CommandIdSchema,
+  bootId: z.string(),
+});
+const AttemptStopStateSchema = z.enum(["ended", "still-ending", "never-seen"]);
+export type AttemptStopState = z.infer<typeof AttemptStopStateSchema>;
+
 const ReconcileWatchesSchema = runnerCommandBase.extend({
   desired: z.array(WatchReconcileActivationSchema).max(32),
   reconcileGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  stop: AttemptStopSchema.extend({
+    activationId: TriggerWatchActivationIdSchema,
+    executionGeneration: z.number().int().positive(),
+  }).optional(),
   type: z.literal("watch.reconcile"),
 });
 
@@ -352,6 +364,7 @@ const StopNodeSchema = runnerCommandBase.extend({
 });
 
 const InterruptExecutionSchema = runnerCommandBase.extend({
+  stop: AttemptStopSchema.optional(),
   /** Present when only that execution of the Run is to stop: a restart's predecessor. */
   bindingGeneration: z.number().int().positive().optional(),
   type: z.literal("run.interrupt"),
@@ -362,6 +375,7 @@ const InterruptExecutionSchema = runnerCommandBase.extend({
 export const triggerStopGenerationCapability = "trigger-stop-generation-v1" as const;
 
 const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
+  stop: AttemptStopSchema.optional(),
   executionGeneration: z.number().int().positive().optional(),
   occurrenceId: TriggerOccurrenceIdSchema,
   type: z.literal("trigger.interrupt"),
@@ -1240,6 +1254,7 @@ export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
+    standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
     cardFill: z
       .number()
       .int()
@@ -1886,6 +1901,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runner.command-accepted"),
     commandId: CommandIdSchema,
     correlationId: CorrelationIdSchema,
+    stopState: AttemptStopStateSchema.optional(),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -2068,6 +2084,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     /** The Home understands `runner.agents.stopped` and `runner.agents.resumed`. */
     acceptsAgentStop: z.literal(true).optional(),
     acceptsHomeFiles: z.literal(true).optional(),
+    acceptsAttemptStopState: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,

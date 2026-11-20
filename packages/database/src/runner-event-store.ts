@@ -901,6 +901,7 @@ export async function commitRunnerEvent(
     readonly environmentId: EnvironmentId;
     readonly event: PendingAgentEvent;
     readonly integration?: IntegrationCallSubject;
+    readonly verifiedContainment?: boolean;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   },
@@ -921,7 +922,7 @@ export async function commitRunnerEvent(
     if (!terminalReceipt || !connectionId) return;
     await database
       .updateTable("runAttempts")
-      .set({ terminalEvidenceAt: new Date() })
+      .set({ terminalEvidenceAt: new Date(), contactLostAt: input.verifiedContainment ? null : new Date() })
       .where("runId", "=", event.runId)
       .where("bindingGeneration", "=", event.bindingGeneration)
       .where("runnerId", "=", input.runnerId)

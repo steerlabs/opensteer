@@ -37,7 +37,7 @@ const copy: Readonly<
   },
 };
 
-export const homeFixed = "Always on. Your agent runs here.";
+export const homeFixed = "Always on. Your own agents run here.";
 const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
 
 export function deviceSwitches(

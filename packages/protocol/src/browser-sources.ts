@@ -63,7 +63,21 @@ export const BrowserSiteGrantSchema = z.object({
 });
 export type BrowserSiteGrant = z.infer<typeof BrowserSiteGrantSchema>;
 
-export const BrowserSourcesStateSchema = z.object({
+export const ChromeTabGrantCatalogSchema = z.object({
+  chromeTabs: z
+    .array(
+      z.object({
+        sourceId: BrowserSourceIdSchema,
+        computerName: z.string().min(1).max(200),
+        paired: z.boolean(),
+      }),
+    )
+    .max(64)
+    .optional(),
+  chromeTabsNeedPairing: z.boolean().optional(),
+});
+
+export const BrowserSourcesStateSchema = ChromeTabGrantCatalogSchema.extend({
   /** The unpacked extension folder Opensteer's desktop app keeps current on the Host's computer. */
   extensionDirectory: z.string().min(1).max(4_096).nullable().default(null),
   sites: z.array(BrowserSiteGrantSchema).max(1_024),

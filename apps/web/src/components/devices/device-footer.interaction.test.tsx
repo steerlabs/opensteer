@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 import { client, mount } from "../workspace/workspace.interaction.test-support.js";
 import { deviceRoute } from "./device-routes.js";
 
-const footer = "Connected agents also need you to choose this Device’s profile or app for them.";
+const footer = "Connected agents also need you to choose this device’s profile or app for them.";
 
 it("says under a Device's switches that a connected agent also needs its profile or app", async () => {
   await mount((source) => {

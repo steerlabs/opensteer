@@ -159,7 +159,7 @@ describe("the door a row that needs a credential opens", () => {
       signIn: "account-grant",
       status: "needs-sign-in",
     });
-    expect(deploymentStatusDetail(accountRequired)).toMatch(/Opensteer Account again/u);
+    expect(deploymentStatusDetail(accountRequired)).toMatch(/Opensteer account again/u);
 
     expect(
       describeDeploymentRow(connection, {

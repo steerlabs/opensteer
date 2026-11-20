@@ -153,3 +153,13 @@ export const cloudComputerClaimMigration: Migration = {
     `.execute(database);
   },
 };
+
+export const cloudComputerBackupReportMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.cloud_computers
+        add column last_backup_at timestamptz,
+        add column last_backup_snapshot_id text
+    `.execute(database);
+  },
+};

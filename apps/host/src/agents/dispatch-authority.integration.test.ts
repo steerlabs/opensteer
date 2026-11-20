@@ -10,6 +10,7 @@ import {
   testReadyHarnessCatalog,
 } from "@opensteer/database/test-support/store";
 import { CommandDispatchError, type RunnerRegistry } from "@opensteer/orchestration";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import type { RunnerCommand } from "@opensteer/protocol";
 import { expect } from "vitest";
 import {
@@ -101,6 +102,83 @@ function dispatcher(
 }
 
 describeStore("a connected agent's authority at the send", (it) => {
+  for (const boundary of ["claim", "send"] as const) {
+    it(`refuses a queued steer at ${boundary} after the connection is revoked`, async ({ storeFixture }) => {
+      const f = await storeFixture.startRunFixture(`steer-after-revoke-${boundary}`);
+      const { database, store } = storeFixture;
+      const url = await serveMcp(storeFixture);
+      const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
+      const task = await createTask(agent, f, "steer-after-revoke");
+      const run = await queuedRun(storeFixture, task);
+      await startPersonalQueuedRunFixture(store, run.id);
+      const followUp = await store.enqueueThreadInput({
+        threadId: task,
+        requestedBy: f.userId,
+        idempotencyKey: "follow-up-after-revoke",
+        content: [{ type: "text", text: "follow up" }],
+        policy: "queue",
+        source: { kind: "human" },
+      });
+      const steer = await store.steerThreadInput({
+        threadId: task,
+        requestedBy: f.userId,
+        expectedRunId: run.id,
+        messageId: followUp.message.id,
+        idempotencyKey: "steer-after-revoke",
+      });
+      if (!steer.command) throw new Error("Expected a pending steer command");
+      if (boundary === "send") {
+        const claimed = await store.claimCommand(steer.command.id, "steer-before-revoke");
+        if (!claimed || claimed.terminalFailure) throw new Error("Expected the steer to be claimed");
+        await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+        const sent: RunnerCommand[] = [];
+        await dispatcher(storeFixture, f.runnerId, { planning: async () => {} }, sent, [])
+          .dispatch(claimed.command, new AbortController().signal);
+        expect(sent).toEqual([]);
+        return;
+      }
+      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+      await expect(store.claimCommand(steer.command.id, "steer-after-revoke")).resolves.toMatchObject({
+        terminalFailure: "The connected agent's access ended before this work could be delivered.",
+      });
+    });
+  }
+
+  it("ends a connected Run locally when revoke wins before its handoff stamp", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("revoke-before-handoff");
+    const { database, store } = storeFixture;
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
+    const task = await createTask(agent, f, "revoke-before-handoff");
+    const run = await queuedRun(storeFixture, task);
+    const command = await database.selectFrom("commands").select("id")
+      .where("runId", "=", run.id).where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    const claimed = await store.claimCommand(command.id, "revoke-before-handoff");
+    if (!claimed) throw new Error("Expected the Run's command");
+
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const sent: RunnerCommand[] = [];
+    const dispatch = dispatcher(storeFixture, f.runnerId, { planning: async () => {
+      entered.resolve();
+      await resume.promise;
+    } }, sent, []).dispatch(claimed.command, new AbortController().signal);
+    const result = dispatch.then(() => null, (error: unknown) => error);
+    try {
+      await Promise.race([entered.promise, result.then(() => { throw new Error("Run did not reach planning"); })]);
+      expect(await database.selectFrom("runs").select("bindingGeneration").where("id", "=", run.id)
+        .executeTakeFirstOrThrow()).toMatchObject({ bindingGeneration: expect.any(Number) });
+      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+      expect(await store.driveConnectionCleanups()).toEqual({ failures: [], settled: [agent.id] });
+      expect(await database.selectFrom("runs").select("status").where("id", "=", run.id)
+        .executeTakeFirstOrThrow()).toEqual({ status: "interrupted" });
+    } finally {
+      resume.resolve();
+      await result;
+    }
+    expect(sent).toEqual([]);
+  });
+
   const cases: readonly {
     readonly name: string;
     readonly accessMode: ThreadAccessMode;

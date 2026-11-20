@@ -8,6 +8,7 @@ export function shellSentence(message: string, fallback: string): string {
 }
 
 export function shellConnectRefusalMessage(error: ShellConnectError["error"]): string {
+  if (error.code === "device-stopped") return `${error.code}: ${error.message}`;
   if (
     (error.code !== "device-access-off" && error.code !== "device-offline") ||
     !error.machineId ||

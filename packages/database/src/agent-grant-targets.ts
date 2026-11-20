@@ -46,17 +46,24 @@ export async function integrationConnectionGrantAccess(
   const ids = [...new Set(connectionIds)];
   if (grant.scope === "everything" || !ids.length)
     return new Map(ids.map((id) => [id, grant.scope === "everything" ? "read-write" : null]));
+  const targets = await integrationConnectionGrantTargets(database, ids);
+  return new Map(ids.map((id) => {
+    const target = targets.get(id);
+    return [id, target ? agentGrantAccess(grant, target) : null];
+  }));
+}
+
+export async function integrationConnectionGrantTargets(
+  database: Kysely<DatabaseSchema>,
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, AgentGrantTarget>> {
+  if (!ids.length) return new Map();
   const rows = await database
     .selectFrom("integrationConnections")
     .select(["id", "deviceId", "computerApp", "integrationDefinitionId"])
     .where("id", "in", ids as never)
     .execute();
-  return new Map(
-    ids.map((id) => {
-      const row = rows.find((candidate) => candidate.id === id);
-      return [id, row ? agentGrantAccess(grant, integrationConnectionGrantTarget(row)) : null];
-    }),
-  );
+  return new Map(rows.map((row) => [row.id, integrationConnectionGrantTarget(row)]));
 }
 
 /** A local MCP server's grant ceiling. */

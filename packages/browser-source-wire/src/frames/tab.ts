@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BrowserSourcePairInputSchema } from "./v4.js";
 
 export const browserSourceTabWire = 6;
+export const browserSourceTabDetachWire = 7;
 export const BrowserSourceLiveTabsCapabilitySchema = z.literal("live-tabs");
 export const BrowserSourcePairV6InputSchema = BrowserSourcePairInputSchema.extend({
   capability: BrowserSourceLiveTabsCapabilitySchema.optional(),
@@ -45,6 +46,7 @@ export const browserSourceTabClientSchemas = {
     title: z.string().max(1024),
     url: z.string().max(8192),
   }),
+  "tab.detached": z.strictObject({ type: z.literal("tab.detached"), shareId: z.uuid() }),
   "tab.unshared": z.strictObject({ type: z.literal("tab.unshared"), shareId: z.uuid() }),
 };
 

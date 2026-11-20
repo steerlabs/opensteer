@@ -510,6 +510,43 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     expect(passwordRead).toHaveBeenCalledTimes(1);
   });
 
+  it("offers only Allow once when a connected agent asks for a saved login", async () => {
+    const dispatch = vi.fn(async () => ({
+      type: "browser.password-sign-in.respond",
+      status: "fulfilled",
+    }));
+    const passwordRead = vi.fn(async () => ({
+      ok: true,
+      data: {
+        stage: "approval",
+        permissionVersion: 6,
+        accounts: [
+          {
+            id: "00000000-0000-4000-8000-000000000001",
+            revision: 7,
+            username: "person@example.com",
+            host: "github.com",
+            onPage: false,
+            updatedAt: new Date().toISOString(),
+            label: null,
+          },
+        ],
+      },
+    }));
+    const request = {
+      ...passwordSignInRequest(),
+      originatingAgentSessionId: createId("agentSession"),
+    };
+    await render(surface(request), dispatch, { passwordRead });
+    expect(text()).not.toContain("from now on");
+    await click("Allow once");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        decision: expect.objectContaining({ kind: "approve", remember: false }),
+      }),
+    );
+  });
+
   it.each([false, true])(
     "keeps account host groups and page matches (onPage=%s)",
     async (onPage) => {

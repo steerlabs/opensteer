@@ -9,6 +9,7 @@ import {
   agentGrantAccess,
   type AgentGrantPluginTarget,
   type UserId,
+  threadAccessModeAtMost,
 } from "@opensteer/core";
 import {
   executionDate,
@@ -19,6 +20,7 @@ import {
 } from "@opensteer/database";
 import type { Transaction } from "kysely";
 import { callerLineage, type AgentCaller } from "../mcp/agent-caller.js";
+import type { DirectOperationContext } from "../agent-sessions/agent-session-service.js";
 import type { PluginAuthorization, PluginCaller } from "./engine-protocol.js";
 
 const discovery = new Set([
@@ -28,6 +30,7 @@ const discovery = new Set([
   "list",
   "search",
   "describe",
+  "resolveTools",
   "listApps",
   "listAccounts",
   "listTools",
@@ -82,7 +85,15 @@ export function pluginCaller(caller: AgentCaller): PluginCaller {
     mode: caller.accessMode === "auto" || caller.accessMode === "full-access" ? "automatic" : "ask",
   };
 }
+export interface PluginSessionScope {
+  readonly operation: DirectOperationContext;
+  signal?: AbortSignal;
+  readonly plugin: string;
+  readonly version: string;
+  readonly write: boolean;
+}
 interface CallerScope {
+  session?: PluginSessionScope;
   context: PluginCaller;
   caller: AgentCaller;
   execution?: string;
@@ -101,14 +112,31 @@ export class PluginAuthority {
   constructor(options: PluginAuthority["options"]) {
     this.options = options;
   }
-  async scoped<T>(caller: AgentCaller, work: () => Promise<T>): Promise<T> {
+  async scoped<T>(
+    caller: AgentCaller,
+    work: () => Promise<T>,
+    session?: PluginSessionScope,
+  ): Promise<T> {
     const subject = pluginCaller(caller);
-    const context = { ...subject, caller: `${subject.caller}:${randomUUID()}` };
-    const scope: CallerScope = { context, caller, plugins: new Set() };
+    const context = {
+      ...subject,
+      caller: `${subject.caller}:${session?.operation.operationId ?? randomUUID()}`,
+    };
+    if (session) {
+      context.mode = "automatic";
+      session.signal = session.operation.signal;
+    }
+    const scope: CallerScope = {
+      context,
+      caller,
+      plugins: new Set(),
+      ...(session ? { session } : {}),
+    };
     this.#callers.set(context.caller, scope);
     try {
       return await this.#scope.run(scope, work);
     } finally {
+      if (session) delete session.signal;
       if (!scope.execution) this.#callers.delete(context.caller);
     }
   }
@@ -136,8 +164,12 @@ export class PluginAuthority {
   caller(key: string) {
     return this.#callers.get(key)?.caller;
   }
+  session(key: string) {
+    return this.#callers.get(key)?.session;
+  }
   async currentMode(key: string): Promise<PluginCaller["mode"]> {
     const caller = this.caller(key);
+    if (this.session(key)) return "automatic";
     if (!caller || caller.kind === "connection") return "ask";
     const mode = await this.#mode(this.options.store, caller).catch(() => null);
     return mode === "auto" || mode === "full-access" ? "automatic" : "ask";
@@ -161,20 +193,24 @@ export class PluginAuthority {
    * A selected grant reaches only the plugins and accounts it names, at the access it names;
    * anything else reads as Off. Rechecked from the live connection at every authorization.
    */
-  async #grantCeiling(store: OpensteerStore, caller: AgentCaller) {
+  async #grantCeiling(store: OpensteerStore, caller: AgentCaller, session?: PluginSessionScope) {
     const lineage = callerLineage(caller);
     if (!lineage) return null;
     const live = await store
       .admitExecution({
         ownerUserId: caller.userId,
         subject:
-          caller.kind === "connection"
+          caller.kind === "connection" && !session
             ? { kind: "connection", agentConnectionId: caller.connectionId }
-            : { kind: "binding", bindingId: caller.key },
+            : { kind: "binding", bindingId: session?.operation.bindingId ?? caller.key },
       })
       .catch(() => undefined);
     // A changed revision is new authority: the call is refused, never reinterpreted.
-    if (!live?.agentConnection || live.agentConnection.grantRevision !== lineage.revision)
+    if (
+      !live?.agentConnection ||
+      live.agentConnection.grantRevision !== lineage.revision ||
+      (session && !threadAccessModeAtMost(session.operation.mode, live.mode))
+    )
       return undefined;
     const grant = live.agentConnection.grant;
     if (grant.scope === "everything") return null;
@@ -196,7 +232,13 @@ export class PluginAuthority {
       async grants(settings: Readonly<Record<string, "all" | "read-only" | "off">>) {
         const installed = await store.database.selectFrom("plugins").select("id").execute();
         return Object.fromEntries(
-          [...new Set([...installed.map(({ id }) => id), ...Object.keys(settings)])].map((id) => {
+          [
+            ...new Set([
+              ...installed.map(({ id }) => id),
+              ...this.visible,
+              ...Object.keys(settings),
+            ]),
+          ].map((id) => {
             const access = this.access(id);
             const held = settings[id] ?? "all";
             return [
@@ -266,7 +308,17 @@ export class PluginAuthority {
       !execution.has(input.operation)
     )
       return { allowed: false };
-    const ceiling = await this.#grantCeiling(store, caller);
+    const session = scope?.session;
+    if (
+      session &&
+      (session.signal?.aborted ||
+        management.has(input.operation) ||
+        (input.plugin && input.plugin !== session.plugin) ||
+        (input.write && !session.write) ||
+        (input.version && input.version !== session.version))
+    )
+      return { allowed: false };
+    const ceiling = await this.#grantCeiling(store, caller, session);
     if (ceiling === undefined) return { allowed: false };
     if (ceiling) {
       if (management.has(input.operation)) return { allowed: false };
@@ -287,7 +339,12 @@ export class PluginAuthority {
       }
     }
     // Integration discovery/calls already use the personal owner's task authority, including team-bound tasks.
-    if (caller.kind !== "connection") {
+    if (session) {
+      if (session.write && (grants[session.plugin] ?? "all") !== "all") return { allowed: false };
+      if (input.execution && input.execution !== scope?.execution) return { allowed: false };
+      if (!session.write && (grants[session.plugin] ?? "all") === "all")
+        grants[session.plugin] = "read-only";
+    } else if (caller.kind !== "connection") {
       const mode = await this.#mode(store, caller).catch(() => null);
       if (!mode) return { allowed: false };
       if (
@@ -342,7 +399,15 @@ export class PluginAuthority {
     )
       return { allowed: false, grants };
     signal?.throwIfAborted();
-    return { allowed: true, grants, ...(ceiling ? { visible: ceiling.visible } : {}) };
+    return {
+      allowed: true,
+      grants,
+      ...(session
+        ? { visible: [session.plugin], pinnedVersion: session.version }
+        : ceiling
+          ? { visible: ceiling.visible }
+          : {}),
+    };
   }
   async assert(context: PluginCaller, operation: string, plugin?: string, execution?: string) {
     if (

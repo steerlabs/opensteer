@@ -4,6 +4,7 @@ import {
   browserSourceTabClientSchemas,
   browserSourceTabHostSchemas,
   browserSourceTabWire,
+  browserSourceTabDetachWire,
 } from "./tab.js";
 import { browserSourceWireCurrent } from "./versions.js";
 import { BrowserSourceOriginSchema } from "../frozen/browser-source.js";
@@ -156,6 +157,7 @@ function readMessage<Schemas extends Record<string, z.ZodType>>(
   if (typeof type !== "string") return null;
   if ((wire < browserSourceTabWire && type.startsWith("tab.")) || !Object.hasOwn(schemas, type))
     return { type: "unknown" };
+  if (wire < browserSourceTabDetachWire && type === "tab.detached") return { type: "unknown" };
   const parsed = schemas[type as keyof Schemas]!.safeParse(value);
   return parsed.success ? (parsed.data as Known<Schemas>) : null;
 }

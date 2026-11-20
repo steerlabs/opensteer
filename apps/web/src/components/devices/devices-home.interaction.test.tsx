@@ -106,7 +106,7 @@ describe("Devices: the Home says what kind it is", () => {
       expect(homeRow(container)?.textContent).toContain("This Mac · Home · Running"),
     );
     expect(container.textContent).toMatch(
-      /Your Opensteer lives on .+\. Agents reach your other Devices through it\./u,
+      /Your Opensteer lives on .+\. Agents reach your other devices through it\./u,
     );
   });
 
@@ -411,7 +411,7 @@ describe("the asleep line in a task's activity", () => {
       exposure: "networked",
     });
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Couldn’t reach a Device: asleep"),
+      expect(container.textContent).toContain("Couldn’t reach a device: asleep"),
     );
     expect(container.textContent).not.toContain("Keep agents working");
   });

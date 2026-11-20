@@ -6,6 +6,7 @@ import { once } from "node:events";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { request } from "node:https";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import {
@@ -32,6 +33,8 @@ const Fastify = createRequire(resolve(root, "apps/control-plane/package.json"))(
 const suffix = randomBytes(5).toString("hex");
 const project = `opensteer-home-proof-${suffix}`;
 const managedProject = `${project}-managed`;
+const replacementProject = `${project}-replacement`;
+const failedCandidate = `local/${project}-failed-host:proof`;
 const registryName = `${project}-registry`;
 const registryImage = "registry:3";
 let registryId;
@@ -98,19 +101,37 @@ function checked(child, label) {
   return child.stdout?.trim() ?? "";
 }
 
-function docker(args, options) {
-  return checked(result("docker", args, options), `docker ${args[0]} failed`);
+async function bounded(promise, label, milliseconds = 30_000) {
+  const controller = new AbortController();
+  try {
+    return await Promise.race([
+      promise,
+      delay(milliseconds, undefined, { signal: controller.signal }).then(() => {
+        throw new Error(`${label} timed out`);
+      }),
+    ]);
+  } finally {
+    controller.abort();
+  }
 }
 
-function vm(command, { managed = false, allowFailure = false } = {}) {
+function docker(args, options) {
+  return checked(
+    result("docker", args, { timeout: 600_000, ...options }),
+    `docker ${args[0]} failed`,
+  );
+}
+
+function vm(command, { managed = false, allowFailure = false, timeout = 600_000 } = {}) {
   const child = result("colima", ["ssh", "--", "sudo", "-n", "bash", "-s"], {
     input: vmScript(command, managed),
+    timeout,
   });
   return allowFailure ? child : checked(child, "Colima command failed");
 }
 
 function vmScript(command, managed) {
-  const name = managed ? managedProject : project;
+  const name = managed === "replacement" ? replacementProject : managed ? managedProject : project;
   return `set -euo pipefail
 umask 077
 export OPENSTEER_HOME_DIR=${quote(`${vmDirectory}/${name}`)}
@@ -123,7 +144,7 @@ ${command}
 }
 
 function container(service, managed = false) {
-  const name = managed ? managedProject : project;
+  const name = managed === "replacement" ? replacementProject : managed ? managedProject : project;
   const id = docker([
     "ps",
     "-aq",
@@ -287,41 +308,51 @@ function assertFirewall(pid) {
   }
 }
 
-function assertNetworkProbes(cid, image, pid, running) {
+function assertNetworkProbes(cid, pid) {
   const probe = `
     const {connect}=require("node:net");
-    const targets=[["169.254.169.254",80],["fd00:ec2::254",80],["10.0.0.1",443],
-      ["192.0.2.25",25],["192.0.2.25",465],["192.0.2.25",587],["127.0.0.1",5432]];
-    async function open([host,port]) {
-      return new Promise(resolve=>{
-        const s=connect({host,port}); s.on("connect",()=>{s.destroy();resolve(true)});
-        s.on("error",()=>resolve(false)); s.setTimeout(1500,()=>{s.destroy();resolve(false)});
-      });
-    }
-    Promise.all(targets.map(open)).then(results=>{if(results.some(Boolean))throw Error("A blocked endpoint accepted TCP")});
+    const socket=connect({host:process.argv[1],port:Number(process.argv[2])});
+    socket.on("connect",()=>{socket.destroy();process.exitCode=1});
+    socket.on("error",()=>{});
+    socket.setTimeout(1500,()=>socket.destroy());
   `;
-  if (running) docker(["exec", cid, "node", "-e", probe]);
-  else
-    docker([
-      "run",
-      "--rm",
-      "--network",
-      `container:${container("host")}`,
-      "--entrypoint",
-      "node",
-      image,
-      "-e",
-      probe,
-    ]);
-  const counters = vm(`nsenter -t ${pid} -n iptables -nvx -L OPENSTEER-HOME`);
-  assert.ok(
-    counters.split("\n").some((line) => /^\s*[1-9]\d*\s+\d+.*25,465,587/u.test(line)),
-    "SMTP REJECT counter did not increment",
-  );
-  assert.ok(
-    counters.split("\n").some((line) => /^\s*[1-9]\d*\s+\d+.*169\.254\.0\.0\/16/u.test(line)),
-    "IPv4 metadata REJECT counter did not increment",
-  );
+  const probes = [
+    ["169.254.169.254", 80, "iptables", "169.254.0.0/16"],
+    ["fd00:ec2::254", 80, "ip6tables", "fc00::/7"],
+    ["10.0.0.1", 443, "iptables", "10.0.0.0/8"],
+    ...[25, 465, 587].map((port) => ["192.0.2.25", port, "iptables", "25,465,587"]),
+  ];
+  const addresses = [
+    ...new Set(probes.map(([host]) => `${host}/${host.includes(":") ? 128 : 32}`)),
+  ];
+  const installed = [];
+  try {
+    for (const address of addresses) {
+      vm(
+        `nsenter -t ${pid} -n ip address add ${address} dev lo${address.includes(":") ? " nodad" : ""}`,
+      );
+      installed.push(address);
+    }
+    for (const [host, port, tool, rule] of probes) {
+      const count = () => {
+        const counters = vm(`nsenter -t ${pid} -n ${tool} -nvx -L OPENSTEER-HOME`);
+        const line = counters.split("\n").find((entry) => entry.includes(rule));
+        assert.ok(line, `Missing ${rule} counter`);
+        return BigInt(line.trim().split(/\s+/u)[0]);
+      };
+      const before = count();
+      docker(["exec", cid, "node", "-e", probe, host, String(port)]);
+      assert.ok(count() > before, `No firewall REJECT for ${host}:${port}`);
+    }
+    docker(["exec", cid, "node", "-e", probe, "127.0.0.1", "5432"]);
+  } finally {
+    if (installed.length)
+      vm(
+        installed
+          .map((address) => `nsenter -t ${pid} -n ip address del ${address} dev lo`)
+          .join("\n"),
+      );
+  }
 }
 
 const launchProof = `
@@ -448,9 +479,19 @@ async function verifyPublicCdp(api, cookie, ca) {
     } finally {
       replay.terminate();
     }
-    const logs = result("docker", ["logs", container("gateway")]);
-    assert.equal(logs.status, 0);
-    assert.ok(!`${logs.stdout}\n${logs.stderr}`.includes(path), "Caddy logged a CDP ticket");
+    const logControl = `/home-proof-log-${randomUUID()}`;
+    await api(logControl);
+    const logs = (service) => {
+      const output = result("docker", ["logs", container(service)], { timeout: 15_000 });
+      assert.equal(output.status, 0);
+      return `${output.stdout}\n${output.stderr}`;
+    };
+    const gateway = logs("gateway");
+    assert.ok(gateway.includes(logControl), "Caddy request log control was not captured");
+    assert.ok(!gateway.includes(path), "Caddy logged a CDP ticket");
+    const host = logs("host");
+    assert.ok(host.includes(logControl), "Host request log control was not captured");
+    assert.ok(!host.includes(path), "Host logged a CDP ticket");
   } finally {
     clearTimeout(deadline);
     socket.terminate();
@@ -517,7 +558,9 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
   const hostPid = docker(["inspect", "--format", "{{.State.Pid}}", container("host")]);
   // The fixture address exists only on this disposable pod's loopback device.
   const address = "8.8.8.8";
+  const originAddress = "8.8.4.4";
   const port = 4370;
+  const originPort = 4371;
   const fixture = `
     const fs = require('node:fs');
     const net = require('node:net');
@@ -527,8 +570,8 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
       if (request.headers['proxy-authorization'] !== authorization) { client.end('HTTP/1.1 407 Proxy Authentication Required\\r\\n\\r\\n'); return; }
       const target = new URL('http://' + request.url);
       const hostname = target.hostname.replace(/^\\[|\\]$/g, '');
-      if (!net.isIP(hostname) || target.port !== '443') { client.destroy(); return; }
-      const upstream = net.connect(443, hostname);
+      if (hostname !== '${originAddress}' || target.port !== '${originPort}') { client.destroy(); return; }
+      const upstream = net.connect(${originPort}, hostname);
       upstream.on('error', () => client.destroy());
       client.on('error', () => upstream.destroy());
       upstream.on('connect', () => {
@@ -538,7 +581,13 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
         process.stdout.write('authenticated CONNECT\\n');
       });
     });
-    server.listen(${port}, '${address}', () => process.stdout.write('ready\\n'));
+    const origin = require('node:http').createServer((request, response) => {
+      process.stdout.write('origin ' + request.url + '\\n');
+      response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+      response.end('<title>Controlled public page</title>');
+    });
+    origin.listen(${originPort}, '${originAddress}', () =>
+      server.listen(${port}, '0.0.0.0', () => process.stdout.write('ready\\n')));
   `;
   const fixturePath = resolve(proof, "upstream.cjs");
   writeFileSync(fixturePath, fixture);
@@ -593,9 +642,12 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
         status === 0 ? resolve() : reject(new Error(redact(stderr))),
       );
       child.stdin.end(vmScript(`CURL_CA_BUNDLE=${quote(cert)} operator maintain`, false));
+      const deadline = setTimeout(() => child.kill(), 300_000);
+      child.once("close", () => clearTimeout(deadline));
     });
   try {
-    vm(`nsenter -t ${hostPid} -n ip address add ${address}/32 dev lo`);
+    vm(`nsenter -t ${hostPid} -n ip address add ${address}/32 dev lo
+        nsenter -t ${hostPid} -n ip address add ${originAddress}/32 dev lo`);
     process = spawn(
       "docker",
       [
@@ -623,25 +675,42 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
     process.stdout.on("data", (data) => {
       output += data;
     });
-    await Promise.race([
-      once(process.stdout, "data"),
-      once(process, "exit").then(() => {
-        throw new Error("TLS upstream fixture stopped");
-      }),
-    ]);
+    await bounded(
+      Promise.race([
+        once(process.stdout, "data"),
+        once(process, "exit").then(() => {
+          throw new Error("TLS upstream fixture stopped");
+        }),
+      ]),
+      "TLS and public origin fixtures",
+    );
     assert.match(output, /ready/u);
+    const probe = async (name, expectedFailure = false) => {
+      const path = `/probe-${name}-${randomUUID()}`;
+      await browserJourney(api, cookie, ca, {
+        url: `http://${originAddress}:${originPort}${path}`,
+        title: "Controlled public page",
+        expectedFailure,
+      });
+      const logs = docker(["logs", `${project}-egress-fixture`]);
+      assert.equal(
+        logs.split("\n").filter((line) => line === `origin ${path}`).length,
+        expectedFailure ? 0 : 1,
+      );
+    };
+    await probe("direct-control");
     vm(`load_compose
       cp "$home_dir/config.env" "$home_dir/config.egress.original"
       cp "$home_dir/common.sh" "$home_dir/common.egress.original"
       printf '%s\n' ${quote(override)} > "$home_dir/egress-upstream.proof.yaml"
-      sed -i '/local -x OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH/i\\  args+=(-f "$home_dir/egress-upstream.proof.yaml")' "$home_dir/common.sh"
+      sed -i '/local apparmor=/i\\  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/egress-upstream.proof.yaml"); fi' "$home_dir/common.sh"
       printf '%s\n' ${quote(`OPENSTEER_HOME_ACCOUNT_ORIGIN='${accountOrigin}'
 OPENSTEER_HOME_MANAGED_ID='${id}'
 OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
       printf '%s' ${quote(oidc.clientSecret)} | save_secret "$home_dir/secrets/oidc_client_secret"
       touch "$home_dir/managed"
       load_compose
-      compose up -d --wait --no-deps --force-recreate browser-egress`);
+      compose up -d --wait --wait-timeout 60 --no-deps --force-recreate browser-egress`);
     await maintain();
     assert.equal(egressRequests, 1);
     vm('test ! -e "$OPENSTEER_HOME_DIR/secrets/egress_url"');
@@ -650,28 +719,47 @@ OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
         "exec",
         container("browser-egress"),
         "printenv",
-        "OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL",
+        "OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED",
       ]),
-      "https://127.0.0.1:443",
+      "true",
     );
-    await browserJourney(api, cookie, ca, {
-      url: `${publicPage.url}?home-egress=pending`,
-      expectedFailure: true,
-    });
+    await probe("pending", true);
     egress = { url: `https://${address}:${port}`, username, password };
     await maintain();
     assert.equal(egressRequests, 2);
     vm(
       'test -s "$OPENSTEER_HOME_DIR/secrets/egress_url" && test ! -e "$OPENSTEER_HOME_DIR/egress.pending"',
     );
-    await browserJourney(api, cookie, ca, { url: `${publicPage.url}?home-egress=assigned` });
-    assert.match(output, /authenticated CONNECT/u);
+    await probe("assigned");
+    assert.match(docker(["logs", `${project}-egress-fixture`]), /authenticated CONNECT/u);
+    const replaceUpstream = (file, value) =>
+      vm(`load_compose
+      printf '%s' ${quote(value)} | save_secret "$home_dir/secrets/egress_${file}"
+      compose up -d --wait --wait-timeout 60 --no-deps --force-recreate browser-egress`);
+    replaceUpstream("password", "incorrect");
+    await probe("auth-refusal", true);
+    replaceUpstream("password", password);
+    replaceUpstream("url", `https://${originAddress}:${port}`);
+    await probe("tls-refusal", true);
+    replaceUpstream("url", `https://${address}:${port + 2}`);
+    await probe("upstream-offline", true);
   } finally {
     const name = `${project}-egress-fixture`;
-    if (result("docker", ["container", "inspect", name]).status === 0) docker(["rm", "-f", name]);
-    if (process?.exitCode === null && process?.signalCode === null) await once(process, "exit");
     try {
-      vm(`nsenter -t ${hostPid} -n ip address del ${address}/32 dev lo 2>/dev/null || true
+      try {
+        if (result("docker", ["container", "inspect", name]).status === 0)
+          docker(["rm", "-f", name]);
+      } finally {
+        if (process?.exitCode === null && process?.signalCode === null) {
+          const exited = once(process, "exit");
+          process.kill();
+          await bounded(exited, "TLS upstream fixture shutdown");
+        }
+      }
+    } finally {
+      try {
+        vm(`nsenter -t ${hostPid} -n ip address del ${address}/32 dev lo 2>/dev/null || true
+        nsenter -t ${hostPid} -n ip address del ${originAddress}/32 dev lo 2>/dev/null || true
         if [[ -f "$OPENSTEER_HOME_DIR/common.egress.original" ]]; then
           load_compose
           mv "$home_dir/common.egress.original" "$home_dir/common.sh"
@@ -679,10 +767,11 @@ OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
           rm -f "$home_dir/egress-upstream.proof.yaml" "$home_dir/managed" "$home_dir/egress.pending" "$home_dir/secrets/"egress_{url,username,password}
           : | save_secret "$home_dir/secrets/oidc_client_secret"
           load_compose
-          compose up -d --wait --no-deps --force-recreate browser-egress
+          compose up -d --wait --wait-timeout 60 --no-deps --force-recreate browser-egress
         fi`);
-    } finally {
-      await account.close();
+      } finally {
+        await bounded(account.close(), "egress Account shutdown");
+      }
     }
   }
 }
@@ -826,7 +915,7 @@ async function browserJourney(
           for (const surface of surfaces) {
             if (surface.id !== surfaceId) continue;
             lastSurface = { url: surface.url, title: surface.title, loading: surface.loading };
-            if (surface.navigationFailed) {
+            if (surface.url === url && surface.navigationFailed) {
               if (expectedFailure) resolve();
               else reject(new Error(`Browser failed to load ${url}`));
             }
@@ -884,20 +973,22 @@ function managedImages() {
   );
 }
 
-async function waitForSystemd(unit, successFile, expectedState, timeout = 360_000) {
+async function waitForSystemd(unit, successFile, expectedState, managed = true, timeout = 360_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const state = vm(
       `test ! -f ${quote(successFile)} || echo complete
       systemctl show ${quote(unit)} -p ActiveState -p ExecMainStatus -p NRestarts -p Result`,
-      { managed: true },
+      { managed, timeout: 15_000 },
     );
     if (state.includes("complete") && state.split("\n").includes(`ActiveState=${expectedState}`))
       return state;
     if (state.includes("ActiveState=failed") && state.includes("ExecMainStatus=78")) break;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error(vm(`journalctl -u ${quote(unit)} --no-pager -n 100`, { managed: true }));
+  throw new Error(
+    vm(`journalctl -u ${quote(unit)} --no-pager -n 100`, { managed, timeout: 15_000 }),
+  );
 }
 
 async function managedProof(directory, bootPackage) {
@@ -928,6 +1019,7 @@ async function managedProof(directory, bootPackage) {
 
   const release = { version, images: managedImages() };
   const token = randomBytes(32).toString("base64url");
+  const replacementToken = randomBytes(32).toString("base64url");
   const setupToken = randomBytes(32).toString("base64url");
   const setupCodeDigest = createHash("sha256").update(setupToken).digest("hex");
   const cloudComputerId = `cc_${randomUUID()}`;
@@ -941,6 +1033,8 @@ async function managedProof(directory, bootPackage) {
   let bootRequests = 0;
   let completeRequests = 0;
   let identity;
+  let snapshotId;
+  let replacementCompleted = false;
   const app = Fastify({ https: { key: readFileSync(key), cert: readFileSync(certificate) } });
   app.setErrorHandler((error, _request, reply) => {
     if (!(error instanceof ControlPlaneError)) throw error;
@@ -951,7 +1045,8 @@ async function managedProof(directory, bootPackage) {
       async boot(id, input) {
         assert.equal(id, cloudComputerId);
         assert.equal(input.hostname, managedHostname);
-        if (input.bootstrapToken !== token || identity)
+        const replacing = input.bootstrapToken === replacementToken && snapshotId;
+        if (replacing ? replacementCompleted : input.bootstrapToken !== token || identity)
           throw new ControlPlaneError(
             "unauthorized",
             "Invalid or expired Cloud Computer bootstrap token",
@@ -962,9 +1057,11 @@ async function managedProof(directory, bootPackage) {
         return CloudComputerBootResponseSchema.parse({
           hostname: managedHostname,
           accountOrigin,
-          setupCodeDigest,
+          setupCodeDigest: replacing ? "e".repeat(64) : setupCodeDigest,
+          ...(replacing ? { restoreSnapshot: snapshotId } : {}),
           ipv6Enabled: false,
           release,
+          releaseManifestUrl: `${accountOrigin}/feed.json`,
           work,
           backup: {
             endpoint: backupFixture.endpoint,
@@ -979,6 +1076,15 @@ async function managedProof(directory, bootPackage) {
       },
       async bootComplete(id, input) {
         assert.equal(id, cloudComputerId);
+        if (input.bootstrapToken === replacementToken) {
+          assert.equal(input.hostname, managedHostname);
+          assert.ok(snapshotId);
+          assert.deepEqual(input.identity, identity);
+          for (const service of ["postgres", ...components])
+            assert.equal(health(service, "replacement"), "running/healthy");
+          replacementCompleted = true;
+          return;
+        }
         assert.deepEqual(
           { hostname: input.hostname, bootstrapToken: input.bootstrapToken },
           { hostname: managedHostname, bootstrapToken: token },
@@ -1002,6 +1108,7 @@ async function managedProof(directory, bootPackage) {
     },
     stripeWebhookSecret: "fixture",
   });
+  app.get("/feed.json", () => manifest);
   await app.listen({ host: "0.0.0.0", port: 0 });
   const accountOrigin = `https://host.lima.internal:${app.server.address().port}`;
   const spec = {
@@ -1032,7 +1139,7 @@ async function managedProof(directory, bootPackage) {
     });
     assert.equal(bootRequests, 2);
     assert.equal(completeRequests, 2);
-    vm(`test ! -e /etc/systemd/system/${unit}-update.timer`, { managed: true });
+    vm(`test -e /etc/systemd/system/${unit}-update.timer`, { managed: true });
     assert.deepEqual(
       JSON.parse(
         docker(["exec", container("host", true), "printenv", "OPENSTEER_MANAGED_HOME_WORK_JSON"]),
@@ -1086,12 +1193,27 @@ async function managedProof(directory, bootPackage) {
       { managed: true, allowFailure: true },
     );
     assert.notEqual(refused.status, 0);
-    assert.match(refused.stderr, /Managed Home releases require a digest/u);
-    const runnerIdentity = () =>
+    assert.match(refused.stderr, /only from the Account feed/u);
+    const refusedFeed = vm(`CURL_CA_BUNDLE=${quote(certificate)} operator update`, {
+      managed: true,
+      allowFailure: true,
+    });
+    assert.notEqual(refusedFeed.status, 0);
+    assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);
+    assert.equal(
+      vm(
+        `load_compose
+      OPENSTEER_HOME_HOST_IMAGE=not-admitted OPENSTEER_HOME_VOLUME_SET=not-admitted \
+      compose config --format json | jq -r '[.services.host.image,.volumes["host-data"].name][]'`,
+        { managed: true },
+      ),
+      `${release.images.host}\n${managedProject}_host-data`,
+    );
+    const runnerIdentity = (target = true) =>
       JSON.parse(
         docker([
           "exec",
-          container("runner", true),
+          container("runner", target),
           "node",
           "-e",
           "const { runnerId, environmentId } = require('/var/lib/opensteer/identity.json'); console.log(JSON.stringify({runnerId, environmentId}));",
@@ -1114,18 +1236,43 @@ async function managedProof(directory, bootPackage) {
       OPENSTEER_HOME_BACKUP_NETWORK=host operator backup`,
       { managed: true },
     );
-    assert.match(backedUp, /snapshot [0-9a-f]+ saved/u);
+    snapshotId = backedUp.match(/snapshot ([0-9a-f]+) saved/u)?.[1];
+    assert.ok(snapshotId);
+    vm(`systemctl stop ${unit}.service`, { managed: true });
+    const replacementTokenPath = `${vmDirectory}/replacement-token`;
     vm(
-      `systemctl stop ${unit}.service
-      load_compose; compose down --volumes
-      OPENSTEER_HOME_BACKUP_NETWORK=host operator restore --source-stopped
-      systemctl start ${unit}.service`,
-      { managed: true },
+      `test ! -e "$OPENSTEER_HOME_DIR"
+      install -d -m 0700 "$OPENSTEER_HOME_DIR"
+      install -m 0600 ${quote(backupFixture.caPath)} "$OPENSTEER_HOME_DIR/backup-ca.pem"
+      printf '%s' ${quote(replacementToken)} > ${quote(replacementTokenPath)}
+      export CURL_CA_BUNDLE=${quote(certificate)} OPENSTEER_HOME_UNIT_PREFIX=${quote(replacementProject)} OPENSTEER_HOME_BACKUP_NETWORK=host
+      bash ${quote(bootPackage)} --local --boot-spec ${quote(specPath)} --bootstrap-token-file ${quote(replacementTokenPath)}`,
+      { managed: "replacement" },
+    );
+    const replacementMarker = `${vmDirectory}/${replacementProject}/boot/completed`;
+    await waitForSystemd(
+      `${replacementProject}-managed.service`,
+      replacementMarker,
+      "inactive",
+      "replacement",
+    );
+    await waitForSystemd(
+      `${replacementProject}.service`,
+      replacementMarker,
+      "active",
+      "replacement",
+    );
+    assert.ok(replacementCompleted);
+    assert.equal(bootRequests, 3);
+    vm(
+      `test -f "$OPENSTEER_HOME_DIR/boot/restored"
+      test ! -e "$OPENSTEER_HOME_DIR/boot/token" && test ! -e ${quote(replacementTokenPath)}`,
+      { managed: "replacement" },
     );
     for (const service of ["postgres", ...components])
-      assert.equal(health(service, true), "running/healthy");
-    assert.deepEqual(runnerIdentity(), enrolled);
-    const restoredCa = caddyRoot(true);
+      assert.equal(health(service, "replacement"), "running/healthy");
+    assert.deepEqual(runnerIdentity("replacement"), enrolled);
+    const restoredCa = caddyRoot("replacement");
     const restoredApi = client(managedHostname, bind + 3, restoredCa);
     const restoredAuthority = expectStatus(await restoredApi("/.well-known/opensteer"), 200).json
       .authority;
@@ -1139,15 +1286,15 @@ async function managedProof(directory, bootPackage) {
       200,
     );
     assert.equal(restoredOwner.data.session.user.id, owner.data.session.user.id);
-    startLoopbackServer(true);
+    startLoopbackServer("replacement");
     await browserJourney(restoredApi, restoredOwner.cookie, restoredCa, {
-      managed: true,
+      managed: "replacement",
       url: `${loopbackOrigin}/check`,
       title: "Home profile restored",
       profileId: profile.id,
     });
   } finally {
-    await app.close();
+    await bounded(app.close(), "managed Account shutdown");
   }
 }
 
@@ -1248,6 +1395,16 @@ try {
   const bundleDirectory = resolve(checkoutTemp, "bundle");
   mkdirSync(bundleDirectory);
   const bootPackage = resolve(bundleDirectory, "opensteer-home-installer.sh");
+  const contract = await check(
+    "Home boot, egress and backup reports match the Account routes",
+    () => {
+      checked(
+        result("pnpm", ["exec", "tsx", "--test", "scripts/verify-home-boot-contract.test.mjs"]),
+        "Home Account contract failed",
+      );
+    },
+  );
+  if (!contract) throw new Error("Home Account contract failed");
   resourcesAllowed = true;
   const built = await check("build all six Home images for Colima linux/arm64", () => {
     const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
@@ -1325,8 +1482,20 @@ try {
     ).hash.match(/^#token=(.+)$/u)?.[1];
     assert.ok(setupToken);
     const cdpFixture = resolve(root, "scripts/verify-home-deployment-cdp.mjs");
+    const caddyFixture = resolve(checkoutTemp, "Caddyfile");
+    writeFileSync(
+      caddyFixture,
+      readFileSync(resolve(recipe, "Caddyfile"), "utf8").replace(
+        "\timport /etc/caddy/tls.caddy",
+        "\tlog\n\timport /etc/caddy/tls.caddy",
+      ),
+      { mode: 0o644 },
+    );
     vm(`cat > "$OPENSTEER_HOME_DIR/compose.proof.yaml" <<'OPENSTEER_HOME_PROOF'
 services:
+  gateway:
+    volumes:
+      - ${caddyFixture}:/etc/caddy/Caddyfile:ro
   host:
     command: [node, --import, /home-proof-cdp.mjs, dist/main.js]
     volumes:
@@ -1666,7 +1835,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     () => {
       const pid = docker(["inspect", "--format", "{{.State.Pid}}", container("host")]);
       assertFirewall(pid);
-      assertNetworkProbes(container("runner"), images.runner, pid, true);
+      assertNetworkProbes(container("runner"), pid);
     },
     Boolean(discovery),
   );
@@ -1675,12 +1844,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     () => {
       const pid = docker(["inspect", "--format", "{{.State.Pid}}", container("host")]);
       assertFirewall(pid);
-      assertNetworkProbes(
-        container("browser-runtime"),
-        images["browser-runtime"],
-        pid,
-        health("browser-runtime") === "running/healthy",
-      );
+      assertNetworkProbes(container("browser-runtime"), pid);
     },
     Boolean(discovery),
   );
@@ -1716,6 +1880,14 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
   await check(
     "namespace firewall detects a missing rule and repairs both address-family policies",
     () => {
+      const id = container("host");
+      const pid = docker(["inspect", "--format", "{{.State.Pid}}", id]);
+      vm(`load_compose
+        nsenter -t ${pid} -n iptables -w -D OPENSTEER-HOME -d 169.254.0.0/16 -j REJECT
+        if check_firewall ${pid}; then exit 1; fi
+        operator maintain
+        check_firewall ${pid}`);
+      assert.equal(container("host"), id);
       vm(`unshare --net bash -euc '
         firewall="$OPENSTEER_HOME_DIR/firewall.sh"
         "$firewall" "$$" apply false
@@ -1911,22 +2083,47 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     Boolean(backupSucceeded),
   );
   await check(
-    "an interrupted update recovers previous images and keeps its database checkpoint",
+    "an interrupted unhealthy candidate restores previous images without rolling back database writes",
     () => {
       const previous = vm('cat "$OPENSTEER_HOME_DIR/images.env"');
+      const before = Object.fromEntries(
+        components.map((service) => [
+          service,
+          docker(["inspect", "--format", "{{.Image}}", container(service)]),
+        ]),
+      );
+      const fixture = docker(["create", "--name", `${project}-failed-host`, images.host]);
+      try {
+        docker(["commit", "--change", 'ENTRYPOINT ["/bin/false"]', fixture, failedCandidate]);
+      } finally {
+        docker(["rm", "-v", fixture]);
+      }
+      const candidateId = docker(["image", "inspect", "--format", "{{.Id}}", failedCandidate]);
+      assert.notEqual(candidateId, before.host);
       vm(`load_compose
       source "$home_dir/backup.sh"
       journal="$home_dir/update.pending"
       mkdir "$journal"
       cp "$home_dir/images.env" "$journal/previous.env"
-      cp "$home_dir/images.env" "$journal/candidate.env"
-      printf 'starting-candidate\n' > "$journal/phase"
+      sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$journal/previous.env" > "$journal/candidate.env"
       postgres_tool pg_dump --format=custom > "$home_dir/update-database.dump"
       compose down
+      release_env="$journal/candidate.env" compose up -d --pull never host
+      candidate=$(release_env="$journal/candidate.env" compose ps --all -q host)
+      test "$(docker inspect --format '{{.Image}}' "$candidate")" = ${quote(candidateId)}
+      test "$(timeout 20s docker wait "$candidate")" = 1
+      postgres_tool psql -v ON_ERROR_STOP=1 -c 'CREATE TABLE home_proof_expand (value integer); INSERT INTO home_proof_expand VALUES (42)'
       operator start
       test ! -e "$journal"
-      test -s "$home_dir/update-database.dump"`);
+      test -s "$home_dir/update-database.dump"
+      test "$(postgres_tool psql -Atc 'SELECT value FROM home_proof_expand')" = 42
+      postgres_tool psql -v ON_ERROR_STOP=1 -c 'DROP TABLE home_proof_expand'`);
       assert.equal(vm('cat "$OPENSTEER_HOME_DIR/images.env"'), previous);
+      for (const service of components)
+        assert.equal(
+          docker(["inspect", "--format", "{{.Image}}", container(service)]),
+          before[service],
+        );
       for (const service of ["postgres", ...components])
         assert.equal(health(service), "running/healthy");
     },
@@ -1993,7 +2190,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     vm("operator stop");
   }
   await check(
-    "standalone managed installer retries real Account handlers, pins identity, claims, browses, restores the pod, and rejects mutable images",
+    "managed installer retries completion, restores onto a fresh destination, and refuses mutable images",
     () => {
       managedPrepared = true;
       return managedProof(checkoutTemp, bootPackage);
@@ -2009,34 +2206,45 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         function clean(task) {
           try {
             task();
+            return true;
           } catch (error) {
             errors.push(error.message);
+            return false;
           }
         }
+        let unitsStopped = true;
         if (managedPrepared) {
-          clean(() =>
-            vm(
-              `if [[ -f "$OPENSTEER_HOME_DIR/config.env" ]]; then
-              OPENSTEER_HOME_UNIT_PREFIX=${quote(managedProject)} operator uninstall --purge
-            elif [[ -f /etc/systemd/system/${managedProject}-managed.service ]]; then
-              systemctl disable --now ${managedProject}-managed.service
-              rm -f /etc/systemd/system/${managedProject}-managed.service
+          for (const unit of [managedProject, replacementProject])
+            unitsStopped =
+              clean(() =>
+                vm(`
+            units=()
+            for suffix in -managed.service -update.timer -backup.timer -maintain.timer -update.service -backup.service -maintain.service .service; do
+              name=${quote(unit)}"$suffix"
+              if [[ -f "/etc/systemd/system/$name" ]]; then units+=("$name"); fi
+            done
+            if (( \${#units[@]} )); then
+              systemctl stop "\${units[@]}"
+              systemctl disable "\${units[@]}"
+              for name in "\${units[@]}"; do rm -f -- "/etc/systemd/system/$name"; done
               systemctl daemon-reload
-            fi`,
-              { managed: true },
-            ),
-          );
+            fi`),
+              ) && unitsStopped;
         }
         clean(() => {
           if (!s3Id) s3Id = docker(["ps", "-aq", "--filter", `name=^/${s3Name}$`]);
           if (s3Id) docker(["rm", "-f", s3Id]);
         });
         clean(() => cleanupProject(project, s3VolumeCreated ? [s3Volume] : []));
-        clean(() => cleanupProject(managedProject));
+        if (unitsStopped) {
+          clean(() => cleanupProject(managedProject));
+          clean(() => cleanupProject(replacementProject));
+        }
         clean(() => {
           if (registryId) docker(["rm", "-fv", registryId]);
         });
-        for (const managed of [false, true]) {
+        for (const managed of [false, true, "replacement"]) {
+          if (managed && !unitsStopped) continue;
           clean(() =>
             vm(
               'if [[ -f "$OPENSTEER_HOME_DIR/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
@@ -2070,6 +2278,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         for (const image of [
           ...registryReferences,
           ...Object.values(images),
+          failedCandidate,
           ...publicImageRefs.filter((ref) => !preexisting.has(ref)),
         ]) {
           clean(() => {
@@ -2077,7 +2286,8 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
               docker(["image", "rm", image]);
           });
         }
-        clean(() => vm(`rm -rf -- ${quote(vmDirectory)}`));
+        if (unitsStopped) clean(() => vm(`rm -rf -- ${quote(vmDirectory)}`));
+        else errors.push(`Preserved ${vmDirectory} because unit cleanup failed.`);
         if (errors.length) throw new Error(errors.join("\n"));
       });
     }

@@ -182,6 +182,7 @@ const agentResult = z
 export const ExecutionSchema = z.strictObject({
   id,
   caller: id,
+  drained: z.literal(true).optional(),
   state: z.enum([
     "running",
     "waiting",
@@ -446,11 +447,17 @@ export const operations = {
       unavailableApps: z.array(unavailableApp).optional(),
     }),
   },
+  resolveTools: {
+    input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
+    output: z.array(
+      z.strictObject({ plugin: id, name: id, version: id, readOnly: z.boolean() }).nullable(),
+    ),
+  },
   call: {
-    input: z.strictObject({ calls: z.union([call, z.array(call).min(1)]) }),
+    input: z.strictObject({ calls: z.union([call, z.array(call).min(1)]), executionId: id.optional() }),
     output: ExecutionSchema,
   },
-  execute: { input: z.strictObject({ code: z.string().max(65536) }), output: ExecutionSchema },
+  execute: { input: z.strictObject({ code: z.string().max(65536), executionId: id.optional() }), output: ExecutionSchema },
   resume: { input: execution, output: ExecutionSchema },
   answer: { input: z.strictObject({ execution: id, response: answer }), output: ExecutionSchema },
   cancel: { input: execution, output: ExecutionSchema },
@@ -495,6 +502,7 @@ export const AuthorizationSchema = z.strictObject({
   tool: id.optional(),
   execution: id.optional(),
   write: z.boolean().optional(),
+  version: id.optional(),
 });
 export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
@@ -502,6 +510,7 @@ export const AuthorizationResultSchema = z.strictObject({
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
   /** For a connection's selected grant: the only apps it may learn exist. */
   visible: z.array(z.string()).optional(),
+  pinnedVersion: id.optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;
 export const HostToolSchema = z.strictObject({

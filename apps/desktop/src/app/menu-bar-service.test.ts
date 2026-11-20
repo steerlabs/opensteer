@@ -212,9 +212,9 @@ describe("menu bar state from this Mac alone", () => {
       "This Mac is your Home · Running",
       "Can’t reach Office",
     ]);
-    expect(status.rightNow.map((row) => [row.actor.label, row.using, row.stoppable])).toEqual([
-      ["Book flights", "Notes", true],
-      ["An agent", "A browser profile", false],
+    expect(status.rightNow.map((row) => [row.actor.label, row.using])).toEqual([
+      ["Book flights", "Notes"],
+      ["An agent", "A browser profile"],
     ]);
     expect(status.stop.offline).toBe("Works even while Office is unreachable.");
     expect(status.needsYou).toBeNull();

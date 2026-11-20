@@ -1111,8 +1111,9 @@ describe("Opensteer MCP spine", () => {
       expect(names).toContain("opensteer_task_wait");
       expect(names).toContain("browser_profile_list");
       expect(names).not.toContain("browser_profile_remove");
-      expect(names).not.toContain("computer_use");
-      expect(names).not.toContain("saved_login_request");
+      // A connected agent drives what it was granted itself, through its session.
+      expect(names).toContain("computer_use");
+      expect(names).toContain("saved_login_request");
       expect(names).not.toContain("chrome_cookies_request");
       expect(names).not.toContain("send_to_person");
     } finally {

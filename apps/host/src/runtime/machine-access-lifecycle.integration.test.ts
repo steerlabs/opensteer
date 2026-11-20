@@ -840,7 +840,7 @@ integration("Machine access across a Run's authority", () => {
     try {
       const refused = await runShim(expiredLaunch, "ssh", [alias, "true"]);
       expect(refused.code).toBe(255);
-      expect(refused.stderr).toContain("This Run has ended.");
+      expect(refused.stderr).toContain("This task has ended.");
     } finally {
       await expiredLaunch.close();
     }

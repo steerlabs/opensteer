@@ -113,6 +113,8 @@ export const hostApiScopes = {
   "channels.get": "session",
   "connections.list": "session",
   "connections.authorization.get": "session",
+  "connections.activity": "session",
+  "threads.activity": "session",
   "personal.remoteAccess.get": "session",
   "personal.accountLink.get": "session",
   "plugins.overview.get": "session",

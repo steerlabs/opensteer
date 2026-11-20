@@ -407,7 +407,7 @@ export function presentConnectionGate(
   if (issue.code === "sign-in")
     return issue.reason === "account-required"
       ? {
-          title: "Sign in to your Opensteer Account",
+          title: "Sign in to your Opensteer account",
           detail: `Use the Account linked to ${name}.`,
           action: "sign-in",
         }

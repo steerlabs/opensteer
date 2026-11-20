@@ -3,6 +3,7 @@ import {
   agentGrantAccess,
   type AgentOperationTarget,
   type BrowserProfileId,
+  type Tab,
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
@@ -11,8 +12,9 @@ import type {
   AgentSessionService,
   DirectOperationContext,
 } from "../../agent-sessions/agent-session-service.js";
+import { deviceVisibleTo } from "../../devices/device-visibility.js";
 import type { TabActor, TabServicePort } from "../../tabs/ports.js";
-import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
+import { callerLineage, type AgentCaller, type ConnectionCaller } from "../agent-caller.js";
 import { operationId, requireRun } from "../operations.js";
 import { directResult as direct, requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
@@ -33,6 +35,11 @@ function sessionActor(context: DirectOperationContext): TabActor {
 }
 function notFound(): never {
   throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+}
+
+function tabForCaller(caller: AgentCaller, tab: Tab) {
+  const { computer, ...rest } = tab;
+  return deviceVisibleTo(callerLineage(caller)?.grant)(computer.computerId) ? tab : rest;
 }
 
 export class TabToolHandlers {
@@ -75,7 +82,15 @@ export class TabToolHandlers {
 
   async tab_list({ caller, input, operationKey }: ToolCall<"tab_list">) {
     const { taskId, reason, operationKey: _key, ...filters } = input;
-    if (caller.kind !== "connection") return this.#tabs.list(actor(caller), filters);
+    const list = async (tabActor: TabActor) => {
+      const result = await this.#tabs.list(
+        tabActor,
+        filters,
+        deviceVisibleTo(callerLineage(caller)?.grant),
+      );
+      return { ...result, tabs: result.tabs.map((tab) => tabForCaller(caller, tab)) };
+    };
+    if (caller.kind !== "connection") return list(actor(caller));
     return direct(
       await this.#direct().run({
         ownerUserId: caller.userId,
@@ -89,7 +104,7 @@ export class TabToolHandlers {
         targetName: "Your tabs",
         effect: "read",
         calls: `tab_list ${canonicalJson(filters)}`,
-        execute: (context) => this.#tabs.list(sessionActor(context), filters),
+        execute: (context) => list(sessionActor(context)),
         summarize: (result) => ({ tabs: result.tabs.length }),
       }),
     );
@@ -104,7 +119,7 @@ export class TabToolHandlers {
       if (target.kind !== "page")
         throw new OpensteerError({
           code: "forbidden",
-          message: "A connected agent can open browser pages directly.",
+          message: "A connected agent can only open browser pages here. Pass target.kind = \"page\".",
         });
       return direct(
         await this.#direct().run({
@@ -118,18 +133,23 @@ export class TabToolHandlers {
           target: operationTarget,
           effect: "write",
           calls: `tab_open ${canonicalJson({ target })}`,
-          execute: (context) =>
-            this.#tabs.open(sessionActor(context), target, `operation:${context.operationId}`),
+          execute: async (context) => {
+            const { tab } = await this.#tabs.open(
+              sessionActor(context), target, `operation:${context.operationId}`,
+            );
+            return { tab: tabForCaller(caller, tab) };
+          },
           summarize: (result) => ({ tabId: result.tab.tabId }),
         }),
       );
     }
     requireRun(caller);
-    return this.#tabs.open(
+    const { tab } = await this.#tabs.open(
       actor(caller),
       input.target,
       operationId(caller, operationKey, "tab_open"),
     );
+    return { tab: tabForCaller(caller, tab) };
   }
   async tab_close({ caller, input, operationKey }: ToolCall<"tab_close">) {
     if (caller.kind === "connection") {

@@ -7,6 +7,7 @@ async function main(): Promise<void> {
   const proxy = new PublicBrowserEgressProxy({
     host: process.env.OPENSTEER_BROWSER_EGRESS_HOST?.trim() || "127.0.0.1",
     port: port(process.env.OPENSTEER_BROWSER_EGRESS_PORT),
+    upstreamRequired: process.env.OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED === "true",
     ...(upstream ? { upstream } : {}),
   });
   const address = await proxy.start();

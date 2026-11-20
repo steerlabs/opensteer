@@ -73,6 +73,8 @@ export interface EngineHostCallbacks {
     plugin?: string;
     tool?: string;
     execution?: string;
+    version?: string;
+    write?: boolean;
   }): Effect.Effect<PluginAuthorizationResult, Error>;
   providers(): Effect.Effect<PluginHostProvider[], Error>;
   call(
@@ -115,12 +117,19 @@ export function compositeBackend(
     return blocked ? { ...tool, blocked } : tool;
   };
 
-  const permissionFor = (operation: string, plugin?: string, tool?: string) =>
+  const permissionFor = (
+    operation: string,
+    plugin?: string,
+    tool?: string,
+    facts?: { version?: string | undefined; write?: boolean },
+  ) =>
     Effect.flatMap(CurrentMcpExecution, (execution) =>
       host.authorize({
         operation,
         ...(plugin === undefined ? {} : { plugin }),
         ...(tool === undefined ? {} : { tool }),
+        ...(facts?.version === undefined ? {} : { version: facts.version }),
+        ...(facts?.write === undefined ? {} : { write: facts.write }),
         ...(execution === undefined ? {} : { execution }),
       }),
     );
@@ -352,7 +361,9 @@ export function compositeBackend(
       }),
     callTool: (input, options) =>
       Effect.gen(function* () {
-        const permission = yield* permissionFor("callTool", input.app, input.tool);
+        const permission = yield* permissionFor("callTool", input.app, input.tool, {
+          version: input.version,
+        });
         const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
         if (blocked) return yield* refused(blocked);
         if (!permission.allowed) return yield* Effect.fail(forbidden());
@@ -361,7 +372,8 @@ export function compositeBackend(
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (
             !current ||
-            (input.version !== undefined && input.version !== local.version) ||
+            ((permission.pinnedVersion ?? input.version) !== undefined &&
+              (permission.pinnedVersion ?? input.version) !== local.version) ||
             (input.kind !== undefined &&
               input.kind !== (current.readOnly === true ? "query" : "mutation"))
           )
@@ -400,13 +412,38 @@ export function compositeBackend(
               return { status: "completed", value: direct ? result : result.value };
           }
         }
+        const pinned = permission.pinnedVersion;
+        if (pinned && (yield* engine.apps.get({ app: input.app, owner })).activeVersion !== pinned)
+          return yield* Effect.fail(
+            new PluginServiceError("invalid", "The plugin changed after review"),
+          );
+        const version = pinned ? VersionId.make(pinned) : input.version;
         return yield* engine.tools
-          .call({ ...input, accounts: yield* accounts.accounts(input.app, input.version) }, options)
+          .call(
+            {
+              ...input,
+              ...(version === undefined ? {} : { version }),
+              accounts: yield* accounts.accounts(input.app, version),
+            },
+            options,
+          )
           .pipe(Effect.map(wrapDirectResult));
       }),
     resumeInvocation: (pending, response, options) =>
       Effect.gen(function* () {
-        yield* checked("resumeInvocation", pending.invocation.app, pending.invocation.tool);
+        const { app, tool, version } = pending.invocation;
+        const permission = yield* permissionFor("resumeInvocation", app, tool, {
+          version,
+          write: pending.invocation.kind !== "query",
+        });
+        if (!permission.allowed) return yield* Effect.fail(forbidden());
+        if (
+          permission.pinnedVersion &&
+          (yield* engine.apps.get({ app, owner })).activeVersion !== permission.pinnedVersion
+        )
+          return yield* Effect.fail(
+            new PluginServiceError("invalid", "The plugin changed after review"),
+          );
         // Revalidate the reviewed account selection through the current product adapter too.
         const current = yield* accounts.accounts(
           pending.invocation.app,
@@ -477,6 +514,7 @@ export function compositeBackend(
     Effect.gen(function* () {
       const allowed = yield* checked("grant");
       const grants = allowed.grants;
+      const visible = allowed.visible;
       const apps =
         grants === undefined
           ? []
@@ -494,6 +532,7 @@ export function compositeBackend(
                 kind: "tools",
                 approval: "client",
                 apps: apps
+                  .filter((app) => visible === undefined || visible.includes(app))
                   .map((app) => [app, grants[app] ?? "all"] as const)
                   .filter(([, access]) => access !== "off")
                   .map(([app, access]) => ({

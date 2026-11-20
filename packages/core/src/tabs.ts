@@ -6,6 +6,7 @@ import {
   BrowserProfileIdSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
+  BrowserSourceIdSchema,
   TabIdSchema,
   TabGroupIdSchema,
   ThreadIdSchema,
@@ -143,6 +144,9 @@ export const TabSchema = z
     kind: TabKindSchema,
     title: z.string().max(1024),
     computer: z.strictObject({ computerId: DeviceIdSchema, name: z.string().max(200) }),
+    sharedByPerson: z
+      .object({ sourceId: BrowserSourceIdSchema, computerName: z.string().max(200) })
+      .optional(),
     groupId: TabGroupIdSchema.nullable(),
     state: TabStateSchema,
     unavailableCode: TabUnavailableCodeSchema.optional(),

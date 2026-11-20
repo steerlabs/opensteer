@@ -39,6 +39,7 @@ import {
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
   CloudComputerIdentitySchema,
+  cloudComputerBackupReportPath,
   cloudComputerBootPath,
   cloudComputerEgressPath,
   cloudComputerBootCompletePath,
@@ -1818,7 +1819,7 @@ integration("Cloud Computer Account service", () => {
     expect(duplicate.json()).toMatchObject({
       error: {
         reason: "cloud-computer-already-exists",
-        message: "This Account already has a Cloud Computer subscription",
+        message: "You already have a Cloud Computer subscription.",
       },
     });
 
@@ -2035,7 +2036,7 @@ integration("Cloud Computer Account service", () => {
     expect(records).toBe(false);
     expect((await read()).json()).toMatchObject({
       status: "suspended",
-      reason: "You paused this Cloud Computer.",
+      reason: "You suspended this Cloud Computer.",
     });
     expect((await mutation("resume")).statusCode).toBe(200);
     await pass();
@@ -2156,7 +2157,7 @@ integration("Cloud Computer Account service", () => {
   });
 
   it("starts boot expiry on server creation, fences revisions, and pins only boot-complete", async () => {
-    const { id } = await buy();
+    const { account, id } = await buy();
     expect(
       (
         await http({
@@ -2236,6 +2237,11 @@ integration("Cloud Computer Account service", () => {
     now = new Date(now.getTime() + 21 * 60_000);
     expect((await boot(replacement)).statusCode).toBe(401);
     expect((await complete(replacement)).statusCode).toBe(401);
+    expect((await requestAs(account, "GET", accountCloudComputerPath(id))).json()).toMatchObject({
+      status: "needs_attention",
+      reasonCode: "cloud-computer-bootstrap-expired",
+      reason: "Setup took too long to finish. Try again or contact support.",
+    });
   });
 
   it("recovers a claim the Home committed from the Home's own receipt", async () => {
@@ -2306,7 +2312,7 @@ integration("Cloud Computer Account service", () => {
     expect(impostor.state.claims).toBe(0);
     expect(await cloud.show(id, account.id)).toMatchObject({
       status: "needs_attention",
-      reason: "Your Cloud Computer couldn’t be set up for your Account. Contact support.",
+      reason: "Opensteer couldn’t link this Cloud Computer to your account. Contact support.",
     });
     expect(await claimer(impostor.fetch).runOnce()).toBe(0);
     await expect(directory.listDeployments(account.id)).resolves.toEqual([]);
@@ -2444,6 +2450,53 @@ integration("Cloud Computer Account service", () => {
         secretAccessKey: "new-secret",
       }),
     ).rejects.toThrow();
+  });
+
+  it("accepts only current Home backup reports and keeps the most recent completion", async () => {
+    const { account, id } = await buy();
+    const current = (await getDesired(id))!;
+    const first = (await bootable(current)).managedHome!.oidc;
+    const published = { completedAt: now.toISOString(), snapshotId: "a".repeat(64) };
+    const send = (oidc: typeof first, payload: unknown) =>
+      http({
+        method: "POST",
+        url: cloudComputerBackupReportPath(id),
+        headers: {
+          authorization: `Basic ${Buffer.from(`${oidc.clientId}:${oidc.clientSecret}`).toString("base64")}`,
+        },
+        payload,
+      });
+    const read = () => requestAs(account, "GET", accountCloudComputerPath(id));
+    expect((await read()).json()).not.toHaveProperty("lastBackupAt");
+    expect((await send(first, published)).statusCode).toBe(401);
+    expect((await complete(current)).statusCode).toBe(200);
+    expect((await send(first, { ...published, snapshotId: "wrong" })).statusCode).toBe(400);
+    const accepted = await send(first, published);
+    expect(accepted.statusCode).toBe(204);
+    expect(accepted.headers["cache-control"]).toBe("no-store");
+    expect((await read()).json()).toHaveProperty("lastBackupAt", published.completedAt);
+    expect(
+      (await requestAs(account, "GET", accountCloudComputersPath)).json().computers,
+    ).toContainEqual(expect.objectContaining({ id, lastBackupAt: published.completedAt }));
+    const stale = {
+      completedAt: new Date(now.getTime() - 1000).toISOString(),
+      snapshotId: "b".repeat(64),
+    };
+    expect((await send(first, stale)).statusCode).toBe(204);
+    expect((await read()).json()).toHaveProperty("lastBackupAt", published.completedAt);
+
+    await cloud.mutate(id, "reissue");
+    const next = (await getDesired(id))!;
+    const replacement = (await bootable(next)).managedHome!.oidc;
+    expect((await complete(next)).statusCode).toBe(200);
+    const later = {
+      completedAt: new Date(now.getTime() + 1000).toISOString(),
+      snapshotId: "c".repeat(64),
+    };
+    expect((await send(first, later)).statusCode).toBe(401);
+    expect((await read()).json()).toHaveProperty("lastBackupAt", published.completedAt);
+    expect((await send(replacement, later)).statusCode).toBe(204);
+    expect((await read()).json()).toHaveProperty("lastBackupAt", later.completedAt);
   });
 
   it("assigns a late egress endpoint and serves it only to the current booted Home", async () => {

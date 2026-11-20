@@ -13,14 +13,18 @@ import {
 import type { AgentConnection, AgentConnectionState } from "@opensteer/protocol";
 import {
   AgentConnectionIdentityAtConsentSchema,
+  AgentDirectoryDocumentSchema,
+  isIdentityStillVerified,
+  type AgentDirectoryDocument,
   type AgentConnectionIdentityAtConsent,
 } from "@opensteer/control-plane-protocol";
 import { randomUUID } from "node:crypto";
-import type { Kysely, Selectable } from "kysely";
+import { isDeepStrictEqual } from "node:util";
+import { sql, type Kysely, type Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
-import { connectionAttempts, outstandingAttempts } from "./connection-disconnect.js";
+import { connectionAttempts, latestConnectionUncertainty, outstandingAttempts } from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
 
 export class AgentConnectionStore {
@@ -43,10 +47,30 @@ export class AgentConnectionStore {
     redirectUri?: string;
     /** Who the person was shown at consent. */
     identityAtConsent?: AgentConnectionIdentityAtConsent;
+    directoryIssuer?: string;
   }): Promise<AgentConnection> {
     return withPersonalTransaction(this.database, async (tx) => {
       await requirePersonalOwner(tx, input.userId);
       if (input.grant) await assertGrantable(tx, input.userId, input.grant);
+      const evidence = input.identityAtConsent;
+      const accepted =
+        input.directoryIssuer && evidence && evidence.kind !== "unverified"
+          ? await tx
+              .selectFrom("agentDirectoryCache")
+              .select(["document", "acceptedAt"])
+              .where("issuer", "=", input.directoryIssuer)
+              .executeTakeFirst()
+          : undefined;
+      const directory = accepted ? AgentDirectoryDocumentSchema.parse(accepted.document) : null;
+      const withdrawal =
+        accepted &&
+        directory &&
+        evidence &&
+        evidence.kind !== "unverified" &&
+        directory.revision > evidence.directoryRevision &&
+        isIdentityStillVerified(evidence, directory) === false
+          ? accepted.acceptedAt
+          : null;
       const row = await tx
         .insertInto("agentConnections")
         .values({
@@ -70,12 +94,95 @@ export class AgentConnectionStore {
           identityAtConsent: input.identityAtConsent
             ? jsonValue(AgentConnectionIdentityAtConsentSchema.parse(input.identityAtConsent))
             : null,
+          verificationWithdrawnAt: withdrawal,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
       return view(row, "active");
     });
   }
+  async loadDirectory(issuer: string): Promise<AgentDirectoryDocument | null> {
+    const row = await this.database
+      .selectFrom("agentDirectoryCache")
+      .select("document")
+      .where("issuer", "=", issuer)
+      .executeTakeFirst();
+    return row ? AgentDirectoryDocumentSchema.parse(row.document) : null;
+  }
+
+  acceptDirectory(issuer: string, document: AgentDirectoryDocument): Promise<AgentDirectoryDocument> {
+    return withPersonalTransaction(this.database, async (tx) => {
+      const current = await new AgentConnectionStore(tx, this.now).loadDirectory(issuer);
+      if (current && document.revision < current.revision) return current;
+      if (
+        document.revision === current?.revision &&
+        (Date.parse(document.issuedAt) <= Date.parse(current.issuedAt) ||
+          !isDeepStrictEqual(document.entries, current.entries))
+      ) {
+        return current;
+      }
+      const acceptedAt = this.now();
+      const newRevision = current?.revision !== document.revision;
+      const encoded = jsonValue(document);
+      await tx
+        .insertInto("agentDirectoryCache")
+        .values({ issuer, document: encoded, acceptedAt })
+        .onConflict((conflict) =>
+          conflict.column("issuer").doUpdateSet({
+            document: encoded,
+            ...(newRevision ? { acceptedAt } : {}),
+          }),
+        )
+        .execute();
+      if (!newRevision) return document;
+      const rows = await tx
+        .selectFrom("agentConnections")
+        .select(["id", "identityAtConsent"])
+        .where("verificationWithdrawnAt", "is", null)
+        .where("identityAtConsent", "is not", null)
+        .execute();
+      const withdrawn = rows.filter((row) => {
+        const evidence = identityAtConsent(row.identityAtConsent);
+        return (
+          evidence &&
+          evidence.kind !== "unverified" &&
+          evidence.directoryRevision < document.revision &&
+          isIdentityStillVerified(evidence, document) === false
+        );
+      });
+      if (withdrawn.length > 0) {
+        await tx
+          .updateTable("agentConnections")
+          .set({ verificationWithdrawnAt: acceptedAt })
+          .where("id", "in", withdrawn.map((row) => row.id))
+          .where("verificationWithdrawnAt", "is", null)
+          .execute();
+      }
+      return document;
+    });
+  }
+
+  async claimEmbedderAssertion(
+    issuer: string,
+    statementId: string,
+    expiresAt: Date,
+  ): Promise<boolean> {
+    const row = await this.database
+      .insertInto("agentEmbedderAssertionClaims")
+      .values({ issuer, statementId, expiresAt })
+      .onConflict((conflict) => conflict.columns(["issuer", "statementId"]).doNothing())
+      .returning(sql<boolean>`expires_at > clock_timestamp()`.as("accepted"))
+      .executeTakeFirst();
+    return row?.accepted === true;
+  }
+
+  async pruneEmbedderAssertionClaims(): Promise<void> {
+    await this.database
+      .deleteFrom("agentEmbedderAssertionClaims")
+      .where("expiresAt", "<=", this.now())
+      .execute();
+  }
+
   async activate(id: string, tokenHash: string): Promise<boolean> {
     const result = await this.database
       .updateTable("agentConnections")
@@ -140,16 +247,17 @@ export class AgentConnectionStore {
       .orderBy("createdAt", "desc")
       .execute();
     // Derived from the durable cleanup record and what its lineage still holds.
-    const states = await Promise.all(
-      rows.map(async (row): Promise<AgentConnectionState> => {
-        if (row.revokedAt === null && row.expiresAt > now) return "active";
-        const outstanding = outstandingAttempts(await connectionAttempts(this.database, row.id));
-        if (outstanding.some((attempt) => attempt.handedOff)) return "stopping";
-        if (outstanding.length === 0 && row.cleanupCompletedAt) return "stopped";
-        return row.revokedAt === null ? "expired" : "revoked";
+    return Promise.all(
+      rows.map(async (row) => {
+        const active = row.revokedAt === null && row.expiresAt > now;
+        if (active && row.cleanupRequestedAt === null) return view(row, "active");
+        const attempts = await connectionAttempts(this.database, row.id);
+        const outstanding = outstandingAttempts(attempts);
+        const state = active ? "active" : outstanding.some((attempt) => attempt.handedOff)
+          ? "stopping" : outstanding.length === 0 ? "stopped" : row.revokedAt === null ? "expired" : "revoked";
+        return view({ ...row, ...await latestConnectionUncertainty(this.database, row, attempts) }, state);
       }),
     );
-    return rows.map((row, index) => view(row, states[index]!));
   }
   /** Clears "last action uncertain" once the person has checked. */
   async acknowledgeUncertain(userId: UserId, id: string): Promise<void> {
@@ -265,7 +373,7 @@ export class AgentConnectionStore {
       await requirePersonalOwner(tx, userId);
       const row = await tx
         .selectFrom("agentConnections")
-        .select(["revokedAt", "expiresAt", "cleanupCompletedAt"])
+        .select(["revokedAt", "expiresAt", "cleanupRequestedAt", "cleanupCompletedAt", "acknowledgedUncertaintyAt", "lastActionUncertainAt"])
         .forNoKeyUpdate()
         .where("id", "=", id)
         .where("userId", "=", userId)
@@ -277,18 +385,25 @@ export class AgentConnectionStore {
           message: "Disconnect this agent before removing it.",
         });
       // A connection whose work has not finished stopping stays visible until it has.
-      if (
-        row.cleanupCompletedAt === null ||
-        outstandingAttempts(await connectionAttempts(tx, id)).length
-      )
+      const attempts = await connectionAttempts(tx, id);
+      if (outstandingAttempts(attempts).length)
         throw new OpensteerError({
           code: "conflict",
           reason: "cleanup-outstanding",
           message: "This agent's work is still stopping. Remove it once it has stopped.",
         });
+      const now = this.now();
       await tx
         .updateTable("agentConnections")
-        .set({ removedAt: this.now() })
+        .set({
+          removedAt: now,
+          cleanupCompletedAt: row.cleanupCompletedAt ?? now,
+          ...(row.cleanupRequestedAt === null ? {
+            cleanupRequestedAt: row.revokedAt ?? row.expiresAt,
+            cleanupReason: row.revokedAt ? "revoked" : "expired",
+          } : {}),
+          ...await latestConnectionUncertainty(tx, row, attempts),
+        })
         .where("id", "=", id)
         .where("userId", "=", userId)
         .where("removedAt", "is", null)
@@ -327,6 +442,9 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
       : null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     identityAtConsent: identityAtConsent(row.identityAtConsent),
+    ...(row.verificationWithdrawnAt
+      ? { verificationWithdrawnAt: row.verificationWithdrawnAt.toISOString() }
+      : {}),
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt.toISOString(),

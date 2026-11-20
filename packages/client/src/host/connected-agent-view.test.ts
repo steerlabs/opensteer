@@ -198,6 +198,26 @@ describe("connected agent identity", () => {
     ).toMatchObject({ local: true, providerId: null });
     expect(connectedAgentIdentity(connection({ client: undefined })).origin).toBeNull();
   });
+
+  it("shows withdrawal from the Home's connection read with the recorded name", () => {
+    const withdrawn = connection({
+      verificationWithdrawnAt: "2026-11-03T11:00:00.000Z",
+      identity: {
+        evidenceKind: "platform",
+        verified: true,
+        selfAsserted: false,
+        heading: "ChatGPT",
+        detail: "https://chatgpt.com",
+        origins: [],
+        warning: "Only approve if you started this yourself.",
+      },
+    });
+    expect(connectedAgentIdentity(withdrawn).who).toMatchObject({
+      heading: "ChatGPT",
+      verified: false,
+      withdrawnSince: withdrawn.verificationWithdrawnAt,
+    });
+  });
 });
 
 describe("connected agent detail", () => {
@@ -394,7 +414,7 @@ describe("consent option sources", () => {
     });
     expect(options.profiles.map((option) => option.detail)).toEqual([
       "MacBook Pro · Offline",
-      "Not opened on a Device yet",
+      "Not opened on a device yet",
     ]);
     expect(options.homes?.map((home) => home.name)).toEqual(["Cloud Computer", "MacBook Pro"]);
     expect(options.defaultHome).toBe("rnr_00000000-0000-4000-8000-000000000001");

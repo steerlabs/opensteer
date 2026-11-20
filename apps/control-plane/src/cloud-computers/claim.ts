@@ -304,7 +304,7 @@ export class CloudComputerClaimer {
       .digest("base64url");
     const { envelope, receipt } = await this.#home.claim(origin, async (envelope) => {
       const document = envelope.document;
-      // Only the Home Account pinned at boot-complete is ever sent the material.
+      // Both a new Home and a restored owner use the identity pinned at boot-complete.
       if (
         document.deploymentShape.kind !== "personal" ||
         document.canonicalOrigin !== origin ||

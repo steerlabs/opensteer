@@ -105,7 +105,7 @@ describe("a connected agent's own task on the phone", () => {
     expect(text).toContain("Listed tabs in Travel on Studio Mac");
     expect(text).toContain("Reading only · Done");
     expect(text).toContain("Allowed by Auto · Failed");
-    expect(text).toContain("Outcome unknown");
+    expect(text).toContain("Uncertain");
     expect(text).toContain("can’t say whether this happened");
     expect(text).toContain("Claude is working");
     expect(text).toContain("Claude works this task itself. You can’t write to it here.");

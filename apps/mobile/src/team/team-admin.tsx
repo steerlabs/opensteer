@@ -65,7 +65,7 @@ export function TeamSettingsBody(props: {
         <TeamTile size={56} team={team} />
         <AppText role="displaySmall">{team.name}</AppText>
         <AppText role="caption" tone="muted">
-          {props.address} · Opensteer Account sign-in
+          {props.address} · Opensteer account sign-in
         </AppText>
       </View>
       <View style={styles.group}>

@@ -12,6 +12,7 @@ import {
   OpensteerError,
   createId,
   type BrowserSourceId,
+  type DeviceId,
   type RequestId,
   type UserId,
   type DeploymentId,
@@ -37,6 +38,7 @@ export interface BrowserSourceRecord {
   readonly revokedAt: Date | null;
   readonly lastSeenAt: Date | null;
   readonly liveTabsOnly?: boolean;
+  readonly deviceId?: DeviceId | null;
 }
 
 export interface BrowserSiteGrantRecord {
@@ -77,6 +79,7 @@ const sourceColumns = [
   "browserSources.revokedAt",
   "browserSources.lastSeenAt",
   "browserSources.liveTabsOnly",
+  "browserSources.deviceId",
 ] as const;
 const grantColumns = [
   "id",
@@ -118,6 +121,7 @@ export class BrowserSourceStore {
     readonly ownerId: UserId;
     readonly expiresAt: Date;
     readonly canonicalOrigin: string;
+    readonly deviceId?: DeviceId;
     readonly remoteOrigin: string | null;
     readonly remoteGeneration: number | null;
   }): Promise<void> {
@@ -150,6 +154,7 @@ export class BrowserSourceStore {
           expiresAt: input.expiresAt,
           consumedAt: null,
           canonicalOrigin: input.canonicalOrigin,
+          deviceId: input.deviceId ?? null,
           remoteOrigin: input.remoteOrigin,
           remoteGeneration: input.remoteGeneration,
         })
@@ -198,7 +203,7 @@ export class BrowserSourceStore {
                 eb("remoteGeneration", "=", input.routeGeneration),
               ]),
         )
-        .returning(["ownerId"])
+        .returning(["ownerId", "deviceId"])
         .executeTakeFirst();
       if (!pairing) throw invalidPairing();
       if (pairing.ownerId !== prospective.ownerId) throw new Error("Pairing owner changed");
@@ -249,6 +254,7 @@ export class BrowserSourceStore {
           pairedOrigin: input.origin,
           pairedRouteGeneration: input.routeGeneration,
           liveTabsOnly: input.liveTabsOnly ?? false,
+          deviceId: input.liveTabsOnly && input.routeGeneration === null ? pairing.deviceId : null,
         })
         .returning([
           "id",
@@ -259,6 +265,7 @@ export class BrowserSourceStore {
           "revokedAt",
           "lastSeenAt",
           "liveTabsOnly",
+          "deviceId",
         ])
         .executeTakeFirstOrThrow();
       if (replaced) {

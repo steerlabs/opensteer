@@ -3,13 +3,10 @@ import {
   EmbedderAssertionTokenSchema,
   embedderAssertionAlgorithms,
   embedderAssertionJwtTyp,
-  embedderAssertionMaxLifetimeSeconds,
   maximumEmbedderAssertionLength,
   type AgentConnectionIdentityAtConsent,
   type AgentDirectoryDocument,
   type AgentDirectoryEntry,
-  type AgentDirectoryPublicJwk,
-  type EmbedderAssertionAlgorithm,
   type EmbedderAssertionClaims,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -17,7 +14,6 @@ import {
   compactVerify,
   decodeProtectedHeader,
   importJWK,
-  type JWK,
 } from "jose";
 import { z } from "zod";
 import { extractRedirectOrigin, isLoopbackRedirect, matchPlatform } from "./agent-directory.js";
@@ -25,43 +21,11 @@ import { extractRedirectOrigin, isLoopbackRedirect, matchPlatform } from "./agen
 export const defaultEmbedderClockToleranceSeconds = 10;
 export const consentSelfStartWarning = "Only approve if you started this yourself.";
 
-export interface JtiReplayStore {
-  /** Records `key` until `expiresAtMs` if unseen and unexpired; returns `true` when accepted, `false` on replay. */
-  consume(key: string, expiresAtMs: number, nowMs: number): boolean | Promise<boolean>;
-}
-
-/** In-memory replay guard bounded by assertion lifetime and entry cap. */
-export class InMemoryJtiReplayStore implements JtiReplayStore {
-  readonly #entries = new Map<string, number>();
-  readonly #maxEntries: number;
-
-  constructor(options: { readonly maxEntries?: number } = {}) {
-    this.#maxEntries = options.maxEntries ?? 10_000;
-    if (this.#maxEntries < 1) throw new RangeError("maxEntries must be positive");
-  }
-
-  consume(key: string, expiresAtMs: number, nowMs: number): boolean {
-    for (const [existingKey, expiry] of this.#entries) {
-      if (expiry <= nowMs) this.#entries.delete(existingKey);
-    }
-    const existing = this.#entries.get(key);
-    if (existing !== undefined && existing > nowMs) return false;
-    if (this.#entries.size >= this.#maxEntries) {
-      const oldest = this.#entries.keys().next().value;
-      if (oldest !== undefined) this.#entries.delete(oldest);
-    }
-    this.#entries.set(key, expiresAtMs);
-    return true;
-  }
-
-  get size(): number {
-    return this.#entries.size;
-  }
-
-  clear(): void {
-    this.#entries.clear();
-  }
-}
+export type ClaimEmbedderAssertion = (
+  issuer: string,
+  statementId: string,
+  expiresAt: Date,
+) => Promise<boolean>;
 
 export type EmbedderAssertionRefusalReason =
   | "directory-unavailable"
@@ -77,7 +41,8 @@ export type EmbedderAssertionRefusalReason =
   | "expired"
   | "issued-in-future"
   | "request-mismatch"
-  | "replayed-jti";
+  | "replayed-jti"
+  | "replay-store-unavailable";
 
 export interface EmbedderAssertionRequestBinding {
   readonly clientId: string;
@@ -90,11 +55,11 @@ export interface EmbedderAssertionRequestBinding {
 export interface VerifyEmbedderAssertionInput {
   readonly directory: AgentDirectoryDocument | null;
   readonly platformEntry: AgentDirectoryEntry | null;
-  readonly assertion: string;
+  readonly assertion: unknown;
   readonly request: EmbedderAssertionRequestBinding;
-  readonly now?: number;
+  readonly now?: number | (() => number);
   readonly clockToleranceSeconds?: number;
-  readonly seenJti: JtiReplayStore;
+  readonly claim: ClaimEmbedderAssertion;
 }
 
 export type VerifyEmbedderAssertionResult =
@@ -124,15 +89,6 @@ function fail(
   return { ok: false, reason, message };
 }
 
-function jwkMatchesAlgorithm(
-  jwk: AgentDirectoryPublicJwk,
-  alg: EmbedderAssertionAlgorithm,
-): boolean {
-  if (jwk.alg !== undefined && jwk.alg !== alg) return false;
-  if (alg === "EdDSA") return jwk.kty === "OKP" && jwk.crv === "Ed25519";
-  return jwk.kty === "EC" && jwk.crv === "P-256";
-}
-
 function decodePayloadObject(token: string): unknown {
   const parts = token.split(".");
   if (parts.length !== 3 || !parts[1]) return null;
@@ -146,13 +102,11 @@ function decodePayloadObject(token: string): unknown {
 
 /**
  * Verifies a per-request `opensteer_embedder_assertion` JWS against the cached directory and OAuth request.
- * An assertion that is present but fails any check is always refused, never treated as absent.
  */
 export async function verifyEmbedderAssertion(
   input: VerifyEmbedderAssertionInput,
 ): Promise<VerifyEmbedderAssertionResult> {
-  const { directory, platformEntry, assertion, request, seenJti } = input;
-  const nowMs = input.now ?? Date.now();
+  const { directory, platformEntry, assertion, request, claim } = input;
   const clockToleranceSeconds = input.clockToleranceSeconds ?? defaultEmbedderClockToleranceSeconds;
 
   if (!directory) {
@@ -180,7 +134,6 @@ export async function verifyEmbedderAssertion(
   if (typeof header.alg !== "string" || !allowedAlgorithms.has(header.alg)) {
     return fail("disallowed-algorithm", "Embedder assertion uses a disallowed signing algorithm");
   }
-  const alg = header.alg as EmbedderAssertionAlgorithm;
 
   if (header.typ !== embedderAssertionJwtTyp) {
     return fail("invalid-typ", "Embedder assertion has an unexpected typ header");
@@ -208,30 +161,25 @@ export async function verifyEmbedderAssertion(
     return fail("unpaired-embedder", "Directory does not pair this embedder with this platform");
   }
 
-  const entryKeys = embedderEntry.keys?.keys ?? [];
-  const headerKid =
-    typeof header.kid === "string" && header.kid.length > 0 ? header.kid : undefined;
-  const candidateKeys = entryKeys.filter(
-    (key) => jwkMatchesAlgorithm(key, alg) && (headerKid === undefined || key.kid === headerKid),
+  const key = embedderEntry.keys?.keys.find(
+    (entry) => typeof header.kid === "string" && entry.kid === header.kid,
   );
-  if (candidateKeys.length === 0) {
+  if (!key) {
     return fail("unknown-key", "No matching signing key was found in the embedder directory entry");
   }
-
-  let verifiedPayloadBytes: Uint8Array | undefined;
-  let matchedKey: AgentDirectoryPublicJwk | undefined;
-  for (const key of candidateKeys) {
-    try {
-      const cryptoKey = await importJWK(key as JWK, alg);
-      const { payload } = await compactVerify(parsedToken.data, cryptoKey, { algorithms: [alg] });
-      verifiedPayloadBytes = payload;
-      matchedKey = key;
-      break;
-    } catch {
-      continue;
-    }
-  }
-  if (!verifiedPayloadBytes || !matchedKey) {
+  const alg = key.kty === "OKP" ? "EdDSA" : "ES256";
+  const jwk = {
+    kty: key.kty,
+    crv: key.crv,
+    x: key.x,
+    ...(key.kty === "EC" ? { y: key.y } : {}),
+  };
+  let verifiedPayloadBytes: Uint8Array;
+  try {
+    const cryptoKey = await importJWK(jwk, alg);
+    const { payload } = await compactVerify(parsedToken.data, cryptoKey, { algorithms: [alg] });
+    verifiedPayloadBytes = payload;
+  } catch {
     return fail("invalid-signature", "Embedder assertion signature verification failed");
   }
 
@@ -244,29 +192,21 @@ export async function verifyEmbedderAssertion(
     return fail("malformed", "Embedder assertion payload is not valid UTF-8 JSON");
   }
 
-  // Distinguish lifetime violations from general malformed payloads for clear refusal codes.
-  const timingPeek = z
-    .object({ iat: z.number().int().nonnegative(), exp: z.number().int().positive() })
-    .safeParse(verifiedJson);
-  if (
-    timingPeek.success &&
-    (timingPeek.data.exp <= timingPeek.data.iat ||
-      timingPeek.data.exp - timingPeek.data.iat > embedderAssertionMaxLifetimeSeconds)
-  ) {
-    return fail("invalid-lifetime", "Embedder assertion lifetime exceeds two minutes");
-  }
-
   const parsedClaims = EmbedderAssertionClaimsSchema.safeParse(verifiedJson);
   if (!parsedClaims.success) {
+    if (parsedClaims.error.issues.some((issue) => issue.code === "custom" && issue.path[0] === "exp")) {
+      return fail("invalid-lifetime", "Embedder assertion lifetime exceeds two minutes");
+    }
     return fail("malformed", "Embedder assertion claims are invalid");
   }
   const claims = parsedClaims.data;
 
-  const nowSec = Math.floor(nowMs / 1_000);
-  if (claims.iat > nowSec + clockToleranceSeconds) {
+  const nowMs = typeof input.now === "function" ? input.now() : (input.now ?? Date.now());
+  if (claims.iat * 1_000 > nowMs + clockToleranceSeconds * 1_000) {
     return fail("issued-in-future", "Embedder assertion was issued in the future");
   }
-  if (nowSec > claims.exp + clockToleranceSeconds) {
+  const deadline = (claims.exp + clockToleranceSeconds) * 1_000;
+  if (nowMs >= deadline) {
     return fail("expired", "Embedder assertion has expired");
   }
 
@@ -286,14 +226,18 @@ export async function verifyEmbedderAssertion(
     return fail("platform-not-verified", "Redirect origin does not match the verified platform");
   }
 
-  const jtiKey = `${claims.iss}\0${claims.jti}`;
-  const jtiExpiresAtMs = (claims.exp + clockToleranceSeconds) * 1_000;
-  const fresh = await seenJti.consume(jtiKey, jtiExpiresAtMs, nowMs);
+  let fresh: boolean;
+  let keyThumbprint: string;
+  try {
+    keyThumbprint = await calculateJwkThumbprint(jwk, "sha256");
+    fresh = await claim(claims.iss, claims.jti, new Date(deadline));
+  } catch {
+    return fail("replay-store-unavailable", "Could not record the embedder statement");
+  }
   if (!fresh) {
     return fail("replayed-jti", "Embedder assertion has already been used");
   }
 
-  const keyThumbprint = await calculateJwkThumbprint(matchedKey as JWK, "sha256");
   const evidence: Extract<
     AgentConnectionIdentityAtConsent,
     { readonly kind: "platform-and-embedder" }
@@ -316,29 +260,16 @@ export async function verifyEmbedderAssertion(
 export interface ResolveConsentIdentityInput {
   readonly directory: AgentDirectoryDocument | null;
   readonly clientName: string;
-  readonly assertion: string | undefined;
+  readonly assertion: unknown;
   readonly request: EmbedderAssertionRequestBinding;
-  readonly now?: number;
+  readonly now?: number | (() => number);
   readonly clockToleranceSeconds?: number;
-  readonly seenJti: JtiReplayStore;
+  readonly claim: ClaimEmbedderAssertion;
 }
 
-export type ResolveConsentIdentityResult =
-  | { readonly ok: true; readonly identity: AgentConnectionIdentityAtConsent }
-  | {
-      readonly ok: false;
-      readonly reason: EmbedderAssertionRefusalReason;
-      readonly message: string;
-    };
-
-/**
- * Resolves the consent identity evidence for an authorization request.
- * If `assertion` is present, it must verify or the request is refused.
- */
 export async function resolveConsentIdentity(
   input: ResolveConsentIdentityInput,
-): Promise<ResolveConsentIdentityResult> {
-  const nowMs = input.now ?? Date.now();
+): Promise<AgentConnectionIdentityAtConsent> {
   const platformEntry = matchPlatform(input.directory, input.request.redirectUri);
 
   if (input.assertion !== undefined) {
@@ -347,45 +278,39 @@ export async function resolveConsentIdentity(
       platformEntry,
       assertion: input.assertion,
       request: input.request,
-      now: nowMs,
+      ...(input.now !== undefined ? { now: input.now } : {}),
       ...(input.clockToleranceSeconds !== undefined
         ? { clockToleranceSeconds: input.clockToleranceSeconds }
         : {}),
-      seenJti: input.seenJti,
+      claim: input.claim,
     });
-    if (!verified.ok) return verified;
-    return { ok: true, identity: verified.evidence };
+    if (verified.ok) return verified.evidence;
   }
 
+  const nowMs = typeof input.now === "function" ? input.now() : (input.now ?? Date.now());
   const recordedAt = new Date(nowMs).toISOString();
-  if (platformEntry && input.directory) {
+  if (input.assertion === undefined && platformEntry && input.directory) {
     const platformOrigin = extractRedirectOrigin(input.request.redirectUri);
     if (platformOrigin && platformEntry.origins.includes(platformOrigin)) {
       return {
-        ok: true,
-        identity: {
-          kind: "platform",
-          platformOrigin,
-          platformDirectoryId: platformEntry.id,
-          platformName: platformEntry.displayName,
-          directoryRevision: input.directory.revision,
-          recordedAt,
-        },
+        kind: "platform",
+        platformOrigin,
+        platformDirectoryId: platformEntry.id,
+        platformName: platformEntry.displayName,
+        directoryRevision: input.directory.revision,
+        recordedAt,
       };
     }
   }
 
   const isLoopback = isLoopbackRedirect(input.request.redirectUri);
   return {
-    ok: true,
-    identity: {
-      kind: "unverified",
-      redirectOrigin: extractRedirectOrigin(input.request.redirectUri),
-      isLoopback,
-      clientName: input.clientName,
-      directoryRevision: input.directory?.revision ?? null,
-      recordedAt,
-    },
+    kind: "unverified",
+    redirectOrigin: extractRedirectOrigin(input.request.redirectUri),
+    isLoopback,
+    clientName: input.clientName,
+    directoryRevision: input.directory?.revision ?? null,
+    recordedAt,
   };
 }
 

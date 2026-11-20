@@ -1240,7 +1240,7 @@ export class MockPlugins {
         if (this.#signInScenario() === "account-link")
           throw refusal(
             "conflict",
-            "Link this Host to Opensteer Account before starting sign-in remotely",
+            "Link this Host to Opensteer account before starting sign-in remotely",
             "plugin-account-link-required",
           );
         if (

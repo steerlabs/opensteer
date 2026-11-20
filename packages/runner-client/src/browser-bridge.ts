@@ -4,6 +4,9 @@ import {
   standardCdpSettledReason,
   standardCdpMessageMaxBytes,
   standardCdpPath,
+  standardCdpLeasePath,
+  StandardCdpLeaseEvidenceSchema,
+  type StandardCdpLeaseReconciliation,
 } from "@opensteer/protocol/standard-cdp";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
@@ -35,6 +38,7 @@ const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
   standardCdp: z.literal(1).optional(),
   wholeContextCdp: z.literal(1).optional(),
+  standardCdpLeaseRecovery: z.literal(1).optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
@@ -108,11 +112,24 @@ export class LocalBrowserRuntimeBridge {
       .strictObject({ state: z.enum(["pending-restart", "deleted"]) })
       .parse(await this.#maintenance("/v1/local-profiles/delete", { binding, deletionId })).state;
   }
-  async #maintenance(pathname: string, input?: object): Promise<unknown> {
+  async reconcileStandardCdpLease(
+    lease: StandardCdpLeaseReconciliation | undefined,
+    signal: AbortSignal,
+  ) {
+    return StandardCdpLeaseEvidenceSchema.parse(
+      await this.#maintenance(standardCdpLeasePath, lease, signal),
+    );
+  }
+
+  async #maintenance(
+    pathname: string,
+    input?: object,
+    signal = AbortSignal.timeout(120_000),
+  ): Promise<unknown> {
     const response = await fetch(new URL(pathname, this.#url), {
       method: input ? "POST" : "GET",
       redirect: "error",
-      signal: AbortSignal.timeout(120_000),
+      signal,
       headers: {
         "x-opensteer-browser-bridge-token": this.#bridgeToken,
         ...(input ? { "content-type": "application/json" } : {}),
@@ -193,6 +210,7 @@ export class LocalBrowserRuntimeBridge {
       wireVersion: health.wireVersion,
       ...(health.standardCdp === 1 ? { standardCdp: 1 as const } : {}),
       ...(health.wholeContextCdp === 1 ? { wholeContextCdp: 1 as const } : {}),
+      ...(health.standardCdpLeaseRecovery === 1 ? { standardCdpLeaseRecovery: 1 as const } : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,

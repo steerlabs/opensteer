@@ -2130,6 +2130,7 @@ export async function enqueueThreadInput(
     const result = await enqueueThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
+      enqueue: input.authority?.kind === "connection" && input.policy === "queue",
     });
     return result;
   });

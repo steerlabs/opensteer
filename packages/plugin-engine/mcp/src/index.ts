@@ -14,6 +14,7 @@ export {
   callTools,
   searchCatalog,
   describeCatalog,
+  resolveCatalogTools,
 } from "./implementation/execute.ts";
 
 export * from "./contracts/browser.ts";

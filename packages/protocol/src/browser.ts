@@ -186,7 +186,11 @@ export const BrowserAttachTicketClaimsSchema = z
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
     standardCdp: StandardCdpModeSchema.optional(),
     standardCdpLease: z
-      .object({ generation: z.number().int().positive(), bindingId: z.string().min(1).max(512) })
+      .object({
+        generation: z.number().int().positive(),
+        bindingId: z.string().min(1).max(512),
+        bootId: z.uuid().optional(),
+      })
       .strict()
       .optional(),
     passkeys: z.literal(1).optional(),
@@ -1393,7 +1397,12 @@ export type TargetedBrowserClientMessage = z.infer<typeof TargetedBrowserClientM
 export type BrowserSessionOpener = z.infer<typeof BrowserSessionOpenerSchema>;
 export const BrowserSessionOpenerRecordSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("person"), userId: UserIdSchema }),
-  z.strictObject({ kind: z.literal("task"), threadId: ThreadIdSchema, runId: RunIdSchema }),
+  // A connected agent's own session works on a task without a Run.
+  z.strictObject({
+    kind: z.literal("task"),
+    threadId: ThreadIdSchema,
+    runId: RunIdSchema.optional(),
+  }),
   z.strictObject({ kind: z.literal("opensteer"), threadId: ThreadIdSchema }),
   z.strictObject({ kind: z.literal("automation") }),
 ]);

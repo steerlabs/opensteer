@@ -897,6 +897,7 @@ function RequestBody(props: {
         <PasswordSignInBody
           canRespond={canRespond}
           hostClient={props.hostClient}
+          oneTime={request.originatingAgentSessionId != null}
           payload={request.payload}
           reason={reason}
           requestId={request.id}
@@ -1195,13 +1196,15 @@ const expiryTickMs = 5_000;
 
 function PasswordSignInBody(props: {
   readonly canRespond: boolean;
+  readonly oneTime: boolean;
   readonly hostClient: HostClient;
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly reason: string | null;
   readonly requestId: string;
   readonly responder: RequestResponder;
 }): ReactNode {
-  const { canRespond, hostClient, requestId, responder } = props;
+  const { canRespond, hostClient, oneTime, requestId, responder } = props;
+  const declineText = oneTime ? "Don't allow" : declineLabel;
   const { session } = responder;
   const [now, setNow] = useState(() => new Date());
   const [query, setQuery] = useState("");
@@ -1228,6 +1231,7 @@ function PasswordSignInBody(props: {
         canRespond={canRespond}
         chosenId={chosenId}
         now={now}
+        oneTime={oneTime}
         onChoose={setChosenId}
         cardLine={cardLine}
         payload={props.payload}
@@ -1323,7 +1327,7 @@ function PasswordSignInBody(props: {
       {card?.stage === "gone" ? (
         <AppText role="secondary">This sign-in is no longer running.</AppText>
       ) : null}
-      {chosen && card?.stage === "approval" ? (
+      {!oneTime && chosen && card?.stage === "approval" ? (
         <AppText role="caption" tone="muted">
           {passwordSignInAllowRemembers(chosen.username)}
         </AppText>
@@ -1334,10 +1338,10 @@ function PasswordSignInBody(props: {
       <ResponseStatus failure={session.failure ?? cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
-          accessibilityLabel={declineLabel}
+          accessibilityLabel={declineText}
           busy={session.pendingId === "password-sign-in-decline"}
           disabled={disabled}
-          label={declineLabel}
+          label={declineText}
           onPress={() => void responder.respondPassword()}
           tone="secondary"
         />
@@ -1346,17 +1350,19 @@ function PasswordSignInBody(props: {
             <AnswerPill
               busy={session.pendingId === "password-once"}
               disabled={disabled}
-              label="Only this time"
+              label={oneTime ? "Allow once" : "Only this time"}
               onPress={() => approve(chosen, false)}
-              tone="secondary"
+              tone={oneTime ? "primary" : "secondary"}
             />
-            <AnswerPill
-              busy={session.pendingId === "password-allow"}
-              disabled={disabled}
-              label="Allow"
-              onPress={() => approve(chosen, true)}
-              tone="primary"
-            />
+            {!oneTime ? (
+              <AnswerPill
+                busy={session.pendingId === "password-allow"}
+                disabled={disabled}
+                label="Allow"
+                onPress={() => approve(chosen, true)}
+                tone="primary"
+              />
+            ) : null}
           </>
         ) : null}
       </AnswerRow>
@@ -1366,6 +1372,7 @@ function PasswordSignInBody(props: {
 
 function CardUseBody(props: {
   readonly canRespond: boolean;
+  readonly oneTime: boolean;
   readonly chosenId: string | null;
   readonly now: Date;
   readonly onChoose: (id: string) => void;
@@ -1424,14 +1431,14 @@ function CardUseBody(props: {
       <AnswerRow>
         <AnswerPill
           disabled={locked}
-          label={declineLabel}
+          label={props.oneTime ? "Don't allow" : declineLabel}
           onPress={() => void responder.respondPassword()}
           tone="secondary"
         />
         {chosen ? (
           <AnswerPill
             disabled={locked || expired}
-            label="Allow card use"
+            label={props.oneTime ? "Allow once" : "Allow card use"}
             onPress={() => void responder.respondPassword({ account: chosen, remember: false })}
             tone="primary"
           />

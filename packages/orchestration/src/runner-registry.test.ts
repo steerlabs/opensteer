@@ -1,6 +1,7 @@
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
+  OpensteerError,
   ThreadAccessModeSchema,
   createId,
 } from "@opensteer/core";
@@ -586,6 +587,27 @@ describe("Runner connection registry", () => {
     });
     await expect(reconciliation).resolves.toBeUndefined();
     expect(onCommandAccepted).not.toHaveBeenCalled();
+  });
+  it("ignores a replayed expiry for a superseded Watch", async () => {
+    const onWatchStatus = vi.fn(async () => {
+      throw new OpensteerError({ code: "forbidden", message: "Watch status binding is stale" });
+    });
+    const registry = new RunnerRegistry({ hooks: {
+      authorize: async () => undefined, onEvent: commitThrough, onWatchStatus,
+    } });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("watch-replay");
+    try {
+      await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+      await expect(registry.handle(peer, {
+        ...fenceOf(peer), type: "runner.watch-status", activationId: createId("triggerWatchActivation"),
+        executionGeneration: 1, observed: "expired", restartCount: 0, healthySince: null,
+        lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
+      })).resolves.toBeUndefined();
+      expect(onWatchStatus).toHaveBeenCalledOnce();
+    } finally {
+      await registry.close();
+    }
   });
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {

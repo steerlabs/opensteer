@@ -213,6 +213,12 @@ function harness() {
         return { request, replayed: false };
       },
     ),
+    openSessionPasswordSignIn: vi.fn<
+      NonNullable<PasswordSignInServiceOptions["requests"]["openSessionPasswordSignIn"]>
+    >(async (input) => {
+      request = { ...input, id: createId("request"), status: "pending" } as unknown as Request;
+      return { request, replayed: false };
+    }),
     settlePasswordSignInRequest: vi.fn<
       PasswordSignInServiceOptions["requests"]["settlePasswordSignInRequest"]
     >(async (input) => {
@@ -307,6 +313,106 @@ function harness() {
       } as PasswordSignInAuthorityEvent),
   };
 }
+
+describe("connected agent login leases", () => {
+  it.each([false, true])(
+    "requires a personal answer and scopes the released reference (approval %s)",
+    async (approve) => {
+      vi.useFakeTimers();
+      const h = harness();
+      const { runId: _runId, ...call } = h.call;
+      const sessionId = createId("agentSession");
+      const operationId = createId("agentOperation");
+      const bindingId = `session:${sessionId}` as const;
+      const profileId = createId("browserProfile");
+      const tabId = createId("tab");
+      const browserSessionId = h.target.sessionId;
+      const authorized = vi.fn(async () => true);
+      const result = h.service.requestForSession({
+        ...call,
+        callId: operationId,
+        scope: operationId,
+        site: h.site,
+        sessionId: browserSessionId,
+        surfaceId: tabId,
+        admitStart: () => true,
+        direct: {
+          sessionId,
+          operationId,
+          bindingId,
+          grantRevision: 3,
+          profileId,
+          authorized,
+          signal: new AbortController().signal,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.requests.openSessionPasswordSignIn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          originatingAgentSessionId: sessionId,
+          operationId,
+          grantRevision: 3,
+        }),
+      );
+      expect(h.hub.sendPasswordSignIn).toHaveBeenCalledWith(
+        h.target.computer.runnerId,
+        expect.objectContaining({ type: "login.authorize", alwaysAsk: true }),
+      );
+      if (!approve) {
+        h.event({
+          kind: "result",
+          outcome: {
+            kind: "authorized",
+            account: "unprompted",
+            loginRef: h.loginRef(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        });
+        expect(await result).toMatchObject({ status: "unavailable" });
+        expect(h.hub.sendPasswordSignIn).toHaveBeenCalledWith(
+          h.target.computer.runnerId,
+          expect.objectContaining({ type: "login.cancel" }),
+        );
+        return;
+      }
+      await h.service.respond({
+        ownerId: call.ownerId,
+        requestId: h.request().id,
+        expectedRevision: "1",
+        sessionId: "phone",
+        revalidate: async () => {},
+        decision: {
+          kind: "approve",
+          loginId: "00000000-0000-4000-8000-000000000001",
+          revision: 1,
+          remember: true,
+          permissionVersion: 6,
+        },
+      });
+      expect(await result).toMatchObject({ status: "ready", loginRef: h.loginRef() });
+      const fill = {
+        loginRef: h.loginRef(),
+        deploymentId: call.deploymentId,
+        sessionId: browserSessionId,
+        bindingId,
+        profileId,
+        tabId,
+      };
+      expect(h.service.validateLease(fill)).toBe(false);
+      await expect(h.service.validateSessionLease(fill)).resolves.toBe(true);
+      for (const other of [
+        { bindingId: `session:${createId("agentSession")}` },
+        { sessionId: createBrowserSessionId() },
+        { profileId: createId("browserProfile") },
+        { tabId: createId("tab") },
+      ])
+        await expect(h.service.validateSessionLease({ ...fill, ...other })).resolves.toBe(false);
+      authorized.mockResolvedValue(false);
+      await expect(h.service.validateSessionLease(fill)).resolves.toBe(false);
+      await expect(h.service.replaySessionResult(operationId)).resolves.toBeUndefined();
+    },
+  );
+});
 
 describe("deployment login leases", () => {
   it("reserves a ref without a browser and reuses it only in its deployment", async () => {

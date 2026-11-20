@@ -17,10 +17,17 @@ import { testBackupVault } from "../apps/control-plane/src/cloud-computers/backu
  * - The claim client and the Home's JWKS fetch are the production public-HTTPS
  *   client, given only its injectable resolver (loopback) and trust root.
  */
-import { createHmac, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+} from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer as createHttpsServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
@@ -65,6 +72,7 @@ import {
   CloudComputerDesiredResponseSchema,
   ControlPlaneAccountIdSchema,
   ManagedHomeClaimReceiptSchema,
+  managedHomeClaimPath,
   ListAccountDeploymentsResponseSchema,
   MyOrganizationsResponseSchema,
   WorkAssignmentViewSchema,
@@ -83,9 +91,15 @@ import {
 } from "../packages/control-plane-protocol/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import { freePort } from "../packages/shared/src/loopbackPort.test-support.js";
+import { testRunnerDescriptor } from "../packages/database/src/runner-fixture.test-support.js";
+import {
+  hashRunnerEnrollmentToken,
+  runnerPublicKeyFingerprint,
+} from "../packages/runner-auth/src/index.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
+  type TestDatabase,
 } from "../packages/database/src/test-database.test-support.js";
 import {
   apiVersionHeaders,
@@ -404,6 +418,10 @@ async function accountUser(): Promise<{
       updatedAt: now,
     })
     .execute();
+  return { id, browser: await accountBrowser(id) };
+}
+
+async function accountBrowser(id: ControlPlaneAccountId): Promise<Browser> {
   const context = await auth.$context;
   const session = await context.internalAdapter.createSession(id);
   const signature = createHmac("sha256", authSecret).update(session.token).digest("base64");
@@ -413,7 +431,7 @@ async function accountUser(): Promise<{
     context.authCookies.sessionToken.name,
     encodeURIComponent(`${session.token}.${signature}`),
   );
-  return { id, browser };
+  return browser;
 }
 
 async function webhook(object: unknown): Promise<void> {
@@ -489,7 +507,7 @@ async function report(
       generation: computer.generation,
       revision: computer.revision,
       phase,
-      providerServerId: 7,
+      providerServerId: 6 + computer.generation,
       ipv4: "192.0.2.7",
       ipv6: null,
       observedIdentity,
@@ -505,7 +523,16 @@ async function report(
  * `/boot`, a Home started from exactly what it returned, `boot-complete` with
  * the identity that Home's discovery proves, readiness, and the claimer.
  */
-async function bootAndClaim(id: string) {
+async function bootAndClaim(
+  id: string,
+  snapshot?: {
+    readonly database: TestDatabase;
+    readonly directory: string;
+    readonly authSecret: string;
+    readonly environmentId: string;
+    readonly snapshotId: string;
+  },
+) {
   const computer = await desired(id);
   await report(computer, "provisioning", null);
   const boot = await operator.request(
@@ -516,24 +543,34 @@ async function bootAndClaim(id: string) {
   expect(boot.status, bootBody).toBe(200);
   const booted = CloudComputerBootResponseSchema.parse(JSON.parse(bootBody));
   expect(booted.managedHome).toBeDefined();
+  expect(booted.restoreSnapshot).toBe(snapshot?.snapshotId);
 
   const directory = await mkdtemp(join(scratch, "home-"));
-  const homeDatabase = await cloneTestDatabase("host");
+  const homeDatabase = await cloneTestDatabase(
+    "host",
+    snapshot ? { fromSnapshotOf: snapshot.database } : {},
+  );
+  if (snapshot)
+    await cp(join(snapshot.directory, "host"), join(directory, "host"), { recursive: true });
+  const authSecret = snapshot?.authSecret ?? randomBytes(32).toString("base64url");
+  const environmentId = snapshot?.environmentId ?? createId("environment");
+  const messagingToken = randomBytes(32).toString("base64url");
   const homeOrigin = `https://${booted.hostname}`;
   const homePort = await freePort();
   const homeConfig = parseHostConfig({
     OPENSTEER_MODE: "development",
     OPENSTEER_DEPLOYMENT_KIND: "personal",
     OPENSTEER_DATABASE_URL: homeDatabase.url,
-    OPENSTEER_AUTH_SECRET: randomBytes(32).toString("base64url"),
+    OPENSTEER_AUTH_SECRET: authSecret,
     OPENSTEER_HOST_DATA_DIR: join(directory, "host"),
     OPENSTEER_PORT: String(homePort),
     OPENSTEER_BIND_ADDRESS: "127.0.0.1",
     OPENSTEER_CANONICAL_ORIGIN: homeOrigin,
-    OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+    OPENSTEER_HOSTING_ENVIRONMENT_ID: environmentId,
     OPENSTEER_AGENT_HOME: join(directory, "agent-home"),
     OPENSTEER_NATIVE_FS_HELPER: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
     OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: booted.setupCodeDigest,
+    OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: messagingToken,
     OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     OPENSTEER_SIGNUP_POLICY: "closed",
     OPENSTEER_MANAGED_HOME_ID: booted.managedHome!.cloudComputerId,
@@ -542,7 +579,7 @@ async function bootAndClaim(id: string) {
     OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: booted.managedHome!.oidc.clientId,
     OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: booted.managedHome!.oidc.clientSecret,
   });
-  const { host } = await ownTestDatabaseProducer(homeDatabase.url, async () => {
+  const { host, close } = await ownTestDatabaseProducer(homeDatabase.url, async () => {
     const runtime = await createHostRuntime(homeConfig, {
       personalAccountGrantFetch: createPublicHttpsFetch({
         ca: cert,
@@ -557,7 +594,7 @@ async function bootAndClaim(id: string) {
   });
   homes.push({
     close: async () => {
-      await host.close();
+      await close();
       await homeDatabase.drop();
     },
   });
@@ -595,7 +632,18 @@ async function bootAndClaim(id: string) {
     .executeTakeFirstOrThrow();
   expect(recorded.claimError).toBeNull();
   const receipt = ManagedHomeClaimReceiptSchema.parse(recorded.bootstrapReceipt);
-  return { host, homeOrigin, identity, receipt };
+  return {
+    host,
+    homeOrigin,
+    identity,
+    receipt,
+    close,
+    database: homeDatabase,
+    directory,
+    authSecret,
+    environmentId,
+    messagingToken,
+  };
 }
 
 /** A bought Cloud Computer, booted and ready, that nobody has claimed yet. */
@@ -809,7 +857,8 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
       .where("accountId", "=", buyer.id)
       .executeTakeFirstOrThrow();
 
-    const { host, homeOrigin, identity, receipt } = await bootAndClaim(id);
+    const source = await bootAndClaim(id);
+    const { host, homeOrigin, identity, receipt } = source;
     expect(receipt.document).toMatchObject({
       account: { issuer: publicOrigin.origin, subject: buyer.id },
       authority: { canonicalOrigin: homeOrigin, ...identity },
@@ -870,6 +919,95 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
     const refused = await signInToHome(stranger.browser, homeOrigin);
     expect(refused.status).toBe(401);
     expect(await host.store.database.selectFrom("users").select("id").execute()).toEqual([owner]);
+
+    const runnerId = createId("runner");
+    const publicKeyPem = generateKeyPairSync("ed25519")
+      .publicKey.export({ format: "pem", type: "spki" })
+      .toString();
+    const enrollmentRequest = {
+      descriptor: {
+        ...testRunnerDescriptor({
+          runnerKind: "managed",
+          runnerId,
+          name: "Messaging service",
+          environmentId: source.environmentId,
+          modules: {},
+        }),
+        capabilities: [],
+      },
+      enrollmentTokenHash: hashRunnerEnrollmentToken(source.messagingToken),
+      publicKeyPem,
+      publicKeyFingerprint: runnerPublicKeyFingerprint(publicKeyPem),
+    };
+    await host.store.enrollRunnerConnection(enrollmentRequest);
+    const enrollment = await host.store.database
+      .selectFrom("runnerEnrollments")
+      .where("idempotencyKey", "=", "deployment-managed-messaging-runner")
+      .select(["id", "tokenHash", "runnerId"])
+      .executeTakeFirstOrThrow();
+    const snapshotId = "aabbccdd";
+    await source.close();
+    await cloud.mutate(id, "replace", undefined, snapshotId);
+    const restored = await bootAndClaim(id, { ...source, snapshotId });
+    expect(restored.identity).toEqual(identity);
+    expect(restored.receipt.document.claim.generation).toBe(receipt.document.claim.generation + 1);
+    expect(restored.receipt.document.linkGeneration).not.toBe(receipt.document.linkGeneration);
+    expect(
+      await restored.host.store.database
+        .selectFrom("runnerEnrollments")
+        .select(["id", "tokenHash", "runnerId"])
+        .where("idempotencyKey", "=", "deployment-managed-messaging-runner")
+        .execute(),
+    ).toEqual([enrollment]);
+    expect(
+      await restored.host.store.database
+        .selectFrom("runners")
+        .select("id")
+        .where("id", "=", runnerId)
+        .executeTakeFirst(),
+    ).toEqual({ id: runnerId });
+    const replacementSession = await signInToHome(await accountBrowser(buyer.id), homeOrigin);
+    expect(replacementSession.status, replacementSession.trail).toBe(200);
+    expect(await replacementSession.json()).toMatchObject({ session: { user: { id: owner.id } } });
+    const wrongCredential = `osc_${randomBytes(32).toString("base64url")}`;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const assertion = (
+      await auth.api.signJWT({
+        body: {
+          payload: {
+            tokenUse: "opensteer-managed-home-claim",
+            iss: publicOrigin.origin,
+            aud: homeOrigin,
+            sub: stranger.id,
+            iat: issuedAt,
+            exp: issuedAt + 120,
+            jti: `mhc_${randomUUID()}`,
+            authority: restored.receipt.document.authority,
+            claim: restored.receipt.document.claim,
+            owner: { email: "stranger@example.test", displayName: "Stranger", emailVerified: true },
+            link: {
+              generation: restored.receipt.document.linkGeneration,
+              hostCredentialSha256: createHash("sha256")
+                .update(wrongCredential)
+                .digest("base64url"),
+            },
+          },
+        },
+      })
+    ).token;
+    const refusedClaim = await operator.request(
+      `${homeOrigin}${managedHomeClaimPath}`,
+      json({
+        schemaVersion: 1,
+        setupCode: randomBytes(32).toString("base64url"),
+        assertion,
+        hostCredential: wrongCredential,
+      }),
+    );
+    expect(refusedClaim.status, await refusedClaim.clone().text()).toBe(409);
+    expect(await restored.host.store.database.selectFrom("users").select("id").execute()).toEqual([
+      owner,
+    ]);
   },
   240_000,
 );

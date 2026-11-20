@@ -5,34 +5,41 @@ update_recovery() {
   local journal="$home_dir/update.pending" active="$home_dir/images.env"
   [[ -d $journal ]] || return 0
   if [[ -f "$journal/committed" ]]; then
+    cmp -s "$journal/candidate.env" "$active" || return 1
+    sync "$active" "$home_dir" "$journal/committed" "$journal" || return
     rm -rf -- "$journal"
     return
   fi
   release_env="$journal/candidate.env" compose down || return
   cp "$journal/previous.env" "$active.new" || return
-  mv -f -- "$active.new" "$active" || return
-  sync "$home_dir" || return
+  publish_file "$active.new" "$active" || return
   install_sandbox_policies && start_pod || return
-  echo 'Rolled back the interrupted update. The database checkpoint is retained.'
+  echo 'Rolled back to the previous images. The pre-update dump is retained for manual recovery.'
   rm -rf -- "$journal"
 }
 
-update_home() {
+update_home() (
   [[ $# -le 2 ]] || fail "Usage: opensteer-home update [MANIFEST.json]"
   update_recovery
   local current_dir candidate previous active project service id ref tag container old_version new_version feed
-  local journal="$home_dir/update.pending" checkpoint="$home_dir/update-database.dump" pinned=false
-  if [[ -f "$home_dir/managed" ]]; then pinned=true; fi
+  local journal="$home_dir/update.pending" dump="$home_dir/update-database.dump" pinned=false
+  if [[ -f "$home_dir/managed" ]]; then
+    pinned=true
+    [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
+  fi
   current_dir=$(mktemp -d "$home_dir/update.XXXXXX")
-  # shellcheck disable=SC2064
-  trap "rm -rf -- '$current_dir'" EXIT
+  trap 'rm -rf -- "$current_dir"' EXIT
   candidate="$current_dir/candidate.env"
   previous="$current_dir/previous.env"
   active="$home_dir/images.env"
   if [[ $# == 2 ]]; then
     release_to_env "$2" "$candidate" "$pinned"
   else
-    feed=$(compose config --environment | sed -n 's/^OPENSTEER_HOME_RELEASE_MANIFEST_URL=//p')
+    if $pinned; then
+      feed=$(sed -n "s/^OPENSTEER_HOME_RELEASE_MANIFEST_URL='\([^']*\)'$/\1/p" "$home_dir/config.env")
+    else
+      feed=$(compose config --environment | sed -n 's/^OPENSTEER_HOME_RELEASE_MANIFEST_URL=//p')
+    fi
     if [[ -z $feed ]]; then
       [[ $1 == scheduled-update ]] && return 0
       fail "Set OPENSTEER_HOME_RELEASE_MANIFEST_URL in config.env or supply a release manifest."
@@ -64,22 +71,21 @@ update_home() {
   done
 
   release_env="$candidate" compose pull --quiet
+  if $pinned; then check_release_stamps "$candidate"; fi
   # shellcheck source=deploy/home/backup.sh
   source "$home_dir/backup.sh"
   postgres_tool pg_dump --format=custom > "$current_dir/database.dump"
-  mv -f -- "$current_dir/database.dump" "$checkpoint"
+  publish_file "$current_dir/database.dump" "$dump"
   printf 'starting-candidate\n' > "$current_dir/phase"
   rm -f -- "$current_dir/release.json"
-  sync "$home_dir"
+  sync -f "$home_dir"
   mv -- "$current_dir" "$journal"
   sync "$home_dir"
   compose down
   if release_env="$journal/candidate.env" install_sandbox_policies && release_env="$journal/candidate.env" start_pod; then
     cp "$journal/candidate.env" "$active.new"
-    mv -f -- "$active.new" "$active"
-    sync "$home_dir"
-    touch "$journal/committed"
-    sync "$home_dir"
+    publish_file "$active.new" "$active"
+    durable_marker "$journal/committed"
     rm -rf -- "$journal"
     echo "Updated Home to $new_version."
     return
@@ -87,4 +93,4 @@ update_home() {
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2
   update_recovery
   fail "The update was rolled back."
-}
+)

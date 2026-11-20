@@ -20,16 +20,6 @@
     "origins": ["https://vertexaisearch.cloud.google.com"]
   },
   {
-    "id": "microsoft-power-platform",
-    "displayName": "Microsoft Power Platform",
-    "origins": ["https://global.consent.azure-apim.net"]
-  },
-  {
-    "id": "mistral",
-    "displayName": "Mistral",
-    "origins": ["https://callback.mistral.ai", "https://console.mistral.ai"]
-  },
-  {
     "id": "perplexity",
     "displayName": "Perplexity",
     "origins": ["https://www.perplexity.ai", "https://enterprise.perplexity.ai"]

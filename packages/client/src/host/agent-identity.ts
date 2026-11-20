@@ -9,7 +9,10 @@ import { workWords } from "./agent-work-copy.js";
  * verified, never guessed from a domain.
  */
 export interface AgentWho {
-  /** "Errand via AgentPay", a verified platform's name, or the self-given name. */
+  /**
+   * "Errand via AgentPay", a verified platform's name, or the self-given name made safe to
+   * show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
+   */
   readonly heading: string;
   /** The verified origin, the redirect origin, or "an app on this computer". */
   readonly detail: string;
@@ -23,6 +26,44 @@ export interface AgentWho {
   /** When the Home stopped vouching for a verified identity; null while it still does. */
   readonly withdrawnSince: string | null;
   readonly warning: string;
+  /**
+   * The name the client gave itself, on one line with no formatting or direction controls,
+   * shown only as a labelled claim ("Says it is …"); null when the Home verified who it is.
+   */
+  readonly claim: string | null;
+  /** Each origin the Home recorded, labelled by what it is: both, for a verified pairing. */
+  readonly origins: readonly AgentWhoOrigin[];
+}
+
+/** One origin the Home recorded for this agent. */
+export interface AgentWhoOrigin {
+  readonly role: "embedder" | "platform" | "redirect";
+  /** The Home's verified name for it; null for a redirect, whose only name is the claim. */
+  readonly name: string | null;
+  readonly origin: string;
+  /** What this origin is: "Asked for this", "Holds the access", "Returns to". */
+  readonly roleLabel: string;
+}
+
+/** The longest claim shown; past it the name is cut with an ellipsis. */
+export const agentClaimMaxLength = 40;
+
+/**
+ * A client-chosen name as text that can only read as itself: control, format (including
+ * bidirectional overrides and zero-width joiners) and line or paragraph separators removed,
+ * whitespace collapsed to single spaces, and long names cut. Check marks and look-alike
+ * words stay as plain characters; the claim's label and styling say what they are.
+ */
+export function agentClaim(name: string, maxLength = agentClaimMaxLength): string {
+  const flat = name
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const chars = Array.from(flat);
+  if (!chars.length) return workWords("who.unnamed");
+  return chars.length > maxLength
+    ? `${chars.slice(0, maxLength - 1).join("").trimEnd()}…`
+    : flat;
 }
 
 /** Logos the apps draw, keyed by the verified directory's own platform id. */
@@ -49,8 +90,10 @@ export function agentWho(input: {
   const presented = input.identity;
   if (presented) {
     const verified = presented.verified && withdrawnSince === null;
+    // An unverified heading is the client's own name: only ever a claim, made safe to show.
+    const claim = presented.verified ? null : agentClaim(input.clientName);
     return {
-      heading: presented.heading,
+      heading: claim ?? presented.heading,
       detail:
         presented.detail || (local ? workWords("who.local") : (originOf(input.redirect) ?? "")),
       verified,
@@ -62,10 +105,19 @@ export function agentWho(input: {
       local,
       withdrawnSince: presented.verified ? withdrawnSince : null,
       warning: presented.warning || workWords("who.consentWarning"),
+      claim,
+      origins: presented.origins.map((origin) => ({
+        role: origin.role,
+        name: origin.role === "redirect" ? null : origin.label,
+        origin: origin.origin,
+        roleLabel: workWords(`who.origin.${origin.role}`),
+      })),
     };
   }
+  const claim = agentClaim(input.clientName);
+  const redirectOrigin = local ? null : originOf(input.redirect);
   return {
-    heading: input.clientName,
+    heading: claim,
     detail: local ? workWords("who.local") : (originOf(input.redirect) ?? workWords("who.local")),
     verified: false,
     selfAsserted: true,
@@ -73,7 +125,68 @@ export function agentWho(input: {
     local,
     withdrawnSince: null,
     warning: workWords("who.consentWarning"),
+    claim,
+    origins: redirectOrigin
+      ? [
+          {
+            role: "redirect",
+            name: null,
+            origin: redirectOrigin,
+            roleLabel: workWords("who.origin.redirect"),
+          },
+        ]
+      : [],
   };
+}
+
+/**
+ * The top of a consent screen. Verified: the Home's verified name beside the mark, and
+ * nothing the client supplied. Not verified: a neutral heading with no mark, and the
+ * client's name only in the labelled claim below it.
+ */
+export function agentConsentHeading(
+  who: AgentWho,
+): { readonly title: string; readonly mark: boolean; readonly claim: string | null } {
+  return who.verified
+    ? { title: who.heading, mark: true, claim: null }
+    : {
+        title: workWords("who.consentHeading"),
+        mark: false,
+        claim: who.claim && workWords("who.claim", { name: who.claim }),
+      };
+}
+
+export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
+  return origin.name
+    ? workWords("who.namedOrigin", { role: origin.roleLabel, name: origin.name, origin: origin.origin })
+    : workWords("who.redirectOrigin", { role: origin.roleLabel, origin: origin.origin });
+}
+
+/**
+ * A connected agent's title in the list and on its page. Verified: the Home's verified
+ * name. Not verified: the name the person gave it, if they changed the one it came with;
+ * otherwise where it returns to, never the client's own name.
+ */
+export function agentListHeading(
+  who: AgentWho,
+  connection: { readonly label: string; readonly clientName: string },
+): string {
+  if (who.verified || who.withdrawnSince) return who.heading;
+  const label = connection.label.trim();
+  if (label && label !== connection.clientName.trim()) return agentClaim(label);
+  const redirect = who.origins.find((origin) => origin.role === "redirect");
+  const host = redirect ? hostOf(redirect.origin) : null;
+  return host ? workWords("who.appAt", { host }) : workWords("who.localApp");
+}
+
+/**
+ * The agent's name as every surface says it: "Verified: Claude", "Says it is Grok", or the
+ * plain name of an app on this computer or one whose verification was withdrawn.
+ */
+export function agentWhoName(who: AgentWho): string {
+  if (who.verified) return workWords("who.verifiedAs", { name: who.heading });
+  if (who.selfAsserted) return workWords("who.saysItIs", { name: who.heading });
+  return who.heading;
 }
 
 /** "No longer verified since Nov 20, 2026", or null while it is. */

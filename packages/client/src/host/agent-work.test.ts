@@ -8,6 +8,7 @@ import {
 } from "../mock/mock-agent-work.js";
 import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
 import {
+  sessionSlotFromHome,
   operationRequestView,
   operationRow,
   sessionTaskRow,
@@ -110,7 +111,7 @@ describe("who a connected agent is", () => {
       providerId: null,
       withdrawnSince: "2026-11-17T09:00:00.000Z",
     });
-    expect(agentWithdrawnLine(withdrawn, "en-US")).toBe("No longer verified since Nov 17, 2026");
+    expect(agentWithdrawnLine(withdrawn, "en-US")).toBe("No longer verified since Nov 17, 2026.");
     expect(
       agentWithdrawnLine(
         agentWho({
@@ -177,7 +178,7 @@ describe("a task a connected agent works itself", () => {
 });
 
 describe("one operation in a task's activity", () => {
-  const rows = slot("working").operations.map(operationRow);
+  const rows = slot("working").operations!.map(operationRow);
 
   it("says what it did in plain words and who allowed it", () => {
     expect(rows[0]).toMatchObject({
@@ -196,23 +197,23 @@ describe("one operation in a task's activity", () => {
   });
 
   it("states an unknown outcome plainly, and a running one as running", () => {
-    expect(rows[3]).toMatchObject({ outcome: { label: "Outcome unknown", tone: "warn" } });
+    expect(rows[3]).toMatchObject({ outcome: { label: "Uncertain", tone: "warn" } });
     expect(rows[3]?.detail).toMatch(/can’t say whether this happened/u);
     expect(rows[4]).toMatchObject({ outcome: { label: "Running…", tone: "busy" }, detail: null });
   });
 
-  it("says when you didn't allow it, when it waits for you, and an unknown tool by name", () => {
-    const [, refused] = slot("stopped").operations.map(operationRow);
+  it("says when you didn't allow it, when it waits for you, and an unfamiliar tool in plain language", () => {
+    const [, refused] = slot("stopped").operations!.map(operationRow);
     expect(refused).toMatchObject({
       allowedBy: "You didn’t allow it",
       outcome: { label: "You didn’t allow it", tone: "muted" },
     });
-    expect(operationRow(slot("waiting").operations[1]!)).toMatchObject({
+    expect(operationRow(slot("waiting").operations![1]!)).toMatchObject({
       allowedBy: null,
       outcome: { label: "Waiting for you" },
     });
-    const odd: AgentOperationView = { ...slot("working").operations[0]!, tool: "calendar_peek" };
-    expect(operationRow(odd).action).toBe("calendar_peek on Travel on Studio Mac");
+    const odd: AgentOperationView = { ...slot("working").operations![0]!, tool: "calendar_peek" };
+    expect(operationRow(odd).action).toBe("Acted on Travel on Studio Mac");
     expect(
       operationRow({
         ...odd,
@@ -275,7 +276,7 @@ describe("the Request a direct operation opens", () => {
     expect(view.answers).toEqual({
       fieldId: "operation-decision",
       allow: { label: "Allow once", value: "allow" },
-      deny: { label: "Don’t allow", value: "deny" },
+      deny: { label: "Don't allow", value: "deny" },
     });
     expect(view.after).toBe(
       "Grok is told your answer. Allowing this once doesn’t give it any more access.",
@@ -320,5 +321,75 @@ describe("the Request a direct operation opens", () => {
         slot: parts,
       }),
     ).toBeNull();
+  });
+});
+
+describe("what the Home itself reports for an agent's own work", () => {
+  const work = {
+    sessionId: "ags_00000000-0000-4000-8000-000000000001",
+    status: "ended" as const,
+    endReason: "stopped" as const,
+    connection: { id: "mcn_home", label: "Research agent", clientName: "Research" },
+  };
+  it("keeps a task the agent's after its session ends, and reads activity only once loaded", () => {
+    const view = sessionTaskView({
+      thread: { status: "idle", agentSessionId: null },
+      slot: sessionSlotFromHome(work as never),
+    });
+    expect(view).toMatchObject({
+      state: "stopped",
+      stop: null,
+      agent: { name: "Research agent" },
+      activity: { kind: "unavailable" },
+    });
+    expect(
+      sessionTaskView({
+        thread: { status: "idle", agentSessionId: null },
+        slot: sessionSlotFromHome(work as never, []),
+      })?.activity,
+    ).toEqual({ kind: "ready", rows: [] });
+  });
+  it("reads an operation's Request from its own parts, by the field the Home names", () => {
+    const request = {
+      id: "req_1",
+      status: "cancelled" as const,
+      originatingAgentSessionId: work.sessionId,
+      agentOperation: {
+        operationId: "aop_1",
+        connectionId: "mcn_home",
+        summary: "A connected agent wants to open a page in Work.",
+        calls: "tab_open {}",
+        agentReason: "To read the report",
+        target: {
+          grant: { kind: "browser-profile", profileId: "bpr_1" },
+          name: "Work",
+          device: null,
+        },
+        decisionFieldId: "choose",
+        expired: true,
+      },
+      presentation: {
+        kind: "form" as const,
+        title: "Allow this?",
+        fields: [
+          {
+            id: "choose",
+            choices: [{ value: "yes" }, { value: "no" }],
+          },
+        ],
+      },
+    };
+    const view = operationRequestView({
+      request: request as never,
+      slot: null,
+      session: sessionSlotFromHome(work as never),
+    });
+    expect(view).toMatchObject({
+      summary: "A connected agent wants to open a page in Work.",
+      agentWords: { text: "To read the report" },
+      calls: { text: "tab_open {}" },
+      state: "expired",
+      agent: { name: "Research agent" },
+    });
   });
 });

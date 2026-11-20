@@ -5,8 +5,8 @@ import {
   type RunId,
   type RunnerId,
 } from "@opensteer/core";
-import type { Transaction } from "kysely";
-import { currentRunAttempt, recordAttemptDispatch } from "./run-attempts.js";
+import { sql, type Transaction } from "kysely";
+import { currentRunAttempt, recordAttemptDispatch, supersedeCurrentAttempt } from "./run-attempts.js";
 import type { DatabaseSchema, GrantTable } from "./schema.js";
 
 /**
@@ -33,15 +33,19 @@ export async function issueRunGrant(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly bindingGeneration: number;
+    readonly connectionId?: string | null;
     readonly modelSelection: ModelSelection;
     readonly runId: RunId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   },
 ): Promise<{ readonly grantId: GrantId; readonly revokedGrants: readonly RevokedRunGrant[] }> {
-  const attemptId = (await currentRunAttempt(transaction, input.runId)).id;
+  const current = await currentRunAttempt(transaction, input.runId);
+  const attemptId = input.connectionId && current.bindingGeneration !== null &&
+    current.bindingGeneration !== input.bindingGeneration
+    ? (await supersedeCurrentAttempt(transaction, input.runId, "recovery")).successor.id
+    : current.id;
   await recordAttemptDispatch(transaction, { ...input, attemptId });
-  // A rebinding keeps the attempt; the previous binding's tokens stop working.
   const revokedGrants = await revokeRunGrants(transaction, [input.runId], "binding-replaced");
   const grant = await transaction
     .insertInto("grants")
@@ -120,9 +124,12 @@ export async function runWasStopped(
   return (
     (await transaction
       .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", runId)
-      .where("type", "=", "run.interrupt")
+      .innerJoin("runs", "runs.id", "commands.runId")
+      .select("commands.id")
+      .where("commands.runId", "=", runId)
+      .where("commands.type", "=", "run.interrupt")
+      .where(sql<boolean>`commands.payload->'stop' is null or
+        commands.payload->>'expectedBindingGeneration' = runs.binding_generation::text`)
       .limit(1)
       .executeTakeFirst()) !== undefined
   );

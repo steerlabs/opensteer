@@ -41,7 +41,11 @@ export type TabActor =
   | { kind: "run"; claims: RunToolScope }
   | { kind: "connection"; caller: ConnectionCaller };
 export interface TabServicePort {
-  list(actor: TabActor, input: TabListInput): Promise<TabListResult>;
+  list(
+    actor: TabActor,
+    input: TabListInput,
+    mayNameComputer?: (deviceId: DeviceId) => boolean,
+  ): Promise<TabListResult>;
   open(actor: TabActor, target: TabTarget, key: string): Promise<{ tab: Tab }>;
   close(actor: TabActor, tabIds: TabId[], key: string): Promise<TabCloseResult>;
   reopen(

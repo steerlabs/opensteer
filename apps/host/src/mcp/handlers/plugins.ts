@@ -1,15 +1,25 @@
-import { pluginCaller } from "../../plugins/plugin-authority.js";
+import { pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import type { PluginCaller } from "../../plugins/engine-protocol.js";
 import { z } from "zod";
-import { OpensteerError, ToolBlockedError, type Blocked, type UserId } from "@opensteer/core";
+import {
+  agentGrantAccess,
+  AgentOperationIdSchema,
+  OpensteerError,
+  type ThreadAccessMode,
+  requestTextMaxLength,
+  threadAccessModeAtMost,
+  ToolBlockedError,
+  type Blocked,
+  type UserId,
+} from "@opensteer/core";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
-import type { AgentCaller } from "../agent-caller.js";
+import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import type { PluginExecutions } from "../../plugins/plugin-executions.js";
@@ -17,7 +27,10 @@ import type { LocalProviders } from "../../plugins/local-providers.js";
 import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
 import { keysetPage } from "../../plugins/keyset-page.js";
 import { engineInstallReceipt } from "../../plugins/engine-storage.js";
-import { pluginNamespace } from "../../plugins/provider-names.js";
+import { localNamespace, localToolPath, pluginNamespace } from "../../plugins/provider-names.js";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { directResult, requireDirectWork } from "./direct.js";
+import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
 
@@ -35,6 +48,7 @@ export class PluginToolHandlers {
     localProviders?: Pick<LocalProviders, "providers">;
     authority: PluginAuthority;
     executions: PluginExecutions;
+    sessions?: () => AgentSessionService;
     store: OpensteerStore;
     settings: PluginAgentStore;
     folder: (
@@ -69,9 +83,20 @@ export class PluginToolHandlers {
       this.options.service.list({}, context, c.signal),
       c.input.pluginId ? [] : (this.options.localProviders?.providers(context) ?? []),
     ]);
-    const access = (id: string) => settings.find((s) => s.pluginId === id)?.access ?? "all";
+    const caller = c.caller;
+    const access = (id: string) => {
+      const configured = settings.find((s) => s.pluginId === id)?.access ?? "all";
+      if (caller.kind !== "connection" || configured === "off") return configured;
+      const granted = agentGrantAccess(caller.grant, {
+        kind: "plugin",
+        target: pluginGrantTarget(id),
+      });
+      return !granted ? "off" : granted === "read" ? "read-only" : configured;
+    };
     const entries = [
-      ...plugins.map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
+      ...plugins
+        .filter(({ id }) => caller.kind !== "connection" || access(id) !== "off")
+        .map((plugin) => ({ kind: "plugin" as const, id: plugin.id })),
       ...local
         .filter(({ id }) => access(id) !== "off")
         .map((provider) => ({ kind: "local" as const, id: provider.id })),
@@ -211,6 +236,196 @@ export class PluginToolHandlers {
         };
       }),
     };
+  }
+  async #directExecution(
+    caller: ConnectionCaller,
+    call: ToolCall<"plugin_call"> | ToolCall<"plugin_execute"> | ToolCall<"plugin_resume">,
+  ) {
+    const o = this.options;
+    const sessions = requireDirectWork(o.sessions?.());
+    const context = o.authority.admit(caller);
+    const unavailable = () =>
+      new OpensteerError({
+        code: "forbidden",
+        message: "Plugin tool is unavailable to this caller.",
+      });
+    const { taskId, reason } = call.input;
+    const signal = call.signal;
+    let target: { plugin: string; name: string; version: string; readOnly: boolean };
+    let tool: "plugin_call" | "plugin_execute" | "plugin_resume";
+    let input: { calls: PluginInput<"call">["calls"] } | { code: string } | { executionId: string };
+    let calls: string;
+    const providers = async () => {
+      const [installed, local] = await Promise.all([
+        o.service.list({}, context, signal),
+        o.localProviders?.providers(context) ?? [],
+      ]);
+      return [
+        ...installed.map((item) => ({ ...item, version: item.activeVersion })),
+        ...local.map((item) => ({ ...item, slug: localNamespace(item.slug, item.id) })),
+      ];
+    };
+    let continuationWrites = false;
+    let continuationMode: ThreadAccessMode | null = null;
+    if ("calls" in call.input) {
+      tool = "plugin_call";
+      input = { calls: call.input.calls };
+      calls = canonicalJson(input);
+      const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
+        ({ path }) => path,
+      );
+      const resolved = await o.service.resolveTools({ paths }, context, signal);
+      const first = resolved[0];
+      if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry))
+        throw unavailable();
+      if (
+        resolved.some((entry) => entry?.plugin !== first.plugin || entry.version !== first.version)
+      )
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Call one plugin per operation.",
+        });
+      target = { ...first, readOnly: resolved.every((entry) => entry?.readOnly) };
+    } else if ("code" in call.input) {
+      tool = "plugin_execute";
+      input = { code: call.input.code };
+      calls = input.code;
+      const namespace = call.input.namespace;
+      if (!namespace)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Supply the one plugin namespace from plugin_search.",
+        });
+      const matches = (await providers()).filter((item) => localToolPath(item.slug) === namespace);
+      const provider = matches[0];
+      if (matches.length !== 1 || !provider?.version) throw unavailable();
+      target = {
+        plugin: provider.id,
+        name: provider.name,
+        version: provider.version,
+        readOnly: false,
+      };
+    } else {
+      tool = "plugin_resume";
+      if (!taskId)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Supply the taskId that started this plugin execution.",
+        });
+      input = { executionId: call.input.executionId };
+      calls = canonicalJson(input);
+      const row = await o.executions.sessionExecution(caller, input.executionId, taskId);
+      const origin = AgentOperationIdSchema.safeParse(
+        row.caller.slice(row.caller.lastIndexOf(":") + 1),
+      );
+      if (!origin.success) throw unavailable();
+      const receipt = await o.store.database
+        .selectFrom("agentOperations")
+        .select(["targetGeneration", "target", "effect"])
+        .where("id", "=", origin.data)
+        .where("sessionId", "=", row.agentSessionId)
+        .where("state", "=", "completed")
+        .executeTakeFirst();
+      if (!receipt?.targetGeneration || receipt.target.grant.kind !== "plugin") throw unavailable();
+      const originTarget = canonicalJson(receipt.target.grant.target);
+      const provider = (await providers()).find(
+        (item) => canonicalJson(pluginGrantTarget(item.id)) === originTarget,
+      );
+      if (provider?.version !== receipt.targetGeneration) throw unavailable();
+      if (row.state === "waiting" || row.state === "answered") {
+        const request = row.requestId ? await o.store.requests.get(row.requestId) : undefined;
+        if (request?.status !== "fulfilled" && request?.status !== "declined")
+          throw new OpensteerError({
+            code: "conflict",
+            message: "The plugin is waiting for the person's answer in Needs you.",
+          });
+      }
+      continuationWrites = receipt.effect === "write";
+      continuationMode = row.admittedAccessMode;
+      target = {
+        plugin: provider.id,
+        name: provider.name,
+        version: provider.version,
+        readOnly: true,
+      };
+    }
+    if (calls.length > requestTextMaxLength)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Use fewer than 20,000 characters per connected plugin operation.",
+      });
+    const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
+    const access = agentGrantAccess(caller.grant, grant);
+    if (!access || ((!target.readOnly || continuationWrites) && access !== "read-write"))
+      throw unavailable();
+    const currentAccess = (await o.settings.settings(caller.userId)).find(
+      ({ pluginId }) => pluginId === target.plugin,
+    )?.access;
+    if (
+      currentAccess === "off" ||
+      ((!target.readOnly || continuationWrites) && currentAccess === "read-only")
+    )
+      throw unavailable();
+    const outcome = await sessions.run({
+      ownerUserId: caller.userId,
+      agentConnectionId: caller.connectionId,
+      taskId,
+      reason,
+      operationKey: call.operationKey,
+      tool,
+      input: {
+        ...input,
+        plugin: target.plugin,
+        version: target.version,
+        readOnly: target.readOnly,
+      },
+      target: { grant, name: target.name.slice(0, 255), device: null },
+      targetGeneration: target.version,
+      effect: target.readOnly ? "read" : "write",
+      calls,
+      execute: async (operation) => {
+        await operation.recheck();
+        if (continuationMode && !threadAccessModeAtMost(continuationMode, operation.mode))
+          throw unavailable();
+        if ("executionId" in input)
+          return o.executions.resumeSession(
+            caller,
+            input.executionId,
+            operation.taskId,
+            operation.signal,
+          );
+        return o.authority.scoped(
+          caller,
+          () =>
+            o.executions.execute(
+              caller,
+              "calls" in input ? "call" : "execute",
+              input,
+              operation.signal,
+            ),
+          { operation, plugin: target.plugin, version: target.version, write: !target.readOnly },
+        );
+      },
+      summarize: (result) => ({ executionId: result.executionId, status: result.status }),
+      replay: async (row, authority) => {
+        if (
+          row.grantRevision !== caller.grantRevision ||
+          row.targetGeneration !== target.version ||
+          !threadAccessModeAtMost(row.mode, authority.mode)
+        )
+          throw unavailable();
+        if (continuationMode && !threadAccessModeAtMost(continuationMode, authority.mode))
+          throw unavailable();
+        const id = row.resultSummary?.executionId;
+        if (typeof id !== "string" || !authority.threadId) return undefined;
+        const saved = await o.executions.sessionExecution(caller, id, authority.threadId);
+        return o.executions.result(saved);
+      },
+    });
+    const result = directResult(outcome);
+    return outcome.status === "completed" && outcome.result
+      ? { ...result, status: outcome.result.status }
+      : result;
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {
     const context = this.options.authority.admit(c.caller);
@@ -471,9 +686,18 @@ export class PluginToolHandlers {
         const context = o.authority.admit(c.caller);
         return this.discoveryResult(context, await o.service.describe(c.input, context, c.signal));
       },
-      plugin_call: (c) => o.executions.execute(c.caller, "call", c.input, c.signal),
-      plugin_execute: (c) => o.executions.execute(c.caller, "execute", c.input, c.signal),
-      plugin_resume: (c) => o.executions.resume(c.caller, c.input.executionId, c.signal),
+      plugin_call: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.execute(c.caller, "call", c.input, c.signal),
+      plugin_execute: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.execute(c.caller, "execute", c.input, c.signal),
+      plugin_resume: (c) =>
+        c.caller.kind === "connection"
+          ? this.#directExecution(c.caller, c)
+          : o.executions.resume(c.caller, c.input.executionId, c.signal),
       opensteer_plugin_list: (c) => this.list(c),
       opensteer_plugin_install: (c) => this.install(c),
       opensteer_plugin_export: (c) => this.export(c),

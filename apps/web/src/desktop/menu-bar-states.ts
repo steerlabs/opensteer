@@ -1,5 +1,5 @@
 import { menuBarStatus, type MenuBarInput, type MenuBarStatus } from "@opensteer/client/computers";
-import { mockDeviceMachine } from "@opensteer/client/mock";
+import { mockAgentIdentity, mockDeviceMachine } from "@opensteer/client/mock";
 import { MachineSummarySchema } from "@opensteer/protocol";
 
 /** This Mac's row in a Home, as Devices reads it: Browser and Files on, Apps off. */
@@ -31,6 +31,9 @@ function thisMac(home: boolean) {
     }),
   );
 }
+
+const grok = mockAgentIdentity.selfNamed("Grok", "https://grok.com", false);
+const claude = mockAgentIdentity.verifiedPlatform("claude", "Claude", "https://claude.ai");
 
 const nothing: MenuBarInput = {
   hostedHome: null,
@@ -100,27 +103,45 @@ export const menuBarStates = {
       shells: [],
     },
   }),
-  /** A Device's Run being stopped from its row, and a task whose Stop did not go out. */
-  rowStates: menuBarStatus({
+  /**
+   * Outside agents using this Mac, named as their connections proved them, and
+   * a Device's Run with its task; each row opens its task.
+   */
+  agents: menuBarStatus({
     ...nothing,
     ...studio,
     deviceHomes: [office("running")],
     local: {
       apps: [],
-      tabs: [],
+      tabs: [
+        {
+          sessionId: "bsn_1",
+          profile: true,
+          threadTitle: "Friday dinner",
+          task: { deploymentId: "dep_home", threadId: "thr_2" },
+          agent: { clientName: "Grok", redirect: "https://grok.com", ...grok },
+        },
+      ],
       runs: [
         {
           deploymentId: "dep_office",
           runId: "run_1",
           engine: "Claude Code",
           purpose: "task",
-          state: "stopping",
+          threadId: "thr_3",
+          threadTitle: "Rename photos",
         },
       ],
     },
     homeWork: {
-      tasks: [{ threadId: "thr_1", title: "Clean up downloads", state: "failed" }],
-      shells: [{ id: "shs_1", threadTitle: "Rename photos", callerMachineName: "Office Mini" }],
+      tasks: [
+        {
+          threadId: "thr_1",
+          title: "Compare flights",
+          agent: { clientName: "Claude", redirect: "https://claude.ai", ...claude },
+        },
+      ],
+      shells: [],
     },
   }),
   stopping: menuBarStatus({

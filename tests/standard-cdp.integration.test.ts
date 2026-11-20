@@ -87,13 +87,13 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     });
     const hub = new RunnerBrowserHub();
     const targetResolver = new RunnerBrowserRuntimeRouter({ registry: hub, localProfiles });
-    const runner = new BrowserModuleRelay(
-      new LocalBrowserRuntimeBridge({
-        runtimeId,
-        bridgeToken,
-        url: new URL(`http://${engine.host}:${engine.port}`),
-      }),
-    );
+    const bridge = new LocalBrowserRuntimeBridge({
+      runtimeId,
+      bridgeToken,
+      url: new URL(`http://${engine.host}:${engine.port}`),
+    });
+    const capabilities = await bridge.capabilities();
+    const runner = new BrowserModuleRelay(bridge);
     const fence = RunnerAuxiliaryFrameFenceSchema.parse({
       runnerId: first.runnerId,
       bootId: `rbt_${randomUUID()}`,
@@ -121,12 +121,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         modules: {
           browser: {
             runtimeId,
-            wireVersion: 2,
-            standardCdp: 1,
-            wholeContextCdp: 1,
-            ...(runtime.localProfileStorage
-              ? { localProfileStorage: runtime.localProfileStorage }
-              : {}),
+            ...capabilities,
             cdpBoundary: 1,
             sharedControl: 1,
           },
@@ -219,7 +214,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     const two = (await browser.openAgentSession({ ...b, fresh: true })).session.id;
     await expect(
       browser.issueStandardCdpTicket({ authority: b, browserSessionId: one, mode: "session" }),
-    ).rejects.toThrow("does not hold");
+    ).rejects.toThrow("This task does not have access to that browser tab.");
 
     const intended = await browser.issueStandardCdpTicket({
       authority: a,
@@ -232,7 +227,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       chromium.connectOverCDP(`${homeUrl}/v1/browser/connect/${wrongBinding}`, {
         noDefaults: true,
       }),
-    ).rejects.toThrow("does not hold that Browser Session");
+    ).rejects.toThrow("This task does not have access to that browser tab.");
 
     const aTicket = await browser.issueStandardCdpTicket({
       authority: a,

@@ -115,7 +115,7 @@ it("says under the switches what connected agents also need, and offers Who can 
   await open(laptop, async (host) => {
     const agent = state.page!.sections.find(({ key }) => key === "agent");
     expect(agent?.footer?.text).toContain(
-      "Connected agents also need you to choose this Device’s profile or app for them.",
+      "Connected agents also need you to choose this device’s profile or app for them.",
     );
     const reach = rows().find(({ key }) => key === "reach");
     if (reach?.kind !== "chips") throw new Error("Who can use it was not a chips row");
@@ -176,7 +176,7 @@ it("shows a Cloud Computer Home its status, and never the Cloud Computer offer",
       id: "cc_00000000-0000-4000-8000-000000000002",
       egress: "assigned",
       status: "suspended",
-      reason: "You paused this Cloud Computer.",
+      reason: "You suspended this Cloud Computer.",
       reasonCode: "cloud-computer-owner-suspended",
     } as CloudComputerView,
   };
@@ -184,7 +184,7 @@ it("shows a Cloud Computer Home its status, and never the Cloud Computer offer",
     const status = rows().find(({ key }) => key === "cloud-status");
     expect(status).toMatchObject({
       label: "Opensteer Cloud Computer",
-      detail: "Suspended · You paused this Cloud Computer.",
+      detail: "Suspended · You suspended this Cloud Computer.",
     });
     expect(keys()).not.toContain("cloud-computer");
     expect(keys()).not.toContain("remote-access");

@@ -590,6 +590,12 @@ export class PhoneBrowserManager {
             state: this.descriptor && this.#capability ? "ready" : "unavailable",
           },
         });
+      } else if (message.type === "browser.standard-cdp.reconcile") {
+        // Only sent to a runtime that advertises lease recovery, which a phone does not.
+        throw new PhoneBrowserError(
+          "unsupported-operation",
+          "The phone does not offer this ability.",
+        );
       } else if (message.type === "capability.grant") {
         const lease = message.lease;
         if (

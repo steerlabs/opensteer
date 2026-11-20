@@ -17,7 +17,7 @@ const bridge: OpensteerMenuBarBridge = {
   status: () => (status ? Promise.resolve(status) : new Promise(() => undefined)),
   onStatus: () => () => undefined,
   setSwitch: idle,
-  stopRow: idle,
+  openRow: idle,
   stop: idle,
   resume: idle,
   setOpenAtLogin: idle,

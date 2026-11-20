@@ -65,6 +65,16 @@ export function workHomeSections(
                 },
               ]
             : []),
+          ...(card.lastBackup
+            ? [
+                {
+                  key: "last-backup",
+                  kind: "text" as const,
+                  label: cloudWords("cloud.backup.reported"),
+                  detail: card.lastBackup,
+                },
+              ]
+            : []),
           ...(card.region
             ? [
                 {

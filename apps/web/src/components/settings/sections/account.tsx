@@ -113,7 +113,7 @@ function AccountSessionRow({
 
   const copy =
     account?.available === false && account.status === "signed-out"
-      ? { title: "Not signed in", detail: "Opensteer Account sign-in isn’t available yet." }
+      ? { title: "Not signed in", detail: "Opensteer account sign-in isn’t available yet." }
       : accountStateCopy[account?.status ?? "unknown"];
   return (
     <>
@@ -162,7 +162,7 @@ function BrowserAccountRow({ portalHref }: { readonly portalHref: string | null 
         ) : undefined
       }
       detail={portalHref ? "Open your Opensteer from any device" : "Account sign-in unavailable"}
-      title="Opensteer Account"
+      title="Opensteer account"
     />
   );
 }
@@ -179,7 +179,7 @@ const accountStateCopy: Readonly<
     title: "Signed out",
     detail: "Sign in again to see your other computers. They keep running.",
   },
-  "signed-in": { title: "Opensteer Account", detail: "Opensteer Account" },
+  "signed-in": { title: "Opensteer account", detail: "Opensteer account" },
   "signed-out": {
     title: "Not signed in",
     detail: "Sign in to open this computer from your phone and see your other computers.",

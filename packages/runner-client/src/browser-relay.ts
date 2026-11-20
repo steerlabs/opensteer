@@ -49,6 +49,7 @@ export class BrowserModuleRelay {
   #capability: BrowserCapabilityLease | undefined;
   #authority = Symbol();
   #stream: RunnerModuleStream | undefined;
+  #streamLifetime = new AbortController();
 
   constructor(bridge: LocalBrowserRuntimeBridge) {
     this.#bridge = bridge;
@@ -60,6 +61,8 @@ export class BrowserModuleRelay {
 
   async attach(stream: RunnerModuleStream): Promise<void> {
     this.#stream = stream;
+    this.#streamLifetime.abort();
+    this.#streamLifetime = new AbortController();
     if (stream.browserWireVersion !== 2)
       throw new BrowserRelayError("Update this Host to use the current browser runtime contract.");
     const capabilities = await this.#bridge.capabilities();
@@ -100,6 +103,7 @@ export class BrowserModuleRelay {
   detach(): void {
     this.#bridge.setPasskeysEnabled(false);
     this.#stream = undefined;
+    this.#streamLifetime.abort();
     this.#capability = undefined;
     this.#authority = Symbol();
     for (const channelId of this.#channels.keys()) this.#removeChannel(channelId);
@@ -150,6 +154,7 @@ export class BrowserModuleRelay {
     if (
       message.type === "browser.attach" ||
       message.type === "browser.profile.delete" ||
+      message.type === "browser.standard-cdp.reconcile" ||
       (message.type === "browser.close" && this.#channels.get(message.channelId)?.raw)
     ) {
       void handle().catch(() => undefined);
@@ -306,6 +311,20 @@ export class BrowserModuleRelay {
         } catch (error) {
           await this.#failChannel(message.channelId, channel, error);
         }
+        return;
+      }
+      case "browser.standard-cdp.reconcile": {
+        const evidence = await this.#bridge.reconcileStandardCdpLease(
+          message.lease,
+          this.#streamLifetime.signal,
+        );
+        if (this.#stream !== stream) return;
+        await this.#send({
+          ...stream.fence,
+          requestId: message.requestId,
+          type: "browser.standard-cdp.reconciled",
+          ...evidence,
+        });
         return;
       }
       case "browser.profile.delete": {

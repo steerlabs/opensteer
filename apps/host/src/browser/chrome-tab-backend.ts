@@ -52,11 +52,18 @@ const nestedMessage = z.object({
 const geometry =
   /^(?:Emulation\.(?:set|clear)DeviceMetricsOverride|Emulation\.setVisibleSize|Emulation\.setPageScaleFactor|Emulation\.resetPageScaleFactor|Page\.setViewport|Page\.setDeviceMetricsOverride)$/u;
 
+export class ChromeTabReplyLost extends Error {
+  constructor() {
+    super("Chrome did not confirm the command outcome.");
+  }
+}
+
 export class ChromeTabBackend implements BrowserCdpBackend {
   readonly allowsProfileCookieReads = true;
   readonly #tabs = new Map<string, Tab>();
   readonly #listeners = new Set<Listener>();
   readonly #pending = new Map<string, Reply>();
+  readonly #detachFailures = new Set<string>();
   readonly #assembly = new BrowserSourceTabAssembly();
   readonly #write: (frame: BrowserSourceTabPart<"tab.command">) => boolean;
   readonly #fail: () => void;
@@ -118,11 +125,15 @@ export class ChromeTabBackend implements BrowserCdpBackend {
     }).catch(() => undefined);
   }
 
+  detachedCleanly(shareId: string): boolean {
+    return !this.#detachFailures.delete(shareId);
+  }
+
   close(): void {
     for (const id of this.#tabs.keys()) this.remove(id);
     for (const [id, pending] of this.#pending) {
       this.#endReply(id, pending);
-      pending.completed.reject(new Error("Chrome disconnected."));
+      pending.completed.reject(new ChromeTabReplyLost());
     }
     this.#listeners.clear();
   }
@@ -206,7 +217,10 @@ export class ChromeTabBackend implements BrowserCdpBackend {
             shareId: tab.info.shareId,
             attachmentId,
             requestId: randomUUID(),
-          }).catch(() => undefined);
+          }).catch(() => {
+            if (this.#tabs.get(tab.info.shareId) === tab)
+              this.#detachFailures.add(tab.info.shareId);
+          });
         }
       },
       onEvent: (listener) => {
@@ -376,14 +390,14 @@ export class ChromeTabBackend implements BrowserCdpBackend {
       completed,
       timer: setTimeout(() => {
         this.#endReply(command.requestId, pending);
-        completed.reject(new Error("Chrome debugger did not answer."));
+        completed.reject(new ChromeTabReplyLost());
       }, 30_000),
     };
     this.#pendingBytes += bytes.length;
     this.#pending.set(command.requestId, pending);
     try {
       for (const frame of browserSourceTabParts("tab.command", bytes))
-        if (!this.#write(frame)) throw new Error("Chrome debugger connection closed.");
+        if (!this.#write(frame)) throw new ChromeTabReplyLost();
       const reply = await completed.promise;
       if (!reply.ok) throw new Error(reply.error);
       return reply.result;
@@ -401,7 +415,7 @@ export class ChromeTabBackend implements BrowserCdpBackend {
     for (const [id, pending] of this.#pending) {
       if (pending.shareId !== shareId || pending.attachmentId !== attachmentId) continue;
       this.#endReply(id, pending);
-      pending.completed.reject(new Error("Chrome debugger detached."));
+      pending.completed.reject(new ChromeTabReplyLost());
     }
   }
 

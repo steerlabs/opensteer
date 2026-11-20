@@ -3,6 +3,7 @@ import type { AgentToolAccess, AgentToolFailure } from "@opensteer/agent-tools";
 import { ToolBlockedError, OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseError } from "../computer-use/computer-use-service.js";
 import { IntegrationAuthorizationRequiredError } from "../devices/integration-authorization-required.js";
@@ -19,8 +20,15 @@ export function agentToolFailure(
   error: unknown,
   access: AgentToolAccess,
   /** Which Devices this caller may learn of; a caller nobody vouched for learns none. */
-  mayKnowDevice: (deviceId: string) => boolean = () => false,
+  mayKnowDevice?: (deviceId: string) => boolean,
 ): AgentToolFailure {
+  if (error instanceof OperationOutcomeUnknown)
+    return {
+      code: "outcome_unknown",
+      message: error.message,
+      next: "Observe before repeating an effectful call.",
+      retryable: false,
+    };
   if (error instanceof ToolBlockedError) return error.blocked;
   if (error instanceof PluginServiceError)
     return {
@@ -65,15 +73,15 @@ export function agentToolFailure(
       error.reason === "device-stopped"
         ? DeviceRefusalContextSchema.safeParse(error.details).data
         : undefined;
-    // An asleep or stopped Device is named, in detail only, to a caller that may know it.
+    const visible = device && (mayKnowDevice?.(device.machineId) ?? true);
     const named =
       device?.machineName &&
       (error.reason === "device-asleep" || error.reason === "device-stopped") &&
-      mayKnowDevice(device.machineId)
+      mayKnowDevice?.(device.machineId)
         ? { device: { id: device.machineId, name: device.machineName } }
         : {};
     return {
-      ...(device ? { computerId: device.machineId, capability: device.capability } : {}),
+      ...(visible ? { computerId: device.machineId, capability: device.capability } : {}),
       ...named,
       code: error.code,
       message: error.message,

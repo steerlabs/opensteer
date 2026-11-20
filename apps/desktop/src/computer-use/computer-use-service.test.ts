@@ -39,6 +39,7 @@ import { ComputerAppModuleHandler } from "../../../runner/src/computer-apps/modu
 
 import { ComputerUseService } from "./computer-use-service.js";
 import { openAgentAdmission, type AgentAdmission } from "../app/agent-admission.js";
+import { DesktopActivity } from "../app/desktop-activity.js";
 import { computerUseFrameReader, encodeComputerUseFrame } from "./helper-frames.js";
 import type { ComputerUseHelperProcess } from "./helper-install.js";
 import {
@@ -687,6 +688,48 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     ).resolves.toEqual({ sessionId: harness.sessionId });
   });
 
+  it("counts a connected agent's app session in the activity Quit reads, and refuses it while stopped", async () => {
+    const admission = openAgentAdmission();
+    const harness = await stackHarness({ admission });
+    // A connected agent's frame names its session's key, never a Run: `run_` and the session's
+    // own id, as the Host keys it. Nothing here can tell it from a task's, by construction.
+    const sessionKey = `run_${createId("agentSession").split("_")[1]}`;
+    const activity = new DesktopActivity({
+      hostedHome: async () => null,
+      deviceHomes: async () => [],
+      host: () => {
+        throw new Error("No Home is read here.");
+      },
+      local: () => ({ appSessions: harness.computerUse.agentSessions, browserTabs: 0 }),
+    });
+    const first = ComputerUseSessionIdSchema.parse(`cus_${globalThis.crypto.randomUUID()}`);
+    await harness.observe("agent-1", first, sessionKey);
+    await vi.waitFor(
+      () => expect(resultOf(harness.hostStream, "agent-1")?.result).toMatchObject({ kind: "ok" }),
+      { interval: 10, timeout: 10_000 },
+    );
+    expect(harness.computerUse.agentSessions).toBe(1);
+    expect((await activity.snapshot()).lines).toContain("An agent is using apps on this Mac");
+
+    admission.close();
+    await harness.computerUse.pause();
+    expect(harness.computerUse.agentSessions).toBe(0);
+    expect((await activity.snapshot()).lines).not.toContain("An agent is using apps on this Mac");
+    const methods = harness.helper.methods.length;
+    const second = ComputerUseSessionIdSchema.parse(`cus_${globalThis.crypto.randomUUID()}`);
+    await harness.observe("agent-2", second, sessionKey);
+    await vi.waitFor(
+      () =>
+        expect(JSON.stringify(resultOf(harness.hostStream, "agent-2")?.result)).toContain(
+          "stopped-by-user",
+        ),
+      { interval: 10, timeout: 10_000 },
+    );
+    // Refused before the helper heard of it.
+    expect(harness.helper.methods.slice(methods)).not.toContain("session.open");
+    expect(harness.computerUse.agentSessions).toBe(0);
+  });
+
   it("stops one agent session from the menu bar as the helper's own Stop ends it", async () => {
     const harness = await lifetimeHarness({});
     await harness.observe();
@@ -769,7 +812,7 @@ describe.skipIf(!onMac)("the person's Stop from the menu bar", () => {
     await harness.observe();
     harness.helper.state.closeFails = true;
     admission.close();
-    await expect(harness.computerUse.pause()).rejects.toThrow(/did not confirm/);
+    await expect(harness.computerUse.pause()).rejects.toThrow(/didn’t confirm it stopped/);
     expect(harness.computerUse.agentSessions).toBe(1);
   });
 
@@ -1406,7 +1449,9 @@ function contractOf(definitionId: string, name: string): string {
   return computerAppOperationContract(operation);
 }
 
-async function stackHarness(options: { readonly helperInstallFails?: boolean } = {}) {
+async function stackHarness(
+  options: { readonly helperInstallFails?: boolean; readonly admission?: AgentAdmission } = {},
+) {
   // The helper's socket lives under this home, and a Unix socket path must
   // stay under about a hundred bytes, which the platform temp root can exceed.
   const home = await mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : tmpdir(), "oscu-"));
@@ -1424,6 +1469,7 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
     platform: "darwin",
     run: helper.run,
     teamId: null,
+    ...(options.admission ? { admission: options.admission } : {}),
   });
   cleanups.push(async () => computerUse.stop());
   const homeConnection = deployment("Home", "https://home.opensteer.test");
@@ -1493,8 +1539,8 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
       }
     },
     log,
-    /** An agent's observe of Notes, as the Host sends it. */
-    observe: async (requestId: string, sessionId: string) =>
+    /** An agent's observe of Notes, as the Host sends it, under the key the Host chose. */
+    observe: async (requestId: string, sessionId: string, runId?: string) =>
       send(requestId, {
         access: "read",
         app: notesIdentity,
@@ -1502,6 +1548,7 @@ async function stackHarness(options: { readonly helperInstallFails?: boolean } =
         params: { window: "window-1", includeScreenshot: true },
         sessionId,
         threadTitle: "Plan the offsite",
+        ...(runId === undefined ? {} : { runId }),
       }),
     /** The Runner's Host connection comes back without advancing its readiness cache. */
     reattach: () => {

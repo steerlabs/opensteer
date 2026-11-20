@@ -115,23 +115,36 @@ export class ManagedHomeClaimService {
     });
     const result = await this.#identity.claimManagedOwner({
       claimKey: `${claims.claim.cloudComputerId}:${claims.claim.generation}:${claims.sub}`,
+      cloudComputerId: claims.claim.cloudComputerId,
+      issuer: this.#verifier.issuer,
       // The Home's Account link commits with its owner: push and the hosted
       // OAuth broker speak for this Home from the moment it is claimed.
-      commit: async (transaction) => {
+      commit: async (transaction, existing) => {
         const now = this.#now();
+        const generation = {
+          grantId: claims.jti,
+          hostCredential: request.hostCredential,
+          linkGeneration: claims.link.generation,
+          updatedAt: now,
+        };
+        if (existing) {
+          await transaction
+            .updateTable("personalRemoteAccountLink")
+            .set(generation)
+            .where("singletonKey", "=", "opensteer-account")
+            .executeTakeFirstOrThrow();
+          return;
+        }
         await transaction
           .insertInto("personalRemoteAccountLink")
           .values({
             challengeId: claims.claim.cloudComputerId,
-            grantId: claims.jti,
-            hostCredential: request.hostCredential,
+            ...generation,
             issuer: this.#verifier.issuer,
-            linkGeneration: claims.link.generation,
             linkedAt: now,
             singletonKey: "opensteer-account",
             state: "active",
             subject: claims.sub,
-            updatedAt: now,
           })
           .executeTakeFirstOrThrow();
       },

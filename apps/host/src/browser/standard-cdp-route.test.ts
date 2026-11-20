@@ -156,7 +156,7 @@ it("relays original text and refuses replay even with ambient credentials", asyn
 it("delivers an admission refusal on the first CDP request before closing", async () => {
   const f = await fixture();
   f.attach.mockRejectedValueOnce(
-    new BrowserCdpConnectionEnded("This binding does not hold that Browser Session."),
+    new BrowserCdpConnectionEnded("This task does not have access to that browser tab."),
   );
   const socket = await f.connect();
   const message = once(socket, "message");
@@ -164,7 +164,7 @@ it("delivers an admission refusal on the first CDP request before closing", asyn
   socket.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
   expect(JSON.parse(String((await message)[0]))).toEqual({
     id: 1,
-    error: { code: -32000, message: "This binding does not hold that Browser Session." },
+    error: { code: -32000, message: "This task does not have access to that browser tab." },
   });
   expect((await closed)[0]).toBe(1008);
 });

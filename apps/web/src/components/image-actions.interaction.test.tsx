@@ -93,7 +93,7 @@ it("tells the person to update the Device when the image original cannot be read
     const items = render(transcriptImageRead(client, null, { kind: "path", path: "plot.png" }));
     await act(async () => items[0]!.click());
     expect(document.body.textContent).toContain(
-      "Update Opensteer on the Device that holds this file.",
+      "Update Opensteer on the device that holds this file.",
     );
   } finally {
     client.dispose();

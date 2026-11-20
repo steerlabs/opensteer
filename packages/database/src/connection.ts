@@ -4,6 +4,7 @@ import {
   CompiledQuery,
   Kysely,
   PostgresDialect,
+  type ControlConnectionProvider,
   type IsolationLevel,
   type Transaction,
 } from "kysely";
@@ -16,6 +17,7 @@ import {
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
+import { inheritWorkHomeDatabase } from "./work-home-context.js";
 import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {
@@ -108,10 +110,31 @@ export function createDatabase<Schema = DatabaseSchema>(
   // An idle client the server ends (restart, failover) is dropped by the pool; without a
   // listener the error would crash the process.
   pool.on("error", () => {});
+  const provideControlConnection: ControlConnectionProvider = async (consume) => {
+    const control = new Client(pool.options);
+    try {
+      await control.connect();
+      await consume({
+        async executeQuery(query) {
+          await control.query(query.sql, [...query.parameters]);
+          return { rows: [] };
+        },
+        streamQuery() {
+          throw new Error("A PostgreSQL control connection cannot stream rows");
+        },
+      });
+    } finally {
+      await control.end();
+    }
+  };
   const database = new Kysely<Schema>({
     dialect: new DrainingPostgresDialect({
-      controlClient: Client,
       onCreateConnection: async (connection) => {
+        // Kysely's provider path rechecks the query ID even when the query has already ended.
+        const cancel = connection.cancelQuery?.bind(connection);
+        const kill = connection.killSession?.bind(connection);
+        if (cancel) connection.cancelQuery = () => cancel(provideControlConnection);
+        if (kill) connection.killSession = () => kill(provideControlConnection);
         const execute = connection.executeQuery.bind(connection);
         connection.executeQuery = async <R>(query: CompiledQuery) => {
           const operation = databaseOperation();
@@ -262,6 +285,7 @@ export function withDatabaseTransaction<Schema, Result>(
         (transaction) =>
           inDatabaseOperationTransaction(async () => {
             operation?.signal.throwIfAborted();
+            inheritWorkHomeDatabase(database, transaction);
             const result = await action(transaction);
             operation?.signal.throwIfAborted();
             return result;

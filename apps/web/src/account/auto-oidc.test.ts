@@ -7,7 +7,7 @@ const config = {
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,
-  oidcProviders: [{ id: "opensteer-account", label: "Opensteer Account", type: "oidc" }],
+  oidcProviders: [{ id: "opensteer-account", label: "Opensteer account", type: "oidc" }],
   passkeysEnabled: false,
   exposure: "networked",
   portalOrigin: null,

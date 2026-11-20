@@ -1109,6 +1109,8 @@ export interface RequestTable {
   >;
   /** The agent session that asked, for a Request about an external agent's direct work. */
   originatingAgentSessionId: Generated<AgentSessionId | null>;
+  /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
+  agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1507,6 +1509,7 @@ interface BrowserSessionUseTable {
 }
 
 interface BrowserSourceTable {
+  deviceId: Generated<DeviceId | null>;
   liveTabsOnly: Generated<boolean>;
   id: BrowserSourceId;
   ownerId: UserId;
@@ -1522,6 +1525,7 @@ interface BrowserSourceTable {
 }
 
 interface BrowserSourcePairingTable {
+  deviceId: Generated<DeviceId | null>;
   codeHash: string;
   ownerId: UserId;
   createdAt: Timestamp;
@@ -1933,6 +1937,7 @@ export interface AppVersionTable {
 }
 
 export interface AgentConnectionTable {
+  sharedChromeAttempts: Generated<Readonly<Record<string, unknown>>>;
   id: string;
   userId: UserId;
   label: string;
@@ -1969,6 +1974,19 @@ export interface AgentConnectionTable {
   removedAt: Generated<Date | null>;
   /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0043. */
   identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
+  verificationWithdrawnAt: Generated<Date | null>;
+}
+
+interface AgentDirectoryCacheTable {
+  issuer: string;
+  document: Readonly<Record<string, unknown>>;
+  acceptedAt: Date;
+}
+
+interface AgentEmbedderAssertionClaimTable {
+  issuer: string;
+  statementId: string;
+  expiresAt: Date;
 }
 
 export interface AgentSessionTable {
@@ -1995,6 +2013,7 @@ export interface AgentOperationTable {
   target: JsonColumn<AgentOperationTarget>;
   targetGeneration: string | null;
   grantRevision: number;
+  workPolicyRevision: Generated<number | null>;
   mode: ThreadAccessMode;
   effect: "read" | "write";
   state: AgentOperationState;
@@ -2003,6 +2022,10 @@ export interface AgentOperationTable {
   calls: string;
   agentReason: string | null;
   handedOffAt: Date | null;
+  /** The executor returned, the operation never left the Home, or its process is gone. */
+  terminalEvidenceAt: Generated<Date | null>;
+  /** Handed off and lost without a confirmed outcome: what "last action uncertain" names. */
+  contactLostAt: Generated<Date | null>;
   completedAt: Date | null;
   outcome: AgentOperationOutcome | null;
   resultSummary: JsonColumn<Readonly<Record<string, unknown>>> | null;
@@ -2013,6 +2036,27 @@ export interface AgentOperationTable {
 export interface DatabaseSchema {
   agentSessions: AgentSessionTable;
   agentOperations: AgentOperationTable;
+  workHomePolicy: {
+    singleton: Generated<boolean>;
+    assignmentId: import("@opensteer/control-plane-protocol").WorkAssignmentId;
+    deploymentId: DeploymentId;
+    organizationName: string;
+    state: Generated<import("@opensteer/control-plane-protocol").WorkPolicyDocument["state"]>;
+    revision: Generated<number>;
+    policy: JsonColumn<import("@opensteer/control-plane-protocol").WorkPolicy>;
+  };
+  workAuditHead: {
+    singleton: Generated<boolean>;
+    sequence: Generated<number>;
+    hash: Generated<string>;
+    acknowledgedSequence: Generated<number>;
+    sendingThrough: Generated<number | null>;
+  };
+  workAuditOutbox: {
+    sequence: number;
+    record: JsonColumn<import("@opensteer/control-plane-protocol").WorkAuditRecord>;
+    hash: string;
+  };
   pluginOauthRecords: {
     id: string;
     ownerUserId: UserId;
@@ -2206,6 +2250,8 @@ export interface DatabaseSchema {
   personalAttention: PersonalAttentionTable;
 
   agentConnections: AgentConnectionTable;
+  agentDirectoryCache: AgentDirectoryCacheTable;
+  agentEmbedderAssertionClaims: AgentEmbedderAssertionClaimTable;
   apps: AppTable;
   appServers: AppServerTable;
   appVersions: AppVersionTable;

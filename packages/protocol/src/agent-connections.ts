@@ -7,6 +7,8 @@ import {
   DeploymentIdSchema,
 } from "@opensteer/core";
 
+import { ChromeTabGrantCatalogSchema } from "./browser-sources.js";
+
 /** The Host's one MCP resource; an agent adds the Host's origin plus this path. */
 export const agentConnectionMcpPath = "/internal/v1/mcp";
 export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
@@ -85,6 +87,7 @@ export const AgentConnectionSchema = z.object({
   revokedAt: z.iso.datetime({ offset: true }).nullable().optional(),
   /** What the Home could prove about who asked, recorded at consent; null before it was kept. */
   identityAtConsent: AgentConnectionIdentityAtConsentSchema.nullable().optional(),
+  verificationWithdrawnAt: z.iso.datetime({ offset: true }).optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 
   createdAt: z.iso.datetime({ offset: true }),
@@ -92,7 +95,7 @@ export const AgentConnectionSchema = z.object({
   expiresAt: z.iso.datetime({ offset: true }),
 });
 export type AgentConnection = z.infer<typeof AgentConnectionSchema>;
-export const AgentConnectionConsentSchema = z.object({
+export const AgentConnectionConsentSchema = ChromeTabGrantCatalogSchema.extend({
   grantsAvailable: z.literal(true).optional(),
   requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   clientName: z.string().min(1).max(100),

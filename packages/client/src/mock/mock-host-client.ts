@@ -2149,6 +2149,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
               )?.id ?? null,
         }),
       ),
+    "connections.activity": async (input) =>
+      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+    "threads.activity": async (input) =>
+      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
     "connections.list": async (input) => {
       const connections = client.listConnections(input.includeRevoked === true);
       if (!client.grantsAvailable) return rpcSuccess({ connections });
@@ -5928,6 +5932,19 @@ class MockHostState {
       completionPath: `/oauth/mcp/complete?request=${command.requestId}`,
     };
   }
+  /** The preview's direct operations, newest first, as the Home's activity reads page them. */
+  agentActivity(filter: { readonly threadId?: string; readonly connectionId?: string }) {
+    const sessions = Object.entries(this.snapshot.agentWork?.sessions ?? {});
+    const operations = sessions
+      .filter(
+        ([threadId, slot]) =>
+          (filter.threadId === undefined || threadId === filter.threadId) &&
+          (filter.connectionId === undefined || slot.connection.id === filter.connectionId),
+      )
+      .flatMap(([, slot]) => slot.operations ?? [])
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    return { operations: operations.slice(0, 50), nextBefore: null };
+  }
   listConnections(includeRevoked = false) {
     return this.connections.filter(
       (row) =>
@@ -9558,7 +9575,7 @@ class MockHostState {
       });
     if (mac.status !== "online" || mac.modules.integrations?.readiness !== "ready")
       throw mockConflict(
-        "Open Opensteer on the Mac connected to this iPhone and update it to support screen drivers.",
+        "Open Opensteer on the Mac connected to this iPhone and update it to support iPhone Screen.",
       );
     const target =
       command.target.kind === "new"

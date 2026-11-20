@@ -5,7 +5,7 @@ import {
   requireSelfDeviceId,
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
-import { DeviceIdSchema, type DeviceId } from "@opensteer/core";
+import { DeviceIdSchema, agentGrantAccess, type DeviceId } from "@opensteer/core";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
@@ -15,7 +15,7 @@ import {
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
-import { integrationConnectionGrantAccess, localServerGrantAccess } from "./agent-grant-targets.js";
+import { integrationConnectionGrantAccess, integrationConnectionGrantTargets, localServerGrantAccess } from "./agent-grant-targets.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -1688,28 +1688,29 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   async listCallableTools(
     input: IntegrationRequester,
   ): Promise<readonly CallableIntegrationTool[]> {
-    const authority = await resolveResourceAccess(this.database, requesterSubject(input));
-    const grant = authority.execution.agentConnection?.grant;
+    // The caller's authority is read when the answer is returned, not when the read began: a
+    // grant narrowed while the cache was being filled applies to this answer.
     const permitted = async (tools: readonly CallableIntegrationTool[]) => {
-      const granted =
-        grant?.scope === "selected"
-          ? await integrationConnectionGrantAccess(
-              this.database,
-              grant,
-              tools.flatMap((tool) => (tool.grant.connectionId ? [tool.grant.connectionId] : [])),
-            )
-          : null;
+      const subject = requesterSubject(input);
+      let authority = await resolveResourceAccess(this.database, subject);
+      const targetIds = tools.flatMap(({ grant, server }) =>
+        grant.connectionId && server.transport.type !== "runner" ? [grant.connectionId] : [],
+      );
+      const targets = authority.execution.agentConnection?.grant.scope === "selected" && targetIds.length
+        ? await integrationConnectionGrantTargets(this.database, [...new Set(targetIds)])
+        : null;
+      if (targets) authority = await resolveResourceAccess(this.database, subject);
+      const grant = authority.execution.agentConnection?.grant;
       return tools.filter((tool) => {
         const write = integrationToolEffect(tool.tool.annotations) !== "read";
         if (authority.runAccess !== "read-write" && write) return false;
-        if (!grant || !granted) return true;
+        if (grant?.scope !== "selected") return true;
         // Each tool's own effect is intersected with what the grant allows of its target.
+        const target = tool.grant.connectionId ? targets?.get(tool.grant.connectionId) : undefined;
         const access =
           tool.server.transport.type === "runner"
             ? localServerGrantAccess(grant, tool.server.id)
-            : tool.grant.connectionId
-              ? (granted.get(tool.grant.connectionId) ?? null)
-              : null;
+            : target ? agentGrantAccess(grant, target) : null;
         return access !== null && (!write || access === "read-write");
       });
     };

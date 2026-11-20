@@ -9,7 +9,10 @@ import {
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
-import { TabStore } from "@opensteer/database";
+import { AgentConnectionStore, TabStore } from "@opensteer/database";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { describeStore, testModelSelection } from "@opensteer/database/test-support/store";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { sql } from "kysely";
@@ -20,6 +23,7 @@ import type { TabActor } from "../tabs/ports.js";
 import { readableTabTasks, tabComputer, tabReadAuthority } from "../tabs/tab-authority.js";
 import { TabService } from "../tabs/tab-service.js";
 import {
+  clients,
   connection,
   createTask,
   errorText,
@@ -159,10 +163,17 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     // Every tab exists for the person, so only the lineage's own filter decides.
     const url = await serveMcp(storeFixture, {
       tabs: {
+        // As the tab service projects it: a page names its profile.
         get: async (owner, tabId) => {
           const row = await tabs.get(owner, tabId, true);
           if (!row) throw new Error("No such tab");
-          return row as never;
+          return {
+            ...row,
+            profile:
+              row.kind === "page" && row.profileId
+                ? { profileId: row.profileId, name: row.profileName }
+                : null,
+          } as never;
         },
       },
     });
@@ -321,5 +332,25 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     } finally {
       service.dispose();
     }
+    // Tasks stay, the profile is withdrawn: the lineage's own places in it are no longer read.
+    await new AgentConnectionStore(storeFixture.database).update(f.userId, {
+      connectionId: agent.id,
+      expectedRevision: 1,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const again = new Client({ name: "after-withdrawal", version: "1" });
+    clients.push(again);
+    await again.connect(
+      new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: `Bearer ${agent.token}` } },
+      }) as unknown as Transport,
+      { timeout: 5000 },
+    );
+    const withdrawn = await again.callTool({
+      name: "opensteer_task_read",
+      arguments: { taskId: own },
+    });
+    expect(withdrawn.isError, JSON.stringify(withdrawn.content)).not.toBe(true);
+    expect((withdrawn.structuredContent as { recentPlaces: unknown[] }).recentPlaces).toEqual([]);
   });
 });

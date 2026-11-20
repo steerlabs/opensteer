@@ -31,6 +31,10 @@ it("negotiates live-tab traffic only on wire 6 while wire 4 stays frozen", () =>
   expect(negotiateWire(6)).toEqual({ kind: "negotiated", wire: 6 });
   expect(readHostMessage(command, 6)).toMatchObject({ type: "tab.command" });
   expect(readClientMessage(shared, 6)).toMatchObject({ type: "tab.shared" });
+  const detached = { type: "tab.detached", shareId: crypto.randomUUID() };
+  expect(readClientMessage(JSON.stringify(detached), 6)).toEqual({ type: "unknown" });
+  expect(negotiateWire(7)).toEqual({ kind: "negotiated", wire: 7 });
+  expect(readClientMessage(JSON.stringify(detached), 7)).toEqual(detached);
 });
 
 it("reassembles exact large UTF-8 messages under the existing outer frame cap", () => {

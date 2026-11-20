@@ -96,6 +96,29 @@ describe("PublicBrowserEgressProxy", () => {
     cleanups.push(() => proxy.close());
     await expect(proxyConnect(address.port, "127.0.0.1:443")).resolves.toBe(403);
   });
+
+  it("refuses SMTP and pending traffic before resolving a destination", async () => {
+    const lookedUp: string[] = [];
+    const proxy = new PublicBrowserEgressProxy({
+      port: 0,
+      upstreamRequired: true,
+      resolveAddress: async (hostname) => {
+        lookedUp.push(hostname);
+        throw new Error("Unexpected DNS request");
+      },
+    });
+    const { port } = await proxy.start();
+    cleanups.push(() => proxy.close());
+    for (const smtp of [25, 465, 587]) {
+      await expect(proxyRequest(port, `http://public.test:${smtp}/`)).resolves.toMatchObject({
+        status: 403,
+      });
+      await expect(proxyConnect(port, `public.test:${smtp}`)).resolves.toBe(403);
+    }
+    await expect(proxyRequest(port, "http://public.test/")).resolves.toMatchObject({ status: 502 });
+    await expect(proxyConnect(port, "public.test:443")).resolves.toBe(502);
+    expect(lookedUp).toEqual([]);
+  });
 });
 
 /*

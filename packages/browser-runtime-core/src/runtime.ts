@@ -1,4 +1,7 @@
-import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
+import type {
+  StandardCdpLeaseReconciliation,
+  StandardCdpMode,
+} from "@opensteer/protocol/standard-cdp";
 import {
   browserFrameFits,
   defaultBrowserViewport,
@@ -17,6 +20,7 @@ import {
 import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { AsyncMutex, LifecycleLanes, settleCleanup } from "./async.js";
@@ -102,6 +106,7 @@ export interface BrowserRuntimeHealth {
   wireVersion: 2;
   standardCdp: 1;
   wholeContextCdp?: 1;
+  standardCdpLeaseRecovery: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -142,7 +147,6 @@ export interface BrowserHost {
   cleanup: { readonly result: Promise<void> } | null;
   disposal: Promise<void> | null;
   generation: number;
-  standardLeaseGeneration: number;
   identity: BrowserHostIdentity;
   onBrowserClose: () => void;
   quiesced: boolean;
@@ -206,6 +210,11 @@ export class BrowserAttachment {
  */
 export class BrowserRuntime implements NativePresentationSource {
   private generation = 0;
+  readonly standardCdpBootId = randomUUID();
+  private readonly standardCdpLeases = new Map<
+    BrowserPartitionKey,
+    { generation: number; active?: { generation: number; client: StandardCdpAttachment } }
+  >();
   private readonly initialViewport: Viewport;
   private readonly launcher: BrowserLauncher;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
@@ -345,6 +354,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return {
       wireVersion: 2,
       standardCdp: 1,
+      standardCdpLeaseRecovery: 1,
       ...(this.launcher.hostCost === "process" && this.localProfileStorage?.engine === "chromium"
         ? { wholeContextCdp: 1 as const }
         : {}),
@@ -585,6 +595,21 @@ export class BrowserRuntime implements NativePresentationSource {
     return result;
   }
 
+  async reconcileStandardCdpLease(lease?: StandardCdpLeaseReconciliation) {
+    if (lease) {
+      const hostKey = `profile:${lease.profileId}` as const;
+      const state = this.standardCdpLeases.get(hostKey) ?? { generation: 0 };
+      state.generation = Math.max(state.generation, lease.generation);
+      this.standardCdpLeases.set(hostKey, state);
+      const active = state.active;
+      if (active?.generation === lease.generation) {
+        active.client.close();
+        await active.client.settled;
+      }
+    }
+    return { runtimeBootId: this.standardCdpBootId };
+  }
+
   /** A signed raw CDP ticket attaches to a live Browser Session without taking its lifecycle lease. */
   async attachStandardCdp(
     ticket: string,
@@ -619,19 +644,30 @@ export class BrowserRuntime implements NativePresentationSource {
           "This ticket does not authorize a live Browser Session.",
         );
       const wholeContext = claims.standardCdp === "whole-context";
+      const exclusive = claims.standardCdpLease;
+      const state = this.standardCdpLeases.get(hostKey);
       if (
         wholeContext &&
         (claims.identity.kind !== "profile-local" ||
-          !claims.standardCdpLease ||
-          claims.standardCdpLease.generation <= active.host.standardLeaseGeneration)
+          !exclusive ||
+          exclusive.bootId !== this.standardCdpBootId ||
+          state?.active !== undefined ||
+          exclusive.generation <= (state?.generation ?? 0))
       )
         throw new BrowserRuntimeError(
           "forbidden",
           "Whole-context CDP requires an exclusive saved profile.",
         );
       const client = active.controller.openStandardCdp(wholeContext, onOverflow);
-      if (wholeContext && claims.standardCdpLease)
-        active.host.standardLeaseGeneration = claims.standardCdpLease.generation;
+      if (wholeContext && exclusive) {
+        const entry = { generation: exclusive.generation, client };
+        const lease = { generation: exclusive.generation, active: entry };
+        this.standardCdpLeases.set(hostKey, lease);
+        void client.settled.then(() => {
+          const current = this.standardCdpLeases.get(hostKey);
+          if (current?.active === entry) delete current.active;
+        });
+      }
       return { ...client, mode };
     });
   }
@@ -1134,7 +1170,6 @@ export class BrowserRuntime implements NativePresentationSource {
           cleanup: null,
           disposal: null,
           generation,
-          standardLeaseGeneration: 0,
           identity:
             claims.identity.kind === "profile-local"
               ? { key: hostKey, kind: "local", binding: claims.identity.binding }

@@ -61,7 +61,7 @@ export class StandardCdpTickets {
     if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > maxTtl)
       throw new OpensteerError({
         code: "bad_request",
-        message: "CDP ticket lifetime must be at most five minutes.",
+        message: "Browser connection links last at most five minutes.",
       });
     const now = this.#now();
     const expiresAt = Math.min(now + ttl, authority.expiresAt ?? Infinity);
@@ -71,7 +71,7 @@ export class StandardCdpTickets {
     if (this.#claims.size >= maxTickets)
       throw new OpensteerError({
         code: "conflict",
-        message: "Too many browser attachment tickets.",
+        message: "Too many pending browser connection links.",
       });
     const ticket = randomBytes(32).toString("base64url");
     this.#claims.set(digest(ticket), {

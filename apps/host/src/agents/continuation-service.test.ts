@@ -821,6 +821,7 @@ function withMacs(
               apps: [
                 {
                   bundleId: "com.apple.Notes",
+                  teamId: null,
                   name: "Notes",
                   access: "read-write",
                   status: "approved",

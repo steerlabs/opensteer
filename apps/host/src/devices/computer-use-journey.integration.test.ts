@@ -1,6 +1,24 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { upsertSelfDeviceInTransaction } from "@opensteer/database";
-import { DeviceIdSchema } from "@opensteer/core";
+import {
+  AgentConnectionStore,
+  integrationConnectionGrantTarget,
+  upsertSelfDeviceInTransaction,
+} from "@opensteer/database";
+import {
+  computer_apps as computerAppsTool,
+  computer_use as computerUseTool,
+} from "@opensteer/agent-tools/tools";
+import { AgentGrantSchema, type RequestId, type ThreadAccessMode } from "@opensteer/core";
+import {
+  AgentSessionService,
+  OperationOutcomeUnknown,
+} from "../agent-sessions/agent-session-service.js";
+import { requireDeviceAccess } from "../administration/device-access.js";
+import { agentToolFailure } from "../mcp/agent-tool-failure.js";
+import type { ConnectionCaller } from "../mcp/agent-caller.js";
+import { DeviceToolHandlers } from "../mcp/handlers/devices.js";
+import { agentSessionComputerKey, endSessionComputerWork } from "./device-service.js";
+import { DeviceIdSchema, ThreadIdSchema, type DeviceId } from "@opensteer/core";
 import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import {
   createDeviceServices,
@@ -5028,6 +5046,7 @@ async function createWorld(
     readonly passwords?: ConstructorParameters<typeof ComputerUseService>[0]["passwords"];
     readonly onTabUsed?: DeviceServicesTestOptions["onTabUsed"];
     readonly computerReplTime?: DeviceServicesTestOptions["computerReplTime"];
+    readonly stoppedDevices?: ReadonlySet<DeviceId>;
   } = {},
 ) {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-computer-use-journey-"));
@@ -5109,6 +5128,10 @@ async function createWorld(
   const definitions = options.phone ? [definition, phoneDefinition] : [definition];
   let computerUse!: ComputerUseService;
   const hub = new ComputerAppHub({
+    requireDeviceAgentAccess: async (deviceId) => {
+      if (options.stoppedDevices?.has(deviceId))
+        await requireDeviceAccess(database, deviceId, "apps", false, { stopped: true });
+    },
     knownDefinitionIds: () => new Set(computerAppIntegrations.map(({ id }) => id)),
     onChanged: () => undefined,
     onComputerUseEvent: (runnerId, event) => computerUse.handleHelperEvent(runnerId, event),
@@ -5678,3 +5701,407 @@ async function selfStops(store: OpensteerStore) {
   }
   return result;
 }
+
+/**
+ * A connected agent driving the one app or phone screen it was granted, through its own session:
+ * the real handler, session pipeline, resolver, computer-use service and REPL, with the phone
+ * faked on its real `integrations` stream, the same seam as every case above.
+ */
+integration.sequential("Computer use for a connected agent, through its session", () => {
+  let isolated: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
+  let database: ReturnType<typeof createDatabase>;
+  beforeAll(async () => {
+    isolated = await createMachineAccessDatabase(baseDatabaseUrl!);
+    database = createDatabase({
+      applicationName: "host-computer-use-session-test",
+      connectionString: isolated.url,
+      maxConnections: 4,
+    });
+  }, 120_000);
+  beforeEach(async () => {
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await isolated?.drop();
+  });
+
+  async function connectedAgent(
+    accessMode: ThreadAccessMode,
+    options: { target?: "mac"; scope?: "everything" } = {},
+  ) {
+    const stoppedDevices = new Set<DeviceId>();
+    const world = await createWorld(database, { phone: true, stoppedDevices });
+    const onMac = options.target === "mac";
+    const definitionId = onMac ? "macos-app" : "android-phone";
+    const asked = await (await world.gateway(await world.startRun("Ask for device access"))).call(
+      "app_access_request",
+      {
+        computerId: onMac ? world.macId : world.phoneId,
+        ...(onMac ? { app: "Notes" } : {}),
+        access: "read-write",
+        reason: onMac ? "Use Notes" : "Use the phone",
+      },
+    );
+    expect(asked.isError).toBeUndefined();
+    const setup = (await world.persistence.listComputerAppSetupRequests(world.owner.userId)).find(
+      (request) => request.definitionId === definitionId,
+    );
+    if (!setup) throw new Error("Missing device approval");
+    if (onMac) await world.approveOnMac(setup);
+    else await world.allowPhoneFromClient(setup);
+    const row = await database
+      .selectFrom("integrationConnections")
+      .select(["id", "deviceId", "computerApp", "integrationDefinitionId"])
+      .where("integrationDefinitionId", "=", definitionId)
+      .where("status", "!=", "revoked")
+      .executeTakeFirstOrThrow();
+    const target = integrationConnectionGrantTarget(row);
+    if (target.kind !== "computer-app") throw new Error("Expected a computer app");
+    const grant = AgentGrantSchema.parse(
+      options.scope === "everything"
+        ? { scope: "everything" }
+        : { scope: "selected", tasks: false, resources: [target] },
+    );
+    const agents = new AgentConnectionStore(database);
+    const record = await agents.create({
+      userId: world.owner.userId,
+      label: "Test agent",
+      clientName: "Test agent",
+      accessMode,
+      resource: "https://home.test/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+      grant,
+    });
+    expect(await agents.activate(record.id, `hash:${randomUUID()}`)).toBe(true);
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", record.id)
+      .executeTakeFirstOrThrow();
+    const sessions = new AgentSessionService({
+      store: world.store,
+      holdMs: 0,
+      // As the runtime wires it: a session's end takes its computer work with it.
+      closeBinding: (bindingId) =>
+        endSessionComputerWork(bindingId, {
+          computerUse: world.computerUse,
+          devices: world.platform.devices,
+          onError: (error) => {
+            throw error;
+          },
+        }),
+    });
+    const handlers = new DeviceToolHandlers({
+      devices: world.platform.devices,
+      access: {} as never,
+      sessions,
+    });
+    const caller: ConnectionCaller = {
+      kind: "connection",
+      key: `connection:${record.id}`,
+      userId: world.owner.userId,
+      accessMode,
+      connectionId: record.id,
+      grant,
+      grantRevision,
+    };
+    const computerId = DeviceIdSchema.parse(row.deviceId);
+    /** The tool's answer as the agent reads it: the content, and the receipt beside it. */
+    const call = async (input: Record<string, unknown>, operationKey: string = randomUUID()) => {
+      const output = computerUseTool.output.parse(
+        await handlers.computer_use({
+          caller,
+          input: computerUseTool.input.parse({ computerId, ...(onMac ? { app: "Notes" } : {}), ...input }),
+          operationKey,
+        }),
+      );
+      return {
+        ...output.structuredContent,
+        requestId: output.structuredContent?.requestId,
+        status: output.structuredContent?.status,
+        taskId: ThreadIdSchema.parse(output.structuredContent?.taskId),
+        content: output.content,
+        error: output.structuredContent?.error,
+        isError: output.isError,
+      };
+    };
+    const apps = async (input = {}) =>
+      (await handlers.computer_apps({
+        caller,
+        input: computerAppsTool.input.parse(input),
+        operationKey: randomUUID(),
+      })) as { computers: unknown[]; phones: unknown[] };
+    const operation = (operationKey: string) =>
+      database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "target", "targetGeneration", "calls", "sessionId", "effect", "decision"])
+        .where("operationKey", "=", operationKey)
+        .executeTakeFirstOrThrow();
+    return {
+      world,
+      agents,
+      record,
+      sessions,
+      call,
+      apps,
+      operation,
+      computerId,
+      target,
+      stoppedDevices,
+      fake: world.fakePhone!,
+    };
+  }
+
+  const tapScript = 'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1); return "tapped"';
+
+  it("runs the granted phone screen in full-access, names it on its Device, and shows its task on the phone", async () => {
+    const s = await connectedAgent("full-access");
+    try {
+      const result = await s.call({ code: tapScript, reason: "Tap send" }, "tap-1");
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" });
+      expect(JSON.stringify(result.content)).toContain("tapped");
+      expect(s.fake.received("act")).toBe(1);
+      const row = await s.operation("tap-1");
+      expect(row).toMatchObject({
+        state: "completed",
+        outcome: "completed",
+        calls: tapScript,
+        targetGeneration: expect.stringMatching(/^approval:/u),
+        target: {
+          grant: s.target,
+          name: phone,
+          device: { id: s.computerId, name: phone },
+        },
+      });
+      // The phone's frames carry the session's own bookkeeping key, never a Run.
+      const key = agentSessionComputerKey(row.sessionId);
+      expect(s.fake.frames.every((frame) => frame.runId === key)).toBe(true);
+      expect(
+        await database.selectFrom("runs").select("id").where("id", "=", key).execute(),
+      ).toEqual([]);
+      // Watch: the phone's session card names the agent's task.
+      expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([
+        expect.objectContaining({
+          threadId: result.taskId,
+          actor: { threadId: result.taskId },
+          display: true,
+        }),
+      ]);
+      // The script sees its one target only, and tab() is not a connected agent's.
+      const listed = await s.call({ code: "return [(await phones()).length, (await apps()).length]" });
+      expect(JSON.stringify(listed.content)).toContain("[1,0]");
+      const tab = await s.call({ code: 'await tab("anything")' });
+      expect(JSON.stringify(tab.content)).toContain("app() or phone()");
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it.each([{}, { scope: "everything" as const }])(
+    "observes Notes without asking and blocks mutations in observation mode ($scope)",
+    async (options) => {
+      const s = await connectedAgent("approval-required", { ...options, target: "mac" });
+      try {
+        expect(await s.apps({ computerId: s.computerId })).toMatchObject({
+          computer: { apps: [expect.objectContaining({ name: "Notes", access: "read-write" })] },
+        });
+        const script = 'globalThis.w=await (await app("Notes")).window(); await w.observe({screenshot:true})';
+        const read = await s.call({ code: script, readOnly: true }, "observe-notes");
+        expect(read).toMatchObject({ status: "completed" });
+        expect(read.content).toContainEqual(expect.objectContaining({ type: "image" }));
+        expect(await s.operation("observe-notes")).toMatchObject({
+          effect: "read", decision: { by: "structural-read" },
+        });
+
+        const effect = await s.call({
+          code: 'await w.type("test")',
+          taskId: read.taskId,
+          readOnly: true,
+        });
+        expect(effect).toMatchObject({ isError: true });
+        expect(effect.content).toContainEqual(expect.objectContaining({
+          text: expect.stringContaining("This script can only observe"),
+        }));
+
+        const pending = await s.call({ code: 'await w.type("test")', taskId: read.taskId });
+        expect(pending.status).toBe("pending");
+        const request = await database.selectFrom("requests").select("presentation")
+          .where("id", "=", pending.requestId as RequestId)
+          .executeTakeFirstOrThrow();
+        expect(request.presentation).toMatchObject({ title: `Act on Notes on ${mac}?` });
+        expect(s.world.fakeMac.frames.filter((frame) => frame.operation === "act")).toEqual([]);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it("reports a stopped Device before reachability or the person's review", async () => {
+    const s = await connectedAgent("approval-required");
+    try {
+      s.stoppedDevices.add(s.computerId);
+      s.fake.detach();
+      const error = await s.call({ code: tapScript }).catch((cause: unknown) => cause);
+      expect(agentToolFailure(error, "write")).toMatchObject({
+        code: "computer_stopped",
+        message: expect.stringContaining("Agents are stopped"),
+      });
+      expect(await database.selectFrom("agentOperations").select("id").execute()).toEqual([]);
+      expect(s.fake.received("act")).toBe(0);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("keeps a dropped effect unknown even if the script catches the error", async () => {
+    const s = await connectedAgent("full-access");
+    const gate = Promise.withResolvers<void>();
+    try {
+      const ready = await s.call({
+        code: 'globalThis.p=await phone("Pixel 8"); await p.observe()',
+      });
+      expect(ready.status).toBe("completed");
+      s.fake.gate = gate.promise;
+      const code = 'try { await p.tap(1); } catch {}';
+      const inFlight = s.call({ code, taskId: ready.taskId }, "lost-effect");
+      const rejected = expect(inFlight).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+      await Promise.race([s.fake.reached("act"), inFlight]);
+      s.fake.detach();
+      await rejected;
+      expect(await s.operation("lost-effect")).toMatchObject({ outcome: "unknown" });
+      expect(await s.call({ code, taskId: ready.taskId }, "lost-effect")).toMatchObject({ status: "unknown" });
+      expect(s.fake.received("act")).toBe(1);
+    } finally {
+      gate.resolve();
+      await s.world.close();
+    }
+  });
+
+  it("asks in approval-required, completes the same call once allowed, and refuses a decline", async () => {
+    const s = await connectedAgent("approval-required");
+    try {
+      const pending = await s.call({ code: tapScript }, "ask-1");
+      expect(pending).toMatchObject({ status: "pending", requestId: expect.any(String) });
+      expect(s.fake.received("act")).toBe(0);
+      const answer = async (requestId: string, decision: "allow" | "deny") => {
+        const request = await database
+          .selectFrom("requests")
+          .select(["id", "revision"])
+          .where("id", "=", requestId as never)
+          .executeTakeFirstOrThrow();
+        await s.sessions.respond({
+          requestId: request.id as RequestId,
+          expectedRevision: request.revision,
+          resolvedBy: s.world.owner.userId,
+          response: { kind: "form", answers: { decision: [decision] } },
+        });
+      };
+      await answer(pending.requestId as string, "allow");
+      const done = await s.call({ code: tapScript, taskId: pending.taskId }, "ask-1");
+      expect(done, JSON.stringify(done)).toMatchObject({
+        status: "completed",
+        taskId: pending.taskId,
+      });
+      expect(s.fake.received("act")).toBe(1);
+      const declined = await s.call({ code: tapScript }, "ask-2");
+      await answer(declined.requestId as string, "deny");
+      await expect(s.call({ code: tapScript }, "ask-2")).rejects.toThrow(
+        "The person did not allow it.",
+      );
+      expect(s.fake.received("act")).toBe(1);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("refuses an app the grant does not hold exactly like one that does not exist, and lists none of it", async () => {
+    const s = await connectedAgent("full-access");
+    try {
+      // The person's own task has Notes approved on their Mac.
+      const gateway = await s.world.gateway(await s.world.startRun("Use Notes"));
+      await gateway.call("app_access_request", {
+        computerId: s.world.macId,
+        app: "Notes",
+        access: "read-write",
+        reason: "Write Notes",
+      });
+      const [setup] = await s.world.persistence.listComputerAppSetupRequests(
+        s.world.owner.userId,
+      );
+      if (!setup) throw new Error("Missing Mac approval");
+      await s.world.approveOnMac(setup);
+      const macId = DeviceIdSchema.parse(s.world.macId);
+      const notes = s.call({ code: "return 1", computerId: macId, app: "Notes" });
+      const nothing = s.call({ code: "return 1", computerId: macId, app: "Nothing" });
+      const [held, missing] = await Promise.allSettled([notes, nothing]);
+      expect(held.status).toBe("rejected");
+      expect(missing.status).toBe("rejected");
+      const message = (outcome: PromiseSettledResult<unknown>) =>
+        outcome.status === "rejected" ? String((outcome.reason as Error).message) : "";
+      expect(message(held)).toBe(message(missing));
+      expect(message(held)).toContain("No app or phone screen shared with this agent matches");
+      // No operation was even recorded for either.
+      expect(await database.selectFrom("agentOperations").select("id").execute()).toEqual([]);
+      const listing = await s.apps();
+      expect(listing.computers).toEqual([]);
+      // Its own phone screen reads as usable directly, not as work only a task's Run can do.
+      expect(listing.phones).toEqual([
+        expect.objectContaining({ computerId: s.computerId, access: "read-write" }),
+      ]);
+      const words = JSON.stringify(listing);
+      expect(words).not.toContain("Notes");
+      expect(words).not.toContain(mac);
+      expect(s.fake.received("act")).toBe(0);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  for (const ending of ["Stop on the task", "Disconnect"] as const) {
+    it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {
+      const s = await connectedAgent("full-access");
+      let resume = () => {};
+      try {
+        const first = await s.call({
+          code: 'globalThis.p=await phone("Pixel 8"); await p.observe(); return "ready"',
+        });
+        expect(first, JSON.stringify(first)).toMatchObject({ status: "completed" });
+        s.fake.gate = new Promise<void>((resolve) => {
+          resume = resolve;
+        });
+        const inFlight = s.call({ code: "await p.tap(1)", taskId: first.taskId }, "in-flight");
+        await Promise.race([s.fake.reached("act"), inFlight]);
+        const { sessionId } = await s.operation("in-flight");
+        if (ending === "Stop on the task")
+          expect(
+            await s.sessions.stopSession({
+              ownerUserId: s.world.owner.userId,
+              threadId: first.taskId,
+              sessionId,
+            }),
+          ).toEqual({ ended: true });
+        else {
+          await s.agents.revoke(s.world.owner.userId, s.record.id);
+          await s.sessions.closeConnection(s.record.id, true);
+        }
+        // The script ends now, not when the phone answers, and its outcome is not claimed.
+        await expect(inFlight).rejects.toThrow(
+          ending === "Stop on the task"
+            ? "The person stopped this work. The script ended while it ran"
+            : "The script ended while it ran",
+        );
+        expect(await s.operation("in-flight")).toMatchObject({ outcome: "unknown" });
+        await vi.waitFor(() => expect(s.fake.received("close")).toBeGreaterThan(0));
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+        await expect(s.call({ code: "return 1", taskId: first.taskId })).rejects.toThrow();
+        expect(s.fake.received("act")).toBe(1);
+      } finally {
+        resume();
+        await s.world.close();
+      }
+    });
+  }
+});

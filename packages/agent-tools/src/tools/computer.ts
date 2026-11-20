@@ -9,6 +9,7 @@ import {
   ComputerUseOutputSchema,
 } from "./computer-outputs.js";
 import { AgentLinkSchema, RequestCreationOutputSchema } from "./outputs.js";
+import { directInput } from "./tabs.js";
 
 const accessState = z.enum(["enabled", "disabled", "unsupported"]);
 const availability = z.object({
@@ -29,7 +30,7 @@ export const computer_list = defineAgentTool({
   name: "computer_list",
   title: "List computers",
   description:
-    "List the person's computers and phones: kind, online state, which one hosts tasks and can run them now, capabilities, browser, apps and files access switches, and active session IDs. A phone whose screen agents can control has phoneDisplay: its definitionId, control and input availability with a typed reason, advertised navigation buttons and actions, and setup (a Mac-driven iPhone names its driving Mac). Only a computer with hosting runs tasks or shell sessions; a Mac-driven iPhone never lends its Mac. Devices with access off are listed too; listing grants no access.",
+    "List the computers and phones you can see, including whether each is online, what it can do and which access switches are on. A phone with screen control has phoneDisplay, with availability, navigation buttons, actions and setup. An iPhone names its connected Mac only if you can see that Mac. Only computers that host work can run tasks or open shells. Listing a computer does not grant access.",
   input: z.strictObject({
     cursor: CursorSchema.optional().describe("nextCursor from the previous page."),
   }),
@@ -102,12 +103,26 @@ export const computer_use = defineAgentTool({
   name: "computer_use",
   title: "Operate Mac apps and phones",
   description:
-    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it.",
-  input: z.strictObject({ code: z.string().min(1).max(65536) }),
+    "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it. Connected agents: name one app or phone screen shared with you by computerId and app (omit app for a phone screen); the script reaches only that one, and tab() is not available. Use at most 20,000 characters. Set readOnly: true to observe without approval. To continue the same task, pass its taskId. If pending, wait for the person in Needs you, then repeat the same operationKey and arguments. Do not poll.",
+  input: z.strictObject({
+    code: z.string().min(1).max(65536),
+    computerId: DeviceIdSchema.optional().describe(
+      "Connected agents only: the Mac or phone from computer_apps.",
+    ),
+    app: z
+      .string()
+      .trim()
+      .min(1)
+      .max(240)
+      .optional()
+      .describe("Connected agents only: the Mac app's name or bundleId; omit for a phone screen."),
+    readOnly: z.boolean().optional().describe("Connected agents only: allow observation, with no input or other changes."),
+    ...directInput,
+  }),
   output: ComputerUseOutputSchema,
   capability: "computerUse",
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "connection"] as const,
   openWorld: true,
   destructive: true,
 });

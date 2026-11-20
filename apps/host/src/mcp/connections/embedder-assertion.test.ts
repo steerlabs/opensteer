@@ -10,14 +10,24 @@ import { describe, expect, it } from "vitest";
 import {
   consentSelfStartWarning,
   describeIdentity,
-  InMemoryJtiReplayStore,
   resolveConsentIdentity,
   verifyEmbedderAssertion,
+  type ClaimEmbedderAssertion,
   type EmbedderAssertionRequestBinding,
 } from "./embedder-assertion.js";
 
 const nowMs = Date.parse("2026-11-20T12:00:00.000Z");
 const nowSec = Math.floor(nowMs / 1_000);
+
+function claimOnce(): ClaimEmbedderAssertion {
+  const claims = new Set<string>();
+  return async (issuer, statementId) => {
+    const key = `${issuer}:${statementId}`;
+    if (claims.has(key)) return false;
+    claims.add(key);
+    return true;
+  };
+}
 
 const baseRequest: EmbedderAssertionRequestBinding = {
   clientId: "eyJ2IjoxfQ.signature-bytes",
@@ -124,7 +134,7 @@ describe("verifyEmbedderAssertion", () => {
     const otherKey = await makeEd25519Key("other-ed-1");
     const { directory, platformEntry } = buildDirectory(errandKey.jwk, otherKey.jwk);
     const assertion = await signAssertion(errandKey);
-    const seenJti = new InMemoryJtiReplayStore();
+    const claim = claimOnce();
 
     const result = await verifyEmbedderAssertion({
       directory,
@@ -132,7 +142,7 @@ describe("verifyEmbedderAssertion", () => {
       assertion,
       request: baseRequest,
       now: nowMs,
-      seenJti,
+      claim,
     });
 
     expect(result.ok).toBe(true);
@@ -163,7 +173,7 @@ describe("verifyEmbedderAssertion", () => {
       assertion,
       request: baseRequest,
       now: nowMs,
-      seenJti: new InMemoryJtiReplayStore(),
+      claim: claimOnce(),
     });
 
     expect(result.ok).toBe(true);
@@ -187,7 +197,7 @@ describe("verifyEmbedderAssertion", () => {
       assertion,
       request: baseRequest,
       now: nowMs,
-      seenJti: new InMemoryJtiReplayStore(),
+      claim: claimOnce(),
     });
 
     expect(result).toMatchObject({ ok: false, reason: "request-mismatch" });
@@ -205,7 +215,7 @@ describe("verifyEmbedderAssertion", () => {
       assertion,
       request: { ...baseRequest, state: undefined },
       now: nowMs,
-      seenJti: new InMemoryJtiReplayStore(),
+      claim: claimOnce(),
     });
 
     expect(result).toMatchObject({ ok: false, reason: "request-mismatch" });
@@ -224,7 +234,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: expired,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "expired" });
 
@@ -237,7 +247,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: barelyExpired,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: true });
 
@@ -249,7 +259,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: future,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "issued-in-future" });
 
@@ -261,7 +271,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: tooLong,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "invalid-lifetime" });
   });
@@ -295,7 +305,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: `${algNoneHeader}.${payload}.`,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "disallowed-algorithm" });
 
@@ -319,7 +329,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: hs256,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "disallowed-algorithm" });
 
@@ -331,7 +341,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: wrongTyp,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "invalid-typ" });
   });
@@ -350,7 +360,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion: withOtherKid,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "unknown-key" });
 
@@ -363,9 +373,38 @@ describe("verifyEmbedderAssertion", () => {
         assertion: withSpoofedKid,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "invalid-signature" });
+  });
+
+  it("requires an exact key ID even if an eligible key would verify the signature", async () => {
+    const errandKey = await makeEd25519Key("errand-ed-1");
+    const otherKey = await makeEd25519Key("other-ed-1");
+    const { directory, platformEntry } = buildDirectory(errandKey.jwk, otherKey.jwk);
+    const token = await signAssertion({ ...errandKey, kid: "" });
+    expect(await verifyEmbedderAssertion({
+      directory, platformEntry, assertion: token, request: baseRequest, now: nowMs, claim: claimOnce(),
+    })).toMatchObject({ ok: false, reason: "unknown-key" });
+  });
+
+  it("uses an exclusive expiry deadline and downgrades when the claim cannot be stored", async () => {
+    const errandKey = await makeEd25519Key("errand-ed-1");
+    const otherKey = await makeEd25519Key("other-ed-1");
+    const { directory, platformEntry } = buildDirectory(errandKey.jwk, otherKey.jwk);
+    const assertion = await signAssertion(errandKey, { exp: nowSec + 1 });
+    const deadline = nowMs + 11_000;
+    const input = { directory, platformEntry, assertion, request: baseRequest };
+    expect(await verifyEmbedderAssertion({
+      ...input, now: deadline - 1, claim: claimOnce(),
+    })).toMatchObject({ ok: true });
+    expect(await verifyEmbedderAssertion({
+      ...input, now: deadline, claim: claimOnce(),
+    })).toMatchObject({ ok: false, reason: "expired" });
+    expect(await resolveConsentIdentity({
+      ...input, clientName: "Claimed name", now: nowMs,
+      claim: async () => { throw new Error("database unavailable"); },
+    })).toMatchObject({ kind: "unverified" });
   });
 
   it("refuses an embedder not paired with this platform in embedsVia", async () => {
@@ -383,7 +422,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
     ).toMatchObject({ ok: false, reason: "unpaired-embedder" });
   });
@@ -392,7 +431,7 @@ describe("verifyEmbedderAssertion", () => {
     const errandKey = await makeEd25519Key("errand-ed-1");
     const otherKey = await makeEd25519Key("other-ed-1");
     const { directory, platformEntry } = buildDirectory(errandKey.jwk, otherKey.jwk);
-    const seenJti = new InMemoryJtiReplayStore();
+    const claim = claimOnce();
     const assertion = await signAssertion(errandKey, { jti: "one-time-jti" });
 
     // Wrong state fails before consuming jti.
@@ -403,7 +442,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion,
         request: { ...baseRequest, state: "wrong" },
         now: nowMs,
-        seenJti,
+        claim,
       }),
     ).toMatchObject({ ok: false, reason: "request-mismatch" });
 
@@ -415,7 +454,7 @@ describe("verifyEmbedderAssertion", () => {
         assertion,
         request: baseRequest,
         now: nowMs,
-        seenJti,
+        claim,
       }),
     ).toMatchObject({ ok: true });
 
@@ -427,12 +466,12 @@ describe("verifyEmbedderAssertion", () => {
         assertion,
         request: baseRequest,
         now: nowMs + 5_000,
-        seenJti,
+        claim,
       }),
     ).toMatchObject({ ok: false, reason: "replayed-jti" });
   });
 
-  it("refuses malformed tokens and never treats an invalid assertion as absent", async () => {
+  it("renders malformed statements and unavailable directories fully unverified", async () => {
     const errandKey = await makeEd25519Key("errand-ed-1");
     const otherKey = await makeEd25519Key("other-ed-1");
     const { directory } = buildDirectory(errandKey.jwk, otherKey.jwk);
@@ -444,12 +483,11 @@ describe("verifyEmbedderAssertion", () => {
         assertion: malformed,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       });
-      expect(result).toMatchObject({ ok: false, reason: "malformed" });
+      expect(result).toMatchObject({ kind: "unverified", clientName: "AgentPay" });
     }
 
-    // Even when directory is unavailable, a present assertion fails rather than falling back.
     const valid = await signAssertion(errandKey);
     expect(
       await resolveConsentIdentity({
@@ -458,9 +496,9 @@ describe("verifyEmbedderAssertion", () => {
         assertion: valid,
         request: baseRequest,
         now: nowMs,
-        seenJti: new InMemoryJtiReplayStore(),
+        claim: claimOnce(),
       }),
-    ).toMatchObject({ ok: false, reason: "directory-unavailable" });
+    ).toMatchObject({ kind: "unverified" });
   });
 });
 

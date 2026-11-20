@@ -8,6 +8,7 @@ import {
 import {
   browserSourceWireFloor,
   browserSourceTabWire,
+  browserSourceTabDetachWire,
   browserSourceTabFrameBytes,
   browserSourceTabBufferedBytes,
   readHostMessage,
@@ -417,6 +418,7 @@ async function receive(
         current.sourceId,
         (frame) => send(current, generation, frame),
         () => reject(current, generation, "Chrome tab transport overloaded"),
+        handshake.wire >= browserSourceTabDetachWire,
       );
     return;
   }

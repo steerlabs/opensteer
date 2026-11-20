@@ -149,7 +149,7 @@ function Invite(props: {
   const shown = state.selection.deploymentId;
   const [computerId, setComputerId] = useState<string | null>(shown);
   const computers = state.rows.map((row) => ({ id: row.deploymentId, name: row.name }));
-  const joinAs = state.account.account.identity?.email ?? "your Opensteer Account";
+  const joinAs = state.account.account.identity?.email ?? "your Opensteer account";
   const [invite, setInvite] = useState<InviteState>({ kind: "checking" });
   const [attempt, setAttempt] = useState(0);
   const tile = (name: string) => ({ id: intent.origin, name, imageUri: null });

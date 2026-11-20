@@ -2027,6 +2027,8 @@ export class IdentityService {
   claimManagedOwner<Receipt>(input: {
     readonly setupCode: string;
     readonly subject: string;
+    readonly issuer: string;
+    readonly cloudComputerId: string;
     readonly owner: {
       readonly email: string;
       readonly displayName: string;
@@ -2034,7 +2036,7 @@ export class IdentityService {
     };
     readonly claimKey: string;
     readonly receipt: Receipt;
-    readonly commit: (transaction: Transaction<DatabaseSchema>, owner: UserId) => Promise<void>;
+    readonly commit: (transaction: Transaction<DatabaseSchema>, existing: boolean) => Promise<void>;
   }): Promise<{ readonly receipt: Receipt; readonly replayed: boolean }> {
     const managed = this.#options.managedOwner;
     if (!managed)
@@ -2066,63 +2068,83 @@ export class IdentityService {
           .forNoKeyUpdate()
           .executeTakeFirst();
         if (existing) {
+          const account = await transaction
+            .selectFrom("authAccounts")
+            .select("userId")
+            .where("userId", "=", existing.id)
+            .where("providerId", "=", oidcIdentityProviderId(provider))
+            .where("accountId", "=", input.subject)
+            .executeTakeFirst();
+          const link = await transaction
+            .selectFrom("personalRemoteAccountLink")
+            .select("singletonKey")
+            .where("singletonKey", "=", "opensteer-account")
+            .where("challengeId", "=", input.cloudComputerId)
+            .where("issuer", "=", input.issuer)
+            .where("subject", "=", input.subject)
+            .where("state", "=", "active")
+            .forNoKeyUpdate()
+            .executeTakeFirst();
+          if (!account || !link)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "This Home already has a different owner",
+              reason: "managed-home-owned",
+            });
           const claimed = await transaction
             .selectFrom("securityAudit")
             .select("metadata")
             .where("action", "=", "instance.managed-owner-claimed")
             .where("targetId", "=", existing.id)
+            .where(sql<string>`metadata->>'claimKey'`, "=", input.claimKey)
             .executeTakeFirst();
-          if (
-            enrollment?.consumedBy === existing.id &&
-            claimed?.metadata["claimKey"] === input.claimKey
-          )
-            return { receipt: claimed.metadata["receipt"] as Receipt, replayed: true };
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This Home already has an owner",
-            reason: "managed-home-owned",
-          });
+          if (claimed) return { receipt: claimed.metadata["receipt"] as Receipt, replayed: true };
         }
-        if (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date())
+        if (
+          !existing &&
+          (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date())
+        )
           throw new OpensteerError({
             code: "forbidden",
             message: "That setup code is incorrect or expired",
             reason: "managed-home-setup-code-invalid",
           });
         const now = new Date();
-        const owner = createId("user");
-        await transaction
-          .insertInto("users")
-          .values({
-            createdAt: now,
-            disabledAt: null,
-            displayName: personNameFromSignIn(input.owner.displayName, input.owner.email),
-            email: normalizeIdentityEmail(input.owner.email),
-            emailVerified: input.owner.emailVerified,
-            id: owner,
-            image: null,
-            updatedAt: now,
-          })
-          .executeTakeFirstOrThrow();
-        // The owner's Opensteer Account is their only way in: SSO finds this link by subject.
-        await transaction
-          .insertInto("authAccounts")
-          .values({
-            accountId: input.subject,
-            createdAt: now,
-            id: createId("authAccount"),
-            providerId: oidcIdentityProviderId(provider),
-            updatedAt: now,
-            userId: owner,
-          })
-          .executeTakeFirstOrThrow();
-        await transaction
-          .updateTable("ownerEnrollments")
-          .set({ consumedAt: now, consumedBy: owner })
-          .where("id", "=", enrollment.id)
-          .where("consumedAt", "is", null)
-          .executeTakeFirstOrThrow();
-        await input.commit(transaction, owner);
+        const owner = existing?.id ?? createId("user");
+        if (!existing && enrollment) {
+          await transaction
+            .insertInto("users")
+            .values({
+              createdAt: now,
+              disabledAt: null,
+              displayName: personNameFromSignIn(input.owner.displayName, input.owner.email),
+              email: normalizeIdentityEmail(input.owner.email),
+              emailVerified: input.owner.emailVerified,
+              id: owner,
+              image: null,
+              updatedAt: now,
+            })
+            .executeTakeFirstOrThrow();
+          // The owner's Opensteer Account is their only way in: SSO finds this link by subject.
+          await transaction
+            .insertInto("authAccounts")
+            .values({
+              accountId: input.subject,
+              createdAt: now,
+              id: createId("authAccount"),
+              providerId: oidcIdentityProviderId(provider),
+              updatedAt: now,
+              userId: owner,
+            })
+            .executeTakeFirstOrThrow();
+          await transaction
+            .updateTable("ownerEnrollments")
+            .set({ consumedAt: now, consumedBy: owner })
+            .where("id", "=", enrollment.id)
+            .where("consumedAt", "is", null)
+            .executeTakeFirstOrThrow();
+        }
+        await input.commit(transaction, Boolean(existing));
         await transaction
           .insertInto("securityAudit")
           .values({

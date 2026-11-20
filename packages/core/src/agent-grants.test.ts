@@ -219,3 +219,27 @@ describe("agent grants", () => {
     expect(() => minThreadAccessMode(null)).toThrow();
   });
 });
+
+it("canonicalizes a shared Chrome grant by exact source identity", () => {
+  const sourceId = "bsr_00000000-0000-4000-8000-000000000001";
+  const resource = { kind: "chrome-tabs", sourceId } as const;
+  const grant = AgentGrantSchema.parse({
+    scope: "selected",
+    tasks: false,
+    resources: [resource, resource],
+  });
+  expect(grant).toEqual({ scope: "selected", tasks: false, resources: [resource] });
+  expect(agentGrantAccess(grant, resource)).toBe("read-write");
+  expect(
+    agentGrantAccess(grant, { ...resource, sourceId: sourceId.replace(/1$/u, "2") }),
+  ).toBeNull();
+  expect(agentGrantAccess(grant, { kind: "browser-profile", profileId: profile })).toBeNull();
+  expect(agentGrantNarrowed(grant, { scope: "selected", tasks: false, resources: [] })).toBe(true);
+  expect(
+    AgentGrantSchema.safeParse({
+      scope: "selected",
+      tasks: false,
+      resources: [{ ...resource, sourceId: profile }],
+    }).success,
+  ).toBe(false);
+});

@@ -430,7 +430,7 @@ it("distinguishes a detached phone from an offline driver and keeps files on the
     tone: "offline",
   });
   expect(computerStatus(mockIphoneScreenDevice("driver-offline"))).toMatchObject({
-    label: "Driver offline",
+    label: "Its Mac is offline",
     tone: "offline",
   });
   const phone = mockIphoneScreenDevice();

@@ -1482,7 +1482,7 @@ export class ProductToolHandlers {
       throw badRequest("An agent cannot message its own active task");
     const thread = await this.#store.getThreadForOwner(destination, caller.userId);
     if (!thread) throw forbidden("task is unavailable to this user");
-    assertMutableTarget(caller, thread);
+    if (caller.kind !== "connection" || input.delivery !== "queue") assertMutableTarget(caller, thread);
     const memoryPass =
       caller.kind === "program" && caller.program.kind === "trigger"
         ? await this.#memoryPasses?.admissionSelection(caller.program.occurrenceId, thread)

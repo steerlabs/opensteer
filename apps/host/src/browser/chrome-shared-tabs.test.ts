@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { AgentGrantSchema, createId } from "@opensteer/core";
 import {
   BrowserSourceTabAssembly,
   BrowserSourceTabCommandSchema,
@@ -17,6 +17,7 @@ import {
   standardCdpMaxPending,
   standardCdpMessageMaxBytes,
 } from "@opensteer/protocol/standard-cdp";
+import type { OpensteerStore } from "@opensteer/database";
 import { SessionCdpRouter } from "@opensteer/browser-runtime-core";
 import { expect, it, vi } from "vitest";
 import { ChromeSharedTabs } from "./chrome-shared-tabs.js";
@@ -190,11 +191,19 @@ it("bridges nested flat child events through the router without exposing the phy
 it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as const)(
   "releases a live shared tab on %s",
   async (ending) => {
-    const admitExecution = vi.fn().mockResolvedValue({
-      agentConnection: null,
-      mode: "full-access",
-      runId: null,
-    });
+    const admitExecution = vi.fn<OpensteerStore["admitExecution"]>(
+      async ({ ownerUserId, subject }) => ({
+        ownerUserId,
+        subject,
+        actor: "native",
+        agentConnection: null,
+        mode: "full-access",
+        runId: null,
+        runMode: null,
+        threadId: null,
+        taskMode: null,
+      }),
+    );
     const service = new ChromeSharedTabs({ admitExecution });
     const ownerId = createId("user");
     const sourceId = createId("browserSource");
@@ -228,8 +237,11 @@ it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as
     await expect(
       service.listForBinding({ ...authority, ownerId: createId("user") }),
     ).resolves.toEqual([]);
-    admitExecution.mockResolvedValueOnce({ agentConnection: {}, mode: "full-access" });
-    await expect(client.reauthorize()).rejects.toThrow("own agents");
+    admitExecution.mockResolvedValueOnce({
+      ...(await admitExecution.mock.results[0]!.value),
+      mode: "read-only",
+    });
+    await expect(client.reauthorize()).rejects.toThrow("access mode");
     if (ending === "binding stop") service.closeForBinding(authority.agentBindingId, "Stopped");
     else if (ending === "unshare") source.receive({ type: "tab.unshared", shareId: first.shareId });
     else if (ending === "source disconnect") source.close();
@@ -246,3 +258,84 @@ it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as
     service.close();
   },
 );
+
+it("checks the current Chrome grant before each command and awaits detach evidence on Stop", async () => {
+  const ownerId = createId("user");
+  const sourceId = createId("browserSource");
+  const deviceId = createId("device");
+  const connectionId = "connected-agent";
+  const authority = { ownerId, agentBindingId: "session:fixture" };
+  const tab = shared();
+  let grant = AgentGrantSchema.parse({ scope: "everything" });
+  const admitExecution: OpensteerStore["admitExecution"] = async ({ ownerUserId, subject }) => ({
+    ownerUserId,
+    subject,
+    actor: "agent",
+    agentConnection: {
+      agentConnectionId: connectionId,
+      grant,
+      grantRevision: 1,
+      consentVersion: 2,
+      accessMode: "full-access",
+    },
+    mode: "full-access",
+    runId: null,
+    threadId: createId("thread"),
+    runMode: null,
+    taskMode: "full-access",
+  });
+  const open = vi.fn(async () => {});
+  const finish = vi.fn(async () => {});
+  const service = new ChromeSharedTabs(
+    { admitExecution },
+    {
+      attempts: { open, finish, recover: async () => {} },
+      device: async () => "Work Mac",
+    },
+  );
+  const peer = chromePeer((frame) => source.receive(frame));
+  const source = service.connectSource({
+    ownerId,
+    sourceId,
+    deviceId,
+    detachReceipts: true,
+    fail: () => {},
+    name: "Chrome",
+    write: peer.write,
+  });
+  try {
+    source.receive(tab);
+    const port = service.browserUsePort(async () => authority, tab.shareId);
+    const call = {
+      contextKey: "fixture",
+      signal: new AbortController().signal,
+      deadline: Date.now() + 5_000,
+      maxBytes: 4096,
+      maxDepth: 16,
+      maxEntries: 256,
+    };
+    const target = await port.openPage(tab.shareId, call);
+    await port.command(target, "Runtime.evaluate", { expression: "1" }, undefined, call);
+    expect(open).toHaveBeenCalledOnce();
+    expect(peer.commands).toHaveLength(1);
+    grant = AgentGrantSchema.parse({ scope: "selected", tasks: false, resources: [] });
+    await expect(
+      port.command(target, "Runtime.evaluate", { expression: "2" }, undefined, call),
+    ).rejects.toThrow("This Chrome tab is no longer shared.");
+    expect(peer.commands).toHaveLength(1);
+    const stopping = service.closeForBinding(authority.agentBindingId, "Stopped");
+    expect(peer.commands).toContainEqual(expect.objectContaining({ action: "unshare" }));
+    expect(finish).not.toHaveBeenCalled();
+    const revoked = vi.fn();
+    const revoking = service.stopSource(sourceId).then(revoked);
+    source.receive(shared());
+    grant = AgentGrantSchema.parse({ scope: "everything" });
+    await expect(service.listForBinding(authority)).resolves.toEqual([]);
+    expect(revoked).not.toHaveBeenCalled();
+    source.receive({ type: "tab.detached", shareId: tab.shareId });
+    await Promise.all([stopping, revoking]);
+    expect(finish).toHaveBeenCalledExactlyOnceWith(connectionId, expect.any(String), true);
+  } finally {
+    source.close();
+  }
+});

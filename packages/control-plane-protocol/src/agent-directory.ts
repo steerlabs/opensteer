@@ -1,4 +1,4 @@
-import { isBareOrigin, isSecureOrLoopbackOrigin } from "@opensteer/core";
+import { isBareOrigin, isLoopbackHostname, isSecureOrLoopbackOrigin } from "@opensteer/core";
 import { z } from "zod";
 
 export const agentDirectoryPath = "/v1/agent-directory";
@@ -24,16 +24,7 @@ const jtiPattern = /^[A-Za-z0-9._:~-]{1,256}$/u;
 const entryIdPattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const isoDateTime = z.iso.datetime({ offset: true });
 
-export function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "[::1]" ||
-    normalized === "::1" ||
-    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
-  );
-}
+export { isLoopbackHostname };
 
 /** Exact public HTTPS origin without wildcards, credentials, path, query, fragment, or loopback. */
 export const AgentDirectoryOriginSchema = z
@@ -291,3 +282,27 @@ export const AgentConnectionIdentityAtConsentSchema = z.discriminatedUnion("kind
 export type AgentConnectionIdentityAtConsent = z.infer<
   typeof AgentConnectionIdentityAtConsentSchema
 >;
+
+/**
+ * Checks whether a previously recorded consent identity is still backed by the current directory.
+ * Returns `null` when the directory is unavailable (cannot claim withdrawal without a live directory).
+ */
+export function isIdentityStillVerified(
+  identity: AgentConnectionIdentityAtConsent,
+  directory: AgentDirectoryDocument | null,
+): boolean | null {
+  if (identity.kind === "unverified") return false;
+  if (!directory) return null;
+  const platform = directory.entries.find(
+    (entry) =>
+      entry.id === identity.platformDirectoryId && entry.origins.includes(identity.platformOrigin),
+  );
+  if (!platform) return false;
+  if (identity.kind === "platform") return true;
+  const embedder = directory.entries.find(
+    (entry) =>
+      entry.id === identity.embedderDirectoryId && entry.origins.includes(identity.embedderOrigin),
+  );
+  if (!embedder) return false;
+  return Boolean(embedder.embedsVia?.includes(platform.id));
+}

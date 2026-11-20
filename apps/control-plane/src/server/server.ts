@@ -143,7 +143,7 @@ export async function createControlPlaneServer(
             href: portal.ownsRequest(request) ? "/" : `${portal.origin.origin}/`,
             label: "Go to your Opensteers",
           }
-        : { href: "/", label: "Go to Opensteer Account" },
+        : { href: "/", label: "Go to your Opensteer account" },
       ...failure,
     });
     void reply
@@ -388,7 +388,7 @@ function registerAccountPages(
     void reply.header("cache-control", "no-store");
     if (portal?.ownsRequest(request)) return portal.home(request, reply);
     if (portal) return reply.redirect(`${portal.origin.origin}/`, 302);
-    return sendAccountPage(reply, "Opensteer Account", accountFrontDoorBody());
+    return sendAccountPage(reply, "Opensteer account", accountFrontDoorBody());
   });
 
   app.get("/sign-in", async (request, reply) => {

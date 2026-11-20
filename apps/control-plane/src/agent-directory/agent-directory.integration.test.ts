@@ -137,4 +137,27 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
     expect(listed.revision).toBe(5);
     expect(listed.entries.map((entry) => entry.id)).toEqual(["agentpay"]);
   });
+
+  it("reads the revision and entries from one snapshot during a concurrent edit", async () => {
+    let firstRead = true;
+    const reader = new AgentDirectoryStore(database.withPlugin({
+      transformQuery: ({ node }) => node,
+      async transformResult({ result }) {
+        if (firstRead) {
+          firstRead = false;
+          await directoryStore.add({
+            id: "platform",
+            displayName: "Platform",
+            origins: ["https://platform.example"],
+          });
+        }
+        return result;
+      },
+    }));
+    expect(await reader.document()).toMatchObject({ revision: 1, entries: [] });
+    expect(await directoryStore.document()).toMatchObject({
+      revision: 2,
+      entries: [{ id: "platform" }],
+    });
+  });
 });

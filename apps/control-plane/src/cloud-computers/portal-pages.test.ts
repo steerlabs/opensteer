@@ -45,7 +45,7 @@ describe("Cloud Computer website pages", () => {
     const body = cloudComputerCheckoutBody({
       plan,
       requestId: "00000000-0000-4000-8000-000000000009",
-      refusal: cloudComputerRefusal("conflict", "This Account already has a checkout in progress"),
+      refusal: cloudComputerRefusal("conflict", "You already have a checkout in progress."),
     });
     expect(body).toContain('<form method="post" action="/cloud-computer/checkout">');
     expect(body).toContain('name="requestId" value="00000000-0000-4000-8000-000000000009"');
@@ -110,13 +110,13 @@ describe("Cloud Computer website pages", () => {
           id,
           egress: "pending",
           status: "suspended",
-          reason: "You paused this Cloud Computer.",
+          reason: "You suspended this Cloud Computer.",
         },
       },
       refusal: null,
       notice: null,
     });
-    expect(body).toContain("You paused this Cloud Computer.");
+    expect(body).toContain("You suspended this Cloud Computer.");
     expect(body).toContain('action="/cloud-computer/resume"');
     expect(body).not.toContain('action="/cloud-computer/suspend"');
   });
@@ -153,8 +153,7 @@ describe("Cloud Computer website pages", () => {
       cloudWords("cloud.web.next.unavailable"),
     );
     expect(
-      cloudComputerRefusal("conflict", "This Account already has a Cloud Computer subscription")
-        .next,
+      cloudComputerRefusal("conflict", "You already have a Cloud Computer subscription.").next,
     ).toBe(cloudWords("cloud.web.next.subscribed"));
     expect(cloudComputerRefusal("conflict", "This checkout expired").next).toBe(
       cloudWords("cloud.web.next.expired"),

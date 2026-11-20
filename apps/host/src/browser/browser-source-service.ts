@@ -1,6 +1,7 @@
 import {
   BrowserSourcePairV6InputSchema,
   browserSourceTabWire,
+  browserSourceTabDetachWire,
   browserSourceTabFrameBytes,
   browserSourceTabBufferedBytes,
 } from "@opensteer/browser-source-wire/frames";
@@ -12,6 +13,7 @@ import {
   OpensteerError,
   browserSessionClosedReason,
   type BrowserSourceId,
+  type DeviceId,
   type Request,
   type RequestId,
   type RunId,
@@ -193,11 +195,16 @@ export class BrowserSourceService {
   readonly #drains = new Map<UserId, Promise<void>>();
   readonly #calls = new Map<string, number[]>();
   readonly #heartbeat: ReturnType<typeof setInterval>;
+  readonly #computerName:
+    ((ownerId: UserId, deviceId: DeviceId) => Promise<string | null>) | undefined;
+  readonly #pairingDevice: ((ownerId: UserId) => Promise<DeviceId | undefined>) | undefined;
   readonly #refusesSite: (site: string) => Promise<boolean>;
   #closed = false;
 
   constructor(options: {
     readonly liveTabs?: ChromeSharedTabs;
+    readonly computerName?: (ownerId: UserId, deviceId: DeviceId) => Promise<string | null>;
+    readonly pairingDevice?: (ownerId: UserId) => Promise<DeviceId | undefined>;
     readonly deploymentId: DeploymentId;
     readonly store: BrowserSourceStore;
     readonly requests: SignInRequests;
@@ -211,6 +218,8 @@ export class BrowserSourceService {
     readonly now?: () => number;
   }) {
     this.liveTabs = options.liveTabs;
+    this.#pairingDevice = options.pairingDevice;
+    this.#computerName = options.computerName;
     this.#deploymentId = options.deploymentId;
     this.#store = options.store;
     this.#requests = options.requests;
@@ -238,7 +247,9 @@ export class BrowserSourceService {
   }): Promise<{ readonly code: string; readonly expiresAt: string }> {
     const code = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.#now() + pairingLifetimeMs);
+    const deviceId = await this.#pairingDevice?.(input.ownerId);
     await this.#store.createPairing({
+      ...(deviceId ? { deviceId } : {}),
       codeHash: digest(code),
       ownerId: input.ownerId,
       expiresAt,
@@ -279,7 +290,13 @@ export class BrowserSourceService {
         ? { sourceId: parsed.replaces.sourceId, tokenHash: digest(parsed.replaces.token) }
         : null,
     });
-    if (parsed.replaces) this.#endConnections(parsed.replaces.sourceId, source.ownerId);
+    if (
+      parsed.replaces &&
+      (await this.#store.get(parsed.replaces.sourceId, source.ownerId)) === null
+    ) {
+      await this.liveTabs?.stopSource(parsed.replaces.sourceId);
+      this.#endConnections(parsed.replaces.sourceId, source.ownerId);
+    }
     return { sourceId: source.id, token };
   }
 
@@ -447,6 +464,7 @@ export class BrowserSourceService {
       if (
         message.type === "tab.shared" ||
         message.type === "tab.unshared" ||
+        message.type === "tab.detached" ||
         message.type === "tab.result" ||
         message.type === "tab.event"
       ) {
@@ -483,6 +501,24 @@ export class BrowserSourceService {
     socket.on("error", () => socket.close());
   }
 
+  async grantableChromeTabs(ownerId: UserId) {
+    return (await this.chromeTabGrantCatalog(ownerId)).chromeTabs;
+  }
+
+  async chromeTabGrantCatalog(ownerId: UserId, sources?: readonly BrowserSourceRecord[]) {
+    const companions = (sources ?? (await this.#store.list(ownerId))).filter(
+      (source) => source.liveTabsOnly,
+    );
+    const entries = await Promise.all(
+      companions.map(async ({ id, deviceId }) => {
+        const computerName = deviceId && (await this.#computerName?.(ownerId, deviceId));
+        return computerName ? { sourceId: id, computerName, paired: true } : null;
+      }),
+    );
+    const chromeTabs = entries.filter((entry) => entry !== null);
+    return { chromeTabs, chromeTabsNeedPairing: chromeTabs.length < companions.length };
+  }
+
   async listState(input: { readonly ownerId: UserId }): Promise<BrowserSourcesState> {
     const [sources, grants] = await Promise.all([
       this.#store.list(input.ownerId),
@@ -490,6 +526,7 @@ export class BrowserSourceService {
     ]);
     const active = new Set(sources.map((source) => source.id));
     return {
+      ...(await this.chromeTabGrantCatalog(input.ownerId, sources)),
       extensionDirectory: this.#extensionDirectory,
       sources: sources.map((source) => ({
         connected: this.#connections.get(source.id)?.ready ?? false,
@@ -548,6 +585,7 @@ export class BrowserSourceService {
   }): Promise<boolean> {
     const revoked = await this.#store.revoke(input);
     if (revoked) {
+      await this.liveTabs?.stopSource(input.sourceId);
       this.liveTabs?.closeForSource(input.sourceId);
       this.#endConnections(input.sourceId, input.ownerId);
     }
@@ -1419,7 +1457,10 @@ export class BrowserSourceService {
       liveTabsOnly !== !!source.liveTabsOnly ||
       (liveTabsOnly && (wire.wire < browserSourceTabWire || !this.liveTabs))
     )
-      throw new OpensteerError({ code: "forbidden", message: "Invalid Chrome source capability" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Chrome extension cannot use that sharing mode.",
+      });
     const peer: SourceSocket = {
       liveTabsOnly,
       sourceId: source.id,
@@ -1455,6 +1496,8 @@ export class BrowserSourceService {
           sourceId: source.id,
           ownerId: source.ownerId,
           name: source.name,
+          ...(source.deviceId ? { deviceId: source.deviceId } : {}),
+          detachReceipts: wire.wire >= browserSourceTabDetachWire,
           fail,
           write: (frame) => {
             const data = JSON.stringify(frame);

@@ -1792,7 +1792,7 @@ describe("NativeOAuthManager credential boundaries", () => {
 
     await expect(fixture.manager.state()).resolves.toMatchObject({
       account: {
-        detail: expect.stringMatching(/different Opensteer Account/u),
+        detail: expect.stringMatching(/different Opensteer account/u),
         identity: { subject: original },
         status: "signed-in",
       },

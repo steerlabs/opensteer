@@ -194,31 +194,32 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
 
 function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked } | null {
   const reason = phone.availability?.reason?.kind;
-  const location =
+  const mac =
     phone.setup?.location === "driver-mac"
-      ? ` in Opensteer on ${phone.setup.driverRunnerName}`
-      : " in Opensteer on its driving Mac";
+      ? phone.setup.driverRunnerName
+      : `the Mac connected to ${phone.name}`;
+  const location = ` in Opensteer on ${mac}`;
+  const subject = phone.definitionId === "iphone-screen" ? mac : phone.name;
+  const named = subject[0]!.toUpperCase() + subject.slice(1);
   if (reason === "driver-stopped")
     return blocked(
       "computer_stopped",
-      `${phone.name}'s screen driver has agents stopped by the person, on that computer itself.`,
-      `It will work again when they resume agents${phone.setup?.location === "driver-mac" ? ` on ${phone.setup.driverRunnerName}` : ""}; other work can continue.`,
+      `Agents are stopped on ${subject}.`,
+      "Wait until the person resumes them there, or continue other work.",
     );
   if (reason === "driver-asleep")
     return blocked(
       "computer_asleep",
-      `${phone.name}'s screen driver is asleep.`,
-      phone.definitionId === "iphone-screen"
-        ? `It will work again when its driving Mac wakes${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
-        : "It will work again when the device wakes; other work can continue.",
+      `${named} is asleep.`,
+      "Resume when it wakes, or continue other work.",
     );
   if (reason === "driver-offline" || (phone.state === "offline" && reason !== "not-connected"))
     return blocked(
       "computer_offline",
-      `${phone.name}'s screen driver is offline.`,
+      `${named} is offline.`,
       phone.definitionId === "iphone-screen"
-        ? `The person can wake its driving Mac and open Opensteer there${phone.setup?.location === "driver-mac" ? ` (${phone.setup.driverRunnerName})` : ""}; other work can continue.`
-        : "The person can bring the phone online; other work can continue.",
+        ? `The person can wake ${mac} and open Opensteer there, or you can continue other work.`
+        : "The person can bring the phone online, or you can continue other work.",
     );
   switch (reason) {
     case "approval-required":
@@ -238,7 +239,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "driver-update-required":
       return blocked(
         "update_required",
-        `${phone.name}'s screen driver needs an update.`,
+        `Screen control for ${phone.name} needs an update.`,
         `The person can update Opensteer${location}.`,
       );
     case "trust-required":
@@ -247,7 +248,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "permission-required":
       return blocked(
         "permission_required",
-        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its driving Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
+        `${phone.name} needs ${reason === "trust-required" ? "the person to trust its connected Mac" : reason === "developer-mode-required" ? "Developer Mode" : reason === "setup-required" ? "screen setup" : "screen permissions"}.`,
         phone.definitionId === "android-phone"
           ? "The person can enable Opensteer's accessibility service in the phone's settings."
           : `The person can finish or fix the iPhone's screen setup${location}.`,
@@ -267,7 +268,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "not-connected":
       return blocked(
         "unavailable",
-        `${phone.name} is not connected to its screen driver.`,
+        `${phone.name} is not connected to its Mac.`,
         `The person can connect the iPhone to its Mac with a cable or the same Wi-Fi, then finish or fix setup${location}.`,
       );
     case "helper-unavailable":
@@ -277,8 +278,8 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     case "unsupported":
       return blocked(
         "unavailable",
-        `${phone.name}'s screen is unavailable (${reason}).`,
-        `The person can check the screen driver and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
+        `${phone.name}'s screen is unavailable.`,
+        `The person can check the connection and finish or fix setup${location}. Continue other work; do not poll or route through the Mac's apps.`,
       );
   }
   if (phone.state === "permission-required")
@@ -299,7 +300,7 @@ function phoneProblem(phone: PhoneDiscoveryFacts["phone"]): { blocked: Blocked }
     return blocked(
       "unavailable",
       `${phone.name}'s screen is unavailable.`,
-      `The person can check its screen driver and fix setup${location}.`,
+      `The person can check its screen connection and fix setup${location}.`,
     );
   return computerMachineProblem(phone);
 }

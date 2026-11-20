@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { AgentOperationIdSchema, RequestIdSchema, ThreadIdSchema } from "@opensteer/core";
+import {
+  AgentOperationIdSchema,
+  RequestIdSchema,
+  TabViewSchema,
+  ThreadIdSchema,
+} from "@opensteer/core";
 import { defineAgentTool } from "../registry.js";
 import {
   TabCloseInputSchema,
@@ -14,7 +19,7 @@ import {
   TabOrganizeResultSchema,
 } from "@opensteer/protocol";
 /** A connected agent's direct call: which of its tasks it belongs to, and why it is made. */
-const directInput = {
+export const directInput = {
   operationKey: z
     .string()
     .trim()
@@ -36,20 +41,28 @@ const directInput = {
     .describe("Connected agents only: why you are doing this, shown to the person who reviews it."),
 };
 /** What a connected agent's direct call reports beside the tool's own result. */
-const directOutput = {
+export const directOutput = {
   taskId: ThreadIdSchema.optional(),
   operationId: AgentOperationIdSchema.optional(),
   status: z.enum(["completed", "pending", "failed", "unknown"]).optional(),
   requestId: RequestIdSchema.nullable().optional(),
   next: z.string().max(500).optional(),
 };
+const AgentTabSchema = z.union([
+  TabViewSchema,
+  z.strictObject(TabViewSchema.shape).omit({ computer: true }),
+]);
+
 export const tab_list = defineAgentTool({
   name: "tab_list",
   title: "List tabs",
   description:
     "Find the person's page, window, phone and app tabs, including asleep and unavailable tabs. Query matches title, URL, group, profile, app or computer name. Results follow workspace order, 50 per page; keep query and kind when using nextCursor. Groups organize tabs and grant no access. Use tab_open to open a target, Browser Harness openPage(tabId) for pages, or computer_use tab(tabId) for windows and phones.",
   input: TabListInputSchema.extend(directInput),
-  output: TabListResultSchema.partial().extend(directOutput),
+  output: TabListResultSchema.partial().extend({
+    ...directOutput,
+    tabs: z.array(AgentTabSchema).max(50).optional(),
+  }),
   access: "read",
   callers: ["run", "connection"] as const,
   capability: "tabs",
@@ -60,7 +73,7 @@ export const tab_open = defineAgentTool({
   description:
     "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
   input: TabOpenInputSchema.extend(directInput),
-  output: TabOpenResultSchema.partial().extend(directOutput),
+  output: TabOpenResultSchema.partial().extend({ ...directOutput, tab: AgentTabSchema.optional() }),
   access: "write",
   callers: ["run", "connection"] as const,
   capability: "tabs",

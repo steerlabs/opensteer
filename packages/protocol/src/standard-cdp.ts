@@ -1,5 +1,14 @@
+import { BrowserProfileIdSchema } from "@opensteer/core";
 import { z } from "zod";
 
+export const StandardCdpLeaseReconciliationSchema = z.strictObject({
+  profileId: BrowserProfileIdSchema,
+  generation: z.number().int().positive(),
+});
+export type StandardCdpLeaseReconciliation = z.infer<typeof StandardCdpLeaseReconciliationSchema>;
+export const StandardCdpLeaseEvidenceSchema = z.strictObject({ runtimeBootId: z.uuid() });
+
+export const standardCdpLeasePath = "/v1/local-profiles/standard-cdp-lease";
 export const standardCdpPath = "/v1/browser/cdp";
 export const standardCdpDetachFrame = '{"type":"browser.detach-standard-cdp"}';
 export const standardCdpSettledReason = "CDP attachment settled";

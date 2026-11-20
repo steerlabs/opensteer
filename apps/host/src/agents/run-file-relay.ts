@@ -91,7 +91,7 @@ export class RunFileRelay {
     )
       throw refusedTransfer();
     entry.binding = { method, scope };
-    const disconnected = () => entry.close(new Error("Runner file connection ended."));
+    const disconnected = () => entry.close(new Error("The device's file connection ended."));
     signal.addEventListener("abort", disconnected, { once: true });
     entry.unlink = () => signal.removeEventListener("abort", disconnected);
   }

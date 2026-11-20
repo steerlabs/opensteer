@@ -2,6 +2,7 @@ import {
   AssignmentSummarySchema,
   AuthSessionIdSchema,
   DeploymentIdSchema,
+  AgentSessionEndReasonSchema,
   AgentSessionIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
@@ -18,6 +19,7 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import {
   AuthenticatedUserViewSchema,
   PersonalCapabilitiesViewSchema,
@@ -189,7 +191,32 @@ const task = z.object({
   runQueued: z.boolean(),
   /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
+  /**
+   * A connected agent's own task: its session and connection, kept after the session ends so
+   * the task stays the agent's.
+   */
+  externalWork: z
+    .object({
+      sessionId: AgentSessionIdSchema,
+      status: z.enum(["active", "ended"]),
+      endReason: AgentSessionEndReasonSchema.nullable(),
+      connection: z.object({
+        id: z.string().min(1).max(255),
+        label: z.string().max(200),
+        clientName: z.string().max(200),
+        client: z
+          .object({
+            fingerprint: z.string().max(128).nullable(),
+            redirectOrigin: z.string().max(2048).nullable(),
+          })
+          .optional(),
+        identityAtConsent: AgentConnectionIdentityAtConsentSchema.nullable().optional(),
+      }),
+    })
+    .nullable()
+    .optional(),
 });
+export type PersonalTaskExternalWork = NonNullable<z.infer<typeof task>["externalWork"]>;
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({ thread: ThreadViewSchema });
 const visit = z.object({

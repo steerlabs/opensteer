@@ -1,3 +1,4 @@
+import { ThreadIdSchema } from "@opensteer/core";
 import type {
   AgentOperationTarget,
   AgentOperationView,
@@ -6,8 +7,12 @@ import type {
   ThreadStatus,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
+import type { PersonalTaskExternalWork } from "@opensteer/protocol/personal-sync";
 import { agentWho, type AgentWho } from "./agent-identity.js";
 import { workWords } from "./agent-work-copy.js";
+import { threadInDirectory } from "./host-snapshot-selectors.js";
+import { unwrapRpcResult } from "./host-session-client.js";
+import type { HostClient } from "./client.js";
 
 /* ------------------------------------------------------------------------- *
  * What the Home does not report yet. Each slot is optional, keyed by what it
@@ -25,8 +30,8 @@ export interface AgentSessionSlot {
   readonly connection: SessionConnection;
   readonly status: "active" | "ended";
   readonly endReason: AgentSessionEndReason | null;
-  /** Its operations, oldest first, as the task's activity shows them. */
-  readonly operations: readonly AgentOperationView[];
+  /** Its operations, oldest first, as the task's activity shows them; absent until read. */
+  readonly operations?: readonly AgentOperationView[] | undefined;
 }
 
 /** The parts of a direct operation's Request the Home now joins into one block of text. */
@@ -53,6 +58,73 @@ export interface AgentWorkSlots {
   readonly sharedTabs?: readonly string[];
   /** By connection id: when the Home withdrew a verified identity. */
   readonly withdrawn?: Readonly<Record<string, string>>;
+}
+
+/**
+ * A task's session as the Home reports it on the task row, with the operations
+ * `threads.activity` returned (newest first there; oldest first here).
+ */
+export function sessionSlotFromHome(
+  work: PersonalTaskExternalWork | null | undefined,
+  operations?: readonly AgentOperationView[] | undefined,
+): AgentSessionSlot | null {
+  if (!work) return null;
+  return {
+    sessionId: work.sessionId,
+    connection: work.connection,
+    status: work.status,
+    endReason: work.endReason,
+    ...(operations ? { operations: [...operations].reverse() } : {}),
+  };
+}
+
+/**
+ * A task's session for any screen: the preview's slot when it fills one, otherwise what the
+ * Home reports on the task row, with the operations read so far.
+ */
+export function agentSessionSlot(
+  snapshot: Parameters<typeof threadInDirectory>[1] & {
+    readonly agentWork?: AgentWorkSlots | undefined;
+  },
+  threadId: string,
+  operations?: readonly AgentOperationView[] | undefined,
+): AgentSessionSlot | null {
+  return (
+    snapshot.agentWork?.sessions?.[threadId] ??
+    sessionSlotFromHome(threadInDirectory(threadId, snapshot)?.externalWork, operations)
+  );
+}
+
+/** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
+export async function readTaskActivity(
+  client: Pick<HostClient, "rpc">,
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<readonly AgentOperationView[]> {
+  return unwrapRpcResult(
+    await client.rpc["threads.activity"](
+      { threadId: ThreadIdSchema.parse(threadId) },
+      signal ? { signal } : undefined,
+    ),
+  ).operations;
+}
+
+/** A direct operation's Request in its parts, as the Home sends them on the Request. */
+export function operationRequestSlot(
+  request: Pick<RequestLike, "agentOperation">,
+  connection: SessionConnection | null | undefined,
+): AgentOperationRequestSlot | null {
+  const operation = request.agentOperation;
+  if (!operation) return null;
+  return {
+    operationId: operation.operationId,
+    connection: connection ?? { id: operation.connectionId, label: "", clientName: "" },
+    summary: operation.summary,
+    calls: operation.calls,
+    agentReason: operation.agentReason,
+    target: operation.target,
+    ...(operation.expired ? { expired: true } : {}),
+  };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -116,6 +188,8 @@ export interface OperationRow {
 
 const glyphs: Readonly<Record<AgentOperationTarget["grant"]["kind"], OperationGlyph>> = {
   "browser-profile": "globe",
+  // Tabs the person shares from Chrome are still browser tabs.
+  "chrome-tabs": "globe",
   "computer-app": "app",
   plugin: "plugin",
   device: "list",
@@ -125,6 +199,7 @@ const knownTools = new Set([
   "tab_open",
   "tab_close",
   "browser_use",
+  "browser_connect",
   "computer_use",
   "plugin_call",
 ]);
@@ -133,7 +208,7 @@ export function operationRow(operation: AgentOperationView): OperationRow {
   const target = operation.target.name;
   const base = knownTools.has(operation.tool)
     ? workWords(`op.${operation.tool}` as "op.tab_open", { target })
-    : workWords("op.other", { tool: operation.tool, target });
+    : workWords("op.other", { target });
   const device = operation.target.device;
   const action = device ? workWords("op.onDevice", { action: base, device: device.name }) : base;
   const decision = operation.decision;
@@ -259,7 +334,7 @@ export function sessionTaskView(input: {
             label: workWords("work.stop", { agent: name }),
             detail: workWords("work.stopDetail", { agent: name }),
           },
-    activity: slot
+    activity: slot?.operations
       ? { kind: "ready", rows: slot.operations.map(operationRow) }
       : { kind: "unavailable" },
   };
@@ -275,7 +350,7 @@ export function sessionTaskRow(input: {
 }): { readonly agent: SessionAgent; readonly line: string; readonly working: boolean } | null {
   const view = sessionTaskView(input);
   if (!view) return null;
-  const latest = input.slot?.operations.at(-1);
+  const latest = input.slot?.operations?.at(-1);
   return {
     agent: view.agent,
     line: latest
@@ -329,6 +404,7 @@ type RequestLike = {
   readonly id: string;
   readonly status: Request["status"];
   readonly originatingAgentSessionId?: string | null | undefined;
+  readonly agentOperation?: Request["agentOperation"] | undefined;
   readonly presentation:
     | {
         readonly kind: "form";
@@ -350,6 +426,9 @@ type RequestLike = {
 /** The field a direct operation's Request asks on, or null for any other Request. */
 export function operationDecisionField(request: RequestLike): string | null {
   if (!request.originatingAgentSessionId || request.presentation.kind !== "form") return null;
+  // The Home names its decision field; older Homes are recognised by their two answers.
+  const named = request.agentOperation?.decisionFieldId;
+  if (named) return request.presentation.fields.some(({ id }) => id === named) ? named : null;
   const [field, ...rest] = request.presentation.fields;
   if (!field || rest.length > 0) return null;
   const values = new Set(field.choices?.map(({ value }) => value) ?? []);
@@ -392,7 +471,8 @@ export function operationRequestView(input: {
   readonly session?: AgentSessionSlot | null | undefined;
   readonly withdrawnAt?: string | null | undefined;
 }): OperationRequestView | null {
-  const { request, slot } = input;
+  const { request } = input;
+  const slot = input.slot ?? operationRequestSlot(request, input.session?.connection ?? null);
   const fieldId = operationDecisionField(request);
   if (fieldId === null || request.presentation.kind !== "form") return null;
   const agent = sessionAgent(slot?.connection ?? input.session?.connection, input.withdrawnAt);

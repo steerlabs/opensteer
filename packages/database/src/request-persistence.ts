@@ -216,6 +216,7 @@ export function requestFromRow(row: RequestRow): Request {
     ...(row.originatingAgentSessionId
       ? { originatingAgentSessionId: row.originatingAgentSessionId }
       : {}),
+    ...(row.agentOperation ? { agentOperation: row.agentOperation as never } : {}),
     originatingRunId: row.originatingRunId,
     originatingThreadId: row.originatingThreadId,
     payload: row.payload,

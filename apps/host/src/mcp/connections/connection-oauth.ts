@@ -23,7 +23,6 @@ import {
 } from "./connection-authenticator.js";
 import {
   describeIdentity,
-  InMemoryJtiReplayStore,
   resolveConsentIdentity,
 } from "./embedder-assertion.js";
 
@@ -47,8 +46,16 @@ const ClientSchema = z.object({
   redirects: z.array(RedirectSchema).min(1).max(5),
 });
 type Client = z.infer<typeof ClientSchema>;
+const defaultClientName = "MCP client";
+function sanitizeClientName(name: string): string {
+  return name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").replace(/\s+/gu, " ").trim();
+}
 const RegistrationSchema = z.object({
-  client_name: z.string().trim().min(1).max(100).default("MCP client"),
+  client_name: z
+    .string()
+    .transform(sanitizeClientName)
+    .pipe(z.string().min(1).max(100))
+    .default(defaultClientName),
   redirect_uris: z.array(z.string()).min(1).max(5),
 });
 const ScopeSchema = z
@@ -66,7 +73,7 @@ const AuthorizationSchema = z.object({
   state: z.string().max(2048).optional(),
   scope: ScopeSchema,
   /** A per-request proof, signed by the product that embeds this platform, that it asked. */
-  opensteer_embedder_assertion: z.string().min(1).max(16_384).optional(),
+  opensteer_embedder_assertion: z.unknown().optional(),
 });
 const TokenSchema = z.object({
   grant_type: z.literal("authorization_code"),
@@ -117,7 +124,7 @@ interface ConnectionOAuthOptions {
    * The Account-signed directory of known agents, from the Home's own Account origin. Absent when
    * the Home has none: every client is then shown as the name it gave itself.
    */
-  readonly directory?: { get(): Promise<AgentDirectoryDocument | null> };
+  readonly directory?: { issuer?: string; get(): Promise<AgentDirectoryDocument | null> };
 }
 
 export class ConnectionOAuthRedirectError extends ConnectionOAuthError {
@@ -138,7 +145,6 @@ export class ConnectionOAuth {
   /** Requests answered and sent back to the agent, so a late read says so instead of "expired". */
   readonly #answered = new Map<string, number>();
   readonly #codes = new Map<string, Code>();
-  readonly #seenAssertions = new InMemoryJtiReplayStore();
   readonly #options: ConnectionOAuthOptions;
   constructor(options: ConnectionOAuthOptions) {
     this.#options = options;
@@ -212,7 +218,7 @@ export class ConnectionOAuth {
         JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
       );
       if (client.issuer !== origin + mcpIssuerPath) throw new Error();
-      return client;
+      return { ...client, name: sanitizeClientName(client.name) || defaultClientName };
     } catch {
       throw new ConnectionOAuthError("invalid_client");
     }
@@ -248,7 +254,6 @@ export class ConnectionOAuth {
     const resource = origin + mcpResourcePath;
     if (!matchesResource(parsed.data.resource, resource)) throw refusal("invalid_target");
     const authorization = { ...parsed.data, resource };
-    // A present assertion must verify; it is never treated as absent.
     const identity = await resolveConsentIdentity({
       directory: (await this.#options.directory?.get()) ?? null,
       clientName: client.name,
@@ -260,10 +265,9 @@ export class ConnectionOAuth {
         codeChallenge: authorization.code_challenge,
         state: authorization.state,
       },
-      now: this.#now(),
-      seenJti: this.#seenAssertions,
+      now: () => this.#now(),
+      claim: (issuer, id, expiresAt) => this.store.claimEmbedderAssertion(issuer, id, expiresAt),
     });
-    if (!identity.ok) throw refusal("invalid_request");
     this.#sweep();
     if (this.#consents.size >= maximumPending)
       throw new ConnectionOAuthError("temporarily_unavailable", 503);
@@ -273,7 +277,7 @@ export class ConnectionOAuth {
       client,
       origin,
       expiresAt: this.#now() + consentTtl,
-      identityAtConsent: identity.identity,
+      identityAtConsent: identity,
     });
     return `/mcp-authorization?request=${id}&deploymentId=${this.#options.deploymentId}`;
   }
@@ -348,6 +352,9 @@ export class ConnectionOAuth {
                 clientFingerprint: credentialHash(pending.authorization.client_id),
                 redirectUri: pending.authorization.redirect_uri,
                 identityAtConsent: pending.identityAtConsent,
+                ...(this.#options.directory?.issuer
+                  ? { directoryIssuer: this.#options.directory.issuer }
+                  : {}),
                 ...(command.decision.grant ? { grant: command.decision.grant } : {}),
               });
         pending.decision = { userId, sessionId, fingerprint, connectionId: connection?.id ?? null };

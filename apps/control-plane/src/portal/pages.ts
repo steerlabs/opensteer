@@ -68,7 +68,7 @@ export function sendBrowserPage(
 
 export function accountFrontDoorBody(): string {
   return card({
-    head: `${brandMark()}<h1 class="title">Opensteer Account</h1>`,
+    head: `${brandMark()}<h1 class="title">Opensteer account</h1>`,
     content: `<a class="btn btn--primary btn--block" href="/sign-in">Sign in</a>`,
   });
 }
@@ -89,7 +89,7 @@ export function signInBody(input: {
     : "";
   return card({
     head: `${brandMark()}<h1 class="title">${input.reauthorization ? "Confirm it’s you" : "Sign in to Opensteer"}</h1>`,
-    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>${email}</div>`,
+    content: `${input.hostedOAuth ? '<p class="lead">Sign in with the Opensteer account linked to that Home.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>${email}</div>`,
   });
 }
 
@@ -212,7 +212,7 @@ export function deleteAccountBody(input: {
 }): string {
   const list = (items: readonly string[]) =>
     `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-  const head = `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`;
+  const head = `${brandMark()}<h1 class="title">Delete your Opensteer account?</h1>`;
   if (input.heldTeams.length > 0) {
     const teams = input.heldTeams
       .map(
@@ -222,16 +222,16 @@ export function deleteAccountBody(input: {
       .join("");
     return card({
       head,
-      content: `<div class="alert" role="alert"><p class="alert__title">Delete or transfer these teams first</p><p class="lead">Other people may use them, so Opensteer never deletes a team with your Account. Transfer one to another owner to keep it for them.</p><ul class="grants">${teams}</ul></div>
+      content: `<div class="alert" role="alert"><p class="alert__title">Delete or transfer these teams first</p><p class="lead">Other people may use them, so Opensteer never deletes a team with your account. Transfer one to another owner to keep it for them.</p><ul class="grants">${teams}</ul></div>
       <p class="lead">Nothing has been deleted or turned off.</p>
       <a class="btn btn--block" href="/">Back</a>`,
     });
   }
   const computers = input.computers.length
-    ? `<p class="lead">These computers lose remote access and leave your Account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
+    ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
     : "";
   const servers = input.servers.length
-    ? `<p class="lead">These servers stop accepting Opensteer Account sign-in, for you and anyone else who uses them.</p>${list(
+    ? `<p class="lead">These servers stop accepting Opensteer account sign-in, for you and anyone else who uses them.</p>${list(
         input.servers.map(({ name, otherMembers }) =>
           otherMembers === 0
             ? name
@@ -243,12 +243,12 @@ export function deleteAccountBody(input: {
     ? `<p class="lead">Setting these teams up stops, and their addresses aren’t used again.</p>${list(input.settingUp)}`
     : "";
   const failed = input.failed
-    ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
+    ? `<p class="lead" role="alert">Your account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
     : "";
   return card({
     head,
     content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${settingUp}
-      <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep Account</a><button class="btn btn--danger" type="submit">Delete Account</button></div></form>`,
+      <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep account</a><button class="btn btn--danger" type="submit">Delete account</button></div></form>`,
   });
 }
 
@@ -256,7 +256,7 @@ export function accountDeletedBody(): string {
   return statusPageBody({
     detail: "You can close this window.",
     mark: "check",
-    title: "Your Opensteer Account is deleted",
+    title: "Your Opensteer account is deleted",
     tone: "ok",
   });
 }
@@ -264,9 +264,9 @@ export function accountDeletedBody(): string {
 export function differentAccountBody(retryHref: string): string {
   return statusPageBody({
     action: { href: retryHref, label: "Try again" },
-    detail: "Nothing was deleted. Sign in with the Account you want to delete.",
+    detail: "Nothing was deleted. Sign in with the account you want to delete.",
     mark: "person",
-    title: "That’s a different Account",
+    title: "That’s a different account",
     tone: "warn",
   });
 }
@@ -287,7 +287,7 @@ export function portalHomeBody(input: {
     <div class="menu" id="account-menu" popover>
       <div class="menu__who">${avatar(label)}<span>${account.displayName ? `<strong>${escapeHtml(account.displayName)}</strong>` : ""}<small>${escapeHtml(account.email)}</small></span></div>
       <form method="post" action="${escapeHtml(input.signOutAction)}"><button class="menu__item" type="submit">${icon("signOut")}Sign out</button></form>
-      <a class="menu__item" href="${escapeHtml(input.deleteAccountHref)}">${icon("trash")}Delete Account</a>
+      <a class="menu__item" href="${escapeHtml(input.deleteAccountHref)}">${icon("trash")}Delete account</a>
     </div>
   </header>`;
   // Without the popover API the menu cannot open, so sign-out stays reachable
@@ -401,7 +401,7 @@ export function createHostedTeamBody(input: {
   if (input.limitReached) {
     return card({
       head,
-      content: `<p class="lead">You have ${input.limit} hosted teams, the most an Account can have. Delete one to create another.</p><a class="btn btn--block" href="/">Back</a>`,
+      content: `<p class="lead">You have ${input.limit} hosted teams, the most an account can have. Delete one to create another.</p><a class="btn btn--block" href="/">Back</a>`,
     });
   }
   const parameters = JSON.stringify({ availabilityPath: input.availabilityPath }).replace(

@@ -38,7 +38,7 @@ const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
   files: deviceWords("devices.switch.filesDetail"),
 };
 
-const homeFixedDetail = "Always on. Your agent runs here.";
+const homeFixedDetail = "Always on. Your own agents run here.";
 const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
 
 export type DeviceSwitch =
@@ -123,7 +123,7 @@ export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolea
 
 /** "Online", "Offline · last seen Tuesday", or Home's role, in one line. */
 export function deviceStatusLine(machine: MachineSummary, now = new Date()): string {
-  if (hostsDeployment(machine)) return "Home · your agent runs here";
+  if (hostsDeployment(machine)) return "Home · your own agents run here";
   const screen = phoneScreenStatus(machine);
   if (screen) return screen.label;
   const stopped = deviceStoppedLabel(machine, now);

@@ -4,9 +4,11 @@ import {
   PhoneDisplayDefinitionIdSchema,
 } from "./devices.js";
 import { z } from "zod";
+import { AgentOperationTargetSchema } from "./agent-sessions.js";
 import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 import {
+  AgentOperationIdSchema,
   AgentSessionIdSchema,
   AssignmentIdSchema,
   BrowserProfileIdSchema,
@@ -603,6 +605,24 @@ const requestBaseShape = {
   originatingWatchActivationId: TriggerWatchActivationIdSchema.nullable().optional(),
   /** An external agent's session, for a Request about its direct work. */
   originatingAgentSessionId: AgentSessionIdSchema.nullable().optional(),
+  /**
+   * A connected agent's direct operation this Request decides, in its parts: the Home's
+   * summary, the exact calls and the agent's own reason, kept apart.
+   */
+  agentOperation: z
+    .object({
+      operationId: AgentOperationIdSchema,
+      connectionId: z.string().min(1).max(255),
+      summary: z.string().max(requestTextMaxLength),
+      calls: z.string().max(requestTextMaxLength),
+      agentReason: z.string().max(2_000).nullable(),
+      target: AgentOperationTargetSchema,
+      /** The form field the person answers it on: `allow` or `deny`. */
+      decisionFieldId: RequestIdentifierSchema,
+      /** It reached the end of its lifetime unanswered, rather than being no longer needed. */
+      expired: z.boolean().optional(),
+    })
+    .optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),

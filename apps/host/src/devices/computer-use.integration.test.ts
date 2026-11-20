@@ -1,4 +1,4 @@
-import { upsertSelfDeviceInTransaction } from "@opensteer/database";
+import { AgentConnectionStore, upsertSelfDeviceInTransaction } from "@opensteer/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createDeviceServices } from "../devices/device-services.test-support.js";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
@@ -288,6 +288,68 @@ integration.sequential("Host computer-use approval transactions", () => {
       .where("id", "=", requested.request.id)
       .executeTakeFirstOrThrow();
     expect(stored.status).toBe("fulfilled");
+  });
+
+  it("lists a selected connection's callable tools by its grant as it is when the answer is returned", async () => {
+    const test = await fixture();
+    await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input);
+    const approval = await test.approve("read-write");
+    if (!approval) throw new Error("Expected an approval");
+    expect(
+      await test.service.devices.computerAppApprovals.requestComputerAppAccess(test.input),
+    ).toMatchObject({ status: "fulfilled" });
+    const connections = new AgentConnectionStore(database);
+    const grant = {
+      scope: "selected" as const,
+      tasks: false,
+      resources: [
+        {
+          kind: "computer-app" as const,
+          approvalId: approval.id,
+          deviceId: await test.store.requireSelfDeviceId(test.input.runnerId),
+          app: { kind: "mac-app" as const, bundleId: notes.bundleId, teamId: notes.teamId },
+        },
+      ],
+    };
+    const agent = async (label: string) => {
+      const created = await connections.create({
+        userId: test.task.userId,
+        label,
+        clientName: label,
+        accessMode: "full-access",
+        resource: "http://localhost/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+        grant,
+      });
+      expect(await connections.activate(created.id, `hash-${label}`)).toBe(true);
+      return created;
+    };
+    const [narrowed, kept] = [await agent("narrowed"), await agent("kept")];
+    if (narrowed.grantRevision === undefined) throw new Error("Expected a grant revision");
+    const expectedRevision = narrowed.grantRevision;
+    // The grant is narrowed while the listing is being resolved, before it is answered.
+    const listing = new IntegrationPlatformStore(database);
+    const grants = listing.grants as unknown as {
+      resolveCallableTools: (...args: unknown[]) => Promise<unknown>;
+    };
+    const resolve = grants.resolveCallableTools.bind(grants);
+    const filled = vi.spyOn(grants, "resolveCallableTools").mockImplementationOnce(async (...args) => {
+      const resolved = await resolve(...args);
+      await connections.update(test.task.userId, {
+        connectionId: narrowed.id,
+        expectedRevision,
+        grant: { ...grant, resources: [] },
+      });
+      return resolved;
+    });
+    const list = (connectionId: string) =>
+      listing
+        .listCallableTools({ ownerUserId: test.task.userId, connectionId })
+        .then((rows) => rows.map((row) => row.tool.name).sort());
+    expect(await list(narrowed.id)).toEqual([]);
+    expect(filled).toHaveBeenCalledOnce();
+    expect(await list(kept.id)).toEqual(["act", "observe"]);
+    expect(filled).toHaveBeenCalledOnce();
   });
 
   it("creates automatically, keeps connections when policy turns off, blocks, and unblocks only through owner approval", async () => {

@@ -49,7 +49,7 @@ export const handleAccountTeams =
     if (!client)
       return {
         ok: false,
-        error: { status: 503, reason: null, message: "This app has no Opensteer Account service." },
+        error: { status: 503, reason: null, message: "This app has no Opensteer account service." },
       };
     try {
       return { ok: true, data: await run(client, call) };
@@ -69,7 +69,7 @@ export const handleAccountTeams =
         error: {
           status: 0,
           reason: null,
-          message: "Opensteer Account can’t be reached. Check your connection and try again.",
+          message: "Opensteer account can’t be reached. Check your connection and try again.",
         },
       };
     }

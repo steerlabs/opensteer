@@ -4,6 +4,7 @@ import type { z } from "zod";
 import {
   OpensteerError,
   agentGrantAllows,
+  type AgentGrant,
   type DeviceId,
   formatReferenceLink,
   DeviceIdSchema,
@@ -50,6 +51,26 @@ function command(value: Record<string, unknown>): AdministrationCommand {
     return parsed;
   throw new OpensteerError({ code: "forbidden", message: "This command is unavailable to agents" });
 }
+function liveGrantedApps(
+  grant: Extract<AgentGrant, { scope: "selected" }>,
+  connections: Awaited<
+    ReturnType<AdministrationService["dependencies"]["integrations"]["devices"]["deviceConnections"]>
+  >,
+) {
+  return grant.resources.flatMap((resource) =>
+    resource.kind === "computer-app" &&
+    connections.some(
+      (entry) =>
+        entry.id === resource.approvalId &&
+        entry.status !== "revoked" &&
+        entry.computer?.deviceId === resource.deviceId &&
+        !entry.computer.blockedAt,
+    )
+      ? [resource]
+      : [],
+  );
+}
+
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
   readonly canExecute: (environmentId: EnvironmentId) => boolean;
@@ -235,20 +256,8 @@ export class AdministrationToolHandlers {
     // A selected grant sees only the Devices where an app or phone screen it names is still
     // approved, scoped before anything is projected; a stale approval names no Device.
     const grant = callerLineage(caller)?.grant;
-    const live = (resource: { readonly approvalId: string; readonly deviceId: string }) =>
-      connections.some(
-        (entry) =>
-          entry.id === resource.approvalId &&
-          entry.status !== "revoked" &&
-          entry.computer?.deviceId === resource.deviceId &&
-          !entry.computer.blockedAt,
-      );
     const grantedResources =
-      grant?.scope === "selected"
-        ? grant.resources.flatMap((resource) =>
-            resource.kind === "computer-app" && live(resource) ? [resource] : [],
-          )
-        : null;
+      grant?.scope === "selected" ? liveGrantedApps(grant, connections) : null;
     const grantedDevices = grantedResources
       ? new Set(grantedResources.map((resource) => resource.deviceId))
       : null;
@@ -398,7 +407,20 @@ export class AdministrationToolHandlers {
               };
           // A selected grant learns only that a granted Device exists and whether it is
           // reachable: nothing of its other apps, drivers, switches, shells or capabilities.
-          if (grantedDevices)
+          if (grantedDevices) {
+            const display = grantedPhones.has(device.id) ? summary?.phoneDisplay : null;
+            const driver = display?.driver;
+            const driverVisible = driver && drivers.some(
+              (binding) =>
+                binding.runnerId === driver.runnerId &&
+                binding.role === "self" &&
+                binding.detachedAt === null &&
+                grantedDevices.has(binding.deviceId),
+            );
+            const phoneDisplay =
+              display && !driverVisible
+                ? { ...display, driver: null, setup: { location: display.setup.location } }
+                : display;
             return {
               computerId: device.id,
               name: device.name,
@@ -410,9 +432,7 @@ export class AdministrationToolHandlers {
               hosting: false,
               canRunTasks: false,
               capabilities: [],
-              ...(summary?.phoneDisplay && grantedPhones.has(device.id)
-                ? { phoneDisplay: summary.phoneDisplay }
-                : {}),
+              ...(phoneDisplay ? { phoneDisplay } : {}),
               revoked: device.removedAt !== null,
               access: {
                 browser: "unsupported" as const,
@@ -421,6 +441,7 @@ export class AdministrationToolHandlers {
               },
               sessions: [],
             };
+          }
           return {
             computerId: device.id,
             ...(self ? { link: formatReferenceLink(self.runnerId, device.name) } : {}),
@@ -455,25 +476,40 @@ export class AdministrationToolHandlers {
   }
   async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     await this.service.actor(caller);
-    const { browser, browserSources } = this.service.dependencies;
-    const [allProfiles, sources] = await Promise.all([
-      browser.listAgentProfiles(caller.userId),
-      browserSources.listState({ ownerId: caller.userId }),
-    ]);
-    // A selected grant sees only the profiles it names, and none of the person's sign-in sites.
+    const { browser, browserSources, integrations, store } = this.service.dependencies;
     const grant = callerLineage(caller)?.grant;
     const selected = grant?.scope === "selected" ? grant : null;
+    const [allProfiles, sources, connections] = await Promise.all([
+      browser.listAgentProfiles(caller.userId),
+      selected ? null : browserSources.listState({ ownerId: caller.userId }),
+      selected && selected.resources.some((resource) => resource.kind === "computer-app")
+        ? integrations.devices.deviceConnections(caller.userId)
+        : [],
+    ]);
+    const grantedDevices = selected
+      ? new Set(liveGrantedApps(selected, connections).map((resource) => resource.deviceId))
+      : null;
     const profiles = selected
       ? allProfiles.filter((profile) =>
           agentGrantAllows(selected, { kind: "browser-profile", profileId: profile.id }, "read"),
         )
       : allProfiles;
     return {
-      profiles: profiles.map(({ home, ...profile }) => ({
-        ...profile,
-        home: home && { computerId: home.runnerId, name: home.name, reachable: home.reachable },
-      })),
-      sites: selected ? [] : sources.sites,
+      profiles: await Promise.all(
+        profiles.map(async ({ home, ...profile }) => {
+          const deviceId =
+            home && grantedDevices?.size ? await store.getSelfDeviceId(home.runnerId) : null;
+          const visible = !grantedDevices || (deviceId !== null && grantedDevices.has(deviceId));
+          return {
+            ...profile,
+            home: home && {
+              reachable: home.reachable,
+              ...(visible ? { computerId: home.runnerId, name: home.name } : {}),
+            },
+          };
+        }),
+      ),
+      sites: sources?.sites ?? [],
     };
   }
   async opensteer_messaging_bridge_list({ caller }: ToolCall<"opensteer_messaging_bridge_list">) {

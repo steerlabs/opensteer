@@ -121,7 +121,7 @@ function AccountSettingsContent(props: {
 
   const signOutAccount = () =>
     Alert.alert(
-      "Sign out of your Opensteer Account?",
+      "Sign out of your Opensteer account?",
       [
         enrolledVia === null ? null : phoneLeaves(thisPhoneNoun, enrolledVia.name),
         `Opensteers your Account lists leave this ${thisPhoneNoun}. Ones you added yourself stay.`,
@@ -285,7 +285,7 @@ function AccountSettingsContent(props: {
           key: "identity",
           kind: "text",
           label: signedIn ? accountModel.title : "Not signed in",
-          detail: signedIn ? "Opensteer Account" : "Sign in to reach your computers",
+          detail: signedIn ? "Opensteer account" : "Sign in to reach your computers",
           ...(accountModel.initial === null ? {} : { initial: accountModel.initial }),
         },
         ...(!signedIn && accountModel.action

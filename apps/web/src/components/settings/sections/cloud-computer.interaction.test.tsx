@@ -133,10 +133,10 @@ describe("Opensteer Cloud Computer on desktop", () => {
         li.getAttribute("data-state"),
       ]),
     ).toEqual([
-      ["Payment received", "done"],
+      ["Payment confirmed", "done"],
       ["Setting up your computer", "current"],
       ["Starting Opensteer", "pending"],
-      ["Linking it to your Account", "pending"],
+      ["Linking it to your account", "pending"],
     ]);
     expect(page.textContent).toContain("What changes");
   });
@@ -176,7 +176,7 @@ describe("Opensteer Cloud Computer on desktop", () => {
     expect(page.textContent).toContain("Running");
     expect(page.textContent).toContain(mockCloudComputerAddress);
     expect(page.textContent).toContain("Browser IP · Assigned");
-    expect(page.textContent).toContain("Browser address203.0.113.24");
+    expect(page.textContent).toContain("Browser IP203.0.113.24");
     expect(page.textContent).toContain("RegionAshburn, Virginia");
     expect(page.textContent).toContain("Renews Dec 20, 2026");
     await act(async () => button(page, "Open it").click());
@@ -278,14 +278,14 @@ describe("Opensteer Cloud Computer on desktop", () => {
     const attention = await mount(bridgeFor(scene("attention")));
     expect(attention.textContent).toContain("Needs attention");
     expect(attention.textContent).toContain("The computer didn’t start in time.");
-    expect(attention.textContent).toContain("Browsing paused");
+    expect(attention.textContent).toContain("Browsing unavailable");
     expect(attention.textContent).not.toContain("Cloud Computer is ready");
   });
 
   it("says signed out with the way to sign in, and unreachable with Try again", async () => {
     const signedOut = await mount(bridgeFor(scene("signed-out")));
     expect(signedOut.querySelector('[role="alert"]')?.textContent).toContain(
-      "Sign in to your Opensteer Account",
+      "Sign in to your Opensteer account",
     );
     expect(signedOut.querySelector('[role="alert"] a[href="/settings/account"]')?.textContent).toBe(
       "Sign in",
@@ -294,7 +294,7 @@ describe("Opensteer Cloud Computer on desktop", () => {
     const account = scene("unreachable");
     const bridge = bridgeFor(account);
     const unreachable = await mount(bridge);
-    expect(unreachable.textContent).toContain("Opensteer Account isn’t answering.");
+    expect(unreachable.textContent).toContain("Opensteer account isn’t answering.");
     await act(async () => button(unreachable, "Try again").click());
     expect(bridge.cloudComputerRead).toHaveBeenCalledTimes(2);
   });
@@ -303,7 +303,7 @@ describe("Opensteer Cloud Computer on desktop", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const page = await mount(null);
     expect(page.textContent).toContain(
-      "Set up and manage your Cloud Computer on the Opensteer website",
+      "Sign in to your Opensteer account on the website to set up and manage your Cloud Computer.",
     );
     await act(async () => button(page, "Open the Opensteer website").click());
     expect(open).toHaveBeenCalledWith(
@@ -329,7 +329,7 @@ describe("work Homes on the Cloud Computer screen", () => {
     expect(card?.textContent).toContain(
       "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
     );
-    expect(card?.textContent).toContain("Most an outside agent may do on its own: Supervised");
+    expect(card?.textContent).toContain("Most a connected agent may do on its own: Supervised");
     expect(card?.textContent).toContain("Agents may run tasks: Allowed");
     for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
       expect(card?.textContent).not.toContain(word);

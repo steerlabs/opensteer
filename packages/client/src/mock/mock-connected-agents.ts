@@ -133,7 +133,7 @@ function agent(input: {
     grantRevision: 1,
     consentVersion: 2,
     client: { fingerprint: null, redirectOrigin: input.origin },
-    ...(input.who ?? {}),
+    ...input.who,
     state: input.state ?? "active",
     lastActionUncertain: input.uncertain ?? false,
     revokedAt:
@@ -148,6 +148,9 @@ function agent(input: {
     expiresAt: new Date(now + (input.state === "expired" ? -2 : 13) * day).toISOString(),
   };
 }
+
+/** Who a mock agent is, as a Home records and presents it, for fixtures elsewhere. */
+export const mockAgentIdentity = { verifiedPlatform, selfNamed } as const;
 
 export function mockConnectedAgents(
   scene: MockConnectedAgentScene,

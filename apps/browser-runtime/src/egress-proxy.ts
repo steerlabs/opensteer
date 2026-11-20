@@ -49,6 +49,7 @@ interface PublicBrowserEgressProxyOptions {
   readonly resolveAddress?: ResolveAddress;
   readonly timeoutMs?: number;
   readonly upstream?: BrowserEgressUpstream;
+  readonly upstreamRequired?: boolean;
 }
 
 /**
@@ -75,6 +76,7 @@ export class PublicBrowserEgressProxy {
   readonly #shutdown = new AbortController();
   readonly #timeoutMs: number;
   readonly #transport: EgressTransport;
+  readonly #upstreamPending: boolean;
   /** CONNECT clients, which leave the server's HTTP connections yet hold its close. */
   readonly #tunnels = new Set<Duplex>();
   /** Connections and requests made on a client's behalf, until each closes. */
@@ -91,6 +93,7 @@ export class PublicBrowserEgressProxy {
     this.#resolveAddress = options.resolveAddress ?? resolvePublicAddress;
     this.#timeoutMs = positiveInteger(options.timeoutMs ?? 60_000);
     const track: TrackSocket = (socket) => this.#track(socket);
+    this.#upstreamPending = options.upstreamRequired === true && options.upstream === undefined;
     this.#transport = options.upstream
       ? upstreamTransport(options.upstream, this.#resolveAddress, this.#timeoutMs, track)
       : directTransport(this.#timeoutMs, track);
@@ -188,6 +191,8 @@ export class PublicBrowserEgressProxy {
       const headers = requestHeaders(request, method, this.#maxRequestBytes);
       headers.host = target.host;
       const port = Number(target.port || 80);
+      if (smtpPorts.has(port)) throw denied();
+      if (this.#upstreamPending) throw upstreamUnavailable;
       const agent = this.#transport.agent;
       request.on("error", () => outgoing?.destroy());
       response.once("close", () => {
@@ -283,6 +288,8 @@ export class PublicBrowserEgressProxy {
     try {
       if (request.method !== "CONNECT" || head.byteLength > this.#maxTunnelBytes) throw denied();
       const target = connectTarget(request.url);
+      if (smtpPorts.has(target.port)) throw denied();
+      if (this.#upstreamPending) throw upstreamUnavailable;
       // Watch a detached CONNECT socket for peer shutdown without draining tunnel bytes.
       const onReadable = () => {};
       const onEnd = () => client.destroy();
@@ -343,6 +350,8 @@ export class PublicBrowserEgressProxy {
     }
   }
 }
+
+const smtpPorts = new Set([25, 465, 587]);
 
 function directTransport(timeoutMs: number, track: TrackSocket): EgressTransport {
   return {

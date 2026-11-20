@@ -3,7 +3,14 @@ import type { z } from "zod";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
-import { refused, type Request, type DeviceId } from "@opensteer/core";
+import { OpensteerError, refused, requestTextMaxLength, type Request, type DeviceId } from "@opensteer/core";
+import {
+  OperationOutcomeUnknown,
+  type AgentSessionService,
+  type DirectOperationResult,
+} from "../../agent-sessions/agent-session-service.js";
+import type { ConnectionCaller } from "../agent-caller.js";
+import { directResult, requireDirectWork } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { DeviceService } from "../../devices/device-service.js";
 import type {
@@ -31,6 +38,8 @@ type DeviceToolDevices = Pick<
   | "computerUseVersion"
   | "listCallableTools"
   | "runComputerCode"
+  | "runSessionComputerCode"
+  | "sessionComputerTarget"
   | "store"
 >;
 
@@ -41,15 +50,20 @@ type DeviceToolDevices = Pick<
 export class DeviceToolHandlers {
   readonly #devices: DeviceToolDevices;
   readonly #access: Pick<AccessRequests, "requestDataApp" | "requestLocalServer">;
+  readonly #sessions: AgentSessionService | undefined;
   constructor(options: {
     readonly devices: DeviceToolDevices;
     readonly access: Pick<AccessRequests, "requestDataApp" | "requestLocalServer">;
+    /** The session pipeline a connected agent's own `computer_use` runs through. */
+    readonly sessions?: AgentSessionService;
   }) {
     this.#devices = options.devices;
     this.#access = options.access;
+    this.#sessions = options.sessions;
   }
 
   async computer_use(call: ToolCall<"computer_use">) {
+    if (call.caller.kind === "connection") return this.#sessionComputerUse(call.caller, call);
     const run = requireRun(call.caller).claims;
     if (!(await this.#devices.computerToolEnabled(run)))
       throw refused(
@@ -63,13 +77,80 @@ export class DeviceToolHandlers {
     );
   }
 
+  /**
+   * A connected agent drives the one app or phone screen it names, reviewed as one operation on
+   * that target: the script is shown in full, and every callback stays on that target.
+   */
+  async #sessionComputerUse(caller: ConnectionCaller, call: ToolCall<"computer_use">) {
+    const { code, computerId, app, taskId, reason, readOnly = false } = call.input;
+    if (!computerId)
+      throw refused(
+        "bad_request",
+        "Name the app or phone screen shared with you: computerId, and app for a Mac app, from computer_apps.",
+      );
+    if (code.length > requestTextMaxLength)
+      throw refused("bad_request", "Use at most 20,000 characters per connected computer operation.");
+    const named = await this.#devices.sessionComputerTarget(
+      { ownerUserId: caller.userId, connectionId: caller.connectionId },
+      computerId,
+      app,
+    );
+    return sessionScriptOutput(
+      await requireDirectWork(this.#sessions).run({
+        ownerUserId: caller.userId,
+        agentConnectionId: caller.connectionId,
+        taskId,
+        reason,
+        operationKey: call.operationKey,
+        tool: "computer_use",
+        input: { code, computerId, ...(app === undefined ? {} : { app }), readOnly },
+        target: named.target,
+        targetGeneration: named.generation,
+        effect: readOnly ? "read" : "write",
+        calls: code,
+        execute: async (context) => {
+          await context.recheck();
+          const result = await this.#devices.runSessionComputerCode(
+            {
+              ownerUserId: context.ownerUserId,
+              sessionId: context.sessionId,
+              taskId: context.taskId,
+              bindingId: context.bindingId,
+              target: named.connectionId,
+              generation: named.generation,
+              readOnly,
+              recheck: context.recheck,
+            },
+            code,
+            context.signal,
+          );
+          const failure = result.structuredContent?.error;
+          if (context.signal.aborted) {
+            const cause: unknown = context.signal.reason;
+            if (failure?.code !== "outcome-unknown") throw cause;
+            throw new OperationOutcomeUnknown(
+              `${cause instanceof OpensteerError ? cause.message + " " : ""}The script ended while it ran. Check the app or phone before repeating any of it.`,
+            );
+          }
+          if (failure?.code === "outcome-unknown") throw new OperationOutcomeUnknown(failure.message);
+          return result;
+        },
+        summarize: (result) => ({
+          failed: result.isError === true,
+          content: result.content.length,
+        }),
+      }),
+    );
+  }
+
   async computer_apps(call: ToolCall<"computer_apps">) {
     const caller = call.caller;
     if (caller.kind === "connection")
       await this.#devices.store.connectionDiscoveryScope(caller.userId, caller.connectionId);
-    const requester: IntegrationRequester =
+    const requester: IntegrationRequester & { readonly direct?: true } =
       caller.kind === "connection"
-        ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
+        ? // A connected agent drives what it holds itself, through computer_use.
+          { ownerUserId: caller.userId, connectionId: caller.connectionId, direct: true }
         : { ownerUserId: caller.userId, agentBindingId: caller.key };
     const run = caller.kind === "run" ? caller.claims : null;
     const { computerId, query, limit } = call.input;
@@ -271,7 +352,13 @@ export class DeviceToolHandlers {
       };
     }
     const machine = access.machines.find((candidate) => candidate.deviceId === deviceId);
-    if (!machine) throw refused("not_found", unknownComputerUseMac(deviceId));
+    if (!machine)
+      throw refused(
+        "not_found",
+        access.grantScoped
+          ? "That computer is unavailable to this connected agent."
+          : unknownComputerUseMac(deviceId),
+      );
     if (access.grantScoped) {
       // A selected grant learns nothing else installed on the Mac: only its own apps, paged.
       const needle = query.toLowerCase();
@@ -332,6 +419,34 @@ export class DeviceToolHandlers {
       })),
     };
   }
+}
+
+/**
+ * A connected agent's `computer_use` answer in the tool's own shape: the script's content, or a
+ * line saying what to do next, with the task and operation receipt beside it.
+ */
+function sessionScriptOutput(
+  outcome: DirectOperationResult<Awaited<ReturnType<DeviceService["runSessionComputerCode"]>>>,
+) {
+  const receipt = directResult(
+    outcome.status === "completed"
+      ? { status: outcome.status, taskId: outcome.taskId, operationId: outcome.operationId }
+      : outcome,
+  );
+  if (outcome.status === "completed")
+    return outcome.result
+      ? {
+          ...outcome.result,
+          structuredContent: { ...outcome.result.structuredContent, ...receipt },
+        }
+      : {
+          content: [{ type: "text" as const, text: "This script already ran." }],
+          structuredContent: receipt,
+        };
+  return {
+    content: [{ type: "text" as const, text: outcome.next }],
+    structuredContent: receipt,
+  };
 }
 
 /** What a task's ask for an app or a phone answers. */

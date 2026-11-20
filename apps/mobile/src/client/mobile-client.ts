@@ -1275,7 +1275,7 @@ export class MobileClient {
   async signInAccount(): Promise<void> {
     const result = await this.oauth.beginAccountSignIn();
     if (result.account.status !== "signed-in" || result.account.identity === null) {
-      throw new Error(result.account.detail ?? "Opensteer Account sign-in did not complete.");
+      throw new Error(result.account.detail ?? "Opensteer account sign-in did not complete.");
     }
   }
 

@@ -30,7 +30,7 @@ export type AgentAuthorizationFormProps =
        */
       readonly who: {
         readonly heading: string;
-        readonly detail: string;
+        readonly origins: readonly string[];
         readonly verified: boolean;
         readonly warning: string | null;
       };

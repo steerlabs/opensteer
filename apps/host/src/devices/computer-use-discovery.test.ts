@@ -148,8 +148,8 @@ describe("computer access", () => {
     ).toEqual({
       blocked: {
         code: "computer_asleep",
-        message: "Work iPhone's screen driver is asleep.",
-        next: "It will work again when its driving Mac wakes (Studio Mac); other work can continue.",
+        message: "Studio Mac is asleep.",
+        next: "Resume when it wakes, or continue other work.",
       },
     });
   });

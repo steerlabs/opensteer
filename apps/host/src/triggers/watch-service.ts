@@ -2,10 +2,11 @@ import {
   triggerProgramCompatibilityReason,
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
-import { runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@opensteer/core";
+import { OpensteerError, runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
+import { attemptStopStateCapability } from "@opensteer/protocol";
 import {
   TRIGGER_PROGRAM_VERSION_REFUSAL,
   WATCH_CAPABILITY_RENEWAL_MS,
@@ -23,6 +24,7 @@ type WatchBrowserTokenService = WatchCapabilityTokenService<"opensteer-watch-bro
 type WatchStore = Pick<
   TriggerStore,
   | "applyWatchStatus"
+  | "assertActiveWatchBinding"
   | "recordWatchUnavailable"
   | "reconcileWatchesForRunner"
   | "watchEnvironmentForTrigger"
@@ -143,6 +145,7 @@ export class WatchService {
     >,
   ): Promise<void> {
     const result = await this.#store.applyWatchStatus({
+      verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
       activationId: status.activationId,
       executionGeneration: status.executionGeneration,
       healthySince: status.healthySince ? new Date(status.healthySince) : null,
@@ -157,7 +160,9 @@ export class WatchService {
       stdoutTail: status.stdoutTail,
     });
     this.#onChanged();
-    if (result.autoPaused) this.changed(result.activation.environmentId);
+    if (result.autoPaused || ((status.observed === "stopped" || status.observed === "expired") &&
+      result.activation.desired === "active"))
+      this.changed(result.activation.environmentId);
   }
   async reconcile(environmentId: EnvironmentId): Promise<void> {
     const identity = this.#runners.identityForEnvironment(environmentId);
@@ -171,6 +176,7 @@ export class WatchService {
       runnerId: identity.runnerId,
     });
     const desired: WatchReconcileActivation[] = [];
+    const lineage: WatchCapabilityScope[] = [];
     const unavailable: {
       readonly activationId: (typeof snapshot.activations)[number]["activation"]["id"];
       readonly executionGeneration: number;
@@ -205,6 +211,7 @@ export class WatchService {
       const mcp = this.#controlTokens.issue(scope);
       const hasBrowser = await this.#browser.hasBrowserProfiles(context.activation.createdBy);
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
+      if (context.connectionId) lineage.push(scope);
       desired.push({
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
@@ -231,6 +238,21 @@ export class WatchService {
       snapshot.reconcileGeneration,
       desired,
       AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(30_000)]),
+      lineage.length ? {
+        connectionGeneration: identity.connectionGeneration,
+        filterDesired: async () => {
+          for (const scope of lineage) {
+            try {
+              await this.#store.assertActiveWatchBinding(scope);
+            } catch (error) {
+              if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
+              const index = desired.findIndex(({ activationId }) => activationId === scope.activationId);
+              if (index !== -1) desired.splice(index, 1);
+            }
+          }
+          return desired;
+        },
+      } : undefined,
     );
     for (const activation of unavailable) {
       await this.#store.recordWatchUnavailable({

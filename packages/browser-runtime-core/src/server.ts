@@ -2,6 +2,8 @@ import {
   standardCdpDetachFrame,
   standardCdpPath,
   standardCdpSettledReason,
+  standardCdpLeasePath,
+  StandardCdpLeaseReconciliationSchema,
 } from "@opensteer/protocol/standard-cdp";
 export { standardCdpPath } from "@opensteer/protocol/standard-cdp";
 import {
@@ -197,7 +199,16 @@ export class BrowserRuntimeServer {
       response.end(JSON.stringify({ storage: this.runtime.localProfileStorage, profiles }));
       return;
     }
-    if (request.method === "POST" && request.url === "/v1/local-profiles/delete") {
+    if (request.method === "GET" && request.url === standardCdpLeasePath) {
+      const evidence = await this.runtime.reconcileStandardCdpLease();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(evidence));
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      (request.url === "/v1/local-profiles/delete" || request.url === standardCdpLeasePath)
+    ) {
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of request) {
@@ -206,10 +217,19 @@ export class BrowserRuntimeServer {
         if (size > 16 * 1024) throw new Error("Profile maintenance body exceeds its limit.");
         chunks.push(bytes);
       }
-      const input = z
+      const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (request.url === standardCdpLeasePath) {
+        const evidence = await this.runtime.reconcileStandardCdpLease(
+          StandardCdpLeaseReconciliationSchema.parse(body),
+        );
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(evidence));
+        return;
+      }
+      const { binding, deletionId } = z
         .strictObject({ binding: LocalProfileBindingSchema, deletionId: z.uuid() })
-        .parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      const state = await this.runtime.deleteLocalProfile(input.binding, input.deletionId);
+        .parse(body);
+      const state = await this.runtime.deleteLocalProfile(binding, deletionId);
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ state }));
       return;

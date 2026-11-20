@@ -5,7 +5,6 @@ import {
   orgModeLabel,
   orgWords,
   workAuditExcluded,
-  workAuditRecordFields,
   workAuditRecordKinds,
   workHomeStatusLabel,
   type MyOrganizationsResponse,
@@ -609,7 +608,7 @@ export function auditDescription(): string {
   return `<p class="lead">${w("org.audit.lead")}</p>
   <h3 class="org__split-title">${w("org.audit.included")}</h3>
   <ul class="org__list org__list--can">${workAuditRecordKinds.map(({ words }) => `<li>${escapeHtml(words)}</li>`).join("")}</ul>
-  <p class="fine org__left">${w("org.audit.fields", { fields: workAuditRecordFields.join(", ") })}</p>
+  <p class="fine org__left">${w("org.audit.fields")}</p>
   <h3 class="org__split-title">${w("org.audit.excluded")}</h3>
   <ul class="org__list org__list--cannot">${workAuditExcluded.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
 }

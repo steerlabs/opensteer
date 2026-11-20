@@ -4,6 +4,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { engineActiveVersions, engineDemand } from "./engine-storage.js";
@@ -123,6 +124,8 @@ export class PluginService {
   readonly #options: PluginServiceOptions;
   readonly #pending = new Map<string, Pending>();
   readonly #callbacks = new Map<string, AbortController>();
+  readonly #executionCallbacks = new Map<string, Set<Promise<void>>>();
+  readonly #executionChildren = new Map<string, number>();
   readonly #elicits = new Map<
     string,
     { resolve(value: PluginAnswer): void; reject(error: Error): void }
@@ -405,9 +408,22 @@ export class PluginService {
         this.#pulls.get(message.id)?.resolve(message);
         this.#pulls.delete(message.id);
       } else if (message.type === "execution") {
-        this.#report(message.execution);
+        const execution = message.execution;
+        if (execution.drained) {
+          void this.#drainCallbacks(execution.id).then(() => this.#report(execution));
+        } else this.#report(execution);
       } else if (message.type === "callback") {
-        void this.#callback(child, message);
+        const execution = z.object({ execution: z.string() }).safeParse(message.input).data?.execution;
+        const pending = this.#callback(child, message);
+        if (execution) {
+          const callbacks = this.#executionCallbacks.get(execution) ?? new Set<Promise<void>>();
+          this.#executionCallbacks.set(execution, callbacks);
+          callbacks.add(pending);
+          void pending.finally(() => {
+            callbacks.delete(pending);
+            if (callbacks.size === 0) this.#executionCallbacks.delete(execution);
+          }).catch(() => {});
+        } else void pending.catch(() => {});
       } else if (message.type === "callbackCancel") {
         this.#callbacks.get(message.id)?.abort();
       } else if (message.type === "elicitResult" || message.type === "elicitError") {
@@ -514,6 +530,21 @@ export class PluginService {
     if (liveExecution.has(execution.state)) this.#executions.set(execution.id, execution);
     else this.#executions.delete(execution.id);
     this.#options.onExecution?.(execution);
+  }
+  async #drainCallbacks(id: string): Promise<void> {
+    await Promise.allSettled(this.#executionCallbacks.get(id) ?? []);
+  }
+  async stopExecution(id: string, context: PluginCaller, submitting: boolean): Promise<PluginExecution | undefined> {
+    const generation = this.#executionChildren.get(id);
+    if (generation === undefined) {
+      if (submitting) return { id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+      return;
+    }
+    if (this.#state.status !== "ready" || generation !== this.#state.generation) return;
+    const result = await this.cancel({ execution: id }, context, AbortSignal.timeout(3_000));
+    if (generation !== this.#state.generation || result.id !== id || result.caller !== context.caller || !result.drained) return;
+    await this.#drainCallbacks(id);
+    return result;
   }
   #send(child: ChildProcess, value: unknown) {
     if (child.connected) child.send(parseIpcMessage(HostMessageSchema, value), () => {});
@@ -639,8 +670,9 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
+    beforeSend?: () => Promise<void>,
   ): Promise<PluginOutput<K>> {
-    const result = await this.#request(operation, input, context, signal);
+    const result = await this.#request(operation, input, context, signal, beforeSend);
     // A change of which version is active, an install replayed from its receipt included, is
     // answered once the skill record follows it.
     const plugin =
@@ -716,11 +748,15 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
+    beforeSend?: () => Promise<void>,
   ): Promise<PluginOutput<K>> {
     signal?.throwIfAborted();
     this.#touch();
     const child = await this.#ready(signal);
+    if (beforeSend) await beforeSend();
     signal?.throwIfAborted();
+    if (!child.connected || this.#child !== child)
+      throw new PluginServiceError("unavailable", "Plugin engine changed before the request was sent");
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const abort = () => {
@@ -740,12 +776,17 @@ export class PluginService {
       });
       signal?.addEventListener("abort", abort, { once: true });
       try {
+        const parsed = operations[operation].input.parse(input);
+        if (operation === "call" || operation === "execute") {
+          const executionId = z.object({ executionId: z.string().optional() }).parse(parsed).executionId;
+          if (executionId && child.connected) this.#executionChildren.set(executionId, this.#state.generation);
+        }
         this.#send(child, {
           type: "request",
           id,
           operation,
           context,
-          input: operations[operation].input.parse(input),
+          input: parsed,
         });
       } catch (error) {
         this.#pending.delete(id);
@@ -755,6 +796,8 @@ export class PluginService {
     }).finally(() => this.#touch());
     checkPluginOutputSize(operation, result);
     const parsed = operations[operation].output.parse(result) as PluginOutput<K>;
+    const execution = z.object({ id: z.string(), drained: z.literal(true) }).safeParse(parsed).data;
+    if (execution) await this.#drainCallbacks(execution.id);
     if (operation === "list") {
       const plugins = await Promise.all(
         operations.list.output.parse(parsed).map(async (plugin) => ({
@@ -812,7 +855,11 @@ export class PluginService {
       input: PluginInput<K>,
       context: PluginCaller,
       signal?: AbortSignal,
-    ): Promise<PluginOutput<K>> => this.request(operation, input, context, signal);
+      beforeSend?: () => Promise<void>,
+    ): Promise<PluginOutput<K>> => this.request(operation, input, context, signal, beforeSend);
+  }
+  executionWasSent(id: string): boolean {
+    return this.#executionChildren.has(id);
   }
   readonly health = this.#method("health");
   readonly catalogList = this.#method("catalogList");
@@ -845,6 +892,7 @@ export class PluginService {
   readonly unlinkAccount = this.#method("unlinkAccount");
   readonly search = this.#method("search");
   readonly describe = this.#method("describe");
+  readonly resolveTools = this.#method("resolveTools");
   readonly call = this.#method("call");
   readonly execute = this.#method("execute");
   readonly resume = this.#method("resume");

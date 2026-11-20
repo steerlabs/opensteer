@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { deviceAccess } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { OpensteerError, type RunId, type RunnerId, type UserId } from "@opensteer/core";
+import { OpensteerError, type DeviceId, type RunId, type RunnerId, type UserId } from "@opensteer/core";
 import type { OpensteerStore, RevokedRunGrant } from "@opensteer/database";
 import type {
   RunnerAuxiliaryStream,
@@ -353,6 +353,8 @@ export class ShellHub implements ShellControlStreamHandler {
         this.#maybeActivate(session);
         return;
       case "runner.shell.session.rejected":
+        if (message.error.code === "computer_stopped")
+          session.settle.reject(stoppedShell(session.targetName));
         this.#background(session.runnerId, () => this.end(session.sessionId, "open-failed"));
         return;
       case "runner.shell.session.closed": {
@@ -394,7 +396,7 @@ export class ShellHub implements ShellControlStreamHandler {
     try {
       scope = await this.#options.callerTokens.authenticate(input.token);
     } catch {
-      throw rejection("run_invalid", "This Run has ended.");
+      throw rejection("run_invalid", "This task has ended.");
     }
     if (!(await this.#lineageAdmits(scope)))
       throw rejection(
@@ -415,6 +417,13 @@ export class ShellHub implements ShellControlStreamHandler {
       );
     }
     const ownership = await this.#options.store.effectiveMachineOwner(input.target);
+    const reachableByPolicy = await this.#reachAdmits(input.target, target.policy, scope);
+    const stopped = async () =>
+      stoppedShell(target.name, await this.#options.store.requireSelfDeviceId(input.target));
+    if (reachableByPolicy) {
+      if (this.#closed) throw shuttingDown();
+      if (this.#options.runners.agentsStoppedSince?.(input.target)) throw await stopped();
+    }
     if (ownership?.effectiveOwner === scope.requestedBy && input.target !== scope.runnerId) {
       if (!this.#liveStream(input.target))
         throw new ShellConnectRejection(
@@ -435,7 +444,7 @@ export class ShellHub implements ShellControlStreamHandler {
           },
         );
     }
-    if (!(await this.#reachAdmits(input.target, target.policy, scope))) {
+    if (!reachableByPolicy) {
       throw rejection("reach_denied", `${target.name} does not allow access from other computers.`);
     }
     const offline = () =>
@@ -447,16 +456,9 @@ export class ShellHub implements ShellControlStreamHandler {
     // their absence is: a caller that arrived as the Host was going is told
     // that, not that the computer it asked for happens to be offline.
     if (this.#closed) throw shuttingDown();
-    // Every shell is an agent's: while the person has agents stopped on that
-    // computer none opens, and the caller is told why, connected or not.
-    if (this.#options.runners.agentsStoppedSince?.(input.target))
-      throw rejection(
-        "target_offline",
-        `Agents are stopped on ${target.name} by its person. It accepts connections again when they resume them there.`,
-      );
     if (!this.#liveStream(input.target)) throw offline();
     const thread = await this.#options.store.getThreadForOwner(scope.threadId, scope.requestedBy);
-    if (!thread) throw rejection("run_invalid", "This Run has ended.");
+    if (!thread) throw rejection("run_invalid", "This task has ended.");
     const callerMachineName = await this.#callerMachineName(scope.runnerId);
     const settle = deferred();
     let admitReservation!: (inserted: boolean) => void;
@@ -464,11 +466,12 @@ export class ShellHub implements ShellControlStreamHandler {
       admitReservation = resolve;
     });
 
-    const reserved = await this.#withMachine(input.target, () => {
+    const reserved = await this.#withMachine(input.target, async () => {
       // Every step above was awaited, and shutdown began in one of those gaps
       // for somebody. A session published now would be one `close` has already
       // walked past, so it would stay open with nothing left to end it.
       if (this.#closed) throw shuttingDown();
+      if (this.#options.runners.agentsStoppedSince?.(input.target)) throw await stopped();
       if (
         this.#countSessions((entry) => entry.runnerId === input.target) >=
         machineAccessMaxActiveSessions
@@ -483,7 +486,7 @@ export class ShellHub implements ShellControlStreamHandler {
       ) {
         throw rejection(
           "too_many_sessions",
-          `This Run already has ${machineAccessMaxRunSessions} open connections.`,
+          `This task already has ${machineAccessMaxRunSessions} open connections.`,
         );
       }
       // The stream may have been superseded while the reads above ran, and a
@@ -1376,7 +1379,7 @@ export class ShellHub implements ShellControlStreamHandler {
     const identity = this.#options.runners.identityForRunner(runnerId);
     if (identity) return identity.name;
     const record = await this.#options.store.getMachineAccessTarget(runnerId);
-    if (!record) throw rejection("run_invalid", "This Run has ended.");
+    if (!record) throw rejection("run_invalid", "This task has ended.");
     return record.name;
   }
 
@@ -1427,6 +1430,14 @@ function deferred(): Deferred {
   return { promise, reject, resolve };
 }
 
+function stoppedShell(name: string, machineId?: DeviceId): ShellConnectRejection {
+  return new ShellConnectRejection(
+    "device-stopped",
+    `Agents are stopped on ${name}. Wait until the person resumes them there.`,
+    machineId ? { machineId, capability: "files" } : undefined,
+  );
+}
+
 function rejection(code: ShellConnectErrorCode, message: string): ShellConnectRejection {
   return new ShellConnectRejection(code, message);
 }
@@ -1440,7 +1451,7 @@ function rejection(code: ShellConnectErrorCode, message: string): ShellConnectRe
 function openFailure(targetName: string, reason: ShellCloseReason): ShellConnectRejection {
   switch (reason) {
     case "run-ended":
-      return rejection("run_invalid", "This Run has ended.");
+      return rejection("run_invalid", "This task has ended.");
     case "stopped-by-owner":
       return rejection("reach_denied", `${targetName}'s owner stopped this connection.`);
     case "policy-changed":

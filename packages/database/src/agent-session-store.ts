@@ -2,6 +2,7 @@ import {
   AgentGrantSchema,
   AgentOperationTargetSchema,
   agentGrantAccess,
+  threadAccessModeAtMost,
   type AgentGrantTarget,
   OpensteerError,
   createId,
@@ -11,6 +12,7 @@ import {
   type AgentOperationOutcome,
   type AgentOperationState,
   type AgentOperationTarget,
+  type AgentOperationView,
   type AgentSessionEndReason,
   type AgentSessionId,
   type HarnessInstanceId,
@@ -318,6 +320,7 @@ export async function endAgentSessions(
         state: "refused",
         outcome: "refused",
         completedAt: new Date(),
+        terminalEvidenceAt: new Date(),
         updatedAt: new Date(),
         decision: jsonValue({
           by: "refused",
@@ -336,6 +339,20 @@ export async function endAgentSessions(
       .where("status", "=", "pending")
       .orderBy("id")
       .execute();
+    // A quiet session ends only once its Requests outlived their lifetime: they expired.
+    if (open.length && input.reason === "idle")
+      await tx
+        .updateTable("requests")
+        .set({
+          agentOperation: sql`agent_operation || '{"expired": true}'::jsonb`,
+        })
+        .where(
+          "id",
+          "in",
+          open.map(({ id }) => id),
+        )
+        .where("agentOperation", "is not", null)
+        .execute();
     if (open.length)
       await cancelPending(tx, {
         reason: input.reason === "stopped" ? "run-ended" : "authority-revoked",
@@ -475,7 +492,9 @@ export async function decideAgentOperation(
     .set({
       decision: jsonValue(decision),
       state: refusedDecision ? "refused" : "approved",
-      ...(refusedDecision ? { outcome: "refused", completedAt: new Date() } : {}),
+      ...(refusedDecision
+        ? { outcome: "refused", completedAt: new Date(), terminalEvidenceAt: new Date() }
+        : {}),
       updatedAt: new Date(),
     })
     .where("id", "=", id)
@@ -512,14 +531,24 @@ export async function askForAgentOperation(
     readonly threadId: ThreadId;
     readonly title: string;
     readonly summary: string;
+    readonly presentation?: Extract<import("@opensteer/core").RequestPresentation, { kind: "form" }>;
   },
 ): Promise<AgentOperationRow> {
   return commitPersonalMutation(database, async (tx) => {
-    // The session, then its operation, then (inside the Request) its task: their ranked order.
+    if (input.presentation) {
+      const connection = await lockLiveConnection(
+        tx,
+        input.operation.userId,
+        input.operation.connectionId,
+      );
+      if (connection.grantRevision !== input.operation.grantRevision)
+        throw refused(lineageEndedMessage);
+    }
     await tx
       .selectFrom("agentSessions")
       .select("id")
       .where("id", "=", input.operation.sessionId)
+      .where("status", "=", "active")
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     const operation = await tx
@@ -545,7 +574,7 @@ export async function askForAgentOperation(
         originatingAgentSessionId: operation.sessionId,
         originatingThreadId: input.threadId,
         payload: { kind: "person.question" },
-        presentation: {
+        presentation: input.presentation ?? {
           kind: "form",
           title: input.title.slice(0, 200),
           detail,
@@ -554,7 +583,7 @@ export async function askForAgentOperation(
               id: operationDecisionFieldId,
               prompt: "Allow this once?",
               choices: [
-                { label: "Allow", value: operationAllow },
+                { label: "Allow once", value: operationAllow },
                 { label: "Don't allow", value: operationDeny },
               ],
               custom: false,
@@ -568,6 +597,25 @@ export async function askForAgentOperation(
       } as never,
       tx,
     );
+    if (!input.presentation) {
+      // The Request carries the operation in its parts, so clients never parse the detail text.
+      await tx
+        .updateTable("requests")
+        .set({
+          agentOperation: jsonValue({
+            operationId: operation.id,
+            connectionId: operation.connectionId,
+            summary: input.summary.slice(0, 20_000),
+            calls: operation.calls.slice(0, 20_000),
+            agentReason: operation.agentReason,
+            target: operation.target,
+            decisionFieldId: operationDecisionFieldId,
+          }),
+        })
+        .where("id", "=", created.request.id)
+        .execute();
+      await refreshRequestState(tx, created.request.id);
+    }
     const pending = await tx
       .updateTable("agentOperations")
       .set({ state: "pending", requestId: created.request.id, updatedAt: new Date() })
@@ -593,25 +641,20 @@ export async function respondToAgentOperation(
     readonly response: RequestResponse;
   },
 ): Promise<AgentOperationRow> {
-  const choice =
-    input.response.kind === "form"
-      ? input.response.answers[operationDecisionFieldId]?.[0]
-      : input.response.kind === "external" && input.response.value?.decision === "declined"
-        ? operationDeny
-        : undefined;
-  if (choice !== operationAllow && choice !== operationDeny)
-    throw new OpensteerError({ code: "bad_request", message: "Choose Allow or Don't allow." });
   return commitPersonalMutation(database, async (tx) => {
     const linked = await tx
       .selectFrom("agentOperations")
-      .select(["id", "sessionId"])
+      .select(["id", "sessionId", "connectionId", "grantRevision"])
       .where("requestId", "=", input.requestId)
       .executeTakeFirst();
     if (!linked) throw new OpensteerError({ code: "not_found", message: "Request not found" });
+    const connection = await lockLiveConnection(tx, input.resolvedBy, linked.connectionId);
+    if (connection.grantRevision !== linked.grantRevision) throw refused(lineageEndedMessage);
     await tx
       .selectFrom("agentSessions")
       .select("id")
       .where("id", "=", linked.sessionId)
+      .where("status", "=", "active")
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     const operation = await tx
@@ -639,9 +682,44 @@ export async function respondToAgentOperation(
         code: "forbidden",
         message: "Only the person it asked can answer this.",
       });
+    const question = operation.tool === "ask_person";
+    const decline =
+      input.response.kind === "external" && input.response.value?.decision === "declined";
+    let allowedResponse: boolean;
+    if (question && !decline) {
+      const field = row.presentation?.kind === "form" ? row.presentation.fields[0] : undefined;
+      const response = input.response;
+      const answers = field && response.kind === "form" ? response.answers[field.id] : undefined;
+      if (
+        !field ||
+        response.kind !== "form" ||
+        Object.keys(response.answers).length !== 1 ||
+        answers?.length !== 1 ||
+        !field.choices?.some(({ value }) => value === answers[0])
+      )
+        throw new OpensteerError({
+          code: "bad_request",
+          message:
+            "Choose an answer shown on the Request. Enter passwords or codes only in the page.",
+        });
+      allowedResponse = true;
+    } else {
+      const choice =
+        input.response.kind === "form"
+          ? input.response.answers[operationDecisionFieldId]?.[0]
+          : decline
+            ? operationDeny
+            : undefined;
+      if (choice !== operationAllow && choice !== operationDeny)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Choose Allow once or Don't allow.",
+        });
+      allowedResponse = choice === operationAllow;
+    }
     assertRequestRevision(row, input.expectedRevision);
     const now = new Date();
-    const allowed = choice === operationAllow && operation.state === "pending";
+    const allowed = allowedResponse && operation.state === "pending";
     await tx
       .updateTable("requests")
       .set({
@@ -675,6 +753,7 @@ export async function respondToAgentOperation(
               state: "refused",
               outcome: "refused",
               completedAt: now,
+              terminalEvidenceAt: now,
               decision: jsonValue({
                 by: "refused",
                 reason: "person",
@@ -702,20 +781,24 @@ export async function handOffAgentOperation(
   },
 ): Promise<AgentOperationRow | null> {
   return commitPersonalMutation(database, async (tx) => {
-    await lockLiveConnection(tx, input.userId, input.agentConnectionId);
+    const connection = await lockLiveConnection(tx, input.userId, input.agentConnectionId);
     const operation = await tx
       .selectFrom("agentOperations")
       .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
-      .select(["agentOperations.sessionId", "agentSessions.status"])
+      .select(["agentOperations.grantRevision", "agentOperations.mode", "agentSessions.status"])
       .where("agentOperations.id", "=", input.id)
+      .where("agentOperations.connectionId", "=", connection.id)
       .executeTakeFirstOrThrow();
-    if (operation.status !== "active") return null;
+    if (operation.status !== "active" || operation.grantRevision !== connection.grantRevision ||
+      !threadAccessModeAtMost(operation.mode, connection.accessMode)) return null;
     return (
       (await tx
         .updateTable("agentOperations")
         .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
         .where("id", "=", input.id)
         .where("state", "=", "approved")
+        .where("grantRevision", "=", operation.grantRevision)
+        .where("mode", "=", operation.mode)
         .returningAll()
         .executeTakeFirst()) ?? null
     );
@@ -762,6 +845,9 @@ export async function settleAgentOperation(
         outcome,
         completedAt: new Date(),
         updatedAt: new Date(),
+        // The executor ran in this process and has returned: that is the end of the attempt.
+        terminalEvidenceAt: new Date(),
+        ...(outcome === "unknown" ? { contactLostAt: new Date() } : {}),
         resultSummary: summary ? jsonValue(summary) : null,
       })
       .where("id", "=", id)
@@ -785,19 +871,28 @@ export async function settleOrphanedAgentOperations(
   if (!orphans.length) return 0;
   const settled = await database
     .updateTable("agentOperations")
-    .set({ state: "unknown", outcome: "unknown", completedAt: new Date(), updatedAt: new Date() })
+    .set({
+      state: "unknown",
+      outcome: "unknown",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      // The process that handed it off is gone, so it can do nothing more; its effect is unknown.
+      terminalEvidenceAt: new Date(),
+      contactLostAt: new Date(),
+    })
     .where("id", "in", orphans)
     .where("state", "=", "handed-off")
     .execute();
   return settled.reduce((sum, result) => sum + Number(result.numUpdatedRows), 0);
 }
 
-/** A connection's operations, newest first, paged by (createdAt, id). */
+/** A connection's or a task's operations, newest first, paged by (createdAt, id). */
 export async function listAgentOperations(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly userId: UserId;
-    readonly connectionId: string;
+    readonly connectionId?: string;
+    readonly threadId?: ThreadId;
     readonly limit: number;
     readonly before?: { readonly createdAt: Date; readonly id: string };
   },
@@ -807,19 +902,57 @@ export async function listAgentOperations(
     .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
     .selectAll("agentOperations")
     .select("agentSessions.threadId")
-    .where("agentOperations.userId", "=", input.userId)
-    .where("agentOperations.connectionId", "=", input.connectionId);
+    .where("agentOperations.userId", "=", input.userId);
+  if (input.connectionId)
+    query = query.where("agentOperations.connectionId", "=", input.connectionId);
+  if (input.threadId) query = query.where("agentSessions.threadId", "=", input.threadId);
   if (input.before) {
     const { createdAt, id } = input.before;
     query = query.where(
       sql<boolean>`(agent_operations.created_at, agent_operations.id) < (${createdAt}, ${id})`,
     );
   }
-  return query
+  const rows = await query
     .orderBy("agentOperations.createdAt", "desc")
     .orderBy("agentOperations.id", "desc")
-    .limit(input.limit)
+    .limit(input.limit + 1)
     .execute();
+  const page = rows.slice(0, input.limit);
+  const last = page.at(-1);
+  return {
+    operations: page.map(
+      (row): AgentOperationView => ({
+        id: row.id,
+        sessionId: row.sessionId,
+        taskId: row.threadId,
+        tool: row.tool,
+        target: row.target,
+        mode: row.mode,
+        effect: row.effect,
+        state: row.state,
+        decision: row.decision,
+        outcome: row.outcome,
+        requestId: row.requestId,
+        createdAt: row.createdAt.toISOString(),
+        handedOffAt: row.handedOffAt?.toISOString() ?? null,
+        completedAt: row.completedAt?.toISOString() ?? null,
+      }),
+    ),
+    nextBefore:
+      rows.length > input.limit && last ? `${last.createdAt.toISOString()}|${last.id}` : null,
+  };
+}
+
+/** A `nextBefore` cursor from a listing, or undefined for the first page. */
+export function agentOperationCursor(
+  before: string | undefined,
+): { readonly createdAt: Date; readonly id: string } | undefined {
+  if (!before) return undefined;
+  const [at, id] = before.split("|");
+  const createdAt = new Date(at ?? "");
+  if (!id || Number.isNaN(createdAt.getTime()))
+    throw new OpensteerError({ code: "bad_request", message: "That cursor is not from this list." });
+  return { createdAt, id };
 }
 
 /**

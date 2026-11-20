@@ -1,5 +1,12 @@
 import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
-import type { Blocked, RunId, DeviceId } from "@opensteer/core";
+import {
+  agentGrantAccess,
+  OpensteerError,
+  type AgentGrantTarget,
+  type Blocked,
+  type RunId,
+  type DeviceId,
+} from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
@@ -25,46 +32,69 @@ export async function gatherComputerAccess(
   > & {
     readonly store: Pick<DeviceService["store"], "requesterGrant">;
   },
-  input: IntegrationRequester & { readonly runId?: RunId },
+  input: IntegrationRequester & {
+    readonly runId?: RunId;
+    /** A connected agent, which drives what it was granted through `computer_use` itself. */
+    readonly direct?: true;
+  },
   run?: RunCapabilityClaims<string>,
   callableTools?: readonly CallableIntegrationTool[],
 ) {
-  const hasRun = !!(run || input.runId);
-  const [ownerInventory, tools, ownerSetupRequests, ownerAccessRequests, enabled, grant] =
+  const hasRun = !!(run || input.runId || input.direct);
+  const [ownerInventory, tools, ownerSetupRequests, ownerAccessRequests, enabled] =
     await Promise.all([
       platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
       callableTools ?? platform.listCallableTools(input),
       platform.store.listDeviceComputerAppSetupRequests(input.ownerUserId),
       platform.store.integrationRequests.listPendingIntegrationAccessRequests(input.ownerUserId),
       run ? platform.computerToolEnabled(run) : hasRun,
-      platform.store.requesterGrant(input),
     ]);
+  const grant = await platform.store.requesterGrant(input);
   // A selected grant learns only the Devices, apps and phone screens it names: the inventory is
   // scoped before anything is projected, and the person's pending setup is none of its business.
   const selected = grant?.scope === "selected" ? grant : null;
-  const grantedApps = selected?.resources.flatMap((resource) =>
-    resource.kind === "computer-app" ? [resource] : [],
+  const holds = (target: AgentGrantTarget) => selected && agentGrantAccess(selected, target);
+  const machines = selected
+    ? ownerInventory.machines.flatMap((machine) => {
+        const apps = machine.apps.filter((app) =>
+          holds({
+            kind: "computer-app",
+            deviceId: machine.deviceId,
+            approvalId: app.connectionId,
+            app: { kind: "mac-app", bundleId: app.bundleId, teamId: app.teamId },
+          }),
+        );
+        return apps.length ? [{ ...machine, apps }] : [];
+      })
+    : ownerInventory.machines;
+  const grantedMacs = new Set(
+    machines.filter((machine) => machine.apps.some((app) => app.status === "approved"))
+      .map((machine) => machine.deviceId),
   );
-  const inventory = grantedApps
+  const inventory = selected
     ? {
         ...ownerInventory,
-        machines: ownerInventory.machines.flatMap((machine) => {
-          const apps = machine.apps.filter((entry) =>
-            grantedApps.some(
-              (resource) =>
-                resource.approvalId === entry.connectionId.toLowerCase() &&
-                resource.deviceId === machine.deviceId,
-            ),
-          );
-          return apps.length ? [{ ...machine, apps }] : [];
-        }),
-        phones: ownerInventory.phones.filter((phone) =>
-          grantedApps.some(
-            (resource) =>
-              resource.deviceId === phone.deviceId &&
-              resource.app.kind === "phone-screen" &&
-              resource.app.definitionId === phone.definitionId,
-          ),
+        machines,
+        phones: await Promise.all(
+          ownerInventory.phones.filter((phone) => {
+            const approvalId = phone.connectionId ?? phone.connection?.connectionId;
+            return approvalId && isPhoneDisplayDefinitionId(phone.definitionId) && holds({
+              kind: "computer-app",
+              deviceId: phone.deviceId,
+              approvalId,
+              app: { kind: "phone-screen", definitionId: phone.definitionId },
+            });
+          }).map(async ({ setup, ...phone }) => {
+            if (setup?.location !== "driver-mac")
+              return { ...phone, ...(setup ? { setup } : {}) };
+            const deviceId = grantedMacs.size
+              ? await platform.store.requireSelfDeviceId(setup.driverRunnerId).catch((error: unknown) => {
+                  if (error instanceof OpensteerError && error.code === "not_found") return null;
+                  throw error;
+                })
+              : null;
+            return { ...phone, ...(deviceId && grantedMacs.has(deviceId) ? { setup } : {}) };
+          }),
         ),
       }
     : ownerInventory;
@@ -73,7 +103,7 @@ export async function gatherComputerAccess(
   const runRequired: { blocked: Blocked; access?: never } = {
     blocked: {
       code: "unavailable",
-      message: "Only a task's Run can operate phones and Mac apps.",
+      message: "Only a running task can operate phones and Mac apps.",
       next: 'Use opensteer_task_send with delivery "queue" to ask a task to do this work.',
     },
   };

@@ -215,8 +215,10 @@ export function createBrowserUsePort({
         ...(sessionId === undefined ? {} : { sessionId }),
       });
       if (!parsed.success) throw refused("bad_request", "Invalid CDP command.");
-      if ((method === "Opensteer.fillLogin" || method === "Opensteer.fillCard") &&
-        !authority.agentBindingId.startsWith("session:"))
+      if (
+        (method === "Opensteer.fillLogin" || method === "Opensteer.fillCard") &&
+        !authority.agentBindingId.startsWith("session:")
+      )
         throw refused(
           "forbidden",
           "Saved-login and card fills require their own approved Request.",

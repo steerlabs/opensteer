@@ -73,7 +73,7 @@ it("tells an agent a Device whose person stopped agents is stopped, not offline"
     message: error.message,
     next: expect.stringContaining("wait until the person resumes agents there"),
   });
-  expect(error.message).toMatch(/Agents are stopped on this Device by the person/u);
+  expect(error.message).toMatch(/Agents are stopped on this device/u);
 });
 
 it.each(["device-asleep", "device-stopped"] as const)(
@@ -91,7 +91,6 @@ it.each(["device-asleep", "device-stopped"] as const)(
       .error;
     expect(unnamed).not.toHaveProperty("device");
     expect(named.message).toBe(unnamed.message);
-    expect(named.next).toBe(unnamed.next);
 
     // A selected grant learns of a Device only when its apps or phone screens name it.
     const selected = (deviceId: string) =>
@@ -106,9 +105,12 @@ it.each(["device-asleep", "device-stopped"] as const)(
           },
         ],
       }) as never;
-    expect(
+    const selectedRefusal = agentToolFailureResult(
       agentToolFailure(error, "write", deviceVisibleTo(selected(createId("runner")))),
-    ).not.toHaveProperty("device");
+    );
+    expect(selectedRefusal.structuredContent.error).toMatchObject({ code });
+    expect(JSON.stringify(selectedRefusal)).not.toContain(machineId);
+    expect(JSON.stringify(selectedRefusal)).not.toContain("Studio Mac mini");
     expect(agentToolFailure(error, "write", deviceVisibleTo(selected(machineId)))).toMatchObject({
       device: { id: machineId, name: "Studio Mac mini" },
     });

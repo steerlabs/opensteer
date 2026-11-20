@@ -99,5 +99,5 @@ it("keeps an explicitly advertised Android display and its offline reason", () =
     definitionId: "android-phone",
     control: unavailable,
   });
-  expect(deviceReasonLabel(phone.phoneDisplay?.control.reason ?? null)).toBe("Driver offline");
+  expect(deviceReasonLabel(phone.phoneDisplay?.control.reason ?? null)).toBe("Its Mac is offline");
 });

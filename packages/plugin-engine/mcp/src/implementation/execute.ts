@@ -2163,3 +2163,23 @@ export const describeCatalog = (backend: McpBackend<Error>, input: typeof Descri
   readCatalog(backend, (discovered) => describeTools(discovered.described, input.paths)).pipe(
     Effect.map(({ value }) => value),
   );
+
+export const resolveCatalogTools = (backend: McpBackend<Error>, paths: readonly string[]) =>
+  readCatalog(backend, (discovered) =>
+    discovered.described(paths.map(canonical)).pipe(
+      Effect.map((entries) => {
+        const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+        return paths.map((path) => {
+          const entry = byPath.get(canonical(path));
+          return !entry || withheld(entry.tool, entry.target)
+            ? null
+            : {
+                plugin: entry.target.id,
+                name: entry.target.app,
+                version: entry.target.version,
+                readOnly: entry.tool.readOnly === true,
+              };
+        });
+      }),
+    ),
+  ).pipe(Effect.map(({ value }) => value));

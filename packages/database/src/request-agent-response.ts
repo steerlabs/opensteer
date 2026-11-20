@@ -16,6 +16,8 @@ import { z } from "zod";
 import type { Kysely, Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
+import { bindingAgentConnectionId, liveAgentConnection, sendEligible } from "./resource-access.js";
+import { threadCallerLineageId } from "./thread-caller.js";
 import type { DatabaseSchema } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
@@ -105,6 +107,24 @@ export function readAgentRequest(
     await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, {
       readOnly: true,
     });
+    // The execution that asked, not only its task: a connection reads only Requests its own
+    // lineage made, or, with `everything`, the person's own.
+    const reader = await threadCallerLineageId(transaction, authority);
+    if (reader) {
+      const asker = row.originatingRunId
+        ? `run:${row.originatingRunId}`
+        : row.originatingOccurrenceId
+          ? `trigger:${row.originatingOccurrenceId}`
+          : row.originatingWatchActivationId
+            ? `watch:${row.originatingWatchActivationId}`
+            : row.originatingAgentSessionId
+              ? `session:${row.originatingAgentSessionId}`
+              : null;
+      const askerLineage = asker ? await bindingAgentConnectionId(transaction, asker) : null;
+      const connection = await liveAgentConnection(transaction, authority.userId, reader);
+      if (!sendEligible(connection, askerLineage))
+        throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
+    }
     return { request: requestFromRow(row), revision: row.revision };
   }).catch((error: unknown) => {
     if (

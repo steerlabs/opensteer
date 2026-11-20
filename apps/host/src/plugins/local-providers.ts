@@ -72,7 +72,8 @@ interface LocalProvidersOptions {
     "withAvailability" | "callTool" | "localDeviceAccessBlocked" | "localDiscoveryFacts"
   >;
   readonly localServers: Pick<LocalServerService, "callTool">;
-  readonly authority: Pick<PluginAuthority, "caller" | "authorize">;
+  readonly authority: Pick<PluginAuthority, "caller" | "authorize"> &
+    Partial<Pick<PluginAuthority, "session">>;
 }
 export class LocalProviders {
   readonly #options: LocalProvidersOptions;
@@ -82,7 +83,13 @@ export class LocalProviders {
   async providers(context: PluginCaller): Promise<PluginHostProvider[]> {
     const caller = this.#options.authority.caller(context.caller);
     if (!caller) return [];
-    return (await this.#list(caller)).providers.map(
+    return (
+      await this.#list(
+        caller,
+        undefined,
+        this.#options.authority.session?.(context.caller)?.operation.bindingId,
+      )
+    ).providers.map(
       ({
         kind: _k,
         computer: _m,
@@ -106,7 +113,15 @@ export class LocalProviders {
     if (!isLocalProviderId(plugin)) return undefined;
     const caller = this.#options.authority.caller(context.caller);
     if (!caller) return "Local tool";
-    return (await this.#list(caller, plugin)).providers[0]?.name ?? "Local tool";
+    return (
+      (
+        await this.#list(
+          caller,
+          plugin,
+          this.#options.authority.session?.(context.caller)?.operation.bindingId,
+        )
+      ).providers[0]?.name ?? "Local tool"
+    );
   }
 
   async call(
@@ -115,9 +130,14 @@ export class LocalProviders {
     elicit: PluginElicit,
   ): Promise<HostToolResult> {
     const caller = this.#options.authority.caller(input.caller);
-    if (!caller || caller.kind === "connection")
+    const session = this.#options.authority.session?.(input.caller);
+    if (!caller || (caller.kind === "connection" && !session))
       throw failure("Local tools are called only from a task or its programs.");
-    const { providers, callables } = await this.#list(caller, input.plugin);
+    const { providers, callables } = await this.#list(
+      caller,
+      input.plugin,
+      session?.operation.bindingId,
+    );
     const [provider] = providers;
     if (!provider) throw failure("This local tool was removed or changed; search again.");
     if (provider.blocked) {
@@ -145,7 +165,7 @@ export class LocalProviders {
       throw failure(`${input.tool} takes an object of arguments.`);
     const assertAuthority = async (transaction?: Parameters<PluginAuthority["authorize"]>[2]) => {
       const permission = await this.#options.authority.authorize(
-        { ...input, operation: "call", write: !tool.readOnly },
+        { ...input, operation: "call", write: !tool.readOnly, version: provider.version },
         signal,
         transaction,
       );
@@ -159,15 +179,20 @@ export class LocalProviders {
     };
     const toolCaller: ToolCaller = {
       run: caller.kind === "run" ? caller.claims : null,
-      threadId: caller.kind === "run" ? caller.thread.id : caller.anchor.id,
-      agentBindingId: caller.key,
+      threadId:
+        caller.kind === "run"
+          ? caller.thread.id
+          : caller.kind === "program"
+            ? caller.anchor.id
+            : session!.operation.taskId,
+      agentBindingId: session?.operation.bindingId ?? caller.key,
       elicit,
       authorize: async () => {
         signal.throwIfAborted();
         const liveCaller = this.#options.authority.caller(input.caller);
         if (!liveCaller)
           throw failure("Local tool caller is no longer active; the call was not sent.");
-        const live = await this.#list(liveCaller, input.plugin);
+        const live = await this.#list(liveCaller, input.plugin, session?.operation.bindingId);
         const [current] = live.providers;
         if (
           !current ||
@@ -347,6 +372,7 @@ export class LocalProviders {
   async #list(
     caller: AgentCaller | { readonly kind: "owner"; readonly userId: UserId },
     id?: string,
+    bindingId?: string,
   ) {
     const requested = id === undefined ? undefined : providerTarget(id);
     if (id !== undefined && !requested) return { providers: [], callables: [] };
@@ -357,10 +383,10 @@ export class LocalProviders {
     const requester: IntegrationRequester =
       caller.kind === "owner"
         ? { ownerUserId: caller.userId }
-        : caller.kind === "connection"
+        : caller.kind === "connection" && !bindingId
           ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
           : // The exact execution, so its own lineage and mode decide, never another Run's.
-            { ownerUserId: caller.userId, agentBindingId: caller.key };
+            { ownerUserId: caller.userId, agentBindingId: bindingId ?? caller.key };
     const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store

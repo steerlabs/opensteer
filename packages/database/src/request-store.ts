@@ -1774,6 +1774,57 @@ export class RequestStore {
     });
   }
 
+  async openSessionPasswordSignIn(
+    input: CreateRequestFields & {
+      readonly originatingAgentSessionId: AgentSessionId;
+      readonly operationId: import("@opensteer/core").AgentOperationId;
+      readonly grantRevision: number;
+    },
+  ): Promise<RequestMutation> {
+    return commitPersonalMutation(this.#database, async (tx) => {
+      const connection = await tx
+        .selectFrom("agentSessions")
+        .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
+        .select("agentConnections.id")
+        .where("agentSessions.id", "=", input.originatingAgentSessionId)
+        .where("agentConnections.revokedAt", "is", null)
+        .where("agentConnections.expiresAt", ">", new Date())
+        .where("agentConnections.grantRevision", "=", input.grantRevision)
+        .forShare("agentConnections")
+        .executeTakeFirst();
+      const session = await tx
+        .selectFrom("agentSessions")
+        .select("id")
+        .where("id", "=", input.originatingAgentSessionId)
+        .where("status", "=", "active")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const operation = await tx
+        .selectFrom("agentOperations")
+        .select("id")
+        .where("id", "=", input.operationId)
+        .where("sessionId", "=", input.originatingAgentSessionId)
+        .where("grantRevision", "=", input.grantRevision)
+        .where("requestId", "is", null)
+        .where("state", "=", "handed-off")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!connection || !session || !operation)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This connected agent's access ended.",
+        });
+      const { operationId, grantRevision: _revision, ...request } = input;
+      const opened = await createRequestInTransaction(this.#links, tx, request);
+      await tx
+        .updateTable("agentOperations")
+        .set({ requestId: opened.request.id })
+        .where("id", "=", operationId)
+        .execute();
+      return opened;
+    });
+  }
+
   /** Opens or joins one operation's Request, recording its Run's calls atomically. */
   async openPasswordSignIn(
     input: CreateRequestFields & {
@@ -3413,6 +3464,26 @@ export async function lockActiveDurableRequestAuthority(
       code: "conflict",
       message: "Request is not durable",
     });
+  }
+  if (request.originatingAgentSessionId && request.kind === "browser.password-sign-in") {
+    const live = await transaction
+      .selectFrom("agentOperations")
+      .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+      .innerJoin("agentConnections", "agentConnections.id", "agentOperations.connectionId")
+      .select("agentOperations.id")
+      .where("agentOperations.requestId", "=", request.id)
+      .where("agentSessions.id", "=", request.originatingAgentSessionId)
+      .where("agentSessions.status", "=", "active")
+      .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
+      .where("agentConnections.revokedAt", "is", null)
+      .where("agentConnections.expiresAt", ">", new Date())
+      .forShare("agentConnections")
+      .executeTakeFirst();
+    if (!live)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This connected agent's access ended.",
+      });
   }
   // Durable answers validate immutable origin fields; they do not depend on Run status.
 

@@ -6,6 +6,8 @@ import { purgeBackupObjects, type BackupPurgeStep } from "./backup-purge.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   hostOidcCallbackPath,
+  cloudComputerSetupIssue,
+  cloudWords,
   type ManagedHomeClaimReceipt,
   CloudComputerBootReleaseSchema,
   CloudComputerBootResponseSchema,
@@ -16,6 +18,7 @@ import {
   type CloudComputerPreparationStep,
   CloudComputerIdSchema,
   CloudComputerSnapshotSchema,
+  type CloudComputerBackupReport,
   type CloudComputerBootCompleteRequest,
   type CloudComputerCheck,
   type CloudComputerBootRequest,
@@ -215,19 +218,15 @@ export class CloudComputerStore {
           reason: "cloud-computer-checkout-in-progress",
         });
       if (existing && (existing.billingStatus !== "canceled" || existing.deletionRequestedAt))
-        throw new ControlPlaneError(
-          "conflict",
-          "This Account already has a Cloud Computer subscription",
-          { reason: "cloud-computer-already-exists" },
-        );
+        throw new ControlPlaneError("conflict", "You already have a Cloud Computer subscription.", {
+          reason: "cloud-computer-already-exists",
+        });
       if (!replay) {
         const open = await attempts.where("status", "=", "open").executeTakeFirst();
         if (open)
-          throw new ControlPlaneError(
-            "conflict",
-            "This Account already has a checkout in progress",
-            { reason: "cloud-computer-checkout-in-progress" },
-          );
+          throw new ControlPlaneError("conflict", "You already have a checkout in progress.", {
+            reason: "cloud-computer-checkout-in-progress",
+          });
         if (!existing) {
           const target = await tx
             .selectFrom("cloudComputerBackupTargets")
@@ -1611,7 +1610,12 @@ export class CloudComputerStore {
     });
   }
 
-  async egressForHome(id: CloudComputerId, authorization: string | undefined) {
+  async #requireBootedHome(
+    tx: TransactionDb,
+    id: CloudComputerId,
+    authorization: string | undefined,
+    lock: "share" | "update",
+  ) {
     const basic = /^Basic ([A-Za-z0-9+/]{1,256}={0,2})$/iu.exec(authorization ?? "");
     const [clientId, clientSecret, extra] = basic
       ? Buffer.from(basic[1]!, "base64").toString("utf8").split(":")
@@ -1622,34 +1626,54 @@ export class CloudComputerStore {
         : undefined;
     const unauthorized = () => new ControlPlaneError("unauthorized", "Invalid Home credentials");
     if (!credentials?.success) throw unauthorized();
+    const query = tx.selectFrom("cloudComputers").selectAll().where("id", "=", id);
+    const row = await (
+      lock === "update" ? query.forNoKeyUpdate() : query.forShare()
+    ).executeTakeFirst();
+    const expected = row?.sealedOidcClientSecret
+      ? digestSecret(
+          this.#options.cipher.open(`oidc:${id}`, row.generation, row.sealedOidcClientSecret),
+        )
+      : emptyDigest;
+    const valid = equalSecretDigests(digestSecret(credentials.data.clientSecret), expected);
+    if (
+      !valid ||
+      !row?.bootCompletedAt ||
+      row.deletionRequestedAt ||
+      row.state !== "active" ||
+      row.oidcClientId !== credentials.data.clientId ||
+      !(await computerOwner(tx, row, true))
+    )
+      throw unauthorized();
+    return row;
+  }
+
+  async egressForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
-      const row = await tx
-        .selectFrom("cloudComputers")
-        .selectAll()
-        .where("id", "=", id)
-        .forShare()
-        .executeTakeFirst();
-      const expected = row?.sealedOidcClientSecret
-        ? digestSecret(
-            this.#options.cipher.open(`oidc:${id}`, row.generation, row.sealedOidcClientSecret),
-          )
-        : emptyDigest;
-      const valid = equalSecretDigests(digestSecret(credentials.data.clientSecret), expected);
-      if (
-        !valid ||
-        !row?.bootCompletedAt ||
-        row.deletionRequestedAt ||
-        row.state !== "active" ||
-        row.oidcClientId !== credentials.data.clientId ||
-        !(await computerOwner(tx, row, true))
-      )
-        throw unauthorized();
+      await this.#requireBootedHome(tx, id, authorization, "share");
       const endpoint = await tx
         .selectFrom("cloudComputerEgressEndpoints")
         .selectAll()
         .where("computerId", "=", id)
         .executeTakeFirst();
       return endpoint ? { egress: this.#egressCredentials(endpoint) } : {};
+    });
+  }
+
+  async reportBackupForHome(
+    id: CloudComputerId,
+    authorization: string | undefined,
+    report: CloudComputerBackupReport,
+  ) {
+    await this.#db.transaction().execute(async (tx) => {
+      const row = await this.#requireBootedHome(tx, id, authorization, "update");
+      const completedAt = new Date(report.completedAt);
+      if (row.lastBackupAt && completedAt <= row.lastBackupAt) return;
+      await tx
+        .updateTable("cloudComputers")
+        .set({ lastBackupAt: completedAt, lastBackupSnapshotId: report.snapshotId })
+        .where("id", "=", id)
+        .executeTakeFirst();
     });
   }
 
@@ -2396,7 +2420,7 @@ export class CloudComputerStore {
         const ownerSuspended = action === "suspend" || (action !== "resume" && row.ownerSuspended);
         const operatorSuspension =
           action === "operator-suspend"
-            ? (reason ?? "Paused by Opensteer.")
+            ? (reason ?? "Suspended by Opensteer.")
             : action === "operator-unsuspend"
               ? null
               : row.operatorSuspension;
@@ -3062,6 +3086,7 @@ function view(
       ? { deploymentId: DeploymentIdSchema.parse(row.deploymentId) }
       : {}),
     ...(region ? { region } : {}),
+    ...(row.lastBackupAt ? { lastBackupAt: row.lastBackupAt.toISOString() } : {}),
     ...(assigned?.publicAddress ? { egressAddress: assigned.publicAddress } : {}),
     ...(row.state !== "deleted" && !row.deletionRequestedAt && row.renewsAt && row.renewsAt > now
       ? { renewsAt: row.renewsAt.toISOString() }
@@ -3090,14 +3115,14 @@ function view(
       return {
         ...base,
         status: "suspended",
-        reason: "You paused this Cloud Computer.",
+        reason: cloudWords("cloud.reason.owner-suspended"),
         reasonCode: "cloud-computer-owner-suspended",
       };
     if (row.workAssignmentId && row.billingStatus === "active")
       return {
         ...base,
         status: "suspended",
-        reason: "Your organization paused this Cloud Computer.",
+        reason: "Your organization suspended this Cloud Computer.",
         reasonCode: "cloud-computer-work-managed",
       };
     return {
@@ -3117,14 +3142,14 @@ function view(
     return {
       ...base,
       status: "needs_attention",
-      reason: row.claimError,
+      reason: cloudComputerSetupIssue(row.claimError),
       reasonCode: "cloud-computer-claim-failed",
     };
   if (row.bootstrapExpiresAt && row.bootstrapExpiresAt <= now) {
     return {
       ...base,
       status: "needs_attention",
-      reason: "The Cloud Computer’s boot credential expired.",
+      reason: cloudWords("cloud.reason.bootstrap-expired"),
       reasonCode: "cloud-computer-bootstrap-expired",
     };
   }
@@ -3132,7 +3157,7 @@ function view(
     return {
       ...base,
       status: "needs_attention",
-      reason: row.lastError ?? "The Cloud Computer could not start.",
+      reason: cloudComputerSetupIssue(row.lastError),
       reasonCode: "cloud-computer-provisioning-failed",
     };
   return { ...base, status: "preparing", steps: preparationSteps(row) };

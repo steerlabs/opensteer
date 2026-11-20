@@ -24,7 +24,7 @@ services:
     cpus: 2
     mem_limit: 2g
     memswap_limit: 2g
-    image: ${OPENSTEER_HOME_POSTGRES_IMAGE:-postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15}
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     user: "70:70"
     network_mode: none
     command: [postgres, -c, "listen_addresses=", -c, "unix_socket_directories=/var/run/postgresql"]

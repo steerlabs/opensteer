@@ -16,6 +16,9 @@ import { Icon } from "./icon.js";
 import { SectionHeader, SettingsRow } from "./settings/primitives.js";
 import {
   accessModeOptions,
+  agentClaim,
+  agentConsentHeading,
+  workWords,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
@@ -111,7 +114,7 @@ export function McpAuthorization({
       .then((result) => {
         if (controller.signal.aborted) return;
         setLoad({ kind: "ready", consent: result });
-        setLabel(result.clientName);
+        setLabel(agentClaim(result.clientName, 120));
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
@@ -182,7 +185,7 @@ export function McpAuthorization({
       if (stale()) return;
       const code = failureCode(reason);
       if (code === "conflict") setLoad({ kind: "answered" });
-      else if (code === "not_found") setLoad({ kind: "expired", agent: consent.clientName });
+      else if (code === "not_found") setLoad({ kind: "expired", agent: null });
       else
         setError(
           agentWords(
@@ -247,7 +250,6 @@ export function McpAuthorization({
           ) : null}
           {load.kind === "ready" && !allowed ? (
             <ConsentForm
-              agent={label.trim() || load.consent.clientName}
               busy={busy}
               consent={load.consent}
               error={error}
@@ -304,7 +306,6 @@ function ConsentEnded({
 }
 
 function ConsentForm({
-  agent,
   busy,
   consent,
   error,
@@ -315,7 +316,6 @@ function ConsentForm({
   onLabel,
   onMode,
 }: {
-  readonly agent: string;
   readonly busy: "allow" | "deny" | null;
   readonly consent: AgentConnectionConsent;
   readonly error: string | null;
@@ -335,27 +335,23 @@ function ConsentForm({
   // Who asked, in the Home's words where it said; never a provider guessed from a domain.
   const identity = connectedAgentIdentity(
     {
-      label: agent,
+      label: label,
       clientName: consent.clientName,
       ...(consent.identity ? { identity: consent.identity } : {}),
       ...(consent.identityAtConsent ? { identityAtConsent: consent.identityAtConsent } : {}),
     },
     consent.redirectUri,
   );
+  const heading = agentConsentHeading(identity.who);
+  const agent = heading.mark ? heading.title : workWords("who.thisAgent");
   const disabled = busy !== null;
   return (
     <>
       <div className="agent-consent__identity">
-        {grants ? <AgentMark identity={identity} large /> : null}
-        <SectionHeader
-          title={
-            grants
-              ? agentWords("consent.title", { agent })
-              : agentWords("consent.legacyTitle", { agent: consent.clientName })
-          }
-        />
+        {heading.mark ? <AgentMark identity={{ ...identity, initial: heading.title[0] ?? "A" }} large /> : null}
+        <SectionHeader title={heading.title} />
       </div>
-      <AgentWhoLine who={identity.who} />
+      <AgentWhoLine who={identity.who} claim={heading.claim ?? undefined} />
       <p className="agent-consent__where">
         <Icon name={identity.local ? "laptop" : "globe"} />
         <span>{connectionDestination(consent.redirectUri)}</span>
@@ -371,6 +367,7 @@ function ConsentForm({
           <AgentGrantEditor
             agent={agent}
             browser={grants.browser}
+            chromeTabs={consent}
             client={grants.client}
             disabled={disabled}
             draft={grants.draft}

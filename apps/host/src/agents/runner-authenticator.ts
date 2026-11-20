@@ -230,6 +230,7 @@ export class RunnerAuthenticator {
     this.#assertConfiguredToken(input);
     await this.#store.createRunnerEnrollment({
       allowedModules: serviceRunnerGrant(input.allowedModules),
+      configuredInitial: true,
       createdBy: null,
       expiresAt: new Date(this.#now() + input.lifetimeSeconds * 1_000),
       id: `ren_${randomUUID()}`,
@@ -257,6 +258,7 @@ export class RunnerAuthenticator {
     const requested: readonly RunnerModuleName[] = ["agents", "browser"];
     await this.#store.createRunnerEnrollment({
       allowedModules: computerRunnerGrant(requested),
+      configuredInitial: true,
       createdBy: null,
       expiresAt: new Date(this.#now() + input.lifetimeSeconds * 1_000),
       id: `ren_${randomUUID()}`,

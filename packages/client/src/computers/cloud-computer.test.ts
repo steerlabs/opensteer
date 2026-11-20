@@ -139,7 +139,7 @@ describe("Cloud Computer screen", () => {
           tone: "attention",
           reason: "The computer didn’t start in time. Opensteer is trying again.",
         },
-        browserIp: { label: "Browsing paused", tone: "bad" },
+        browserIp: { label: "Browsing unavailable", tone: "bad" },
         address: null,
         canSuspend: true,
         canResume: false,
@@ -161,7 +161,7 @@ describe("Cloud Computer screen", () => {
     const { store, stop } = await started(new MockCloudComputerAccount("ready"));
     const screen = store.getSnapshot().screen;
     if (screen.kind !== "computer") throw new Error("not ready");
-    expect(screen.computer.unreported).toEqual({ lastBackupAt: null });
+    expect(screen.computer.lastBackup).toBeNull();
     stop();
   });
 
@@ -260,7 +260,7 @@ describe("Cloud Computer Account client", () => {
       message: "No Cloud Computers are available right now.",
     });
     expect(cloudComputerFailure(new TypeError("fetch failed")).kind).toBe("unreachable");
-    expect(cloudComputerFailure(new Error("Opensteer Account isn't available yet.")).kind).toBe(
+    expect(cloudComputerFailure(new Error("Opensteer account isn't available yet.")).kind).toBe(
       "unavailable",
     );
   });
@@ -338,6 +338,7 @@ describe("what the Account reports about a Cloud Computer", () => {
         region: { id: "ash", label: "Ashburn, Virginia" } as never,
         egressAddress: "203.0.113.24",
         renewsAt: "2026-12-20T12:00:00.000Z",
+        lastBackupAt: "2026-12-19T12:00:00.000Z",
       },
       "en-US",
     );
@@ -346,6 +347,10 @@ describe("what the Account reports about a Cloud Computer", () => {
       region: "Ashburn, Virginia",
       browserAddress: "203.0.113.24",
       renews: "Renews Dec 20, 2026",
+      lastBackup: new Intl.DateTimeFormat("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date("2026-12-19T12:00:00.000Z")),
     });
   });
 
@@ -367,10 +372,10 @@ describe("what the Account reports about a Cloud Computer", () => {
         ],
       }).steps,
     ).toEqual([
-      { id: "payment", label: "Payment received", state: "done" },
+      { id: "payment", label: "Payment confirmed", state: "done" },
       { id: "machine", label: "Setting up your computer", state: "failed" },
       { id: "opensteer", label: "Starting Opensteer", state: "pending" },
-      { id: "claim", label: "Linking it to your Account", state: "pending" },
+      { id: "claim", label: "Linking it to your account", state: "pending" },
     ]);
   });
 
@@ -380,10 +385,10 @@ describe("what the Account reports about a Cloud Computer", () => {
         id,
         egress: "assigned",
         status: "suspended",
-        reason: "You paused this Cloud Computer.",
+        reason: "You suspended this Cloud Computer.",
         reasonCode: "cloud-computer-owner-suspended",
       }).status.reason,
-    ).toBe("You paused this Cloud Computer.");
+    ).toBe("You suspended this Cloud Computer.");
     expect(
       cloudComputerDetail({
         id,

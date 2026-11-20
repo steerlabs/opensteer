@@ -99,7 +99,7 @@ describe("a direct operation's Request on the phone", () => {
       state: "pending",
       question: "Allow browser_use on Shopping?",
       agentWords: { text: "Buy the $12 phone case you asked for." },
-      answers: { allow: { label: "Allow once" }, deny: { label: "Don’t allow" } },
+      answers: { allow: { label: "Allow once" }, deny: { label: "Don't allow" } },
     });
     expect(item?.view.calls?.text).toContain("Place order");
   });

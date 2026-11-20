@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ComputerAppBundleIdSchema, ComputerAppTeamIdSchema } from "./computer-app.js";
 import { DeviceIdSchema, PhoneDisplayDefinitionIdSchema } from "./devices.js";
-import { BrowserProfileIdSchema } from "./ids.js";
+import { BrowserProfileIdSchema, BrowserSourceIdSchema } from "./ids.js";
 import { ThreadAccessModeSchema, type ThreadAccessMode } from "./models.js";
 import type { ResourceAccessLevel } from "./resource-access.js";
 
@@ -44,6 +44,7 @@ export type AgentGrantAppIdentity = z.infer<typeof AgentGrantAppIdentitySchema>;
 
 export const AgentGrantResourceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("browser-profile"), profileId: BrowserProfileIdSchema }),
+  z.strictObject({ kind: z.literal("chrome-tabs"), sourceId: BrowserSourceIdSchema }),
   /** The exact owner approval row on one Device, and the app it approved. */
   z.strictObject({
     kind: z.literal("computer-app"),
@@ -84,6 +85,8 @@ export function agentGrantResourceKey(resource: AgentGrantResource): string {
   switch (resource.kind) {
     case "browser-profile":
       return `browser-profile:${resource.profileId}`;
+    case "chrome-tabs":
+      return `chrome-tabs:${resource.sourceId}`;
     case "computer-app":
       return `computer-app:${resource.approvalId}`;
     case "plugin":
@@ -131,6 +134,7 @@ function canonicalAgentGrant(
 /** A concrete thing an effect touches, as the Home resolved it at use time. */
 export type AgentGrantTarget =
   | { readonly kind: "browser-profile"; readonly profileId: string }
+  | { readonly kind: "chrome-tabs"; readonly sourceId: string }
   | {
       readonly kind: "computer-app";
       readonly approvalId: string;
@@ -156,6 +160,8 @@ export function agentGrantAccess(
   for (const resource of grant.resources) {
     if (target.kind === "browser-profile" && resource.kind === "browser-profile") {
       if (resource.profileId === target.profileId) return "read-write";
+    } else if (target.kind === "chrome-tabs" && resource.kind === "chrome-tabs") {
+      if (resource.sourceId === target.sourceId) return "read-write";
     } else if (target.kind === "computer-app" && resource.kind === "computer-app") {
       if (
         resource.approvalId === target.approvalId.toLowerCase() &&
@@ -209,7 +215,7 @@ export function agentGrantToolFamilies(grant: AgentGrant): ReadonlySet<AgentGran
   if (grant.tasks) families.add("tasks");
   for (const resource of grant.resources)
     families.add(
-      resource.kind === "browser-profile"
+      resource.kind === "browser-profile" || resource.kind === "chrome-tabs"
         ? "browser"
         : resource.kind === "computer-app"
           ? "computer"

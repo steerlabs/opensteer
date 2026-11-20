@@ -258,8 +258,29 @@ export interface ComputerUseLease {
   readonly sessionId: ComputerUseSessionId;
 }
 
+/**
+ * A connected agent's session driving the one app or phone screen it was granted, through
+ * `computer_use`. It is no Run: `runId` is only the key this service and the frame keep their
+ * bookkeeping under, derived from the session the way Mac-wide operations use a runless one.
+ * Its authority is the session binding, which `assertActive` resolves on every check.
+ */
+export interface ComputerUseSessionAuthority {
+  readonly kind: "agent-session";
+  readonly runId: RunId;
+  readonly bindingGeneration: 0;
+  readonly threadId: ThreadId;
+  /** Throws a `forbidden` refusal once the session ended or no longer reaches this target. */
+  readonly assertActive: () => Promise<void>;
+}
+
 /** The authenticated attempt, including the executing Runner distinct from the target computer. */
-export type ComputerUseContext = RunCapabilityClaims<string>;
+export type ComputerUseContext = RunCapabilityClaims<string> | ComputerUseSessionAuthority;
+
+function agentSessionAuthority(
+  context: ComputerUseContext,
+): ComputerUseSessionAuthority | undefined {
+  return "kind" in context && context.kind === "agent-session" ? context : undefined;
+}
 
 /**
  * One frame that has left the Host, and the answer still to come.
@@ -1296,7 +1317,10 @@ export class ComputerUseService {
         .then(
           async (title) => {
             session.threadTitle = title;
-            const actor = await this.#resolveActor?.(context.runId, machine.ownerUserId);
+            // A connected agent's session works for its own task; there is no Run to look up.
+            const actor = agentSessionAuthority(context)
+              ? { threadId: context.threadId }
+              : await this.#resolveActor?.(context.runId, machine.ownerUserId);
             session.actor = actor ? { threadId: actor.threadId } : null;
           },
           () => undefined,
@@ -1611,7 +1635,7 @@ export class ComputerUseService {
     if (session) await this.#authorizeSession(session, authority);
     else {
       try {
-        await this.#authorizer.assertActiveGrant(authority);
+        await this.#assertAuthority(authority);
       } catch (error) {
         throw authorityRefused(error) ? authorityEnded() : authorityUnchecked();
       }
@@ -1993,10 +2017,18 @@ export class ComputerUseService {
     session.lastUsedAt = this.#now();
   }
 
+  /** A Run's renewable live grant, or a connected agent's session binding. */
+  #assertAuthority(authority: ComputerUseContext): Promise<unknown> {
+    const session = agentSessionAuthority(authority);
+    return session
+      ? session.assertActive()
+      : this.#authorizer.assertActiveGrant(authority as RunCapabilityClaims<string>);
+  }
+
   async #authorizeSession(session: Session, authority: ComputerUseContext): Promise<void> {
     try {
       // Like reauthorize: validate the renewable live grant, not the original token expiry.
-      await this.#authorizer.assertActiveGrant(authority);
+      await this.#assertAuthority(authority);
     } catch (error) {
       if (!authorityRefused(error)) throw authorityUnchecked();
       this.#forget(session);

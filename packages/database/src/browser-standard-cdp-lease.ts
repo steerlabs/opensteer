@@ -1,10 +1,51 @@
-import { OpensteerError, type BrowserProfileId, type UserId } from "@opensteer/core";
+import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
 import type { BrowserSessionId } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
+import { recordReconciledConnectionCdpAttempt } from "./connection-disconnect.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
+
+export interface BrowserStandardCdpLease {
+  readonly profileId: BrowserProfileId;
+  readonly sessionId: BrowserSessionId;
+  readonly generation: number;
+  readonly bootId?: string;
+  readonly relayId?: string;
+  readonly attemptId?: string;
+}
+
+export async function listBrowserStandardCdpLeases(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<BrowserStandardCdpLease[]> {
+  const { rows } = await sql<
+    Omit<BrowserStandardCdpLease, "bootId" | "relayId" | "attemptId"> & {
+      bootId: string | null;
+      relayId: string | null;
+      attemptId: string | null;
+    }
+  >`
+    select b.profile_id as "profileId", b.id as "sessionId",
+      (lease.value->>'exclusiveGeneration')::bigint::float8 as generation,
+      lease.value->>'bootId' as "bootId", lease.value->>'relayId' as "relayId",
+      lease.value->>'attemptId' as "attemptId"
+    from browser_sessions b
+    cross join lateral jsonb_each(b.standard_cdp_attempts) as lease
+    where b.runner_id = ${runnerId} and b.profile_id is not null
+      and lease.value ? 'exclusiveGeneration'
+    order by generation
+  `.execute(database);
+  return rows.map(({ profileId, sessionId, generation, bootId, relayId, attemptId }) => ({
+    profileId,
+    sessionId,
+    generation,
+    ...(bootId ? { bootId } : {}),
+    ...(relayId ? { relayId } : {}),
+    ...(attemptId ? { attemptId } : {}),
+  }));
+}
 
 export async function requireNoBrowserStandardCdpLease(
   database: Kysely<DatabaseSchema>,
@@ -29,13 +70,7 @@ export async function requireNoBrowserStandardCdpLease(
 /** The attempt stays recorded if the Home loses contact before Runtime settlement. */
 export function acquireBrowserStandardCdpLease(
   database: Kysely<DatabaseSchema>,
-  input: {
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-    readonly ownerId: UserId;
-    readonly bindingId: string;
-    readonly generation: number;
-  },
+  input: BrowserStandardCdpLease & { readonly ownerId: UserId; readonly bindingId: string },
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockBrowserProfile(transaction, input.profileId);
@@ -68,7 +103,13 @@ export function acquireBrowserStandardCdpLease(
       .set({
         standardCdpAttempts: sql`standard_cdp_attempts || jsonb_build_object(
           ${String(input.generation)}::text,
-          jsonb_build_object('bindingId', ${input.bindingId}::text, 'exclusiveGeneration', ${input.generation}::bigint)
+          ${JSON.stringify({
+            bindingId: input.bindingId,
+            exclusiveGeneration: input.generation,
+            bootId: input.bootId,
+            relayId: input.relayId,
+            attemptId: input.attemptId,
+          })}::jsonb
         )`,
       })
       .where("id", "=", input.sessionId)
@@ -81,20 +122,25 @@ export function acquireBrowserStandardCdpLease(
 
 export function releaseBrowserStandardCdpLease(
   database: Kysely<DatabaseSchema>,
-  input: {
-    readonly profileId: BrowserProfileId;
-    readonly sessionId: BrowserSessionId;
-    readonly generation: number;
-  },
+  input: BrowserStandardCdpLease,
+  reconciliation?: { readonly contactLost: boolean },
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockBrowserProfile(transaction, input.profileId);
-    await transaction
+    const result = await transaction
       .updateTable("browserSessions")
       .set({ standardCdpAttempts: sql`standard_cdp_attempts - ${String(input.generation)}::text` })
       .where("id", "=", input.sessionId)
       .where("profileId", "=", input.profileId)
-      .execute(databaseOperationOptions());
+      .where(sql<boolean>`standard_cdp_attempts ? ${String(input.generation)}`)
+      .executeTakeFirst(databaseOperationOptions());
+    if (result.numUpdatedRows === 1n && reconciliation && input.attemptId)
+      await recordReconciledConnectionCdpAttempt(
+        transaction,
+        input.sessionId,
+        input.attemptId,
+        reconciliation.contactLost,
+      );
   });
 }
 

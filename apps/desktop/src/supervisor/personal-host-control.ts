@@ -712,8 +712,8 @@ export class PersonalAccountLinkReservationLostError extends Error {
   ) {
     super(
       reason === "personal-account-link-cancelled"
-        ? "This Opensteer Account link was cancelled. Unlink this Opensteer, then link it again."
-        : "This Opensteer Account link expired before it finished. Unlink this Opensteer, then link it again.",
+        ? "This Opensteer account link was cancelled. Unlink this Opensteer, then link it again."
+        : "This Opensteer account link expired before it finished. Unlink this Opensteer, then link it again.",
     );
     this.code = reason;
     this.name = "PersonalAccountLinkReservationLostError";

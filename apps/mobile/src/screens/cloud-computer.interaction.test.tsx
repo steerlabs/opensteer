@@ -169,10 +169,10 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("preparing", "status")).toMatchObject({
       label: "Preparing your Cloud Computer",
       steps: [
-        { label: "Payment received", state: "done" },
+        { label: "Payment confirmed", state: "done" },
         { label: "Setting up your computer", state: "current" },
         { label: "Starting Opensteer", state: "pending" },
-        { label: "Linking it to your Account", state: "pending" },
+        { label: "Linking it to your account", state: "pending" },
       ],
     });
   });
@@ -292,7 +292,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     await open("attention");
     expect(row("status", "status")).toMatchObject({ label: "Needs attention", tone: "attention" });
     expect(section("status")?.footer?.text).toContain("The computer didn’t start in time.");
-    expect(row("status", "ip").label).toBe("Browser IP · Browsing paused");
+    expect(row("status", "ip").label).toBe("Browser IP · Browsing unavailable");
     expect(section("ready")).toBeUndefined();
   });
 
@@ -303,7 +303,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     act(() => root?.unmount());
     const { read } = await open("unreachable");
     expect(section("failed")?.footer?.text).toBe(
-      "Opensteer Account isn’t answering. Try again in a moment.",
+      "We couldn’t reach Opensteer. Try again in a moment.",
     );
     await press(row("failed", "retry"));
     expect(read).toHaveBeenCalledTimes(2);
@@ -311,7 +311,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     await open("unavailable");
     expect(section("failed")?.rows).toEqual([]);
     expect(section("failed")?.footer?.text).toBe(
-      "This build of Opensteer has no Opensteer Account.",
+      "Sign-in isn’t available in this version of Opensteer.",
     );
   });
 
@@ -332,7 +332,7 @@ describe("work Homes on the phone", () => {
       "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
     );
     expect(labels("work-policy-was_00000000-0000-4000-8000-0000000000a1")).toContain(
-      "Most an outside agent may do on its own: Supervised",
+      "Most a connected agent may do on its own: Supervised",
     );
     for (const key of [workKey, "work-policy-was_00000000-0000-4000-8000-0000000000a1"])
       for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])

@@ -246,7 +246,7 @@ function TeamSignIn({
   };
   return (
     <OnboardingCard
-      description="Your team uses Opensteer Account to sign in. Your own agent and files stay on your computer."
+      description="Your team uses your Opensteer account to sign in. Your own agents and files stay on your computer."
       title="Sign in to your team"
     >
       <ErrorNotice message={error} />
@@ -257,7 +257,7 @@ function TeamSignIn({
           onClick={() => void signIn()}
           type="button"
         >
-          {busy ? "Opening Opensteer Account…" : "Continue with Opensteer Account"}
+          {busy ? "Opening Opensteer account…" : "Continue with Opensteer account"}
         </button>
       </div>
     </OnboardingCard>

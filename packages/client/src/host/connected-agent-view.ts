@@ -108,9 +108,8 @@ export interface GrantNames {
 
 export function connectedAgentIdentity(
   source: Pick<AgentConnection, "label" | "clientName"> &
-    Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent">>,
+    Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent" | "verificationWithdrawnAt">>,
   redirectUri?: string,
-  /** When the Home withdrew a verified identity; not reported by any Home yet. */
   withdrawnAt?: string | null,
 ): ConnectedAgentIdentity {
   const redirect = redirectUri ?? source.client?.redirectOrigin ?? null;
@@ -119,7 +118,7 @@ export function connectedAgentIdentity(
     redirect,
     identity: source.identity,
     identityAtConsent: source.identityAtConsent,
-    withdrawnAt,
+    withdrawnAt: source.verificationWithdrawnAt ?? withdrawnAt,
   });
   const initial = Array.from(source.label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
   return {
@@ -172,6 +171,8 @@ export function grantSummaryParts(grant: AgentGrant, names: GrantNames): readonl
         : agentWords("agents.row.someProfile"),
     );
   }
+  if (grant.resources.some((resource) => resource.kind === "chrome-tabs"))
+    parts.push(agentWords("agents.row.chromeTabs"));
   const apps = grant.resources.filter((resource) => resource.kind === "computer-app").length;
   if (apps)
     parts.push(

@@ -986,7 +986,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "List the person's computers and phones: kind, online state, which one hosts tasks and can run them now, capabilities, browser, apps and files access switches, and active session IDs. A phone whose screen agents can control has phoneDisplay: its definitionId, control and input availability with a typed reason, advertised navigation buttons and actions, and setup (a Mac-driven iPhone names its driving Mac). Only a computer with hosting runs tasks or shell sessions; a Mac-driven iPhone never lends its Mac. Devices with access off are listed too; listing grants no access.",
+    "description": "List the computers and phones you can see, including whether each is online, what it can do and which access switches are on. A phone with screen control has phoneDisplay, with availability, navigation buttons, actions and setup. An iPhone names its connected Mac only if you can see that Mac. Only computers that host work can run tasks or open shells. Listing a computer does not grant access.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1458,8 +1458,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "connection",
     ],
-    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. When loginRef is returned, fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first.",
+    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. When loginRef is returned, fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. For a connected agent, pass taskId and a tab in a shared profile, then call page.cdp with Opensteer.fillLogin and {loginRef, field} in that tab. Pending means the person is deciding in Needs you. Retry later with the same operationKey and arguments.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1486,6 +1487,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "description": "Browser tab showing the site's sign-in form; omit for a genuine app.",
           "maxLength": 512,
           "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -1545,8 +1550,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "connection",
     ],
-    "description": "Ask the person to approve a saved card for this checkout site, in the hosting computer's browser only. When cardRef is returned, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase.",
+    "description": "Ask the person to approve a saved card for this checkout site, in the hosting computer's browser only. When cardRef is returned, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase. For a connected agent, pass taskId and a tab in a shared profile. In browser_use, call page.cdp with Opensteer.fillCard and {cardRef, field}. Pending means the person is deciding in Needs you. Retry later with the same operationKey and arguments.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1570,6 +1576,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "tabId": {
           "maxLength": 512,
           "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -1939,8 +1949,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
       "program",
+      "connection",
     ],
-    "description": "Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Accounts connect through plugin_account_request; never collect secrets in chat. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "description": "Call plugin tools at exact paths from plugin_search. Pass one {path,input} as calls, or an array of independent calls to run concurrently; results keep that order with ok and value or error. Use plugin_execute when output feeds another call or to filter large results. Connected agents call one plugin per operation. If pending without an executionId, wait for approval in Needs you, then repeat the same arguments with the returned taskId and original operationKey. Do not poll. Accounts connect through plugin_account_request; never collect secrets in chat. If the plugin returns a pending executionId, wait for the person to answer in Needs you, then use plugin_resume with that id. Never answer it yourself or rerun the plugin. Earlier effects are not rolled back.",
     "input": {
       "$defs": {
         "__schema0": {
@@ -2023,6 +2034,23 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             },
           ],
         },
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
       },
       "required": [
         "calls",
@@ -2036,8 +2064,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
       "program",
+      "connection",
     ],
-    "description": "Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. No filesystem, process or direct network APIs. Waiting on the person opens Needs you. Never answer it yourself or repeat a call/program to continue it; after the person answers use plugin_resume with executionId. Earlier effects are not rolled back.",
+    "description": "Run a short JavaScript program over tools.<plugin>.<tool>() when one result feeds another call or large results should be filtered before reaching you. For one or a few independent calls use plugin_call. Discover with plugin_search or tools.search, and full signatures with plugin_describe or tools.search.describe({paths}). First read opensteer:plugins and its code mode reference. A blocked plugin setting returns {kind:'blocked',blocked:{code,message,next}}. Return only the result needed. Connected agents supply the one plugin namespace the program may use, as shown by plugin_search. If pending without an executionId, wait for approval in Needs you, then repeat the same arguments with the returned taskId and original operationKey. Do not poll. No filesystem, process or direct network APIs. If the plugin returns a pending executionId, wait for the person to answer in Needs you, then use plugin_resume with that id. Never answer it yourself or rerun the plugin. Earlier effects are not rolled back.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -2045,6 +2074,28 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "code": {
           "maxLength": 65536,
           "minLength": 1,
+          "type": "string",
+        },
+        "namespace": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -2060,8 +2111,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
       "program",
+      "connection",
     ],
-    "description": "Collect or continue an execution by executionId after the person answers in Needs you. Pass no approval or input answer; only the person can provide those. An id belongs to the task or program that started it; a later Run of that task can resume. Pending means wait, without polling. Interrupted or expired means check current state before starting any new work; never rerun blindly.",
+    "description": "Collect or continue an execution by executionId after the person answers in Needs you. Pass no approval or input answer; only the person can provide those. An id belongs to the task or program that started it. Connected agents include the originating taskId. Pending means wait, without polling. Interrupted or expired means check current state before starting any new work; never rerun blindly.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -2069,6 +2121,23 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "executionId": {
           "maxLength": 256,
           "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Connected agents only: your key for this call. Repeat the same call with it to resume one that is waiting on the person.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Connected agents only: why you are doing this, shown to the person who reviews it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "description": "Connected agents only: your current task from an earlier result. Omit to continue or start one.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -3450,8 +3519,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "connection",
     ],
-    "description": "Ask the person for a decision or answer only they can give. It reaches Needs you and their devices. Prepare the work first and put it in detail, such as the exact draft or plan, so one answer settles it. The person can always type their own answer instead of an option. While they watch, the call waits for the answer; otherwise it returns pending and their answer later continues this task, even days later. A dismissed question means no: do not ask it again unless something changed. Never ask for passwords, codes or access: Request tools cover those. Refused on a delegation: ask the delegating task.",
+    "description": "Ask the person for a decision or answer only they can give. It reaches Needs you and their devices. Prepare the work first and put it in detail, such as the exact draft or plan, so one answer settles it. The person can always type their own answer instead of an option. While they watch, the call waits for the answer; otherwise it returns pending and their answer later continues this task, even days later. A dismissed question means no: do not ask it again unless something changed. Never ask for passwords, codes or access: Request tools cover those. Refused on a delegation: ask the delegating task. In a connected session, pass taskId and ask one question with choices. Use the page for passwords or codes. Pending means the person is deciding in Needs you. Retry later with the same operationKey and arguments.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -3517,6 +3587,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "maxItems": 4,
           "minItems": 1,
           "type": "array",
+        },
+        "taskId": {
+          "description": "Continue the connected agent’s current task.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
         },
         "title": {
           "description": "The decision in one short line, as Needs you and the notification show it.",

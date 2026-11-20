@@ -154,6 +154,7 @@ public enum Wire {
 
   /// Consent is personal to this Deployment and site, independent of task or folder.
   public struct SignInRequestParams: Equatable, Sendable {
+    public let alwaysAsk: Bool
     public let deploymentId: String
     public let deploymentName: String
     public let expiresAtText: String
@@ -170,10 +171,13 @@ public enum Wire {
       guard negotiated == nil || negotiated == Wire.protocolVersion else {
         throw Failure.invalid("Update Opensteer to request this sign-in.")
       }
-      let object = try strict(json, [
+      var keys: Set<String> = [
         "deploymentId", "deploymentName", "expiresAt", "reason", "site", "threadTitle",
         "transactionId", "protocolVersion", "permissionVersion",
-      ])
+      ]
+      if case .object(let fields) = json, fields["alwaysAsk"] != nil { keys.insert("alwaysAsk") }
+      let object = try strict(json, keys)
+      alwaysAsk = object.fields["alwaysAsk"] == nil ? false : try bool(object, "alwaysAsk")
       protocolVersion = try integer(object, "protocolVersion")
       permissionVersion = try integer(object, "permissionVersion")
       guard protocolVersion == 10, permissionVersion == 6 else {
@@ -206,12 +210,14 @@ public enum Wire {
     public var grantKey: GrantKey { GrantKey(deploymentId: deploymentId, site: site) }
     var transactionKey: [String] { [deploymentId, site] }
     public var json: JSONValue {
-      .object([
+      var fields: [String: JSONValue] = [
         "deploymentId": .string(deploymentId), "deploymentName": .string(deploymentName),
         "expiresAt": .string(expiresAtText), "reason": .string(reason), "site": .string(site),
         "threadTitle": .string(threadTitle), "transactionId": .string(transactionId),
         "protocolVersion": .integer(protocolVersion), "permissionVersion": .integer(permissionVersion),
-      ])
+      ]
+      if alwaysAsk { fields["alwaysAsk"] = .bool(true) }
+      return .object(fields)
     }
   }
 

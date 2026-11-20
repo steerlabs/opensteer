@@ -2,6 +2,7 @@ import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
   accountCloudComputersPath,
+  CloudComputerBackupReportSchema,
   CloudComputerBillingUrlResponseSchema,
   CloudComputerBootRequestSchema,
   CloudComputerBootCompleteRequestSchema,
@@ -153,6 +154,17 @@ export function registerCloudComputerRoutes(
     return CloudComputerEgressResponseSchema.parse(
       await store.egressForHome(id, request.headers.authorization),
     );
+  });
+
+  app.post(`${provisionerPath}/backup`, { bodyLimit: 1024 }, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    await store.reportBackupForHome(
+      id,
+      request.headers.authorization,
+      CloudComputerBackupReportSchema.parse(request.body),
+    );
+    return reply.code(204).send();
   });
 
   app.get(accountCloudComputersPath, async (request, reply) => {

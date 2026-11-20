@@ -3,6 +3,7 @@ import {
   operationDecisionField,
   operationRequestView,
   sessionAgent,
+  sessionSlotFromHome,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
@@ -28,7 +29,11 @@ interface AgentWorkSource {
 }
 
 function slotOf(snapshot: AgentWorkSource, threadId: string): AgentSessionSlot | null {
-  return snapshot.agentWork?.sessions?.[threadId] ?? null;
+  // The preview's slot, else what the Home reports on the task row itself.
+  return (
+    snapshot.agentWork?.sessions?.[threadId] ??
+    sessionSlotFromHome(snapshot.threads.find(({ id }) => id === threadId)?.externalWork)
+  );
 }
 
 function withdrawnFor(snapshot: AgentWorkSource, slot: AgentSessionSlot | null): string | null {

@@ -74,6 +74,10 @@ export async function serveMcp(
     readonly tabs?: Pick<import("../tabs/ports.js").TabServicePort, "get">;
     /** The tab tools themselves, for direct work through agent sessions. */
     readonly tabHandlers?: import("./handlers/tabs.js").TabToolHandlers;
+    readonly administration?: import("./handlers/administration.js").AdministrationToolHandlers;
+    readonly browser?: import("./handlers/browser.js").BrowserToolHandlers;
+    readonly sessionPerson?: import("./handlers/session-person.js").SessionPersonTools;
+    readonly onToolError?: (error: unknown, tool: string) => void;
     /** The person's Macs and phones as the computer-use service reports them. */
     readonly computerApps?: {
       readonly computerUseInventory: (owner: UserId) => Promise<unknown>;
@@ -210,6 +214,7 @@ export async function serveMcp(
     access: {} as never,
   });
   service = lastService = new OpensteerMcpService({
+    ...(options.onToolError ? { onToolError: options.onToolError } : {}),
     realtime,
     callers: new AgentCallerResolver({
       store,
@@ -225,7 +230,9 @@ export async function serveMcp(
     }),
     handlers: agentToolHandlers({
       tabs: options.tabHandlers ?? ({} as never),
-      administration: new Proxy(
+      ...(options.browser ? { browser: options.browser } : {}),
+      ...(options.sessionPerson ? { sessionPerson: options.sessionPerson } : {}),
+      administration: options.administration ?? new Proxy(
         {},
         {
           get: () => {
@@ -371,6 +378,12 @@ export function commands(
       }),
     remove: (connectionId: string) =>
       run({ type: "connection.remove", connectionId, idempotencyKey: randomUUID() }),
+    acknowledge: (connectionId: string) =>
+      run({
+        type: "connection.uncertain.acknowledge",
+        connectionId,
+        idempotencyKey: randomUUID(),
+      }),
     list: () => store.list(userId, { includeRevoked: true }),
   };
 }

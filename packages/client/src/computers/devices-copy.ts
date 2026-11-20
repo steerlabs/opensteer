@@ -5,7 +5,7 @@
  */
 export const devicesCopy = {
   "devices.title": "Devices",
-  "devices.lead": "Your Opensteer lives on {home}. Agents reach your other Devices through it.",
+  "devices.lead": "Your Opensteer lives on {home}. Agents reach your other devices through it.",
   "devices.lead.cloud": "your Cloud Computer",
   "devices.lead.work": "your {organization} work Home",
   "devices.section.home": "Home",
@@ -28,7 +28,7 @@ export const devicesCopy = {
   "devices.switch.apps": "Apps",
   "devices.switch.files": "Files and commands",
   "devices.switch.footer":
-    "Connected agents also need you to choose this Device’s profile or app for them.",
+    "Connected agents also need you to choose this device’s profile or app for them.",
   "devices.reach.title": "Who can use it",
   "devices.reach.nobody": "Allow no other computers",
   "devices.reach.owner": "Allow my agents",
@@ -44,7 +44,7 @@ export const devicesCopy = {
   "asleep.gate":
     "{device} isn’t reachable. It may be asleep or offline. Agents can’t use it until it’s back.",
   "asleep.activity": "Couldn’t reach {device}: asleep",
-  "asleep.someDevice": "a Device",
+  "asleep.someDevice": "a device",
 } as const;
 
 export type DevicesCopyId = keyof typeof devicesCopy;

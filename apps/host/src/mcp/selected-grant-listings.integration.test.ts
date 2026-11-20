@@ -9,11 +9,19 @@ import {
 import {
   createId,
   DeviceIdSchema,
+  TabSchema,
   type AgentGrant,
   type BrowserProfileId,
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import { machineAccessPolicyDefault } from "@opensteer/protocol";
+import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { requireDeviceAccess } from "../administration/device-access.js";
+import { BrowserScriptConfinement, BrowserToolHandlers } from "./handlers/browser.js";
+import { TabToolHandlers } from "./handlers/tabs.js";
+import { SessionPersonTools } from "./handlers/session-person.js";
+import type { TabServicePort } from "../tabs/ports.js";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { describeStore, enrollTestRunner } from "@opensteer/database/test-support/store";
 import { sql } from "kysely";
@@ -69,6 +77,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         connectionId,
         name: appName,
         bundleId,
+        teamId: null,
         access: "read-write",
       })),
     });
@@ -224,6 +233,38 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         tokenSuffix: runnerId,
       });
     const [profile, hiddenProfile] = [createId("browserProfile"), createId("browserProfile")];
+    const phoneId = createId("device");
+    const screenApproval = createIntegrationId("connection");
+    const deployment = await storeFixture.database
+      .selectFrom("deployments")
+      .select("id")
+      .executeTakeFirstOrThrow();
+    await storeFixture.database
+      .insertInto("devices")
+      .values({
+        id: phoneId,
+        deploymentId: deployment.id,
+        ownerKind: "user",
+        ownerUserId: f.userId,
+        name: "Shared iPhone",
+        kind: "phone",
+        platform: "ios",
+        form: "phone",
+        accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps: true })}::jsonb`,
+        accessPolicyRevision: 1,
+        removedAt: null,
+      })
+      .execute();
+    await storeFixture.database
+      .insertInto("deviceDrivers")
+      .values({
+        deviceId: phoneId,
+        role: "screen",
+        runnerId: hidden,
+        generation: 1,
+        detachedAt: null,
+      })
+      .execute();
     const [approval, staleApproval] = [
       createIntegrationId("connection"),
       createIntegrationId("connection"),
@@ -251,6 +292,12 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const approvals = [
       { id: approval, status: "active", computer: { deviceId: granted, blockedAt: null } },
       { id: staleApproval, status: "revoked", computer: { deviceId: hidden, blockedAt: null } },
+      {
+        id: screenApproval,
+        status: "active",
+        definitionId: "iphone-screen",
+        computer: { deviceId: phoneId, blockedAt: null, access: "read-write" },
+      },
     ];
     // A shell on every computer: none of them is the selected agent's to see.
     const store = new Proxy(storeFixture.store, {
@@ -264,7 +311,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const profileRow = (id: BrowserProfileId, name: string) => ({
       id,
       name,
-      home: { runnerId: granted, name: "Granted Mac", reachable: true },
+      home: { runnerId: hidden, name: "Hidden Mac", reachable: true },
     });
     const handler = new AdministrationToolHandlers(
       new AdministrationService(
@@ -316,7 +363,212 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       profiles: [expect.objectContaining({ id: profile, name: "Granted profile" })],
       sites: [],
     });
-    expect(names(profiles, [hiddenProfile, "Hidden profile", "bank.example"])).toEqual([]);
+    expect(profiles.profiles[0]?.home).toEqual({ reachable: true });
+    expect(
+      names(profiles, [hidden, "Hidden Mac", hiddenProfile, "Hidden profile", "bank.example"]),
+    ).toEqual([]);
+
+    const phoneGrant: AgentGrant = {
+      scope: "selected",
+      tasks: false,
+      resources: [
+        { kind: "browser-profile", profileId: profile },
+        {
+          kind: "computer-app",
+          approvalId: screenApproval,
+          deviceId: phoneId,
+          app: { kind: "phone-screen", definitionId: "iphone-screen" },
+        },
+      ],
+    };
+    const phoneCaller = selectedCaller(f.userId, "phone-screen", phoneGrant);
+    const phoneList = await handler.computer_list({
+      caller: phoneCaller,
+      input: {},
+      operationKey: "phone-list",
+    });
+    expect(phoneList).toMatchObject({
+      nextCursor: null,
+      computers: [
+        {
+          computerId: phoneId,
+          phoneDisplay: { driver: null, setup: { location: "driver-mac" } },
+        },
+      ],
+    });
+    expect(phoneList.computers).toHaveLength(1);
+    expect(names(phoneList, [hidden, "Hidden Mac"])).toEqual([]);
+
+    const hiddenTab = "hidden-tab-title-and-id";
+    const shownTab = TabSchema.parse({
+      tabId: "shared-profile-tab",
+      title: "Shared page",
+      kind: "page",
+      computer: { computerId: hidden, name: "Hidden Mac" },
+      groupId: null,
+      state: "open",
+      openedBy: "person",
+      usedBy: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      url: "https://example.test/",
+      profile: { profileId: profile, name: "Granted profile" },
+    });
+    const tabs = {
+      list: async () => ({ tabs: [shownTab], groups: [], nextCursor: null }),
+    } as unknown as TabServicePort;
+    const sessions = new AgentSessionService({ store: storeFixture.store, holdMs: 0 });
+    const toolErrors: unknown[] = [];
+    const url = await serveMcp(storeFixture, {
+      onToolError: (error) => toolErrors.push(error),
+      administration: handler,
+      tabHandlers: new TabToolHandlers(tabs, sessions, async () => "Granted profile"),
+      browser: new BrowserToolHandlers({
+        sessions,
+        tabs: tabs as never,
+        scripts: {} as never,
+        confinement: new BrowserScriptConfinement(),
+        profiles: async () => [
+          profileRow(profile, "Granted profile"),
+          profileRow(hiddenProfile, "Hidden profile"),
+        ],
+        requireDevice: async (runnerId) => {
+          const deviceId = await storeFixture.store.requireSelfDeviceId(runnerId);
+          await requireDeviceAccess(storeFixture.database, deviceId, "browser", false, {
+            stopped: true,
+          });
+          return deviceId;
+        },
+        issueTicket: async () => {
+          throw new Error("A refused call must not open a connection.");
+        },
+        origin: new URL("https://personal.mcp.test"),
+      }),
+      sessionPerson: new SessionPersonTools({
+        store: storeFixture.store,
+        sessions,
+        browser: {
+          signInTarget: async () => ({
+            live: true,
+            profileId: hiddenProfile,
+            profileName: "Hidden profile",
+            computer: { runnerId: hidden, name: "Hidden Mac" },
+            tabUrl: "https://bank.example/",
+          }),
+        } as never,
+        logins: {} as never,
+      }),
+      computerApps: {
+        computerUseInventory: async () => ({
+          machines: [],
+          phones: [
+            {
+              deviceId: phoneId,
+              connectionId: screenApproval,
+              name: "Shared iPhone",
+              definitionId: "iphone-screen",
+              state: "unavailable",
+              availability: { state: "unavailable", reason: { kind: "driver-stopped" } },
+              setup: {
+                location: "driver-mac",
+                driverRunnerName: "Hidden Mac",
+                driverRunnerId: hidden,
+              },
+            },
+          ],
+        }),
+      },
+    });
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: phoneGrant,
+    });
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      agent.client.callTool({ name, arguments: args });
+    const offered = await agent.client.listTools();
+    expect(
+      offered.tools
+        .map(({ name }) => name)
+        .filter((name) => name.endsWith("_list") || name === "computer_apps")
+        .sort(),
+    ).toEqual(["browser_profile_list", "computer_apps", "computer_list", "tab_list"]);
+    const computersResult = await call("computer_list");
+    const profilesResult = await call("browser_profile_list");
+    const appsResult = await call("computer_apps");
+    const tabsResult = await call("tab_list");
+    expect(computersResult.structuredContent).toMatchObject({
+      computers: [{ computerId: phoneId, phoneDisplay: { setup: { location: "driver-mac" } } }],
+      nextCursor: null,
+    });
+    expect(profilesResult.structuredContent).toEqual({
+      profiles: [{ id: profile, name: "Granted profile", home: { reachable: true } }],
+      sites: [],
+    });
+    expect(appsResult.structuredContent).toMatchObject({
+      computers: [],
+      phones: [
+        {
+          computerId: phoneId,
+          blocked: {
+            code: "computer_stopped",
+            message: "Agents are stopped on the Mac connected to Shared iPhone.",
+          },
+        },
+      ],
+    });
+    expect(tabsResult.isError, toolErrors.map(String).join("\n")).not.toBe(true);
+    expect(tabsResult.structuredContent).toMatchObject({
+      tabs: [{ tabId: shownTab.tabId }],
+      groups: [],
+      nextCursor: null,
+    });
+    const refusals = await Promise.all([
+      call("computer_apps", { computerId: hidden }),
+      call("tab_open", {
+        target: { kind: "page", url: "https://example.test/", profileId: hiddenProfile },
+      }),
+      call("tab_close", { tabIds: [hiddenTab] }),
+      call("browser_connect", { profileId: hiddenProfile }),
+      call("browser_connect", { profileId: profile }),
+      call("browser_use", { profileId: hiddenProfile, code: "print(await pages())" }),
+      call("browser_use", { profileId: profile, code: "print(await pages())" }),
+      call("computer_use", { code: "print(await apps())" }),
+      call("saved_login_request", { tabId: hiddenTab, site: "bank.example", reason: "Sign in" }),
+      call("card_request", { tabId: hiddenTab, site: "bank.example", reason: "Pay" }),
+      call("ask_person", {
+        title: "Choose",
+        questions: [{ question: "Which one?", multiSelect: true }],
+      }),
+
+      call("opensteer_task_list"),
+      call("browser_profile_request", {
+        suggestion: { kind: "existing", profileId: hiddenProfile },
+        reason: "Open a page",
+      }),
+    ]);
+    for (const refusal of refusals) expect(refusal.isError).toBe(true);
+    expect(refusals[4]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
+    expect(refusals[6]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
+    expect(
+      names(
+        [offered, computersResult, profilesResult, appsResult, tabsResult, ...refusals],
+        [
+          hidden,
+          "Hidden Mac",
+          granted,
+          "Granted Mac",
+          f.runnerId,
+          "Hosting computer",
+          hiddenProfile,
+          "Hidden profile",
+          hiddenTab,
+          "bank.example",
+          "shell-session-secret",
+          "/Users/secret",
+        ],
+      ),
+    ).toEqual([]);
   });
 
   it("local_server_list: only the local servers the grant names", async ({ storeFixture }) => {

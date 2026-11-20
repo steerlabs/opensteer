@@ -117,17 +117,60 @@ body:has(.menu-bar) {
   gap: 10px;
 }
 
+/* Right now: a list to glance at. A whole row opens its task; none is a control. */
+.menu-bar__activity {
+  gap: 0;
+  margin: 0 -6px;
+}
+
+.menu-bar__activity-row {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-bar__activity-row:hover {
+  background: var(--surface-raised);
+}
+
 .menu-bar__mark {
   display: grid;
   flex: none;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-xs);
   background: var(--surface-raised);
   color: var(--text-soft);
-  font-size: var(--text-2xs);
-  font-weight: 600;
+}
+
+.menu-bar__mark svg {
+  width: 14px;
+  height: 14px;
+}
+
+.menu-bar__mark .provider-logo {
+  width: 16px;
+  height: 16px;
+}
+
+.menu-bar__row-open {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
 }
 
 .menu-bar__row-text {
@@ -138,9 +181,26 @@ body:has(.menu-bar) {
 }
 
 .menu-bar__row-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--text-lg);
+  font-weight: 500;
+}
+
+.menu-bar__row-name,
+.menu-bar__row-using {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.menu-bar__verified {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--green);
 }
 
 .menu-bar__detail,
@@ -148,12 +208,6 @@ body:has(.menu-bar) {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--muted);
-}
-
-.menu-bar__row-stop {
-  flex: none;
-  padding: 2px 8px;
-  font-size: var(--text-sm);
 }
 
 .menu-bar__stop-all {

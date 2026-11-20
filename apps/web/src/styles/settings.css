@@ -1391,6 +1391,17 @@ a.connected-agents__row:focus-visible {
   gap: var(--space-4);
   align-self: flex-start;
 }
+/* On touch the link keeps its drawn size; only its hit area grows to a finger. */
+@media (any-pointer: coarse) {
+  .connected-agent__back {
+    position: relative;
+  }
+  .connected-agent__back::after {
+    position: absolute;
+    inset: -9px -6px;
+    content: "";
+  }
+}
 .connected-agent__header {
   display: flex;
   align-items: center;
@@ -1537,6 +1548,12 @@ a.connected-agents__row:focus-visible {
 
 .agent-who__name {
   color: var(--text);
+}
+
+.agent-who__claim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-who__detail {

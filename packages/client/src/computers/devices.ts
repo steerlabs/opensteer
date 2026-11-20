@@ -138,7 +138,9 @@ export function devicesView(input: {
         capabilitySummary: machine.phoneDisplay ? "Screen control" : null,
         status:
           deviceStoppedLabel(machine) ??
-          (isHomeDevice(machine) ? "Home · your agent runs here" : computerStatus(machine).label),
+          (isHomeDevice(machine)
+            ? "Home · your own agents run here"
+            : computerStatus(machine).label),
         thisDevice: machine.id === input.hereId,
       })),
     alsoSignedIn: input.sessions

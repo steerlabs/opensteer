@@ -20,6 +20,7 @@ import {
   font,
   foregroundStyle,
   frame,
+  lineLimit,
   shapes,
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
@@ -87,13 +88,13 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
             {props.who.verified ? (
               <Image color={color.green} size={13} systemName="checkmark.seal.fill" />
             ) : null}
-            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.text)]}>
+            <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.text), lineLimit(1)]}>
               {props.who.heading}
             </Text>
           </HStack>
-          <Text modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>
-            {props.who.detail}
-          </Text>
+          {props.who.origins.map((line) => (
+            <Text key={line} modifiers={[font({ textStyle: "subheadline" }), foregroundStyle(color.textSoft)]}>{line}</Text>
+          ))}
           <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>{props.destination}</Text>
           {props.who.warning === null ? null : (
             <Text modifiers={[font({ textStyle: "footnote", weight: "semibold" })]}>

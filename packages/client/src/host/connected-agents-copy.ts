@@ -50,7 +50,7 @@ export const connectedAgentsCopy = {
   "consent.scope.selected.detail": "Only what you pick below.",
   "consent.scope.everything.label": "Everything my own agents can do",
   "consent.scope.everything.detail":
-    "Every browser profile, app, plugin and Device, and Tasks. For an agent you trust as much as yourself.",
+    "Every browser profile, app, plugin and device, and Tasks. For an agent you trust as much as yourself.",
   "consent.scope.everything.settingsNote": "Changing your settings also needs Full access.",
   "consent.scope.nothingChosen":
     "{agent} can connect, but can’t use anything until you choose something.",
@@ -69,12 +69,18 @@ export const connectedAgentsCopy = {
     "{agent} gets full control of each profile you pick, including every site signed in there. It can’t see saved passwords or cards; it asks you each time it needs one.",
   "consent.browser.device.online": "{device} · Online",
   "consent.browser.device.offline": "{device} · Offline",
-  "consent.browser.device.unknown": "Not opened on a Device yet",
+  "consent.browser.device.unknown": "Not opened on a device yet",
+  "consent.chromeTabs.label": "Tabs you share from Chrome on {device}",
+  "consent.chromeTabs.detail":
+    "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere and use sites that Chrome is signed in to.",
+  "consent.chromeTabs.repair":
+    "To share tabs with a connected agent, pair Chrome again from that device.",
+  "agents.row.chromeTabs": "Shared Chrome tabs",
   "consent.apps.title": "Apps and phone screens",
   "consent.apps.none": "None",
   "consent.apps.phoneThrough": "through {device}",
   "consent.apps.footer":
-    "Only apps you’ve already approved on a Device are listed. {agent} can see and control each one you turn on.",
+    "Only apps you’ve already approved on a device are listed. {agent} can see and control each one you turn on.",
   "consent.plugins.title": "Plugins and data",
   "consent.plugins.none": "None",
   "consent.plugins.off": "Off",
@@ -89,7 +95,7 @@ export const connectedAgentsCopy = {
   "consent.tasks.detail":
     "Lets {agent} ask your own agents to work on {home}: read and change files and run commands there.",
   "consent.tasks.warning":
-    "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below.",
+    "This is the most powerful choice. Work it starts can change anything on {home} that your own agents can, inside the safety mode below. Opensteer can stop what happens next, but can't undo what an agent already did.",
   "consent.safety.title": "Safety mode",
   "consent.name.title": "Name",
   "consent.name.placeholder": "Connection name",
@@ -120,10 +126,10 @@ export const connectedAgentsCopy = {
   "consent.edge.failed.title": "Can’t review this request",
   "consent.edge.failed.detail": "Check your connection and try again.",
   "consent.edge.noDeviceOnline":
-    "None of your Devices are online. {agent} can use its profile once {device} is back.",
-  "consent.edge.noBrowser.title": "Turn on Browser on a Device first",
+    "None of your devices are online. {agent} can use its profile once {device} is back.",
+  "consent.edge.noBrowser.title": "Turn on Browser on a device first",
   "consent.edge.noApps.title": "No apps approved yet",
-  "consent.edge.noApps.detail": "Approve an app on a Device, then add it here.",
+  "consent.edge.noApps.detail": "Approve an app on a device, then add it here.",
   "consent.edge.noPlugins": "No plugins installed.",
   "consent.edge.openDevices": "Open Devices",
   "consent.edge.listFailed": "Couldn’t load this list.",
@@ -182,7 +188,7 @@ export const connectedAgentsCopy = {
   "disconnect.step.stopped": "Stopped",
   "disconnect.stopping.label": "Stopping its work",
   "disconnect.stopping.detailGeneric":
-    "Waiting for your Devices to confirm its work stopped. {agent} already can’t use anything.",
+    "Waiting for your devices to confirm its work stopped. {agent} already can’t use anything.",
   "disconnect.stopped.label": "Disconnected",
   "disconnect.stopped.detailRevokedAt":
     "Its access ended at {time}, and everything it was doing has stopped.",

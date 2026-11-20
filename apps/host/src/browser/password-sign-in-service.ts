@@ -6,6 +6,9 @@ import {
   type Request,
   type RequestId,
   type RunId,
+  type AgentSessionId,
+  type AgentOperationId,
+  type BrowserProfileId,
   type RunnerId,
   type ThreadId,
   type UserId,
@@ -55,11 +58,22 @@ type PasswordSignInRequests = Pick<
   | "listPendingPasswordSignIns"
   | "openPasswordSignIn"
   | "settlePasswordSignInRequest"
->;
+> &
+  Partial<Pick<RequestStore, "openSessionPasswordSignIn">>;
 type Settlement = Parameters<RequestStore["settlePasswordSignInRequest"]>[0]["settlement"];
 type Finish = "settled" | "ended-elsewhere" | "retrying";
 
-interface Call {
+export interface SessionSignInScope {
+  readonly bindingId: `session:${string}`;
+  readonly sessionId: AgentSessionId;
+  readonly operationId: AgentOperationId;
+  readonly grantRevision: number;
+  readonly profileId: BrowserProfileId;
+  readonly signal: AbortSignal;
+  readonly authorized: () => Promise<boolean>;
+}
+
+interface CallFields {
   /**
    * The authority a fill is scoped to beyond its deployment and site: for work in a connected
    * agent's lineage, its connection, grant revision and execution. Absent for the person's own
@@ -73,10 +87,15 @@ interface Call {
   readonly arrivedAt?: number;
   readonly ownerId: UserId;
   readonly reason: string;
-  readonly runId: RunId;
   readonly threadId: ThreadId;
   readonly deploymentId: DeploymentId;
 }
+type Call = CallFields &
+  (
+    | { readonly runId: RunId; readonly direct?: undefined }
+    | { readonly runId?: undefined; readonly direct: SessionSignInScope }
+  );
+
 type Operation = OperationShared &
   (
     | { credential: "login" }
@@ -100,6 +119,8 @@ interface OperationShared {
   result: SavedLoginResult | null;
   requestId: RequestId | null;
   opening: Promise<void> | null;
+  starting?: Promise<void>;
+  sent: boolean;
   settlement: Settlement | null;
   settling: Promise<Finish> | null;
   settled: boolean;
@@ -266,10 +287,68 @@ export class PasswordSignInService {
     return result.type === "card.probe.result" ? result.cards : "unavailable";
   }
 
+  #hasAuthority(call: Call): Promise<boolean> {
+    return call.direct
+      ? call.direct.authorized()
+      : this.#requests.hasActiveRunPasswordSignInAuthority(authority(call));
+  }
+
+  async requestForSession(
+    input: CallFields & {
+      readonly direct: SessionSignInScope;
+      readonly site: string;
+      readonly cardRunnerId?: RunnerId;
+      readonly admitStart: () => boolean;
+    },
+  ): Promise<SavedLoginResult | UseCardResult> {
+    input.direct.signal.throwIfAborted();
+    const result =
+      input.credential === "card" && input.cardRunnerId
+        ? await this.requestCard({ ...input, cardRunnerId: input.cardRunnerId })
+        : await this.request(input);
+    if (result.status !== "pending") return result;
+    const operation = this.#calls.get(callKey(input));
+    if (!operation || !result.requestId) return unavailable(input.site, "interrupted");
+    const { signal } = input.direct;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const wake = () => {
+      if (signal.aborted || operation.settled || operation.authorityEnded) resolve();
+    };
+    operation.waiters.add(wake);
+    signal.addEventListener("abort", wake, { once: true });
+    try {
+      wake();
+      await promise;
+      if (signal.aborted) {
+        await this.#cancel(operation, "authority-lost");
+        signal.throwIfAborted();
+      }
+      const request = await this.#requests.get(result.requestId);
+      if (!request || !(await input.direct.authorized())) return unavailable(input.site, "stopped");
+      if (request.status === "pending") return unavailable(input.site, "interrupted");
+      if (input.credential === "card") {
+        const lease = this.leaseForOperation(operation.id);
+        if (lease?.publicCard)
+          return {
+            status: "ready",
+            site: input.site,
+            cardRef: lease.loginRef,
+            ...lease.publicCard,
+          };
+        if (request.status === "declined") return { status: "declined", site: input.site };
+        return { status: "unavailable", site: input.site, reason: "interrupted" };
+      }
+      return this.replayResult(request, input.deploymentId, input.scope);
+    } finally {
+      operation.waiters.delete(wake);
+      signal.removeEventListener("abort", wake);
+    }
+  }
+
   async requestCard(
     input: Call & { site: string; cardRunnerId: RunnerId; admitStart: () => boolean },
   ): Promise<UseCardResult> {
-    if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
+    if (!(await this.#hasAuthority(input)))
       return { status: "unavailable", site: input.site, reason: "stopped" };
     const target = await this.#resolveAuthority(input.ownerId);
     if (target && target.runnerId !== input.cardRunnerId)
@@ -279,7 +358,7 @@ export class PasswordSignInService {
       return { status: "unavailable", site: input.site, reason: "runtime-outdated" };
     const result = await this.request({ ...input, credential: "card" });
     if (result.status === "ready") {
-      if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
+      if (!(await this.#hasAuthority(input)))
         return { status: "unavailable", site: input.site, reason: "stopped" };
       const lease = this.#liveLease(result.loginRef);
       if (!lease?.publicCard) return { status: "unavailable", site: input.site, reason: "expired" };
@@ -322,7 +401,7 @@ export class PasswordSignInService {
     if (!lease || lease.deploymentId !== input.deploymentId || input.binding.field !== input.field)
       return { type: "login.seal.result", status: "denied" };
     const operation = this.#operations.get(lease.operationId);
-    if (!operation || input.binding.expiresAt <= this.#now())
+    if (!operation || operation.starter.direct || input.binding.expiresAt <= this.#now())
       return { type: "login.seal.result", status: "expired" };
     const binding = {
       ...input.binding,
@@ -386,9 +465,49 @@ export class PasswordSignInService {
     };
   }
 
+  async replaySessionResult(operationId: string) {
+    for (const operation of this.#operations.values()) {
+      const call = operation.starter;
+      if (call.direct?.operationId !== operationId || !(await this.#hasAuthority(call))) continue;
+      const lease = this.#liveLease(operation.loginRef);
+      if (lease)
+        return operation.credential === "card"
+          ? { cardStatus: "ready" as const, cardRef: lease.loginRef }
+          : { loginStatus: "ready" as const, loginRef: lease.loginRef };
+    }
+    return undefined;
+  }
+
+  async validateSessionLease(input: {
+    loginRef: string;
+    deploymentId: DeploymentId;
+    bindingId: string;
+    sessionId: string;
+    profileId: BrowserProfileId | null;
+    tabId?: import("@opensteer/protocol").BrowserSurfaceId;
+  }): Promise<boolean> {
+    const lease = this.#liveLease(input.loginRef);
+    const call = lease && this.#operations.get(lease.operationId)?.starter;
+    return Boolean(
+      lease &&
+      call?.direct &&
+      lease.deploymentId === input.deploymentId &&
+      call.direct.bindingId === input.bindingId &&
+      input.sessionId === call.sessionId &&
+      input.profileId === call.direct.profileId &&
+      input.tabId === call.surfaceId &&
+      (await call.direct.authorized()) &&
+      this.#liveLease(input.loginRef) === lease,
+    );
+  }
+
   validateLease(input: { loginRef: string; deploymentId: DeploymentId }): boolean {
     const lease = this.#liveLease(input.loginRef);
-    return lease !== null && lease.deploymentId === input.deploymentId;
+    return (
+      lease !== null &&
+      lease.deploymentId === input.deploymentId &&
+      !this.#operations.get(lease.operationId)?.starter.direct
+    );
   }
 
   #liveLease(loginRef: string): PasswordLoginLease | null {
@@ -521,8 +640,7 @@ export class PasswordSignInService {
       if (input.credential === "card" && !this.#authority.cardUseSupported?.(target.runnerId))
         return unavailable(input.site, "runtime-outdated");
       if (!input.admitStart()) return unavailable(input.site, "rate-limited");
-      if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
-        return unavailable(input.site, "stopped");
+      if (!(await this.#hasAuthority(input))) return unavailable(input.site, "stopped");
       const description = await this.#describe({
         ownerId: input.ownerId,
         threadId: input.threadId,
@@ -559,6 +677,7 @@ export class PasswordSignInService {
         result: null,
         requestId: null,
         opening: null,
+        sent: false,
         settlement: null,
         settling: null,
         settled: false,
@@ -570,28 +689,47 @@ export class PasswordSignInService {
       this.#onDeadlineChanged();
       this.#bySite.set(key, operation);
       this.#recordCall(operation, input);
-      void this.#track(
-        this.#authority
-          .sendPasswordSignIn(target.runnerId, {
-            type: "login.authorize",
-            ...(operation.credential === "card"
-              ? { credential: "card" as const, cardRef: operation.loginRef }
-              : { loginRef: operation.loginRef }),
-            expiresAt: new Date(operation.expiresAt).toISOString(),
-            operationId: operation.id,
-            site: input.site,
-            requester,
-            deploymentId: input.deploymentId,
-          })
-          .then(async (result) => {
-            if (result.type !== "login.authorize.started")
-              await this.#finish(operation, interrupted());
-          })
+      const start = async () => {
+        if (input.direct) {
+          // The Request records this helper operation before it can be sent.
+          await this.#openRequest(operation);
+          if (
+            !operation.requestId ||
+            !(await this.#hasAuthority(input)) ||
+            input.direct.signal.aborted ||
+            operation.cancelSent
+          ) {
+            await this.#cancel(operation, "authority-lost");
+            await this.#finish(operation, interrupted());
+            return;
+          }
+        }
+        operation.sent = true;
+        const result = await this.#authority.sendPasswordSignIn(target.runnerId, {
+          type: "login.authorize",
+          ...(input.direct && operation.credential === "login" ? { alwaysAsk: true as const } : {}),
+          ...(operation.credential === "card"
+            ? { credential: "card" as const, cardRef: operation.loginRef }
+            : { loginRef: operation.loginRef }),
+          expiresAt: new Date(operation.expiresAt).toISOString(),
+          operationId: operation.id,
+          site: input.site,
+          requester,
+          deploymentId: input.deploymentId,
+        });
+        if (result.type !== "login.authorize.started") await this.#finish(operation, interrupted());
+      };
+      const starting = this.#track(
+        start()
           .catch(async () => {
             if (!operation.settlement) await this.#finish(operation, interrupted());
           })
           .catch(this.#onError),
       );
+      if (input.direct) {
+        operation.starting = starting;
+        await starting;
+      }
       return operation;
     });
     const tail = admitted.then(
@@ -610,6 +748,10 @@ export class PasswordSignInService {
   async get(input: { ownerId: UserId; requestId: RequestId }): Promise<PasswordSignInCard> {
     const request = await this.#requester(input);
     if (request.status !== "pending") return { stage: "gone" };
+    if (request.originatingAgentSessionId && request.payload.kind === "browser.password-sign-in") {
+      const call = this.#operations.get(request.payload.operationId)?.starter;
+      if (!call?.direct || !(await this.#hasAuthority(call))) return { stage: "gone" };
+    }
     if (!(await this.#requests.hasDurablePasswordSignInRequestAuthority(input)))
       throw new OpensteerError({
         code: "forbidden",
@@ -625,6 +767,15 @@ export class PasswordSignInService {
       this.#now() >= operation.expiresAt
     )
       return { stage: "gone" };
+    if (operation.starting) {
+      await operation.starting;
+      if (
+        operation.cancelSent ||
+        operation.settlement ||
+        !(await this.#hasAuthority(operation.starter))
+      )
+        return { stage: "gone" };
+    }
     const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
       type: "login.get",
       operationId: operation.id,
@@ -685,6 +836,12 @@ export class PasswordSignInService {
       });
     if (operation) operation.deciding = true;
     try {
+      if (operation?.starting) await operation.starting;
+      if (operation?.starter.direct && !(await this.#hasAuthority(operation.starter)))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This sign-in no longer has personal authority.",
+        });
       await input.revalidate();
       if (input.decision.kind === "decline")
         return { status: await this.#decline({ ...input, settlementSessionId: input.sessionId }) };
@@ -723,7 +880,7 @@ export class PasswordSignInService {
           : {
               loginId: input.decision.loginId,
               revision: input.decision.revision,
-              remember: input.decision.remember,
+              remember: !operation.starter.direct && input.decision.remember,
               permissionVersion: 6 as const,
             };
       const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
@@ -861,14 +1018,14 @@ export class PasswordSignInService {
     const refusedAfterOpening = cannotJoin();
     if (refusedAfterOpening) return refusedAfterOpening;
     if (operation.requestId) {
-      if (!operation.settlement) {
+      if (!operation.settlement && !call.direct) {
         const joined = await this.#requests.openPasswordSignIn(requestInput(operation, call));
         if (joined.request.id !== operation.requestId)
           throw new Error("Sign-in join changed its Request");
       }
       const request = await this.#requests.get(operation.requestId);
       if (request && request.status !== "pending")
-        return this.replayResult(request, call.deploymentId);
+        return this.replayResult(request, call.deploymentId, call.direct ? call.scope : undefined);
       return { status: "pending", site: operation.site, requestId: operation.requestId, replayed };
     }
     if (
@@ -885,13 +1042,23 @@ export class PasswordSignInService {
   async #openRequest(operation: Operation): Promise<void> {
     if (operation.settlement) return;
     try {
-      // The store holds live Run and deployment fences through the insert.
-      const created = await this.#requests.openPasswordSignIn({
-        ...requestInput(operation, operation.starter),
-        joinedCallIds: [...operation.calls.values()]
-          .filter((call) => call.runId === operation.starter.runId)
-          .map((call) => call.callId),
-      });
+      // The store holds the live authority through the insert.
+      const call = operation.starter;
+      const created = call.direct
+        ? await this.#requests.openSessionPasswordSignIn?.({
+            ...requestFields(operation, call),
+            originatingAgentSessionId: call.direct.sessionId,
+            operationId: call.direct.operationId,
+            grantRevision: call.direct.grantRevision,
+          })
+        : await this.#requests.openPasswordSignIn({
+            ...requestInput(operation, call),
+            joinedCallIds: [...operation.calls.values()]
+              .filter((joined) => joined.runId === call.runId)
+              .map((joined) => joined.callId),
+          });
+      if (!created)
+        throw new Error("Password approval requests are unavailable for this connected agent.");
       operation.requestId = created.request.id;
       if (operation.settlement) await this.#finish(operation, operation.settlement);
       else if (created.request.status !== "pending")
@@ -999,6 +1166,17 @@ export class PasswordSignInService {
         await this.#finish(operation, interrupted());
         return;
       }
+      if (
+        operation.starter.direct &&
+        (!operation.requestId ||
+          !operation.expectedRequestRevision ||
+          !(await this.#hasAuthority(operation.starter)) ||
+          operation.cancelSent)
+      ) {
+        await this.#cancel(operation, "authority-lost");
+        await this.#finish(operation, interrupted());
+        return;
+      }
       operation.pendingLease = {
         loginRef: operation.loginRef,
         account:
@@ -1100,9 +1278,7 @@ export class PasswordSignInService {
           acted++;
         }
       } else {
-        const permitted = await this.#requests.hasActiveRunPasswordSignInAuthority(
-          authority(operation.starter),
-        );
+        const permitted = await this.#hasAuthority(operation.starter);
         if (!operation.settlement && !permitted) {
           await this.#cancel(operation, "authority-lost");
           acted++;
@@ -1118,7 +1294,9 @@ export class PasswordSignInService {
     operation.cancelSent = reason;
     operation.authorityEnded = true;
     operation.cancelledAt = this.#now();
+    if (operation.starter.direct) this.#notify(operation);
     this.#onDeadlineChanged();
+    if (!operation.sent) return;
     void this.#track(
       this.#authority
         .sendPasswordSignIn(operation.target.runnerId, {
@@ -1192,8 +1370,11 @@ export class PasswordSignInService {
           return "ended-elsewhere";
         }
         if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
-          let committed = operation.credential === "login" && !operation.settlementSessionId;
-          if (operation.settlementSessionId) {
+          let committed =
+            operation.credential === "login" &&
+            !operation.settlementSessionId &&
+            !operation.starter.direct;
+          if (operation.settlementSessionId || operation.starter.direct) {
             try {
               const answer = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
                 type: "login.commit",
@@ -1208,7 +1389,8 @@ export class PasswordSignInService {
             committed &&
             !operation.cancelSent &&
             !operation.authorityEnded &&
-            this.#now() < operation.expiresAt
+            this.#now() < operation.expiresAt &&
+            (!operation.starter.direct || (await this.#hasAuthority(operation.starter)))
           )
             this.#leases.set(operation.loginRef, operation.pendingLease);
           else await this.#cancel(operation, "authority-lost");
@@ -1296,7 +1478,7 @@ export class PasswordSignInService {
       operation.id,
       pending
         ? [...operation.calls.values()].flatMap((call) =>
-            call.sessionId
+            call.sessionId && call.runId
               ? [
                   {
                     sessionId: BrowserSessionIdSchema.parse(call.sessionId),
@@ -1315,18 +1497,7 @@ export class PasswordSignInService {
     for (const waiter of operation.waiters) waiter();
   }
   #recordCall(operation: Operation, call: Call): void {
-    const identity: Call = {
-      sessionId: call.sessionId,
-      surfaceId: call.surfaceId,
-      credential: call.credential,
-      callId: call.callId,
-      ownerId: call.ownerId,
-      reason: call.reason,
-      runId: call.runId,
-      threadId: call.threadId,
-      deploymentId: call.deploymentId,
-    };
-    operation.calls.set(callKey(call), identity);
+    operation.calls.set(callKey(call), call);
     this.#calls.set(callKey(call), operation);
     this.#publishPins(operation);
   }
@@ -1381,24 +1552,29 @@ export interface PasswordSignInServiceOptions {
 function siteKey(deploymentId: DeploymentId, site: string, credential?: "card"): string {
   return `${credential ?? "login"}\0${deploymentId}\0${site}`;
 }
-function callKey(call: Pick<Call, "runId" | "callId">): string {
-  return `${call.runId}\0${call.callId}`;
+function callKey(call: Call): string {
+  return `${call.runId ?? call.direct?.sessionId}\0${call.callId}`;
 }
-function authority(call: Call) {
+function authority(call: Extract<Call, { runId: RunId }>) {
   return {
     originatingRunId: call.runId,
     originatingThreadId: call.threadId,
     requestedBy: call.ownerId,
   };
 }
-function requestInput(
+function requestInput(operation: Operation, call: Extract<Call, { runId: RunId }>) {
+  return { ...requestFields(operation, call), originatingRunId: call.runId };
+}
+
+function requestFields(
   operation: Operation,
   call: Call,
-): Parameters<RequestStore["openPasswordSignIn"]>[0] {
+): Omit<Parameters<RequestStore["openPasswordSignIn"]>[0], "originatingRunId"> {
   const computer = operation.target;
   if (!computer) throw new Error("Password sign-in has no computer");
   return {
-    ...authority(call),
+    originatingThreadId: call.threadId,
+    requestedBy: call.ownerId,
     callId: call.callId,
     kind: "browser.password-sign-in",
     mode: "durable",
@@ -1419,7 +1595,10 @@ function requestInput(
       kind: "external",
       detail: operation.starter.reason,
       subject: { kind: "browser-site", id: operation.site },
-      title: `Sign in to ${browserSiteDomain(operation.site)}?`,
+      title:
+        call.direct && operation.credential === "card"
+          ? `Fill a saved card on ${browserSiteDomain(operation.site)}?`
+          : `Sign in to ${browserSiteDomain(operation.site)}?`,
     },
   };
 }

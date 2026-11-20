@@ -3,6 +3,24 @@ import { phoneAvailabilityDetail } from "../computer-apps/computer-app-availabil
 import { phoneDiscovery } from "./computer-use-discovery.js";
 
 describe("phone display availability", () => {
+  it.each(["driver-asleep", "driver-stopped"] as const)(
+    "uses a connected Mac name for %s only when the caller supplies an authorized name",
+    (kind) => {
+      const phone = {
+        attached: true,
+        runnerConnected: true,
+        phone: "Travel iPhone",
+        status: null,
+        availability: { state: "unavailable", reason: { kind } } as const,
+        definitionId: "iphone-screen" as const,
+      };
+      expect(phoneAvailabilityDetail(phone)).toMatch(/Mac connected to Travel iPhone/u);
+      expect(phoneAvailabilityDetail({ ...phone, connectedMacName: "Work Mac" })).toContain(
+        "Work Mac",
+      );
+    },
+  );
+
   it("keeps a locked or detached iPhone distinct from its online Mac", () => {
     expect(
       phoneAvailabilityDetail({
@@ -82,7 +100,9 @@ describe("phone display availability", () => {
       expect(result).toEqual({
         blocked: {
           code,
-          message: expect.stringContaining("Travel iPhone"),
+          message: expect.stringContaining(
+            kind === "driver-offline" ? "Work Mac" : "Travel iPhone",
+          ),
           next: expect.any(String),
         },
       });
@@ -90,7 +110,6 @@ describe("phone display availability", () => {
       if (
         [
           "not-connected",
-          "driver-offline",
           "driver-update-required",
           "trust-required",
           "developer-mode-required",

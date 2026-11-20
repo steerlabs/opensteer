@@ -346,6 +346,6 @@ export class AgentHomeFiles {
   }
   close() {
     this.#reader.close();
-    this.#lifetime.abort(new Error("Host file service closed"));
+    this.#lifetime.abort(new Error("Home file access closed."));
   }
 }

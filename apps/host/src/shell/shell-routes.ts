@@ -158,7 +158,7 @@ function connectToken(request: IncomingMessage): string {
   try {
     return shellBearerToken(request);
   } catch {
-    throw new ShellConnectRejection("run_invalid", "This Run has ended.");
+    throw new ShellConnectRejection("run_invalid", "This task has ended.");
   }
 }
 

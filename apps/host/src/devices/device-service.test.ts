@@ -1358,6 +1358,7 @@ describe("DeviceService computer use gateway", () => {
       readonly refusal?: ComputerUseError;
       readonly revoked?: () => boolean;
       readonly runnerConnected?: boolean;
+      readonly attached?: boolean;
       readonly settleRefusal?: ComputerUseError;
     } = {},
   ) {
@@ -1514,7 +1515,7 @@ describe("DeviceService computer use gateway", () => {
     const sent: unknown[] = [];
     const computerApps = {
       appStatus: vi.fn(() => null),
-      attached: vi.fn(() => true),
+      attached: vi.fn(() => input.attached ?? true),
       send: vi.fn(async () => {
         throw new Error("A gui tool never reaches the invoke path.");
       }),
@@ -1668,6 +1669,7 @@ describe("DeviceService computer use gateway", () => {
                     {
                       name: notes.displayName,
                       bundleId: notes.bundleId,
+                      teamId: notes.teamId,
                       connectionId: connection.id,
                       access: input.connectionAccess ?? "read-write",
                       status: "approved",
@@ -1739,6 +1741,24 @@ describe("DeviceService computer use gateway", () => {
   }
 
   const context = { runId: createId("run"), threadId: createId("thread") };
+
+  it("preserves a stopped device refusal when its computer-use stream is unavailable", async () => {
+    const f = guiFixture({ operation: "observe", attached: false });
+    const blocked = {
+      code: "computer_stopped",
+      message: "Agents are stopped on this device.",
+      next: "Wait until the person resumes them there.",
+    };
+    vi.spyOn(f.service.devices, "localDeviceAccessBlocked").mockResolvedValue(blocked);
+    try {
+      await expect(operate(f.service, f.callable, {}, runCaller(context))).rejects.toMatchObject({
+        blocked,
+      });
+      expect(f.prepared).toEqual([]);
+    } finally {
+      await f.service.close();
+    }
+  });
 
   it("explains a missing callable with the listing blocker and reuses its tool lookup", async () => {
     const f = guiFixture({ operation: "observe" });

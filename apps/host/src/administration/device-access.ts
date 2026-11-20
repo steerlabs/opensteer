@@ -23,11 +23,11 @@ export class DeviceAccessRefusal extends OpensteerError {
       reason,
       message:
         reason === "device-stopped"
-          ? "Agents are stopped on this Device by the person, from the Device itself. Wait until they resume them; do not request access."
+          ? "Agents are stopped on this device. Wait until the person resumes them there."
           : reason === "device-asleep"
-            ? "Device is asleep. Wait until it wakes; do not request access."
+            ? "This device is asleep. Wait until it wakes before using it."
             : reason === "device-offline"
-              ? "Device is offline. Do not request access."
+              ? "This device is offline. Continue other work until it returns."
               : `${capability} is off. Use computer_access_request if needed.`,
       details: { machineId, capability, ...(machineName ? { machineName } : {}) },
     });

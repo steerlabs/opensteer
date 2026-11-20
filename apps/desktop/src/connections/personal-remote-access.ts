@@ -293,7 +293,7 @@ export class DesktopPersonalRemoteAccessService {
   ): Promise<DesktopPersonalRemoteAccessStatus> {
     if (current.accountLink?.state !== "active")
       throw new Error(
-        "Link an Opensteer Account from the device signing in before enabling Connect.",
+        "Link an Opensteer account from the device signing in before turning on Remote access.",
       );
     return this.#enableConnect(runtime);
   }
@@ -307,7 +307,7 @@ export class DesktopPersonalRemoteAccessService {
     }
     this.#set(fromHost(runtime, await this.#host.status(), "linking-account", null, true));
     if ((await this.#host.status()).accountLink?.state !== "active")
-      throw new Error("Link an Opensteer Account before enabling Connect.");
+      throw new Error("Link an Opensteer account before turning on Remote access.");
     const current = await this.#host.status();
     if (current.mode === "private") await this.#host.disableConnect();
     this.#set(fromHost(runtime, await this.#host.status(), "provisioning", null, true));

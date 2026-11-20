@@ -32,7 +32,7 @@ interface ChromeDebuggee {
 interface ChromeDebugger {
   attach(target: { tabId: number }, requiredVersion: string): Promise<void>;
   detach(target: { tabId: number }): Promise<void>;
-  getTargets(): Promise<{ id: string; tabId?: number; type: string }[]>;
+  getTargets(): Promise<{ id: string; tabId?: number; type: string; attached?: boolean }[]>;
   sendCommand(
     target: ChromeDebuggee,
     method: string,

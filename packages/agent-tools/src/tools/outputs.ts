@@ -1,3 +1,4 @@
+import { AgentOperationIdSchema } from "@opensteer/core";
 import { TabIdSchema, TeamSourceSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
@@ -296,6 +297,20 @@ export const RequestListOutputSchema = z.object({
   window: WindowSchema,
 });
 export const RequestWithdrawOutputSchema = z.object({ request: RequestOutputSchema });
+export const SessionPersonOutputSchema = z.object({
+  taskId: ThreadIdSchema,
+  operationId: AgentOperationIdSchema,
+  requestId: RequestIdSchema.nullable().optional(),
+  status: z.enum(["pending", "completed", "failed", "unknown"]),
+  next: z.string().optional(),
+  answer: z.string().optional(),
+  loginStatus: z.string().optional(),
+  loginRef: z.string().optional(),
+  cardStatus: z.string().optional(),
+  cardRef: z.string().optional(),
+  reason: z.string().optional(),
+});
+
 export const RequestCreationOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   kind: RequestKindSchema,
@@ -308,7 +323,11 @@ export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
   home: z
-    .object({ computerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() })
+    .object({
+      computerId: RunnerIdSchema.optional(),
+      name: z.string().optional(),
+      reachable: z.boolean(),
+    })
     .nullable(),
 });
 export const BrowserProfileListOutputSchema = z.object({

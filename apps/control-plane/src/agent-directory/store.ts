@@ -2,6 +2,9 @@ import {
   AgentDirectoryDocumentSchema,
   AgentDirectoryEntryIdSchema,
   AgentDirectoryEntrySchema,
+  agentDirectoryJwtTyp,
+  agentDirectoryTokenUse,
+  maximumAgentDirectoryEnvelopeBytes,
   type AgentDirectoryDocument,
   type AgentDirectoryEntry,
   type AgentDirectoryEntryId,
@@ -112,11 +115,29 @@ export function applyAgentDirectoryChange(
       message.startsWith("Duplicate ") || message.startsWith("Unknown platform entry");
     throw new ControlPlaneError(isConflict ? "conflict" : "bad_request", message);
   }
+  if (maximumEnvelopeSize(validated.data) > maximumAgentDirectoryEnvelopeBytes) {
+    throw new ControlPlaneError("bad_request", "Signed agent directory would exceed its byte limit");
+  }
   return {
     revision: validated.data.revision,
     entries: validated.data.entries,
     ...(changedEntry ? { entry: changedEntry } : {}),
   };
+}
+
+function maximumEnvelopeSize(document: AgentDirectoryDocument): number {
+  const claims = {
+    ...document,
+    tokenUse: agentDirectoryTokenUse,
+    iss: "x".repeat(256),
+    iat: Number.MAX_SAFE_INTEGER,
+  };
+  // Allow for a 256-character key ID with every character needing JSON escaping.
+  const headerBytes = JSON.stringify({ alg: "EdDSA", kid: "", typ: agentDirectoryJwtTyp }).length + 6 * 256;
+  const encodedLength = (bytes: number) => Math.ceil(bytes * 4 / 3);
+  return encodedLength(headerBytes) +
+    encodedLength(Buffer.byteLength(JSON.stringify(claims))) +
+    encodedLength(64) + 2 + JSON.stringify({ assertion: "" }).length;
 }
 
 export class AgentDirectoryStore implements AgentDirectoryReader {
@@ -129,7 +150,7 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
   }
 
   async document(): Promise<AgentDirectoryDocument> {
-    return this.#db.transaction().execute(async (tx) => {
+    return this.#db.transaction().setIsolationLevel("repeatable read").execute(async (tx) => {
       const snapshot = await this.#readSnapshot(tx, false);
       return AgentDirectoryDocumentSchema.parse({
         revision: snapshot.revision,
@@ -140,7 +161,8 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
   }
 
   async list(): Promise<AgentDirectorySnapshot> {
-    return this.#db.transaction().execute((tx) => this.#readSnapshot(tx, false));
+    return this.#db.transaction().setIsolationLevel("repeatable read")
+      .execute((tx) => this.#readSnapshot(tx, false));
   }
 
   async add(

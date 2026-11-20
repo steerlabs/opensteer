@@ -123,8 +123,8 @@ export function TeamInvitesScreen(
         <AppText role="displaySmall">Invite people to {name}</AppText>
         <AppText role="secondary" tone="muted">
           {state.kind === "single-use"
-            ? "Each link lets one person join with their Opensteer Account."
-            : "Anyone with this link can join with their Opensteer Account."}
+            ? "Each link lets one person join with their Opensteer account."
+            : "Anyone with this link can join with their Opensteer account."}
         </AppText>
       </View>
       {state.kind === "loading" ? (

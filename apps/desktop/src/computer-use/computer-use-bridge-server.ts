@@ -1421,7 +1421,7 @@ export class ComputerUseBridgeServer {
         ending.push(this.#stopForPerson(connection, sessionId));
     const confirmed = await Promise.all(ending);
     if (confirmed.some((closed) => !closed))
-      throw new Error("An agent's session on this Mac's apps did not confirm it closed.");
+      throw new Error("An agent using apps on this Mac didn’t confirm it stopped.");
   }
 
   /**

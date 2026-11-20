@@ -50,24 +50,66 @@ test("restore rollback reselects the previous volume set before restarting the H
     set -euo pipefail
     home_dir=$(mktemp -d)
     trap 'rm -rf -- "$home_dir"' EXIT
+    export OPENSTEER_HOME_DIR="$home_dir"
+    source deploy/home/common.sh
     source deploy/home/backup.sh
-    mkdir -p "$home_dir/restore.pending" "$home_dir/identity/staging"
+    stage=proof-restore-aa1234567890
+    mkdir -p "$home_dir/restore.pending" "$home_dir/identity/$stage"
     journal=$home_dir/restore.pending
-    echo staging > "$journal/volume-set"
+    echo "$stage" > "$journal/volume-set"
+    echo previous > "$journal/previous-set"
     echo OPENSTEER_HOME_VOLUME_SET=previous > "$journal/previous.env"
-    echo OPENSTEER_HOME_VOLUME_SET=staging > "$home_dir/volumes.env"
-    cp "$home_dir/volumes.env" "$home_dir/identity/staging/volumes.env"
+    echo "OPENSTEER_HOME_VOLUME_SET=$stage" > "$home_dir/volumes.env"
+    cp "$home_dir/volumes.env" "$home_dir/identity/$stage/volumes.env"
     touch "$journal/cutover"
     compose() { printf '%s %s\\n' "\${stage_project:-live}" "$*"; }
-    docker() { [[ $* == 'volume inspect staging_host-data' ]] || [[ $* == 'volume rm staging_host-data' ]]; }
+    docker() { [[ $* == "volume inspect $stage"_host-data ]] || [[ $* == "volume rm $stage"_host-data ]]; }
+    restore_state() { volume_set=$(cut -d= -f2 "$home_dir/volumes.env"); }
     start_pod() { cat "$home_dir/volumes.env"; }
     restore_rollback
-    test ! -e "$journal" && test ! -e "$home_dir/identity/staging"
+    test ! -e "$journal" && test ! -e "$home_dir/identity/$stage"
   `,
     ],
     { encoding: "utf8" },
   );
-  assert.equal(output, "live down\nOPENSTEER_HOME_VOLUME_SET=previous\nstaging down --volumes\n");
+  assert.equal(
+    output,
+    "live down\nOPENSTEER_HOME_VOLUME_SET=previous\nproof-restore-aa1234567890 down --volumes\n",
+  );
+});
+
+test("interrupted update reselects the previous images without touching the database dump", () => {
+  const output = execFileSync(
+    "bash",
+    [
+      "-c",
+      `
+    set -euo pipefail
+    home_dir=$(mktemp -d)
+    trap 'rm -rf -- "$home_dir"' EXIT
+    export OPENSTEER_HOME_DIR="$home_dir"
+    source deploy/home/common.sh
+    source deploy/home/update.sh
+    journal="$home_dir/update.pending"
+    mkdir "$journal"
+    printf 'OPENSTEER_HOME_HOST_IMAGE=previous\n' > "$journal/previous.env"
+    printf 'OPENSTEER_HOME_HOST_IMAGE=candidate\n' > "$journal/candidate.env"
+    cp "$journal/candidate.env" "$home_dir/images.env"
+    printf 'manual recovery copy\n' > "$home_dir/update-database.dump"
+    compose() { printf '%s %s\n' "$(cat "$release_env")" "$*"; }
+    install_sandbox_policies() { cmp -s "$journal/previous.env" "$home_dir/images.env"; }
+    start_pod() { cat "$home_dir/images.env"; }
+    update_recovery
+    test ! -e "$journal"
+    test "$(cat "$home_dir/update-database.dump")" = 'manual recovery copy'
+  `,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(
+    output,
+    /^OPENSTEER_HOME_HOST_IMAGE=candidate down\nOPENSTEER_HOME_HOST_IMAGE=previous\n/u,
+  );
 });
 
 test("the image expands the upstream address and leaves the password and CA files for egress to read", async (t) => {

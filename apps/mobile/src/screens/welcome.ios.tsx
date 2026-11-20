@@ -84,7 +84,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
         <Section footer={<Footer text={view.footer} />} title={welcomeCopy.otherWays}>
           <ErrorText detail={view.failure} />
           {view.signedInAs === null ? null : (
-            <Lines detail="Opensteer Account" title={view.signedInAs} />
+            <Lines detail="Opensteer account" title={view.signedInAs} />
           )}
           {view.account === null ? null : (
             <Button modifiers={[disabled(view.account.disabled)]} onPress={props.onAccount}>

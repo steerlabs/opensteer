@@ -38,9 +38,7 @@ export function registerAgentDirectoryRoutes(
       sign,
       ...(options.now ? { now: options.now } : {}),
     });
-    void reply
-      .header("cache-control", agentDirectoryCacheControl)
-      .header("etag", `"agent-directory-r${document.revision}"`);
+    void reply.header("cache-control", agentDirectoryCacheControl);
     return AgentDirectoryResponseSchema.parse({ assertion });
   });
 }

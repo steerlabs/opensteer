@@ -750,7 +750,7 @@ function AgentAccessChoice({
 
   return (
     <fieldset className="iphone-setup__access" disabled={!view}>
-      <legend>What can your agent do with it?</legend>
+      <legend>What can your own agents do with it?</legend>
       {accessChoices.map((choice) => (
         <OptionRow
           as="radio"

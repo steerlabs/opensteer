@@ -241,7 +241,7 @@ integration("Cloud Computer website pages", () => {
       "/cloud-computer",
     );
     const suspended = await page("/cloud-computer", person);
-    expect(suspended.body).toContain("You paused this Cloud Computer.");
+    expect(suspended.body).toContain("You suspended this Cloud Computer.");
     expect(suspended.body).toContain('action="/cloud-computer/resume"');
     expect(suspended.headers.get("refresh")).toBeNull();
 

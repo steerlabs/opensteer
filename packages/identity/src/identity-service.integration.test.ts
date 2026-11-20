@@ -11,7 +11,8 @@ import {
   type NativeOAuthClient,
 } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
-import { sql } from "kysely";
+import { sql, type Transaction } from "kysely";
+import type { DatabaseSchema } from "@opensteer/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
 import { TeamIdentityAdmission } from "./team-admission.js";
@@ -29,6 +30,35 @@ const database = createDatabase({
   maxConnections: 4,
 });
 const hostKeyFingerprint = `sha256:${"A".repeat(43)}`;
+const accountIssuer = "https://accounts.example.test";
+
+/** What the Home's claim route adds to a managed claim: the Account link, committed with its owner. */
+function accountLinked(subject: string, issuer = accountIssuer, cloudComputerId = "cc_1") {
+  return {
+    cloudComputerId,
+    issuer,
+    subject,
+    commit: async (transaction: Transaction<DatabaseSchema>, existing: boolean) => {
+      if (existing) return;
+      const now = new Date();
+      await transaction
+        .insertInto("personalRemoteAccountLink")
+        .values({
+          challengeId: cloudComputerId,
+          grantId: "grant",
+          hostCredential: "credential",
+          issuer,
+          linkGeneration: "1",
+          linkedAt: now,
+          singletonKey: "opensteer-account",
+          state: "active",
+          subject,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    },
+  };
+}
 
 integration("IdentityService", () => {
   beforeAll(async () => {
@@ -716,12 +746,11 @@ integration("IdentityService", () => {
     };
     const claim = (subject: string, claimKey = `cc_1:1:${subject}`, code = setupCode) =>
       identity.claimManagedOwner({
+        ...accountLinked(subject),
         claimKey,
-        commit: async () => undefined,
         owner,
         receipt: { claimKey, subject },
         setupCode: code,
-        subject,
       });
 
     // The password and setup-link doors stay shut on a managed Home.
@@ -758,9 +787,25 @@ integration("IdentityService", () => {
     // The same claim again answers the first receipt; nothing else gets in.
     await expect(claim(subject)).resolves.toEqual({ receipt: winner.receipt, replayed: true });
     await expect(claim(loser)).rejects.toMatchObject({ reason: "managed-home-owned" });
-    await expect(claim(subject, "another-claim")).rejects.toMatchObject({
+    // A replacement restored from this Home's backup is claimed again under a new key: the same
+    // Account, Cloud Computer and issuer are confirmed as the owner, and nobody new is created.
+    await expect(claim(subject, "another-claim")).resolves.toEqual({
+      receipt: { claimKey: "another-claim", subject },
+      replayed: false,
+    });
+    await expect(claim(loser, "another-claim")).rejects.toMatchObject({
       reason: "managed-home-owned",
     });
+    await expect(
+      identity.claimManagedOwner({
+        ...accountLinked(subject, accountIssuer, "cc_2"),
+        claimKey: "a-different-cloud-computer",
+        owner,
+        receipt: {},
+        setupCode,
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-owned" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toHaveLength(1);
 
     // A bring-your-own Home has no Account-bound claim.
     const byo = identityService({
@@ -771,12 +816,11 @@ integration("IdentityService", () => {
     });
     await expect(
       byo.claimManagedOwner({
+        ...accountLinked("acct_subject_a"),
         claimKey: "k",
-        commit: async () => undefined,
         owner,
         receipt: {},
         setupCode,
-        subject: "acct_subject_a",
       }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
@@ -796,12 +840,11 @@ integration("IdentityService", () => {
     await identity.initialize();
     await expect(
       identity.claimManagedOwner({
+        ...accountLinked("acct_subject_a"),
         claimKey: "k",
-        commit: async () => undefined,
         owner: { displayName: "Pat", email: "pat@example.test", emailVerified: true },
         receipt: {},
         setupCode,
-        subject: "acct_subject_a",
       }),
     ).rejects.toMatchObject({ reason: "managed-home-setup-code-invalid" });
     expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
@@ -881,12 +924,11 @@ integration("IdentityService", () => {
       });
       await identity.initialize();
       await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
         claimKey: "k",
-        commit: async () => undefined,
         owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
         receipt: {},
         setupCode,
-        subject: "acct_bound_subject",
       });
       const signIn = async () => {
         const begun = await identity.beginOidcSignIn({

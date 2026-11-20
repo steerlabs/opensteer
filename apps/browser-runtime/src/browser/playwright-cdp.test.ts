@@ -101,7 +101,11 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
         ...claims,
         ...(overrides.standardCdp === "whole-context"
           ? {
-              standardCdpLease: { bindingId: "run:fixture", generation: ++standardLeaseGeneration },
+              standardCdpLease: {
+                bindingId: "run:fixture",
+                generation: ++standardLeaseGeneration,
+                bootId: runtime.standardCdpBootId,
+              },
             }
           : {}),
         ...overrides,
@@ -369,7 +373,11 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
     connect(
       ticket({
         standardCdp: "whole-context",
-        standardCdpLease: { bindingId: "run:fixture", generation: 1 },
+        standardCdpLease: {
+          bindingId: "run:fixture",
+          generation: 1,
+          bootId: runtime.standardCdpBootId,
+        },
       }),
       true,
     ),
@@ -415,13 +423,28 @@ it("connects stock Playwright to the owned pages of a managed Chromium session",
   const lateTicket = () =>
     ticket({
       standardCdp: "whole-context",
-      standardCdpLease: { bindingId: "run:fixture", generation: pendingGeneration },
+      standardCdpLease: {
+        bindingId: "run:fixture",
+        generation: pendingGeneration,
+        bootId: runtime.standardCdpBootId,
+      },
     });
   await runtime.reconcileStandardCdpLease({ profileId, generation: pendingGeneration });
   await expect(
     runtime.attachStandardCdp(lateTicket(), () => undefined, new AbortController().signal),
   ).rejects.toThrow("Whole-context CDP requires an exclusive saved profile");
   await expect(connect(lateTicket(), true)).rejects.toThrow("CDP attachment rejected");
+  const differentBoot = ticket({
+    standardCdp: "whole-context",
+    standardCdpLease: {
+      bindingId: "run:fixture",
+      generation: ++standardLeaseGeneration,
+      bootId: randomUUID(),
+    },
+  });
+  await expect(
+    runtime.attachStandardCdp(differentBoot, () => undefined, new AbortController().signal),
+  ).rejects.toThrow("Whole-context CDP requires an exclusive saved profile");
 
   const bridge = await startHarnessBridge(agent, sessionSink);
   cleanup.push(() => bridge.close());

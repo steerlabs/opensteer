@@ -42,4 +42,14 @@ describe("deploy/account/agent-directory.seed.json", () => {
     }
     expect(snapshot.entries).toHaveLength(items.length);
   });
+
+  it("holds the shared Microsoft callback and both narrowly sourced Mistral origins", () => {
+    const entries = AgentDirectoryEntrySchema.array().parse(JSON.parse(readFileSync(seedPath, "utf8")));
+    const origins = entries.flatMap((entry) => entry.origins);
+    for (const held of [
+      "https://global.consent.azure-apim.net",
+      "https://callback.mistral.ai",
+      "https://console.mistral.ai",
+    ]) expect(origins).not.toContain(held);
+  });
 });

@@ -232,7 +232,7 @@ export function registerControlPlaneRoutes(
       if (grantRequest.clientSurface === "browser") {
         throw new ControlPlaneError(
           "forbidden",
-          "Browser Host session grants are issued only by the Account portal",
+          "Open your Home from the Opensteer website to sign in through your browser.",
         );
       }
       const response = await service.issueSessionGrant(
@@ -469,7 +469,7 @@ function requirePersonalRemoteAccount(
   if (!service) {
     throw new ControlPlaneError(
       "unavailable",
-      "Personal Host Account linking is not configured on this control plane",
+      "Linking a Home to an Opensteer account isn’t enabled here.",
     );
   }
   return service;

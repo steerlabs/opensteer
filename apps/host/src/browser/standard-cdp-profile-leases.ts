@@ -27,9 +27,8 @@ export class StandardCdpProfileLeases {
     persist: () => Promise<void>,
   ): Promise<void> {
     return this.run(profileId, async () => {
-      if (this.#active.get(profileId)?.generation !== generation) return;
       await persist();
-      this.#active.delete(profileId);
+      if (this.#active.get(profileId)?.generation === generation) this.#active.delete(profileId);
     });
   }
 }

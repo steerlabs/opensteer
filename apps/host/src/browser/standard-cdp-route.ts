@@ -53,7 +53,7 @@ export function registerStandardCdpRoute(
             chromeTabs?.standardCdpTickets.consume(params.data.ticket))
           : undefined;
         if (!claims) {
-          void reply.code(401).send({ error: "Browser attachment ticket is invalid or expired" });
+          void reply.code(401).send({ error: "This browser connection link is invalid or expired." });
           return;
         }
         upgrades.set(request, claims);
@@ -70,7 +70,7 @@ export function registerStandardCdpRoute(
       const binding = claims.authority.agentBindingId;
       const live = liveByBinding.get(binding) ?? 0;
       if (live >= standardCdpMaxLivePerBinding) {
-        closeStandardSocket(socket, 1013, "Too many live CDP attachments for this binding");
+        closeStandardSocket(socket, 1013, "Too many live browser connections for this task.");
         return;
       }
       liveByBinding.set(binding, live + 1);

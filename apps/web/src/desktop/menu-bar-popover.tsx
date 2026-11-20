@@ -5,6 +5,8 @@ import {
   type MenuBarStatus,
   type OpensteerMenuBarBridge,
 } from "@opensteer/client/computers";
+import { Icon, type IconName } from "../components/icon.js";
+import { ProviderLogo } from "../components/provider-brand.js";
 
 /** Electron prefixes a main-process refusal with its own words; the person needs only ours. */
 export function menuBarFailure(error: unknown): string {
@@ -74,6 +76,11 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
   }, [bridge]);
   const phase = status?.stop.phase ?? "running";
   const stopProblem = status?.stop.problem ?? stopFailure;
+  const problemLine = stopProblem ? (
+    <p className="menu-bar__failure" role="alert">
+      {stopProblem}
+    </p>
+  ) : null;
   const stopEverything = (
     <button
       className="menu-bar__stop-all"
@@ -85,8 +92,9 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
     </button>
   );
   // Stopped is said only once everything is confirmed ended. While a Stop is
-  // under way nothing else is offered; one that did not finish offers Stop
-  // everything again, never Resume in its place.
+  // under way nothing else is offered; one that could not be confirmed says so
+  // and offers Stop everything again, never Resume in its place. It is the
+  // popover's only control over what agents do: a row opens its task instead.
   const stopSection = (
     <section className="menu-bar__section menu-bar__stop" aria-live="polite">
       {phase === "running" ? (
@@ -98,8 +106,9 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
         <p className="menu-bar__stopped">{menuBarWords("menubar.stopping")}</p>
       ) : phase === "failed" ? (
         <>
+          <p className="menu-bar__stopped">{menuBarWords("menubar.stop.unconfirmed")}</p>
+          {problemLine}
           {stopEverything}
-          <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>
         </>
       ) : (
         <>
@@ -120,11 +129,7 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           </button>
         </>
       )}
-      {stopProblem ? (
-        <p className="menu-bar__failure" role="alert">
-          {stopProblem}
-        </p>
-      ) : null}
+      {phase === "failed" ? null : problemLine}
     </section>
   );
   return (
@@ -159,13 +164,18 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           <h2 className="menu-bar__heading" id="menu-bar-right-now">
             {menuBarWords("menubar.rightNow")}
           </h2>
-          <ul className="menu-bar__rows">
+          <ul className="menu-bar__rows menu-bar__activity">
             {status.rightNow.map((row) => (
               <RightNowRow
                 key={row.id}
-                pending={busy.has(`row:${row.id}`)}
                 row={row}
-                onStop={() => void act(`row:${row.id}`, () => bridge.stopRow({ id: row.id }))}
+                onOpen={() =>
+                  void act(`row:${row.id}`, () => {
+                    // Until desktop main can open one task, the row opens the app.
+                    const target = row.opens;
+                    return target && bridge.openRow ? bridge.openRow(target) : bridge.openApp();
+                  })
+                }
               />
             ))}
           </ul>
@@ -264,47 +274,41 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
   );
 }
 
-function RightNowRow({
-  row,
-  pending,
-  onStop,
-}: {
-  readonly row: MenuBarRow;
-  readonly pending: boolean;
-  readonly onStop: () => void;
-}) {
-  const name = row.actor.name ?? row.actor.label;
+const kindIcon = {
+  browser: "globe",
+  apps: "app",
+  files: "terminal",
+  task: "sparkles",
+} as const satisfies Record<MenuBarRow["kind"], IconName>;
+
+/**
+ * Who is using what, to glance at: the row opens its task in the app, where
+ * that task's own Stop is. It never stops anything itself.
+ */
+function RightNowRow({ row, onOpen }: { readonly row: MenuBarRow; readonly onOpen: () => void }) {
   return (
-    <li className="menu-bar__row menu-bar__activity-row">
-      <span
-        aria-hidden="true"
-        className="menu-bar__mark"
-        data-kind={row.kind}
-        data-origin={row.actor.markOrigin ?? undefined}
-      >
-        {name.slice(0, 1).toUpperCase()}
-      </span>
-      <span className="menu-bar__row-text">
-        <span className="menu-bar__row-title">{name}</span>
-        <span className="menu-bar__detail">
-          {row.state === "failed" ? menuBarWords("menubar.row.failed") : row.using}
+    <li>
+      <button className="menu-bar__activity-row" onClick={onOpen} type="button">
+        <span aria-hidden="true" className="menu-bar__mark" data-kind={row.kind}>
+          {row.actor.providerId ? (
+            <ProviderLogo providerId={row.actor.providerId} />
+          ) : (
+            <Icon name={kindIcon[row.kind]} />
+          )}
         </span>
-      </span>
-      {row.state === "stopping" ? (
-        <span className="menu-bar__detail menu-bar__row-state">
-          {menuBarWords("menubar.row.stopping")}
+        <span className="menu-bar__row-text">
+          <span
+            className={`menu-bar__row-title${row.actor.verified ? " menu-bar__row-title--verified" : ""}`}
+          >
+            {row.actor.verified ? (
+              <Icon className="menu-bar__verified" name="check-circle" />
+            ) : null}
+            <span className="menu-bar__row-name">{row.actor.label}</span>
+          </span>
+          <span className="menu-bar__detail menu-bar__row-using">{row.using}</span>
         </span>
-      ) : row.stoppable ? (
-        <button
-          aria-label={`${menuBarWords("menubar.stop")} ${name}`}
-          className="btn btn--ghost menu-bar__row-stop"
-          disabled={pending}
-          onClick={onStop}
-          type="button"
-        >
-          {menuBarWords("menubar.stop")}
-        </button>
-      ) : null}
+        <Icon className="menu-bar__row-open" name="chevron-right" />
+      </button>
     </li>
   );
 }

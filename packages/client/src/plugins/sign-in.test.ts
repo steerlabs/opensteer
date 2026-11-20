@@ -138,7 +138,7 @@ const flowOf = (client: never, sign: ReturnType<typeof surface>) =>
 
 describe("plugin sign-in choices", () => {
   it.each([
-    ["account-not-linked", "One-click sign-in needs a linked Opensteer Account."],
+    ["account-not-linked", "One-click sign-in needs a linked Opensteer account."],
     ["no-provider-app", "Opensteer has no sign-in app for Linear."],
   ])("explains why one-click sign-in is unavailable (%s)", (reason, message) => {
     const input = prepared();
@@ -266,7 +266,7 @@ describe("a plugin sign-in", () => {
       begin: () => {
         throw new HostClientRequestError({
           code: "conflict",
-          message: "Link this Host to Opensteer Account before starting sign-in remotely",
+          message: "Link this Host to Opensteer account before starting sign-in remotely",
           reason: "plugin-account-link-required",
           status: 409,
         });

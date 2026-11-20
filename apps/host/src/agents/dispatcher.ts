@@ -4,6 +4,7 @@ import { dispatchNodeStop, grantedContent, NodeStopAuthoritySchema } from "@open
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
+  CommandIdSchema,
   OpensteerError,
   agentGrantAccess,
   agentGrantToolFamilies,
@@ -40,6 +41,7 @@ import {
   type RunnerRegistry,
 } from "@opensteer/orchestration";
 import {
+  attemptStopStateCapability,
   CorrelationIdSchema,
   ProtocolErrorSchema,
   HarnessInputSchema,
@@ -90,6 +92,7 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
       threadId: ThreadIdSchema,
       type: z.literal("run.interrupt"),
       expectedBindingGeneration: z.number().int().positive().nullable().optional(),
+      stop: z.object({ id: CommandIdSchema, bootId: z.string() }).optional(),
     })
     .passthrough(),
   z
@@ -472,7 +475,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Run whose lineage and task disagree is never treated as the person's.
     const { runConnectionId, taskOriginConnectionId } = context.lineage;
     if (taskOriginConnectionId !== null && runConnectionId !== taskOriginConnectionId)
-      throw new CommandDispatchError("This Run does not belong to its task's lineage.", "failed");
+      throw new CommandDispatchError("This task's authority no longer matches.", "failed");
     const authority = await (runConnectionId === null
       ? Promise.resolve({ agentConnection: null, mode: context.run.accessMode } as const)
       : this.#store.admitExecution({
@@ -481,7 +484,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         }))
       .catch((error: unknown) => {
         throw new CommandDispatchError(
-          error instanceof OpensteerError ? error.message : "This Run's authority ended.",
+          error instanceof OpensteerError ? error.message : "This task's access ended.",
           "failed",
         );
       });
@@ -799,18 +802,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // a Stop included, cannot launch new work.
     const dispatch = {
       beforeSend: async () => {
-        await this.#store.assertActiveGrant({
-          bindingGeneration: binding.bindingGeneration,
-          grantId: binding.grantId,
-          environmentId: context.run.environmentId,
-          requestedBy: context.run.requestedBy,
-          runId: context.run.id,
-          runnerBootId: identity.bootId,
-          runnerId: identity.runnerId,
-          threadId: context.thread.id,
-        });
-        // The plan (mode, tools, packages) was built for one grant revision and mode; a change
-        // committed while planning means this command describes authority that no longer holds.
         if (authority.agentConnection) {
           await this.#assertPlannedAuthority(context.run, authority);
           await this.#store.recordConnectionRunHandoff({
@@ -821,6 +812,16 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             mode: authority.mode,
           });
         }
+        await this.#store.assertActiveGrant({
+          bindingGeneration: binding.bindingGeneration,
+          grantId: binding.grantId,
+          environmentId: context.run.environmentId,
+          requestedBy: context.run.requestedBy,
+          runId: context.run.id,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+          threadId: context.thread.id,
+        });
       },
       ...(authority.agentConnection
         ? {
@@ -1014,6 +1015,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       case "run.interrupt":
         runnerCommand = {
           ...base,
+          ...(payload.data.stop && this.#runners.identityForEnvironment(command.environmentId)
+            ?.capabilities.includes(attemptStopStateCapability) ? { stop: payload.data.stop } : {}),
           ...(payload.data.expectedBindingGeneration
             ? { bindingGeneration: payload.data.expectedBindingGeneration }
             : {}),
@@ -1111,7 +1114,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             steering: true,
           });
           if (failure) throw new CommandDispatchError(failure, "failed");
-        });
+        }, steer.reauthorize);
         return;
       }
     }
@@ -1133,18 +1136,28 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     >,
     signal: AbortSignal,
     validate: () => Promise<void>,
+    reauthorize?: () => Promise<void>,
   ): Promise<void> {
     try {
       await validate();
+      const beforeSend = reauthorize && (async () => {
+        try {
+          await reauthorize();
+        } catch (error) {
+          if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
+          throw new CommandDispatchError(error.message, "failed");
+        }
+      });
       if (command.authoritySource.kind === "channel-ingress") {
         await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
           await this.#runners.dispatch(runnerCommand, signal, {
             beforeAck,
+            ...(beforeSend ? { beforeSend } : {}),
           });
         });
         return;
       }
-      await this.#runners.dispatch(runnerCommand, signal);
+      await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
       await this.#store.refuseSteer(

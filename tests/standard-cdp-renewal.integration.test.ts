@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -5,9 +6,13 @@ import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { chromium, type Browser } from "playwright-core";
 import { expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { NetworkPartition } from "../apps/host/src/agents/network-partition.test-support.js";
+import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   startPersonalRuntime,
@@ -17,9 +22,16 @@ import {
   BrowserRuntime,
   BrowserRuntimeServer,
   Ed25519AttachTicketVerifier,
+  defaultAttachTicketReplayLedgerPath,
+  sessionFilesRoot,
 } from "../packages/browser-runtime-core/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
+import {
+  listBrowserStandardCdpLeases,
+  requireNoBrowserStandardCdpLease,
+} from "../packages/database/src/browser-standard-cdp-lease.js";
+import { connectionAttempts } from "../packages/database/src/connection-disconnect.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -372,6 +384,168 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
   },
 );
 
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL).each(["same Runtime boot", "new Runtime boot"])(
+  "reconciles an exclusive lease after connection loss with the %s",
+  async (boot) => {
+    const fixture = await startBrowserHome();
+    const { stack, clients } = fixture;
+    const { browser, store } = stack.host;
+    const { network } = stack;
+    if (!(network instanceof NetworkPartition))
+      throw new Error("The real Runner needs a TCP partition.");
+    const owner = await store.firstUser();
+    if (!owner) throw new Error("The Home has no owner.");
+    const runnerId = stack.agentHome.computerId;
+    await store.database
+      .updateTable("devices")
+      .set({ accessPolicy: { ...machineAccessPolicyDefault, browser: true } })
+      .where("id", "=", await store.requireSelfDeviceId(runnerId))
+      .execute();
+    const profile = await browser.createProfile({
+      homeRunnerId: runnerId,
+      ownerId: owner.id,
+      name: "Reconnect fence",
+      idempotencyKey: randomUUID(),
+    });
+    const connections = new AgentConnectionStore(store.database);
+    const connection = await connections.create({
+      userId: owner.id,
+      label: "Reconnecting agent",
+      clientName: "Reconnecting agent",
+      accessMode: "full-access",
+      resource: stack.hostOrigin.href,
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      },
+    });
+    expect(await connections.activate(connection.id, randomBytes(32).toString("hex"))).toBe(true);
+    const threadId = await createTask(stack, "Reconnect lease");
+    await store.database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id, accessMode: "full-access" })
+      .where("id", "=", threadId)
+      .execute();
+    const authority = { ownerId: owner.id, agentBindingId: `thread:${threadId}` };
+    const { session } = await browser.openAgentSession({ ...authority, profileId: profile.id });
+    const ticket = await browser.issueStandardCdpTicket({
+      authority,
+      browserSessionId: session.id,
+      mode: "whole-context",
+    });
+    expect(ticket.mode).toBe("whole-context");
+    const client = await chromium.connectOverCDP(
+      new URL(ticket.path, stack.hostOrigin).href.replace(/^http/u, "ws"),
+    );
+    clients.push(client);
+    expect(
+      await client
+        .contexts()[0]!
+        .pages()[0]!
+        .evaluate(() => 42),
+    ).toBe(42);
+    const leases = () => listBrowserStandardCdpLeases(store.database, runnerId);
+    const [original] = await leases();
+    const oldBoot = fixture.runtime.standardCdpBootId;
+    expect(original).toMatchObject({
+      sessionId: session.id,
+      bootId: oldBoot,
+      attemptId: expect.any(String),
+    });
+    const competingOpen = () =>
+      browser.start({
+        ownerId: owner.id,
+        origin: "person",
+        profileId: profile.id,
+        reuseExisting: false,
+      });
+
+    const entered = Promise.withResolvers<string>();
+    const acknowledge = Promise.withResolvers<void>();
+    const reconciled = Promise.withResolvers<void>();
+    const recover = browser.reconcileStandardCdpLeases.bind(browser);
+    const home = vi
+      .spyOn(browser, "reconcileStandardCdpLeases")
+      .mockImplementation(async (computer, relay, settle) => {
+        let acknowledged = false;
+        await recover(computer, relay, async (lease) => {
+          const runtimeBootId = await settle(lease);
+          if (lease.generation === original?.generation) {
+            entered.resolve(runtimeBootId);
+            await acknowledge.promise;
+            acknowledged = true;
+          }
+          return runtimeBootId;
+        });
+        if (acknowledged) reconciled.resolve();
+      });
+    const disconnected = new Promise<void>((resolve) => client.once("disconnected", resolve));
+    network.block();
+    try {
+      await milestone(disconnected, "client disconnect across the TCP partition");
+      await expect(
+        requireNoBrowserStandardCdpLease(store.database, profile.id),
+      ).rejects.toMatchObject({
+        reason: "browser-profile-exclusively-held",
+      });
+      expect(await leases()).toEqual([original]);
+      if (boot === "new Runtime boot") await fixture.restartBrowserRuntime();
+      network.unblock();
+      await stack.restartRunner();
+      await milestone(
+        entered.promise.then(() => undefined),
+        "Runtime generation acknowledgement over the new relay",
+      );
+      const currentBootId = await entered.promise;
+      if (boot === "new Runtime boot") expect(currentBootId).not.toBe(oldBoot);
+      else expect(currentBootId).toBe(oldBoot);
+      expect(await leases()).toEqual([original]);
+      await expect(competingOpen()).rejects.toThrow("exclusive access");
+      acknowledge.resolve();
+      await milestone(reconciled.promise, "Home to persist Runtime settlement");
+      expect(await leases()).toEqual([]);
+      const competing = await competingOpen();
+      expect(competing.session).toMatchObject({
+        profileId: profile.id,
+        placement: { kind: "runner", runnerId },
+        state: "ready",
+      });
+
+      await connections.revoke(owner.id, connection.id);
+      const attempts = await connectionAttempts(store.database, connection.id);
+      expect(attempts).toContainEqual(
+        expect.objectContaining({
+          kind: "standard-cdp",
+          id: original!.attemptId,
+          terminalEvidenceAt: expect.any(Date),
+          ...(boot === "new Runtime boot" ? { contactLostAt: expect.any(Date) } : {}),
+        }),
+      );
+      const cleanup = await store.driveConnectionCleanups();
+      expect(cleanup.failures).toEqual([]);
+      expect(cleanup.settled).toContain(connection.id);
+      if (boot === "new Runtime boot") {
+        const record = await store.database
+          .selectFrom("agentConnections")
+          .select(["lastActionUncertain", "lastActionUncertainAt"])
+          .where("id", "=", connection.id)
+          .executeTakeFirstOrThrow();
+        expect(record).toMatchObject({
+          lastActionUncertain: { attemptId: original!.attemptId },
+          lastActionUncertainAt: expect.any(Date),
+        });
+      }
+      await browser.stop(owner.id, competing.session.id);
+    } finally {
+      network.unblock();
+      acknowledge.resolve();
+      home.mockRestore();
+    }
+  },
+);
+
 it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
   "admits a sibling during a stalled Runtime handshake and caps live attachments on its Runner",
   async () => {
@@ -437,7 +611,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           });
       expect(await probe(bindings[4]!)).toMatchObject({
         id: 1,
-        error: { message: "This computer has too many live CDP attachments." },
+        error: { message: "This computer has too many live browser connections." },
       });
       const refused = sockets.at(-1)!;
       if (refused.readyState !== WebSocket.CLOSED) await once(refused, "close");
@@ -473,6 +647,7 @@ async function startBrowserHome() {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-cdp-renewal-"));
     const bridgeToken = randomBytes(32).toString("base64url");
     const runtimeId = "renewal-browser";
+    const profileRoot = join(scratch, "profiles");
     const clients: Browser[] = [];
     let keys: readonly { keyId: string; publicKeyPem: string }[] = [];
     const runtime = new BrowserRuntime({
@@ -481,11 +656,11 @@ async function startBrowserHome() {
         chromiumSandbox: false,
         executablePath: chromium.executablePath(),
       }),
-      localProfiles: { root: join(scratch, "profiles") },
+      localProfiles: { root: profileRoot },
       runtimeId,
-      sessionFilesRoot: join(scratch, "files"),
+      sessionFilesRoot: sessionFilesRoot(profileRoot),
       ticketVerifier: await Ed25519AttachTicketVerifier.create({
-        replayLedgerPath: join(scratch, "private", "replay.json"),
+        replayLedgerPath: defaultAttachTicketReplayLedgerPath(profileRoot),
         resolvePublicKey: (id) => keys.find((key) => key.keyId === id)?.publicKeyPem ?? null,
       }),
     });
@@ -499,6 +674,7 @@ async function startBrowserHome() {
       },
       runtime,
     });
+    let stopRuntime = () => runtimeServer.close();
     try {
       const address = await runtimeServer.start();
       const stack = await startPersonalRuntime({
@@ -515,10 +691,49 @@ async function startBrowserHome() {
         stack,
         clients,
         runtime,
+        restartBrowserRuntime: async () => {
+          await runtimeServer.close();
+          const child = spawn(
+            process.execPath,
+            [fileURLToPath(new URL("../apps/browser-runtime/dist/main.js", import.meta.url))],
+            {
+              env: {
+                ...process.env,
+                OPENSTEER_MODE: "development",
+                OPENSTEER_BROWSER_RELAY_HOST_URL: "",
+                OPENSTEER_BROWSER_ATTACH_PUBLIC_KEYS: "",
+                OPENSTEER_BROWSER_RUNTIME_ID: runtimeId,
+                OPENSTEER_BROWSER_PROFILE_ROOT: profileRoot,
+                OPENSTEER_BROWSER_BRIDGE_TOKEN: bridgeToken,
+                OPENSTEER_BROWSER_PORT: String(address.port),
+                OPENSTEER_BROWSER_HOST: address.host,
+                OPENSTEER_BROWSER_HEADLESS: "true",
+                OPENSTEER_BROWSER_CHROMIUM_SANDBOX: "false",
+                OPENSTEER_CHROMIUM_EXECUTABLE: chromium.executablePath(),
+              },
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          const owned = ownChild(child);
+          stopRuntime = () => owned.close(() => child.kill("SIGTERM"), 5_000);
+          const ready = Promise.withResolvers<void>();
+          const lines = createInterface({ input: child.stdout });
+          lines.on("line", (line) => {
+            if (line.includes('"event":"browser-runtime.ready"')) ready.resolve();
+          });
+          let diagnostics = "";
+          child.stderr.on("data", (bytes: Buffer) => {
+            diagnostics += bytes.toString();
+          });
+          void owned.exited.then(() =>
+            ready.reject(new Error(`The replacement Browser Runtime exited: ${diagnostics}`)),
+          );
+          await milestone(ready.promise, "replacement Browser Runtime startup");
+        },
         close: async () => {
           try {
             await Promise.all(clients.map(async (client) => client.close()));
-            await Promise.all([stack.close(), runtimeServer.close()]);
+            await Promise.all([stack.close(), stopRuntime()]);
           } finally {
             await rm(scratch, { recursive: true, force: true });
           }

@@ -478,7 +478,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await readSession(request, reply);
         if (!session || !dependencies.personalRemoteAccount)
-          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+          throw new ControlPlaneError("unauthorized", "Sign in to your Opensteer account first.");
         const result = await dependencies.personalRemoteAccount.issueLinkChallenge(
           ControlPlaneAccountIdSchema.parse(session.accountId),
           IssuePersonalHostAccountLinkChallengeRequestSchema.parse(request.body),
@@ -490,7 +490,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await readSession(request, reply);
         if (!session || !dependencies.personalRemoteAccount)
-          throw new ControlPlaneError("unauthorized", "Sign in to your Account first");
+          throw new ControlPlaneError("unauthorized", "Sign in to your Opensteer account first.");
         const result = await dependencies.personalRemoteAccount.completeLink(
           ControlPlaneAccountIdSchema.parse(session.accountId),
           CompletePersonalHostAccountLinkRequestSchema.parse(request.body),
@@ -641,7 +641,10 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         if (!session) return reply.redirect(portalSignInPath, 303);
         const service = dependencies.personalRemoteAccount;
         if (!service) {
-          throw new ControlPlaneError("unavailable", "Personal Host handoff is unavailable");
+          throw new ControlPlaneError(
+            "unavailable",
+            "Opening your Mac Home from the website isn’t available right now.",
+          );
         }
         const { deploymentId } = PersonalConnectParamsSchema.parse(request.params);
         const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);

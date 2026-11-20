@@ -8,6 +8,7 @@ import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import {
+  minThreadAccessMode,
   threadAccessModeAtMost,
   type ThreadAccessMode,
   CommandIdSchema,
@@ -64,7 +65,12 @@ import {
   type TriggerAccess,
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import { liveDelegatingConnection } from "./resource-access.js";
+import {
+  liveDelegatingConnection,
+  meetsConnectionFloor,
+  sendEligible,
+  type AgentConnectionAuthority,
+} from "./resource-access.js";
 import { admitLineageExecution } from "./execution-authority.js";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
@@ -134,6 +140,7 @@ export interface TriggerDispatchContext {
 
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
+  readonly connectionId?: string;
   readonly toolContractVersion: number;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
@@ -164,7 +171,7 @@ export async function assertActiveTriggerExecutionBinding(
   const row = await database
     .selectFrom("triggerOccurrences")
     .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-    .select(["triggers.anchorThreadId", "triggers.createdBy", "triggers.originConnectionId"])
+    .select(["triggers.anchorThreadId", "triggers.createdBy", "triggers.originConnectionId", "triggerOccurrences.admittedGrantRevision", "triggerOccurrences.admittedAccessMode"])
     .where("triggerOccurrences.id", "=", input.occurrenceId)
     .where("triggerOccurrences.environmentId", "=", input.environmentId)
     .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
@@ -174,7 +181,11 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
     .executeTakeFirst();
-  if (!row || !(await triggerExecutionAuthorityAvailable(database, row))) {
+  if (!row || !(await triggerExecutionAuthorityAvailable(database, row)) ||
+    (row.originConnectionId && !meetsConnectionFloor(
+      await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
+      row.admittedGrantRevision, row.admittedAccessMode,
+    ))) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Automation execution is no longer active",
@@ -195,6 +206,8 @@ export async function assertActiveWatchBinding(
       "triggerWatchActivations.anchorThreadId",
       "triggerWatchActivations.createdBy",
       "triggerWatchActivations.environmentId",
+      "triggerWatchActivations.admittedGrantRevision",
+      "triggerWatchActivations.admittedAccessMode",
       "triggers.originConnectionId",
     ])
     .where("triggerWatchActivations.id", "=", input.activationId)
@@ -220,7 +233,11 @@ export async function assertActiveWatchBinding(
     row.createdBy !== input.createdBy ||
     row.environmentId !== input.environmentId ||
     !admission ||
-    admission.environmentId !== input.environmentId
+    admission.environmentId !== input.environmentId ||
+    (row.originConnectionId !== null && !meetsConnectionFloor(
+      await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
+      row.admittedGrantRevision, row.admittedAccessMode,
+    ))
   ) {
     throw new OpensteerError({
       code: "forbidden",
@@ -252,7 +269,8 @@ export async function createTriggerInTransaction(
   await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.createdBy, input.idempotencyKey])}, 0))`.execute(
     transaction,
   );
-  await admitTriggerActor(transaction, input.createdBy, input.actorConnectionId);
+  const admitted = await admitTriggerActor(transaction, input.createdBy, input);
+  input = admitted.input;
   const existing = await transaction
     .selectFrom("triggers")
     .selectAll()
@@ -308,6 +326,17 @@ export async function createTriggerInTransaction(
     input.createdBy,
     managed !== undefined,
   );
+  // The send rule, under this fence: a connection narrowed to `selected` after the MCP check
+  // may no longer place work on the person's task.
+  if (admitted.connection && !ownTask) {
+    const origin = await transaction
+      .selectFrom("threads")
+      .select("originConnectionId")
+      .where("id", "=", anchorThreadId)
+      .executeTakeFirstOrThrow();
+    if (!sendEligible(admitted.connection, origin.originConnectionId))
+      throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+  }
   const triggerId = createId("trigger");
   const revisionId = createId("triggerRevision");
   const now = new Date();
@@ -495,7 +524,7 @@ export class TriggerStore {
       });
     }
     return commitPersonalMutation(this.#database, async (transaction) => {
-      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
+      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       // Another lineage's program, or the person's, would run with authority this actor lacks.
@@ -634,7 +663,7 @@ export class TriggerStore {
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
+      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(
         transaction,
@@ -728,7 +757,7 @@ export class TriggerStore {
     }
     const nextFireAt = new Date(parsed.data);
     return commitPersonalMutation(this.#database, async (transaction) => {
-      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
+      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (nextFireAt.getTime() <= Date.now()) {
@@ -948,15 +977,8 @@ export class TriggerStore {
           continue;
         }
         const witness = await automationHandoffWitness(transaction, trigger);
-        if (
-          row.connectionId &&
-          row.runnerBootId !== input.runnerBootId &&
-          !row.terminalEvidenceAt
-        ) {
-          // A new process must not replace the only record of the old generation.
-          continue;
-        }
-        const sameExecution = row.runnerBootId === input.runnerBootId && !row.terminalEvidenceAt;
+        const sameExecution = row.runnerBootId === input.runnerBootId && !row.terminalEvidenceAt &&
+          row.observed !== "stopped" && row.observed !== "expired";
         const nextExecutionGeneration = sameExecution
           ? Number(row.executionGeneration)
           : Number(row.executionGeneration) + 1;
@@ -966,29 +988,38 @@ export class TriggerStore {
             message: "Watch execution generation overflow",
           });
         }
-        const updated = await transaction
-          .updateTable("triggerWatchActivations")
-          .set({
-            ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null, contactLostAt: null }),
-            executionGeneration: nextExecutionGeneration,
-            leaseExpiresAt: input.leaseExpiresAt,
-            ...(sameExecution
-              ? {}
-              : {
-                  healthySince: null,
-                  observed: "starting" as const,
-                  restartCount: 0,
-                }),
-            runnerBootId: input.runnerBootId,
-            runnerConnectionGeneration: input.runnerConnectionGeneration,
-            runnerId: input.runnerId,
-            updatedAt: new Date(),
-          })
-          .where("id", "=", row.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
+        const binding = {
+          ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null, contactLostAt: null }),
+          executionGeneration: nextExecutionGeneration,
+          leaseExpiresAt: input.leaseExpiresAt,
+          ...(sameExecution ? {} : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
+          runnerBootId: input.runnerBootId,
+          runnerConnectionGeneration: input.runnerConnectionGeneration,
+          runnerId: input.runnerId,
+          updatedAt: new Date(),
+        };
+        const preserve = row.connectionId !== null && !sameExecution;
+        if (preserve) {
+          if (row.runnerId !== input.runnerId ||
+            Number(row.runnerConnectionGeneration) > input.runnerConnectionGeneration) continue;
+          const now = new Date();
+          await transaction.updateTable("triggerWatchActivations").set({
+            desired: "stopped", observed: "stopped", leaseExpiresAt: null, updatedAt: now,
+            terminalEvidenceAt: row.terminalEvidenceAt ?? now,
+            contactLostAt: row.terminalEvidenceAt ? row.contactLostAt : now,
+          }).where("id", "=", row.id).execute();
+        }
+        const { executable: _executable, ...prior } = row;
+        const updated = preserve
+          ? await transaction.insertInto("triggerWatchActivations").values({
+              ...prior, ...binding, id: createId("triggerWatchActivation"), createdAt: new Date(),
+              lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
+            }).returningAll().executeTakeFirstOrThrow()
+          : await transaction.updateTable("triggerWatchActivations").set(binding)
+              .where("id", "=", row.id).returningAll().executeTakeFirstOrThrow();
         activations.push({
           activation: watchActivationFromRow(updated),
+          ...(updated.connectionId ? { connectionId: updated.connectionId } : {}),
           toolContractVersion: currentProgramVersion,
           agentHome: (await personalSettings(transaction)).agentHome,
         });
@@ -1039,6 +1070,7 @@ export class TriggerStore {
     return TriggerProgramSchema.parse(revision.program);
   }
   async applyWatchStatus(input: {
+    readonly verifiedContainment?: boolean;
     readonly activationId: TriggerWatchActivationId;
     readonly executionGeneration: number;
     readonly healthySince: Date | null;
@@ -1083,7 +1115,6 @@ export class TriggerStore {
         (admittedConnectionGeneration !== input.runnerConnectionGeneration &&
           !(
             terminal &&
-            activation.desired === "stopped" &&
             input.runnerConnectionGeneration > admittedConnectionGeneration
           )) ||
         Number(activation.executionGeneration) !== input.executionGeneration
@@ -1142,7 +1173,8 @@ export class TriggerStore {
           lastExitCode: input.lastExitCode,
           observed: input.observed,
           ...(terminal && activation.connectionId
-            ? { terminalEvidenceAt: activation.terminalEvidenceAt ?? now }
+            ? { terminalEvidenceAt: activation.terminalEvidenceAt ?? now,
+                contactLostAt: activation.terminalEvidenceAt ? activation.contactLostAt : input.verifiedContainment ? null : now }
             : {}),
           restartCount: input.restartCount,
           stderrTail: input.stderrTail,
@@ -1380,7 +1412,7 @@ export class TriggerStore {
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      await admitTriggerActor(transaction, input.ownerId, input.actorConnectionId);
+      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
@@ -1427,7 +1459,7 @@ export class TriggerStore {
     return commitPersonalMutation(
       this.#database,
       async (transaction) => {
-        await admitTriggerActor(transaction, ownerId, input.actorConnectionId);
+        input = (await admitTriggerActor(transaction, ownerId, input)).input;
         const observedPending = await transaction
           .selectFrom("triggerOccurrences")
           .select("id")
@@ -1771,6 +1803,7 @@ export class TriggerStore {
     await assertActiveTriggerExecutionBinding(this.#database, input);
   }
   async completeExecution(input: {
+    readonly verifiedContainment?: boolean;
     readonly executionGeneration: number;
     readonly output: TriggerExecutionOutput;
     readonly runnerBootId: string;
@@ -1802,13 +1835,16 @@ export class TriggerStore {
       }
       if (occurrence.status !== "running" && !occurrence.connectionId)
         return occurrenceFromRow(occurrence);
-      if (occurrence.terminalEvidenceAt) return occurrenceFromRow(occurrence);
+      if (occurrence.terminalEvidenceAt && occurrence.status !== "running") return occurrenceFromRow(occurrence);
       const now = new Date();
       const updated = await transaction
         .updateTable("triggerOccurrences")
         .set({
           completedAt: new Date(input.output.completedAt),
-          ...(occurrence.connectionId ? { terminalEvidenceAt: now } : {}),
+          ...(occurrence.connectionId && !occurrence.terminalEvidenceAt ? {
+            terminalEvidenceAt: now,
+            contactLostAt: input.verifiedContainment ? null : now,
+          } : {}),
           error: input.output.error
             ? jsonValue({
                 message: input.output.error,
@@ -2706,17 +2742,31 @@ export async function pauseTriggerInTransaction(
 }
 
 /** A lineaged actor's connection, locked ahead of every trigger row and checked live. */
-async function admitTriggerActor(
+/**
+ * The actor as it stands inside this mutation's fence. Its connection is held and must still
+ * delegate; the mode the caller was admitted with is capped by the connection's mode now, so a
+ * lowering committed after the MCP check still applies.
+ */
+async function admitTriggerActor<
+  Input extends {
+    readonly actorConnectionId?: string | undefined;
+    readonly actorAccessMode?: ThreadAccessMode | undefined;
+  },
+>(
   transaction: Transaction<DatabaseSchema>,
   ownerId: UserId,
-  actorConnectionId: string | undefined,
-): Promise<void> {
-  if (!actorConnectionId) return;
+  input: Input,
+): Promise<{ readonly input: Input; readonly connection: AgentConnectionAuthority | null }> {
+  if (!input.actorConnectionId) return { input, connection: null };
   await transaction
     .selectFrom("agentConnections")
     .select("id")
-    .where("id", "=", actorConnectionId)
+    .where("id", "=", input.actorConnectionId)
     .forShare()
     .executeTakeFirst();
-  await liveDelegatingConnection(transaction, ownerId, actorConnectionId);
+  const connection = await liveDelegatingConnection(transaction, ownerId, input.actorConnectionId);
+  const actorAccessMode = input.actorAccessMode
+    ? minThreadAccessMode(input.actorAccessMode, connection.accessMode)
+    : connection.accessMode;
+  return { input: { ...input, actorAccessMode }, connection };
 }

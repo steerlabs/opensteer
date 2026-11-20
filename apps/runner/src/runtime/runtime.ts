@@ -218,7 +218,7 @@ export interface RunnerRuntimeOptions {
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
+  > & Partial<Pick<WatchSupervisor, "stopAttempt">>;
 }
 
 type HarnessAuthenticationResponse = Pick<
@@ -466,7 +466,9 @@ export class RunnerRuntime {
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
-  readonly #recentEndReceipts = new Map<string, ExecutionEndReport>();
+  readonly #bootId: string;
+  readonly #endedAttempts = new Map<string, ExecutionEndReport | "ended" | "never-seen">();
+  readonly #unverifiedTriggerEnds = new Map<string, Extract<ExecutionEndReport, { type: "runner.trigger-result" }>>();
   readonly #unverifiedRunEnds = new Map<
     string,
     {
@@ -582,7 +584,7 @@ export class RunnerRuntime {
   readonly #watchSupervisor: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
-  >;
+  > & Partial<Pick<WatchSupervisor, "stopAttempt">>;
   #draining = false;
   readonly #agentWorkStopped: () => boolean;
   readonly #activityListeners = new Set<() => void>();
@@ -658,6 +660,7 @@ export class RunnerRuntime {
         agentHome: options.agentHome,
       });
     this.#sessions = new LiveSessionDirectory(options.bootId);
+    this.#bootId = options.bootId;
     this.#containment =
       options.containment ??
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
@@ -1716,10 +1719,10 @@ export class RunnerRuntime {
   }
 
   handleCommand(command: RunnerCommand, sink: RunnerMessageSink): Promise<CommandDecision> {
+    if (command.environmentId !== this.#environmentId)
+      return Promise.resolve(reject("forbidden", "Command targets a different execution environment", false));
+    if ("stop" in command && command.stop) return this.#stopAttempt(command, sink);
     return this.#ledger.execute(command, async () => {
-      if (command.environmentId !== this.#environmentId) {
-        return reject("forbidden", "Command targets a different execution environment", false);
-      }
       switch (command.type) {
         case "run.execute":
           return this.#admitExecution(command, sink);
@@ -1728,8 +1731,8 @@ export class RunnerRuntime {
         case "watch.reconcile": {
           await this.#watchSupervisor.reconcile(command, sink);
           const desired = new Set(command.desired.map(({ activationId }) => activationId));
-          for (const report of this.#recentEndReceipts.values())
-            if (report.type === "runner.watch-status" && !desired.has(report.activationId))
+          for (const report of this.#endedAttempts.values())
+            if (typeof report !== "string" && report.type === "runner.watch-status" && !desired.has(report.activationId))
               void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
         }
@@ -1747,6 +1750,53 @@ export class RunnerRuntime {
           return this.#startHarnessUpdate(command.driverKind, sink);
       }
     });
+  }
+
+  async #stopAttempt(
+    command: Extract<RunnerCommand, { type: "run.interrupt" | "trigger.interrupt" | "watch.reconcile" }>,
+    sink: RunnerMessageSink,
+  ): Promise<CommandDecision> {
+    if (command.stop?.bootId !== this.#bootId)
+      return { status: "accepted", stopState: "never-seen" };
+    if (command.type === "watch.reconcile") {
+      const stop = command.stop!;
+      return { status: "accepted", stopState: await this.#watchSupervisor.stopAttempt?.(
+        stop.activationId, stop.executionGeneration, sink,
+      ) ?? "still-ending" };
+    }
+    const key = command.type === "run.interrupt"
+      ? `${command.runId}:${command.bindingGeneration}`
+      : `${command.occurrenceId}:${command.executionGeneration}`;
+    const prior = this.#endedAttempts.get(key);
+    if (prior) {
+      if (typeof prior !== "string") void sink.send(prior).catch(() => undefined);
+      return { status: "accepted", stopState: prior === "never-seen" ? prior : "ended" };
+    }
+    if (command.type === "run.interrupt") {
+      const active = this.#runs.get(command.runId);
+      if (this.#unverifiedRunEnds.has(key) ||
+        (active && active.command.context.bindingGeneration === command.bindingGeneration)) {
+        await this.#interrupt(command.runId, command.threadId, sink, command.bindingGeneration);
+        return { status: "accepted", stopState: this.#endedAttempts.has(key) ? "ended" : "still-ending" };
+      }
+    } else {
+      const active = this.#triggerPrograms.get(command.occurrenceId);
+      if (active && active.command.context.executionGeneration === command.executionGeneration) {
+        this.#interruptTrigger(command.occurrenceId, command.executionGeneration);
+        return { status: "accepted", stopState: "still-ending" };
+      }
+      const pending = this.#unverifiedTriggerEnds.get(key);
+      if (pending) {
+        const proof = await this.#containment.terminate(command.occurrenceId).catch(() => "unknown");
+        if (proof !== "proven") return { status: "accepted", stopState: "still-ending" };
+        this.#unverifiedTriggerEnds.delete(key);
+        this.#rememberEndReceipt(pending);
+        void sink.send(pending).catch(() => undefined);
+        return { status: "accepted", stopState: "ended" };
+      }
+    }
+    this.#endedAttempts.set(key, "never-seen");
+    return { status: "accepted", stopState: "never-seen" };
   }
 
   async #startHarnessUpdate(
@@ -2125,8 +2175,8 @@ export class RunnerRuntime {
       }
     }
     await this.#publishPendingHarnessCatalogInvalidations(sink);
-    for (const report of this.#recentEndReceipts.values())
-      void sink.send(report).catch(() => undefined);
+    for (const report of this.#endedAttempts.values())
+      if (typeof report !== "string") void sink.send(report).catch(() => undefined);
   }
   #rememberEndReceipt(report: ExecutionEndReport): void {
     let key: string;
@@ -2141,12 +2191,7 @@ export class RunnerRuntime {
         key = `${report.activationId}:${report.executionGeneration}`;
         break;
     }
-    this.#recentEndReceipts.delete(key);
-    this.#recentEndReceipts.set(key, report);
-    if (this.#recentEndReceipts.size > 32) {
-      const oldest = this.#recentEndReceipts.keys().next().value;
-      if (oldest) this.#recentEndReceipts.delete(oldest);
-    }
+    this.#endedAttempts.set(key, report);
   }
 
   resynchronizeLive(runId: RunId): void {
@@ -2355,6 +2400,8 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    if (this.#endedAttempts.has(`${command.context.runId}:${command.context.bindingGeneration}`))
+      return reject("conflict", "Run attempt already ended", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
@@ -2505,6 +2552,9 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
+    const key = `${command.context.occurrenceId}:${command.context.executionGeneration}`;
+    if (this.#endedAttempts.has(key) || this.#unverifiedTriggerEnds.has(key))
+      return reject("conflict", "Trigger attempt already stopped", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#agentWorkStopped()) return reject("conflict", agentWorkStoppedSentence, true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
@@ -2578,15 +2628,16 @@ export class RunnerRuntime {
       };
       active.abort.signal.removeEventListener("abort", endAccess);
       await endpoints?.close();
+      const report = {
+        environmentId: active.command.environmentId,
+        executionGeneration: context.executionGeneration,
+        output,
+        type: "runner.trigger-result" as const,
+      };
+      const key = `${context.occurrenceId}:${context.executionGeneration}`;
       try {
         const proof = await this.#containment.terminate(context.occurrenceId);
         if (proof === "proven") {
-          const report = {
-            environmentId: active.command.environmentId,
-            executionGeneration: context.executionGeneration,
-            output,
-            type: "runner.trigger-result" as const,
-          };
           this.#rememberEndReceipt(report);
           await (this.#connection ?? active.sink).send(report).catch(() => undefined);
         } else {
@@ -2601,6 +2652,7 @@ export class RunnerRuntime {
           error: safeMessage(error, safeMessageOptions),
         });
       } finally {
+        if (!this.#endedAttempts.has(key)) this.#unverifiedTriggerEnds.set(key, report);
         this.#triggerPrograms.delete(context.occurrenceId);
       }
     }
@@ -3264,11 +3316,7 @@ export class RunnerRuntime {
             }),
           },
         });
-        if (this.#unverifiedRunEnds.size > 32) {
-          const oldest = this.#unverifiedRunEnds.keys().next().value;
-          if (oldest) this.#unverifiedRunEnds.delete(oldest);
-        }
-      }
+      } else this.#endedAttempts.set(`${context.runId}:${context.bindingGeneration}`, "ended");
       if (terminal.type === "run.failed") {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {

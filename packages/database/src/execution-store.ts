@@ -596,6 +596,7 @@ export async function acquireExecutionBinding(
       .innerJoin("threads", "threads.id", "runs.threadId")
       .select([
         "runs.maintenance",
+        "runs.connectionId",
         "runs.environmentId",
         "runs.harnessInstanceId",
         "runs.modelSelection",
@@ -837,6 +838,7 @@ export async function acquireExecutionBinding(
     mutation.react({ type: "executionDeadlinesChanged" });
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
       bindingGeneration: row.bindingGeneration,
+      connectionId: run.connectionId,
       modelSelection: run.modelSelection,
       runId: input.runId,
       runnerBootId: input.runnerBootId,

@@ -9,6 +9,7 @@ import {
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
   type RunnerAuxiliaryFrameFence,
+  type BrowserAttachPublicKey,
   type BrowserEngine,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
@@ -62,6 +63,16 @@ export async function startBrowserRuntime(
     readonly targetedStreaming?: boolean;
     readonly personalTabs?: boolean;
     readonly signIn?: boolean;
+    readonly runtimeRelay?: {
+      attach(stream: {
+        fence: RunnerAuxiliaryFrameFence;
+        browserWireVersion: 2;
+        browserAttachPublicKeys: readonly BrowserAttachPublicKey[];
+        send(frame: Buffer | string, binary: boolean): Promise<void>;
+      }): Promise<void>;
+      detach(): void;
+      handleFrame(frame: Buffer, binary: boolean): Promise<void>;
+    };
     readonly initialDialog?: Record<string, unknown>;
   } = {},
 ): Promise<{
@@ -303,7 +314,21 @@ export async function startBrowserRuntime(
     if (heartbeat) clearInterval(heartbeat);
   });
 
+  const runtimeRelay = options.runtimeRelay;
   auxiliary.on("message", (raw, isBinary) => {
+    if (runtimeRelay) {
+      const bytes = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
+      if (!isBinary) {
+        const frame = HostToBrowserRelayMessageSchema.safeParse(JSON.parse(bytes.toString()));
+        if (frame.success && frame.data.type === "browser.client-message")
+          receivedCommands.push(frame.data.message);
+      }
+      void runtimeRelay.handleFrame(bytes, isBinary).catch((error) => {
+        protocolErrors.push(String(error));
+        auxiliary.close(1011, "Browser runtime relay failed");
+      });
+      return;
+    }
     if (isBinary) return;
     const value: unknown = JSON.parse(raw.toString());
     if (options.keepAlive && RunnerAuxiliaryLeaseRenewedSchema.safeParse(value).success) return;
@@ -544,7 +569,18 @@ export async function startBrowserRuntime(
     }
   });
 
-  if (!options.runtimeUrl && !options.primary)
+  if (runtimeRelay)
+    await runtimeRelay.attach({
+      fence,
+      browserWireVersion: 2,
+      browserAttachPublicKeys: attachPublicKeys,
+      send: async (frame, binary) => {
+        await new Promise<void>((resolve, reject) => {
+          auxiliary.send(frame, { binary }, (error) => (error ? reject(error) : resolve()));
+        });
+      },
+    });
+  else if (!options.runtimeUrl && !options.primary)
     send({
       type: "browser.profile.inventory",
       storageInstanceId: "20000000-0000-4000-8000-000000000001",
@@ -557,6 +593,7 @@ export async function startBrowserRuntime(
     runnerId,
     close: async () => {
       if (heartbeat) clearInterval(heartbeat);
+      runtimeRelay?.detach();
       for (const engine of engineSockets.values()) engine.terminate();
       engineSockets.clear();
       auxiliary.terminate();

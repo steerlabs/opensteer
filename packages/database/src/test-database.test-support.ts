@@ -82,6 +82,7 @@ export async function cloneTestDatabase(
     readonly stopProducers?: () => Promise<void>;
     readonly producerTimeoutMs?: number;
     readonly serverUrl?: string;
+    readonly fromSnapshotOf?: TestDatabase;
   } = {},
 ): Promise<TestDatabase> {
   const context = TestRunner.getCurrentTest()?.context;
@@ -93,7 +94,13 @@ export async function cloneTestDatabase(
   const templateUrl = run[authority];
   if (options.serverUrl && new URL(options.serverUrl).host !== new URL(templateUrl).host)
     throw new Error("Fixture server does not match its run-owned template");
-  const template = new URL(templateUrl).pathname.slice(1);
+  const snapshot = options.fromSnapshotOf?.url;
+  if (
+    snapshot &&
+    (!producers.has(snapshot) || new URL(snapshot).host !== new URL(templateUrl).host)
+  )
+    throw new Error("Snapshot source must be an owned clone on the same server");
+  const template = new URL(snapshot ?? templateUrl).pathname.slice(1);
   const name = `opensteer_it_${run.run}_${authority === "host" ? "host" : "control"}_clone_${randomBytes(8).toString("hex")}`;
   const url = databaseUrl(templateUrl, name);
   const owner: DatabaseOwner = { stops: [], closed: false };

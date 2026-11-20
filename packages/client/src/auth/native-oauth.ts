@@ -143,7 +143,7 @@ const maximumOAuthResponseBytes = 128 * 1_024;
 const maximumPendingAuthorizationFlows = 8;
 const defaultOAuthNetworkTimeoutMs = 30_000;
 const accountAuthorizationExpiredDetail =
-  "Your Opensteer Account authorization expired. Sign in again.";
+  "Your Opensteer account authorization expired. Sign in again.";
 const accountUnreachableDetail =
   "Your Opensteer account couldn’t be reached. Check your connection and try again.";
 const accountRenewalFailedDetail =
@@ -375,7 +375,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         : this.#accountOrigin === null
           ? {
               available: false,
-              detail: "Opensteer Account sign-in isn't available yet.",
+              detail: "Opensteer account sign-in isn't available yet.",
               identity: null,
               status: "signed-out",
             }
@@ -460,11 +460,11 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async beginAccountReauthorization(): Promise<DesktopAccountAuthState> {
     await this.#ensureStorageReady();
     if (this.#accountOrigin === null) {
-      throw new Error("Opensteer Account sign-in isn't available yet.");
+      throw new Error("Opensteer account sign-in isn't available yet.");
     }
     const session = this.#accountSession;
     if (!session) {
-      throw new Error("Sign in to your Opensteer Account before verifying it again.");
+      throw new Error("Sign in to your Opensteer account before verifying it again.");
     }
     return this.#beginAccountAuthorization({ subject: session.credential.subject });
   }
@@ -479,7 +479,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     await this.#beforeAccountChange();
     await this.#ensureStorageReady();
     if (this.#accountOrigin === null) {
-      throw new Error("Opensteer Account sign-in isn't available yet.");
+      throw new Error("Opensteer account sign-in isn't available yet.");
     }
     this.#accountDetail = null;
     this.#removePending((flow) => flow.kind === "account");
@@ -923,7 +923,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         });
         if (flow.reauthorization && identity.subject !== flow.reauthorization.subject) {
           throw new Error(
-            "That verification returned a different Opensteer Account. Sign out before switching accounts.",
+            "That verification returned a different Opensteer account. Sign out before switching accounts.",
           );
         }
         const credential = AccountCredentialSchema.parse({

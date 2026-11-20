@@ -24,9 +24,9 @@ export function accountDoorPresentation(
   return {
     description: account.available
       ? account.status === "error"
-        ? (unavailableDetail ?? "Your Opensteer Account could not be reached.")
+        ? (unavailableDetail ?? "Your Opensteer account could not be reached.")
         : "Your Account lists every deployment you can reach."
-      : (unavailableDetail ?? "This build was made without an Opensteer Account service."),
+      : (unavailableDetail ?? "This build was made without an Opensteer account service."),
     disabled: !account.available,
     // Retrying is only something to offer when signing in is possible at all.
     title: account.available && account.status === "error" ? "Try signing in again" : "Sign in",

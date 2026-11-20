@@ -143,7 +143,7 @@ export class DesktopShutdown {
       this.#log("desktop.shutdown.finished", { failed, elapsedMs: performance.now() - started });
       if (install && this.#systemTerminating) {
         this.#log("desktop.shutdown.update-skipped", {});
-        this.#updateRejected?.(new Error("The system ended the session before the update."));
+        this.#updateRejected?.(new Error("macOS ended the app before the update could finish."));
         this.#updateRejected = undefined;
       } else if (install) {
         // Electron closes windows before before-quit. The caller destroys them

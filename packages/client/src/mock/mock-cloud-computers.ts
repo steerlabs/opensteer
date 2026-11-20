@@ -177,7 +177,7 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
         ok: false,
         failure: {
           kind: "signed-out",
-          message: "Sign in to your Opensteer Account to set up a Cloud Computer.",
+          message: "Sign in to your Opensteer account to set up a Cloud Computer.",
         },
       };
     if (this.scene === "unreachable")
@@ -185,7 +185,7 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
         ok: false,
         failure: {
           kind: "unreachable",
-          message: "Opensteer Account isn’t answering. Try again in a moment.",
+          message: "We couldn’t reach Opensteer. Try again in a moment.",
         },
       };
     if (this.scene === "unavailable")
@@ -193,7 +193,7 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
         ok: false,
         failure: {
           kind: "unavailable",
-          message: "This build of Opensteer has no Opensteer Account.",
+          message: "Sign-in isn’t available in this version of Opensteer.",
         },
       };
     if (this.scene === "checkout") {

@@ -90,7 +90,9 @@ interface ProblemCopy {
 
 function problemCopy(problem: Pick<UiProblem, "code" | "deploymentName" | "origin">): ProblemCopy {
   const name = problem.deploymentName ?? "Opensteer";
-  const again = "Go back to Opensteer and choose Connect Chrome again.";
+  const again = liveTabsOnly
+    ? "Open a fresh Chrome pairing link from Opensteer and choose Pair Chrome tab sharing."
+    : "Go back to Opensteer and choose Connect Chrome again.";
   const copies: Record<ConnectProblemCode | "framed", ProblemCopy> = {
     busy: {
       action: "retry",
@@ -103,7 +105,7 @@ function problemCopy(problem: Pick<UiProblem, "code" | "deploymentName" | "origi
     },
     failed: {
       action: "retry",
-      body: [`Chrome couldn't finish connecting. Try again, or ${again.toLowerCase()}`],
+      body: [`Chrome couldn't finish connecting. ${again}`],
       title: "Something went wrong",
     },
     framed: {
@@ -125,14 +127,16 @@ function problemCopy(problem: Pick<UiProblem, "code" | "deploymentName" | "origi
     missing: {
       body: [
         liveTabsOnly
-          ? "Open a Chrome pairing link from Opensteer and choose Pair Opensteer Live Tabs. The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use."
+          ? "Open a Chrome pairing link from Opensteer and choose Pair Chrome tab sharing. The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows a banner while a tab is shared."
           : "In Opensteer, open Settings → Chrome and choose Connect Chrome.",
       ],
       title: "Open this from Opensteer",
     },
     "not-from-opensteer": {
       body: [
-        "Choose Connect Chrome there, and Opensteer opens this page for you. Chrome connects only to the Opensteer that opened it.",
+        liveTabsOnly
+          ? again
+          : "Choose Connect Chrome there, and Opensteer opens this page for you. Chrome connects only to the Opensteer that opened it.",
       ],
       title: "Open this from Opensteer",
     },
@@ -225,26 +229,28 @@ function showReady(check: InvitationCheck, name: string, invitation: string): vo
   setState("idle");
   title.replaceChildren(
     ...addressTitle(
-      liveTabsOnly ? "Pair Live Tabs with Opensteer at " : "Connect Chrome to Opensteer at ",
+      liveTabsOnly
+        ? "Pair Chrome tab sharing with Opensteer at "
+        : "Connect Chrome to Opensteer at ",
       check.origin,
     ),
   );
   showDeployment(check.deploymentName, check.origin);
   body.textContent = liveTabsOnly
-    ? "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use. Opensteer uses Chrome’s navigation permission to follow sign-in popups opened by a tab you’re sharing. The agent can read cookies from this Chrome profile."
+    ? "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows a banner while a tab is shared. Opensteer uses Chrome’s navigation permission to follow sign-in popups opened by a tab you’re sharing. The agent can read cookies from this Chrome profile."
     : "This Opensteer can use your sign-in for a website only after you allow that site there. Chrome notifies you each time a new site is shared.";
   nameInput.value = check.name ?? name;
   note.hidden = check.existing !== "reconnect";
   note.textContent =
     check.existing === "reconnect"
       ? liveTabsOnly
-        ? `This replaces the earlier Live Tabs pairing with ${host}.`
+        ? `This replaces the earlier pairing with ${host}.`
         : `This replaces this Chrome's earlier connection to ${host}. Sites you stopped sharing stay stopped.`
       : "";
   actions.hidden = true;
   form.hidden = false;
   submit.removeAttribute("aria-disabled");
-  submit.textContent = liveTabsOnly ? "Pair Live Tabs" : "Connect";
+  submit.textContent = liveTabsOnly ? "Pair Chrome tab sharing" : "Connect";
   announce(title.textContent);
   nameInput.focus();
   nameInput.setSelectionRange(nameInput.value.length, nameInput.value.length);

@@ -133,7 +133,7 @@ describe("Devices on the phone", () => {
       },
     ]);
     expect(sections[0]?.footer).toBe(
-      "Your Opensteer lives on Mac mini. Agents reach your other Devices through it.",
+      "Your Opensteer lives on Mac mini. Agents reach your other devices through it.",
     );
     expect(sections[2]?.footer).toBe("These run nothing. Your agent can't use them.");
     expect(sections[0]?.rows.map(({ symbol }) => symbol)).toEqual(["macmini"]);

@@ -497,7 +497,7 @@ export function guideAddress(
   if (reach.reach === "private-network" && guide.reach === "internet")
     return {
       kind: "blocked",
-      detail: `${guide.name} can’t reach a private network address. Switch Remote access to your Opensteer Account, under Advanced.`,
+      detail: `${guide.name} can’t reach a private network address. Switch Remote access to your Opensteer account, under Advanced.`,
     };
   return { kind: "address", url: reach.url };
 }

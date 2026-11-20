@@ -92,7 +92,7 @@ const identityConfig = {
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,
-  oidcProviders: [{ id: "opensteer-account", label: "Opensteer Account", type: "oidc" as const }],
+  oidcProviders: [{ id: "opensteer-account", label: "Opensteer account", type: "oidc" as const }],
   passkeysEnabled: false,
   exposure: "networked" as const,
   portalOrigin: null,
@@ -161,7 +161,7 @@ describe("App automatic OIDC sign-in", () => {
     await runEffectsTwice();
 
     expect(markup).toContain("Welcome back");
-    expect(markup).toContain("Continue with Opensteer Account");
+    expect(markup).toContain("Continue with Opensteer account");
     expect(beginOidcSignIn).not.toHaveBeenCalled();
     expect(browser.assign).not.toHaveBeenCalled();
   });

@@ -12,6 +12,7 @@ import { assertPersonalOwner } from "./private-resource-owner.js";
 import { eventDataSchemas, type EventData } from "@opensteer/core";
 import { storableText } from "./storable-json.js";
 import {
+  AgentSessionIdSchema,
   type BrowserProfileId,
   BrowserProfileIdSchema,
   type ContentPart,
@@ -1692,6 +1693,19 @@ export async function browserSessionOpenerForBinding(
 ): Promise<BrowserSessionOpenerRecord | null> {
   // Trigger provenance is recorded at its authenticated call site, never inferred from current occupants.
   if (agentBindingId.startsWith("trigger:")) return { kind: "automation" };
+  if (agentBindingId.startsWith("session:")) {
+    const session = AgentSessionIdSchema.safeParse(agentBindingId.slice("session:".length));
+    if (!session.success) return null;
+    // A connected agent's session opens for the one task it works on.
+    const row = await database
+      .selectFrom("agentSessions")
+      .select("threadId")
+      .where("id", "=", session.data)
+      .where("userId", "=", ownerId)
+      .where("status", "=", "active")
+      .executeTakeFirst(databaseOperationOptions());
+    return row ? { kind: "task", threadId: row.threadId } : null;
+  }
   const runId = bindingRunId(agentBindingId);
   if (!runId) return null;
   const actors = await resolvePlaceActors(database, {

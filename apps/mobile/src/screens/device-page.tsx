@@ -317,7 +317,7 @@ function DevicePage(props: {
   const status =
     deviceStoppedLabel(machine) ??
     (isHome(machine)
-      ? "Home · your agent runs here"
+      ? "Home · your own agents run here"
       : [kind, phoneScreenStatus(machine)?.label ?? computerStatus(machine).label]
           .filter(Boolean)
           .join(" · "));

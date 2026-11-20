@@ -17,7 +17,7 @@ import {
   isMissingClientResource,
 } from "../connections/operation-error.js";
 
-export const fileDeviceUpdateMessage = "Update Opensteer on the Device that holds this file.";
+export const fileDeviceUpdateMessage = "Update Opensteer on the device that holds this file.";
 
 export type OpenTranscriptFile = Extract<TranscriptFileOpen, { status: "ok" }>;
 export type TranscriptFileState =

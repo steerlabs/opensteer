@@ -27,7 +27,7 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
     account: {
       available: true,
       status: expired ? "error" : "signed-in",
-      detail: expired ? "Your Opensteer Account authorization expired. Sign in again." : undefined,
+      detail: expired ? "Your Opensteer account authorization expired. Sign in again." : undefined,
     },
     deployments: [
       {

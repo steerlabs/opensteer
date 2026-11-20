@@ -112,6 +112,7 @@ describe("WatchSupervisor", () => {
       desired: boolean,
       expiresAt: string,
       controlToken = "control-token",
+      executionGeneration = 1,
     ): Extract<RunnerCommand, { readonly type: "watch.reconcile" }> => ({
       commandId: createId("command"),
       correlationId: CorrelationIdSchema.parse(`watch-test:${crypto.randomUUID()}`),
@@ -126,7 +127,7 @@ describe("WatchSupervisor", () => {
 
                 mcp: { expiresAt, token: controlToken, url: baseUrl },
               },
-              executionGeneration: 1,
+              executionGeneration,
               revisionId,
               triggerId,
             },
@@ -175,7 +176,7 @@ describe("WatchSupervisor", () => {
         (message) => message.type === "runner.watch-status" && message.observed === "running",
       ).length;
       await supervisor.reconcile(
-        command(3, true, new Date(Date.now() + 60_000).toISOString(), "control-token-2"),
+        command(3, true, new Date(Date.now() + 60_000).toISOString(), "control-token-2", 2),
         sink,
       );
       await vi.waitFor(() => {
@@ -195,6 +196,7 @@ describe("WatchSupervisor", () => {
             true,
             new Date(Date.now() + 60_000).toISOString(),
             "control-token-2",
+            2,
           ),
           sink,
         );
@@ -237,18 +239,12 @@ describe("WatchSupervisor", () => {
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      await expect(
-        fixture.supervisor.reconcile(
-          {
-            ...fixture.command(2),
-            desired: [],
-          },
-          fixture.sink,
-        ),
-      ).rejects.toThrow("Watch containment could not be verified");
+      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
+        .resolves.toBe("still-ending");
       expect(fixture.messages).not.toContainEqual(expect.objectContaining({ observed: "stopped" }));
       proved = true;
-      await fixture.supervisor.reconcile({ ...fixture.command(2), desired: [] }, fixture.sink);
+      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
+        .resolves.toBe("ended");
       expect(fixture.messages.at(-1)).toMatchObject({ observed: "stopped" });
     } finally {
       await fixture.close();
@@ -272,8 +268,24 @@ describe("WatchSupervisor", () => {
       });
 
       await fixture.supervisor.reconcile(fixture.command(2), fixture.sink);
+      expect(fixture.supervisor.activeActivationIds()).toEqual([]);
+      await fixture.supervisor.reconcile(fixture.command(3, 2), fixture.sink);
       await vi.waitFor(() => expect(fixture.runningReports()).toHaveLength(2));
       expect(fixture.supervisor.activeActivationIds()).toEqual([fixture.activationId]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("answers never seen for a stamped Watch whose reconcile did not arrive", async () => {
+    const fixture = await watchHarness("export default async () => {};");
+    try {
+      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
+        .resolves.toBe("never-seen");
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      expect(fixture.supervisor.activeActivationIds()).toEqual([]);
+      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
+        .resolves.toBe("never-seen");
     } finally {
       await fixture.close();
     }
@@ -378,6 +390,7 @@ async function watchHarness(
   readonly close: () => Promise<void>;
   readonly command: (
     reconcileGeneration: number,
+    executionGeneration?: number,
   ) => Extract<RunnerCommand, { readonly type: "watch.reconcile" }>;
   readonly messages: RunnerOperationalReport[];
   readonly runningReports: () => RunnerOperationalReport[];
@@ -424,6 +437,7 @@ async function watchHarness(
   });
   const command = (
     reconcileGeneration: number,
+    executionGeneration = 1,
   ): Extract<RunnerCommand, { readonly type: "watch.reconcile" }> => ({
     commandId: createId("command"),
     correlationId: CorrelationIdSchema.parse(`watch-harness:${crypto.randomUUID()}`),
@@ -437,7 +451,7 @@ async function watchHarness(
 
           mcp: { expiresAt, token: "control-token", url: baseUrl },
         },
-        executionGeneration: 1,
+        executionGeneration,
         revisionId,
         triggerId,
       },

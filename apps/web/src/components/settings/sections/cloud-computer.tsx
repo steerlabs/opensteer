@@ -356,6 +356,9 @@ function ComputerStatus({
         {computer.browserAddress ? (
           <SettingsRow title={cloudWords("cloud.ip.address")} detail={computer.browserAddress} />
         ) : null}
+        {computer.lastBackup ? (
+          <SettingsRow title={cloudWords("cloud.backup.reported")} detail={computer.lastBackup} />
+        ) : null}
         {computer.region ? (
           <SettingsRow title={cloudWords("cloud.region")} detail={computer.region} />
         ) : null}

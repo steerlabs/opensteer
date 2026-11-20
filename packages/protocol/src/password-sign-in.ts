@@ -354,6 +354,7 @@ export const PasswordSignInAuthorityCommandSchema = z.union([
     type: z.literal("login.authorize"),
     operationId: z.uuid(),
     loginRef: LoginRefSchema,
+    alwaysAsk: z.literal(true).optional(),
     site: BrowserSiteSchema,
     deploymentId: DeploymentIdSchema,
     requester: PasswordSignInRequesterSchema,

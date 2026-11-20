@@ -1992,7 +1992,7 @@ export async function createHostServer(
           };
           await (async (): Promise<void> => {
             // A connected agent's direct operation: the answer settles it, with no Runner.
-            if (pending.originatingAgentSessionId) {
+            if (pending.originatingAgentSessionId && pending.kind === "person.question") {
               if (!dependencies.agentOperations)
                 throw new OpensteerError({
                   code: "conflict",
@@ -2671,7 +2671,9 @@ export async function createHostServer(
         dependencies.pluginOAuth,
       ),
       ...(dependencies.connections
-        ? createConnectionRpcHandlers(dependencies.connections)
+        ? createConnectionRpcHandlers(dependencies.connections, (ownerId) =>
+            dependencies.browserSources.chromeTabGrantCatalog(ownerId),
+          )
         : {
             "connections.list": async () => {
               throw new OpensteerError({
@@ -2680,6 +2682,18 @@ export async function createHostServer(
               });
             },
             "connections.authorization.get": async () => {
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Agent connections are unavailable.",
+              });
+            },
+            "connections.activity": async () => {
+              throw new OpensteerError({
+                code: "not_found",
+                message: "Agent connections are unavailable.",
+              });
+            },
+            "threads.activity": async () => {
               throw new OpensteerError({
                 code: "not_found",
                 message: "Agent connections are unavailable.",

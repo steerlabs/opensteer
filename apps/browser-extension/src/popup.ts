@@ -194,8 +194,8 @@ function fix(connection: ConnectionView): HTMLElement | null {
             "p",
             {},
             connection.state === "ended"
-              ? `${name} disconnected this Chrome. To use it again, open Settings → Chrome in Opensteer and choose Connect Chrome.`
-              : `${name} moved to a new address. Open Settings → Chrome in Opensteer and choose Connect Chrome.`,
+              ? `${name} disconnected this Chrome. ${reconnectInstructions()}`
+              : `${name} moved to a new address. ${reconnectInstructions()}`,
           ),
           h(
             "div.notice__actions",
@@ -298,7 +298,7 @@ function actions(connection: ConnectionView): HTMLElement {
         {},
         h("strong", {}, `Disconnect Chrome from ${connection.deploymentName}?`),
         liveTabsOnly
-          ? " This stops sharing any live tabs with that Home."
+          ? " This stops sharing tabs with that Home."
           : connection.state === "connected"
             ? ` ${connection.deploymentName} removes this Chrome too. Agents there can't use your Chrome sign-ins until you connect again.`
             : " Agents there can't use your Chrome sign-ins until you connect again. Opensteer will show this Chrome as offline until you remove it there.",
@@ -454,21 +454,27 @@ function deployment(connection: ConnectionView): HTMLElement {
   );
 }
 
+function reconnectInstructions(): string {
+  return liveTabsOnly
+    ? "Open a fresh Chrome pairing link from Opensteer and choose Pair Chrome tab sharing."
+    : "Open Settings → Chrome in Opensteer and choose Connect Chrome.";
+}
+
 function empty(): HTMLElement {
   if (liveTabsOnly) {
     return h(
       "section.empty",
       {},
-      h("p.empty__lead", {}, "Pair Opensteer Live Tabs with your Home"),
+      h("p.empty__lead", {}, "Pair Chrome tab sharing with your Home"),
       h(
         "p.empty__text",
         {},
-        "Open a Chrome pairing link from your Home and choose Pair Opensteer Live Tabs.",
+        "Open a Chrome pairing link from your Home and choose Pair Chrome tab sharing.",
       ),
       h(
         "p.empty__text",
         {},
-        "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows its debugging bar while a tab is in use.",
+        "The agent can act as you, in a tab you share, on any site this Chrome is signed in to, until you stop. Chrome shows a banner while a tab is shared.",
       ),
     );
   }

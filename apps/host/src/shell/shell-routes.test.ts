@@ -71,7 +71,7 @@ describe("shell connect route", () => {
   it("answers every refusal with its status and the sentence the proxy prints", async () => {
     const target = createId("runner");
     const cases = [
-      { code: "run_invalid", message: "This Run has ended.", status: 401 },
+      { code: "run_invalid", message: "This task has ended.", status: 401 },
       {
         code: "target_unknown",
         message: `No computer ${target} is enrolled in this Deployment.`,
@@ -129,7 +129,7 @@ describe("shell connect route", () => {
 
     expect(rejected.status).toBe(401);
     expect(rejected.body).toEqual({
-      error: { code: "run_invalid", message: "This Run has ended." },
+      error: { code: "run_invalid", message: "This task has ended." },
     });
     expect(connect).not.toHaveBeenCalled();
   });

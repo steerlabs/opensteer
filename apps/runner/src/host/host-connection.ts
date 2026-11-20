@@ -24,6 +24,7 @@ import {
   runFileTransferProofPayload,
   runnerPowerStateCapability,
   triggerStopGenerationCapability,
+  attemptStopStateCapability,
   runnerAgentStopCapability,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
@@ -646,7 +647,7 @@ export class ReconnectingHostConnection {
       const iterator = inbox[Symbol.asyncIterator]();
       const welcome = await this.#authenticate(socket, iterator, signal);
       sink = new CausallyOrderedRunnerSink(new WebSocketMessageSink(socket, this.#fence), (runId) =>
-        this.#refreshRunCredentials(socket, runId),
+        this.#refreshRunCredentials(socket, runId), welcome.acceptsAttemptStopState === true,
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -843,7 +844,7 @@ export class ReconnectingHostConnection {
           : []),
         ...(this.#supportsPowerState() ? [runnerPowerStateCapability] : []),
         ...(this.#agentWork ? [runnerAgentStopCapability] : []),
-        ...(agents ? ([runEventsCapability, triggerStopGenerationCapability] as const) : []),
+        ...(agents ? ([runEventsCapability, triggerStopGenerationCapability, attemptStopStateCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -2421,14 +2422,17 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   #closed = false;
 
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
+  readonly #acceptsAttemptStopState: boolean;
   #publishOutputImage: RunnerMessageSink["publishOutputImage"] | undefined;
 
   constructor(
     delegate: RunnerReportSink,
     refresh?: (runId: RunId) => Promise<RefreshedRunCredentials | undefined>,
+    acceptsAttemptStopState = false,
   ) {
     this.#delegate = delegate;
     this.#refresh = refresh;
+    this.#acceptsAttemptStopState = acceptsAttemptStopState;
   }
 
   setOutputImagePublisher(publisher: RunnerMessageSink["publishOutputImage"] | undefined): void {
@@ -2488,6 +2492,7 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
               commandId: command.commandId,
               correlationId: command.correlationId,
               type: "runner.command-accepted",
+              ...(this.#acceptsAttemptStopState && decision.stopState ? { stopState: decision.stopState } : {}),
               ...(decision.workspacePath ? { workspacePath: decision.workspacePath } : {}),
             }
           : decision.status === "rejected"

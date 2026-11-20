@@ -330,7 +330,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   };
   const subject = () => {
     const current = ports.accountSubject();
-    if (current === null) throw new Error("Sign in to your Opensteer Account first.");
+    if (current === null) throw new Error("Sign in to your Opensteer account first.");
     return current;
   };
   const keyOf = (intent: TeamConnectionIntentKey) =>

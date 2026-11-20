@@ -201,11 +201,11 @@ export function computerReasonWords(
     case "not-connected":
       return `${names.machine} is not connected.`;
     case "driver-offline":
-      return `The computer driving ${names.machine} is offline.`;
+      return `The Mac connected to ${names.machine} is offline.`;
     case "driver-asleep":
-      return `The computer driving ${names.machine} is asleep.`;
+      return `The Mac connected to ${names.machine} is asleep.`;
     case "driver-stopped":
-      return `Agents are stopped on the computer driving ${names.machine}.`;
+      return `Agents are stopped on the Mac connected to ${names.machine}.`;
     case "setup-required":
     case "trust-required":
     case "developer-mode-required":

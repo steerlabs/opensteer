@@ -20,7 +20,7 @@ function listen<T extends (...args: never[]) => void>() {
   };
 }
 
-async function fixture() {
+async function fixture(detachReceipts = false) {
   const onCreated =
     listen<(details: { sourceTabId: number; tabId: number; url: string }) => void>();
   const onRemoved = listen<(tabId: number) => void>();
@@ -83,6 +83,7 @@ async function fixture() {
       return true;
     },
     () => {},
+    detachReceipts,
   );
   const send = (command: BrowserSourceTabCommand) => {
     const done = Promise.withResolvers<ReturnType<typeof BrowserSourceTabResultSchema.parse>>();
@@ -198,7 +199,8 @@ it.each(["stop", "bar", "close", "disconnect", "Home Stop"] as const)(
       });
     expect(f.debuggerRelay.list(f.sourceId)).toEqual([]);
     await Promise.resolve();
-    expect(f.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 5 });
+    if (ending === "bar") expect(f.detach).not.toHaveBeenCalled();
+    else expect(f.detach).toHaveBeenCalledExactlyOnceWith({ tabId: 5 });
     if (ending !== "disconnect")
       await expect(f.evaluate()).resolves.toMatchObject({
         ok: false,
@@ -206,3 +208,22 @@ it.each(["stop", "bar", "close", "disconnect", "Home Stop"] as const)(
       });
   },
 );
+
+it("revokes a share before an in-progress debugger detachment is acknowledged", async () => {
+  const f = await fixture(true);
+  await f.evaluate();
+  const detach = Promise.withResolvers<void>();
+  f.detach.mockReturnValueOnce(detach.promise);
+  const stopped = f.send({
+    action: "unshare",
+    requestId: crypto.randomUUID(),
+    shareId: f.shareId,
+    attachmentId: f.attachmentId,
+  });
+  expect(f.received.at(-1)).toEqual({ type: "tab.unshared", shareId: f.shareId });
+  await expect(f.evaluate()).resolves.toMatchObject({ ok: false });
+  expect(f.received).not.toContainEqual({ type: "tab.detached", shareId: f.shareId });
+  detach.resolve();
+  await expect(stopped).resolves.toMatchObject({ ok: true });
+  expect(f.received).toContainEqual({ type: "tab.detached", shareId: f.shareId });
+});

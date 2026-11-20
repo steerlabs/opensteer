@@ -130,6 +130,8 @@ export function createHostApiHandlers(
   | "personal.accountLink.get"
   | "connections.list"
   | "connections.authorization.get"
+  | "connections.activity"
+  | "threads.activity"
   | `team.${string}`
 > {
   return {
@@ -236,6 +238,10 @@ export function createHostApiHandlers(
     | "personal.accountLink.get"
     | "connections.list"
     | "connections.authorization.get"
+    | "connections.activity"
+    | "threads.activity"
+    | "connections.activity"
+    | "threads.activity"
     | `team.${string}`
     | `team.${string}`
   >;

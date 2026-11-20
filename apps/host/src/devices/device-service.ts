@@ -25,12 +25,17 @@ import { randomUUID } from "node:crypto";
 
 import { TabIdSchema, WindowIdSchema, type TabId } from "@opensteer/core";
 import {
+  AgentOperationTargetSchema,
+  agentGrantAccess,
+  AgentSessionIdSchema,
   OpensteerError,
   ToolBlockedError,
   refused,
   UserIdSchema,
+  type AgentSessionId,
   type RunId,
   type RunnerId,
+  type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import type {
@@ -42,6 +47,7 @@ import type {
   IntegrationPlatformStore,
   IntegrationRequester,
 } from "@opensteer/database";
+import { integrationConnectionGrantTarget } from "@opensteer/database";
 import { accessCoversEffect, type IntegrationAccess } from "@opensteer/integration-core/access";
 import type { IntegrationDefinition } from "@opensteer/integration-core/adapter";
 import { integrationDefinitionSummary } from "@opensteer/integration-core/adapter";
@@ -113,7 +119,9 @@ import type { NativeReplTabTarget, NativeTabTargets } from "../computer-use/nati
 import {
   ComputerUseError,
   computerUseDefinitionId,
+  type ComputerUseContext,
   type ComputerUseLease,
+  type ComputerUseSessionAuthority,
 } from "../computer-use/computer-use-service.js";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import { deviceAccessBlocked } from "./target-blocked.js";
@@ -189,6 +197,75 @@ interface RunFileRoute {
  * moves their files to and from Runs, runs `computer_use`, records each
  * operation, and keeps their approvals and built-in installations.
  */
+/**
+ * A connected agent's session driving the one app or phone screen its operation was admitted
+ * for. Every callback stays on that target, and the session binding is its only authority.
+ */
+export interface ComputerSessionCaller {
+  readonly ownerUserId: UserId;
+  readonly sessionId: AgentSessionId;
+  readonly taskId: ThreadId;
+  readonly bindingId: `session:${string}`;
+  /** The approval row (a Mac app, or a phone screen) the operation named. */
+  readonly target: IntegrationConnectionId;
+  readonly generation: string;
+  readonly readOnly: boolean;
+  /** Re-admits the operation's session and target; called before every command. */
+  readonly recheck: () => Promise<void>;
+}
+
+/** A computer call's caller: a Run, or a connected agent's session. */
+type ComputerCaller = ToolCaller & { readonly session?: ComputerSessionCaller };
+
+/**
+ * The key a session's computer work is kept under in the REPL and the computer-use service: its
+ * own id in the shape those keys take. It names no Run, and nothing reads authority from it.
+ */
+export function agentSessionComputerKey(sessionId: AgentSessionId): RunId {
+  return `run_${sessionId.slice(sessionId.indexOf("_") + 1)}` as RunId;
+}
+
+/**
+ * What ends with a connected agent's session (Stop, Disconnect, idle): its computer-use sessions,
+ * which tell the Mac or phone to close, and its script context. Anything but a session binding is
+ * left alone.
+ */
+export function endSessionComputerWork(
+  bindingId: string,
+  ports: {
+    readonly computerUse: { closeForRun(runId: RunId): void } | undefined;
+    readonly devices: Pick<DeviceService, "endComputerSession">;
+    readonly onError: (error: unknown) => void;
+  },
+): void {
+  const session = AgentSessionIdSchema.safeParse(bindingId.replace(/^session:/u, ""));
+  if (!bindingId.startsWith("session:") || !session.success) return;
+  ports.computerUse?.closeForRun(agentSessionComputerKey(session.data));
+  void ports.devices.endComputerSession(session.data).catch(ports.onError);
+}
+
+function computerOwner(caller: ComputerCaller): UserId {
+  if (caller.run) return caller.run.requestedBy;
+  if (caller.session) return caller.session.ownerUserId;
+  throw refused("conflict", "This computer context has ended.");
+}
+
+/** What a target that is not this session's reads as: nothing about whether it exists. */
+function notThisSessionsTarget(): never {
+  throw refused(
+    "not_found",
+    "No app or phone screen shared with this agent matches. Call computer_apps for what you can use.",
+  );
+}
+
+const computerObservations = new Set(["apps", "phones", "installedApps", "windows", "bind", "observe"]);
+
+function computerApprovalGeneration(
+  computer: { readonly policyRevision: number | null; readonly access: IntegrationAccess } | null | undefined,
+) {
+  return `approval:${computer?.policyRevision ?? 0}:${computer?.access ?? "none"}`;
+}
+
 export class DeviceService {
   readonly #listConnections: (
     ownerUserId: UserId,
@@ -659,7 +736,7 @@ export class DeviceService {
   }
 
   /** The same catalog pin and fresh admission fence for every computer row. */
-  async #computerAuthority(callable: CallableIntegrationTool, caller: ToolCaller) {
+  async #computerAuthority(callable: CallableIntegrationTool, caller: ComputerCaller) {
     const transport = callable.server.transport;
     if (transport.type !== "computer")
       throw new Error("Computer-backed integration server is invalid");
@@ -701,8 +778,6 @@ export class DeviceService {
       ) => Promise<Result>,
     ) =>
       this.#deviceApps.withAdmission(placement.deviceId, async () => {
-        const blocked = await this.localDeviceAccessBlocked(placement.deviceId);
-        if (blocked) throw new ToolBlockedError(blocked);
         const [connection, authority] = await Promise.all([
           this.#store.getDeviceComputerConnectionForCall({ connectionId, ownerUserId }),
           this.#store.listCallableTools(callerRequester(ownerUserId, caller)),
@@ -727,6 +802,13 @@ export class DeviceService {
           !accessCoversEffect(current.grant.access, operation.effect)
         )
           throw new IntegrationAuthorizationRequiredError(callable);
+        if (caller.session) {
+          await caller.session.recheck();
+          if (caller.session.generation !== computerApprovalGeneration(connection.connection.computer))
+            throw refused("conflict", "The person's approval changed. Start a new operation.");
+        }
+        const blocked = await this.localDeviceAccessBlocked(connection.deviceId);
+        if (blocked) throw new ToolBlockedError(blocked);
         if (
           definition.id === computerUseDefinitionId &&
           this.#computerUseVersion(
@@ -975,7 +1057,7 @@ export class DeviceService {
 
   /** Internal authority path. Window discovery/observation use read; input uses write. */
   async callComputerOperation(
-    caller: ToolCaller,
+    caller: ComputerCaller,
     target: IntegrationConnectionId,
     operation: string,
     args: Readonly<Record<string, unknown>>,
@@ -984,8 +1066,7 @@ export class DeviceService {
     beforeAcquired?: () => Promise<void>,
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
-    const run = caller.run;
-    if (!run || !this.#computerUse)
+    if ((!caller.run && !caller.session) || !this.#computerUse)
       throw refused("forbidden", "Computer use requires a running task.");
     try {
       return await this.#callComputerOperation(
@@ -1005,10 +1086,7 @@ export class DeviceService {
         !["offline", "busy", "incompatible-version", "permission-required"].includes(error.code)
       )
         throw error;
-      const access = await this.computerAccess(
-        { ownerUserId: run.requestedBy, threadId: caller.threadId },
-        run,
-      );
+      const access = await this.#computerAccessFor(caller);
       const phone = access.phones.find(
         (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
       );
@@ -1062,7 +1140,7 @@ export class DeviceService {
     }
   }
   async #callComputerOperation(
-    caller: ToolCaller,
+    caller: ComputerCaller,
     target: IntegrationConnectionId,
     operation: string,
     args: Readonly<Record<string, unknown>>,
@@ -1072,16 +1150,17 @@ export class DeviceService {
     facts?: Awaited<ReturnType<DeviceService["computerAccess"]>>,
   ): Promise<ReplReply> {
     const run = caller.run;
-    if (!run || !this.#computerUse)
+    if ((!run && !caller.session) || !this.#computerUse)
       throw refused("forbidden", "Computer use requires a running task.");
+    const owner = computerOwner(caller);
+    const authority = this.#computerUseAuthority(caller);
     const row =
       operation === "release"
         ? "release"
         : ["windows", "bind", "observe"].includes(operation)
           ? "observe"
           : "act";
-    const tools =
-      facts?.tools ?? (await this.listCallableTools(callerRequester(run.requestedBy, caller)));
+    const tools = facts?.tools ?? (await this.listCallableTools(callerRequester(owner, caller)));
     const callable = tools.find(
       (candidate) =>
         candidate.grant.connectionId === target &&
@@ -1091,13 +1170,7 @@ export class DeviceService {
           isPhoneDisplayDefinitionId(candidate.server.transport.definitionId)),
     );
     if (!callable) {
-      const access =
-        facts ??
-        (await this.computerAccess(
-          { ownerUserId: run.requestedBy, threadId: caller.threadId },
-          run,
-          tools,
-        ));
+      const access = facts ?? (await this.#computerAccessFor(caller, tools));
       const phone = access.phones.find(
         (entry) => (entry.connectionId ?? entry.connection?.connectionId) === target,
       );
@@ -1122,7 +1195,7 @@ export class DeviceService {
         row === "act"
           ? await this.#store.getDeviceComputerConnectionForCall({
               connectionId: target,
-              ownerUserId: run.requestedBy,
+              ownerUserId: owner,
             })
           : null;
       if (
@@ -1149,7 +1222,8 @@ export class DeviceService {
     } = await this.#computerAuthority(callable, caller);
     const computerUse = this.#computerUse;
     const mac = definition.id === computerUseDefinitionId;
-    if (!(await this.#deviceApps.attached(placement.deviceId)))
+    if (!(await this.#deviceApps.attached(placement.deviceId))) {
+      await admit(async () => undefined);
       throw new ComputerUseError(
         "offline",
         mac
@@ -1168,6 +1242,7 @@ export class DeviceService {
               status: null,
             })!,
       );
+    }
     const rawArgs = { ...args };
     delete rawArgs.emit;
     const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
@@ -1190,7 +1265,8 @@ export class DeviceService {
     let auditCompletion: Promise<void> | undefined;
     let finishOperation: ((error?: unknown) => void) | undefined;
     const start = async (connection: NonNullable<typeof placement>, scope: DeviceComputerScope) => {
-      if (started) return;
+      // A session's record is its own operation, which names the app and the Device.
+      if (started || !run) return;
       const subject = {
         account: callable.grant.alias,
         computerApp:
@@ -1243,7 +1319,7 @@ export class DeviceService {
       if (operation !== "release")
         lease = await computerUse.prepare(
           { ownerUserId, deviceId: placement.deviceId, deviceName: placement.runnerName },
-          run,
+          authority,
         );
       const initial = await admit(async (connection, access) => {
         const scope = computerUseScope(definition, connection.connection.computer?.app ?? null);
@@ -1265,7 +1341,7 @@ export class DeviceService {
           return send();
         });
       if (operation === "release")
-        released = await guarded(() => computerUse.releaseSession(run, placement.deviceId));
+        released = await guarded(() => computerUse.releaseSession(authority, placement.deviceId));
       else if (lease) {
         const dispatch =
           row === "act"
@@ -1322,11 +1398,10 @@ export class DeviceService {
       }
       const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
       if (result?.observation && operation !== "bind" && args.emit !== false) {
-        const renderImages = await this.#mcpImageContent({
-          ownerUserId,
-          runId: run.runId,
-          threadId: run.threadId,
-        });
+        // A connected agent reads results over MCP, which carries images.
+        const renderImages = run
+          ? await this.#mcpImageContent({ ownerUserId, runId: run.runId, threadId: run.threadId })
+          : true;
         content.push(
           ...computerObservationContent(result.observation, renderImages, placement.runnerName),
         );
@@ -1347,8 +1422,18 @@ export class DeviceService {
               : mac && row === "act"
                 ? { performed }
                 : result;
+      // A connected agent's handle holds its own target; it opens no tab in the person's list.
+      if (operation === "bind" && !run)
+        return {
+          value: z.json().parse(
+            mac
+              ? { window: result?.window }
+              : { connectionId: target, name: placement.runnerName, computerId: placement.deviceId },
+          ),
+          content,
+        };
       if (operation === "bind") {
-        if (!this.#nativeTabs || run.aud !== "opensteer-run-tools")
+        if (!this.#nativeTabs || !run || run.aud !== "opensteer-run-tools")
           throw refused("conflict", "The tab service is unavailable.");
         signal?.throwIfAborted();
         await beforeAcquired?.();
@@ -1434,20 +1519,140 @@ export class DeviceService {
   }
 
   async computerAccess(
-    input: IntegrationRequester & { readonly runId?: RunId },
+    input: IntegrationRequester & { readonly runId?: RunId; readonly direct?: true },
     run?: RunCapabilityClaims<string>,
     tools?: readonly CallableIntegrationTool[],
   ) {
     return gatherComputerAccess(this, input, run, tools);
   }
 
+  /**
+   * The one app or phone screen a connected agent names for `computer_use`, as its grant shows
+   * it: an approval row the grant reaches, or nothing. What it cannot see reads exactly like what
+   * does not exist. The generation is the approval's revision, so a changed approval is reviewed
+   * again before the script runs.
+   */
+  async sessionComputerTarget(
+    requester: { readonly ownerUserId: UserId; readonly connectionId: string },
+    computerId: DeviceId,
+    app: string | undefined,
+  ) {
+    const access = await this.computerAccess({ ...requester, direct: true });
+    const needle = app?.toLowerCase();
+    const connectionId =
+      needle === undefined
+        ? access.phones.find((entry) => entry.deviceId === computerId)?.connection?.connectionId
+        : access.machines
+            .find((entry) => entry.deviceId === computerId)
+            ?.apps.find(
+              (entry) =>
+                entry.bundleId.toLowerCase() === needle || entry.name.toLowerCase() === needle,
+            )?.connectionId;
+    if (!connectionId) notThisSessionsTarget();
+    const id = IntegrationConnectionIdSchema.parse(connectionId);
+    const placement = await this.#store.getDeviceComputerConnectionForCall({
+      connectionId: id,
+      ownerUserId: requester.ownerUserId,
+    });
+    if (!placement || placement.deviceId !== computerId) notThisSessionsTarget();
+    const computer = placement.connection.computer;
+    const grant = integrationConnectionGrantTarget({
+      id,
+      deviceId: placement.deviceId,
+      computerApp: computer?.app ?? null,
+      integrationDefinitionId: placement.connection.definitionId,
+    });
+    const currentGrant = await this.#store.requesterGrant(requester);
+    if (grant.kind !== "computer-app" || !currentGrant || !agentGrantAccess(currentGrant, grant))
+      notThisSessionsTarget();
+    const blocked = await this.localDeviceAccessBlocked(placement.deviceId);
+    if (blocked?.code === "computer_stopped") throw new ToolBlockedError(blocked);
+    return {
+      connectionId: id,
+      target: AgentOperationTargetSchema.parse({
+        grant,
+        name: computer?.app?.displayName ?? placement.runnerName,
+        device: { id: placement.deviceId, name: placement.runnerName },
+      }),
+      generation: computerApprovalGeneration(computer),
+    };
+  }
+
+  /** The access facts a computer call reads: the Run's, or the session binding's. */
+  #computerAccessFor(caller: ComputerCaller, tools?: readonly CallableIntegrationTool[]) {
+    if (caller.run)
+      return this.computerAccess(
+        { ownerUserId: caller.run.requestedBy, threadId: caller.threadId },
+        caller.run,
+        tools,
+      );
+    const session = caller.session;
+    if (!session) throw refused("conflict", "This computer context has ended.");
+    return this.computerAccess(
+      {
+        ownerUserId: session.ownerUserId,
+        agentBindingId: session.bindingId,
+        runId: agentSessionComputerKey(session.sessionId),
+      },
+      undefined,
+      tools,
+    );
+  }
+
+  /** What the computer-use service checks a session against: the Run, or the session binding. */
+  #computerUseAuthority(caller: ComputerCaller): ComputerUseContext {
+    if (caller.run) return caller.run;
+    const session = caller.session;
+    if (!session) throw refused("conflict", "This computer context has ended.");
+    const authority: ComputerUseSessionAuthority = {
+      kind: "agent-session",
+      runId: agentSessionComputerKey(session.sessionId),
+      bindingGeneration: 0,
+      threadId: session.taskId,
+      // The resolver refuses an ended session; each callback checks its exact target itself.
+      assertActive: async () => {
+        const tools = await this.listCallableTools({
+          ownerUserId: session.ownerUserId,
+          agentBindingId: session.bindingId,
+        });
+        if (!tools.some((tool) => tool.server.transport.type === "computer"))
+          throw refused("forbidden", "This connected agent no longer has an app or phone.");
+      },
+    };
+    return authority;
+  }
+
   async #invokeComputerRepl(
-    caller: ToolCaller,
+    caller: ComputerCaller,
     request: ComputerReplInvocation,
   ): Promise<ReplReply> {
-    if (!caller?.run) throw refused("conflict", "This computer context has ended.");
+    if (!caller?.run && !caller?.session)
+      throw refused("conflict", "This computer context has ended.");
+    const session = caller.session;
+    // A session stays on its one target, and re-admits before each command it sends.
+    if (session) {
+      await session.recheck();
+      if (session.readOnly && !computerObservations.has(request.operation))
+        throw refused("forbidden", "This script can only observe. Use a new operation to make changes.");
+      if (request.operation === "tab")
+        throw refused(
+          "not_found",
+          "A connected agent uses app() or phone() for the app or phone shared with it.",
+        );
+      if (
+        request.operation !== "apps" &&
+        request.operation !== "phones" &&
+        request.target !== session.target
+      )
+        notThisSessionsTarget();
+    }
     if (request.operation === "tab") {
-      if (!this.#tabs || !this.#nativeTabTarget || caller.run.aud !== "opensteer-run-tools")
+      if (
+        !this.#tabs ||
+        !this.#nativeTabTarget ||
+        !caller.run ||
+        caller.run.aud !== "opensteer-run-tools"
+      )
         throw refused("not_found", "This tab is unavailable.");
       const claims: RunToolScope = { ...caller.run, aud: "opensteer-run-tools" };
       let facts: ReturnType<DeviceService["computerAccess"]> | undefined;
@@ -1490,10 +1695,7 @@ export class DeviceService {
       );
     }
     if (request.operation === "apps" || request.operation === "phones") {
-      const access = await this.computerAccess(
-        { ownerUserId: caller.run.requestedBy, threadId: caller.threadId },
-        caller.run,
-      );
+      const access = await this.#computerAccessFor(caller);
       const usable =
         request.operation === "phones"
           ? await Promise.all(
@@ -1520,10 +1722,11 @@ export class DeviceService {
       const targets = this.#replTargets.get(key) ?? new Set<string>();
       for (const entry of usable) if (entry.id && entry.access) targets.add(entry.id);
       this.#replTargets.set(key, targets);
-      return { value: usable };
+      // A session sees only its own target: nothing about the rest, not even how many.
+      return { value: session ? usable.filter((entry) => entry.id === session.target) : usable };
     }
     if (request.operation === "installedApps") {
-      const owner = caller.run.requestedBy;
+      const owner = computerOwner(caller);
       const connectionId = IntegrationConnectionIdSchema.parse(request.target);
       const row = (await this.listCallableTools(callerRequester(owner, caller))).find(
         (candidate) =>
@@ -1614,6 +1817,36 @@ export class DeviceService {
       signal,
       (request) => this.#invokeComputerRepl(caller, request),
     );
+  }
+
+  /**
+   * A connected agent's `computer_use` script, kept to the one app or phone screen its operation
+   * was admitted for. Its handles last for the session, and its signal is the operation's: Stop
+   * or Disconnect ends the script in flight.
+   */
+  async runSessionComputerCode(session: ComputerSessionCaller, code: string, signal: AbortSignal) {
+    const key = agentSessionComputerKey(session.sessionId);
+    const caller: ComputerCaller = {
+      run: null,
+      threadId: session.taskId,
+      agentBindingId: session.bindingId,
+      session,
+    };
+    this.#replCallers.set(`${key}:0`, caller);
+    return this.computerRepl.execute(
+      { runId: key, generation: 0, reportUnknownEffects: true },
+      code,
+      signal,
+      (request) => this.#invokeComputerRepl(caller, request),
+    );
+  }
+
+  /** A session ended (Stop, Disconnect, idle): its script context goes with it. */
+  async endComputerSession(sessionId: AgentSessionId): Promise<void> {
+    const key = agentSessionComputerKey(sessionId);
+    this.#replCallers.delete(`${key}:0`);
+    this.#replTargets.delete(`${key}:0`);
+    await this.computerRepl.endRun(key);
   }
 
   async endComputerRun(runId: RunId): Promise<void> {

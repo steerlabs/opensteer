@@ -1663,7 +1663,11 @@ export class BrowserController {
       const targetId =
         message.command.sessionId === undefined
           ? null
-          : this.cdpRouter.attachedTargetId(this.claims.sessionId, message.command.sessionId);
+          : this.cdpRouter.attachedTargetId(
+              this.claims.sessionId,
+              message.command.sessionId,
+              message.scriptAttachmentId,
+            );
       if (!params.success || !targetId)
         throw new BrowserRuntimeError(
           "bad_message",
@@ -1689,7 +1693,11 @@ export class BrowserController {
       const targetId =
         message.command.sessionId === undefined
           ? null
-          : this.cdpRouter.attachedTargetId(this.claims.sessionId, message.command.sessionId);
+          : this.cdpRouter.attachedTargetId(
+              this.claims.sessionId,
+              message.command.sessionId,
+              message.scriptAttachmentId,
+            );
       if (!params.success || !targetId) {
         throw new BrowserRuntimeError(
           "bad_message",

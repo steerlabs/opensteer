@@ -12,6 +12,9 @@ import { z } from "zod";
 import {
   createId,
   RequestIdSchema,
+  AgentSessionIdSchema,
+  ThreadIdSchema,
+  type AgentGrant,
   TeamMessageIdSchema,
   type ThreadAccessMode,
   type RequestId,
@@ -38,11 +41,16 @@ import { withFolderPluginPackage } from "../apps/host/src/local-servers/folder-p
 import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
+import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { PluginExecutions } from "../apps/host/src/plugins/plugin-executions.js";
 import { PluginToolHandlers } from "../apps/host/src/mcp/handlers/plugins.js";
 import { OpensteerMcpService } from "../apps/host/src/mcp/opensteer-mcp-service.js";
 import { pluginSourceFiles, exportPluginSource } from "../apps/host/src/plugins/plugin-source.js";
-import type { AgentCaller, RunCaller } from "../apps/host/src/mcp/agent-caller.js";
+import type {
+  AgentCaller,
+  ConnectionCaller,
+  RunCaller,
+} from "../apps/host/src/mcp/agent-caller.js";
 import { pluginFixtureFiles, pluginFixtureRegistry } from "../scripts/plugin-engine/fixture.js";
 import { continuationMessage } from "../apps/host/src/agents/continuation-service.js";
 import { pendingEvent } from "../packages/database/src/store.integration.test-support.js";
@@ -61,6 +69,7 @@ let authority: PluginAuthority;
 let service: PluginService;
 let executions: PluginExecutions;
 let handlers: PluginToolHandlers;
+let sessions: AgentSessionService;
 let mcp: OpensteerMcpService;
 let registry: Awaited<ReturnType<typeof pluginFixtureRegistry>>;
 let personal: Awaited<ReturnType<typeof seedPersonalFixture>>;
@@ -70,6 +79,8 @@ const events = new EventEmitter();
 const errors: unknown[] = [];
 const enginePhases: string[] = [];
 let effects = 0;
+let waitingForPlugin: (() => void) | undefined;
+let sessionStop: Promise<void> | undefined;
 let exportWait: (() => Promise<void>) | undefined;
 let current: AgentCaller;
 let authorizationWait:
@@ -176,12 +187,16 @@ beforeAll(async () => {
     // Like the Host, wait for the execution report before checking its authority.
     beforeAuthorize: () => executions.settled(),
   });
-  registry = await pluginFixtureRegistry(undefined, pluginFixtureFiles(1), (request, response) => {
-    if (request.url !== "/effect") return false;
-    effects++;
-    response.end("ok");
-    return true;
-  });
+  registry = await pluginFixtureRegistry(
+    () => waitingForPlugin?.(),
+    pluginFixtureFiles(1),
+    (request, response) => {
+      if (request.url !== "/effect") return false;
+      effects++;
+      response.end("ok");
+      return true;
+    },
+  );
   homeFiles = new AgentHomeFiles({
     agentHome: async () => personal.agentHome,
     helperPath: new URL("../apps/runner/native-fs-helper/opensteer-native-fs-test", import.meta.url)
@@ -268,7 +283,17 @@ beforeAll(async () => {
     throw new Error("Fixture did not install: " + JSON.stringify(installed));
   plugin = installed.plugin.id;
   await recordPluginAuthor(database, personal.userId, plugin, installed.version.id, "agent");
+  sessions = new AgentSessionService({
+    store,
+    holdMs: 0,
+    closeBinding(bindingId) {
+      sessionStop = executions.stopSession(bindingId).catch((error: unknown) => {
+        errors.push(error);
+      });
+    },
+  });
   handlers = new PluginToolHandlers({
+    sessions: () => sessions,
     service,
     authority,
     executions,
@@ -302,6 +327,8 @@ afterEach(async () => {
   expect(errors).toEqual([]);
 });
 afterAll(async () => {
+  sessions?.stop();
+  await sessions?.drain();
   homeFiles?.close();
   await mcp?.close();
   await executions?.close();
@@ -463,33 +490,58 @@ test.each(["trigger", "watch"] as const)(
   },
 );
 
-test("connected external agents can discover and list, but cannot execute, manage or ask for accounts", async () => {
+async function connect(mode: ThreadAccessMode, access?: "read" | "read-write") {
   const connections = new AgentConnectionStore(database);
+  const grant: AgentGrant = {
+    scope: "selected",
+    tasks: false,
+    resources: access
+      ? [{ kind: "plugin", target: { kind: "installed", pluginId: plugin }, access }]
+      : [
+          {
+            kind: "plugin",
+            target: { kind: "installed", pluginId: "app_uninstalled" },
+            access: "read",
+          },
+        ],
+  };
   const connection = await connections.create({
     userId: personal.userId,
     label: "External",
     clientName: "Fixture",
-    accessMode: "full-access",
+    accessMode: mode,
     resource: "http://127.0.0.1/mcp",
     expiresAt: new Date(Date.now() + 60000),
+    grant,
   });
-  await connections.activate(connection.id, "fixture-token-hash");
-  const caller: AgentCaller = {
+  await connections.activate(connection.id, randomUUID());
+  return {
     kind: "connection",
     key: `connection:${connection.id}`,
     userId: personal.userId,
-    accessMode: "full-access",
+    accessMode: mode,
     connectionId: connection.id,
-  };
-  expect(await call(caller, "plugin_search", { namespace: "fixture" })).toMatchObject({
-    items: expect.any(Array),
+    grant,
+    grantRevision: connection.grantRevision,
+  } satisfies ConnectionCaller;
+}
+
+const readCall = { calls: { path: "tools.fixture.read", input: { amount: 1 } } };
+const writeCall = { calls: { path: "tools.fixture.reviewed", input: { amount: 7 } } };
+
+test("connected plugin discovery and calls enforce the selected installation and read/write access", async () => {
+  const reader = await connect("full-access", "read");
+  const unshared = await connect("full-access");
+  expect(await call(unshared, "plugin_search", { namespace: "fixture" })).toMatchObject({
+    items: [],
   });
-  expect(await call(caller, "plugin_describe", { paths: ["tools.fixture.read"] })).toMatchObject({
-    items: [expect.objectContaining({ path: "tools.fixture.read" })],
+  await expect(call(unshared, "opensteer_plugin_list", {})).rejects.toMatchObject({
+    code: "forbidden",
   });
-  // A write it is kept from by Read-only is named without its input type or signature.
-  await records.setAccess(personal.userId, plugin, "read-only");
-  const found = await call(caller, "plugin_search", { namespace: "fixture" });
+  await expect(call(unshared, "plugin_call", readCall)).rejects.toMatchObject({
+    message: "Plugin tool is unavailable to this caller.",
+  });
+  const found = await call(reader, "plugin_search", { namespace: "fixture" });
   const items = found.items as { path: string; input?: string }[];
   expect(items.find(({ path }) => path === "tools.fixture.read")).toHaveProperty("input");
   expect(items.find(({ path }) => path === "tools.fixture.reviewed")).toEqual({
@@ -497,31 +549,253 @@ test("connected external agents can discover and list, but cannot execute, manag
     description: expect.any(String),
     blocked: expect.objectContaining({ code: "access_denied" }),
   });
+  const before = effects;
+  await expect(call(reader, "plugin_call", writeCall)).rejects.toMatchObject({
+    message: "Plugin tool is unavailable to this caller.",
+  });
+  await expect(
+    call(reader, "plugin_execute", { namespace: "tools.fixture", code: "return 1;" }),
+  ).rejects.toThrow();
+  expect(effects).toBe(before);
+  expect(await call(reader, "plugin_call", readCall)).toMatchObject({
+    taskId: expect.any(String),
+    operationId: expect.any(String),
+    status: "completed",
+    result: { execution: { value: { ok: true, value: 2 } } },
+  });
+  const writer = await connect("full-access", "read-write");
+  const send = service.call;
+  const submission = vi.spyOn(service, "call").mockImplementationOnce(async (input, ...args) => {
+    expect(input.executionId).toEqual(expect.any(String));
+    expect(await records.execution(input.executionId!)).toMatchObject({
+      connectionId: writer.connectionId,
+      agentSessionId: expect.any(String),
+      admittedGrantRevision: writer.grantRevision,
+      admittedAccessMode: "full-access",
+      state: "running",
+    });
+    return send(input, ...args);
+  });
+  try {
+    expect(await call(writer, "plugin_call", writeCall)).toMatchObject({ status: "completed" });
+    expect(submission).toHaveBeenCalledOnce();
+  } finally {
+    submission.mockRestore();
+  }
+  expect(effects).toBe(before + 1);
   expect(
-    await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] }),
+    await call(writer, "plugin_execute", {
+      namespace: "tools.fixture",
+      code: "return await tools.fixture.read({amount: 5});",
+    }),
   ).toMatchObject({
-    items: [{ path: "tools.fixture.reviewed", blocked: { code: "access_denied" } }],
+    operationId: expect.any(String),
+    status: "completed",
   });
-  expect(
-    (await call(caller, "plugin_describe", { paths: ["tools.fixture.reviewed"] })).items,
-  ).toEqual([expect.not.objectContaining({ signature: expect.anything() })]);
-  await records.setAccess(personal.userId, plugin, "all");
-  expect(await call(caller, "opensteer_plugin_list", {})).toMatchObject({
-    plugins: expect.arrayContaining([expect.objectContaining({ id: plugin })]),
-  });
-  for (const [name, input] of [
-    ["plugin_call", { calls: { path: "tools.fixture.read", input: { amount: 1 } } }],
-    ["plugin_execute", { code: "return 1;" }],
-    ["opensteer_plugin_install", { source: "catalog", catalogId: "fixture" }],
-    [
-      "plugin_account_request",
-      { pluginId: plugin, requirement: "service", scope: "user", reason: "Read" },
-    ],
-  ] as const)
-    await expect(call(caller, name, input)).rejects.toThrow();
-  await connections.revoke(personal.userId, connection.id);
-  await expect(call(caller, "plugin_search", {})).rejects.toThrow();
+  await expect(
+    call(writer, "opensteer_plugin_install", { source: "catalog", catalogId: "fixture" }),
+  ).rejects.toThrow();
+  await expect(
+    call(writer, "plugin_account_request", {
+      pluginId: plugin,
+      requirement: "service",
+      scope: "user",
+      reason: "Read",
+    }),
+  ).rejects.toThrow();
 });
+
+test("a connected plugin write is reviewed once, can be declined, and records the exact call", async () => {
+  const writer = await connect("approval-required", "read-write");
+  const before = effects;
+  const invoke = (key: string) =>
+    call(writer, "plugin_call", { ...writeCall, reason: "My reason" }, false, key);
+  const reply = async (pending: Record<string, unknown>, decision: "allow" | "deny") => {
+    const requestId = RequestIdSchema.parse(pending.requestId);
+    expect(await store.requests.get(requestId)).toMatchObject({
+      presentation: { title: "Use Fixture?" },
+      agentOperation: {
+        calls: JSON.stringify({ calls: { input: { amount: 7 }, path: "tools.fixture.reviewed" } }),
+        agentReason: "My reason",
+      },
+    });
+    await sessions.respond({
+      requestId,
+      expectedRevision: (await store.requests.revision(requestId))!,
+      resolvedBy: personal.userId,
+      response: { kind: "form", answers: { decision: [decision] } },
+    });
+  };
+  const pending = await invoke("plugin-allow");
+  expect(pending).toMatchObject({ status: "pending", operationId: expect.any(String) });
+  expect(effects).toBe(before);
+  await reply(pending, "allow");
+  const done = await invoke("plugin-allow");
+  expect(done).toMatchObject({
+    status: "completed",
+    operationId: pending.operationId,
+    result: { execution: { value: { ok: true, value: 8 } } },
+  });
+  expect(await invoke("plugin-allow")).toEqual(done);
+  expect(effects).toBe(before + 1);
+  const refused = await invoke("plugin-deny");
+  await reply(refused, "deny");
+  await expect(invoke("plugin-deny")).rejects.toMatchObject({ reason: "person-declined" });
+  expect(effects).toBe(before + 1);
+  expect(
+    await database
+      .selectFrom("requests")
+      .select("kind")
+      .where(
+        "originatingAgentSessionId",
+        "=",
+        AgentSessionIdSchema.parse(
+          (
+            await database
+              .selectFrom("agentSessions")
+              .select("id")
+              .where("threadId", "=", ThreadIdSchema.parse(done.taskId))
+              .executeTakeFirstOrThrow()
+          ).id,
+        ),
+      )
+      .execute(),
+  ).toEqual([{ kind: "person.question" }, { kind: "person.question" }]);
+});
+
+test("a connected plugin input Request continues the reviewed execution in the same task", async () => {
+  const reader = await connect("full-access", "read");
+  const pending = await call(reader, "plugin_call", {
+    calls: { path: "tools.fixture.input", input: { label: "one" } },
+  });
+  expect(pending).toMatchObject({
+    status: "pending",
+    executionId: expect.any(String),
+    operationId: expect.any(String),
+  });
+  const id = RequestIdSchema.parse(pending.requestId);
+  expect(await store.requests.get(id)).toMatchObject({
+    kind: "plugin.input",
+    presentation: { title: expect.stringMatching(/ needs your input$/) },
+  });
+  const args = { executionId: pending.executionId, taskId: pending.taskId };
+  await expect(call(reader, "plugin_resume", args, false, "plugin-resume")).rejects.toMatchObject({
+    code: "conflict",
+  });
+  await answer(id, true, { name: "Alice" });
+  const done = await call(reader, "plugin_resume", args, false, "plugin-resume");
+  expect(done).toMatchObject({
+    status: "completed",
+    executionId: pending.executionId,
+    result: { execution: { value: { ok: true } } },
+  });
+  expect(await call(reader, "plugin_resume", args, false, "plugin-resume")).toEqual(done);
+});
+
+test("a grant version change between approval and plugin dispatch prevents the write", async () => {
+  const caller = await connect("full-access", "read-write");
+  const before = effects;
+  const atDispatch = Promise.withResolvers<void>();
+  const continueDispatch = Promise.withResolvers<void>();
+  authorizationWait = async (input) => {
+    if (input.operation === "callTool" && input.tool === "reviewed") {
+      atDispatch.resolve();
+      await continueDispatch.promise;
+    }
+  };
+  const work = call(caller, "plugin_call", writeCall);
+  const settled = work.catch((error: unknown) => error);
+  try {
+    await deadline(
+      Promise.race([
+        atDispatch.promise,
+        work.then(() => {
+          throw new Error("Plugin call did not reach dispatch");
+        }),
+      ]),
+      "Plugin call did not reach dispatch",
+    );
+    await database
+      .updateTable("agentConnections")
+      .set({ grantRevision: caller.grantRevision + 1 })
+      .where("id", "=", caller.connectionId)
+      .execute();
+    continueDispatch.resolve();
+    await settled;
+    expect(effects).toBe(before);
+  } finally {
+    continueDispatch.resolve();
+    authorizationWait = undefined;
+    await settled;
+  }
+});
+
+test.each(["Stop", "Disconnect"] as const)(
+  "%s ends a connected plugin call in flight",
+  async (action) => {
+    const caller = await connect("full-access", "read");
+    const entered = Promise.withResolvers<void>();
+    waitingForPlugin = entered.resolve;
+    const work = call(caller, "plugin_call", { calls: { path: "tools.fixture.wait", input: {} } });
+    const observed = work.catch((error: unknown) => error);
+    try {
+      await deadline(
+        Promise.race([
+          entered.promise,
+          work.then(() => {
+            throw new Error("Plugin call ended before reaching its service");
+          }),
+        ]),
+        "Plugin call did not reach its service",
+      );
+      const row = await database
+        .selectFrom("agentSessions")
+        .selectAll()
+        .where("connectionId", "=", caller.connectionId)
+        .executeTakeFirstOrThrow();
+      if (action === "Stop") {
+        expect(
+          await sessions.stopSession({
+            ownerUserId: caller.userId,
+            threadId: row.threadId,
+            sessionId: row.id,
+          }),
+        ).toEqual({ ended: true });
+      } else {
+        await new AgentConnectionStore(database).revoke(caller.userId, caller.connectionId);
+        const cleanup = await store.driveConnectionCleanups({
+          stopper: {
+            stopDirectOperation: (attempt) => sessions.stopDirectOperation(attempt.id),
+            async stop(attempt, cleanup) {
+              if (attempt.kind === "plugin") {
+                return await executions.stopConnectionExecution(attempt.id, cleanup.connectionId);
+              }
+              return undefined;
+            },
+          },
+        });
+        expect(cleanup.failures).toEqual([]);
+      }
+      await sessionStop;
+      expect(await deadline(observed, "Plugin call did not stop")).not.toMatchObject({
+        status: "completed",
+      });
+      await sessions.drain();
+      await executions.settled();
+      const execution = await database
+        .selectFrom("pluginExecutions")
+        .select(["state", "terminalEvidenceAt"])
+        .where("agentSessionId", "=", row.id)
+        .executeTakeFirstOrThrow();
+      expect(execution).toMatchObject({
+        state: expect.stringMatching(/^(cancelled|interrupted)$/u),
+        terminalEvidenceAt: expect.any(Date),
+      });
+    } finally {
+      waitingForPlugin = undefined;
+    }
+  },
+);
 
 test.each(["background", "voice", "team"] as const)(
   "%s Runs retain plugin call authority, with non-foreground waits pending immediately",
@@ -1867,6 +2141,8 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
       userId: personal.userId,
       accessMode: "full-access",
       connectionId: connection.id,
+      grant: connection.grant,
+      grantRevision: connection.grantRevision,
     },
   ];
   const started = z.object({ id: z.string() }).parse(

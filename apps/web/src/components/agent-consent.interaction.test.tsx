@@ -395,7 +395,7 @@ describe("agent consent with grants", () => {
     const { container } = await mount(host);
     expect(detail(container, "Browser")).toBe("None");
     await act(async () => buttonNamed(container, "Choose Browser").click());
-    expect(container.textContent).toContain("Turn on Browser on a Device first");
+    expect(container.textContent).toContain("Turn on Browser on a device first");
   });
 
   it("lets an older profile placement decide where the new profile lives", async () => {
@@ -408,7 +408,7 @@ describe("agent consent with grants", () => {
     host = consentHost({ homes: [macRunner], macOnline: false });
     const { container } = await mount(host);
     expect(container.textContent).toContain(
-      "None of your Devices are online. Grok can use its profile once MacBook Pro is back.",
+      "None of your devices are online. Grok can use its profile once MacBook Pro is back.",
     );
   });
 

@@ -142,6 +142,9 @@ function WorkHomeCardView({ card }: { readonly card: WorkHomeCard }) {
             <CopyBlock label={cloudWords("cloud.address")} value={card.address} />
           </div>
         ) : null}
+        {card.lastBackup ? (
+          <SettingsRow title={cloudWords("cloud.backup.reported")} detail={card.lastBackup} />
+        ) : null}
         {card.region ? (
           <SettingsRow title={cloudWords("cloud.region")} detail={card.region} />
         ) : null}

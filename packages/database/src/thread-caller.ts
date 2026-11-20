@@ -114,6 +114,7 @@ export async function assertThreadCaller(
   caller: ThreadCallerAuthority | undefined,
   target?: {
     readonly activate?: boolean;
+    readonly enqueue?: boolean;
     readonly readOnly?: boolean;
     readonly threadId?: ThreadId;
     readonly accessMode?: ThreadAccessMode;
@@ -187,8 +188,10 @@ export async function assertThreadCaller(
   }
   // A task in this caller's lineage runs at most at the connection's mode, whatever its own says.
   const targetMode =
-    thread && lineage && thread.originConnectionId === lineage.agentConnectionId
-      ? minThreadAccessMode(thread.accessMode, lineage.accessMode)
+    thread && lineage && target?.enqueue
+      ? minThreadAccessMode(thread.accessMode, accessMode)
+      : thread && lineage && thread.originConnectionId === lineage.agentConnectionId
+        ? minThreadAccessMode(thread.accessMode, lineage.accessMode)
       : (thread?.accessMode ?? target?.accessMode ?? accessMode);
   if (!target?.readOnly && !threadAccessModeAtMost(targetMode, accessMode))
     throw forbidden("Target task has a stronger access mode than this caller");

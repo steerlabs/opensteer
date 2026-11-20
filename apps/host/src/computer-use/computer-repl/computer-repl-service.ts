@@ -28,6 +28,7 @@ import {
 export interface ComputerReplContext {
   readonly runId: string;
   readonly generation: number;
+  readonly reportUnknownEffects?: true;
 }
 export type ComputerReplInvocation = ReplInvocation<ReplRequest>;
 export type ReplInvocation<Request> = Request & {
@@ -411,6 +412,8 @@ export class ReplService<Request extends AnyReplRequest> {
             ? record.performed.filter((value): value is string => typeof value === "string")
             : [],
       };
+      if (call.context.reportUnknownEffects && failure.code === "outcome-unknown")
+        call.abandoned = "outcome-unknown";
       if ("content" in record && Array.isArray(record.content)) {
         const parsed = ReplReplySchema.shape.content.safeParse(record.content);
         if (parsed.success)
@@ -626,6 +629,17 @@ export class ReplService<Request extends AnyReplRequest> {
         code: "operation-pending",
         message:
           "Browser code ended while a browser operation was still pending. Await each operation before returning.",
+        performed: [],
+      };
+    if (
+      call.context.reportUnknownEffects &&
+      (call.mutationsInFlight || call.abandoned === "outcome-unknown") &&
+      error?.code !== "outcome-unknown"
+    )
+      error = {
+        code: "outcome-unknown",
+        message:
+          "A computer action did not confirm its outcome. Observe the app or phone before deciding what to do next.",
         performed: [],
       };
     if (!call.started) this.#queue.delete(call.id);

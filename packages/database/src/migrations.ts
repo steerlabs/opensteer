@@ -27,6 +27,8 @@ import {
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName, applyAgentSessions } from "./agent-sessions-migration.js";
+import { agentDirectoryMigrationName, applyAgentDirectoryVerification } from "./agent-directory-migration.js";
+import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -611,6 +613,17 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
+              "0046_shared_chrome_grants": {
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table browser_source_pairings add column device_id text;
+                    alter table browser_sources add column device_id text;
+                    alter table agent_connections add column shared_chrome_attempts jsonb not null default '{}';
+                  `.execute(database);
+                },
+              },
+              [workHomeMigrationName]: { up: applyWorkHome },
             }
           : {}),
       };

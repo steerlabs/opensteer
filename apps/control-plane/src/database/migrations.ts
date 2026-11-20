@@ -6,6 +6,7 @@ import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
 import {
+  cloudComputerBackupReportMigration,
   cloudComputerClaimMigration,
   cloudComputersMigration,
 } from "../cloud-computers/migration.js";
@@ -523,6 +524,7 @@ const migrationProvider = {
       "0030_organizations": organizationsMigration,
       "0031_cloud_computer_view": cloudComputerViewMigration,
       "0032_agent_directory": agentDirectoryMigration,
+      "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
     };
   },
 };

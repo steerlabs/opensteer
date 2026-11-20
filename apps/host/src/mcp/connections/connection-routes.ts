@@ -1,3 +1,5 @@
+import { agentOperationCursor, listAgentOperations } from "@opensteer/database";
+import { embedderAssertionParam } from "@opensteer/control-plane-protocol";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ConnectionCaller } from "../agent-caller.js";
 import type { UserId } from "@opensteer/core";
@@ -6,6 +8,7 @@ import {
   AgentConnectionConsentSchema,
   rpcSuccess,
   type AgentConnection,
+  type AgentConnectionConsent,
   type HostApiHandlers,
   type HostApiCommand,
   type HostApiServerContext,
@@ -197,10 +200,11 @@ export function registerConnectionRoutes(
         .send(oauth.register(await getOrigin(request), request.body)),
     );
     routes.get(`${mcpIssuerPath}/authorize`, async (request, reply) => {
-      const path = await oauth.authorize(
-        await getOrigin(request),
-        uniqueParameters(new URL(request.url, options.canonicalOrigin).searchParams),
-      );
+      const parameters = new URL(request.url, options.canonicalOrigin).searchParams;
+      if (parameters.getAll(embedderAssertionParam).length > 1) {
+        parameters.set(embedderAssertionParam, "");
+      }
+      const path = await oauth.authorize(await getOrigin(request), uniqueParameters(parameters));
       return reply
         .header("cache-control", "no-store")
         .header("referrer-policy", "no-referrer")
@@ -249,8 +253,32 @@ function uniqueParameters(parameters: URLSearchParams): Record<string, string> {
 
 export function createConnectionRpcHandlers(
   oauth: ConnectionOAuth,
-): Pick<HostApiHandlers, "connections.list" | "connections.authorization.get"> {
+  chromeTabGrantCatalog?: (
+    ownerId: UserId,
+  ) => Promise<Pick<AgentConnectionConsent, "chromeTabs" | "chromeTabsNeedPairing">>,
+): Pick<
+  HostApiHandlers,
+  "connections.list" | "connections.authorization.get" | "connections.activity" | "threads.activity"
+> {
   return {
+    "connections.activity": async (input, context) =>
+      rpcSuccess(
+        await listAgentOperations(oauth.store.database, {
+          userId: requireOwner(context).user.id,
+          connectionId: input.connectionId,
+          limit: 50,
+          ...optionalBefore(input.before),
+        }),
+      ),
+    "threads.activity": async (input, context) =>
+      rpcSuccess(
+        await listAgentOperations(oauth.store.database, {
+          userId: requireOwner(context).user.id,
+          threadId: input.threadId,
+          limit: 50,
+          ...optionalBefore(input.before),
+        }),
+      ),
     "connections.list": async (input, context) => {
       const connections = (
         await oauth.store.list(requireOwner(context).user.id, { includeRevoked: true })
@@ -264,13 +292,17 @@ export function createConnectionRpcHandlers(
             },
       );
     },
-    "connections.authorization.get": async (input, context) =>
-      rpcSuccess(
+    "connections.authorization.get": async (input, context) => {
+      const ownerId = requireOwner(context).user.id;
+      const consent = await oauth.consent(input.requestId, ownerId);
+      return rpcSuccess(
         AgentConnectionConsentSchema.parse({
-          ...(await oauth.consent(input.requestId, requireOwner(context).user.id)),
+          ...consent,
           grantsAvailable: true,
+          ...(await chromeTabGrantCatalog?.(ownerId)),
         }),
-      ),
+      );
+    },
   };
 }
 /** A connection with how the Home words who asked, from what it recorded at consent. */
@@ -372,4 +404,9 @@ function requireOwner(context: HostApiServerContext) {
       message: "Sign in to manage connected agents.",
     });
   return context.session;
+}
+
+function optionalBefore(before: string | undefined) {
+  const cursor = agentOperationCursor(before);
+  return cursor ? { before: cursor } : {};
 }

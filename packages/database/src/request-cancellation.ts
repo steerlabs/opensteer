@@ -65,6 +65,19 @@ async function cancelInTransaction(
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
+  if (["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(input.reason)) {
+    const durable = await pending.where("mode", "=", "durable").orderBy("id", "asc").execute();
+    for (const row of durable) {
+      await transaction.insertInto("requestContinuations").values({
+        requestId: row.id,
+        status: "waiting",
+        reason: null,
+        attemptedAt: null,
+        createdAt: input.resolvedAt,
+        updatedAt: input.resolvedAt,
+      }).onConflict((conflict) => conflict.column("requestId").doNothing()).execute();
+    }
+  }
   if (refresh) {
     const parents = await pending.clearSelect().select("originatingThreadId").distinct().execute();
     await lockRequestThreads(
@@ -116,27 +129,6 @@ async function cancelInTransaction(
     .where("status", "=", "pending")
     .returningAll()
     .execute();
-  if (
-    ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
-      input.reason,
-    )
-  ) {
-    for (const row of rows) {
-      if (row.mode !== "durable") continue;
-      await transaction
-        .insertInto("requestContinuations")
-        .values({
-          requestId: row.id,
-          status: "waiting",
-          reason: null,
-          attemptedAt: null,
-          createdAt: input.resolvedAt,
-          updatedAt: input.resolvedAt,
-        })
-        .onConflict((conflict) => conflict.column("requestId").doNothing())
-        .execute();
-    }
-  }
   const ids = rows.map((row) => row.id).sort();
   if (refresh) for (const id of ids) await refreshRequestState(transaction, id);
   return ids;

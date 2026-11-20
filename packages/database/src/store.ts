@@ -13,6 +13,8 @@ import {
   claimConnectionCleanup,
   completeCleanupIfSettled,
   connectionAttempts,
+  connectionStopId,
+  recordConnectionStop,
   connectionCdpAttempts,
   recoverConnectionCdpAttempts,
   markConnectionAttemptsContactLost,
@@ -176,7 +178,7 @@ import {
 import { type CommandRow, type DatabaseSchema, type PendingCommandRow } from "./schema.js";
 import { readPersonalTaskPage } from "./personal-task-store.js";
 import { drainRunFinish } from "./run-finalization.js";
-import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import { lockCommandIdempotency, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
 import * as quietTasks from "./quiet-tasks.js";
 import { readThreadHistory, type ThreadHistoryQuery } from "./thread-history.js";
@@ -608,6 +610,7 @@ export class OpensteerStore {
     readonly id: string;
     readonly idempotencyKey: string;
     readonly mainEnrollmentPurpose?: "initial" | "replacement";
+    readonly configuredInitial?: true;
     readonly name: string;
     /**
      * The person whose work runs on a managed Runner. Administration stays
@@ -959,6 +962,8 @@ export class OpensteerStore {
     return markConnectionAttemptsContactLost(this.#database, input);
   }
 
+  connectionStopId = connectionStopId;
+
   async driveConnectionCleanups(
     options: {
       readonly stopper?: ConnectionAttemptStopper;
@@ -990,30 +995,39 @@ export class OpensteerStore {
           if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
         }
         for (const attempt of attempts) {
-          if (!(await renewConnectionCleanupClaim(this.#database, connectionId, token))) break;
+          if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) break;
           const key = `connection-stop:${connectionId}:${attempt.kind}:${attempt.id}:${attempt.generation ?? "local"}`;
+          const mutate = (work: (tx: import("kysely").Transaction<DatabaseSchema>) => Promise<unknown>, idempotent = false) =>
+            step(() => commitPersonalMutation(this.#database, async (tx) => {
+              if (idempotent) await lockCommandIdempotency(tx, userId, key);
+              if (await renewConnectionCleanupClaim(tx, cleanup)) await work(tx);
+            }));
+          const stop = () => step(async () => {
+            const result = await options.stopper?.stop(attempt, cleanup);
+            if (result) await recordConnectionStop(this.#database, cleanup, attempt, result);
+          });
           switch (attempt.kind) {
             case "request":
-              await step(() => settleLineageRequests(this.#database, [attempt.id]));
+              await step(() => settleLineageRequests(this.#database, [attempt.id], cleanup));
               break;
             case "input":
-              await step(() =>
-                this.cancelThreadInput({
+              await mutate((tx) =>
+                threadStore.cancelThreadInput(tx, {
                   threadId: attempt.threadId!,
                   messageId: attempt.id,
                   idempotencyKey: key,
                   requestedBy: userId,
-                }),
+                }), true,
               );
               break;
             case "trigger":
-              await step(() => pauseLineageTrigger(this.#database, attempt.id));
+              await mutate((tx) => pauseLineageTrigger(tx, attempt.id));
               break;
             case "steer":
               if (!attempt.handedOff)
-                await step(() =>
+                await mutate((tx) =>
                   commandStore.refuseSteer(
-                    this.#database,
+                    tx,
                     attempt.id,
                     "The connected agent's access ended before this message could be delivered.",
                     undefined,
@@ -1035,26 +1049,28 @@ export class OpensteerStore {
                 row.bindingGeneration === attempt.generation &&
                 ["queued", "starting", "running", "waiting"].includes(row.status);
               if (canEnqueue)
-                await step(() =>
-                  this.enqueueRunnerControl({
+                await mutate((tx) =>
+                  commandStore.enqueueRunnerControlInTransaction(tx, this.#links, {
                     type: "run.interrupt",
                     idempotencyKey: key,
                     requestedBy: userId,
                     runId,
                     threadId: attempt.threadId!,
                     expectedBindingGeneration: attempt.generation,
+                    ...(attempt.runnerBootId ? {
+                      stop: { id: connectionStopId(attempt), bootId: attempt.runnerBootId },
+                    } : {}),
                     ...(reason === "narrowed" || row.originConnectionId !== connectionId
                       ? { keepQueueRunning: true }
                       : {}),
-                  }),
+                  }), true,
                 );
-              else if (attempt.handedOff && options.stopper)
-                await step(() => options.stopper!.stop(attempt, cleanup));
+              if (attempt.kind === "run-attempt") await stop();
               break;
             }
             case "occurrence":
               if (attempt.handedOff) {
-                if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+                await stop();
               } else {
                 const row = await this.#database
                   .selectFrom("triggerOccurrences")
@@ -1062,8 +1078,8 @@ export class OpensteerStore {
                   .where("id", "=", attempt.id)
                   .executeTakeFirst();
                 if (row)
-                  await step(() =>
-                    new TriggerStore(this.#database).cancelPendingOccurrences(userId, {
+                  await mutate((tx) =>
+                    new TriggerStore(tx).cancelPendingOccurrences(userId, {
                       actorThreadId: null,
                       triggerId: row.triggerId,
                       occurrenceId: attempt.id,
@@ -1072,18 +1088,17 @@ export class OpensteerStore {
               }
               break;
             case "watch":
-              await step(() =>
-                new TriggerStore(this.#database).stopConnectionWatch(
+              await mutate((tx) =>
+                new TriggerStore(tx).stopConnectionWatch(
                   attempt.id,
                   attempt.generation!,
                 ),
               );
-              if (attempt.handedOff && options.stopper)
-                await step(() => options.stopper!.stop(attempt, cleanup));
+              if (attempt.handedOff) await stop();
               break;
             case "session":
-              await step(() =>
-                endAgentSessions(this.#database, {
+              await mutate((tx) =>
+                endAgentSessions(tx, {
                   userId,
                   sessionIds: [attempt.id],
                   reason,
@@ -1096,7 +1111,7 @@ export class OpensteerStore {
                 await step(() => options.stopper!.stopDirectOperation!(attempt, cleanup));
               break;
             default:
-              if (options.stopper) await step(() => options.stopper!.stop(attempt, cleanup));
+              await stop();
               break;
           }
         }
@@ -1655,6 +1670,7 @@ export class OpensteerStore {
     readonly message: Message;
     readonly origin: import("@opensteer/core").MessageOrigin | undefined;
     readonly run: Run;
+    readonly reauthorize?: () => Promise<void>;
     readonly runId: RunId;
     readonly threadId: ThreadId;
   }> {

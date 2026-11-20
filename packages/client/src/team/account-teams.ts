@@ -179,14 +179,14 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
       throw new AccountRequestError({
         code: null,
         status: 401,
-        message: "Sign in to your Opensteer Account first.",
+        message: "Sign in to your Opensteer account first.",
       });
     if (lease.issuer !== this.#origin)
       throw new Error("The signed-in Account issuer does not match this service.");
     const endpoint = new URL(path, this.#origin).toString();
     const controller = new AbortController();
     const timeout = setTimeout(
-      () => controller.abort(clientTimeoutError("Opensteer Account didn’t answer in time.")),
+      () => controller.abort(clientTimeoutError("Opensteer account didn’t answer in time.")),
       timeoutMs,
     );
     unrefTimer(timeout);
@@ -223,7 +223,7 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
           code: parsed?.error.code ?? null,
           reason: parsed?.error.reason ?? null,
           status: response.status,
-          message: parsed?.error.message ?? "Opensteer Account refused the request.",
+          message: parsed?.error.message ?? "Opensteer account refused the request.",
         });
       }
       return schema.parse(JSON.parse(text) as unknown);

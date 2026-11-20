@@ -1432,6 +1432,7 @@ export async function createRunnerEnrollment(
     readonly id: string;
     readonly idempotencyKey: string;
     readonly mainEnrollmentPurpose?: "initial" | "replacement";
+    readonly configuredInitial?: true;
     readonly name: string;
     /**
      * The person whose work runs on a managed Runner. Administration stays
@@ -1523,6 +1524,7 @@ export async function createRunnerEnrollment(
       .selectFrom("runnerEnrollments")
       .select([
         "deviceProfile",
+        "consumedAt",
         "allowedModules",
         "issuanceModules",
         "initialAccess",
@@ -1546,14 +1548,16 @@ export async function createRunnerEnrollment(
       .forNoKeyUpdate()
       .executeTakeFirst(databaseOperationOptions());
     if (existing) {
+      const keepEnrolled =
+        input.configuredInitial && input.createdBy === null && existing.consumedAt !== null;
       if (
         !isDeepStrictEqual(existing.initialAccess, input.initialAccess ?? null) ||
         !isDeepStrictEqual(existing.preparedIdentity, preparedIdentity) ||
         existing.deviceProfile !== (input.deviceProfile ?? null) ||
-        existing.requestFingerprint !== input.requestFingerprint ||
+        (!keepEnrolled && existing.requestFingerprint !== input.requestFingerprint) ||
         existing.name !== input.name ||
         existing.runnerKind !== input.runnerKind ||
-        existing.tokenHash !== input.tokenHash ||
+        (!keepEnrolled && existing.tokenHash !== input.tokenHash) ||
         // A replay that names a different owner is a different request, not
         // the same one: re-binding a Runner to another person on replay would
         // hand them the credentials living inside it.

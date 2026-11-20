@@ -1819,6 +1819,20 @@ integration.sequential("Trigger failure auto-pause", () => {
     ).rejects.toMatchObject({
       code: "forbidden",
     });
+    await expect(triggers.applyWatchStatus({
+      activationId: reconnected.activations[0]!.activation.id,
+      executionGeneration: 1,
+      runnerBootId: bootOne,
+      runnerConnectionGeneration: 3,
+      runnerId: fixture.runnerId,
+      observed: "stopped",
+      healthySince: null,
+      lastError: null,
+      lastExitCode: null,
+      restartCount: 0,
+      stderrTail: "",
+      stdoutTail: "",
+    })).resolves.toMatchObject({ activation: { desired: "active", observed: "stopped" } });
     const restarted = await triggers.reconcileWatchesForRunner({
       environmentId: fixture.environmentId,
       leaseExpiresAt: new Date(Date.now() + 120_000),

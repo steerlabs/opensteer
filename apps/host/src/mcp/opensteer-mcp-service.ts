@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   agentTools,
+  agentToolFamilies,
   toolsFor,
   agentToolAnnotations,
   connectionInstructionsFor,
@@ -581,12 +582,12 @@ export class OpensteerMcpService {
     const check = async () => {
       identity.signal?.throwIfAborted();
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
-      toolAccess[access](caller, await this.#targets(caller, tool, input));
+      const targets = await this.#targets(caller, tool, input);
+      const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
+        "delivery" in input && input.delivery === "queue";
+      toolAccess[queue ? "read" : access](caller, targets);
       if (!(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This tool is unavailable to this caller",
-        });
+        throw unavailableTool(caller, tool.name);
       const authorize = this.options.handlers[tool.name]?.authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
       await authorize?.({
@@ -648,7 +649,10 @@ export class OpensteerMcpService {
     const tool = found;
     const input = tool.input.parse(value);
     const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
-    toolAccess[access](caller, await this.#targets(caller, tool, input));
+    const targets = await this.#targets(caller, tool, input);
+    const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
+      "delivery" in input && input.delivery === "queue";
+    toolAccess[queue ? "read" : access](caller, targets);
     await this.assertToolOffered(caller, name);
     const authorize = this.options.handlers[tool.name]?.authorize as
       ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
@@ -662,10 +666,7 @@ export class OpensteerMcpService {
     if (!agentTools.some((spec) => spec.name === name))
       throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     if (!(await this.#toolsFor(caller)).some((spec) => spec.name === name))
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This tool is unavailable to this caller",
-      });
+      throw unavailableTool(caller, name);
   }
   async #toolsFor(caller: AgentCaller) {
     return toolsFor({
@@ -774,6 +775,25 @@ export class OpensteerMcpService {
     }
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
+}
+
+/**
+ * Why a tool is not offered. A connected agent cannot ask for more access itself: the person
+ * widens its grant under Connected agents, and the refusal says so.
+ */
+function unavailableTool(caller: AgentCaller, name: string): OpensteerError {
+  const family = agentToolFamilies[name as keyof typeof agentToolFamilies];
+  if (caller.kind === "connection" && family === "widen")
+    return new OpensteerError({
+      code: "forbidden",
+      message:
+        "A connected agent cannot ask for more access. The person widens what this agent may use under Connected agents.",
+      next: "Continue with what is shared with you, or tell the person what you need.",
+    });
+  return new OpensteerError({
+    code: "forbidden",
+    message: "This tool is unavailable to this caller",
+  });
 }
 
 function sessionAuthority(caller: AgentCaller): string {

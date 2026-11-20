@@ -148,5 +148,9 @@ export { returnHintResources } from "./personal-snapshot-store.js";
 
 export {
   acquireBrowserStandardCdpLease,
+  listBrowserStandardCdpLeases,
+  type BrowserStandardCdpLease,
   releaseBrowserStandardCdpLease,
 } from "./browser-standard-cdp-lease.js";
+
+export * from "./shared-chrome-attempts.js";

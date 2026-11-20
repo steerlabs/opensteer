@@ -194,7 +194,7 @@ describe("the Devices screen", () => {
   it("says where Opensteer lives and what kind of Home it is", () => {
     const thisMac = screen({ kind: "this-mac", from: "this-device", organization: null });
     expect(thisMac.lead).toBe(
-      "Your Opensteer lives on Studio Mac. Agents reach your other Devices through it.",
+      "Your Opensteer lives on Studio Mac. Agents reach your other devices through it.",
     );
     expect(thisMac.home).toMatchObject({
       title: "Studio Mac",
@@ -414,7 +414,7 @@ describe("the asleep moment", () => {
       line: "Couldn’t reach MacBook Air: asleep",
     });
     expect(asleepToolFailure(failed("computer_asleep", {}), machines)?.line).toBe(
-      "Couldn’t reach a Device: asleep",
+      "Couldn’t reach a device: asleep",
     );
     // The Home named the Device in its refusal: that name, even when the call named none.
     const named = {

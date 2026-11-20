@@ -2074,8 +2074,26 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ).rejects.toThrow("Watch activation is no longer active");
     expect((await reconcile()).activations).toEqual([]);
     expect(await personDetail(f, triggerId)).toMatchObject({
-      activation: { desired: "stopped", observed: "stopped", leaseExpiresAt: null },
+      activation: { desired: "stopped", observed: "starting", leaseExpiresAt: null },
       trigger: { status: "paused", pauseReason: TRIGGER_PROGRAM_UPDATE_REASON },
+    });
+    await triggerStore.applyWatchStatus({
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      runnerBootId: "authority-boot",
+      runnerConnectionGeneration: 1,
+      runnerId: f.runnerId,
+      observed: "stopped",
+      restartCount: 0,
+      healthySince: null,
+      lastError: null,
+      lastExitCode: null,
+      stderrTail: "",
+      stdoutTail: "",
+      verifiedContainment: true,
+    });
+    expect(await personDetail(f, triggerId)).toMatchObject({
+      activation: { desired: "stopped", observed: "stopped", leaseExpiresAt: null },
     });
     const repaired = createdSchema.parse(
       await agentTrigger(f.rootToken, {

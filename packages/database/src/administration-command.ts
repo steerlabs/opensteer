@@ -39,6 +39,17 @@ export async function replayAdministrationCommand(
   database: Kysely<DatabaseSchema>,
   identity: AdministrationCommandIdentity,
 ): Promise<{ readonly result: unknown; readonly output?: unknown } | undefined> {
+  if (!identity.admit) return readAdministrationCommand(database, identity);
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockAdministrationCommand(transaction, identity);
+    return readAdministrationCommand(transaction, identity);
+  });
+}
+
+async function readAdministrationCommand(
+  database: Kysely<DatabaseSchema>,
+  identity: AdministrationCommandIdentity,
+): Promise<{ readonly result: unknown; readonly output?: unknown } | undefined> {
   const existing = await findCommandByIdempotency(
     database,
     identity.requestedBy,
@@ -64,7 +75,7 @@ export async function administrationCommand<Result>(
   if (!identity) return mutate();
   await lockCommandIdempotency(transaction, identity.requestedBy, identity.idempotencyKey);
   await identity.admit?.(transaction);
-  const replay = await replayAdministrationCommand(transaction, identity);
+  const replay = await readAdministrationCommand(transaction, identity);
   if (replay) return replay.result as Result;
   const result = await mutate();
   await transaction

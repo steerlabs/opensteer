@@ -22,6 +22,7 @@ import type {
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
   agentHomeFilesCapability,
+  attemptStopStateCapability,
   runnerPowerStateCapability,
   runnerAgentStopCapability,
   type HostAppRequest,
@@ -784,6 +785,9 @@ export class RunnerRegistry {
           : {}),
         ...(identity.capabilities.includes(runnerAgentStopCapability)
           ? { acceptsAgentStop: true as const }
+          : {}),
+        ...(identity.capabilities.includes(attemptStopStateCapability)
+          ? { acceptsAttemptStopState: true as const }
           : {}),
         ...(identity.capabilities.includes(agentHomeFilesCapability) &&
         this.#hooks.onAgentHomeReport
@@ -2128,6 +2132,8 @@ export class RunnerRegistry {
         current.identity.connectionGeneration === connectionGeneration)
         ? current
         : undefined;
+    if (connection?.pendingAcks.has(command.commandId))
+      throw new CommandDispatchError("Runner command is already in flight", "retry");
     let runCancellation:
       | {
           active: boolean;
@@ -2141,7 +2147,7 @@ export class RunnerRegistry {
           pendingInterrupts: number;
         }
       | undefined;
-    if (command.type === "run.interrupt") {
+    if (command.type === "run.interrupt" && !command.stop) {
       const existing = this.#canceledRuns.get(command.runId);
       if (existing && existing.threadId !== command.threadId) {
         throw new CommandDispatchError("Run cancellation targets a different Thread", "failed");
@@ -2157,7 +2163,7 @@ export class RunnerRegistry {
         (connection.ownedRunIds.has(command.runId) || connection.observedRunIds.has(command.runId)),
       );
       this.#canceledRuns.set(command.runId, runCancellation);
-    } else if (command.type === "trigger.interrupt") {
+    } else if (command.type === "trigger.interrupt" && !command.stop) {
       triggerCancellation = this.#canceledTriggerOccurrences.get(command.occurrenceId) ?? {
         active: false,
         pendingInterrupts: 0,
@@ -2379,12 +2385,14 @@ export class RunnerRegistry {
     reconcileGeneration: number,
     desired: readonly WatchReconcileActivation[],
     signal: AbortSignal,
+    options?: { readonly filterDesired: () => Promise<readonly WatchReconcileActivation[]>; readonly connectionGeneration: number },
   ): Promise<void> {
+    const activations = [...desired];
     await this.dispatch(
       {
         commandId: createId("command"),
         correlationId: CorrelationIdSchema.parse(`watch:${randomUUID()}`),
-        desired: [...desired],
+        desired: activations,
         environmentId,
         reconcileGeneration,
         type: "watch.reconcile",
@@ -2392,6 +2400,12 @@ export class RunnerRegistry {
       signal,
       {
         beforeAck: async () => undefined,
+        ...(options ? {
+          connectionGeneration: options.connectionGeneration,
+          beforeSend: async () => {
+            activations.splice(0, activations.length, ...await options.filterDesired());
+          },
+        } : {}),
       },
     );
   }
@@ -2763,7 +2777,7 @@ export class RunnerRegistry {
             await this.#runHook(() => this.#hooks.onWatchStatus?.(connection.identity, message));
           } catch (error) {
             if (
-              message.observed !== "stopped" ||
+              (message.observed !== "stopped" && message.observed !== "expired") ||
               !(error instanceof OpensteerError) ||
               (error.code !== "forbidden" && error.code !== "not_found")
             )

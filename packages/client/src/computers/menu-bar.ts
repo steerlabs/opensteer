@@ -4,6 +4,7 @@ import type {
   DesktopRunnerStateSchema,
   MachineSummary,
 } from "@opensteer/protocol";
+import { agentWho, agentWhoName } from "../host/agent-identity.js";
 import { deviceAccessRows, type DeviceCapability } from "./devices.js";
 import { menuBarWords, type MenuBarCopyId } from "./menu-bar-copy.js";
 
@@ -34,27 +35,39 @@ export const MenuBarHomeLineSchema = z.strictObject({
 });
 export type MenuBarHomeLine = z.infer<typeof MenuBarHomeLineSchema>;
 
+/** The task a row opens in the app, in the Home that runs it. */
+export const MenuBarRowTargetSchema = z.strictObject({
+  deploymentId: z.string().min(1).max(255),
+  threadId: z.string().min(1).max(255),
+});
+export type MenuBarRowTarget = z.infer<typeof MenuBarRowTargetSchema>;
+
 /**
- * One thing using this Mac right now. `actor.label` is what the row shows
- * today; `name` and `markOrigin` stay empty until the Home names the agent.
+ * One thing using this Mac right now, as information: who, and what it is
+ * using. A row is never a control here; it opens its task in the app, where
+ * that task's own Stop is.
  */
 export const MenuBarRowSchema = z.strictObject({
   id: z.string().min(1).max(300),
   /** What the thing is, from the record it came from: never a label guessed for it. */
   kind: MenuBarRowKindSchema,
+  /**
+   * Who is using it, said once: an outside agent as its connection proved it
+   * ("Verified: Claude", "Says it is Grok"), else the engine or the task.
+   */
   actor: z.strictObject({
     label: Text,
-    name: z.string().min(1).max(120).nullable(),
-    markOrigin: z.string().min(1).max(255).nullable(),
+    /** The name alone, for the row's mark. */
+    name: z.string().min(1).max(120),
+    verified: z.boolean(),
+    selfAsserted: z.boolean(),
+    /** A verified platform's logo; never guessed from a domain. */
+    providerId: z.string().min(1).max(64).nullable(),
   }),
+  /** What it is using on this Mac, and for which task when the task is not the first line. */
   using: Text,
-  /** This Mac can stop this one thing itself, the way the Home's Stop does. */
-  stoppable: z.boolean(),
-  /**
-   * A row being stopped stays until its end is confirmed; one whose Stop was
-   * not confirmed says so and can be stopped again.
-   */
-  state: z.enum(["active", "stopping", "failed"]),
+  /** The task this opens in the app; null when the record names none, which opens the app. */
+  opens: MenuBarRowTargetSchema.nullable(),
 });
 export type MenuBarRow = z.infer<typeof MenuBarRowSchema>;
 
@@ -123,6 +136,10 @@ export const MenuBarSwitchInputSchema = z.strictObject({
 });
 export type MenuBarSwitchInput = z.infer<typeof MenuBarSwitchInputSchema>;
 
+/**
+ * @deprecated The popover no longer stops one row (rows only open their task);
+ * this goes with desktop main's per-row Stop.
+ */
 export const MenuBarRowStopInputSchema = z.strictObject({ id: z.string().min(1).max(300) });
 
 /** What the Opensteer menu bar item's popover can ask of desktop main. */
@@ -130,7 +147,13 @@ export interface OpensteerMenuBarBridge {
   status(): Promise<MenuBarStatus>;
   onStatus(listener: (status: MenuBarStatus) => void): () => void;
   setSwitch(input: MenuBarSwitchInput): Promise<void>;
-  stopRow(input: { readonly id: string }): Promise<void>;
+  /**
+   * Opens a row's task in the app, switching to its Home first. Until desktop
+   * main offers it, a row opens the app instead.
+   */
+  openRow?(target: MenuBarRowTarget): Promise<void>;
+  /** @deprecated Never called: the popover's only Stop is Stop everything. */
+  stopRow?(input: { readonly id: string }): Promise<void>;
   stop(): Promise<void>;
   resume(): Promise<void>;
   setOpenAtLogin(on: boolean): Promise<void>;
@@ -138,6 +161,14 @@ export interface OpensteerMenuBarBridge {
   openNeedsYou(deploymentId: string): Promise<void>;
   openSettings(): Promise<void>;
   quitCompletely(): Promise<void>;
+}
+
+/** What a record may say about whose work it is; each part optional. */
+export interface MenuBarRecordFacts {
+  /** The Home and task this work belongs to, when the record names them. */
+  readonly task?: MenuBarRowTarget | null;
+  /** An outside agent's connection, as its Home presents it, when one does this work. */
+  readonly agent?: Parameters<typeof agentWho>[0] | null;
 }
 
 export interface MenuBarMachine {
@@ -169,39 +200,50 @@ export interface MenuBarInput {
    * failed. A Home with no entry has not answered yet.
    */
   readonly needsYou: ReadonlyMap<string, number | null>;
-  /** What this Mac itself knows is using it. */
+  /**
+   * What this Mac itself knows is using it. `task` (the Home and task the
+   * record belongs to) and `agent` (an outside agent's connection) are
+   * optional: a row without a task opens the app, one without an agent is
+   * named by its task.
+   */
   readonly local: {
-    readonly apps: readonly {
+    readonly apps: readonly ({
       readonly sessionId: string;
       readonly threadTitle: string | null;
       readonly app: string | null;
-      readonly state?: MenuBarRow["state"];
-    }[];
+    } & MenuBarRecordFacts)[];
     /** Browser sessions an agent is acting in, one per session. */
-    readonly tabs: readonly { readonly sessionId: string; readonly profile: boolean }[];
+    readonly tabs: readonly ({
+      readonly sessionId: string;
+      readonly profile: boolean;
+      readonly threadTitle?: string | null;
+    } & MenuBarRecordFacts)[];
     /** Runs the Device Runners on this Mac are working on, whatever their Home's reach. */
-    readonly runs?: readonly {
+    readonly runs?: readonly ({
       readonly deploymentId: string;
       readonly runId: string;
       readonly engine: string;
       readonly purpose: "task" | "voice" | "background-job";
-      readonly state?: MenuBarRow["state"];
-    }[];
+      readonly threadId?: string | null;
+      readonly threadTitle?: string | null;
+    } & Pick<MenuBarRecordFacts, "agent">)[];
   };
   /** Typed records a readable Home reports about work on this Mac; null when none answered. */
   readonly homeWork: {
     /** Tasks this Mac's own Home is running here. */
-    readonly tasks: readonly {
+    readonly tasks: readonly ({
       readonly threadId: string;
       readonly title: string;
-      readonly state?: MenuBarRow["state"];
-    }[];
+    } & Pick<MenuBarRecordFacts, "agent">)[];
     /** Shells other computers' agents hold open on this Mac. */
-    readonly shells: readonly {
+    readonly shells: readonly ({
       readonly id: string;
       readonly threadTitle: string;
       readonly callerMachineName: string;
-    }[];
+      readonly threadId?: string | null;
+      /** The Home whose record of this Mac reported the shell. */
+      readonly deploymentId?: string | null;
+    } & Pick<MenuBarRecordFacts, "agent">)[];
   } | null;
   readonly openAtLogin: { readonly on: boolean; readonly available: boolean };
 }
@@ -330,71 +372,118 @@ function homeNames(input: MenuBarInput): Map<string, string> {
 /**
  * Up to three things using this Mac, each from a record that says what it is:
  * what the Mac itself holds first, so the rows are right while every Home is
- * unreachable, then what a Home reports.
+ * unreachable, then what a Home reports. Each says who and what, and opens its
+ * task when the record names one.
  */
 export function menuBarRightNow(input: MenuBarInput): MenuBarRow[] {
-  const agent = { label: menuBarWords("menubar.rightNow.agent"), name: null, markOrigin: null };
-  const titled = (title: string | null | undefined) =>
-    title?.trim() ? { ...agent, label: title.trim() } : agent;
+  const hosted = input.hostedHome?.deploymentId ?? null;
   const rows: MenuBarRow[] = [
-    ...input.local.apps.map((session): MenuBarRow => ({
-      id: `apps:${session.sessionId}`,
-      kind: "apps",
-      actor: titled(session.threadTitle),
-      using: session.app ?? menuBarWords("menubar.rightNow.app"),
-      stoppable: true,
-      state: session.state ?? "active",
-    })),
-    ...input.local.tabs.map((tab): MenuBarRow => ({
-      id: `browser:${tab.sessionId}`,
-      kind: "browser",
-      actor: agent,
-      using: menuBarWords(tab.profile ? "menubar.rightNow.profile" : "menubar.rightNow.tab"),
-      stoppable: false,
-      state: "active",
-    })),
-    ...(input.local.runs ?? []).map((run): MenuBarRow => ({
-      id: `runner:${run.deploymentId}:${run.runId}`,
-      kind: "task",
-      actor: { label: run.engine, name: null, markOrigin: null },
-      using: menuBarWords(
-        run.purpose === "background-job"
-          ? "menubar.rightNow.backgroundJob"
-          : run.purpose === "voice"
-            ? "menubar.rightNow.voice"
-            : "menubar.rightNow.running",
-      ),
-      stoppable: true,
-      state: run.state ?? "active",
-    })),
-    ...(input.homeWork?.tasks ?? []).map((task): MenuBarRow => ({
-      id: `home:${task.threadId}`,
-      kind: "task",
-      actor: {
-        label: task.title.trim() || menuBarWords("menubar.rightNow.task"),
-        name: null,
-        markOrigin: null,
-      },
-      using: menuBarWords("menubar.rightNow.running"),
-      stoppable: true,
-      state: task.state ?? "active",
-    })),
-    ...(input.homeWork?.shells ?? []).map((shell): MenuBarRow => ({
-      id: `shell:${shell.id}`,
-      kind: "files",
-      actor: {
-        label: shell.threadTitle.trim() || menuBarWords("menubar.rightNow.task"),
-        name: null,
-        markOrigin: null,
-      },
-      using: menuBarWords("menubar.rightNow.shell", { machine: shell.callerMachineName }),
-      stoppable: false,
-      state: "active",
-    })),
+    ...input.local.apps.map((session) =>
+      row({
+        id: `apps:${session.sessionId}`,
+        kind: "apps",
+        who: session.agent,
+        title: session.threadTitle,
+        using: session.app ?? menuBarWords("menubar.rightNow.app"),
+        opens: session.task,
+      }),
+    ),
+    ...input.local.tabs.map((tab) =>
+      row({
+        id: `browser:${tab.sessionId}`,
+        kind: "browser",
+        who: tab.agent,
+        title: tab.threadTitle,
+        using: menuBarWords(tab.profile ? "menubar.rightNow.profile" : "menubar.rightNow.tab"),
+        opens: tab.task,
+      }),
+    ),
+    ...(input.local.runs ?? []).map((run) =>
+      row({
+        id: `runner:${run.deploymentId}:${run.runId}`,
+        kind: "task",
+        who: run.agent,
+        name: run.engine,
+        title: run.threadTitle,
+        using: menuBarWords(
+          run.purpose === "background-job"
+            ? "menubar.rightNow.backgroundJob"
+            : run.purpose === "voice"
+              ? "menubar.rightNow.voice"
+              : "menubar.rightNow.running",
+        ),
+        opens: run.threadId ? { deploymentId: run.deploymentId, threadId: run.threadId } : null,
+      }),
+    ),
+    ...(input.homeWork?.tasks ?? []).map((task) =>
+      row({
+        id: `home:${task.threadId}`,
+        kind: "task",
+        who: task.agent,
+        title: task.title,
+        fallback: menuBarWords("menubar.rightNow.task"),
+        using: menuBarWords("menubar.rightNow.running"),
+        opens: hosted ? { deploymentId: hosted, threadId: task.threadId } : null,
+      }),
+    ),
+    ...(input.homeWork?.shells ?? []).map((shell) =>
+      row({
+        id: `shell:${shell.id}`,
+        kind: "files",
+        who: shell.agent,
+        title: shell.threadTitle,
+        fallback: menuBarWords("menubar.rightNow.task"),
+        using: menuBarWords("menubar.rightNow.shell", { machine: shell.callerMachineName }),
+        opens:
+          shell.threadId && shell.deploymentId
+            ? { deploymentId: shell.deploymentId, threadId: shell.threadId }
+            : null,
+      }),
+    ),
   ];
-  return rows
-    .slice(0, menuBarMaxRows)
-    .map((row) => ({ ...row, actor: { ...row.actor, label: clip(row.actor.label, 120) } }));
+  return rows.slice(0, menuBarMaxRows);
+}
+
+/**
+ * One row: an outside agent by the name its connection proved, else the
+ * engine, else the task; the task joins the second line when it is not the
+ * first.
+ */
+function row(input: {
+  readonly id: string;
+  readonly kind: MenuBarRow["kind"];
+  readonly who: MenuBarRecordFacts["agent"];
+  /** The engine doing the work, when the record names one. */
+  readonly name?: string;
+  readonly title: string | null | undefined;
+  /** Said when nothing else names who: "An agent" unless the record is a task. */
+  readonly fallback?: string;
+  readonly using: string;
+  readonly opens: MenuBarRowTarget | null | undefined;
+}): MenuBarRow {
+  const title = input.title?.trim() || null;
+  const who = input.who ? agentWho(input.who) : null;
+  const name = who?.heading || input.name?.trim() || title;
+  const label = who
+    ? agentWhoName(who)
+    : (name ?? input.fallback ?? menuBarWords("menubar.rightNow.agent"));
+  const using =
+    title && name !== title
+      ? menuBarWords("menubar.rightNow.forTask", { using: input.using, task: title })
+      : input.using;
+  return {
+    id: input.id,
+    kind: input.kind,
+    actor: {
+      label: clip(label, 120),
+      name: clip(name ?? label, 120),
+      verified: who?.verified ?? false,
+      selfAsserted: who?.selfAsserted ?? false,
+      providerId: who?.providerId ?? null,
+    },
+    using: clip(using, 600),
+    opens: input.opens ?? null,
+  };
 }
 
 /** One line per thing using this Mac, for Quit Opensteer's question. */

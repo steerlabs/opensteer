@@ -358,9 +358,9 @@ export class NativeTeamEntry {
         return {
           status: "update-required",
           error: new Error(
-            "Update the team server to sign in on this device without an Opensteer Account." +
+            "Update the team server to sign in on this device without an Opensteer account." +
               (verified.capabilities.includes("team-session-exchange-v1")
-                ? " Or sign in to your Opensteer Account on this device."
+                ? " Or sign in to your Opensteer account on this device."
                 : ""),
           ),
         };

@@ -18,6 +18,10 @@ source "$home_dir/update.sh"
 recover_home() {
   restore_rollback
   update_recovery
+  if [[ -f "$home_dir/backup.resume" ]]; then
+    start_pod
+    rm -f -- "$home_dir/backup.resume"
+  fi
 }
 
 case "${1:-}" in
@@ -54,7 +58,7 @@ case "${1:-}" in
     recover_home
     pid=$(host_pid) || pid=''
     if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
-      check_firewall "$pid" &&
+      { check_firewall "$pid" || { apply_firewall "$pid" && check_firewall "$pid"; }; } &&
       compose ps --all --format json | jq -es 'length == 7 and all(.[]; .Health == "healthy")' >/dev/null; }; then
       compose down
       start_pod
@@ -70,6 +74,7 @@ case "${1:-}" in
     compose down
     ;;
   update|scheduled-update)
+    if [[ -f "$home_dir/managed" && $# != 1 ]]; then fail 'Managed Homes update only from the Account feed.'; fi
     lock_home
     recover_home
     update_home "$@"

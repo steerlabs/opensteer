@@ -1,5 +1,7 @@
 import {
   accessModeOptions,
+  chromeTabGrantOptions,
+  type ChromeTabGrantCatalog,
   agentWords,
   connectionModeDescriptions,
   draftAppsSummary,
@@ -39,6 +41,7 @@ export interface AgentGrantContext {
   readonly agent: string;
   readonly home: string;
   readonly browser: BrowserOptions;
+  readonly chromeTabs?: ChromeTabGrantCatalog | undefined;
   readonly apps: AgentOptionsRead<readonly AppOption[]>;
   readonly plugins: AgentOptionsRead<PluginOptions>;
   readonly disabled: boolean;
@@ -52,6 +55,7 @@ export function agentGrantSections(
     readonly mode: ThreadAccessMode;
     readonly onScope: (scope: AgentGrantDraft["scope"]) => void;
     readonly onOpen: (sheet: AgentGrantSheet) => void;
+    readonly onChromeTab: (resource: ReturnType<typeof chromeTabGrantOptions>["options"][number]["resource"], on: boolean) => void;
     readonly onTasks: (on: boolean) => void;
   },
 ): readonly NativeSettingsSection[] {
@@ -85,6 +89,7 @@ export function agentGrantSections(
       : {}),
   };
   if (draft.scope === "everything") return [scope];
+  const chrome = chromeTabGrantOptions(context.chromeTabs);
   const names = { profiles: context.browser.profiles.map(({ id, name }) => ({ id, name })) };
   const shared = draftSharedProfiles(draft, names);
   const offline = draftNewProfileHome(draft, context.browser);
@@ -112,6 +117,15 @@ export function agentGrantSections(
           disabled,
           onPress: () => context.onOpen("browser"),
         },
+        ...chrome.options.map((option): NativeSettingsRow => ({
+          key: option.resource.sourceId,
+          kind: "toggle",
+          label: option.name,
+          detail: agentWords("consent.chromeTabs.detail"),
+          value: draftHas(draft, option.resource),
+          disabled,
+          onChange: (on) => context.onChromeTab(option.resource, on),
+        })),
         {
           key: "apps",
           kind: "button",
@@ -141,6 +155,9 @@ export function agentGrantSections(
       ],
       ...(resourcesFooter ? { footer: resourcesFooter } : {}),
     },
+    ...(chrome.needsPairing
+      ? [{ key: "chrome-pairing", title: "", rows: [], footer: { text: agentWords("consent.chromeTabs.repair") } }]
+      : []),
     {
       key: "tasks",
       title: "",

@@ -319,7 +319,8 @@ export class ThreadService {
     input: EnqueueThreadInputRequest,
     admission?: ThreadMutationAdmission,
   ) {
-    if (actor.kind !== "person") await this.assertTarget(actor, input.threadId);
+    if (actor.kind !== "person" && (actor.kind !== "connection" || input.policy !== "queue"))
+      await this.assertTarget(actor, input.threadId);
     const request = {
       ...input,
       ...(actor.kind === "person" || admission

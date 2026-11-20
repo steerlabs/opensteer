@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  threadAccessModeAtMost,
   type AssignmentId,
   type EnvironmentId,
   type GrantId,
@@ -137,7 +138,7 @@ export async function assertActiveGrant(
   const run = await database
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select(["runs.assignmentId", "runs.connectionId", "threads.originConnectionId"])
+    .select(["runs.assignmentId", "runs.connectionId", "runs.admittedGrantRevision", "runs.admittedAccessMode", "runs.bindingGeneration", "threads.originConnectionId"])
     .where("runs.id", "=", input.runId)
     .executeTakeFirstOrThrow();
   const grant = await database
@@ -158,8 +159,17 @@ export async function assertActiveGrant(
       code: "forbidden",
       message: "Run tool authority has ended",
     });
-  if (run.connectionId)
-    await liveDelegatingConnection(database, input.requestedBy, run.connectionId);
+  if (run.connectionId) {
+    const connection = await liveDelegatingConnection(database, input.requestedBy, run.connectionId);
+    if (run.bindingGeneration !== input.bindingGeneration ||
+      (connection.cleanupMinimumGrantRevision !== null && (
+        run.admittedGrantRevision === null ||
+        run.admittedGrantRevision < connection.cleanupMinimumGrantRevision ||
+        (run.admittedGrantRevision === connection.cleanupMinimumGrantRevision &&
+          connection.cleanupMaximumMode !== null && (run.admittedAccessMode === null ||
+            !threadAccessModeAtMost(run.admittedAccessMode, connection.cleanupMaximumMode)))
+      ))) refuseExecutionBinding();
+  }
   return { agentConnectionId: run.connectionId, taskOriginConnectionId: run.originConnectionId };
 }
 /** Whom an authenticated Run works for, from the row that authenticated it. */

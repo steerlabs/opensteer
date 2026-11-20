@@ -18,6 +18,7 @@ type Share = {
   readonly link: ChromeTabLink;
   info: BrowserSourceTabShared;
   attachment?: Attachment;
+  detachFailed?: boolean;
 };
 type TabView = { readonly shareId: string; readonly title: string; readonly url: string };
 
@@ -127,6 +128,7 @@ export class ChromeTabDebugger {
   readonly #byTab = new Map<number, Share>();
   readonly #detaching = new Map<number, Promise<void>>();
   readonly #links = new Map<string, ChromeTabLink>();
+  readonly #detachReceipts = new WeakSet<ChromeTabLink>();
   readonly #popups = new Map<number, { parent: Share; attachment: Attachment }>();
 
   constructor(
@@ -152,7 +154,10 @@ export class ChromeTabDebugger {
     });
     api.onDetach.addListener((source) => {
       const share = source.tabId === undefined ? undefined : this.#byTab.get(source.tabId);
-      if (share?.attachment && !this.#detaching.has(share.tabId)) this.#unshare(share);
+      if (share?.attachment && !this.#detaching.has(share.tabId)) {
+        delete share.attachment;
+        this.#unshare(share);
+      }
     });
     navigation?.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
       const parent = this.#byTab.get(sourceTabId);
@@ -192,10 +197,16 @@ export class ChromeTabDebugger {
     tabs.onReplaced.addListener((_added, removed) => remove(removed));
   }
 
-  connect(sourceId: string, send: (frame: TabFrame) => boolean, stop: () => void): ChromeTabLink {
+  connect(
+    sourceId: string,
+    send: (frame: TabFrame) => boolean,
+    stop: () => void,
+    detachReceipts = false,
+  ): ChromeTabLink {
     this.disconnect(sourceId);
     const link = new ChromeTabLink(send, stop, (command) => this.#execute(link, command));
     this.#links.set(sourceId, link);
+    if (detachReceipts) this.#detachReceipts.add(link);
     return link;
   }
 
@@ -230,7 +241,7 @@ export class ChromeTabDebugger {
     if (this.#shares.size >= maxShares) throw new Error("Too many tabs are shared.");
     const targetId = await this.#targetId(tab.id);
     if (this.#links.get(sourceId) !== link || !targetId)
-      throw new Error("This Chrome tab cannot be debugged.");
+      throw new Error("This Chrome tab can’t be shared.");
     if (this.#byTab.has(tab.id) || this.#shares.size >= maxShares)
       throw new Error("This tab is already shared or there are too many shared tabs.");
     this.#share(link, tab.id, tab, targetId);
@@ -285,24 +296,52 @@ export class ChromeTabDebugger {
     link.announce(info);
   }
 
-  #unshare(share: Share): void {
-    if (!this.#shares.delete(share.info.shareId)) return;
+  #unshare(share: Share): Promise<void> {
+    if (!this.#shares.delete(share.info.shareId)) return Promise.resolve();
     this.#byTab.delete(share.tabId);
     for (const [id, candidate] of this.#popups)
       if (candidate.parent === share) this.#popups.delete(id);
     share.link.announce({ type: "tab.unshared", shareId: share.info.shareId });
-    for (const child of this.#shares.values())
-      if (child.info.openerShareId === share.info.shareId) this.#unshare(child);
-    void this.#detach(share);
+    const children = [...this.#shares.values()].filter(
+      (child) => child.info.openerShareId === share.info.shareId,
+    );
+    const detached = Promise.all([
+      this.#detach(share),
+      ...children.map((child) => this.#unshare(child)),
+    ]).then(() => {
+      if (this.#detachReceipts.has(share.link))
+        share.link.announce({ type: "tab.detached", shareId: share.info.shareId });
+    });
+    void detached.catch(() => undefined);
+    return detached;
   }
 
   #detach(share: Share): Promise<void> {
     const current = share.attachment;
-    if (!current) return this.#detaching.get(share.tabId) ?? Promise.resolve();
+    if (!current) {
+      const pending = this.#detaching.get(share.tabId);
+      if (pending) return pending;
+      return share.detachFailed
+        ? Promise.reject(
+            new Error("Opensteer couldn’t confirm that Chrome stopped sharing this tab."),
+          )
+        : Promise.resolve();
+    }
     delete share.attachment;
     const job = current.ready
-      .then(() => this.#debugger.detach({ tabId: share.tabId }))
-      .catch(() => undefined)
+      .then(
+        () =>
+          this.#debugger.detach({ tabId: share.tabId }).catch(async (error: unknown) => {
+            const targets = await this.#debugger.getTargets();
+            if (targets.some((target) => target.tabId === share.tabId && target.attached !== false))
+              throw error;
+          }),
+        () => undefined,
+      )
+      .catch((error: unknown) => {
+        share.detachFailed = true;
+        throw error;
+      })
       .finally(() => {
         if (this.#detaching.get(share.tabId) === job) this.#detaching.delete(share.tabId);
       });
@@ -317,16 +356,18 @@ export class ChromeTabDebugger {
     const share = this.#shares.get(command.shareId);
     if (!share || share.link !== link) throw new Error("This Chrome tab is no longer shared.");
     if (command.action === "unshare") {
-      this.#unshare(share);
+      await this.#unshare(share);
       return {};
     }
     if (command.action === "detach") {
       if (share.attachment?.id === command.attachmentId) await this.#detach(share);
       return {};
     }
+    if (share.detachFailed)
+      throw new Error("Opensteer couldn’t confirm that Chrome stopped sharing this tab.");
     const existing = share.attachment;
     if (existing && existing.id !== command.attachmentId)
-      throw new Error("Chrome debugger attachment changed.");
+      throw new Error("Chrome stopped sharing this tab.");
     const attachment = (share.attachment ??= {
       id: command.attachmentId,
       ready: (this.#detaching.get(share.tabId) ?? Promise.resolve()).then(() => {
@@ -341,7 +382,7 @@ export class ChromeTabDebugger {
       if (share.attachment === attachment) delete share.attachment;
       throw error;
     }
-    if (share.attachment !== attachment) throw new Error("Chrome debugger detached.");
+    if (share.attachment !== attachment) throw new Error("Chrome stopped sharing this tab.");
     return (
       (await this.#debugger.sendCommand(
         {

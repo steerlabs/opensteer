@@ -102,6 +102,8 @@ export const databaseLockOrder = [
   // Written only under the deployment fence, first by commands that already hold their idempotency key.
   "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
+  "agent_directory_cache",
+  "agent_embedder_assertion_claims",
   "agent_connections",
   // A session and its operations are admitted under their connection, before any Run.
   "agent_sessions",

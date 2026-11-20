@@ -341,7 +341,7 @@ describe("PushRegistration", () => {
 
   it("says what failed when the Account refuses, and retries on the next sync", async () => {
     const { registration, registry } = open();
-    registry.failure = new Error("The Opensteer Account rejected the notification registration.");
+    registry.failure = new Error("The Opensteer account rejected the notification registration.");
 
     await registration.start();
 

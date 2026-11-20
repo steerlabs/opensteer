@@ -1,5 +1,5 @@
 import { sql, type QueryResult } from "kysely";
-import { Pool } from "pg";
+import { Client, Pool, type PoolClient } from "pg";
 import { expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createDatabase, withDatabaseTransaction } from "./connection.js";
@@ -8,6 +8,84 @@ import { describeStore } from "./store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 describeStore("automatic database operation budgets", (it) => {
+  it("joins cancellation when the query ends before its control connection opens", async ({
+    storeFixture,
+  }) => {
+    const { database, pool } = await ownTestDatabaseProducer(storeFixture.databaseUrl, async () => {
+      const pool = new Pool({ connectionString: storeFixture.databaseUrl, max: 1 });
+      const database = createDatabase({ connectionString: storeFixture.databaseUrl }, pool);
+      return { database, pool, close: () => database.destroy() };
+    });
+    const lock = 596_204;
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const blocker = storeFixture.database.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(${lock})`.execute(tx);
+      locked.resolve();
+      await release.promise;
+    });
+    void blocker.catch(locked.reject);
+    const active = Promise.withResolvers<void>();
+    const queryEnded = Promise.withResolvers<void>();
+    const onAcquire = (client: PoolClient) => {
+      const query = client.query;
+      vi.spyOn(client, "query").mockImplementation(function (this: PoolClient, ...args: unknown[]) {
+        const running: unknown = Reflect.apply(query, this, args);
+        if (
+          typeof args[0] === "string" &&
+          args[0].includes("pg_advisory_xact_lock") &&
+          running instanceof Promise
+        ) {
+          active.resolve();
+          void running.then(() => queryEnded.resolve(), queryEnded.reject);
+        }
+        return running as ReturnType<PoolClient["query"]>;
+      });
+    };
+    const controlOpened = Promise.withResolvers<void>();
+    const finishConnect = Promise.withResolvers<void>();
+    const connect = Client.prototype.connect;
+    const connection = vi.spyOn(Client.prototype, "connect").mockImplementation(function (
+      this: Client,
+      callback?: Parameters<Client["connect"]>[0],
+    ) {
+      if (callback) return connect.call(this, callback);
+      const opening: Promise<Client> = Reflect.apply(connect, this, []);
+      return opening.then(async (client) => {
+        controlOpened.resolve();
+        await finishConnect.promise;
+        return client;
+      });
+    });
+    const errors = vi.spyOn(console, "error");
+    const controller = new AbortController();
+    try {
+      await locked.promise;
+      pool.once("acquire", onAcquire);
+      const read = withDatabaseOperationSignal(controller.signal, Date.now() + 2_000, () =>
+        sql`select pg_advisory_xact_lock(${lock})`.execute(database),
+      );
+      void read.catch(() => undefined);
+      await active.promise;
+      controller.abort(new Error("Read cancelled"));
+      await expect(read).rejects.toThrow("Read cancelled");
+      await controlOpened.promise;
+      release.resolve();
+      await queryEnded.promise;
+      finishConnect.resolve();
+      await sql`select 1`.execute(database);
+      expect(errors).not.toHaveBeenCalledWith(expect.stringContaining("inflightQueryAbortHandler"));
+    } finally {
+      release.resolve();
+      finishConnect.resolve();
+      pool.off("acquire", onAcquire);
+      connection.mockRestore();
+      errors.mockRestore();
+      await blocker;
+      await database.destroy();
+    }
+  });
+
   for (const ending of ["abort", "deadline", "explicit options"] as const) {
     it(`cancels a locking read on ${ending} and returns its checkout`, async ({ storeFixture }) => {
       const f = await storeFixture.createRunFixture("operation-read");

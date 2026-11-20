@@ -2283,7 +2283,7 @@ function expiredAccount(): DesktopAccountAuthState {
   return {
     account: {
       available: true,
-      detail: "Your Opensteer Account authorization expired. Sign in again.",
+      detail: "Your Opensteer account authorization expired. Sign in again.",
       identity: null,
       status: "error",
     },

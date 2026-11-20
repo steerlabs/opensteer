@@ -133,7 +133,7 @@ export function connectionInstructionsFor(grant: AgentGrant): string {
   const lines = [
     "Opensteer runs the person's agents and tools on their computers. The person chose what this connection may use; it has an access-mode ceiling, expiry and revoke, and you see only tasks you started.",
     families.has("tasks")
-      ? "- Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. A task runs the person's engine in Agent home with that computer's files, commands and network, under the task's mode. Always name taskId."
+      ? "- Tasks: opensteer_task_create, opensteer_task_read and bounded opensteer_task_wait. A task runs one of the person's own agents on their Home with that computer's files, commands and network, under the task's mode. Always name taskId."
       : "- You may not ask the person's agents to work on tasks.",
     ...(families.has("browser") ? ["- Browser: only the browser profiles the person chose."] : []),
     ...(families.has("computer")

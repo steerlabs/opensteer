@@ -39,15 +39,6 @@ export function cloudComputerPlanView(
   return { name: plan.name, ...cloudComputerPriceLine(plan, locale) };
 }
 
-/**
- * Facts the design shows that the Account does not report yet. Each is null until it
- * does; a screen never draws a value for one it does not have.
- */
-export interface CloudComputerUnreported {
-  readonly lastBackupAt: string | null;
-}
-const unreported: CloudComputerUnreported = { lastBackupAt: null };
-
 /** One preparation step the Account reports, in its words and state. */
 export interface CloudComputerStepView {
   readonly id: CloudComputerPreparationStep["id"];
@@ -83,13 +74,13 @@ export interface CloudComputerDetail {
   readonly region: string | null;
   readonly browserAddress: string | null;
   readonly renews: string | null;
+  readonly lastBackup: string | null;
   /** The Account's setup steps while preparing; null when it reports none. */
   readonly steps: readonly CloudComputerStepView[] | null;
   readonly canSuspend: boolean;
   readonly canResume: boolean;
   /** False while a deletion waits on the payment provider: only that state shows. */
   readonly canDelete: boolean;
-  readonly unreported: CloudComputerUnreported;
 }
 
 export type CloudComputerScreen =
@@ -136,7 +127,7 @@ export function cloudComputerDetail(view: CloudComputerView, locale?: string): C
           ? { label: cloudWords("cloud.status.suspended"), tone: "neutral", reason }
           : view.status === "needs_attention"
             ? { label: cloudWords("cloud.status.attention"), tone: "attention", reason }
-            : { label: cloudWords("cloud.deleted"), tone: "neutral", reason: null };
+            : { label: "Deleted", tone: "neutral", reason: null };
   const deletionPending =
     view.status === "needs_attention" && view.reasonCode === "cloud-computer-deletion-pending";
   const browserIp: CloudComputerBrowserIpView =
@@ -168,6 +159,11 @@ export function cloudComputerDetail(view: CloudComputerView, locale?: string): C
     region: view.region?.label ?? null,
     browserAddress: view.egressAddress ?? null,
     renews: view.renewsAt ? cloudWords("cloud.renews", { date: day(view.renewsAt, locale) }) : null,
+    lastBackup: view.lastBackupAt
+      ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+          new Date(view.lastBackupAt),
+        )
+      : null,
     steps:
       view.status === "preparing" && view.steps && view.steps.length > 0
         ? view.steps.map((step) => ({
@@ -179,7 +175,6 @@ export function cloudComputerDetail(view: CloudComputerView, locale?: string): C
     canSuspend: !deletionPending && (view.status === "ready" || view.status === "needs_attention"),
     canResume: view.status === "suspended",
     canDelete: !deletionPending,
-    unreported,
   };
 }
 
@@ -203,6 +198,7 @@ export interface WorkHomeCard {
   readonly deploymentId: string | null;
   readonly region: string | null;
   readonly browserAddress: string | null;
+  readonly lastBackup: string | null;
   readonly steps: readonly CloudComputerStepView[] | null;
   readonly policy: ReturnType<typeof workPolicyLines>;
   readonly policyTitle: string;
@@ -234,6 +230,7 @@ export function workHomeCard(work: DesktopWorkHome, locale?: string): WorkHomeCa
     deploymentId: computer?.deploymentId ?? null,
     region: computer?.region ?? null,
     browserAddress: computer?.browserAddress ?? null,
+    lastBackup: computer?.lastBackup ?? null,
     steps: assignment.homeStatus === "preparing" ? (computer?.steps ?? null) : null,
     policy: workPolicyLines(policy),
     policyTitle: orgWords("org.work.policy", { organization }),

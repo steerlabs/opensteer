@@ -23,7 +23,7 @@ export class AccountReauthorizationRequiredError extends Error {
   readonly code = "recent_sign_in_required" as const;
 
   constructor() {
-    super("Verify your Opensteer Account again, then repeat this action.");
+    super("Verify your Opensteer account again, then repeat this action.");
     this.name = "AccountReauthorizationRequiredError";
   }
 }
@@ -112,7 +112,7 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
     const id = DeploymentIdSchema.parse(deploymentId);
     const authorization = await this.#authorization.accountAuthorizationHeader();
     if (!authorization || !/^Bearer [^\p{Control}\s]+$/u.test(authorization)) {
-      throw new Error("Sign in to your Opensteer Account to manage Connect.");
+      throw new Error("Sign in to your Opensteer account to manage Connect.");
     }
     const endpoint = new URL(endpointPath(id, suffix), this.#accountOrigin).toString();
     const controller = new AbortController();
@@ -143,11 +143,11 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
       if (contentLength !== null) {
         if (!/^(0|[1-9][0-9]*)$/u.test(contentLength)) {
           await response.body?.cancel();
-          throw new Error("The Opensteer Account returned an invalid Connect response.");
+          throw new Error("The Opensteer account returned an invalid Connect response.");
         }
         if (Number(contentLength) > maximumResponseBytes) {
           await response.body?.cancel();
-          throw new Error("The Opensteer Account Connect response is too large.");
+          throw new Error("The Opensteer account Connect response is too large.");
         }
       }
       const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
@@ -160,10 +160,10 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
         } else {
           await response.body?.cancel();
         }
-        throw new Error("The Opensteer Account rejected the Connect request.");
+        throw new Error("The Opensteer account rejected the Connect request.");
       }
       if (contentType !== "application/json") {
-        throw new Error("The Opensteer Account returned an invalid Connect response.");
+        throw new Error("The Opensteer account returned an invalid Connect response.");
       }
       let decoded: unknown;
       try {
@@ -172,12 +172,12 @@ export class AccountConnectClient implements PersonalHostConnectControlPlane {
             abortError: () => new Error("Opensteer Connect request ended."),
             maximumBytes: maximumResponseBytes,
             signal: controller.signal,
-            sizeError: () => new Error("The Opensteer Account Connect response is too large."),
+            sizeError: () => new Error("The Opensteer account Connect response is too large."),
           }),
         );
       } catch (error) {
         if (error instanceof SyntaxError) {
-          throw new Error("The Opensteer Account returned an invalid Connect response.");
+          throw new Error("The Opensteer account returned an invalid Connect response.");
         }
         throw error;
       }
@@ -207,7 +207,7 @@ async function readControlPlaneError(response: Response, signal: AbortSignal) {
           abortError: () => new Error("Opensteer Connect request ended."),
           maximumBytes: maximumResponseBytes,
           signal,
-          sizeError: () => new Error("The Opensteer Account Connect response is too large."),
+          sizeError: () => new Error("The Opensteer account Connect response is too large."),
         }),
       ),
     ).data;

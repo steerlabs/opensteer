@@ -21,7 +21,7 @@ export const handleTeamSessions =
     if (!sessions)
       return {
         ok: false,
-        error: { status: 503, reason: null, message: "This app has no Opensteer Account service." },
+        error: { status: 503, reason: null, message: "This app has no Opensteer account service." },
       };
     try {
       return { ok: true, data: await sessions.run(call) };

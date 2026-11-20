@@ -94,7 +94,7 @@ it("leads with the Home, says where Opensteer lives, then lists every other Devi
     expect(home?.title).toBe("Home");
     expect(home?.rows.map(label)).toEqual(["Mac mini — Home · Online"]);
     expect(home?.footer?.text).toBe(
-      "Your Opensteer lives on Mac mini. Agents reach your other Devices through it.",
+      "Your Opensteer lives on Mac mini. Agents reach your other devices through it.",
     );
     const devices = section("devices");
     expect(devices?.title).toBe("Devices");

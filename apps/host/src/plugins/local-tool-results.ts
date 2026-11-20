@@ -67,7 +67,8 @@ export function presentPluginToolResult(record: Record<string, unknown>) {
   if (!parsed.success) return agentToolRecordResult(record);
   const { value } = parsed.data.execution;
   const blocked = Array.isArray(value) ? null : BlockedSchema.safeParse(value.error);
-  if (blocked?.success && !Array.isArray(value) && !value.ok)
+  const direct = typeof record.operationId === "string";
+  if (!direct && blocked?.success && !Array.isArray(value) && !value.ok)
     return agentToolFailureResult(blocked.data);
 
   const blocks = (call: Outcome) => {
@@ -75,16 +76,20 @@ export function presentPluginToolResult(record: Record<string, unknown>) {
     if (!result.success || !isLocalPath(call.path)) return null;
     return { ...result.data, content: z.array(ContentBlockSchema).parse(result.data.content) };
   };
-  if (!Array.isArray(value)) return blocks(value) ?? agentToolRecordResult(record);
-  const attachments = value.flatMap((call) => blocks(call)?.content ?? []);
+  if (!direct && !Array.isArray(value)) return blocks(value) ?? agentToolRecordResult(record);
+  const calls = Array.isArray(value) ? value : [value];
+  const attachments = calls.flatMap((call) => blocks(call)?.content ?? []);
   if (!attachments.length) return agentToolRecordResult(record);
-  const summary = value.map(({ mcp, ...call }) => {
+  const summary = calls.map(({ mcp, ...call }) => {
     const output = LocalMcpResultSchema.safeParse(mcp);
     return output.success ? { ...call, value: output.data.structuredContent ?? null } : call;
   });
   const formatted = agentToolRecordResult({
     ...record,
-    result: { ...parsed.data, execution: { ...parsed.data.execution, value: summary } },
+    result: {
+      ...parsed.data,
+      execution: { ...parsed.data.execution, value: Array.isArray(value) ? summary : summary[0] },
+    },
   });
   return { ...formatted, content: [...formatted.content, ...attachments] };
 }

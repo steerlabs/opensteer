@@ -295,9 +295,18 @@ describe("RunnerRuntime", () => {
         status: "rejected",
         error: { retryable: true, message: "Run containment could not be verified" },
       });
+      const request = { ...stop, stop: { id: commandId, bootId: "boot-control-test" } };
+      const calls = terminate.mock.calls.length;
+      await expect(runtime.handleCommand({ ...request, stop: { id: commandId, bootId: "old-boot" } }, sink))
+        .resolves.toEqual({ status: "accepted", stopState: "never-seen" });
+      expect(terminate).toHaveBeenCalledTimes(calls);
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "still-ending" });
       terminate.mockResolvedValue("proven");
-      await expect(runtime.handleCommand(stop, sink)).resolves.toEqual({ status: "accepted" });
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "ended" });
       await confirmed.promise;
+      const endedCalls = terminate.mock.calls.length;
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "ended" });
+      expect(terminate).toHaveBeenCalledTimes(endedCalls);
     } finally {
       await runtime.close();
     }
@@ -3565,6 +3574,7 @@ describe("RunnerRuntime", () => {
             ? seedCommand
             : {
                 ...seedCommand,
+                context: { ...seedCommand.context, executionGeneration: seedCommand.context.executionGeneration + index },
                 commandId,
                 correlationId: CorrelationIdSchema.parse(commandId),
               };
@@ -3609,15 +3619,15 @@ describe("RunnerRuntime", () => {
         { ...testConnectionFence, leaseMs: 60_000, results: [], type: "host.executions.attached" },
         { send: async (report) => void replayed.push(report) },
       );
-      expect(replayed.filter((message) => message.type === "runner.trigger-result")).toEqual([
-        expect.objectContaining({
-          executionGeneration: seedCommand.context.executionGeneration,
+      expect(replayed.filter((message) => message.type === "runner.trigger-result")).toEqual(
+        [0, 1, 2].map((index) => expect.objectContaining({
+          executionGeneration: seedCommand.context.executionGeneration + index,
           output: expect.objectContaining({
             occurrenceId: seedCommand.context.occurrenceId,
             status: "canceled",
           }),
-        }),
-      ]);
+        })),
+      );
       expect(messages.filter((message) => message.type === "runner.trigger-result")).toHaveLength(
         3,
       );

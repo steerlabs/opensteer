@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import {
+  drainLegacyRunCdp,
   registerAgentCdpBridge,
   registerAgentPageBindingRoute,
   registerTriggerCdpBridge,
@@ -74,9 +75,9 @@ async function agentBridge(
       openAgentSession: vi.fn(),
     } as unknown as BrowserService,
     {
-      authenticate: vi.fn(async () => ({
-        requestedBy,
-        runId: createId("run"),
+      authenticateExecution: vi.fn(async () => ({
+        claims: { requestedBy, runId: createId("run") },
+        lineage: null,
       })),
       reauthorize: vi.fn(async (scope: unknown) => scope),
     } as unknown as RunToolTokenService,
@@ -240,6 +241,45 @@ describe("Watch CDP bridge", () => {
 });
 
 describe("Agent CDP bridge", () => {
+  it("does not attach a connected Run that settles during the post-upgrade check", async () => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const runId = createId("run");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const attached = Promise.withResolvers<never>();
+    const attachCdpForAgent = vi.fn(async () => {
+      attached.reject(new Error("Browser attachment began before authorization"));
+      throw new BrowserCdpConnectionEnded("Unexpected attachment");
+    });
+    void attached.promise.catch(() => undefined);
+    const browser = { attachCdpForAgent } as unknown as BrowserService;
+    registerAgentCdpBridge(app, browser, {
+      authenticateExecution: async () => ({
+        claims: { runId, requestedBy: createId("user"), bindingGeneration: 3 },
+        lineage: { agentConnectionId: "connection", taskOriginConnectionId: null },
+      }),
+      reauthorize: async () => { entered.resolve(); await resume.promise; },
+    } as unknown as RunToolTokenService);
+    const port = await listen(app);
+    const { closed, socket } = await connect(
+      `ws://127.0.0.1:${port}/internal/v1/browser-cdp/${createBrowserSessionId()}`,
+      "agent-control-token-1234567890",
+    );
+    try {
+      await Promise.race([entered.promise, attached.promise]);
+      const draining = drainLegacyRunCdp(browser, runId, 3);
+      resume.resolve();
+      await draining;
+      await closed;
+      expect(attachCdpForAgent).not.toHaveBeenCalled();
+    } finally {
+      resume.resolve();
+      socket.terminate();
+    }
+  });
+
   it("binds a connection to the session it names and never releases the Run's sessions", async () => {
     const requestedBy = createId("user");
 
@@ -266,7 +306,7 @@ describe("Agent CDP bridge", () => {
         openAgentSession,
       } as unknown as BrowserService,
       {
-        authenticate: vi.fn(async () => ({ requestedBy, runId })),
+        authenticateExecution: vi.fn(async () => ({ claims: { requestedBy, runId }, lineage: null })),
         reauthorize: vi.fn(async (scope: unknown) => scope),
       } as unknown as RunToolTokenService,
     );

@@ -63,6 +63,8 @@ export interface CloudComputerTable {
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;
+  lastBackupAt: Generated<Date | null>;
+  lastBackupSnapshotId: Generated<string | null>;
   completedBootDigest: string | null;
   previousProviderServerId: string | null;
   restoreSnapshot: string | null;

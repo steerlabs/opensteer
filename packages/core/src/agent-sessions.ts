@@ -4,6 +4,7 @@ import { DeviceIdSchema } from "./devices.js";
 import {
   AgentOperationIdSchema,
   AgentSessionIdSchema,
+  BrowserSourceIdSchema,
   RequestIdSchema,
   ThreadIdSchema,
 } from "./ids.js";
@@ -29,6 +30,7 @@ export const agentOperationHoldMs = 25_000;
 /** A concrete thing an operation touches, exactly as the grant names it. */
 export const AgentGrantTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("browser-profile"), profileId: z.string().min(1).max(255) }),
+  z.strictObject({ kind: z.literal("chrome-tabs"), sourceId: BrowserSourceIdSchema }),
   z.strictObject({
     kind: z.literal("computer-app"),
     approvalId: z.string().min(1).max(255),

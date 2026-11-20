@@ -1,4 +1,6 @@
 import {
+  agentSessionSlot,
+  readTaskActivity,
   mutationIdempotencyKey,
   operationRequestView,
   requestDecisionRevision,
@@ -13,21 +15,44 @@ import {
   workWords,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import type { Request, RequestResponse, ThreadStatus } from "@opensteer/core";
+import type { AgentOperationView, Request, RequestResponse, ThreadStatus } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { requestAnswer, useAction } from "./use-action.js";
 
+/**
+ * A connected agent's task's operations as the Home lists them, read again whenever the task's
+ * state changes; undefined until read, or on a Home that does not list them.
+ */
+function useTaskActivity(hostClient: HostClient, threadId: string, key: string | null) {
+  const [operations, setOperations] = useState<readonly AgentOperationView[] | undefined>();
+  useEffect(() => {
+    if (key === null) return;
+    const controller = new AbortController();
+    void readTaskActivity(hostClient, threadId, controller.signal).then(
+      (operations) => setOperations(operations),
+      () => setOperations(undefined),
+    );
+    return () => controller.abort();
+  }, [hostClient, threadId, key]);
+  return operations;
+}
+
 /** The view for a connected agent's own task, or null for any other task. */
 export function useSessionTask(threadId: string): SessionTaskView | null {
-  const { snapshot } = useShell();
+  const { snapshot, hostClient } = useShell();
   const thread = threadInDirectory(threadId, snapshot);
+  const operations = useTaskActivity(
+    hostClient,
+    threadId,
+    thread?.externalWork ? `${thread.status}|${thread.externalWork.status}` : null,
+  );
   if (!thread) return null;
-  const slot = snapshot.agentWork?.sessions?.[threadId];
+  const slot = agentSessionSlot(snapshot, threadId, operations);
   return sessionTaskView({
     thread: { status: thread.status, agentSessionId: thread.agentSessionId ?? null },
     slot,
@@ -152,7 +177,7 @@ export function useOperationRequest(
 ): OperationRequestView | null {
   const { snapshot } = useShell();
   const slot = snapshot.agentWork?.requests?.[request.id];
-  const session = snapshot.agentWork?.sessions?.[request.originatingThreadId];
+  const session = agentSessionSlot(snapshot, request.originatingThreadId);
   const connection = slot?.connection ?? session?.connection;
   return operationRequestView({
     request,
@@ -269,7 +294,7 @@ export function TabAgentStatus({
   readonly occupant: { readonly threadId: string; readonly title: string } | null;
 }) {
   const { snapshot } = useShell();
-  const slot = occupant ? snapshot.agentWork?.sessions?.[occupant.threadId] : null;
+  const slot = occupant ? agentSessionSlot(snapshot, occupant.threadId) : null;
   const line = tabAgentLine({
     tabId,
     occupant,
@@ -306,7 +331,7 @@ export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView
   if (!snapshot || entry.kind !== "request") return null;
   const { request } = entry;
   const slot = snapshot.agentWork?.requests?.[request.id];
-  const session = snapshot.agentWork?.sessions?.[request.originatingThreadId];
+  const session = agentSessionSlot(snapshot, request.originatingThreadId);
   return operationRequestView({ request, slot, session });
 }
 
@@ -317,7 +342,7 @@ export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView
 export function useSessionTaskRow(hostClient: HostClient, threadId: string) {
   const slot = useHostSelector(
     hostClient,
-    useCallback((current) => current.agentWork?.sessions?.[threadId] ?? null, [threadId]),
+    useCallback((current) => agentSessionSlot(current, threadId), [threadId]),
   );
   const key = useHostSelector(
     hostClient,

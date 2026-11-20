@@ -55,6 +55,8 @@ export async function applyAgentSessions(database: Kysely<DatabaseSchema>) {
       agent_reason text,
       handed_off_at timestamptz,
       completed_at timestamptz,
+      terminal_evidence_at timestamptz,
+      contact_lost_at timestamptz,
       outcome text check (outcome in ('completed', 'failed', 'refused', 'unknown')),
       result_summary jsonb,
       created_at timestamptz not null default now(),
@@ -65,6 +67,7 @@ export async function applyAgentSessions(database: Kysely<DatabaseSchema>) {
     create index agent_operations_connection on agent_operations(connection_id, created_at desc, id desc);
     create index agent_operations_unsettled on agent_operations(connection_id) where outcome is null;
     alter table requests add column originating_agent_session_id text references agent_sessions(id);
+    alter table requests add column agent_operation jsonb;
     alter table requests drop constraint requests_origin_check;
     alter table requests add constraint requests_origin_check check (
       num_nonnulls(originating_run_id, originating_occurrence_id, originating_watch_activation_id,

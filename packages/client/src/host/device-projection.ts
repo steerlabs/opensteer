@@ -46,11 +46,11 @@ export function deviceReasonLabel(reason: DeviceCapabilityReason | null): string
     case "not-connected":
       return "Not connected";
     case "driver-offline":
-      return "Driver offline";
+      return "Its Mac is offline";
     case "driver-asleep":
-      return "Driver asleep";
+      return "Asleep";
     case "driver-stopped":
-      return "Stopped on its computer";
+      return "Stopped on its Mac";
     case "connecting":
     case "unreported":
       return "Connecting…";
@@ -65,7 +65,7 @@ export function deviceReasonLabel(reason: DeviceCapabilityReason | null): string
     case "approval-required":
       return "Access needed";
     case "driver-update-required":
-      return "Driver needs update";
+      return "Update Opensteer on its Mac";
     case "setup-required":
     case "trust-required":
     case "developer-mode-required":

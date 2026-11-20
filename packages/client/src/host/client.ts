@@ -227,6 +227,8 @@ export interface ThreadSummary {
   runQueued?: boolean;
   /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
   agentSessionId?: string | null;
+  /** A connected agent's own task: its session and connection, kept after the session ends. */
+  externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */

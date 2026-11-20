@@ -375,6 +375,16 @@ function personalSections(
             },
           ]
         : []),
+      ...(computer.lastBackup
+        ? [
+            {
+              key: "last-backup",
+              kind: "text" as const,
+              label: cloudWords("cloud.backup.reported"),
+              detail: computer.lastBackup,
+            },
+          ]
+        : []),
       ...(computer.region
         ? [
             {

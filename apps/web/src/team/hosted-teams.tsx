@@ -762,7 +762,7 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
             <span className="teams-join__host">{state.host}</span>
           </div>
           <p className="teams-form__lede">
-            You’ll join as <b>{account?.email ?? "your Opensteer Account"}</b>. Your agent will be
+            You’ll join as <b>{account?.email ?? "your Opensteer account"}</b>. Your agent will be
             connected so you can ask it in threads. It stays on your computer and only acts when you
             ask.
           </p>
@@ -862,8 +862,8 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
   const lede = (
     <p className="teams-form__lede">
       {singleUse
-        ? "Each link lets one person join with their Opensteer Account."
-        : "Anyone with this link can join with their Opensteer Account."}
+        ? "Each link lets one person join with their Opensteer account."
+        : "Anyone with this link can join with their Opensteer account."}
     </p>
   );
   if (error)

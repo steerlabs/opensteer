@@ -14,15 +14,10 @@ poll_managed_egress() {
       --output "$destination" --write-out '%{http_code}' \
       -- "$origin/v1/cloud-computers/$id/egress") || fail 'The Account egress request failed.'
   [[ $status == 200 ]] || fail "The Account refused the egress request (HTTP $status)."
-  jq -e '
-    def credential: type == "string" and length <= 255 and test("[^[:space:]]") and (test("[[:cntrl:]]") | not);
-    . == {} or (keys == ["egress"] and (.egress |
-      keys == ["password", "url", "username"] and
-      (.url | type == "string" and length <= 2048 and
-        test("^https://(\\[[a-fA-F0-9:.]+\\]|[a-zA-Z0-9.-]+)(:[0-9]{1,5})?/?$") and
-        ((rtrimstr("/") | capture(":(?<port>[0-9]+)$").port | tonumber) // 443 | . > 0 and . <= 65535)) and
-      (.username | credential and (contains(":") | not)) and (.password | credential)))
-  ' "$destination" >/dev/null 2>&1 || fail 'The Account returned invalid egress configuration.'
+  if ! jq -e '. == {}' "$destination" >/dev/null 2>&1 && ! valid_managed_egress "$destination"; then
+    echo 'The Account returned invalid egress configuration; browser egress remains pending.' >&2
+    printf '{}\n' > "$destination"
+  fi
 }
 
 maintain_managed_egress() {
@@ -44,7 +39,7 @@ maintain_managed_egress() {
     )
   fi
   if [[ -f $pending && -s "$home_dir/secrets/egress_url" ]]; then
-    compose up -d --wait --no-deps --pull never --force-recreate browser-egress
+    compose up -d --wait --wait-timeout 240 --no-deps --pull never --force-recreate browser-egress
     rm -f -- "$pending"
     echo 'Managed browser egress is configured.'
   fi

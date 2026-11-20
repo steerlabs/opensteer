@@ -43,27 +43,27 @@ export const organizationCopy = {
   "org.create.priceOnce": "{price} a seat",
   "org.create.total": "{seats} × {price} = {total} a {interval}",
   "org.create.totalOnce": "{seats} × {price} = {total}",
-  "org.create.billing": "Billed by the Opensteer Account. Change seats or cancel any time.",
+  "org.create.billing":
+    "Opensteer bills you through Stripe. You can change seats or close the organization here.",
   "org.checkout": "Continue to checkout",
   "org.checkout.detail": "You pay on Stripe, then come back here.",
   "org.checkout.back": "Back",
-  "org.checkout.completed":
-    "Payment received. Your organization appears here as soon as Stripe confirms it.",
+  "org.checkout.completed": "Payment confirmed. Your organization is ready.",
   "org.unavailable.title": "Organizations aren’t available",
-  "org.unavailable.detail": "This Opensteer Account doesn’t offer organizations yet.",
+  "org.unavailable.detail": "This Opensteer account doesn’t offer organizations yet.",
 
   "org.seats.title": "Seats",
   "org.seats.paid": "Paid",
   "org.seats.assigned": "Assigned",
   "org.seats.free": "Free",
   "org.seats.pending": "Pending",
-  "org.seats.pendingDetail": "{seats} seats once the payment provider confirms the change.",
+  "org.seats.pendingDetail": "{seats} seats once Stripe confirms the change.",
   "org.seats.change": "Change seats",
   "org.seats.changeDetail":
-    "An increase applies when the payment provider confirms it. You can’t go below the seats you’ve assigned.",
+    "An increase applies when Stripe confirms it. You can’t go below the seats you’ve assigned.",
   "org.seats.save": "Save seats",
   "org.billing.title": "Billing",
-  "org.billing.manage": "Manage billing",
+  "org.billing.manage": "Manage billing on Stripe",
   "org.billing.active": "Active",
   "org.billing.payment_failed": "Payment failed",
   "org.billing.past_due": "Past due",
@@ -84,7 +84,7 @@ export const organizationCopy = {
   "org.people.makeMember": "Make member",
   "org.people.remove": "Remove",
   "org.people.removeConfirm":
-    "Remove {name} from {organization}? They keep their Opensteer Account and personal Homes.",
+    "Remove {name} from {organization}? They keep their Opensteer account and personal Homes.",
   "org.people.you": "You",
 
   "org.homes.title": "Work Homes",
@@ -101,8 +101,8 @@ export const organizationCopy = {
   "org.status.suspended": "Suspended",
   "org.status.deleted": "Deleted",
   "org.status.signInCut": "Sign-in cut",
-  "org.policy.applied": "Policy applied · revision {revision}",
-  "org.policy.pending": "Policy pending on the Home · revision {revision} (it has {applied})",
+  "org.policy.applied": "Policy applied · version {revision}",
+  "org.policy.pending": "Policy pending on the Home · version {revision} (it has {applied})",
   "org.audit.none": "No audit records received yet",
   "org.audit.last": "Audit record {sequence} received {at}",
   "org.audit.gap": "Gap: expected record {expected}, the Home sent {received}",
@@ -112,7 +112,7 @@ export const organizationCopy = {
   "org.offboard.title": "Offboard {name}?",
   "org.offboard.step.cut": "Their sign-in to this work Home is cut now.",
   "org.offboard.step.off":
-    "The computer is powered off, so every agent, Device and session on it stops working.",
+    "Opensteer suspends the computer. Agents stop working on it, running tasks stop, and devices lose access.",
   "org.offboard.step.delete":
     "After the time you choose, Opensteer destroys the computer and disk and makes its backups unreadable. Opensteer then removes the stored backup data. The next person gets a different work Home.",
   "org.offboard.step.recall": "What an agent already did or copied elsewhere can’t be recalled.",
@@ -131,7 +131,7 @@ export const organizationCopy = {
   "org.offboard.deletionRequested": "Deletion requested",
   "org.offboard.deletionInProgress": "Deletion in progress",
   "org.audit.finalUnconfirmed": "Final records not confirmed",
-  "org.billing.payInvoice": "Complete payment",
+  "org.billing.payInvoice": "Complete payment on Stripe",
   "org.billing.abandonSeats": "Abandon seat change",
   "org.billing.close": "Close organization",
   "org.billing.closeDetail":
@@ -144,15 +144,15 @@ export const organizationCopy = {
 
   "org.policy.title": "Policy",
   "org.policy.lead":
-    "Every work Home follows this. It limits what agents may do there; it never lets you see in.",
-  "org.policy.revision": "Revision {revision}",
+    "Every work Home follows this policy. It limits what connected agents can do and which devices can join. The Home’s contents stay private.",
+  "org.policy.revision": "Version {revision}",
   "org.policy.homes": "{applied} of {total} work Homes have applied it",
   "org.policy.save": "Save policy",
   "org.policy.on": "Allowed",
   "org.policy.off": "Not allowed",
-  "org.policy.externalMaxMode.title": "Most an outside agent may do on its own",
+  "org.policy.externalMaxMode.title": "Most a connected agent may do on its own",
   "org.policy.externalMaxMode.detail":
-    "An agent connected from outside never acts with more freedom than this, whatever its grant says. The person’s own agents on their work Home aren’t limited by it.",
+    "This sets the most freedom a connected agent can have, whatever access the person chooses for it. It applies only to connected agents.",
   "org.policy.allowTasks.title": "Agents may run tasks",
   "org.policy.allowTasks.detail":
     "Whether a connected agent may be given tasks to run. When this is off, it can’t be given everything either.",
@@ -163,7 +163,7 @@ export const organizationCopy = {
   "org.policy.devices.detail":
     "Whether the person may connect their own computers to their work Home. Each one says it’s joining a work Home before it does.",
   "org.policy.devices.cloud-computer-only": "Only the work Home’s own Cloud Computer",
-  "org.policy.devices.assignee-may-enroll": "The person may connect their own Devices",
+  "org.policy.devices.assignee-may-enroll": "The person may connect their own devices",
   "org.mode.approval-required": "Supervised",
   "org.mode.auto-accept-edits": "Auto-accept edits",
   "org.mode.auto": "Auto",
@@ -174,7 +174,7 @@ export const organizationCopy = {
     "Each work Home sends what it observed, never content. Records are numbered without gaps and chained, so a missing record shows.",
   "org.audit.included": "What’s in it",
   "org.audit.excluded": "What’s never in it",
-  "org.audit.fields": "Every record holds only ids, choices and times: {fields}.",
+  "org.audit.fields": "Each record contains only IDs, choices, outcomes and times.",
 
   "org.invite.title": "Join {organization}",
   "org.invite.lead":
@@ -196,7 +196,7 @@ export const organizationCopy = {
   "org.work.see.sees": "{organization} can see",
   "org.work.see.never": "{organization} can never see",
   "org.work.see.status": "Whether this Home is running, suspended or deleted, and its address",
-  "org.work.see.policy": "Which policy revision this Home has applied",
+  "org.work.see.policy": "Which policy version this Home has applied",
   "org.work.see.records": "These records, sent from this Home:",
   "org.work.see.personal": "Your personal Opensteer and your own computers",
   "org.work.notAllowed": "Your organization doesn’t allow this",
@@ -219,7 +219,7 @@ export const organizationCopy = {
   "org.refused.form": "Something in the form isn’t right.",
   "org.refused.formNext": "Check it and try again.",
   "org.refused.forbiddenNext": "Only an admin of this organization can do this.",
-  "org.done.seats": "Seats saved. An increase applies when the payment provider confirms it.",
+  "org.done.seats": "Seats saved. An increase applies when Stripe confirms it.",
   "org.done.invited": "Invited. Send them the link below.",
   "org.done.removed": "Removed from the organization.",
   "org.done.role": "Role changed.",
@@ -258,20 +258,20 @@ const auditKindWords: Readonly<Record<WorkAuditRecord["kind"], string>> = {
   "connection.grant_changed": "An agent’s access was changed",
   "connection.disconnected": "An agent was disconnected",
   "connection.expired": "An agent’s connection expired",
-  "agent_session.started": "An agent session started",
-  "agent_session.ended": "An agent session ended",
+  "agent_session.started": "A connected agent started working",
+  "agent_session.ended": "A connected agent finished working",
   "operation.direct":
     "Each direct action: its kind of tool and target, the access it ran with, who decided and the outcome",
   "request.opened": "A Request was opened",
   "request.answered": "A Request was answered, and how",
   "request.expired": "A Request expired",
   stop: "Stop was pressed",
-  "device.enrolled": "A Device was connected",
-  "device.removed": "A Device was removed",
-  "device.switch_changed": "A Device was switched on or off",
+  "device.enrolled": "A device was connected",
+  "device.removed": "A device was removed",
+  "device.switch_changed": "A device was switched on or off",
   "owner.signed_in": "The person signed in",
   "owner.signed_out": "The person signed out",
-  "policy.applied": "A policy revision was applied",
+  "policy.applied": "A policy version was applied",
 };
 
 /** Every record kind a work Home sends, read from the record schema itself. */

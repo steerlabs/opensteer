@@ -8,6 +8,8 @@ import {
   createDedicatedProfile,
   draftFromGrant,
   grantFromDraft,
+  agentWhoOriginLine,
+  toggleDraftResource,
   sameGrant,
   type AgentGrantDraft,
   type ConnectedAgentDetail,
@@ -16,6 +18,7 @@ import {
 import {
   useAgentAppOptions,
   useAgentPluginOptions,
+  useChromeTabGrantCatalog,
   useConnectedAgents,
 } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
@@ -60,6 +63,7 @@ export function ConnectedAgentController(props: {
   const { host, connectionId } = props;
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  const chromeTabs = useChromeTabGrantCatalog(host, true);
   const [sheet, setSheet] = useState<{
     readonly which: AgentGrantSheet;
     readonly draft: AgentGrantDraft;
@@ -75,7 +79,6 @@ export function ConnectedAgentController(props: {
       : connectedAgentDetail(connection, names, {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
-          withdrawnAt: snapshot.agentWork?.withdrawn?.[connection.id] ?? null,
         });
   const agent = detail?.row.identity.label ?? null;
   useEffect(() => {
@@ -117,6 +120,7 @@ export function ConnectedAgentController(props: {
   const context = {
     agent,
     home: agentHomeName(snapshot),
+    chromeTabs,
     browser,
     apps,
     plugins,
@@ -210,6 +214,7 @@ export function ConnectedAgentController(props: {
           onOpen: (which) => setSheet({ which, draft: current }),
           onRemove: remove,
           onScope: changeScope,
+          onChromeTab: (resource, on) => void save({ draft: toggleDraftResource(current, resource, on) }),
           onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
           pending,
         })}
@@ -250,6 +255,7 @@ export function connectedAgentSections(props: {
   readonly onOpen: (sheet: AgentGrantSheet) => void;
   readonly onRemove: () => void;
   readonly onScope: (scope: AgentGrantDraft["scope"]) => void;
+  readonly onChromeTab: Parameters<typeof agentGrantSections>[0]["onChromeTab"];
   readonly onTasks: (on: boolean) => void;
   readonly pending: "revoke" | "update" | "remove" | null;
 }): readonly NativeSettingsSection[] {
@@ -277,8 +283,13 @@ export function connectedAgentSections(props: {
           key: "who",
           kind: "text",
           label: who.verified ? workWords("who.verifiedAs", { name: who.heading }) : who.heading,
-          detail: who.detail,
+          ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
         },
+        ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
+          key: origin.role,
+          kind: "text",
+          label: agentWhoOriginLine(origin),
+        })),
       ],
     },
     // Opensteer stopped vouching for it: said once, with the one way to act on it.
@@ -347,6 +358,7 @@ export function connectedAgentSections(props: {
       mode: detail.accessMode,
       onScope: props.onScope,
       onOpen: props.onOpen,
+      onChromeTab: props.onChromeTab,
       onTasks: props.onTasks,
     });
     sections.push(

@@ -1,5 +1,6 @@
 import { agentGrantAllows, BrowserProfileIdSchema, refused, TabIdSchema } from "@opensteer/core";
 import { executionAccess, selectedGrantOf, type OpensteerStore } from "@opensteer/database";
+import type { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor } from "../tabs/ports.js";
@@ -8,6 +9,7 @@ import { BrowserReplService, type BrowserUsePort } from "./browser-repl-service.
 import { createBrowserUsePort, type BrowserUseTabAccess } from "./browser-use-port.js";
 
 type Services = {
+  sharedChromeTabs?: Pick<ChromeSharedTabs, "browserUsePort">;
   browser: Pick<
     BrowserService,
     | "attachCdpForAgent"
@@ -20,7 +22,9 @@ type Services = {
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
 };
-type Target = Awaited<ReturnType<ReturnType<typeof createBrowserUsePort>["openPage"]>>;
+type ManagedTarget = Awaited<ReturnType<ReturnType<typeof createBrowserUsePort>["openPage"]>>;
+type SharedTarget = Awaited<ReturnType<ReturnType<ChromeSharedTabs["browserUsePort"]>["openPage"]>>;
+type Target = ManagedTarget | (SharedTarget & { port: BrowserUsePort<SharedTarget> });
 
 function tabAccess(
   { browser, store, tabs }: Services,
@@ -119,7 +123,10 @@ export class BrowserScriptService {
     string,
     { ownerId: CdpAuthority["ownerId"]; lifetime: AbortController; contexts: Set<string> }
   >();
-  readonly #ports = new Map<string, BrowserUsePort<Target>>();
+  readonly #ports = new Map<
+    string,
+    BrowserUsePort<ManagedTarget> | { shared: true; value: BrowserUsePort<SharedTarget> }
+  >();
   readonly #repl: BrowserReplService<Target>;
   #closed = false;
 
@@ -132,25 +139,49 @@ export class BrowserScriptService {
     };
     this.#repl = new BrowserReplService({
       port: {
-        listPages: (call) => byContext(call.contextKey).listPages(call),
-        openPage: (tabId, call) => byContext(call.contextKey).openPage(tabId, call),
-        newPage: (input, call) => byContext(call.contextKey).newPage(input, call),
-        command: (target, method, params, sessionId, call) =>
-          byContext(call.contextKey).command(target, method, params, sessionId, call),
-        release: (target) => target.port.release?.(target),
+        listPages: (call) => {
+          const port = byContext(call.contextKey);
+          return ("shared" in port ? port.value : port).listPages(call);
+        },
+        openPage: async (tabId, call) => {
+          const port = byContext(call.contextKey);
+          if ("shared" in port)
+            return { ...(await port.value.openPage(tabId, call)), port: port.value };
+          return port.openPage(tabId, call);
+        },
+        newPage: async (input, call) => {
+          const port = byContext(call.contextKey);
+          if ("shared" in port)
+            throw refused("forbidden", "A shared Chrome tab cannot create a new tab.");
+          return port.newPage(input, call);
+        },
+        command: (target, method, params, sessionId, call) => {
+          byContext(call.contextKey);
+          if ("share" in target)
+            return target.port.command(target, method, params, sessionId, call);
+          return target.port.command(target, method, params, sessionId, call);
+        },
+        release: (target) => {
+          if ("share" in target) target.port.release?.(target);
+          else target.port.release?.(target);
+        },
         subscribe: (target, onEvent, onEnd, budget) =>
-          target.port.subscribe(target, onEvent, onEnd, budget),
+          "share" in target
+            ? target.port.subscribe(target, onEvent, onEnd, budget)
+            : target.port.subscribe(target, onEvent, onEnd, budget),
       },
     });
   }
 
   async runBrowserScript({
     authority,
+    sharedChromeTabId,
     contextKey,
     code,
     signal,
   }: {
     authority: CdpAuthority;
+    sharedChromeTabId?: string;
     contextKey: string;
     code: string;
     signal?: AbortSignal;
@@ -190,18 +221,28 @@ export class BrowserScriptService {
       contextKey,
       authority.environmentId,
       authority.expiresAt,
+      sharedChromeTabId,
     ]);
     if (!this.#ports.has(key)) {
       if (binding.contexts.size >= 16)
         throw refused("resource_exhausted", "Too many browser contexts for this task.");
-      this.#ports.set(
-        key,
-        createBrowserUsePort({
-          authority,
-          browser: this.#services.browser,
-          tabs: tabAccess(this.#services, authority),
-        }),
-      );
+      if (sharedChromeTabId === undefined) {
+        this.#ports.set(
+          key,
+          createBrowserUsePort({
+            authority,
+            browser: this.#services.browser,
+            tabs: tabAccess(this.#services, authority),
+          }),
+        );
+      } else {
+        const port = this.#services.sharedChromeTabs?.browserUsePort(
+          async () => authority,
+          sharedChromeTabId,
+        );
+        if (!port) throw refused("forbidden", "This Chrome tab is no longer shared.");
+        this.#ports.set(key, { shared: true, value: port });
+      }
       binding.contexts.add(key);
     }
     return this.#repl.execute(

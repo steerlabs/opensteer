@@ -1,5 +1,9 @@
 import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
-import { StandardCdpChunkSchema, type StandardCdpMode } from "@opensteer/protocol/standard-cdp";
+import {
+  StandardCdpChunkSchema,
+  type StandardCdpLeaseReconciliation,
+  type StandardCdpMode,
+} from "@opensteer/protocol/standard-cdp";
 import { OpensteerError, type RunnerId } from "@opensteer/core";
 import { sameProfileBinding } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
@@ -88,10 +92,11 @@ interface PendingRequest {
     | "browser.closed"
     | "capability.accepted"
     | "capability.revoked"
-    | "browser.profile.delete.result";
+    | "browser.profile.delete.result"
+    | "browser.standard-cdp.reconciled";
   readonly reject: (error: unknown) => void;
   readonly resolve: (message: BrowserRelayEvent) => void;
-  readonly timer: NodeJS.Timeout;
+  readonly timer: NodeJS.Timeout | undefined;
 }
 
 interface PlacementCapabilityLease {
@@ -126,6 +131,11 @@ interface RunnerBrowserRuntimeRouterOptions {
   >;
   readonly onDeletionsChanged?: (runnerId: RunnerId) => Promise<void>;
   readonly onPlacementChanged?: (runnerId: RunnerId) => void;
+  readonly onStandardCdpReconnect?: (
+    runnerId: RunnerId,
+    relayId: string,
+    reconcile: (lease: StandardCdpLeaseReconciliation) => Promise<string>,
+  ) => Promise<void>;
 }
 
 /**
@@ -157,11 +167,13 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
   readonly #onPlacementChanged: RunnerBrowserRuntimeRouterOptions["onPlacementChanged"];
+  readonly #onStandardCdpReconnect: RunnerBrowserRuntimeRouterOptions["onStandardCdpReconnect"];
 
   constructor(options: RunnerBrowserRuntimeRouterOptions) {
     this.#localProfiles = options.localProfiles;
     this.#onDeletionsChanged = options.onDeletionsChanged;
     this.#onPlacementChanged = options.onPlacementChanged;
+    this.#onStandardCdpReconnect = options.onStandardCdpReconnect;
     this.#now = options.now ?? Date.now;
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
@@ -286,7 +298,18 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       captureRegion: browser.captureRegion === 1,
       rasterDemand: browser.rasterDemand === 1,
       computer: { name: stream.identity.name, runnerId: placement.runnerId },
-      wholeContextCdp: browser.wholeContextCdp === 1,
+      wholeContextCdp: browser.wholeContextCdp === 1 && browser.standardCdpLeaseRecovery === 1,
+      ...(browser.standardCdpLeaseRecovery === 1
+        ? {
+            standardCdpRecovery: {
+              relayId: expectedFence.auxiliaryStreamId,
+              boot: () => this.#reconcileStandardCdpLease(expectedFence),
+              assertCurrent: () => {
+                this.#requireExpectedStream(placement.runnerId, expectedFence);
+              },
+            },
+          }
+        : {}),
       ...(browser.standardCdp === 1
         ? {
             connectStandard: (ticket: string, signal: AbortSignal) =>
@@ -307,6 +330,22 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         return connection;
       },
     };
+  }
+
+  async #reconcileStandardCdpLease(
+    fence: RunnerAuxiliaryFrameFence,
+    lease?: StandardCdpLeaseReconciliation,
+  ): Promise<string> {
+    this.#requireExpectedStream(fence.runnerId, fence);
+    const result = await this.#request(fence.runnerId, fence, {
+      expectedType: "browser.standard-cdp.reconciled",
+      ...(lease ? { timeoutMs: null } : {}),
+      message: { ...fence, type: "browser.standard-cdp.reconcile", ...(lease ? { lease } : {}) },
+    });
+    if (result.type !== "browser.standard-cdp.reconciled")
+      throw relayError("The browser did not acknowledge exclusive CDP settlement.");
+    this.#requireExpectedStream(fence.runnerId, fence);
+    return result.runtimeBootId;
   }
 
   async #connectStandard(
@@ -682,8 +721,15 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       for (const claim of message.profiles) inventory.profiles.add(claim.binding.profileId);
       inventory.complete = message.complete;
       this.#notifyAdmission(message.complete ? stream.identity.runnerId : undefined);
-      if (message.complete)
+      if (message.complete) {
         void this.resumeDeletions(stream.identity.runnerId).catch(() => undefined);
+        if (stream.identity.modules.browser?.standardCdpLeaseRecovery === 1)
+          void this.#onStandardCdpReconnect?.(
+            stream.identity.runnerId,
+            stream.fence.auxiliaryStreamId,
+            (lease) => this.#reconcileStandardCdpLease(stream.fence, lease),
+          );
+      }
       return;
     }
     if (
@@ -726,6 +772,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
     if (
       message.type === "browser.profile.delete.result" ||
+      message.type === "browser.standard-cdp.reconciled" ||
       message.type === "browser.attached" ||
       message.type === "capability.accepted" ||
       message.type === "capability.revoked"
@@ -759,7 +806,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         pending,
         stream,
         "channelId" in message ? message.channelId : undefined,
-        message.capability,
+        "capability" in message ? message.capability : undefined,
       );
       if (pending.expectedType !== message.type) {
         pending.reject(new Error("The browser relay returned the wrong correlated response."));
@@ -982,11 +1029,14 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       readonly channelId?: BrowserChannelId;
       readonly expectedType: PendingRequest["expectedType"];
       readonly message: Record<string, unknown>;
-      readonly timeoutMs?: number | undefined;
+      readonly timeoutMs?: number | null | undefined;
       readonly erasure?: { binding: LocalProfileBinding; deletionId: string };
     },
   ): Promise<BrowserRelayEvent> {
-    if (this.#pending.size >= maxPendingRequests) {
+    if (
+      options.timeoutMs !== null &&
+      [...this.#pending.values()].filter((request) => request.timer).length >= maxPendingRequests
+    ) {
       return Promise.reject(relayError("Too many browser relay requests are pending.", true));
     }
     // Never forget an admitted erasure while its stream can still reply. Bound
@@ -1003,14 +1053,17 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       );
     const id = requestId(options.expectedType);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const pending = this.#pending.get(id);
-        if (!pending) return;
-        this.#pending.delete(id);
-        if (pending.erasure) this.#lateErasures.set(id, pending);
-        reject(relayError("The browser relay request timed out.", true));
-      }, options.timeoutMs ?? this.#requestTimeoutMs);
-      timer.unref();
+      const timer =
+        options.timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              const pending = this.#pending.get(id);
+              if (!pending) return;
+              this.#pending.delete(id);
+              if (pending.erasure) this.#lateErasures.set(id, pending);
+              reject(relayError("The browser relay request timed out.", true));
+            }, options.timeoutMs ?? this.#requestTimeoutMs);
+      timer?.unref();
       this.#pending.set(id, {
         ...(options.erasure ? { erasure: options.erasure } : {}),
         capability: options.capability,

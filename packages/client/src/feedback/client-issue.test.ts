@@ -51,7 +51,7 @@ describe("safe client issues", () => {
         showInterruption: true,
       } as ClientConnectionState);
     expect(say({ code: "sign-in", reason: "account-required" })).toEqual({
-      title: "Sign in to your Opensteer Account",
+      title: "Sign in to your Opensteer account",
       detail: "Use the Account linked to Mac mini.",
       action: "sign-in",
     });

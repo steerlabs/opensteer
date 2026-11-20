@@ -614,7 +614,7 @@ integration("Hosted teams", () => {
     for (const body of [page.body, (await postForm(cookie, "/account/delete")).body]) {
       expect(body).toContain("Delete or transfer these teams first");
       expect(body).toContain(`href="/#team-${team.id}"`);
-      expect(body).not.toContain(">Delete Account</button>");
+      expect(body).not.toContain(">Delete account</button>");
       expect(body).not.toContain("Remote access may already be off");
     }
     expect(

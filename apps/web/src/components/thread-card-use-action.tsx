@@ -25,6 +25,7 @@ export function CardUseRequestBody({
   readonly disabled: boolean;
   readonly request: Request;
 }) {
+  const oneTime = request.originatingAgentSessionId != null;
   const pending = request.status === "pending";
   const chooser = useHostSignIn(client, pending && !disabled ? request.id : null);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -160,7 +161,7 @@ export function CardUseRequestBody({
       {error ? <p role="alert">{error}</p> : null}
       <div className="action-buttons">
         <button className="btn" disabled={locked} onClick={() => void respond(false)}>
-          Don’t allow
+          {oneTime ? "Don't allow" : "Don’t allow"}
         </button>
         {chosen ? (
           <button
@@ -169,7 +170,7 @@ export function CardUseRequestBody({
             disabled={locked || expired}
             onClick={() => void respond(true)}
           >
-            Allow card use
+            {oneTime ? "Allow once" : "Allow card use"}
           </button>
         ) : null}
       </div>

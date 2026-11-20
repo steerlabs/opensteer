@@ -75,6 +75,7 @@ export interface PageTabsPort {
 }
 export interface TabServiceOptions {
   store: TabStore;
+  sharedChromeTabs?: (actor: TabActor) => Promise<Tab[]>;
   devices: Pick<OpensteerStore, "requireSelfDeviceId" | "requireDeviceSelfRunnerId">;
   nativeTargets: NativeTabTargetsPort;
   deviceNativeTargets?: DeviceNativeTabTargetsPort;
@@ -275,9 +276,14 @@ export class TabService implements TabServicePort {
     if (actor.kind === "person" && database === this.options.store.database) {
       await this.options.authorizeMembership(actor, database);
       const { rows, layout } = await this.#catalog(actor.ownerId);
-      return { tabs: [...rows.values()], layout };
+      return {
+        tabs: [...rows.values(), ...((await this.options.sharedChromeTabs?.(actor)) ?? [])],
+        layout,
+      };
     }
-    return this.#snapshotProject(actor, database);
+    const projected = await this.#snapshotProject(actor, database);
+    projected.tabs.push(...((await this.options.sharedChromeTabs?.(actor)) ?? []));
+    return projected;
   }
   async #snapshotProject(
     actor: TabActor,
@@ -487,7 +493,11 @@ export class TabService implements TabServicePort {
       ...(row.kind === "app" ? { appId: row.appId! } : {}),
     });
   }
-  async list(actor: TabActor, input: TabListInput): Promise<TabListResult> {
+  async list(
+    actor: TabActor,
+    input: TabListInput,
+    mayNameComputer?: (deviceId: DeviceId) => boolean,
+  ): Promise<TabListResult> {
     input = TabListInputSchema.parse(input);
     const { tabs, layout } = await this.project(actor);
     const groups = layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
@@ -502,7 +512,10 @@ export class TabService implements TabServicePort {
             tab.profile?.name,
             tab.appName,
             tab.bundleId,
-            tab.computer.name,
+            tab.sharedByPerson?.computerName ??
+              (mayNameComputer?.(tab.computer.computerId) === false
+                ? undefined
+                : tab.computer.name),
             groups.find((group) => group.groupId === tab.groupId)?.name,
           ].some((value) => value?.toLowerCase().includes(query))),
     );
@@ -912,7 +925,17 @@ export class TabService implements TabServicePort {
       catalog,
     );
     const byId = new Map(tabs.map((tab) => [tab.tabId, tab]));
-    return rows.map(({ id }) => ({ id, tab: byId.get(id) }));
+    const shared = (await this.options.sharedChromeTabs?.({ kind: "person", ownerId })) ?? [];
+    return [
+      ...rows.map(({ id }) => ({ id, tab: byId.get(id) })),
+      ...shared
+        .filter(
+          ({ tabId }) => (!input.after || tabId > input.after) && (!input.id || input.id === tabId),
+        )
+        .map((tab) => ({ id: tab.tabId, tab })),
+    ]
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, input.limit);
   }
 
   async resourceLayout(

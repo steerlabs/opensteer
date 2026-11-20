@@ -4,6 +4,8 @@ The Account service publishes a signed list of verified agent platforms and embe
 
 ## Running the operator CLI
 
+An operator needs write access to the Account database to edit the directory. The public HTTP route serves only the signed directory, and the document holds curated names, origins, relationships and public verification keys.
+
 The directory operator CLI ships in the Account image as `dist/agent-directory-operator-main.js`. It requires only `OPENSTEER_CONTROL_PLANE_DATABASE_URL` in the environment:
 
 ```bash
@@ -69,13 +71,12 @@ node dist/agent-directory-operator-main.js remove claude
 
 Returns `{"revision":4,"removed":true}`. Removal is refused with a conflict if another entry still lists `<id>` in `embedsVia`; update or remove the embedding entry first.
 
-## What a Home does when it cannot read the list
+## Trust, refresh and expiry
 
-Homes cache the verified directory in memory (`AgentDirectoryCache`):
+The Home trusts its configured Account origin over HTTPS and reads that origin's public signing keys. Account signs the directory with Ed25519. Signature verification protects the document against tampering in HTTP caches. The signed revision and issue time let the Home enforce rollback protection. Someone who controls the Account origin can serve their own keys and directory, so signing provides no protection against that. Account retains old public keys during rotation, and Homes refresh the key set when they encounter a new key ID.
 
-- **Refresh interval**: 15 minutes (`defaultAgentDirectoryRefreshIntervalMs`). Within this window, lookups use the cached copy without contacting Account.
-- **Maximum age**: 24 hours (`defaultAgentDirectoryMaxAgeMs`). If a refresh fails (network error, non-200 status, oversized response, bad signature, wrong `typ`/`tokenUse`, or lower `revision` than already accepted), the Home keeps serving its last verified copy until 24 hours have elapsed since `fetchedAt` or `issuedAt`.
-- **Degradation when unavailable or expired**: `AgentDirectoryCache.get()` never throws into its caller. Once no unexpired verified copy is available, lookups return `null`:
-  - Connections without an embedder assertion are shown as **unverified** (self-asserted name plus redirect origin, or `"an app on this computer"` for loopback). The Home never guesses a verified name.
-  - Requests that present `opensteer_embedder_assertion` are **refused** (`directory-unavailable`), never silently downgraded to unverified.
-  - Existing connections are not disconnected when the directory is unreachable (`isIdentityStillVerified` returns `null` rather than marking them withdrawn).
+The Home persists its last accepted directory across restarts. It rejects lower revisions and accepts a renewal at the same revision only if the entries are identical and the signed issue time advances. The document is usable for up to 24 hours from that time. A failed refresh leaves the last accepted copy available until it expires.
+
+The Home refreshes at start and in the background. Consent uses the current copy immediately. On a Home that has never accepted a copy, consent can wait for the first refresh for at most two seconds. Without a usable copy, consent continues with an unverified identity.
+
+A supplied statement that is malformed, expired, replayed, or otherwise unverifiable also leaves consent fully unverified, even for a known platform. A newer directory can withdraw support for an existing connection's recorded identity. The Home records the first withdrawal separately and preserves the evidence recorded at consent.

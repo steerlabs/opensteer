@@ -135,6 +135,23 @@ describe("Browser Use port", () => {
     expect(dispatch).toHaveBeenCalledTimes(4);
   });
 
+  it("routes session credential fills to the same tab-bound admission as other script commands", async () => {
+    const { browser, tabs, binding, call, authority, dispatch } = setup();
+    const port = createBrowserUsePort({
+      authority: { ...authority, agentBindingId: `session:${createId("agentSession")}` },
+      browser,
+      tabs,
+    });
+    const target = await port.openPage(binding.tabId, call);
+    for (const method of ["Opensteer.fillLogin", "Opensteer.fillCard"]) {
+      await port.command(target, method, {}, target.sessionId, call);
+      expect(dispatch).toHaveBeenLastCalledWith(
+        { method, parameters: {}, sessionId: target.sessionId },
+        expect.objectContaining({ signal: call.signal }),
+      );
+    }
+  });
+
   it("preflights metadata, replies and events, and stops reading a list at the limit", async () => {
     const { authority, browser, tabs, binding, call, port, dispatch, emit } = setup();
     const afterLimit = vi.fn();

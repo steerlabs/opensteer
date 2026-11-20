@@ -19,6 +19,8 @@ import {
   WorkAssignmentIdSchema,
   WorkPolicySchema,
   canonicalWorkAuditRecord,
+  cloudComputerSetupIssue,
+  cloudWords,
   defaultWorkPolicy,
   workAuditGenesisHash,
   workAuditSigningBytes,
@@ -224,7 +226,7 @@ export class OrganizationStore {
         );
       const assigned = renewal ? await this.#count(tx, renewal.id) : 0;
       if (input.seats < assigned)
-        throw new ControlPlaneError("conflict", "Offboard assignments before reducing seats");
+        throw new ControlPlaneError("conflict", "Offboard work Homes before reducing seats.");
       const organizationId = renewal?.id ?? OrganizationIdSchema.parse(`org_${randomUUID()}`);
       const open = await tx
         .selectFrom("organizationCheckouts")
@@ -847,7 +849,7 @@ export class OrganizationStore {
       if (org.closingAt || org.closedAt || org.billingStatus !== "active")
         throw new ControlPlaneError("conflict", "Organization billing needs attention");
       if (input.seats < (await this.#count(tx, id)))
-        throw new ControlPlaneError("conflict", "Offboard assignments before reducing seats");
+        throw new ControlPlaneError("conflict", "Offboard work Homes before reducing seats.");
       if (org.pendingSeats !== null)
         throw new ControlPlaneError("conflict", "A seat change is already pending");
       const subscription = await this.#stripe.subscription(org.stripeSubscriptionId);
@@ -962,7 +964,7 @@ export class OrganizationStore {
         .where("users.email", "=", email)
         .select("users.id")
         .executeTakeFirst();
-      if (member) throw new ControlPlaneError("conflict", "This Account is already a member");
+      if (member) throw new ControlPlaneError("conflict", "This person is already a member.");
       const existing = await tx
         .selectFrom("organizationInvitations")
         .where("organizationId", "=", id)
@@ -1076,7 +1078,7 @@ export class OrganizationStore {
         if (live)
           throw new ControlPlaneError(
             "conflict",
-            "Offboard the member’s assignment before removing them",
+            "Offboard the member’s work Home before removing them.",
           );
         await tx
           .deleteFrom("organizationMembers")
@@ -1110,7 +1112,10 @@ export class OrganizationStore {
         .executeTakeFirst();
       if (replay) {
         if (replay.assigneeAccountId !== input.accountId)
-          throw new ControlPlaneError("conflict", "This request already has a different assignee");
+          throw new ControlPlaneError(
+            "conflict",
+            "This work Home was already assigned to someone else.",
+          );
         return replay;
       }
       const member = await tx
@@ -1134,8 +1139,7 @@ export class OrganizationStore {
         .where("assigneeAccountId", "=", input.accountId)
         .where("state", "!=", "ended")
         .executeTakeFirst();
-      if (existing)
-        throw new ControlPlaneError("conflict", "This member already has a work assignment");
+      if (existing) throw new ControlPlaneError("conflict", "This member already has a work Home.");
       if (
         org.closingAt ||
         org.closedAt ||
@@ -1433,7 +1437,7 @@ export class OrganizationStore {
     return this.#db.transaction().execute(async (tx) => {
       const { assignment, org } = await this.#host(tx, id, deploymentId, true);
       if (revision > org.policyRevision)
-        throw new ControlPlaneError("bad_request", "Work policy revision has not been issued");
+        throw new ControlPlaneError("bad_request", "That policy version isn’t available.");
       const appliedRevision = Math.max(assignment.appliedRevision, revision);
       await tx
         .updateTable("workAssignments")
@@ -1770,11 +1774,11 @@ export class OrganizationStore {
       Boolean(row.suspendedAt) || (home.state === "suspended" && home.phase === "suspended");
     const bootExpired = home.bootstrapExpiresAt && home.bootstrapExpiresAt <= this.#now();
     const attention =
-      home.claimError ??
-      (home.phase === "failed"
-        ? (home.lastError ?? "The Cloud Computer failed to start.")
-        : null) ??
-      (bootExpired ? "The Cloud Computer’s boot credential expired." : null);
+      home.claimError || home.phase === "failed"
+        ? cloudComputerSetupIssue(home.claimError ?? home.lastError)
+        : bootExpired
+          ? cloudWords("cloud.reason.bootstrap-expired")
+          : null;
     const ready =
       row.state === "active" &&
       home.state === "active" &&
@@ -1803,7 +1807,7 @@ export class OrganizationStore {
           ? null
           : suspended
             ? row.state === "offboarding"
-              ? "Your organization ended this assignment."
+              ? "Your organization is offboarding this work Home."
               : "Your organization’s billing needs attention."
             : attention,
       address: ready ? `https://${home.hostname}` : null,

@@ -206,10 +206,10 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
       return "This phone cannot reach it right now.";
     case "needs-sign-in":
       if (row.sessionFailure === "account-required") {
-        return "Sign in to your Opensteer Account again to reconnect this deployment.";
+        return "Sign in to your Opensteer account again to reconnect this Home.";
       }
       if (row.sessionFailure === "blocked") {
-        return "This deployment no longer admits your Opensteer Account.";
+        return "This Home no longer accepts sign-in with your Opensteer account.";
       }
       return row.signIn === "pairing-code"
         ? "Enter a new pairing code from the computer that hosts it."

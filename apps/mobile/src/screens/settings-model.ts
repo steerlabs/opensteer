@@ -171,7 +171,7 @@ export function accountSettingsModel(
       account.detail ?? "Sign in to sync the deployments your Account lists and get notifications.",
     initial: null,
     subtitle: null,
-    title: authorizing ? "Finish signing in in your browser" : "No Opensteer Account",
+    title: authorizing ? "Finish signing in in your browser" : "No Opensteer account",
   };
 }
 
@@ -193,7 +193,7 @@ function accountInitial(identity: string): string | null {
  * than repeated in every state above it: the Account is the only thing that
  * can reach this phone, so a deployment it does not list cannot notify at all.
  */
-const notificationFooter = "Only deployments your Opensteer Account lists can notify this phone.";
+const notificationFooter = "Only deployments your Opensteer account lists can notify this phone.";
 
 /**
  * The notification state machine translated into the one useful next action,
@@ -217,7 +217,7 @@ export function notificationSettingsModel(
     case "signed-out":
       return {
         action: null,
-        detail: "Sign in to your Opensteer Account to receive notifications on this phone.",
+        detail: "Sign in to your Opensteer account to receive notifications on this phone.",
         disabled: working,
         footer: notificationFooter,
         preferences: null,
@@ -245,7 +245,7 @@ export function notificationSettingsModel(
     case "push-not-configured":
       return {
         action: null,
-        detail: "Your Opensteer Account service is not configured to send notifications.",
+        detail: "Your Opensteer account service is not configured to send notifications.",
         disabled: working,
         footer: notificationFooter,
         preferences: null,

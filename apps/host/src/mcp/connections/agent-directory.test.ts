@@ -1,14 +1,20 @@
 import {
+  AgentDirectoryOriginSchema,
   agentDirectoryJwtTyp,
   agentDirectoryPath,
   agentDirectoryTokenUse,
+  isIdentityStillVerified,
   maximumAgentDirectoryEnvelopeBytes,
   type AgentConnectionIdentityAtConsent,
   type AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
+import { createId } from "@opensteer/core";
+import type { AgentConnectionStore } from "@opensteer/database";
+import { generateKeyPairSync } from "node:crypto";
+import { ConnectionOAuth } from "./connection-oauth.js";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWK } from "jose";
-import { describe, expect, it } from "vitest";
-import { AgentDirectoryCache, isIdentityStillVerified, matchPlatform } from "./agent-directory.js";
+import { describe, expect, it, vi } from "vitest";
+import { AgentDirectoryCache, matchPlatform } from "./agent-directory.js";
 
 const accountOrigin = "https://accounts.example.test";
 const baseNow = Date.parse("2026-11-20T12:00:00.000Z");
@@ -80,6 +86,41 @@ function jsonResponse(body: unknown, status = 200, contentType = "application/js
   });
 }
 
+function makeCache(options: Omit<ConstructorParameters<typeof AgentDirectoryCache>[0], "storage">,
+  saved: AgentDirectoryDocument | null = null) {
+  return new AgentDirectoryCache({
+    ...options,
+    storage: {
+      load: async () => saved,
+      accept: async (_issuer, document) => { saved = document; return document; },
+    },
+  });
+}
+
+function authorize(cache: AgentDirectoryCache) {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const origin = "http://127.0.0.1:4310";
+  const oauth = new ConnectionOAuth({
+    directory: cache,
+    deploymentId: createId("deployment"),
+    store: {} as AgentConnectionStore,
+    signingKey: privateKey,
+    verificationKey: publicKey,
+  });
+  const redirect = "https://agentpay.example/callback";
+  const client = oauth.register(origin, { redirect_uris: [redirect] });
+  return oauth.authorize(origin, {
+    ...client,
+    redirect_uri: redirect,
+    response_type: "code",
+    code_challenge: "a".repeat(43),
+    code_challenge_method: "S256",
+  }).then((path) => {
+    const id = new URL(path, origin).searchParams.get("request")!;
+    return oauth.consent(id, createId("user"));
+  });
+}
+
 describe("AgentDirectoryCache", () => {
   it("fetches, verifies, caches, and refreshes a valid signed directory", async () => {
     const key1 = await makeAccountKey("key-1");
@@ -90,7 +131,7 @@ describe("AgentDirectoryCache", () => {
     let currentDoc = sampleDocument(1, now);
     let directoryCalls = 0;
 
-    const cache = new AgentDirectoryCache({
+    const cache = makeCache({
       issuer: new URL(accountOrigin),
       now: () => now,
       refreshIntervalMs: 60_000,
@@ -119,7 +160,8 @@ describe("AgentDirectoryCache", () => {
     activeKey = key2;
     jwks = { keys: [key1.jwk, key2.jwk] };
     currentDoc = sampleDocument(2, now);
-    const refreshed = await cache.get();
+    await cache.refresh();
+    const refreshed = cache.current();
     expect(refreshed?.revision).toBe(2);
     expect(directoryCalls).toBe(2);
   });
@@ -130,7 +172,7 @@ describe("AgentDirectoryCache", () => {
     const [h, p, s] = token.split(".");
     const tamperedSig = (s![0] === "A" ? "B" : "A") + s!.slice(1);
 
-    const cache = new AgentDirectoryCache({
+    const cache = makeCache({
       issuer: new URL(accountOrigin),
       now: () => baseNow,
       fetch: makeMockFetch({
@@ -150,7 +192,7 @@ describe("AgentDirectoryCache", () => {
     const wrongTyp = await signDirectory(sampleDocument(1), key, { typ: "JWT" });
 
     for (const assertion of [wrongPurpose, wrongTyp]) {
-      const cache = new AgentDirectoryCache({
+      const cache = makeCache({
         issuer: new URL(accountOrigin),
         now: () => baseNow,
         fetch: makeMockFetch({
@@ -167,7 +209,7 @@ describe("AgentDirectoryCache", () => {
     const attacker = await makeAccountKey("key-1");
     const forged = await signDirectory(sampleDocument(1), attacker);
 
-    const cache = new AgentDirectoryCache({
+    const cache = makeCache({
       issuer: new URL(accountOrigin),
       now: () => baseNow,
       fetch: makeMockFetch({
@@ -179,35 +221,55 @@ describe("AgentDirectoryCache", () => {
     expect(await cache.get()).toBeNull();
   });
 
-  it("refuses a lower revision than it has already accepted", async () => {
-    const key = await makeAccountKey("key-1");
-    let now = baseNow;
-    let doc = sampleDocument(5, now);
+  it("serves a persisted copy immediately while Account is stalled", async () => {
+    const stalled = Promise.withResolvers<Response>();
+    const fetch = vi.fn(() => stalled.promise);
+    const saved = sampleDocument(1);
+    const cache = makeCache({ issuer: new URL(accountOrigin), now: () => baseNow, fetch }, saved);
+    await cache.start();
+    expect(fetch).toHaveBeenCalledOnce();
+    const consent = vi.fn();
+    vi.useFakeTimers();
+    try {
+      const pending = authorize(cache).then(consent);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(consent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        identityAtConsent: expect.objectContaining({ kind: "platform", directoryRevision: 1 }),
+      }));
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+    stalled.resolve(new Response(null, { status: 503 }));
+    await cache.refresh();
+  });
 
-    const cache = new AgentDirectoryCache({
-      issuer: new URL(accountOrigin),
-      now: () => now,
-      refreshIntervalMs: 10_000,
-      maxAgeMs: 120_000,
-      fetch: makeMockFetch({
-        getJwks: () => jsonResponse({ keys: [key.jwk] }),
-        getDirectory: async () => jsonResponse({ assertion: await signDirectory(doc, key) }),
-      }),
-    });
-
-    expect((await cache.get())?.revision).toBe(5);
-
-    now += 20_000;
-    doc = sampleDocument(4, now);
-    // Downgrade is refused and the previously accepted revision 5 remains cached.
-    expect((await cache.get())?.revision).toBe(5);
+  it("limits a cold cache to two seconds even while the fetch is stalled", async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = Promise.withResolvers<Response>();
+      const cache = makeCache({ issuer: new URL(accountOrigin), fetch: () => stalled.promise });
+      const consent = vi.fn();
+      const pending = authorize(cache).then(consent);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(consent).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(consent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        identityAtConsent: expect.objectContaining({ kind: "unverified" }),
+      }));
+      stalled.resolve(new Response(null, { status: 503 }));
+      await cache.refresh();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses oversized directory responses", async () => {
     const key = await makeAccountKey("key-1");
     const oversized = "x".repeat(maximumAgentDirectoryEnvelopeBytes + 1_024);
 
-    const cache = new AgentDirectoryCache({
+    const cache = makeCache({
       issuer: new URL(accountOrigin),
       now: () => baseNow,
       fetch: makeMockFetch({
@@ -228,7 +290,7 @@ describe("AgentDirectoryCache", () => {
     let now = baseNow;
     let available = true;
 
-    const cache = new AgentDirectoryCache({
+    const cache = makeCache({
       issuer: new URL(accountOrigin),
       now: () => now,
       refreshIntervalMs: 60_000,
@@ -256,14 +318,14 @@ describe("AgentDirectoryCache", () => {
   });
 
   it("never throws on fetch failures or non-200 / non-JSON responses", async () => {
-    const cacheNetwork = new AgentDirectoryCache({
+    const cacheNetwork = makeCache({
       issuer: new URL(accountOrigin),
       now: () => baseNow,
       fetch: (() => Promise.reject(new Error("ECONNREFUSED"))) as typeof globalThis.fetch,
     });
     expect(await cacheNetwork.get()).toBeNull();
 
-    const cacheStatus = new AgentDirectoryCache({
+    const cacheStatus = makeCache({
       issuer: new URL(accountOrigin),
       now: () => baseNow,
       fetch: makeMockFetch({
@@ -296,6 +358,16 @@ describe("matchPlatform", () => {
     expect(matchPlatform(null, "https://agentpay.example/callback")).toBeNull();
   });
 });
+
+it.each(["https://localhost.", "https://app.localhost.", "https://[::ffff:7f00:1]"])(
+  "excludes loopback alias %s from publication and matching",
+  (origin) => {
+    expect(AgentDirectoryOriginSchema.safeParse(origin).success).toBe(false);
+    expect(matchPlatform({ ...sampleDocument(1), entries: [
+      { id: "platform", displayName: "Platform", origins: [origin] },
+    ] }, `${origin}/callback`)).toBeNull();
+  },
+);
 
 describe("isIdentityStillVerified", () => {
   const baseDirectory = sampleDocument(2);

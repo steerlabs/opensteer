@@ -44,6 +44,7 @@ if $resume_managed; then
 fi
 if [[ -n $managed ]]; then
   [[ -z $hostname && -z $manifest && -n $token_path ]] || usage
+  [[ $token_path == /* ]] || token_path="$PWD/$token_path"
   if ! $resume_managed && ! $prepare; then
     lock_home
     for input in "$managed" "$token_path"; do
@@ -60,6 +61,10 @@ if [[ -n $managed ]]; then
     if [[ -f "$boot/spec.json" ]]; then
       cmp -s "$managed" "$boot/spec.json" || fail "A different managed install is already staged."
     fi
+    if [[ -f "$boot/refused" ]]; then
+      rm -f -- "$token_path"
+      exit 0
+    fi
     for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml; do
       install -m 0700 "$source_dir/$file" "$boot/$file"
     done
@@ -69,11 +74,7 @@ if [[ -n $managed ]]; then
       install -m 0600 "$token_path" "$boot/token.new"
       mv -f -- "$boot/token.new" "$boot/token"
     elif ! cmp -s "$token_path" "$boot/token"; then
-      [[ $(systemctl show "$unit_prefix-managed.service" -p ExecMainStatus --value) == 78 && ! -f "$home_dir/config.env" ]] ||
-        fail "A different bootstrap token is already staged."
-      install -m 0600 "$token_path" "$boot/token.new"
-      mv -f -- "$boot/token.new" "$boot/token"
-      rm -f -- "$boot/result.json"
+      fail "A different bootstrap token is already staged."
     fi
     printf '%s\n' "$token_path" > "$boot/original-token-path"
     {
@@ -86,8 +87,7 @@ if [[ -n $managed ]]; then
         fi
       done
     } > "$boot/options.env"
-    sync "$boot"
-    flock -u 9
+    sync -f "$boot"
     "$source_dir/install-managed-unit.sh" "$home_dir" "$unit_prefix"
     exit 0
   fi
@@ -133,18 +133,36 @@ lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 setup_code=''
-if $resume_managed && [[ -f "$home_dir/boot/completed" ]]; then
-  rm -f -- "$(cat "$home_dir/boot/original-token-path")" "$token_path" "$home_dir/boot/result.json"
+finish_managed_boot() {
+  local outcome=$1 original
+  durable_marker "$home_dir/boot/$outcome"
+  original=$(cat "$home_dir/boot/original-token-path")
+  rm -f -- "$original" "$token_path" "$home_dir/boot/token.new" "$home_dir/boot/"{result.json,result.json.new}
+  sync "${original%/*}" "$home_dir/boot"
+  if [[ $outcome == refused ]]; then
+    if [[ -f "$home_dir/config.env" ]]; then compose down; fi
+    exit 78
+  fi
   "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9
   systemctl start "$unit_prefix.service"
   exit 0
+}
+if $resume_managed; then
+  for outcome in refused completed; do
+    if [[ -f "$home_dir/boot/$outcome" ]]; then finish_managed_boot "$outcome"; fi
+  done
 fi
 if [[ -n $managed ]]; then
   if $resume_managed; then result="$home_dir/boot/result.json"; else result="$staging/result.json"; fi
-  if [[ ! -s $result || ! -f "$home_dir/boot/completing" ]]; then
-    "$source_dir/managed-boot.sh" boot "$managed" "$token_path" "$result"
-    sync "$result"
+  if [[ ! -s $result ]]; then
+    if "$source_dir/managed-boot.sh" boot "$managed" "$token_path" "$result"; then
+      :
+    else
+      status=$?
+      if $resume_managed && [[ $status == 78 ]]; then finish_managed_boot refused; fi
+      exit "$status"
+    fi
   fi
 fi
 
@@ -201,7 +219,7 @@ else
       jq -ce .work "$result" | save_secret "$home_dir/managed-work.json"
     fi
     OPENSTEER_HOME_RELEASE_MANIFEST_URL=$(jq -r '.releaseManifestUrl // empty' "$result")
-    if jq -e '.egress != null' "$result" >/dev/null; then
+    if valid_managed_egress "$result"; then
       save_managed_egress "$result"
     fi
     for item in repository password accessKeyId secretAccessKey; do
@@ -227,6 +245,10 @@ else
   valid_value='^[a-zA-Z0-9.:/_?&=%+-]+$'
   {
     printf 'OPENSTEER_HOME_HOSTNAME=%s\n' "$hostname"
+    if [[ -n ${COMPOSE_PROJECT_NAME:-} ]]; then
+      [[ $COMPOSE_PROJECT_NAME =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail 'Invalid Compose project name.'
+      printf "COMPOSE_PROJECT_NAME='%s'\n" "$COMPOSE_PROJECT_NAME"
+    fi
     for suffix in BIND_IP HTTP_PORT HTTPS_PORT RUNNER_CPUS RUNNER_MEMORY BROWSER_CPUS BROWSER_MEMORY RELEASE_MANIFEST_URL \
       LOCAL_PASSWORD_ENABLED MANAGED_ID MANAGED_GENERATION ACCOUNT_ORIGIN OIDC_CLIENT_ID; do
       key="OPENSTEER_HOME_$suffix"
@@ -257,13 +279,14 @@ chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
 [[ -e "$home_dir/secrets/oidc_client_secret" ]] || : | save_secret "$home_dir/secrets/oidc_client_secret"
 chmod 0444 "$home_dir/tls.caddy"
 if [[ -f "$staging/config.env" ]]; then
-  mv -- "$staging/config.env" "$home_dir/config.env"
-  sync "$home_dir"
+  sync -f "$home_dir"
+  publish_file "$staging/config.env" "$home_dir/config.env"
 fi
 if $prepare; then
   install_sandbox_policies
 else
   compose pull --quiet
+  if $resume_managed; then check_release_stamps "$home_dir/images.env"; fi
   install_sandbox_policies
   if $resume_managed; then
     snapshot=$(jq -r '.restoreSnapshot // empty' "$result")
@@ -274,18 +297,20 @@ else
     fi
     start_pod
     identity=$(local_discovery)
-    touch "$home_dir/boot/completing"
-    sync "$home_dir/boot"
+    if [[ -s "$home_dir/boot/identity.json" ]]; then
+      [[ $identity == "$(cat "$home_dir/boot/identity.json")" ]] || finish_managed_boot refused
+    else
+      printf '%s\n' "$identity" > "$staging/identity.json"
+      publish_file "$staging/identity.json" "$home_dir/boot/identity.json"
+    fi
     if "$source_dir/managed-boot.sh" boot-complete "$managed" "$token_path" "$identity"; then
       :
     else
       status=$?
-      if [[ $status == 78 ]]; then compose down; fi
+      if [[ $status == 78 ]]; then finish_managed_boot refused; fi
       exit "$status"
     fi
-    touch "$home_dir/boot/completed"
-    sync "$home_dir/boot"
-    rm -f -- "$(cat "$home_dir/boot/original-token-path")" "$token_path" "$result"
+    finish_managed_boot completed
   fi
   "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9

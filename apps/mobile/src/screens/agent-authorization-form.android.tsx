@@ -73,8 +73,15 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
       >
         {props.title}
       </Text>
-      <NoteRow text={props.who.verified ? `✓ ${props.who.heading}` : props.who.heading} />
-      <NoteRow text={props.who.detail} />
+      <Text
+        color={color.textSoft}
+        modifiers={[padding(16, 8, 16, 8)]}
+        maxLines={1}
+        style={{ typography: "bodyMedium" }}
+      >
+        {props.who.verified ? `✓ ${props.who.heading}` : props.who.heading}
+      </Text>
+      {props.who.origins.map((line) => <NoteRow key={line} text={line} />)}
       <NoteRow text={props.destination} />
       {props.who.warning === null ? null : (
         <Text

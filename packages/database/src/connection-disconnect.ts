@@ -1,6 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  CommandIdSchema,
   ThreadAccessModeSchema,
+  type AgentOperationId,
   type AgentSessionId,
   type BrowserSessionId,
   type CommandId,
@@ -53,14 +55,19 @@ export type LineageAttempt =
   | ConnectionAttempt<"trigger", TriggerId>
   | ConnectionAttempt<"session", AgentSessionId>
   | ConnectionAttempt<"operation">
-  | ConnectionAttempt<"plugin" | "standard-cdp">;
+  | ConnectionAttempt<"plugin" | "standard-cdp" | "shared-chrome">;
 
 export interface ConnectionAttemptStopper {
-  stop(attempt: LineageAttempt, cleanup: ConnectionCleanup): Promise<void>;
+  stop(attempt: LineageAttempt, cleanup: ConnectionCleanup): Promise<void | "ended" | "contact-lost">;
   stopDirectOperation?(
     attempt: ConnectionAttempt<"operation">,
     cleanup: ConnectionCleanup,
   ): Promise<void>;
+}
+
+export function connectionStopId(attempt: LineageAttempt): CommandId {
+  const hash = createHash("sha256").update(JSON.stringify([attempt.kind, attempt.id, attempt.generation])).digest("hex");
+  return CommandIdSchema.parse(`cmd_${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`);
 }
 
 /** The same set drives the worker, the connection's state and Remove. */
@@ -68,11 +75,14 @@ export async function connectionAttempts(
   database: Kysely<DatabaseSchema>,
   connectionId: string,
 ): Promise<readonly LineageAttempt[]> {
-  const belowFloor = (revision: string, mode: string) => {
+  const belowFloor = (
+    revision: string | ReturnType<typeof sql>,
+    mode: string | ReturnType<typeof sql>,
+  ) => {
     const modes = sql`${ThreadAccessModeSchema.options}::text[]`;
-    return sql`(f.disconnected or ${sql.ref(revision)} < f.cleanup_minimum_grant_revision
-      or (${sql.ref(revision)} = f.cleanup_minimum_grant_revision
-        and array_position(${modes}, ${sql.ref(mode)}) > array_position(${modes}, f.cleanup_maximum_mode)))`;
+    return sql`(f.disconnected or ${typeof revision === "string" ? sql.ref(revision) : revision} < f.cleanup_minimum_grant_revision
+      or (${typeof revision === "string" ? sql.ref(revision) : revision} = f.cleanup_minimum_grant_revision
+        and array_position(${modes}, ${typeof mode === "string" ? sql.ref(mode) : mode}) > array_position(${modes}, f.cleanup_maximum_mode)))`;
   };
   const { rows } = await sql<LineageAttempt>`
     with floor as (
@@ -101,8 +111,8 @@ export async function connectionAttempts(
     eligible_threads as (
       select t.id from threads t cross join floor f
       where not f.disconnected and (
-        f.grant->>'scope' = 'everything' or
-        (f.grant->>'tasks' = 'true' and t.origin_connection_id = f.id)
+        (f.grant->>'scope' = 'everything' and t.origin_connection_id is null) or
+        t.origin_connection_id = f.id
       )
     ),
     attempts as (
@@ -116,8 +126,8 @@ export async function connectionAttempts(
         null, null, null
       from lineage_runs r cross join floor f
       where r.status in ('queued','starting','running','waiting')
-        and not exists (select 1 from held_attempts a where a.run_id = r.id
-          and a.binding_generation = r.binding_generation)
+        and not exists (select 1 from run_attempts a where a.run_id = r.id
+          and a.binding_generation = r.binding_generation and a.admitted_grant_revision is not null)
         and (f.disconnected or r.thread_id not in (select id from eligible_threads))
       union all
       select 'occurrence', o.id, o.execution_generation,
@@ -160,6 +170,7 @@ export async function connectionAttempts(
       left join lineage_occurrences o on o.id = q.originating_occurrence_id
       left join lineage_watches w on w.id = q.originating_watch_activation_id
       left join agent_sessions s on s.id = q.originating_agent_session_id
+      left join agent_operations op on op.request_id = q.id
       cross join floor f
       where q.status = 'pending' and (
         r.id is not null or o.id is not null or w.id is not null or s.connection_id = f.id
@@ -167,7 +178,7 @@ export async function connectionAttempts(
           and q.originating_watch_activation_id is null and q.originating_agent_session_id is null
           and t.origin_connection_id = f.id)
       ) and (f.disconnected or
-        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision)
+        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision, op.grant_revision)
           < f.cleanup_minimum_grant_revision)
       union all
       select 'trigger', t.id, null, t.anchor_thread_id, null, null, null, false, null, null, null
@@ -200,15 +211,23 @@ export async function connectionAttempts(
       where b.standard_cdp_attempts <> '{}'
         and (f.disconnected or (c.witness->>'grantRevision')::integer < f.cleanup_minimum_grant_revision)
       union all
+      select 'shared-chrome', c.id, null, c.witness->>'threadId', null, null,
+        null, true, (c.witness->>'terminalEvidenceAt')::timestamptz,
+        (c.witness->>'contactLostAt')::timestamptz, null
+      from floor f cross join lateral jsonb_each(f.shared_chrome_attempts) c(id, witness)
+      where ${belowFloor(sql`(c.witness->>'grantRevision')::integer`, sql`c.witness->>'mode'`)}
+      union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
       where s.status = 'active' and f.disconnected
       union all
       select 'operation', o.id, null, s.thread_id, null, null, null,
-        o.handed_off_at is not null, null, null, null
+        o.handed_off_at is not null, o.terminal_evidence_at, o.contact_lost_at, null
       from agent_operations o join floor f on f.id = o.connection_id
       join agent_sessions s on s.id = o.session_id
-      where (o.outcome is null or (o.outcome = 'unknown' and o.handed_off_at is not null))
+      -- Its executor runs in this process: it ends when the executor returns or the process
+      -- that handed it off is gone; a lost one stays only as evidence of contact loss.
+      where (o.terminal_evidence_at is null or o.contact_lost_at is not null)
         and ${belowFloor("o.grant_revision", "o.mode")}
     )
     select * from attempts order by kind, id
@@ -266,7 +285,7 @@ export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<st
   return rows.map(({ id }) => id);
 }
 
-interface ConnectionCleanupClaim extends ConnectionCleanup {
+export interface ConnectionCleanupClaim extends ConnectionCleanup {
   readonly token: string;
   readonly grantRevision: number;
 }
@@ -313,16 +332,54 @@ export async function claimConnectionCleanup(
 
 export async function renewConnectionCleanupClaim(
   database: Kysely<DatabaseSchema>,
-  connectionId: string,
-  token: string,
+  claim: ConnectionCleanupClaim,
 ): Promise<boolean> {
+  const now = new Date();
   const result = await database
     .updateTable("agentConnections")
-    .set({ cleanupClaimExpiresAt: new Date(Date.now() + cleanupClaimDurationMs) })
-    .where("id", "=", connectionId)
-    .where("cleanupClaimToken", "=", token)
+    .set({ cleanupClaimExpiresAt: new Date(now.getTime() + cleanupClaimDurationMs) })
+    .where("id", "=", claim.connectionId)
+    .where("cleanupClaimToken", "=", claim.token)
+    .where("cleanupClaimExpiresAt", ">", sql<Date>`clock_timestamp()`)
+    .where("grantRevision", "=", claim.grantRevision)
+    .where("cleanupReason", "=", claim.reason)
     .executeTakeFirst();
   return result.numUpdatedRows === 1n;
+}
+
+export async function recordConnectionStop(
+  database: Kysely<DatabaseSchema>,
+  claim: ConnectionCleanupClaim,
+  attempt: LineageAttempt,
+  result: "ended" | "contact-lost",
+): Promise<void> {
+  await commitPersonalMutation(database, async (tx) => {
+    if (!(await renewConnectionCleanupClaim(tx, claim))) return;
+    const current = outstandingAttempts(await connectionAttempts(tx, claim.connectionId)).some((row) =>
+      row.kind === attempt.kind && row.id === attempt.id && row.generation === attempt.generation &&
+      row.runnerId === attempt.runnerId && row.runnerBootId === attempt.runnerBootId);
+    if (!current) return;
+    const now = new Date();
+    const evidence = { terminalEvidenceAt: now, contactLostAt: result === "contact-lost" ? now : null };
+    if (attempt.kind === "plugin") {
+      await tx.updateTable("pluginExecutions").set({ ...evidence, state: "cancelled" })
+        .where("id", "=", attempt.id)
+        .where("terminalEvidenceAt", "is", null).execute();
+    } else if (attempt.kind === "run-attempt") {
+      await tx.updateTable("runAttempts").set(evidence)
+        .where("id", "=", attempt.id as import("@opensteer/core").RunAttemptId)
+        .where("bindingGeneration", "=", attempt.generation)
+        .where("terminalEvidenceAt", "is", null).execute();
+    } else if (attempt.kind === "occurrence") {
+      await tx.updateTable("triggerOccurrences").set(evidence)
+        .where("id", "=", attempt.id).where("executionGeneration", "=", attempt.generation)
+        .where("terminalEvidenceAt", "is", null).execute();
+    } else if (attempt.kind === "watch") {
+      await tx.updateTable("triggerWatchActivations").set({ ...evidence, observed: "stopped", updatedAt: now })
+        .where("id", "=", attempt.id).where("executionGeneration", "=", String(attempt.generation))
+        .where("terminalEvidenceAt", "is", null).execute();
+    }
+  });
 }
 
 export async function releaseConnectionCleanupClaim(
@@ -354,36 +411,18 @@ export async function completeCleanupIfSettled(
       ])
       .where("id", "=", connectionId)
       .where("cleanupClaimToken", "=", token)
+      .where("cleanupClaimExpiresAt", ">", sql<Date>`clock_timestamp()`)
       .where("cleanupReason", "=", claim.reason)
       .where("grantRevision", "=", claim.grantRevision)
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (!connection?.cleanupRequestedAt) return false;
     const attempts = await connectionAttempts(tx, connectionId);
-    const latest = attempts.reduce<LineageAttempt | undefined>(
-      (previous, attempt) =>
-        attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
-          ? attempt
-          : previous,
-      undefined,
-    );
-    if (
-      latest?.contactLostAt &&
-      (!connection.acknowledgedUncertaintyAt ||
-        latest.contactLostAt > connection.acknowledgedUncertaintyAt) &&
-      (!connection.lastActionUncertainAt || latest.contactLostAt > connection.lastActionUncertainAt)
-    ) {
+    const uncertainty = await latestConnectionUncertainty(tx, connection, attempts);
+    if (uncertainty) {
       await tx
         .updateTable("agentConnections")
-        .set({
-          lastActionUncertainAt: latest.contactLostAt,
-          lastActionUncertain: {
-            attemptId: latest.id,
-            generation: latest.generation,
-            taskId: latest.threadId,
-            reason: "Contact was lost before this attempt confirmed it ended.",
-          },
-        })
+        .set(uncertainty)
         .where("id", "=", connectionId)
         .execute();
     }
@@ -408,19 +447,82 @@ export async function completeCleanupIfSettled(
   });
 }
 
+export async function latestConnectionUncertainty(
+  database: Kysely<DatabaseSchema>,
+  connection: { readonly acknowledgedUncertaintyAt: Date | null; readonly lastActionUncertainAt: Date | null },
+  attempts: readonly LineageAttempt[],
+) {
+  const latest = attempts.reduce<LineageAttempt | undefined>(
+    (previous, attempt) =>
+      attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
+        ? attempt
+        : previous,
+    undefined,
+  );
+  const at = latest?.contactLostAt;
+  if (!latest || !at ||
+    (connection.acknowledgedUncertaintyAt && at <= connection.acknowledgedUncertaintyAt) ||
+    (connection.lastActionUncertainAt && at <= connection.lastActionUncertainAt)) return;
+  return {
+    lastActionUncertainAt: at,
+    lastActionUncertain: {
+      attemptId: latest.id,
+      generation: latest.generation,
+      taskId: latest.threadId,
+      reason: "Contact was lost before this attempt confirmed it ended.",
+      ...(latest.runnerId ? { device: (await database.selectFrom("runners").select("name")
+        .where("id", "=", latest.runnerId).executeTakeFirst())?.name ?? null } : {}),
+      ...(latest.kind === "operation"
+        ? await database.selectFrom("agentOperations")
+            .select(["tool", sql<string>`target->>'name'`.as("target"),
+              sql<string | null>`target->'device'->>'name'`.as("device")])
+            .where("id", "=", latest.id as AgentOperationId).executeTakeFirst()
+        : {}),
+    },
+  };
+}
+
 export async function settleLineageRequests(
   database: Kysely<DatabaseSchema>,
   requestIds: readonly RequestId[],
+  claim?: ConnectionCleanupClaim,
 ): Promise<void> {
   if (!requestIds.length) return;
-  await commitPersonalMutation(database, (tx) =>
-    cancelPending(tx, {
+  await commitPersonalMutation(database, async (tx) => {
+    if (claim && !(await renewConnectionCleanupClaim(tx, claim))) return;
+    const now = new Date();
+    const linked = await tx
+      .selectFrom("agentOperations")
+      .select("id")
+      .where("requestId", "in", requestIds)
+      .where("state", "=", "pending")
+      .where("handedOffAt", "is", null)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    if (linked.length)
+      await tx
+        .updateTable("agentOperations")
+        .set({
+          state: "refused",
+          outcome: "refused",
+          completedAt: now,
+          terminalEvidenceAt: now,
+          updatedAt: now,
+        })
+        .where(
+          "id",
+          "in",
+          linked.map(({ id }) => id),
+        )
+        .execute();
+    await cancelPending(tx, {
       reason: "authority-revoked",
       resolvedAt: new Date(),
       requestIds,
       cancelHandedOffPlugins: false,
-    }),
-  );
+    });
+  });
 }
 
 export async function recordConnectionRunHandoff(
@@ -576,12 +678,35 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
   };
 }
 
+export async function recordReconciledConnectionCdpAttempt(
+  database: Kysely<DatabaseSchema>,
+  sessionId: BrowserSessionId,
+  id: string,
+  contactLost: boolean,
+): Promise<void> {
+  await database
+    .updateTable("browserSessions")
+    .set({
+      standardCdpAttempts: sql`jsonb_set(
+        standard_cdp_attempts, array[${id}],
+        standard_cdp_attempts -> ${id}::text ||
+          jsonb_build_object('terminalEvidenceAt', now()) ||
+          case when ${contactLost} then jsonb_build_object(
+            'contactLostAt', coalesce(standard_cdp_attempts -> ${id}::text -> 'contactLostAt', to_jsonb(now()))
+          ) else '{}'::jsonb end
+      )`,
+    })
+    .where("id", "=", sessionId)
+    .where(sql<boolean>`standard_cdp_attempts -> ${id}::text ? 'connectionId'`)
+    .execute();
+}
+
 export async function recoverConnectionCdpAttempts(
   database: Kysely<DatabaseSchema>,
 ): Promise<void> {
   await sql`update browser_sessions b
     set standard_cdp_attempts = (
-      select jsonb_object_agg(id, case when witness ?| array['terminalEvidenceAt', 'contactLostAt']
+      select jsonb_object_agg(id, case when not (witness ? 'connectionId') or witness ?| array['terminalEvidenceAt', 'contactLostAt']
         then witness else witness || jsonb_build_object('contactLostAt', now()) end)
       from jsonb_each(b.standard_cdp_attempts) a(id, witness)
     ) where b.standard_cdp_attempts <> '{}'`.execute(database);

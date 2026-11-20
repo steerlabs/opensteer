@@ -473,6 +473,7 @@ export type ShellDataTicketClaims = z.infer<typeof ShellDataTicketClaimsSchema>;
 export const ShellConnectErrorCodeSchema = z.enum([
   "device-access-off",
   "device-offline",
+  "device-stopped",
   "run_invalid",
   "target_unknown",
   "target_offline",

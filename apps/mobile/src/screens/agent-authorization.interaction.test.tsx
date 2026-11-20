@@ -383,14 +383,14 @@ describe("agent consent on the phone", () => {
     expect(detail(row("resources", "browser"))).toBe("None");
     await press(row("resources", "browser"));
     expect(row("new", "no-browser", sheetSections())).toMatchObject({
-      label: "Turn on Browser on a Device first",
+      label: "Turn on Browser on a device first",
     });
   });
 
   it("says the new profile waits for its Device when that Device is offline", async () => {
     await open(consentHost({ homes: [macRunner], macOnline: false }));
     expect(section("resources").footer?.text).toBe(
-      "None of your Devices are online. Grok can use its profile once MacBook Pro is back.",
+      "None of your devices are online. Grok can use its profile once MacBook Pro is back.",
     );
   });
 

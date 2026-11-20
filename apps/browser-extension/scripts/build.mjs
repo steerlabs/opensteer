@@ -208,10 +208,10 @@ try {
   await writeFile(
     path.join(staging, "INSTALL.txt"),
     liveTabs
-      ? `Opensteer Live Tabs for Chrome
+      ? `Opensteer tab sharing
 
 Load this folder from chrome://extensions using Developer mode and Load unpacked.
-Open an Opensteer Chrome pairing link in this Chrome and choose Pair Live Tabs.
+Open an Opensteer Chrome pairing link in this Chrome and choose Pair Chrome tab sharing.
 
 An agent can act as you, in a tab you share, on any site this Chrome is signed in
 to, until you stop. Chrome shows a debugging bar while a tab is in use.

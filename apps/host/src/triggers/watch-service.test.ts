@@ -131,6 +131,26 @@ describe("WatchService", () => {
     await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledTimes(2));
     await service.close();
   });
+  it("reconciles a desired Watch after a stopped report is replayed", async () => {
+    const fixture = watchFixture();
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(async () => undefined);
+    const service = new WatchService(options(fixture, {
+      reconcileWatches,
+      applyWatchStatus: async () => ({
+        activation: { ...fixture.context.activation, desired: "active" }, autoPaused: false,
+      }),
+    }));
+    try {
+      await service.applyStatus(fixture.identity, {
+        type: "runner.watch-status", activationId: fixture.context.activation.id,
+        executionGeneration: 3, observed: "stopped", restartCount: 0, healthySince: null,
+        lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
+      });
+      await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
+    } finally {
+      await service.close();
+    }
+  });
   it("serializes repeated reconciliation so the latest live Runner identity is used", async () => {
     const fixture = watchFixture();
     let identity = fixture.identity;
@@ -250,6 +270,7 @@ function options(
       reconcileWatches: overrides.reconcileWatches ?? (async () => undefined),
     },
     store: {
+      assertActiveWatchBinding: async () => undefined,
       applyWatchStatus:
         overrides.applyWatchStatus ??
         (async () => ({

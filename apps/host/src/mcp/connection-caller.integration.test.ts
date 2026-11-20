@@ -1,4 +1,7 @@
-import { TriggerStore } from "@opensteer/database";
+import { PluginAgentStore, TriggerStore } from "@opensteer/database";
+import { PluginExecutions } from "../plugins/plugin-executions.js";
+import { pluginCaller } from "../plugins/plugin-authority.js";
+import type { RunCaller } from "./agent-caller.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -21,6 +24,7 @@ import {
 } from "@opensteer/database";
 import {
   describeStore,
+  testContinuationIdentity,
   testModelSelection,
   testReadyHarnessCatalog,
   pendingEvent,
@@ -99,6 +103,16 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         }),
       ),
     ).toContain("stronger access mode");
+    const sent = await send(cautious, fullAccess.id, "queue-capped-work");
+    expect(sent.isError, JSON.stringify(sent.content)).not.toBe(true);
+    const queued = await queuedRun(storeFixture, fullAccess.id);
+    expect(await storeFixture.store.admitExecution({
+      ownerUserId: f.userId,
+      subject: { kind: "binding", bindingId: `run:${queued.id}` },
+    })).toMatchObject({
+      mode: "approval-required",
+      agentConnection: { agentConnectionId: cautious.id },
+    });
     expect((await storeFixture.store.getThreadForOwner(fullAccess.id, f.userId))?.title).toBe(
       "Full access",
     );
@@ -894,7 +908,7 @@ describeStore("connection grants and lineage", (it) => {
     const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
-      accessMode: "auto",
+      accessMode: "full-access",
       grant: tasksOnly,
     });
     const own = await createTask(agent, f, "own-task");
@@ -1057,6 +1071,9 @@ describeStore("connection grants and lineage", (it) => {
       state: "stopped",
       lastActionUncertain: false,
     });
+    await storeFixture.database.updateTable("agentConnections").set({ cleanupCompletedAt: null })
+      .where("id", "=", agent.id).execute();
+    expect((await host.list()).find(({ id }) => id === agent.id)?.state).toBe("stopped");
     await host.remove(agent.id);
     expect((await host.list()).map(({ id }) => id)).not.toContain(agent.id);
   });
@@ -1097,11 +1114,21 @@ describeStore("connection grants and lineage", (it) => {
     const url = await serveMcp(storeFixture);
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
-      accessMode: "approval-required",
+      accessMode: "full-access",
       grant: tasksOnly,
     });
     const own = await createTask(agent, f, "min-mode");
     const { database, store } = storeFixture;
+    const triggers = new TriggerStore(database);
+    const made = await triggers.create({
+      ...scheduled(own, f.userId, "lineage-made"),
+      actorConnectionId: agent.id,
+    });
+    await new AgentConnectionStore(database).update(f.userId, {
+      connectionId: agent.id,
+      expectedRevision: 1,
+      accessMode: "approval-required",
+    });
     await database
       .updateTable("threads")
       .set({ accessMode: "full-access" })
@@ -1132,11 +1159,10 @@ describeStore("connection grants and lineage", (it) => {
     expect(
       await access({ kind: "plugin", target: { kind: "installed", pluginId: "gmail" } }),
     ).toBeNull();
-    // An automation it made, and a child of its task, carry the same lineage and the same refusals.
-    const made = await new TriggerStore(database).create({
-      ...scheduled(own, f.userId, "lineage-made"),
+    await expect(triggers.create({
+      ...scheduled(own, f.userId, "lineage-made-after-lowering"),
       actorConnectionId: agent.id,
-    });
+    })).rejects.toMatchObject({ code: "forbidden" });
     expect(made.trigger.id).toBeTruthy();
     expect(
       await database
@@ -1279,6 +1305,10 @@ describeStore("connection grants and lineage", (it) => {
     const firstTask = await createTask(first, f, "first");
     const firstRun = await queuedRun(storeFixture, firstTask);
     const execution = await startPersonalQueuedRunFixture(store, firstRun.id);
+    const runAttempt = await database.selectFrom("runAttempts").select("id")
+      .where("runId", "=", firstRun.id)
+      .where("bindingGeneration", "=", execution.bindingGeneration)
+      .executeTakeFirstOrThrow();
     const queued = await send(first, firstTask, "queued");
     expect(queued.isError, JSON.stringify(queued.content)).not.toBe(true);
     const pendingInput = await database
@@ -1402,7 +1432,7 @@ describeStore("connection grants and lineage", (it) => {
       releaseStop.resolve();
       await revoked;
     }
-    expect(stopped).toEqual([occurrence.id, attachmentId, activation.id]);
+    expect(stopped).toEqual([occurrence.id, runAttempt.id, attachmentId, activation.id]);
     expect(host.failures).toEqual([]);
     expect(
       await database
@@ -1499,6 +1529,7 @@ describeStore("connection grants and lineage", (it) => {
     ).toEqual({ terminalEvidenceAt: null });
     await store.commitRunnerEvent({
       ...runner,
+      verifiedContainment: false,
       environmentId: f.environmentId,
       event: pendingEvent({
         type: "run.interrupted",
@@ -1510,6 +1541,11 @@ describeStore("connection grants and lineage", (it) => {
         data: { status: "interrupted" },
       }),
     });
+    expect(await database.selectFrom("runAttempts")
+      .select(["terminalEvidenceAt", "contactLostAt"])
+      .where("runId", "=", firstRun.id)
+      .where("bindingGeneration", "=", execution.bindingGeneration)
+      .executeTakeFirstOrThrow()).toEqual({ terminalEvidenceAt: expect.any(Date), contactLostAt: expect.any(Date) });
     const occurrenceReceipt = {
       ...runner,
       executionGeneration: dispatched.executionGeneration,
@@ -1537,10 +1573,10 @@ describeStore("connection grants and lineage", (it) => {
       state: "stopping",
     });
     await store.markConnectionAttemptsContactLost(runner);
-    await restarted.effects.driveCleanups();
     expect((await restarted.list()).find(({ id }) => id === first.id)).toMatchObject({
       state: "stopping",
       lastActionUncertain: true,
+      lastActionUncertainDetail: { device: expect.any(String) },
     });
     const watchReceipt = {
       ...runner,
@@ -1575,6 +1611,36 @@ describeStore("connection grants and lineage", (it) => {
     });
     await restarted.remove(first.id);
     expect((await restarted.list()).map(({ id }) => id)).not.toContain(first.id);
+  });
+
+  it("preserves a connected Watch's old witness when its Runner boots again", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("watch-rebind");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId, accessMode: "full-access", grant: tasksOnly,
+    });
+    const task = await createTask(agent, f, "watch-rebind");
+    const triggers = new TriggerStore(database);
+    const watch = await triggers.create({
+      ...scheduled(task, f.userId, "watch-rebind"), actorConnectionId: agent.id,
+      source: { kind: "watch" },
+    });
+    const reconcile = async (runnerBootId: string, runnerConnectionGeneration: number) => {
+      const result = await triggers.reconcileWatchesForRunner({
+        environmentId: f.environmentId, runnerBootId, runnerConnectionGeneration,
+        runnerId: f.runnerId, leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
+      return result.activations.find(({ activation }) => activation.triggerId === watch.trigger.id)!.activation;
+    };
+    const old = await reconcile("old-watch-boot", 1);
+    const current = await reconcile("new-watch-boot", 2);
+    expect(current.id).not.toBe(old.id);
+    expect(await database.selectFrom("triggerWatchActivations")
+      .select(["executionGeneration", "desired", "terminalEvidenceAt", "contactLostAt"])
+      .where("triggerId", "=", watch.trigger.id).orderBy("executionGeneration").execute()).toEqual([
+      { executionGeneration: String(old.executionGeneration), desired: "stopped", terminalEvidenceAt: expect.any(Date), contactLostAt: expect.any(Date) },
+      { executionGeneration: String(current.executionGeneration), desired: "active", terminalEvidenceAt: null, contactLostAt: null },
+    ]);
   });
 
   it("retries an older floor without interrupting a Run admitted under the new grant", async ({
@@ -1635,6 +1701,74 @@ describeStore("connection grants and lineage", (it) => {
         .where("type", "=", "run.interrupt")
         .execute(),
     ).toEqual([{ runId: oldRun.id }]);
+  });
+
+  it("refuses a plugin submission whose authorization read predates the revoke", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("plugin-before-ipc");
+    const { database, store } = storeFixture;
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
+    const checked = Promise.withResolvers<void>();
+    const continueSubmission = Promise.withResolvers<void>();
+    const execute = vi.fn(async () => { throw new Error("Plugin IPC was reached"); });
+    const service = new PluginExecutions({
+      service: { execute }, store, records: new PluginAgentStore(database),
+      authority: {
+        admit: pluginCaller,
+        assert: async () => { checked.resolve(); await continueSubmission.promise; },
+        session: () => undefined,
+      },
+    } as unknown as ConstructorParameters<typeof PluginExecutions>[0]);
+    const caller = {
+      kind: "run", userId: f.userId, accessMode: "full-access", thread: f.thread,
+      claims: { runId: f.run.id },
+      agentConnection: { agentConnectionId: agent.id, grant: { scope: "everything" }, grantRevision: 1 },
+    } as RunCaller;
+    const submission = service.execute(caller, "execute", { code: "return 1" });
+    const rejected = expect(submission).rejects.toMatchObject({ code: "forbidden" });
+    try {
+      await checked.promise;
+      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+    } finally {
+      continueSubmission.resolve();
+      await rejected;
+    }
+    expect(execute).not.toHaveBeenCalled();
+    expect(await database.selectFrom("pluginExecutions").select("id").execute()).toEqual([]);
+  });
+
+  it("keeps a plugin witness before IPC and settles a refusal during engine startup", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("plugin-startup-revoke");
+    const { database, store } = storeFixture;
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId, accessMode: "full-access",
+    });
+    const ipc = vi.fn();
+    const execute = vi.fn(async (
+      input: { executionId: string }, _context: unknown, _signal: AbortSignal, beforeSend: () => Promise<void>,
+    ) => {
+      expect(await database.selectFrom("pluginExecutions").select("connectionId")
+        .where("id", "=", input.executionId).executeTakeFirst()).toEqual({ connectionId: agent.id });
+      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+      await beforeSend();
+      ipc();
+    });
+    const service = new PluginExecutions({
+      service: { execute, executionWasSent: () => false }, store, records: new PluginAgentStore(database),
+      authority: { admit: pluginCaller, assert: async () => {}, session: () => undefined },
+    } as unknown as ConstructorParameters<typeof PluginExecutions>[0]);
+    const caller = {
+      kind: "run", userId: f.userId, accessMode: "full-access", thread: f.thread,
+      claims: { runId: f.run.id },
+      agentConnection: { agentConnectionId: agent.id, grant: { scope: "everything" }, grantRevision: 1 },
+    } as RunCaller;
+    await expect(service.execute(caller, "execute", { code: "return 1" }))
+      .rejects.toMatchObject({ code: "forbidden" });
+    expect(ipc).not.toHaveBeenCalled();
+    expect(await database.selectFrom("pluginExecutions").select(["state", "terminalEvidenceAt"])
+      .where("connectionId", "=", agent.id).execute()).toEqual([
+      { state: "cancelled", terminalEvidenceAt: expect.any(Date) },
+    ]);
   });
 
   it("recovers a legacy revoke and keeps a plugin handed off after enumeration outstanding", async ({
@@ -1725,6 +1859,71 @@ describeStore("connection grants and lineage", (it) => {
     });
   });
 
+  it("preserves a Run's old proof without carrying it into a rebind", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("disconnect-rebind");
+    const { database, store } = storeFixture;
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access", grant: tasksOnly });
+    const task = await createTask(agent, f, "disconnect-rebind");
+    const run = await queuedRun(storeFixture, task);
+    const prior = await startPersonalQueuedRunFixture(store, run.id);
+    const evidence = new Date();
+    await database.updateTable("runAttempts").set({ terminalEvidenceAt: evidence })
+      .where("runId", "=", run.id).execute();
+    await database.updateTable("runs").set({ status: "starting" }).where("id", "=", run.id).execute();
+    const thread = await store.getThreadForOwner(task, f.userId);
+    const { runnerId } = await database.selectFrom("executionEnvironments").select("runnerId")
+      .where("id", "=", f.environmentId).executeTakeFirstOrThrow();
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000), continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: thread!.harnessInstanceId, leaseTokenHash: crypto.randomUUID(),
+      runnerBootId: prior.runnerBootId, runnerId: runnerId!, runId: run.id, threadId: task,
+    });
+    expect(await database.selectFrom("runAttempts").select(["bindingGeneration", "terminalEvidenceAt"])
+      .where("runId", "=", run.id).orderBy("ordinal").execute()).toEqual([
+        { bindingGeneration: prior.bindingGeneration, terminalEvidenceAt: evidence },
+        { bindingGeneration: binding.bindingGeneration, terminalEvidenceAt: null },
+      ]);
+  });
+
+  it("reuses the stop ID after claim takeover and discards the first worker's proof", async ({ storeFixture }) => {
+    const f = await storeFixture.startRunFixture("cleanup-takeover");
+    const { database, store } = storeFixture;
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access", grant: tasksOnly });
+    const task = await createTask(agent, f, "cleanup-takeover");
+    const run = await queuedRun(storeFixture, task);
+    await startPersonalQueuedRunFixture(store, run.id);
+    await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+    const entered = Promise.withResolvers<string>();
+    const finish = Promise.withResolvers<void>();
+    const first = store.driveConnectionCleanups({ stopper: {
+      async stop(attempt) {
+        if (attempt.kind !== "run-attempt") return;
+        entered.resolve(store.connectionStopId(attempt));
+        await finish.promise;
+        return "ended";
+      },
+    } });
+    try {
+      const firstId = await Promise.race([entered.promise, first.then(() => { throw new Error("No stop sent"); })]);
+      await database.updateTable("agentConnections").set({ cleanupClaimExpiresAt: new Date(0) })
+        .where("id", "=", agent.id).execute();
+      const ids: string[] = [];
+      await store.driveConnectionCleanups({ stopper: {
+        async stop(attempt) { if (attempt.kind === "run-attempt") ids.push(store.connectionStopId(attempt)); },
+      } });
+      expect(ids).toEqual([firstId]);
+      expect(await database.selectFrom("commands").select("id").where("runId", "=", run.id)
+        .where("type", "=", "run.interrupt").execute()).toEqual([{ id: firstId }]);
+    } finally {
+      finish.resolve();
+      await first;
+    }
+    expect(await database.selectFrom("runAttempts").select("terminalEvidenceAt")
+      .where("runId", "=", run.id).executeTakeFirstOrThrow()).toEqual({ terminalEvidenceAt: null });
+  });
+
   it("drives an expired connection through the same durable cleanup", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("expiry");
     const subscribed = Promise.withResolvers<void>();
@@ -1771,7 +1970,7 @@ describeStore("connection grants and lineage", (it) => {
     await Promise.all([held, detached.promise]);
   });
 
-  it("serializes Disconnect with an admitted send: it lands before and is stopped, or is refused", async ({
+  it("refuses a send after Disconnect and creates no new input", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("disconnect-race");
@@ -1786,23 +1985,13 @@ describeStore("connection grants and lineage", (it) => {
     const run = await queuedRun(storeFixture, own);
     await startPersonalQueuedRunFixture(store, run.id);
     const host = commands(storeFixture, f.userId);
-    const [sent] = await Promise.allSettled([send(agent, own, "race"), host.revoke(agent.id)]);
+    const inputIds = () => database.selectFrom("threadInputs").select("messageId")
+      .where("threadId", "=", own).orderBy("messageId").execute();
+    const before = await inputIds();
+    await host.revoke(agent.id);
+    await expect(send(agent, own, "race")).rejects.toThrow(/invalid or expired|access ended/iu);
     expect(host.failures).toEqual([]);
-    const refused =
-      sent.status === "rejected" ||
-      (sent.value.isError === true &&
-        /invalid or expired|access ended/iu.test(errorText(sent.value)));
-    const pending = await database
-      .selectFrom("threadInputs")
-      .select("state")
-      .where("threadId", "=", own)
-      .where("state", "in", ["pending", "awaiting-approval"])
-      .execute();
-    // Either the send was refused, or it landed first and the one revoke's cleanup cancelled it.
-    expect({ refusedOrLandedAndStopped: refused || pending.length === 0, pending }).toEqual({
-      refusedOrLandedAndStopped: true,
-      pending: [],
-    });
+    expect(await inputIds()).toEqual(before);
     expect(
       await database
         .selectFrom("commands")

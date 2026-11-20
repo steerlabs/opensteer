@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { MachineSummarySchema } from "@opensteer/protocol";
+import { mockAgentIdentity } from "../mock/mock-connected-agents.js";
 import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { menuBarWords } from "./menu-bar-copy.js";
 import { menuBarActivity, menuBarStatus, type MenuBarInput } from "./menu-bar.js";
@@ -202,7 +203,11 @@ describe("Needs you", () => {
 });
 
 describe("Right now", () => {
-  it("shows an agent in an app with a Stop, named by its task and the app", () => {
+  const plain = { verified: false, selfAsserted: false, providerId: null };
+  const grok = mockAgentIdentity.selfNamed("Grok", "https://grok.com", false);
+  const claude = mockAgentIdentity.verifiedPlatform("claude", "Claude", "https://claude.ai");
+
+  it("shows an agent in an app as information, named by its task and the app", () => {
     const status = menuBarStatus({
       ...base,
       local: {
@@ -214,12 +219,12 @@ describe("Right now", () => {
       {
         id: "apps:cus_1",
         kind: "apps",
-        actor: { label: "Book flights", name: null, markOrigin: null },
+        actor: { label: "Book flights", name: "Book flights", ...plain },
         using: "Notes",
-        stoppable: true,
-        state: "active",
+        opens: null,
       },
     ]);
+    expect(Object.keys(status.rightNow[0]!)).not.toContain("stoppable");
   });
 
   it("calls an agent and an app it cannot name by honest generic names", () => {
@@ -230,7 +235,7 @@ describe("Right now", () => {
     expect(row).toMatchObject({ actor: { label: "An agent" }, using: "An app" });
   });
 
-  it("shows an agent's browser tab without a Stop this Mac could not do as the Home does", () => {
+  it("shows an agent's browser tab by what kind of session it is", () => {
     const status = menuBarStatus({
       ...base,
       local: {
@@ -241,26 +246,21 @@ describe("Right now", () => {
         ],
       },
     });
-    expect(status.rightNow.map((row) => [row.kind, row.using, row.stoppable])).toEqual([
-      ["browser", "A browser profile", false],
-      ["browser", "A new browser tab", false],
+    expect(status.rightNow.map((row) => [row.kind, row.using, row.opens])).toEqual([
+      ["browser", "A browser profile", null],
+      ["browser", "A new browser tab", null],
     ]);
   });
 
   it("names each row from the record it came from, after what this Mac itself knows", () => {
     const status = menuBarStatus({
       ...base,
+      hostedHome: studio(),
       local: {
         apps: [],
         tabs: [],
         runs: [
-          {
-            deploymentId: "dep_office",
-            runId: "run_1",
-            engine: "Claude Code",
-            purpose: "task",
-            state: "stopping",
-          },
+          { deploymentId: "dep_office", runId: "run_1", engine: "Claude Code", purpose: "task" },
         ],
       },
       homeWork: {
@@ -269,13 +269,158 @@ describe("Right now", () => {
       },
     });
     expect(
-      status.rightNow.map((row) => [row.id, row.kind, row.actor.label, row.using, row.stoppable]),
+      status.rightNow.map((row) => [row.id, row.kind, row.actor.label, row.using, row.opens]),
     ).toEqual([
-      ["runner:dep_office:run_1", "task", "Claude Code", "Working on this Mac", true],
-      ["home:thr_2", "task", "Book flights", "Working on this Mac", true],
-      ["shell:shs_1", "files", "Clean up downloads", "Commands from Home", false],
+      ["runner:dep_office:run_1", "task", "Claude Code", "Working on this Mac", null],
+      [
+        "home:thr_2",
+        "task",
+        "Book flights",
+        "Working on this Mac",
+        { deploymentId: "dep_home", threadId: "thr_2" },
+      ],
+      ["shell:shs_1", "files", "Clean up downloads", "Files and commands from Home", null],
     ]);
-    expect(status.rightNow[0]?.state).toBe("stopping");
+  });
+
+  it("opens the task a record names, in the Home that runs it", () => {
+    const status = menuBarStatus({
+      ...base,
+      local: {
+        apps: [
+          {
+            sessionId: "cus_1",
+            threadTitle: "Book flights",
+            app: "Notes",
+            task: { deploymentId: "dep_office", threadId: "thr_1" },
+          },
+        ],
+        tabs: [],
+        runs: [
+          {
+            deploymentId: "dep_office",
+            runId: "run_1",
+            engine: "Codex",
+            purpose: "task",
+            threadId: "thr_2",
+            threadTitle: "Rename photos",
+          },
+        ],
+      },
+      homeWork: {
+        tasks: [],
+        shells: [
+          {
+            id: "shs_1",
+            threadTitle: "Tidy",
+            callerMachineName: "Office Mini",
+            threadId: "thr_3",
+            deploymentId: "dep_office",
+          },
+        ],
+      },
+    });
+    expect(status.rightNow.map((row) => [row.actor.label, row.using, row.opens])).toEqual([
+      ["Book flights", "Notes", { deploymentId: "dep_office", threadId: "thr_1" }],
+      [
+        "Codex",
+        "Working on this Mac · Rename photos",
+        { deploymentId: "dep_office", threadId: "thr_2" },
+      ],
+      [
+        "Tidy",
+        "Files and commands from Office Mini",
+        { deploymentId: "dep_office", threadId: "thr_3" },
+      ],
+    ]);
+  });
+
+  it("names a connected agent as its connection proved it, never from its address", () => {
+    const status = menuBarStatus({
+      ...base,
+      hostedHome: studio(),
+      local: {
+        apps: [],
+        tabs: [
+          {
+            sessionId: "bsn_1",
+            profile: true,
+            threadTitle: "Friday dinner",
+            agent: { clientName: "Grok", redirect: "https://grok.com", ...grok },
+          },
+          // An older Home sends no presentation: the name it gave itself, marked as such.
+          {
+            sessionId: "bsn_2",
+            profile: false,
+            agent: { clientName: "ChatGPT", redirect: "https://chatgpt.com/cb" },
+          },
+        ],
+      },
+      homeWork: {
+        tasks: [
+          {
+            threadId: "thr_1",
+            title: "Compare flights",
+            agent: { clientName: "Claude", redirect: "https://claude.ai", ...claude },
+          },
+        ],
+        shells: [],
+      },
+    });
+    expect(status.rightNow.map((row) => [row.actor, row.using])).toEqual([
+      [
+        {
+          label: "Says it is Grok",
+          name: "Grok",
+          verified: false,
+          selfAsserted: true,
+          providerId: null,
+        },
+        "A browser profile · Friday dinner",
+      ],
+      [
+        {
+          label: "Says it is ChatGPT",
+          name: "ChatGPT",
+          verified: false,
+          selfAsserted: true,
+          providerId: null,
+        },
+        "A new browser tab",
+      ],
+      [
+        {
+          label: "Verified: Claude",
+          name: "Claude",
+          verified: true,
+          selfAsserted: false,
+          providerId: "anthropic",
+        },
+        "Working on this Mac · Compare flights",
+      ],
+    ]);
+  });
+
+  it("names a verification the Home withdrew plainly, without its mark", () => {
+    const [row] = menuBarStatus({
+      ...base,
+      local: {
+        apps: [],
+        tabs: [
+          {
+            sessionId: "bsn_1",
+            profile: true,
+            agent: {
+              clientName: "Claude",
+              redirect: "https://claude.ai",
+              ...claude,
+              withdrawnAt: "2026-11-17T09:00:00.000Z",
+            },
+          },
+        ],
+      },
+    }).rightNow;
+    expect(row?.actor).toEqual({ label: "Claude", name: "Claude", ...plain });
   });
 
   it("is empty when nothing uses this Mac", () => {
@@ -316,8 +461,8 @@ describe("This Mac and Stop everything", () => {
     });
     const fixed = status.thisMac?.switches.filter((item) => item.fixed);
     expect(fixed?.map((item) => [item.capability, item.detail])).toEqual([
-      ["browser", "Always on. Your agent runs here."],
-      ["files", "Always on. Your agent runs here."],
+      ["browser", "Always on. Your own agents run here."],
+      ["files", "Always on. Your own agents run here."],
     ]);
   });
 

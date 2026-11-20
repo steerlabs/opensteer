@@ -228,7 +228,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
               transactionId: input.operationId,
               loginId: approval.loginId,
               revision: approval.revision,
-              remember: approval.remember,
+              remember: !("alwaysAsk" in input && input.alwaysAsk) && approval.remember,
               permissionVersion: approval.permissionVersion,
             },
             signal,
@@ -271,6 +271,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
         const grant = await broker.request(
           PasswordsBrokerSignInRequestParamsSchema.parse({
             ...input.requester,
+            ...("alwaysAsk" in input && input.alwaysAsk ? { alwaysAsk: true } : {}),
             deploymentId: input.deploymentId,
             expiresAt: input.expiresAt.toISOString(),
             protocolVersion: 10,

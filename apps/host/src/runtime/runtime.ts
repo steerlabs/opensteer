@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
-import { CommandIdSchema } from "@opensteer/core";
-import { CorrelationIdSchema, triggerStopGenerationCapability } from "@opensteer/protocol";
-import { closeLegacyCdpForConnection } from "../browser/trigger-cdp-bridge.js";
+import { SessionPersonTools } from "../mcp/handlers/session-person.js";
+import { attemptStopStateCapability, CorrelationIdSchema, triggerStopGenerationCapability } from "@opensteer/protocol";
+import { closeLegacyCdpForConnection, drainLegacyRunCdp } from "../browser/trigger-cdp-bridge.js";
 import { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
 import { ResourceRevisions } from "./personal-resource-revisions.js";
 import { PersonalLiveText } from "./personal-live-text.js";
@@ -14,7 +13,7 @@ import { createRunFinishDrain, republishThreads } from "@opensteer/database";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { RequestDeadlines, settleEach } from "../agents/request-deadlines.js";
-import { harnessUsageLimitFailureCode } from "@opensteer/core";
+import { harnessUsageLimitFailureCode, isLoopbackHostname } from "@opensteer/core";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PluginChange } from "@opensteer/protocol";
 import { resolvePublicAddress } from "@opensteer/access";
@@ -47,7 +46,10 @@ import {
   canReadTab,
 } from "../tabs/tab-authority.js";
 import { TabToolHandlers } from "../mcp/handlers/tabs.js";
+import { BrowserScriptConfinement, BrowserToolHandlers } from "../mcp/handlers/browser.js";
+import { BrowserScriptService } from "../browser-use/browser-script-service.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { createAgentReviewer } from "../agent-sessions/agent-reviewer.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -134,6 +136,7 @@ import {
   AttachmentStore,
   AutomationFailureStore,
   BrowserSourceStore,
+  sharedChromeAttempts,
   ChannelStore,
   createDatabase,
   databaseShutdownDetails,
@@ -240,7 +243,7 @@ import {
 } from "../identity/host-keys.js";
 import { DefaultIntegrationAuthAttemptLifecycle } from "../access/integration-auth-attempt-service.js";
 import { AccessRequests } from "../devices/access-requests.js";
-import { DeviceService } from "../devices/device-service.js";
+import { DeviceService, endSessionComputerWork } from "../devices/device-service.js";
 import { LocalServerService } from "../local-servers/local-server-service.js";
 import {
   packageStillGranted,
@@ -761,14 +764,17 @@ export async function createHostRuntime(
       () => pluginsChanged(),
     );
     pluginChangeNotices = notices;
+    const connectionStore = new AgentConnectionStore(database);
+    const directory = agentDirectoryFor(
+      config.personalAccountIssuer ?? config.account?.issuer ?? config.managedHome?.accountOrigin,
+      connectionStore,
+    );
     const connections = new ConnectionOAuth({
       deploymentId: deployment.id,
-      store: new AgentConnectionStore(database),
+      store: connectionStore,
       signingKey: keys.privateKey,
       verificationKey: keys.publicKey,
-      ...agentDirectoryFor(
-        config.personalAccountIssuer ?? config.account?.issuer ?? config.managedHome?.accountOrigin,
-      ),
+      ...(directory ? { directory } : {}),
     });
     const triggerStore = new TriggerStore(database);
     const accountDirectoryStore = new AccountDirectoryStore(database);
@@ -1097,20 +1103,21 @@ export async function createHostRuntime(
                             state: "unavailable" as const,
                             reason: { kind: "not-connected" as const },
                           }
-                        : screenGeneration === undefined ||
-                            runnerRegistry?.identityForRunner(screen.runnerId)
-                              ?.connectionGeneration !== screenGeneration
-                          ? {
-                              state: "unavailable" as const,
-                              reason: {
-                                kind: runnerRegistry?.agentsStoppedSince(screen.runnerId)
-                                  ? ("driver-stopped" as const)
-                                  : screenGeneration !== undefined &&
+                        : screenGeneration !== undefined &&
+                            runnerRegistry?.agentsStoppedSince(screen.runnerId, screenGeneration)
+                          ? { state: "unavailable" as const, reason: { kind: "driver-stopped" as const } }
+                          : screenGeneration === undefined ||
+                              runnerRegistry?.identityForRunner(screen.runnerId)
+                                ?.connectionGeneration !== screenGeneration
+                            ? {
+                                state: "unavailable" as const,
+                                reason: {
+                                  kind: screenGeneration !== undefined &&
                                       runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
-                                    ? ("driver-asleep" as const)
-                                    : ("driver-offline" as const),
-                              },
-                            }
+                                      ? ("driver-asleep" as const)
+                                      : ("driver-offline" as const),
+                                },
+                              }
                           : !device.accessPolicy.apps
                             ? {
                                 state: "disabled" as const,
@@ -1123,7 +1130,7 @@ export async function createHostRuntime(
                       setup: {
                         location: "driver-mac" as const,
                         driverRunnerId: screen.runnerId,
-                        driverRunnerName: runnerNames.get(screen.runnerId) ?? "its driving Mac",
+                        driverRunnerName: runnerNames.get(screen.runnerId) ?? "its connected Mac",
                       },
                     }
                   : platform === "android"
@@ -1210,6 +1217,10 @@ export async function createHostRuntime(
       registry: browserRelay,
       localProfiles,
       onDeletionsChanged: async () => announceResources("browser-profile", "browser-home"),
+      onStandardCdpReconnect: (runnerId, relayId, reconcile) =>
+        browser
+          .reconcileStandardCdpLeases(runnerId, relayId, reconcile)
+          .catch(reportBrowserUsageError),
       onPlacementChanged: () =>
         announceResources("browser-placement", "browser-availability", "tab"),
     });
@@ -1298,6 +1309,7 @@ export async function createHostRuntime(
     });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
     let reportBrowserSignInError: (error: unknown) => void = () => undefined;
+    let onSessionRequestClosed: AgentSessionService["requestClosed"] | undefined;
     const passwordSignIns = new PasswordSignInService({
       authority: computerApps,
       resolveAuthority: async (ownerId) => {
@@ -1334,10 +1346,57 @@ export async function createHostRuntime(
       requests: store.requests,
     });
     browser.setLoginLeaseValidator((input) =>
-      passwordSignIns.validateLease({ ...input, deploymentId: deployment.id }),
+      input.bindingId
+        ? passwordSignIns.validateSessionLease({
+            ...input,
+            bindingId: input.bindingId,
+            profileId: input.profileId ?? null,
+          })
+        : passwordSignIns.validateLease(input),
     );
+    const chromeAttempts = sharedChromeAttempts(database);
+    await chromeAttempts.recover();
+    const chromeTabs = new ChromeSharedTabs(store, {
+      attempts: chromeAttempts,
+      changed: (ownerId) => {
+        tabs?.changed(ownerId);
+        announceResources("tab");
+      },
+      device: async (ownerId, deviceId, list, person) => {
+        const computer = await tabComputer(ownerId, deviceId, database);
+        if (computer.removed || !computer.selfRunnerId)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "The Chrome computer is unavailable.",
+          });
+        const runnerId = computer.selfRunnerId;
+        if (!person)
+          await requireDeviceAccess(
+            database,
+            deviceId,
+            "browser",
+            list || runners.isRunnerConnected(runnerId),
+            {
+              asleep: runners.isRunnerAsleep(runnerId),
+              stopped: runners.agentsStoppedSince(runnerId) !== null,
+            },
+          );
+        return computer.name;
+      },
+    });
     const browserSources = new BrowserSourceService({
-      liveTabs: new ChromeSharedTabs(store),
+      liveTabs: chromeTabs,
+      pairingDevice: async (ownerId) => {
+        if (!isLoopbackHostname(config.canonicalOrigin.hostname)) return undefined;
+        const personal = await initializePersonal();
+        return personal?.options.ownerId === ownerId
+          ? store.requireSelfDeviceId(personal.options.hostingComputerId)
+          : undefined;
+      },
+      computerName: async (ownerId, deviceId) => {
+        const computer = await tabComputer(ownerId, deviceId, database);
+        return computer.removed ? null : computer.name;
+      },
       deploymentId: deployment.id,
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
@@ -1519,6 +1578,27 @@ export async function createHostRuntime(
     });
     tabs = new TabService({
       store: tabStore,
+      sharedChromeTabs: (actor) => {
+        switch (actor.kind) {
+          case "person":
+            return chromeTabs.tabPlaces(actor.ownerId, { kind: "person" });
+          case "connection":
+            return chromeTabs.tabPlaces(actor.caller.userId, {
+              kind: "connection",
+              agentConnectionId: actor.caller.connectionId,
+            });
+          case "run":
+            return chromeTabs.tabPlaces(actor.claims.requestedBy, {
+              kind: "binding",
+              bindingId: `run:${actor.claims.runId}`,
+            });
+          case "browser-binding":
+            return chromeTabs.tabPlaces(actor.authority.ownerId, {
+              kind: "binding",
+              bindingId: actor.authority.agentBindingId,
+            });
+        }
+      },
       devices: store,
       pages: browser.pageTabs,
       nativeTargets: nativeTabs,
@@ -1751,8 +1831,10 @@ export async function createHostRuntime(
     const endGrants: Parameters<OpensteerStore["onRunGrantsRevoked"]>[0] = (grants) => {
       browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
-      for (const grant of grants)
+      for (const grant of grants) {
         devices.endComputerGeneration(grant.runId, grant.bindingGeneration);
+        void drainLegacyRunCdp(browser, grant.runId, grant.bindingGeneration).catch(reportMutationFailure);
+      }
       void shellHub?.endGrantSessions(grants, "run-ended").catch(reportMutationFailure);
     };
     store.onRunGrantsRevoked(endGrants);
@@ -1812,6 +1894,7 @@ export async function createHostRuntime(
         case "requestChanged":
           taskQuestions?.requestChanged(reaction);
           passwordSignIns.requestChanged(reaction);
+          if (reaction.status !== "pending") onSessionRequestClosed?.(reaction.requestId);
           pluginExecutions?.observe(reaction);
           teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
@@ -1873,10 +1956,9 @@ export async function createHostRuntime(
           void devices
             .endComputerRun(reaction.runId)
             .catch((error) => reportComputerUseTeardownError(reaction.runId, error));
-          browserSources.liveTabs?.closeForBinding(
-            `run:${reaction.runId}`,
-            "The browser task ended.",
-          );
+          void chromeTabs
+            .closeForBinding(`run:${reaction.runId}`, "The browser task ended.")
+            .catch(reportMutationFailure);
           void browser
             .detachAgentSessionsForBinding(`run:${reaction.runId}`)
             .catch(reportMutationFailure);
@@ -2228,11 +2310,13 @@ export async function createHostRuntime(
         authorize: async (identity) => authorizeRunnerRegistration(store, identity),
         onEvent: async (identity, event) => {
           if (["run.completed", "run.failed", "run.interrupted"].includes(event.type)) {
+            await drainLegacyRunCdp(browser, event.runId, event.bindingGeneration);
             await browser.drainRunPlaces(event.runId);
           }
           const committed = await store.commitRunnerEvent({
             environmentId: event.environmentId,
             event,
+            verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
@@ -2593,6 +2677,7 @@ export async function createHostRuntime(
           await triggerStore.completeExecution({
             executionGeneration: result.executionGeneration,
             output: result.output,
+            verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
@@ -2992,7 +3077,6 @@ export async function createHostRuntime(
       tokens: runToolTokens,
     });
     await apps.collectGarbage();
-    const deviceTools = new DeviceToolHandlers({ devices, access: accessRequests });
     const plugins = new PluginPackageService({
       stillGranted: packageStillGranted({
         store,
@@ -3099,6 +3183,7 @@ export async function createHostRuntime(
       localProviders: providerNames,
       authority: pluginAuthority,
       executions: pluginExecutions,
+      sessions: () => agentSessions,
       store,
       settings: pluginAgentStore,
       removed: (plugin) => pluginPages.forget(plugin),
@@ -3143,11 +3228,36 @@ export async function createHostRuntime(
     void pluginService.start().catch(() => undefined);
     // An external agent's direct work: sessions, operations and the person's answers to them.
     let reportAgentSessionError: (error: unknown) => void = () => {};
+    // The browser for connected agents: scripts kept to the reviewed profile, and raw CDP.
+    const browserScriptConfinement = new BrowserScriptConfinement();
+    const browserScripts = new BrowserScriptService({
+      browser,
+      store,
+      tabs: browserScriptConfinement.tabs(tabs),
+      sharedChromeTabs: chromeTabs,
+    });
     const agentSessions = new AgentSessionService({
       store,
-      closeBinding: (bindingId, reason) => browser.closeStandardCdpForBinding(bindingId, reason),
+      ...(config.agentReviewModel
+        ? { reviewer: createAgentReviewer({ store, runners, model: config.agentReviewModel }) }
+        : {}),
+      closeBinding: (bindingId, reason) => {
+        browser.closeStandardCdpForBinding(bindingId, reason);
+        void chromeTabs.closeForBinding(bindingId, reason).catch(reportAgentSessionError);
+        void pluginExecutions?.stopSession(bindingId).catch(reportAgentSessionError);
+        void browserScripts
+          .closeBrowserScriptsForBinding(bindingId)
+          .catch((error: unknown) => reportAgentSessionError(error));
+        // A connected agent's computer work ends with its session: the app, then the script.
+        endSessionComputerWork(bindingId, {
+          computerUse,
+          devices,
+          onError: (error) => reportComputerUseSweepError(error),
+        });
+      },
       onError: (error) => reportAgentSessionError(error),
     });
+    onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const agentTools = new OpensteerMcpService({
       pluginExecutions,
       teamsAvailable: async () =>
@@ -3188,8 +3298,42 @@ export async function createHostRuntime(
             (await browser.listProfiles(caller.userId)).find(({ id }) => id === profileId)?.name ??
             null,
         ),
+        browser: new BrowserToolHandlers({
+          sessions: agentSessions,
+          tabs,
+          scripts: browserScripts,
+          confinement: browserScriptConfinement,
+          sharedChromeTabs: chromeTabs,
+          profiles: (ownerId) => browser.listProfiles(ownerId),
+          requireDevice: async (runnerId) => {
+            const deviceId = await store.requireSelfDeviceId(runnerId);
+            await requireDeviceAccess(
+              database,
+              deviceId,
+              "browser",
+              runners.isRunnerConnected(runnerId),
+              {
+                asleep: runners.isRunnerAsleep(runnerId),
+                stopped: runners.agentsStoppedSince(runnerId) !== null,
+              },
+            );
+            return deviceId;
+          },
+          issueTicket: (input) => browser.issueStandardCdpTicket(input),
+          origin: config.canonicalOrigin,
+        }),
+        sessionPerson: new SessionPersonTools({
+          sessions: agentSessions,
+          browser,
+          logins: savedLogins,
+          store,
+        }),
         product: productHandlers,
-        devices: deviceTools,
+        devices: new DeviceToolHandlers({
+          devices,
+          access: accessRequests,
+          sessions: agentSessions,
+        }),
         triggers: new TriggerToolHandlers(triggers, store),
         teamRequestForRun: async (runId, threadId) => {
           const run = await database
@@ -3347,9 +3491,10 @@ export async function createHostRuntime(
         await agentTools.closeLineage(connectionId, minimumGrantRevision);
       },
       stopper: {
+        stopDirectOperation: (attempt) => agentSessions.stopDirectOperation(attempt.id),
         async stop(attempt, cleanup) {
-          if (attempt.kind === "watch") {
-            if (attempt.environmentId) watchService?.changed(attempt.environmentId);
+          if (attempt.kind === "shared-chrome") {
+            await chromeTabs.stopAttempt(attempt.id);
             return;
           }
           if (attempt.kind === "standard-cdp") {
@@ -3357,57 +3502,59 @@ export async function createHostRuntime(
             return;
           }
           if (attempt.kind === "plugin") {
-            await pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
+            return pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
+          }
+          if (attempt.kind !== "occurrence" && attempt.kind !== "run-attempt" && attempt.kind !== "watch") return;
+          if (!attempt.environmentId || attempt.generation === null) return;
+          if (attempt.kind === "run-attempt")
+            await drainLegacyRunCdp(browser, attempt.runId, attempt.generation);
+          const identity = runners.identityForEnvironment(attempt.environmentId);
+          if (!identity || identity.runnerId !== attempt.runnerId || !attempt.runnerBootId) return;
+          if (identity.bootId !== attempt.runnerBootId) return "contact-lost";
+          const supportsStop = identity.capabilities.includes(attemptStopStateCapability);
+          if (attempt.kind === "watch" && !supportsStop) {
+            watchService?.changed(attempt.environmentId);
             return;
           }
-          if (attempt.kind !== "occurrence" && attempt.kind !== "run-attempt") return;
-          if (!attempt.environmentId || attempt.generation === null) return;
-          const identity = runners.identityForEnvironment(attempt.environmentId);
-          if (
-            !identity ||
-            identity.runnerId !== attempt.runnerId ||
-            identity.bootId !== attempt.runnerBootId
-          )
-            return;
           if (
             attempt.kind === "occurrence" &&
             !identity.capabilities.includes(triggerStopGenerationCapability)
           )
             return;
-          const hash = createHash("sha256")
-            .update(
-              JSON.stringify([cleanup.connectionId, attempt.kind, attempt.id, attempt.generation]),
-            )
-            .digest("hex");
-          const stopId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+          const stopId = store.connectionStopId(attempt);
+          const stop = { id: stopId, bootId: attempt.runnerBootId };
           const base = {
-            commandId: CommandIdSchema.parse(`cmd_${stopId}`),
-            correlationId: CorrelationIdSchema.parse(`cmd_${stopId}`),
+            commandId: stopId,
+            correlationId: CorrelationIdSchema.parse(stopId),
             environmentId: attempt.environmentId,
           };
-          if (attempt.kind === "occurrence")
-            await runners.dispatch(
-              {
+          const receipt = await runners.dispatch(
+            attempt.kind === "occurrence" ? {
                 ...base,
                 type: "trigger.interrupt",
                 occurrenceId: attempt.id,
                 executionGeneration: attempt.generation,
-              },
-              AbortSignal.timeout(3_000),
-              { connectionGeneration: identity.connectionGeneration },
-            );
-          else if (attempt.threadId)
-            await runners.dispatch(
-              {
+                ...(supportsStop ? { stop } : {}),
+              } : attempt.kind === "watch" ? {
+                ...base,
+                type: "watch.reconcile",
+                desired: [],
+                reconcileGeneration: 1,
+                stop: { ...stop, activationId: attempt.id, executionGeneration: attempt.generation },
+              } : {
                 ...base,
                 type: "run.interrupt",
                 runId: attempt.runId,
-                threadId: attempt.threadId,
+                threadId: attempt.threadId!,
                 bindingGeneration: attempt.generation,
+                ...(supportsStop ? { stop } : {}),
               },
               AbortSignal.timeout(3_000),
               { connectionGeneration: identity.connectionGeneration },
             );
+          if (supportsStop && (receipt.stopState === "ended" || receipt.stopState === "never-seen"))
+            return "ended";
+          return undefined;
         },
       },
       onFailure: (error, connectionId) =>
@@ -3527,7 +3674,15 @@ export async function createHostRuntime(
     );
     attachmentGcTimer.unref();
     app.addHook("onClose", async () => clearInterval(attachmentGcTimer));
+    if (directory) {
+      app.addHook("onClose", async () => directory.close());
+      await directory.start();
+    }
     const connectionCleanupTimer = setInterval(() => {
+      void directory?.refresh();
+      void connectionStore.pruneEmbedderAssertionClaims().catch((error: unknown) =>
+        app.log.warn({ err: error }, "Embedder assertion cleanup failed"),
+      );
       void driveConnectionCleanups().catch((error: unknown) =>
         app.log.warn({ err: error }, "Connected agent cleanup failed"),
       );
@@ -3539,6 +3694,7 @@ export async function createHostRuntime(
     app.addHook("onClose", async () => {
       agentSessions.stop();
       await agentSessions.drain();
+      await browserScripts.close();
     });
     // Work handed off before this process can no longer report: its outcome is unknown. Then a
     // cleanup interrupted by the last shutdown finishes, recording it as uncertain.
@@ -3944,13 +4100,15 @@ export function hostAppRealOrigins(
  * The verified agent directory, read only from the Home's own Account origin. A Home with no
  * Account, or one that is not a public HTTPS origin, shows every agent as unverified.
  */
-function agentDirectoryFor(issuer: URL | undefined): { directory?: AgentDirectoryCache } {
-  if (!issuer || issuer.protocol !== "https:") return {};
-  try {
-    return { directory: new AgentDirectoryCache({ issuer: new URL(issuer.origin) }) };
-  } catch {
-    return {};
-  }
+function agentDirectoryFor(issuer: URL | undefined, store: AgentConnectionStore) {
+  if (!issuer || issuer.protocol !== "https:") return undefined;
+  return new AgentDirectoryCache({
+    issuer: new URL(issuer.origin),
+    storage: {
+      load: (origin) => store.loadDirectory(origin),
+      accept: (origin, document) => store.acceptDirectory(origin, document),
+    },
+  });
 }
 
 function requirePluginRun(caller: import("../mcp/agent-caller.js").AgentCaller) {

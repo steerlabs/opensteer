@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
+  chromeTabGrantOptions,
+  type ChromeTabGrantCatalog,
   agentWords,
   connectionModeDescriptions,
   accessModeOptions,
@@ -42,6 +44,7 @@ const devicesPath = "/settings/devices";
 export function AgentGrantEditor({
   agent,
   browser,
+  chromeTabs,
   client,
   disabled,
   draft,
@@ -51,6 +54,7 @@ export function AgentGrantEditor({
 }: {
   readonly agent: string;
   readonly browser: BrowserOptions;
+  readonly chromeTabs?: ChromeTabGrantCatalog | undefined;
   readonly client: HostClient;
   readonly disabled: boolean;
   readonly draft: AgentGrantDraft;
@@ -63,6 +67,7 @@ export function AgentGrantEditor({
   const [open, setOpen] = useState<Disclosure>(null);
   const apps = useAgentAppOptions(client, open === "apps" || hasKind(draft, "computer-app"));
   const plugins = useAgentPluginOptions(client, open === "plugins" || hasKind(draft, "plugin"));
+  const chrome = chromeTabGrantOptions(chromeTabs);
   const names = { profiles: browser.profiles.map(({ id, name }) => ({ id, name })) };
   const shared = draftSharedProfiles(draft, names);
   const toggle = (which: Exclude<Disclosure, null>) => setOpen(open === which ? null : which);
@@ -110,6 +115,30 @@ export function AgentGrantEditor({
                 draft={draft}
                 onChange={onChange}
               />
+            ) : null}
+            {chrome.options.map((option) => (
+              <label className="card__row" key={option.resource.sourceId}>
+                <span className="card__row-body">
+                  <span className="card__row-title">{option.name}</span>
+                  <span className="card__row-detail">{agentWords("consent.chromeTabs.detail")}</span>
+                </span>
+                <span className="card__row-actions">
+                  <input
+                    aria-label={option.name}
+                    checked={draftHas(draft, option.resource)}
+                    className="switch"
+                    disabled={disabled}
+                    onChange={(event) =>
+                      onChange(toggleDraftResource(draft, option.resource, event.currentTarget.checked))
+                    }
+                    role="switch"
+                    type="checkbox"
+                  />
+                </span>
+              </label>
+            ))}
+            {chrome.needsPairing ? (
+              <p className="card__form settings-footnote">{agentWords("consent.chromeTabs.repair")}</p>
             ) : null}
             <DisclosureRow
               disabled={disabled}

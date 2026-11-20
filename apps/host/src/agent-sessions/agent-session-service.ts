@@ -13,6 +13,7 @@ import {
   type AgentSessionId,
   type RequestId,
   type RequestResponse,
+  type RequestPresentation,
   type ThreadAccessMode,
   type ThreadId,
   type UserId,
@@ -46,6 +47,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 export interface AgentReviewerPort {
   review(
     input: {
+      readonly ownerUserId: UserId;
       readonly grant: AgentGrant;
       readonly mode: ThreadAccessMode;
       readonly tool: string;
@@ -58,15 +60,49 @@ export interface AgentReviewerPort {
 }
 /** The reviewer this Home ships with until a model-backed one is configured. */
 export const alwaysAskReviewer: AgentReviewerPort = { review: async () => "ask" };
-const reviewerTimeoutMs = 15_000;
+export const reviewerTimeoutMs = 15_000;
 /** How long one executor call may take before its signal aborts. */
 const defaultExecutionMs = 120_000;
+
+function directOperationAction(tool: string, target: string): string {
+  switch (tool) {
+    case "tab_open":
+      return `open a tab in ${target}`;
+    case "tab_close":
+      return `close a tab in ${target}`;
+    case "tab_list":
+      return `list tabs in ${target}`;
+    case "browser_use":
+      return `run a browser script in ${target}`;
+    case "browser_connect":
+      return `take direct control of ${target}`;
+    case "computer_use":
+      return `act on ${target}`;
+    case "plugin_call":
+      return `use ${target}`;
+    case "plugin_execute":
+      return `run a script using ${target}`;
+    case "plugin_resume":
+      return `continue work using ${target}`;
+    case "ask_person":
+      return "ask you a question";
+    case "saved_login_request":
+      return `use a saved login in ${target}`;
+    case "card_request":
+      return `use a saved card in ${target}`;
+    default:
+      return `act on ${target}`;
+  }
+}
 
 /** What an executor gets: a signal tied to Stop, Disconnect, narrowing and its deadline. */
 export interface DirectOperationContext {
   readonly sessionId: AgentSessionId;
   readonly taskId: ThreadId;
   readonly operationId: AgentOperationId;
+  readonly requestId: RequestId | null;
+  readonly grantRevision: number;
+  readonly mode: ThreadAccessMode;
   /** The binding every downstream check resolves (`session:<id>`). */
   readonly bindingId: `session:${string}`;
   readonly ownerUserId: UserId;
@@ -105,6 +141,13 @@ export interface DirectOperation<Result> {
   /** The agent's own reason, kept apart and marked as its words. */
   readonly reason?: string | undefined;
   readonly timeoutMs?: number;
+  readonly question?: (taskId: ThreadId) => Promise<Extract<RequestPresentation, { kind: "form" }>>;
+  /** Passwords owns the sole approval Request and never fills during this operation. */
+  readonly passwordsApproval?: true;
+  readonly replay?: (
+    row: AgentOperationRow,
+    execution: ExecutionAuthority,
+  ) => Promise<Result | undefined>;
   readonly execute: (context: DirectOperationContext) => Promise<Result>;
   /** A bounded, redacted record of the result, for the activity list. */
   readonly summarize?: (result: Result) => Readonly<Record<string, unknown>> | null;
@@ -214,7 +257,7 @@ export class AgentSessionService {
     const execution = await this.#admit(operation, bindingId);
     const target: AgentOperationTarget = operation.target ?? {
       grant: { kind: "device" },
-      name: operation.targetName ?? operation.tool,
+      name: operation.targetName ?? "this resource",
       device: null,
     };
     const { operation: row } = await admitAgentOperation(this.#store.database, {
@@ -233,6 +276,10 @@ export class AgentSessionService {
       agentReason: operation.reason?.slice(0, 2_000) ?? null,
     });
     return this.#advance(operation, row, session.threadId, execution);
+  }
+
+  requestClosed(requestId: RequestId): void {
+    this.#decisions.emit(requestId);
   }
 
   /** The person answered an operation's Request; waiters wake after the commit. */
@@ -261,6 +308,19 @@ export class AgentSessionService {
     });
     this.#ended(ended, "stopped");
     return { ended: ended.length > 0 };
+  }
+
+  /**
+   * The Disconnect worker's stop for one handed-off operation: abort the signal its executor
+   * holds. Its row settles, with terminal evidence, when the executor returns.
+   */
+  async stopDirectOperation(operationId: string): Promise<void> {
+    const row = await this.#store.database
+      .selectFrom("agentOperations")
+      .select(["sessionId", "state"])
+      .where("id", "=", operationId as AgentOperationId)
+      .executeTakeFirst();
+    if (row?.state === "handed-off") this.#abort(row.sessionId, "revoked");
   }
 
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
@@ -326,7 +386,7 @@ export class AgentSessionService {
       if (!access)
         throw refused(
           "forbidden",
-          `${operation.target.name} is not shared with this connected agent.`,
+          "This resource is not shared with this connected agent.",
           "Ask the person to share it from Connected agents.",
         );
       if (operation.effect === "write" && access !== "read-write")
@@ -345,8 +405,15 @@ export class AgentSessionService {
     const base = { taskId, operationId: row.id };
     for (;;) {
       switch (row.state) {
-        case "completed":
-          return { status: "completed", ...base, summary: row.resultSummary };
+        case "completed": {
+          const result = await operation.replay?.(row, execution);
+          return {
+            status: "completed",
+            ...base,
+            summary: row.resultSummary,
+            ...(result === undefined ? {} : { result }),
+          };
+        }
         case "failed":
           return { status: "failed", ...base, next: "It failed. Check the current state." };
         case "unknown":
@@ -355,14 +422,20 @@ export class AgentSessionService {
           throw this.#refusal(row.decision);
         case "handed-off": {
           const running = this.#running.get(row.id);
-          if (running) return (await running) as DirectOperationResult<Result>;
+          if (running)
+            return this.#awaitExecution(
+              operation,
+              row,
+              taskId,
+              running as Promise<DirectOperationResult<Result>>,
+            );
           return { status: "unknown", ...base, next: unknownNext };
         }
         case "admitted":
           row = await this.#decide(operation, row, taskId, execution);
           break;
         case "pending": {
-          const decided = await this.#wait(row.id);
+          const decided = await this.#wait(row);
           if (decided.state === "pending")
             return { status: "pending", ...base, requestId: decided.requestId, next: pendingNext };
           row = decided;
@@ -382,35 +455,40 @@ export class AgentSessionService {
   ): Promise<AgentOperationRow> {
     const decide = (decision: AgentOperationDecision) =>
       decideAgentOperation(this.#store.database, row.id, decision);
-    if (row.effect === "read") return decide({ by: "structural-read" });
-    if (row.mode === "full-access") return decide({ by: "full-access" });
-    if (row.mode === "auto" && (await this.#review(operation, row, execution)) === "allow")
-      return decide({ by: "reviewer" });
+    if (!operation.question) {
+      if (row.effect === "read") return decide({ by: "structural-read" });
+      if (row.mode === "full-access") return decide({ by: "full-access" });
+      if (row.mode === "auto" && (await this.#review(row, execution)) === "allow")
+        return decide({ by: "reviewer" });
+    }
+    const target = row.target.name;
+    const device =
+      row.target.device && (operation.tool !== "computer_use" || row.target.device.name !== target)
+        ? ` on ${row.target.device.name}`
+        : "";
+    const titleDevice = operation.tool === "computer_use" ? device : "";
+    const action = directOperationAction(operation.tool, target);
     return askForAgentOperation(this.#store.database, this.#store.requests, {
       operation: row,
       threadId: taskId,
-      title: `Allow ${operation.tool} on ${row.target.name}?`,
-      summary: `A connected agent wants to run ${operation.tool} on ${row.target.name}${
-        row.target.device ? ` on ${row.target.device.name}` : ""
-      }.`,
+      ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
+      title: `${action[0]!.toUpperCase()}${action.slice(1)}${titleDevice}?`,
+      summary: `A connected agent wants to ${action}${device}.`,
     });
   }
 
-  async #review<Result>(
-    operation: DirectOperation<Result>,
-    row: AgentOperationRow,
-    execution: ExecutionAuthority,
-  ): Promise<"allow" | "ask"> {
+  async #review(row: AgentOperationRow, execution: ExecutionAuthority): Promise<"allow" | "ask"> {
     const signal = AbortSignal.timeout(reviewerTimeoutMs);
     try {
       const answer = await this.#reviewer.review(
         {
+          ownerUserId: execution.ownerUserId,
           grant: execution.agentConnection!.grant,
           mode: row.mode,
           tool: row.tool,
           target: row.target,
           calls: row.calls,
-          agentReason: operation.reason ? { untrusted: true, text: operation.reason } : null,
+          agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
         },
         signal,
       );
@@ -421,23 +499,36 @@ export class AgentSessionService {
   }
 
   /** Waits up to the hold for the person's decision, woken by `respond` after its commit. */
-  async #wait(id: AgentOperationId): Promise<AgentOperationRow> {
+  async #wait({ id, requestId }: AgentOperationRow): Promise<AgentOperationRow> {
     let done!: () => void;
     const decided = new Promise<void>((resolve) => {
       done = () => {
         clearTimeout(timer);
         this.#decisions.removeListener(id, done);
+        if (requestId) this.#decisions.removeListener(requestId, done);
         resolve();
       };
       const timer = setTimeout(done, this.#holdMs);
       timer.unref?.();
       // Listening before the read below, so an answer that commits in between still wakes it.
       this.#decisions.once(id, done);
+      if (requestId) this.#decisions.once(requestId, done);
     });
     const current = await readAgentOperation(this.#store.database, id);
-    if (current.state !== "pending") done();
+    if (
+      current.state !== "pending" ||
+      (requestId && (await this.#store.requests.get(requestId))?.status !== "pending")
+    )
+      done();
     await decided;
-    return readAgentOperation(this.#store.database, id);
+    const latest = await readAgentOperation(this.#store.database, id);
+    if (
+      latest.state === "pending" &&
+      requestId &&
+      (await this.#store.requests.get(requestId))?.status !== "pending"
+    )
+      throw refused("forbidden", "The Request is no longer pending.");
+    return latest;
   }
 
   async #handOff<Result>(
@@ -478,10 +569,41 @@ export class AgentSessionService {
       );
     const running = this.#execute(operation, handed, taskId, bindingId);
     this.#running.set(handed.id, running as Promise<DirectOperationResult<unknown>>);
+    const forget = () => this.#running.delete(handed.id);
+    void running.then(forget, forget);
+    return this.#awaitExecution(operation, handed, taskId, running);
+  }
+
+  async #awaitExecution<Result>(
+    operation: DirectOperation<Result>,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+    running: Promise<DirectOperationResult<Result>>,
+  ): Promise<DirectOperationResult<Result>> {
+    if (!operation.passwordsApproval) return running;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await running;
+      return await Promise.race([
+        running,
+        new Promise<DirectOperationResult<Result>>((resolve, reject) => {
+          timer = setTimeout(() => {
+            void readAgentOperation(this.#store.database, row.id).then(
+              (current) =>
+                resolve({
+                  status: "pending",
+                  taskId,
+                  operationId: row.id,
+                  requestId: current.requestId,
+                  next: pendingNext,
+                }),
+              reject,
+            );
+          }, this.#holdMs);
+          timer.unref();
+        }),
+      ]);
     } finally {
-      this.#running.delete(handed.id);
+      clearTimeout(timer);
     }
   }
 
@@ -509,6 +631,9 @@ export class AgentSessionService {
         sessionId: row.sessionId,
         taskId,
         operationId: row.id,
+        requestId: row.requestId,
+        grantRevision: row.grantRevision,
+        mode: row.mode,
         bindingId,
         ownerUserId: operation.ownerUserId,
         signal,

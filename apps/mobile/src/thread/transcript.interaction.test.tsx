@@ -366,7 +366,7 @@ describe("a step the Home refused because its Device is asleep", () => {
   it("says it couldn't reach the Device, under the step, from the Home's own code", () => {
     const { container, render } = setup(false);
     render([run, refused("computer_asleep")]);
-    expect(container.textContent).toContain("Couldn’t reach a Device: asleep");
+    expect(container.textContent).toContain("Couldn’t reach a device: asleep");
   });
 
   it("says nothing of sleep for any other failure", () => {

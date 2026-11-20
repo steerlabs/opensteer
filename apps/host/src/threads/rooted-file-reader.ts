@@ -263,6 +263,6 @@ export class RootedFileReader {
   }
 
   close() {
-    this.#lifetime.abort(new Error("Host file service closed"));
+    this.#lifetime.abort(new Error("Home file access closed."));
   }
 }

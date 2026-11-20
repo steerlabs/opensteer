@@ -22,7 +22,7 @@ function bridge(
       };
     },
     setSwitch: vi.fn(async () => undefined),
-    stopRow: vi.fn(async () => undefined),
+    openRow: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),
     resume: vi.fn(async () => undefined),
     setOpenAtLogin: vi.fn(async () => undefined),
@@ -124,42 +124,77 @@ describe("Needs you", () => {
 });
 
 describe("Right now", () => {
-  it("lists what is using this Mac, with Stop only where this Mac can stop it", async () => {
+  it("lists who is using what, with no control but the row itself", async () => {
     const value = bridge(menuBarStates.active);
     const view = await render(value);
     try {
       expect(view.text()).toContain("Right now");
-      expect(view.text()).toContain("Book flights");
-      expect(view.text()).toContain("Notes");
-      expect(view.text()).toContain("A browser profile");
-      expect(view.text()).toContain("Clean up downloads");
-      expect(view.text()).toContain("Working on this Mac");
-      const stops = Array.from(view.node.querySelectorAll(".menu-bar__row-stop"));
-      expect(stops.map((stop) => stop.getAttribute("aria-label"))).toEqual([
-        "Stop Book flights",
-        "Stop Clean up downloads",
+      const rows = Array.from(view.node.querySelectorAll(".menu-bar__activity-row"));
+      expect(rows.map((row) => row.textContent)).toEqual([
+        "Book flightsNotes",
+        "An agentA browser profile",
+        "Clean up downloadsWorking on this Mac",
       ]);
-      await act(async () => (stops[0] as HTMLButtonElement).click());
-      expect(value.stopRow).toHaveBeenCalledWith({ id: "apps:cus_1" });
+      expect(view.node.querySelectorAll(".menu-bar__activity button button")).toHaveLength(0);
+      expect(view.text()).not.toMatch(/Stopping…|Didn’t stop/u);
+      expect(view.button("Stop")).toBeUndefined();
     } finally {
       await view.close();
     }
   });
 
-  it("shows a row being stopped as stopping, and one whose Stop failed with Stop again", async () => {
-    const value = bridge(menuBarStates.rowStates);
+  it("opens a row's task in the app, and the app where the record names no task", async () => {
+    const value = bridge(menuBarStates.active);
     const view = await render(value);
     try {
-      expect(view.text()).toContain("Claude Code");
-      expect(view.text()).toContain("Stopping…");
-      expect(view.text()).toContain("Didn’t stop. Try again.");
-      expect(view.text()).toContain("Commands from Office Mini");
-      const stops = Array.from(view.node.querySelectorAll(".menu-bar__row-stop"));
-      expect(stops.map((stop) => stop.getAttribute("aria-label"))).toEqual([
-        "Stop Clean up downloads",
+      const rows = Array.from(
+        view.node.querySelectorAll<HTMLButtonElement>(".menu-bar__activity-row"),
+      );
+      await act(async () => rows[2]!.click());
+      expect(value.openRow).toHaveBeenCalledWith({ deploymentId: "dep_home", threadId: "thr_1" });
+      await act(async () => rows[0]!.click());
+      expect(value.openApp).toHaveBeenCalledTimes(1);
+      expect(value.openRow).toHaveBeenCalledTimes(1);
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("opens the app from a row while desktop main cannot open one task", async () => {
+    const { openRow: _unused, ...older } = bridge(menuBarStates.active);
+    const view = await render(older);
+    try {
+      const rows = view.node.querySelectorAll<HTMLButtonElement>(".menu-bar__activity-row");
+      await act(async () => rows[2]!.click());
+      expect(older.openApp).toHaveBeenCalledTimes(1);
+    } finally {
+      await view.close();
+    }
+  });
+
+  it("names a connected agent as its connection proved it, with the task it works on", async () => {
+    const value = bridge(menuBarStates.agents);
+    const view = await render(value);
+    try {
+      const rows = Array.from(view.node.querySelectorAll(".menu-bar__activity-row"));
+      expect(rows.map((row) => row.textContent)).toEqual([
+        "Says it is GrokA browser profile · Friday dinner",
+        "Claude CodeWorking on this Mac · Rename photos",
+        "Verified: ClaudeWorking on this Mac · Compare flights",
       ]);
-      await act(async () => (stops[0] as HTMLButtonElement).click());
-      expect(value.stopRow).toHaveBeenCalledWith({ id: "home:thr_1" });
+      // Only the verified one wears the check and its platform's logo.
+      expect(rows.map((row) => row.querySelector(".menu-bar__verified") !== null)).toEqual([
+        false,
+        false,
+        true,
+      ]);
+      expect(rows.map((row) => row.querySelector(".provider-logo") !== null)).toEqual([
+        false,
+        false,
+        true,
+      ]);
+      await act(async () => (rows[1] as HTMLButtonElement).click());
+      expect(value.openRow).toHaveBeenCalledWith({ deploymentId: "dep_office", threadId: "thr_3" });
     } finally {
       await view.close();
     }
@@ -214,6 +249,11 @@ describe("Stop everything", () => {
       await act(async () => value.push(menuBarStates.stopped));
       expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
       expect(view.text()).toContain("MacBook Pro shows this Mac as stopped too.");
+      // Stop is about agents: the person's own tabs and watching from the phone go on.
+      expect(view.text()).toContain(
+        "Agents can’t use this Mac until you resume. Your own tabs keep working, and you can still watch this Mac from your phone.",
+      );
+      expect(view.text()).not.toMatch(/can’t watch|tabs (?:stop|close)/u);
       await act(async () => view.button("Resume")!.click());
       expect(value.resume).toHaveBeenCalledOnce();
     } finally {
@@ -238,7 +278,8 @@ describe("Stop everything", () => {
     const value = bridge(menuBarStates.stopFailed);
     const view = await render(value);
     try {
-      expect(view.text()).not.toMatch(/Stopped everything/);
+      expect(view.text()).not.toMatch(/Stopped everything|until you resume/);
+      expect(view.text()).toContain("Couldn’t confirm everything stopped");
       expect(view.button("Resume")).toBeUndefined();
       expect(view.node.querySelector('[role="alert"]')?.textContent).toMatch(
         /didn’t stop \(tasks on this Mac’s Home\)\. Press Stop everything to try again\./,

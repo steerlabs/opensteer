@@ -76,18 +76,25 @@ export function ChromeConnectCard({ state }: { readonly state: ChromeConnectLink
           linkExtensionDirectory={extensionDirectory}
         />
         {liveTabsInstalled && (
-          <button
-            className="btn"
-            type="button"
-            onClick={() => {
-              window.open(
-                `chrome-extension://${opensteerChromeLiveTabsExtensionId}/connect.html#${invitation}`,
-                "_blank",
-              );
-            }}
-          >
-            Pair Opensteer Live Tabs
-          </button>
+          <section aria-label="Chrome tab sharing">
+            <p className="connect-chrome__hint">
+              When you share a tab, a connected agent can act as you in that tab on any site Chrome
+              is signed in to until you stop sharing. The agent can read cookies from this Chrome
+              profile.
+            </p>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => {
+                window.open(
+                  `chrome-extension://${opensteerChromeLiveTabsExtensionId}/connect.html#${invitation}`,
+                  "_blank",
+                );
+              }}
+            >
+              Pair Chrome tab sharing
+            </button>
+          </section>
         )}
         {otherBrowser && environment.place !== "phone" ? (
           <div className="chrome-connect-page__copy">

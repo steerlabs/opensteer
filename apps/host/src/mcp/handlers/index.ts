@@ -1,5 +1,8 @@
+import type { SessionPersonTools } from "./session-person.js";
+import { refused } from "@opensteer/core";
 import { appToolHandlers } from "./apps.js";
 import { TabToolHandlers } from "./tabs.js";
+import type { BrowserToolHandlers } from "./browser.js";
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AppService } from "../../apps/app-service.js";
 
@@ -18,10 +21,13 @@ import type { LocalServerRegistry } from "../../local-servers/local-server-regis
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
+  readonly sessionPerson?: SessionPersonTools;
   readonly devices: DeviceToolHandlers;
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
+  /** The browser for connected agents; absent on a Home without direct work. */
+  readonly browser?: BrowserToolHandlers;
   readonly plugins?: PluginToolHandlers;
   readonly localServers?: LocalServerRegistry;
   readonly team?: TeamToolPort;
@@ -36,11 +42,22 @@ export function agentToolHandlers(options: {
   const p = options.product,
     d = options.devices,
     t = options.triggers;
+  const sessionPerson = () => {
+    if (!options.sessionPerson)
+      throw refused("conflict", "This Home cannot open a Request for direct work.");
+    return options.sessionPerson;
+  };
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
     ...options.plugins?.handlers(),
     ...(options.localServers ? localServerToolHandlers(options.localServers) : {}),
     ...appToolHandlers(options.apps),
+    ...(options.browser
+      ? {
+          browser_use: (c: ToolCall<"browser_use">) => options.browser!.browser_use(c),
+          browser_connect: (c: ToolCall<"browser_connect">) => options.browser!.browser_connect(c),
+        }
+      : {}),
     tab_list: (c) => options.tabs.tab_list(c),
     tab_open: (c) => options.tabs.tab_open(c),
     tab_close: (c) => options.tabs.tab_close(c),
@@ -87,7 +104,10 @@ export function agentToolHandlers(options: {
         targets: (c: ToolCall<"opensteer_delegation_cancel">) => p.assignmentTargets(c),
       },
     ),
-    ask_person: async (c) => await p.ask_person(c),
+    ask_person: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().question({ ...c, caller: c.caller })
+        : p.ask_person(c),
     send_to_person: async (c) => await p.send_to_person(c),
     show_to_person: Object.assign(
       async (c: ToolCall<"show_to_person">) => await p.show_to_person(c),
@@ -109,8 +129,14 @@ export function agentToolHandlers(options: {
         input: { ...c.input, action: "respond", limit: 50 },
       }),
     opensteer_request_withdraw: async (c) => await p.opensteer_request_withdraw(c),
-    card_request: async (c) => await p.card_request(c),
-    saved_login_request: async (c) => await p.saved_login_request(c),
+    card_request: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().credentials({ ...c, caller: c.caller }, "card")
+        : p.card_request(c),
+    saved_login_request: (c) =>
+      c.caller.kind === "connection"
+        ? sessionPerson().credentials({ ...c, caller: c.caller }, "login")
+        : p.saved_login_request(c),
     chrome_cookies_request: async (c) => await p.chrome_cookies_request(c),
     browser_profile_request: async (c) => await p.browser_profile_request(c),
     computer_access_request: async (c) => await p.computer_access_request(c),
