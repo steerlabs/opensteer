@@ -3514,6 +3514,21 @@ describe("RunnerRuntime", () => {
           status: "accepted",
         });
         await waitUntil(() => observedSignals.length === index + 1);
+        const stale = createId("command");
+        await expect(
+          runtime.handleCommand(
+            {
+              type: "trigger.interrupt",
+              commandId: stale,
+              correlationId: CorrelationIdSchema.parse(stale),
+              environmentId,
+              occurrenceId: command.context.occurrenceId,
+              executionGeneration: command.context.executionGeneration + 1,
+            },
+            sink,
+          ),
+        ).resolves.toEqual({ status: "accepted" });
+        expect(observedSignals[index]?.aborted).toBe(false);
         const interruptId = createId("command");
         await expect(
           runtime.handleCommand(
@@ -3522,6 +3537,7 @@ describe("RunnerRuntime", () => {
               correlationId: CorrelationIdSchema.parse(interruptId),
               environmentId,
               occurrenceId: command.context.occurrenceId,
+              executionGeneration: command.context.executionGeneration,
               type: "trigger.interrupt",
             }),
             sink,

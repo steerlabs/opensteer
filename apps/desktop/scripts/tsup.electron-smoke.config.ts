@@ -25,6 +25,7 @@ export const smokeConfig = {
     "scripts/electron-display-smoke.ts",
     "scripts/electron-passwords-smoke.ts",
     "scripts/electron-quit-smoke.ts",
+    "scripts/electron-menu-bar-smoke.ts",
     "scripts/quit-runner-worker.ts",
     "scripts/harness-owner-smoke.ts",
     "scripts/electron-usb-smoke.ts",

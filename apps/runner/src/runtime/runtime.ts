@@ -1708,7 +1708,7 @@ export class RunnerRuntime {
           await this.#watchSupervisor.reconcile(command, sink);
           return { status: "accepted" };
         case "trigger.interrupt":
-          return this.#interruptTrigger(command.occurrenceId);
+          return this.#interruptTrigger(command.occurrenceId, command.executionGeneration);
         case "node.stop":
           return this.#stopNode(command);
         case "run.interrupt":
@@ -3613,12 +3613,18 @@ export class RunnerRuntime {
     schedule(afterMs);
   }
 
-  #interruptTrigger(occurrenceId: TriggerOccurrenceId): CommandDecision {
-    // Cancellation is idempotent so a retried Host security effect can always
-    // converge even if the program completed between observation and delivery.
-    this.#triggerPrograms
-      .get(occurrenceId)
-      ?.abort.abort(new Error("Trigger execution authority was revoked"));
+  #interruptTrigger(
+    occurrenceId: TriggerOccurrenceId,
+    executionGeneration?: number,
+  ): CommandDecision {
+    const active = this.#triggerPrograms.get(occurrenceId);
+    if (
+      active &&
+      (executionGeneration === undefined ||
+        active.command.context.executionGeneration === executionGeneration)
+    ) {
+      active.abort.abort(new Error("Trigger execution authority was revoked"));
+    }
     return { status: "accepted" };
   }
 

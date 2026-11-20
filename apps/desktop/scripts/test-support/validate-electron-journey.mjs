@@ -60,6 +60,29 @@ try {
       assert.equal(local("electron-local-visibility.json").passed, true);
       assert.equal(local("electron-idle-cpu.json").phases.length, 3);
       break;
+    case "menu-bar": {
+      // Every trial passed; only the real helper's may be unverified, and is recorded so.
+      const { results } = local("menu-bar.json");
+      const trials = [
+        "popover-phases",
+        "home-stop",
+        "row-stop",
+        "quit-logout",
+        "quit-sigterm",
+        "early-quit",
+        "dock",
+      ];
+      assert.deepEqual(
+        results.map((row) => row.trial),
+        trials,
+      );
+      for (const row of results)
+        assert(
+          row.outcome === "pass" || (row.trial === "row-stop" && row.outcome === "unverified"),
+          `menu-bar ${row.trial}: ${row.outcome} ${row.error ?? ""}`,
+        );
+      break;
+    }
     case "quit": {
       const directory = path.join(root, name);
       const runs = fs.readdirSync(directory).filter((entry) => entry.startsWith("quit-"));

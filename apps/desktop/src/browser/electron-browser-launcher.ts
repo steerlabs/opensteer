@@ -2058,6 +2058,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     layout,
     pageScale,
     quality,
+    maxImageBytes,
   }: ViewportCaptureRequest): Promise<ViewportCapture> {
     const cdp = await this.cdp();
     const release = cdp.retainRendering?.();
@@ -2083,7 +2084,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         })
         .resize({ ...plan.output, quality: "better" });
       return {
-        data: await this.#encode(cdp, picture, format, quality),
+        data: await this.#encode(cdp, picture, format, quality, maxImageBytes),
         ...(crop.right || crop.bottom
           ? {
               cropped: {
@@ -2157,22 +2158,35 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     image: NativeImage,
     format: ViewportCaptureRequest["format"],
     quality: number | undefined,
+    maxImageBytes?: number,
   ): Promise<string> {
-    if (format === "jpeg") return image.toJPEG(quality ?? 80).toString("base64");
-    const data = image.toPNG().toString("base64");
-    if (format === "png") return data;
+    const exceeds = () =>
+      new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
+        reason: "browser-reply-limit",
+      });
+    const bytes = format === "jpeg" ? image.toJPEG(quality ?? 80) : image.toPNG();
+    if (format !== "webp" && maxImageBytes !== undefined && bytes.length > maxImageBytes)
+      throw exceeds();
+    const data = bytes.toString("base64");
+    if (format !== "webp") return data;
     const size = image.getSize();
     const plan = { output: size, source: { x: 0, y: 0, ...size } };
     // nativeImage has no WebP encoder; the page's own does.
-    return z.string().parse(
-      await this.#inFrameWorld(
-        cdp,
-        viewportImageScript(data, plan, {
-          format,
-          ...(quality === undefined ? {} : { quality }),
-        }),
-      ),
-    );
+    const encoded = z
+      .string()
+      .nullable()
+      .parse(
+        await this.#inFrameWorld(
+          cdp,
+          viewportImageScript(data, plan, {
+            format,
+            ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
+            ...(quality === undefined ? {} : { quality }),
+          }),
+        ),
+      );
+    if (encoded === null) throw exceeds();
+    return encoded;
   }
 
   loadInitialUrl(url: string): Promise<void> {

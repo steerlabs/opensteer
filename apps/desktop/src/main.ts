@@ -203,11 +203,11 @@ import { PasswordsLoginAuthority } from "./passwords/login-authority.js";
 import { AgentBrowserGate } from "./browser/agent-browser-gate.js";
 import { DesktopLocalStop, localStopFileStore } from "./app/local-stop.js";
 import { HostedHomeStop } from "./app/hosted-home-stop.js";
+import { parentedQuitQuestion, quitQuestionParentOptions } from "./app/quit-question.js";
 import { AgentAdmission } from "./app/agent-admission.js";
 import { activityIdle, DesktopActivity, fencedIdle } from "./app/desktop-activity.js";
 import { DesktopQuitRouting } from "./app/quit-routing.js";
 import { appRoutes, appRouteScript } from "./app/app-route.js";
-import { menuBarWords } from "@opensteer/client/computers";
 import {
   backgroundNoticeBody,
   backgroundNoticeFileStore,
@@ -1745,44 +1745,11 @@ async function runDesktop(
       },
     },
     work: () => activity.snapshot(),
-    // Parented, so macOS shows it as a sheet that waits without blocking main
-    // and that the shutdown's signal can dismiss; an unparented one cannot be.
-    confirm: async ({ message, detail }, signal) => {
-      signal.throwIfAborted();
-      app.focus({ steal: true });
-      const parent = new BrowserWindow({
-        width: 420,
-        height: 1,
-        show: false,
-        frame: false,
-        transparent: true,
-        hasShadow: false,
-        resizable: false,
-        minimizable: false,
-        maximizable: false,
-        fullscreenable: false,
-        skipTaskbar: true,
-        alwaysOnTop: true,
-        title: app.getName(),
-      });
-      try {
-        parent.center();
-        parent.show();
-        const { response } = await dialog.showMessageBox(parent, {
-          type: "warning",
-          buttons: [menuBarWords("menubar.quit"), menuBarWords("common.cancel")],
-          defaultId: 1,
-          cancelId: 1,
-          message,
-          detail,
-          signal,
-        });
-        signal.throwIfAborted();
-        return response === 0;
-      } finally {
-        if (!parent.isDestroyed()) parent.destroy();
-      }
-    },
+    confirm: parentedQuitQuestion({
+      focus: () => app.focus({ steal: true }),
+      createParent: () => new BrowserWindow(quitQuestionParentOptions(app.getName())),
+      showMessageBox: (parent, options) => dialog.showMessageBox(parent as BrowserWindow, options),
+    }),
     log: reportEvent,
   });
   quitRouting.attach(background);

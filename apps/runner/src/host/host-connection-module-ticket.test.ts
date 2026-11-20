@@ -179,19 +179,20 @@ describe("ReconnectingHostConnection module tickets", () => {
     // connection can close exactly while that write is pending.
     const requested = Promise.withResolvers<(error?: Error) => void>();
     const send = WebSocketClient.prototype.send;
-    const held = vi
-      .spyOn(WebSocketClient.prototype, "send")
-      .mockImplementation(function (this: WebSocketClient, data: unknown, ...rest: unknown[]) {
-        const callback = rest.find((value) => typeof value === "function") as
-          | ((error?: Error) => void)
-          | undefined;
-        if (typeof data === "string" && data.includes('"runner.auxiliary.ticket-request"')) {
-          held.mockRestore();
-          if (callback) requested.resolve(callback);
-          return;
-        }
-        return (send as (...args: unknown[]) => void).call(this, data, ...rest);
-      });
+    const held = vi.spyOn(WebSocketClient.prototype, "send").mockImplementation(function (
+      this: WebSocketClient,
+      data: unknown,
+      ...rest: unknown[]
+    ) {
+      const callback = rest.find((value) => typeof value === "function") as
+        ((error?: Error) => void) | undefined;
+      if (typeof data === "string" && data.includes('"runner.auxiliary.ticket-request"')) {
+        held.mockRestore();
+        if (callback) requested.resolve(callback);
+        return;
+      }
+      return (send as (...args: unknown[]) => void).call(this, data, ...rest);
+    });
     const host = await startMockHost(false);
     const { connection, connected } = await createConnection({
       device,
