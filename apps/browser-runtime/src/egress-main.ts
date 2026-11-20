@@ -1,10 +1,13 @@
+import { readBrowserEgressUpstream } from "./egress-config.js";
 import { PublicBrowserEgressProxy } from "./egress-proxy.js";
 import { shutdownSignals } from "@opensteer/shared/processControl";
 
 async function main(): Promise<void> {
+  const upstream = await readBrowserEgressUpstream(process.env);
   const proxy = new PublicBrowserEgressProxy({
     host: process.env.OPENSTEER_BROWSER_EGRESS_HOST?.trim() || "127.0.0.1",
     port: port(process.env.OPENSTEER_BROWSER_EGRESS_PORT),
+    ...(upstream ? { upstream } : {}),
   });
   const address = await proxy.start();
   process.stdout.write(`${JSON.stringify({ event: "browser-egress.ready", ...address })}\n`);
