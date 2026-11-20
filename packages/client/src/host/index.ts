@@ -89,6 +89,9 @@ export * from "./browser-cursor.js";
 export * from "./connected-agents.js";
 export * from "./connected-agents-copy.js";
 export * from "./connected-agent-view.js";
+export * from "./agent-identity.js";
+export * from "./agent-work.js";
+export * from "./agent-work-copy.js";
 export * from "./connected-agent-options.js";
 
 export * from "./automatic-models.js";

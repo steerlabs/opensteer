@@ -151,10 +151,35 @@ describe("connected agents list", () => {
 });
 
 describe("connected agent identity", () => {
-  it("shows a provider mark only for a proven origin, never for a claimed name", () => {
+  it("shows a provider mark only for a platform the Home verified, never for a domain or a name", () => {
+    // A redirect domain proves nothing on its own: without the Home's report, no mark.
     expect(
       connectedAgentIdentity(
         connection({ client: { fingerprint: null, redirectOrigin: "https://chatgpt.com" } }),
+      ).providerId,
+    ).toBeNull();
+    expect(
+      connectedAgentIdentity(
+        connection({
+          client: { fingerprint: null, redirectOrigin: "https://chatgpt.com" },
+          identityAtConsent: {
+            kind: "platform",
+            platformOrigin: "https://chatgpt.com",
+            platformDirectoryId: "chatgpt",
+            platformName: "ChatGPT",
+            directoryRevision: 1,
+            recordedAt: "2026-11-03T10:00:00.000Z",
+          },
+          identity: {
+            evidenceKind: "platform",
+            verified: true,
+            selfAsserted: false,
+            heading: "ChatGPT",
+            detail: "https://chatgpt.com",
+            origins: [],
+            warning: "Only approve if you started this yourself.",
+          },
+        }),
       ).providerId,
     ).toBe("openai");
     expect(

@@ -3,12 +3,13 @@ import type { PersonalAccountLinkStatus } from "@opensteer/protocol";
 import { HomeAccountLinkClient, homeAccountLinkView } from "./home-account-link.js";
 
 const authorityEnvelope = { document: {}, publicKey: {}, signature: "s" } as never;
-const link = (state: "activating" | "active") => ({
-  generation: "g".repeat(43),
-  issuer: "https://accounts.example.test",
-  state,
-  subject: "acct_0192f4a1-1111-4000-8000-000000000001",
-});
+const link = (state: "activating" | "active") =>
+  ({
+    generation: "g".repeat(43),
+    issuer: "https://accounts.example.test",
+    state,
+    subject: "acct_0192f4a1-1111-4000-8000-000000000001",
+  }) as NonNullable<PersonalAccountLinkStatus["accountLink"]>;
 
 function fixture(initial: PersonalAccountLinkStatus, refuse?: string) {
   let status = initial;

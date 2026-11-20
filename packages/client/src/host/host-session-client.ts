@@ -1895,6 +1895,7 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              agentSessionId: row.agentSessionId ?? null,
             },
             SequenceSchema.parse(row.revision),
             undefined,
@@ -1906,10 +1907,13 @@ export class HttpHostClient {
     if (
       session &&
       (this.#snapshot.user?.id !== session.user.id ||
-        this.#snapshot.sessionId !== session.sessionId)
+        this.#snapshot.sessionId !== session.sessionId ||
+        this.#snapshot.role !== session.role)
     ) {
+      const { role: _previousRole, ...withoutRole } = this.#snapshot;
       this.#update({
-        ...this.#snapshot,
+        ...withoutRole,
+        ...(session.role ? { role: session.role } : {}),
         deploymentId: shell.deploymentId,
         deploymentShape: { kind: "personal" },
         user: session.user,
@@ -4970,6 +4974,7 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    agentSessionId: row.agentSessionId ?? null,
     modelSelection: unknownModelSelection,
     harnessLabel: "",
     modelLabel: "",

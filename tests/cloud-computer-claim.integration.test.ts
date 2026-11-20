@@ -30,6 +30,8 @@ import tls from "node:tls";
 import { sql } from "kysely";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { ConnectLifecycleService } from "../apps/control-plane/src/account/connect-lifecycle.js";
+import { PersonalAccountLinkOperationCipher } from "../apps/control-plane/src/account/personal-account-link-operation-crypto.js";
+import { PersonalRemoteAccountService } from "../apps/control-plane/src/account/personal-remote-account.js";
 import {
   ControlPlaneAuthenticator,
   createControlPlaneAuth,
@@ -281,7 +283,7 @@ const stripe = {
   cancel: async () => {
     if (stripeUnavailable) throw new Error("Stripe is unavailable");
   },
-  updateSeatQuantity: async () => {},
+  updateSeatQuantity: async () => { throw new Error("Not used"); },
 } satisfies StripeBilling & Pick<CloudComputerStripe, "updateSeatQuantity">;
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: provisionerEmail,
@@ -315,9 +317,10 @@ const auth = createControlPlaneAuth(database, {
   googleClientSecret: "test-secret",
 });
 const organizations = new OrganizationStore(database, {
-  stripe,
+  stripe: { ...stripe, invoice: async () => { throw new Error("Not used"); }, voidInvoice: async () => { throw new Error("Not used"); } },
   offer: {
     priceId: "price_seat",
+    portalConfigurationId: "bpc_org",
     name: "Work seat",
     currency: "usd",
     amountMinor: 4900,
@@ -725,6 +728,14 @@ beforeAll(async () => {
           keys: async () => google.publicKey,
         }),
       },
+      personalRemoteAccount: new PersonalRemoteAccountService({
+        auth,
+        database,
+        issuer: publicOrigin,
+        operationCipher: new PersonalAccountLinkOperationCipher(
+          Buffer.alloc(32, 11).toString("base64url"),
+        ),
+      }),
       portalOrigin: publicOrigin,
       publicOrigin,
       store: new ControlPlaneStore(database, publicOrigin, { portalOrigin: publicOrigin }),
@@ -796,7 +807,16 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
     expect(receipt.document.work).toBeUndefined();
 
     // The Home is in the buyer's directory, at its own address.
-    const listed = await buyer.browser.request(account("/v1/account/deployments"));
+    // An app that hasn't said it understands a Home at its own address isn't shown one.
+    const older = await buyer.browser.request(account("/v1/account/deployments"));
+    expect(
+      ListAccountDeploymentsResponseSchema.parse(await older.json()).deployments.map(
+        (deployment) => deployment.id,
+      ),
+    ).not.toContain(identity.deploymentId);
+    const listed = await buyer.browser.request(
+      account("/v1/account/deployments?understands=canonical-personal"),
+    );
     expect(listed.status, await listed.clone().text()).toBe(200);
     expect(ListAccountDeploymentsResponseSchema.parse(await listed.json()).deployments).toEqual(
       expect.arrayContaining([
@@ -944,19 +964,21 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
       .select(["deletionRequestedAt", "revision", "state"])
       .where("id", "=", second.id as never)
       .executeTakeFirstOrThrow();
-    expect(waiting).toMatchObject({ revision: leased.revision, state: "active" });
+    expect(waiting.state).toBe("active");
     expect(waiting.deletionRequestedAt).not.toBeNull();
+    // Even a job carrying the row's current revision is refused, on the intent alone.
+    const atRevision = { ...leased, revision: waiting.revision };
     await database
       .updateTable("cloudComputers")
       .set({ claimNextAt: null })
       .where("id", "=", second.id as never)
       .execute();
     expect(await cloud.claimDue()).toBeUndefined();
-    await expect(cloud.claimMaterial(leased)).rejects.toBeInstanceOf(
+    await expect(cloud.claimMaterial(atRevision)).rejects.toBeInstanceOf(
       CloudComputerClaimSupersededError,
     );
     await expect(
-      cloud.recordClaim(leased, receiptFor("https://x"), {} as never),
+      cloud.recordClaim(atRevision, receiptFor("https://x"), {} as never),
     ).rejects.toBeInstanceOf(CloudComputerClaimSupersededError);
 
     // The owner's own listing is accepted only as this very Home.
@@ -1103,7 +1125,7 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
       account("/v1/account/personal-host-links/challenges"),
       json({ authorityEnvelope, name: "My Home", operationId: `plo_${randomUUID()}` }),
     );
-    expect(challenged.status, await challenged.clone().text()).toBe(200);
+    expect(challenged.status, await challenged.clone().text()).toBe(201);
     const challenge = (await challenged.json()) as {
       challengeId: string;
       challengeCredential: string;
@@ -1123,7 +1145,7 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
         proof: (approved.body.data as { proof: unknown }).proof,
       }),
     );
-    expect(completed.status, await completed.clone().text()).toBe(200);
+    expect(completed.status, await completed.clone().text()).toBe(201);
     const consumed = await homeApi(owner, homeOrigin, "commands.dispatch", {
       completion: await completed.json(),
       idempotencyKey: randomUUID(),
@@ -1144,7 +1166,9 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
     expect((await homeApi(owner, homeOrigin, "personal.accountLink.get")).body.data).toMatchObject({
       accountLink: null,
     });
-    const listed = await person.browser.request(account("/v1/account/deployments"));
+    const listed = await person.browser.request(
+      account("/v1/account/deployments?understands=canonical-personal"),
+    );
     expect(
       ListAccountDeploymentsResponseSchema.parse(await listed.json()).deployments.map(
         (deployment) => deployment.authority.canonicalOrigin,

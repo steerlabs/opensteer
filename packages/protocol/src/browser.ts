@@ -185,6 +185,7 @@ export const BrowserAttachTicketClaimsSchema = z
     actor: z.enum(["agent", "person"]).optional(),
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
     standardCdp: StandardCdpModeSchema.optional(),
+    standardCdpLease: z.object({ generation: z.number().int().positive(), bindingId: z.string().min(1).max(512) }).strict().optional(),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),
@@ -305,6 +306,8 @@ export const BrowserCdpMethodSchema = z
 export const BrowserCdpSessionIdSchema = z.string().min(1).max(512);
 export const BrowserCdpParametersSchema = z.record(z.string(), z.unknown());
 
+export const browserScriptScreenshotMaxBytes = 323 * 1024;
+
 export const BrowserCdpReplyBudgetSchema = z.strictObject({
   maxBytes: z
     .number()
@@ -313,6 +316,7 @@ export const BrowserCdpReplyBudgetSchema = z.strictObject({
     .max(1024 * 1024 - 4096),
   maxDepth: z.number().int().min(1).max(32),
   maxEntries: z.number().int().min(1).max(16_384),
+  maxImageBytes: z.number().int().min(1).max(browserScriptScreenshotMaxBytes).optional(),
 });
 
 export const BrowserCdpCommandSchema = z.strictObject({

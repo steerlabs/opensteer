@@ -360,6 +360,7 @@ const InterruptExecutionSchema = runnerCommandBase.extend({
 });
 
 const InterruptTriggerExecutionSchema = runnerCommandBase.extend({
+  executionGeneration: z.number().int().positive().optional(),
   occurrenceId: TriggerOccurrenceIdSchema,
   type: z.literal("trigger.interrupt"),
 });

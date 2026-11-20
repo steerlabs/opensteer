@@ -8,6 +8,7 @@ import {
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
+import { agentWho, type AgentWho } from "./agent-identity.js";
 import { agentWords } from "./connected-agents-copy.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -27,9 +28,11 @@ export interface ConnectedAgentIdentity {
   /** The consented redirect's host, or null when the Home proves none. */
   readonly origin: string | null;
   readonly local: boolean;
-  /** A provider logo is chosen by the proven origin only, never by the name. */
+  /** A provider logo, only for a platform the Home verified; never guessed from a domain. */
   readonly providerId: string | null;
   readonly initial: string;
+  /** Who it is, in the Home's words where the Home said. */
+  readonly who: AgentWho;
 }
 
 export interface ConnectedAgentRow {
@@ -103,30 +106,30 @@ export interface GrantNames {
   readonly profiles: readonly { readonly id: string; readonly name: string }[];
 }
 
-const providerOrigins: readonly (readonly [RegExp, string])[] = [
-  [/(^|\.)(chatgpt\.com|openai\.com)$/u, "openai"],
-  [/(^|\.)(claude\.ai|anthropic\.com)$/u, "anthropic"],
-];
-const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
 export function connectedAgentIdentity(
-  source: Pick<AgentConnection, "label" | "clientName" | "client">,
+  source: Pick<AgentConnection, "label" | "clientName"> &
+    Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent">>,
   redirectUri?: string,
+  /** When the Home withdrew a verified identity; not reported by any Home yet. */
+  withdrawnAt?: string | null,
 ): ConnectedAgentIdentity {
-  const origin = hostOf(redirectUri ?? source.client?.redirectOrigin ?? null);
-  const local = origin !== null && loopback.has(origin);
-  const providerId =
-    origin === null || local
-      ? null
-      : (providerOrigins.find(([pattern]) => pattern.test(origin))?.[1] ?? null);
+  const redirect = redirectUri ?? source.client?.redirectOrigin ?? null;
+  const who = agentWho({
+    clientName: source.clientName,
+    redirect,
+    identity: source.identity,
+    identityAtConsent: source.identityAtConsent,
+    withdrawnAt,
+  });
   const initial = Array.from(source.label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
   return {
     label: source.label,
     clientName: source.clientName,
-    origin,
-    local,
-    providerId,
+    origin: hostOf(redirect),
+    local: who.local,
+    providerId: who.providerId,
     initial,
+    who,
   };
 }
 

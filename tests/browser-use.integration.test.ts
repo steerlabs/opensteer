@@ -288,6 +288,8 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (site.listening) await new Promise<void>((resolve) => site.close(() => resolve()));
       },
     }));
+    let dropBrowserReply = false;
+    let replaceBrowserResponse: ((message: unknown) => unknown) | undefined;
     await runner.attach({
       fence,
       browserWireVersion: 2,
@@ -301,7 +303,29 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (binary) await hub.handleBinary(peer, Buffer.from(frame));
         else {
           const message = BrowserRuntimeRelayToHostMessageSchema.parse(JSON.parse(String(frame)));
-          if (message.type !== "runner.auxiliary.heartbeat") await hub.handleMessage(peer, message);
+          if (
+            message.type === "browser.server-message" &&
+            dropBrowserReply &&
+            message.message &&
+            typeof message.message === "object" &&
+            "type" in message.message &&
+            message.message.type === "cdp.result"
+          ) {
+            dropBrowserReply = false;
+            const { message: _discardedReply, ...channel } = message;
+            await hub.handleMessage(peer, {
+              ...channel,
+              type: "browser.closed",
+              code: 1011,
+              reason: "Fixture dropped the correlated reply",
+            });
+          } else if (message.type === "browser.server-message" && replaceBrowserResponse) {
+            await hub.handleMessage(peer, {
+              ...message,
+              message: replaceBrowserResponse(message.message),
+            });
+          } else if (message.type !== "runner.auxiliary.heartbeat")
+            await hub.handleMessage(peer, message);
         }
       },
     });
@@ -384,6 +408,40 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     });
     await setBrowserAccess(true);
 
+    replaceBrowserResponse = (message) => {
+      if (
+        message &&
+        typeof message === "object" &&
+        "type" in message &&
+        message.type === "cdp.result" &&
+        "requestId" in message
+      ) {
+        return {
+          type: "cdp.error",
+          requestId: message.requestId,
+          error: {
+            code: "forbidden",
+            retryable: false,
+            message: "private upstream URL and secret",
+          },
+        };
+      }
+      return message;
+    };
+    try {
+      const sanitized = text(
+        await run(
+          `try { await page.cdp("Runtime.evaluate", { expression: "1" }); } catch (error) { print({ code: error.code, message: error.message }); }`,
+        ),
+      );
+      expect(JSON.parse(sanitized)).toEqual({
+        code: "forbidden",
+        message: "This CDP operation is outside the browser attachment's authority.",
+      });
+    } finally {
+      replaceBrowserResponse = undefined;
+    }
+
     const abandoned = hold("/abandoned");
     try {
       const unfinished = run(`
@@ -428,5 +486,23 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     expect(
       await store.getBrowserSessionForOwner(tab!.pageBinding!.sessionId, a.ownerId),
     ).toMatchObject({ state: "ready" });
+    const fresh = await run(
+      `globalThis.fresh = await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });`,
+      b,
+    );
+    expect(fresh.isError).toBeUndefined();
+    dropBrowserReply = true;
+    const lost = await run(
+      `
+      try { await fresh.cdp("Runtime.evaluate", { expression: "document.title = 'changed'" }); }
+      catch (error) { print(error.code); }
+      return "caught";
+    `,
+      b,
+    );
+    expect(lost).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "outcome-unknown" } },
+    });
   },
 );

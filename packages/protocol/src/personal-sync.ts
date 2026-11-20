@@ -286,6 +286,8 @@ export const PersonalShellSnapshotSchema = z.object({
     .object({
       sessionId: AuthSessionIdSchema,
       user: AuthenticatedUserViewSchema,
+      /** The signed-in person's relation to this Home, from the session. Absent from older Homes. */
+      role: z.enum(["owner", "member"]).optional(),
       sessionSurface: PersonalSessionSurfaceSchema,
       can: PersonalCapabilitiesViewSchema,
     })

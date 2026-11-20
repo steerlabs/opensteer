@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const standardCdpPath = "/v1/browser/cdp";
+export const standardCdpDetachFrame = '{"type":"browser.detach-standard-cdp"}';
+export const standardCdpSettledReason = "CDP attachment settled";
 export {
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,

@@ -9,6 +9,8 @@ import {
   IssueAccountHostSessionGrantResponseSchema,
   IssuePersonalAccountHostSessionGrantRequestSchema,
   ListAccountDeploymentsResponseSchema,
+  accountDirectoryUnderstandsParameter,
+  canonicalPersonalHomeUnderstanding,
   RemoveAccountDeploymentResponseSchema,
   UpdateAccountDeploymentNameRequestSchema,
   UpdateAccountDeploymentNameResponseSchema,
@@ -334,7 +336,10 @@ export class AccountDeploymentDirectoryService {
     authorization: string,
     accountSignal: AbortSignal,
   ): Promise<readonly AccountDeploymentDirectoryEntry[]> {
-    const endpoint = new URL("/v1/account/deployments", accountOrigin).toString();
+    const url = new URL("/v1/account/deployments", accountOrigin);
+    // This app understands a Home listed at its own HTTPS address.
+    url.searchParams.set(accountDirectoryUnderstandsParameter, canonicalPersonalHomeUnderstanding);
+    const endpoint = url.toString();
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(clientTimeoutError("Account Host discovery timed out.")),

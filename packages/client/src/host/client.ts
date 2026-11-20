@@ -225,6 +225,8 @@ export interface ThreadSummary {
   harnessLabel: string;
   /** A Run waits to start and none is executing, as the shell's task row says. */
   runQueued?: boolean;
+  /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
+  agentSessionId?: string | null;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */
@@ -903,6 +905,11 @@ export interface HostSnapshot {
   /** Days untouched before the reader's tasks move to Done; null until the Host says. */
   quietTaskDays: QuietTaskDays | null;
   identityConfig: IdentityConfig | null;
+  /**
+   * Facts about connected agents' own work that no Home reports yet, keyed by what they
+   * belong to. Only the preview fills it; every screen reads it as optional.
+   */
+  agentWork?: import("./agent-work.js").AgentWorkSlots;
   machines: MachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;
@@ -949,6 +956,8 @@ export interface HostSnapshot {
   voiceAvailable?: boolean;
   threads: ThreadSummary[];
   user: AuthenticatedUser | null;
+  /** The signed-in person's relation to this Home, as the Home says it. Absent from older Homes. */
+  role?: "owner" | "member";
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
   sessionId?: string;
 }

@@ -13,6 +13,7 @@ import {
   Ed25519AttachTicketVerifier,
 } from "../packages/browser-runtime-core/src/index.js";
 import { createId } from "../packages/core/src/index.js";
+import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -65,6 +66,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     const accepted: number[] = [];
     const rawGenerations: number[] = [];
     const firstChunk = Promise.withResolvers<void>();
+    const renewed = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
     let hold = false;
     const send = WebSocket.prototype.send;
@@ -77,9 +79,16 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       if (!this.url?.endsWith("/internal/v1/runners/auxiliary/browser") || typeof data !== "string")
         return send.call(this, data, options, callback);
       const frame = JSON.parse(data);
-      if (frame.type === "capability.accepted")
+      if (frame.type === "capability.accepted") {
         accepted.push(frame.capability.capabilityGeneration);
-      if (hold && frame.type === "browser.server-message" && frame.message?.type === "cdp.raw") {
+        if (accepted.length === 2) renewed.resolve();
+      }
+      if (
+        hold &&
+        frame.type === "browser.server-message" &&
+        frame.message?.type === "cdp.raw" &&
+        (!frame.message.last || rawGenerations.length > 0)
+      ) {
         rawGenerations.push(frame.capability.capabilityGeneration);
         if (!frame.message.last && rawGenerations.length === 1) {
           // Put the first chunk on the real socket, then hold only its writer's completion.
@@ -104,7 +113,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         });
         const browser = await chromium.connectOverCDP(
           stack.hostOrigin.href.replace(/^http/u, "ws").replace(/\/$/u, "") + ticket.path,
-          { noDefaults: true },
+          { noDefaults: true, timeout: 5_000 },
         );
         clients.push(browser);
         return browser.contexts()[0]!.pages()[0]!;
@@ -116,14 +125,15 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       hold = true;
       const large = active.evaluate(() => "abcdefgh".repeat(256 * 1024));
       const outcome = Promise.allSettled([large]);
-      await firstChunk.promise;
+      await milestone(firstChunk.promise, "first response chunk", outcome);
       expect(rawGenerations).toEqual([accepted[0]]);
 
-      // The auxiliary socket has a two-minute lease. Move just its scheduling timers.
+      // The auxiliary socket has a two-minute lease. Move the scheduling timers only.
       await vi.advanceTimersByTimeAsync(60_000);
-      await expect.poll(() => accepted.length).toBe(2);
+      await milestone(renewed.promise, "renewal acknowledgement");
       resume.resolve();
       const [largeResult] = await outcome;
+      hold = false;
       const quietResult = await Promise.allSettled([quiet.evaluate(() => 6 * 7)]);
       expect({ large: largeResult?.status, quiet: quietResult }).toEqual({
         large: "fulfilled",
@@ -137,6 +147,84 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       vi.useRealTimers();
       spy.mockRestore();
     }
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "keeps two connected-agent lineages out of Guest contexts",
+  async () => {
+    const { stack } = await startBrowserHome();
+    const { browser, store } = stack.host;
+    const owner = await store.firstUser();
+    if (!owner) throw new Error("The Home has no owner.");
+    const runnerId = stack.agentHome.computerId;
+    await store.database
+      .updateTable("devices")
+      .set({ accessPolicy: { ...machineAccessPolicyDefault, browser: true } })
+      .where("id", "=", await store.requireSelfDeviceId(runnerId))
+      .execute();
+    const profile = await browser.createProfile({
+      homeRunnerId: runnerId,
+      ownerId: owner.id,
+      name: "Connected agent profile",
+      idempotencyKey: randomUUID(),
+    });
+    const guest = await browser.start({ ownerId: owner.id, origin: "person", fresh: true });
+    const connectionStore = new AgentConnectionStore(store.database);
+    const catalog = stack.initialCatalog;
+    if (catalog.status !== "ready" || !catalog.models[0]) throw new Error("No fixture model.");
+    const { modelId, providerId } = catalog.models[0];
+    for (const scope of ["everything", "selected"] as const) {
+      const connection = await connectionStore.create({
+        userId: owner.id,
+        label: scope,
+        clientName: scope,
+        accessMode: "full-access",
+        resource: stack.hostOrigin.href,
+        expiresAt: new Date(Date.now() + 60_000),
+        grant:
+          scope === "selected"
+            ? {
+                scope,
+                tasks: false,
+                resources: [{ kind: "browser-profile", profileId: profile.id }],
+              }
+            : { scope },
+      });
+      expect(await connectionStore.activate(connection.id, randomBytes(32).toString("hex"))).toBe(
+        true,
+      );
+      const task = await stack.api["commands.dispatch"]({
+        type: "thread.create",
+        environmentId: stack.environmentId,
+        harnessInstanceId: stack.harnessInstanceId,
+        modelSelection: { modelId, providerId, options: {} },
+        idempotencyKey: randomUUID(),
+        title: scope,
+      });
+      if (!task.ok || task.data.type !== "thread.create") throw new Error(JSON.stringify(task));
+      const threadId = task.data.thread.id;
+      await store.database
+        .updateTable("threads")
+        .set({ originConnectionId: connection.id, accessMode: "full-access" })
+        .where("id", "=", threadId)
+        .execute();
+      const authority = { ownerId: owner.id, agentBindingId: `thread:${threadId}` };
+      // The same connection can use its named profile.
+      const allowed = await browser.openAgentSession({ ...authority, profileId: profile.id });
+      expect(allowed.session.profileId).toBe(profile.id);
+      await browser.stop(owner.id, allowed.session.id);
+      await expect(browser.openAgentSession({ ...authority, fresh: true })).rejects.toMatchObject({
+        code: "forbidden",
+      });
+      await expect(
+        browser.openAgentSession({ ...authority, sessionId: guest.session.id }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+    expect(
+      (await store.listBrowserSessions(owner.id)).filter(({ profileId }) => !profileId),
+    ).toEqual([expect.objectContaining({ id: guest.session.id })]);
+    await browser.stop(owner.id, guest.session.id);
   },
 );
 
@@ -201,4 +289,25 @@ async function startBrowserHome() {
       throw error;
     }
   });
+}
+
+async function milestone(
+  reached: Promise<void>,
+  label: string,
+  early?: Promise<readonly PromiseSettledResult<unknown>[]>,
+) {
+  const timeout = AbortSignal.timeout(5_000);
+  await Promise.race([
+    reached,
+    new Promise<never>((_resolve, reject) =>
+      timeout.addEventListener("abort", () => reject(new Error(`Missing ${label}`)), {
+        once: true,
+      }),
+    ),
+    early?.then((result) => {
+      throw new Error(`The command finished before ${label}: ${result[0]?.status}`, {
+        cause: result[0]?.status === "rejected" ? result[0].reason : undefined,
+      });
+    }) ?? new Promise<never>(() => {}),
+  ]);
 }

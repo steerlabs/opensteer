@@ -370,6 +370,7 @@ import {
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
 import { personalResourceKinds } from "@opensteer/protocol/resources";
+import { mockAgentWork, mockAgentWorkThreads } from "./mock-agent-work.js";
 import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
@@ -4948,6 +4949,16 @@ export class MockHostClient implements HostClient {
     this.#state.mockAsleepStep();
   }
 
+  /** One computer asleep since twenty minutes ago and another waiting for an update. */
+  mockDeviceStates(): void {
+    this.#state.mockDeviceStates();
+  }
+
+  /** Connected agents working tasks themselves, in each state, with a tab each uses. */
+  mockAgentWork(): void {
+    this.#state.mockAgentWork();
+  }
+
   /** Rewrites one message's words in place, as a durable update or a streamed token would. */
   mockMessageBody(threadId: string, messageId: string, body: string): void {
     this.#state.mockMessageBody(threadId, messageId, body);
@@ -7330,6 +7341,68 @@ class MockHostState {
     const entry = this.snapshot.transcripts[threadId]?.find(({ id }) => id === messageId);
     if (entry?.kind !== "message") throw new Error("No such message.");
     this.replaceEntryById(threadId, messageId, { ...entry, body });
+  }
+
+  mockAgentWork(): void {
+    const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
+    const user = this.snapshot.user;
+    if (!template || !user) throw new Error("No task to copy.");
+    const seed = mockAgentWork({
+      now: this.now(),
+      userId: user.id,
+      template,
+      connections: this.connections,
+    });
+    const at = this.now().toISOString();
+    // The working agent uses a tab of its own; the waiting one, a tab the person shares.
+    const placed: Readonly<Record<string, string>> = {
+      "mock-tab-1-0": mockAgentWorkThreads.working,
+      "mock-tab-0-0": mockAgentWorkThreads.waiting,
+    };
+    const browserSessions = this.snapshot.browserSessions.map((session) => {
+      if (!session.catalog?.tabs.some(({ id }) => id in placed)) return session;
+      const tabs = session.catalog.tabs.map((tab) =>
+        tab.id in placed
+          ? {
+              ...tab,
+              occupants: [
+                {
+                  threadId: ThreadIdSchema.parse(placed[tab.id]!),
+                  holding: true,
+                  acting: placed[tab.id] === mockAgentWorkThreads.working,
+                  lastActiveAt: at,
+                },
+              ],
+            }
+          : tab,
+      );
+      return {
+        ...session,
+        catalog: { ...session.catalog, tabs },
+        threadIds: [...new Set(tabs.flatMap(({ occupants }) => occupants.map((o) => o.threadId)))],
+      };
+    });
+    this.update({
+      ...this.snapshot,
+      threads: [...this.snapshot.threads, ...seed.threads],
+      requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
+      browserSessions,
+      agentWork: { ...seed.agentWork, sharedTabs: ["mock-tab-0-0"] },
+    });
+  }
+
+  mockDeviceStates(): void {
+    const since = new Date(Date.now() - 20 * 60_000).toISOString();
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.name === "Studio iMac"
+          ? { ...machine, status: "offline", asleepSince: since, lastSeenAt: since }
+          : machine.name === "Studio Mac"
+            ? { ...machine, status: "needs-update" }
+            : machine,
+      ),
+    });
   }
 
   mockAsleepStep(): void {

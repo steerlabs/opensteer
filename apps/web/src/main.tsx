@@ -264,6 +264,10 @@ async function renderOpensteer(): Promise<void> {
               if (teamAsk) client.mockTeamAsk(teamAsk);
               // `?mock-asleep-step`: the computer-use task's last call was refused, a Mac asleep.
               if (search.has("mock-asleep-step")) client.mockAsleepStep();
+              // `?mock-device-states`: a Device asleep and one waiting for an update.
+              if (search.has("mock-device-states")) client.mockDeviceStates();
+              // `?mock-agent-work`: connected agents working tasks themselves (with `?mock-agents`).
+              if (search.has("mock-agent-work")) client.mockAgentWork();
               // `?mock-iphone-setup` lets this window set up iPhones as Opensteer on a Mac does,
               // playing a whole setup; `?mock-iphone-setup=<state>` holds it at one state.
               const iphoneScene = search.get("mock-iphone-setup");

@@ -87,7 +87,10 @@ describe("AccountDeploymentDirectoryService", () => {
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       const headers = init?.headers as Record<string, string> | undefined;
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         expect(headers?.authorization).toBe("Bearer account");
         return json({ deployments: [directoryDeployment()] }, url);
       }
@@ -143,7 +146,8 @@ describe("AccountDeploymentDirectoryService", () => {
       catalog: { reconcileAccountDeployments },
       fetch: vi.fn(async (input: string | URL | Request) => {
         const url = String(input);
-        return url === "https://accounts.opensteer.test/v1/account/deployments"
+        return url ===
+          "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
           ? json({ deployments: [entry] }, url)
           : json(testHostDescriptor(signDiscovery(home), ["oidc"]), url);
       }),
@@ -192,7 +196,10 @@ describe("AccountDeploymentDirectoryService", () => {
     const reconcileAccountDeployments = vi.fn();
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         return json({ deployments: [deployment] }, url);
       }
       expect(init).toMatchObject({ credentials: "omit", redirect: "error" });
@@ -236,7 +243,9 @@ describe("AccountDeploymentDirectoryService", () => {
     let deployment = personalDirectoryDeployment(route, "offline");
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      expect(url).toBe("https://accounts.opensteer.test/v1/account/deployments");
+      expect(url).toBe(
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal",
+      );
       return json({ deployments: [deployment] }, url);
     });
     const service = new AccountDeploymentDirectoryService({
@@ -309,7 +318,7 @@ describe("AccountDeploymentDirectoryService", () => {
     const personalProjection = vi.fn(async () => undefined);
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url === `${accountSource.issuer}/v1/account/deployments`) {
+      if (url === `${accountSource.issuer}/v1/account/deployments?understands=canonical-personal`) {
         return json({ deployments: [personal, cloud] }, url);
       }
       expect(url).toBe(`${canonicalOrigin}/.well-known/opensteer`);
@@ -350,7 +359,10 @@ describe("AccountDeploymentDirectoryService", () => {
     let route = personalAccessRoute("https://old.connect.opensteer.test", 7);
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url === "https://accounts.opensteer.test/v1/account/deployments") {
+      if (
+        url ===
+        "https://accounts.opensteer.test/v1/account/deployments?understands=canonical-personal"
+      ) {
         return json({ deployments: [personalDirectoryDeployment(route, "ready")] }, url);
       }
       return url.endsWith("/personal-access-route")
