@@ -693,6 +693,244 @@ integration("IdentityService", () => {
     },
   );
 
+  it("claims a managed Home once for its Account subject, and never by a setup link", async () => {
+    const setupCode = "managed-home-setup-code-with-plenty-of-entropy";
+    const managed = (overrides: Partial<ConstructorParameters<typeof IdentityService>[1]> = {}) =>
+      identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [accountProvider("https://accounts.example.test")],
+        signupPolicy: "closed",
+        ...overrides,
+      });
+    const identity = managed();
+    await identity.initialize();
+    const owner = {
+      displayName: "Pat Owner",
+      email: "pat@example.test",
+      emailVerified: true,
+    };
+    const claim = (subject: string, claimKey = `cc_1:1:${subject}`, code = setupCode) =>
+      identity.claimManagedOwner({
+        claimKey,
+        commit: async () => undefined,
+        owner,
+        receipt: { claimKey, subject },
+        setupCode: code,
+        subject,
+      });
+
+    // The password and setup-link doors stay shut on a managed Home.
+    await expect(identity.exchangeInitialOwnerEnrollment(setupCode)).rejects.toMatchObject({
+      reason: "managed-home-setup-link-refused",
+    });
+    await expect(
+      identity.claimInitialOwner(
+        { email: "intruder@example.test", password: "a-password-long-enough" },
+        new Headers({ origin: "http://127.0.0.1:4310" }),
+      ),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-link-refused" });
+    await expect(
+      claim("acct_subject_a", "k", "wrong-setup-code-with-plenty-of-entropy"),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-code-invalid" });
+
+    // Two claims race for the same code: exactly one becomes the owner.
+    const raced = await Promise.allSettled([claim("acct_subject_a"), claim("acct_subject_b")]);
+    const won = raced.filter((result) => result.status === "fulfilled");
+    expect(won).toHaveLength(1);
+    const winner = (won[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof claim>>>).value;
+    expect(winner.replayed).toBe(false);
+    const subject = (winner.receipt as { subject: string }).subject;
+    const loser = subject === "acct_subject_a" ? "acct_subject_b" : "acct_subject_a";
+    expect(raced.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { reason: "managed-home-owned" },
+    });
+    const users = await database.selectFrom("users").select(["id", "email"]).execute();
+    expect(users).toEqual([{ id: expect.any(String), email: "pat@example.test" }]);
+    await expect(
+      database.selectFrom("authAccounts").select(["accountId", "userId"]).execute(),
+    ).resolves.toEqual([{ accountId: subject, userId: users[0]!.id }]);
+
+    // The same claim again answers the first receipt; nothing else gets in.
+    await expect(claim(subject)).resolves.toEqual({ receipt: winner.receipt, replayed: true });
+    await expect(claim(loser)).rejects.toMatchObject({ reason: "managed-home-owned" });
+    await expect(claim(subject, "another-claim")).rejects.toMatchObject({
+      reason: "managed-home-owned",
+    });
+
+    // A bring-your-own Home has no Account-bound claim.
+    const byo = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+    });
+    await expect(
+      byo.claimManagedOwner({
+        claimKey: "k",
+        commit: async () => undefined,
+        owner,
+        receipt: {},
+        setupCode,
+        subject: "acct_subject_a",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("refuses an expired managed Home setup code", async () => {
+    const setupCode = "expired-managed-home-setup-code-with-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() - 1_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+      localPasswordEnabled: false,
+      managedOwner: { providerId: "opensteer-account" },
+      oidcProviders: [accountProvider("https://accounts.example.test")],
+      signupPolicy: "closed",
+    });
+    await identity.initialize();
+    await expect(
+      identity.claimManagedOwner({
+        claimKey: "k",
+        commit: async () => undefined,
+        owner: { displayName: "Pat", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+        subject: "acct_subject_a",
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-setup-code-invalid" });
+    expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
+  });
+
+  it("signs a managed Home's owner in with their Account, and nobody else", async () => {
+    let subject = "acct_bound_subject";
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          response.end(
+            JSON.stringify({
+              email: `${subject}@example.test`,
+              email_verified: true,
+              name: "Account Person",
+              sub: subject,
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-sign-in-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        claimKey: "k",
+        commit: async () => undefined,
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+        subject: "acct_bound_subject",
+      });
+      const signIn = async () => {
+        const begun = await identity.beginOidcSignIn({
+          headers: new Headers({ origin: publicOrigin }),
+          providerId: "opensteer-account",
+          returnPath: "/",
+        });
+        const authorization = new URL(begun.data.redirectUrl);
+        expectedCodeChallenge = authorization.searchParams.get("code_challenge");
+        const callback = await identity.handleOidcCallback(
+          new Request(
+            `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorization.searchParams.get("state") ?? "")}`,
+            {
+              headers: {
+                accept: "text/html",
+                cookie: cookieHeader(begun.headers),
+                "sec-fetch-mode": "navigate",
+              },
+            },
+          ),
+        );
+        const session = callback.headers
+          .getSetCookie()
+          .map((value) => value.split(";", 1)[0])
+          .find((value) => /(?:^|\s)(?:__Host-)?opensteer\.session=.+/u.test(value ?? ""));
+        return session ? identity.authenticate(new Headers({ cookie: session })) : null;
+      };
+
+      // The bound subject is the owner, even under an Account email the Home never saw.
+      await expect(signIn()).resolves.toMatchObject({ user: { email: "pat@example.test" } });
+
+      // Anyone else the Account vouches for is not admitted, and no account is created.
+      subject = "acct_someone_else";
+      await expect(signIn().catch(() => null)).resolves.toBeNull();
+      expect(await database.selectFrom("users").select("email").execute()).toEqual([
+        { email: "pat@example.test" },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("declares a machine owner only for a seeded owner nobody can sign in as", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
       machineOwner: false,
@@ -1526,12 +1764,13 @@ integration("IdentityService", () => {
     ]);
   });
 
-  it("keeps initial-owner enrollment fixed, rotates only after expiry, and rejects stale config", async () => {
+  it("keeps an operator's setup code fixed across restarts and re-issues it while unclaimed", async () => {
+    const originalToken = "original-owner-token-with-entropy";
     const originalExpiry = new Date(Date.now() + 3_600_000);
     const original = identityService({
       initialOwnerEnrollment: {
         expiresAt: originalExpiry,
-        tokenDigest: digestSecret("original-owner-token-with-entropy"),
+        tokenDigest: digestSecret(originalToken),
       },
     });
     await original.initialize();
@@ -1543,7 +1782,7 @@ integration("IdentityService", () => {
     await identityService({
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 7_200_000),
-        tokenDigest: digestSecret("original-owner-token-with-entropy"),
+        tokenDigest: digestSecret(originalToken),
       },
     }).initialize();
     const replay = await database
@@ -1553,24 +1792,14 @@ integration("IdentityService", () => {
     expect(replay.expiresAt).toEqual(first.expiresAt);
     expect(replay.tokenHash).toBe(first.tokenHash);
 
-    await expect(
-      identityService({
-        initialOwnerEnrollment: {
-          expiresAt: new Date(Date.now() + 7_200_000),
-          tokenDigest: digestSecret("different-live-owner-token-with-entropy"),
-        },
-      }).initialize(),
-    ).rejects.toThrow("does not match durable Host state");
-
-    await database
-      .updateTable("ownerEnrollments")
-      .set({ expiresAt: new Date(Date.now() - 1_000) })
-      .executeTakeFirstOrThrow();
+    // A browser is mid-claim on the old link when the operator re-issues it.
+    const inFlight = await original.exchangeInitialOwnerEnrollment(originalToken);
     const rotatedToken = "rotated-owner-token-with-enough-entropy";
     const rotatedExpiry = new Date(Date.now() + 3_600_000);
-    await identityService({
+    const rotatedIdentity = identityService({
       initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
-    }).initialize();
+    });
+    await rotatedIdentity.initialize();
     const rotated = await database
       .selectFrom("ownerEnrollments")
       .selectAll()
@@ -1585,23 +1814,70 @@ integration("IdentityService", () => {
         .where("action", "=", "instance.initial-owner-enrollment-rotated")
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ action: "instance.initial-owner-enrollment-rotated" });
-
-    const administratorId = await createUser("Administrator");
-    await database
-      .updateTable("users")
-      .set({ updatedAt: new Date() })
-      .where("id", "=", administratorId)
-      .executeTakeFirstOrThrow();
-    const completedIdentity = identityService({
-      initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
-    });
-    await expect(completedIdentity.initialize()).resolves.toBeUndefined();
     await expect(
-      completedIdentity.exchangeInitialOwnerEnrollment(rotatedToken),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("incorrect or expired"),
-    });
+      rotatedIdentity.exchangeInitialOwnerEnrollment(originalToken),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      rotatedIdentity.claimInitialOwner(
+        { email: "late@example.test", password: "old-link-password-123" },
+        new Headers({ cookie: cookieHeader(inFlight.headers), origin: "http://127.0.0.1:4310" }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(database.selectFrom("users").select("id").execute()).resolves.toEqual([]);
+
+    const admitted = await rotatedIdentity.exchangeInitialOwnerEnrollment(rotatedToken);
+    const claimed = await rotatedIdentity.claimInitialOwner(
+      { email: "owner@example.test", password: "new-link-password-123" },
+      new Headers({ cookie: cookieHeader(admitted.headers), origin: "http://127.0.0.1:4310" }),
+    );
+    expect(claimed.data.session.user.email).toBe("owner@example.test");
+
+    // Once owned, a code still configured, or a new one, is ignored rather than fatal.
+    for (const token of [rotatedToken, "post-claim-owner-token-with-entropy"]) {
+      const configured = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(token),
+        },
+      });
+      await expect(configured.initialize()).resolves.toBeUndefined();
+      await expect(configured.exchangeInitialOwnerEnrollment(token)).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining("incorrect or expired"),
+      });
+    }
+  });
+
+  it("refuses a different live loopback setup code, and rotates it only after expiry", async () => {
+    const loopback = (token: string, expiresAt: Date) =>
+      identityService({
+        exposure: "loopback",
+        initialOwnerEnrollment: { expiresAt, renewable: true, tokenDigest: digestSecret(token) },
+      });
+    await loopback(
+      "original-loopback-token-with-entropy",
+      new Date(Date.now() + 3_600_000),
+    ).initialize();
+    await expect(
+      loopback(
+        "different-live-loopback-token-with-entropy",
+        new Date(Date.now() + 7_200_000),
+      ).initialize(),
+    ).rejects.toThrow("does not match durable Host state");
+
+    await database
+      .updateTable("ownerEnrollments")
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .executeTakeFirstOrThrow();
+    const rotatedToken = "rotated-loopback-token-with-entropy";
+    const rotatedExpiry = new Date(Date.now() + 3_600_000);
+    await loopback(rotatedToken, rotatedExpiry).initialize();
+    const rotated = await database
+      .selectFrom("ownerEnrollments")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(rotated.expiresAt).toEqual(rotatedExpiry);
+    expect(rotated.tokenHash).toBe(createHash("sha256").update(rotatedToken).digest("hex"));
   });
 
   it("creates and restores one passwordless loopback machine owner", async () => {
@@ -2328,6 +2604,18 @@ function identityService(
     signupPolicy: "invite-only",
     ...overrides,
   });
+}
+
+function accountProvider(issuer: string) {
+  return {
+    allowPrivateNetwork: false,
+    clientId: "occ_0192f4a1-1111-4000-8000-000000000001",
+    clientSecret: `ocs_${"s".repeat(43)}`,
+    issuer,
+    label: "Opensteer",
+    providerId: "opensteer-account",
+    trustedOrigins: [],
+  };
 }
 
 function cookieHeader(headers: Headers): string {

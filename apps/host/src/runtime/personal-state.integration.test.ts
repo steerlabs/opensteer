@@ -1,3 +1,6 @@
+import { createId } from "@opensteer/core";
+import { agentHomeFilesCapability } from "@opensteer/protocol";
+import { sql } from "kysely";
 import { ExecutionCoordinator } from "@opensteer/orchestration";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,6 +109,45 @@ it("invalidates Personal settings resources once when the hosting computer first
     await database.destroy();
     await clone.drop();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("initializes Home from the hosting report and refuses a later path change", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  try {
+    const personal = await seedPersonalFixture(database, "/configured-home");
+    await database.deleteFrom("personalSettings").execute();
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: sql<readonly string[]>`${JSON.stringify([agentHomeFilesCapability])}::jsonb`,
+      })
+      .where("id", "=", personal.runnerId)
+      .execute();
+    const config = { agentHome: "/configured-home", environmentId: personal.environmentId };
+    await expect(initializePersonalState(database, config)).resolves.toBeNull();
+    await expect(
+      initializePersonalState(database, {
+        ...config,
+        reportedAgentHome: { computerId: createId("runner"), path: "/other" },
+      }),
+    ).resolves.toBeNull();
+    const reportedAgentHome = { computerId: personal.runnerId, path: "/canonical-home" };
+    const initialized = await initializePersonalState(database, { ...config, reportedAgentHome });
+    expect(initialized?.options.agentHome).toEqual(reportedAgentHome);
+    await expect(
+      initializePersonalState(database, {
+        ...config,
+        reportedAgentHome: { ...reportedAgentHome, path: "/other-home" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await initializePersonalState(database, config))?.options.agentHome).toEqual(
+      reportedAgentHome,
+    );
+  } finally {
+    await database.destroy();
+    await clone.drop();
   }
 });
 

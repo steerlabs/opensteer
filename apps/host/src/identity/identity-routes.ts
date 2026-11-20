@@ -1,4 +1,5 @@
 import { afterResponse } from "../server/after-response.js";
+import { unversionedRoute } from "../server/unversioned-route.js";
 
 import { OpensteerError } from "@opensteer/core";
 import type { TokenFreeAuthResponse } from "@opensteer/identity";
@@ -269,6 +270,9 @@ export function registerIdentityRoutes(
       ] as const) {
         oauth.route({
           ...(route.method === "POST" ? { bodyLimit: maximumNativeOAuthBodyBytes } : {}),
+          // Standard OAuth: a system browser and a token client state no Opensteer version.
+          // A team negotiates its own version in the OAuth round trip, in its own gate.
+          config: unversionedRoute,
           handler: (request, reply) => handleNativeOAuth(identity, authenticator, request, reply),
           method: route.method,
           url: route.path,

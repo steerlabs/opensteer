@@ -3,6 +3,9 @@ import { createPublicHttpsFetch } from "@opensteer/access/host";
 import {
   AccountHostSessionGrantClaimsSchema,
   AccountHostSessionGrantSchema,
+  ManagedHomeClaimClaimsSchema,
+  ManagedHomeClaimRequestSchema,
+  type ManagedHomeClaimClaims,
   PersonalHostAccountLinkCompletionGrantClaimsSchema,
   PersonalHostAccountLinkCompletionGrantSchema,
   type AccountHostSessionGrantClaims,
@@ -44,6 +47,7 @@ export interface PersonalAccountGrantVerifier {
   readonly issuer: string;
   verifyLink(grant: unknown): Promise<PersonalHostAccountLinkCompletionGrantClaims>;
   verifySession(grant: unknown): Promise<AccountHostSessionGrantClaims>;
+  verifyManagedHomeClaim(assertion: unknown): Promise<ManagedHomeClaimClaims>;
 }
 
 /** Pinned Account-JWKS trust boundary for an unmanaged Personal Host. The
@@ -91,6 +95,14 @@ export class RemotePersonalAccountGrantVerifier implements PersonalAccountGrantV
       AccountHostSessionGrantSchema.parse(grant),
       AccountHostSessionGrantClaimsSchema,
       "Account Host session grant",
+    );
+  }
+
+  verifyManagedHomeClaim(assertion: unknown): Promise<ManagedHomeClaimClaims> {
+    return this.#verify(
+      ManagedHomeClaimRequestSchema.shape.assertion.parse(assertion),
+      ManagedHomeClaimClaimsSchema,
+      "Managed Home claim",
     );
   }
 

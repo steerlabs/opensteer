@@ -1,5 +1,5 @@
-import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { mkdir, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { ComputerFolder, RunnerId } from "@opensteer/core";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 
@@ -12,6 +12,12 @@ export interface AgentHomeWorkspace {
   readonly instructions: string | undefined;
 }
 export interface AgentHomeAccess {
+  /** Creates and canonicalizes Agent home on the hosting computer. */
+  ensure?(
+    agentHome: ComputerFolder,
+    signal: AbortSignal,
+    requireCanonical?: boolean,
+  ): Promise<string>;
   prepare(input: {
     readonly agentHome: ComputerFolder;
     readonly personalContext?: boolean;
@@ -22,13 +28,35 @@ export interface AgentHomeAccess {
 }
 
 /**
- * The Host creates Agent home; the Runner only checks it. The path the Host sends is canonical,
- * so one that no longer resolves to itself (a swapped symlink) is refused rather than followed.
+ * The hosting Runner creates and canonicalizes Agent home; later Runs require the path
+ * to remain canonical so a swapped symlink is refused rather than followed.
  */
 export class AgentHomeManager implements AgentHomeAccess {
   readonly computerId: RunnerId;
   constructor(computerId: RunnerId) {
     this.computerId = computerId;
+  }
+
+  async ensure(
+    agentHome: ComputerFolder,
+    signal: AbortSignal,
+    requireCanonical = false,
+  ): Promise<string> {
+    signal.throwIfAborted();
+    if (agentHome.computerId !== this.computerId)
+      throw new Error("Agent home belongs to the hosting computer");
+    if (!isAbsolute(agentHome.path) || agentHome.path.includes("\0"))
+      throw new Error("Agent home must be an absolute path");
+    if (requireCanonical) await assertCanonicalAncestors(agentHome.path);
+    signal.throwIfAborted();
+    await mkdir(agentHome.path, { recursive: true });
+    signal.throwIfAborted();
+    const canonical = await realpath(agentHome.path);
+    if (requireCanonical && canonical !== agentHome.path)
+      throw new Error(`Agent home ${agentHome.path} now resolves to ${canonical}. Restore it.`);
+    if (!(await stat(canonical)).isDirectory())
+      throw new Error(`${agentHome.path} is not a folder`);
+    return canonical;
   }
 
   async prepare(input: {
@@ -73,13 +101,18 @@ export class AgentHomeManager implements AgentHomeAccess {
   }
 }
 
-async function readInstructions(path: string): Promise<string | undefined> {
-  const source = await realpath(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
+async function assertCanonicalAncestors(path: string): Promise<void> {
+  const canonical = await realpath(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" && dirname(path) !== path) return null;
     throw error;
   });
-  if (!source) return undefined;
-  const bytes = await readBoundedRegularFile(source, maximumInstructionBytes, {
+  if (canonical === null) return assertCanonicalAncestors(dirname(path));
+  if (canonical !== path)
+    throw new Error(`Agent home path ${path} now resolves to ${canonical}. Restore it.`);
+}
+
+async function readInstructions(path: string): Promise<string | undefined> {
+  const bytes = await readBoundedRegularFile(path, maximumInstructionBytes, {
     changedError: () => new Error("Agent home instructions changed during read"),
     invalidFileError: () => new Error("Agent home instructions must be a regular file"),
     missing: "null",
@@ -92,5 +125,5 @@ async function readInstructions(path: string): Promise<string | undefined> {
   } catch (cause) {
     throw new Error("Agent home instructions are not valid UTF-8", { cause });
   }
-  return `Instructions from ${source}:\n${text}`;
+  return `Instructions from ${path}:\n${text}`;
 }

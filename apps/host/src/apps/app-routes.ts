@@ -22,7 +22,7 @@ import type { AppService } from "./app-service.js";
 
 export function createAppHandlers(
   apps: Pick<AppService, "get" | "list" | "view">,
-  gateway?: Pick<AppGateway, "entryUrl">,
+  gateway?: Pick<AppGateway, "entryUrl" | "requireAppAddress">,
 ) {
   return {
     "apps.list": async (input: AppsListInput, context: HostApiServerContext) =>
@@ -39,6 +39,7 @@ export function createAppHandlers(
       context: HostApiServerContext,
     ) => {
       const session = requireSession(context);
+      gateway?.requireAppAddress();
       const view = await apps.view(session.user.id, input.appId, input.theme);
       const entryUrl = gateway?.entryUrl(input.appId, session, input.theme, context.headers);
       return rpcSuccess({ ...view, ...(entryUrl ? { entryUrl } : {}) });

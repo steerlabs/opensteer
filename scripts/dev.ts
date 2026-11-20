@@ -176,10 +176,15 @@ export async function runDevelopmentStack(
         if (stopping || !unspawned.delete(service)) return;
         let child: DevelopmentProcess;
         try {
+          const serviceEnvironment = { ...environment, ...extraEnvironment };
+          if (service === "host") {
+            delete serviceEnvironment.OPENSTEER_RUNNER_DATA_DIR;
+            delete serviceEnvironment.OPENSTEER_NATIVE_FS_HELPER;
+          }
           child = spawnDevelopmentProcess(
             supervisor,
             [...pnpm, "--filter", `@opensteer/${service}`, "dev"],
-            { cwd: repositoryRoot, env: { ...environment, ...extraEnvironment } },
+            { cwd: repositoryRoot, env: serviceEnvironment },
           );
         } catch (error) {
           settleService(service, new Error(`Could not start ${service}`, { cause: error }));
@@ -367,8 +372,6 @@ export function configureDevelopmentEnvironment(
     environment.OPENSTEER_HOST_DATA_DIR = resolve(repositoryRoot, ".opensteer/team-host");
     return;
   }
-  // pnpm runs the Runner in apps/runner, so its relative data directory is
-  // absolute here for the Host, which serves that directory's `images`.
   environment.OPENSTEER_RUNNER_DATA_DIR = resolve(
     repositoryRoot,
     "apps",

@@ -685,6 +685,7 @@ export class PluginOwnerApi {
         const session = await this.#owner(context);
         if (!this.pages)
           throw new OpensteerError({ code: "not_found", message: "Plugin pages are unavailable" });
+        this.#gateway?.requireAppAddress();
         const view = await this.pages.view(session.user.id, input.pluginId, input.theme);
         const entryUrl = this.#gateway?.entryUrl(
           input.pluginId,

@@ -13,6 +13,13 @@ import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
 
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
+import {
+  HostHomeFileRequestSchema,
+  HostOutputImageUploadSchema,
+  RunnerAgentHomeReportSchema,
+  RunnerHomeFileResultSchema,
+  RunnerOutputImagePublishSchema,
+} from "./home-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
@@ -1761,10 +1768,13 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerSettingsReportSchema,
+  RunnerAgentHomeReportSchema,
   RunnerAppResultSchema,
   RunnerAppStateSchema,
   RunnerAppsSyncResultSchema,
   RunnerRunFileResultSchema,
+  RunnerHomeFileResultSchema,
+  RunnerOutputImagePublishSchema,
   z.strictObject({
     ...fencedMessageBase,
     type: z.literal("runner.heartbeat"),
@@ -1974,6 +1984,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   HostAppsSyncSchema,
   ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
+  ...HostHomeFileRequestSchema.options,
+  HostOutputImageUploadSchema,
   z.strictObject({
     ...fencedMessageBase,
     /**
@@ -1984,8 +1996,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
-    /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
     agentHome: ComputerFolderSchema.optional(),
+    agentHomeIsProvisional: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

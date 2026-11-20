@@ -116,6 +116,12 @@ export interface IdentityServiceOptions {
    * disabled in the public identity configuration unless
    * `localPasswordEnabled` is also true.
    */
+  /**
+   * An Opensteer Cloud Computer's Home: its one owner is created by an
+   * Account-bound claim, never by a setup link or a password, and signs in
+   * through the named OIDC provider (the Opensteer Account).
+   */
+  readonly managedOwner?: { readonly providerId: string };
   readonly localMachineOwner?: {
     readonly displayName: string;
     readonly email: string;

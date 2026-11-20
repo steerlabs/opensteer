@@ -1,3 +1,7 @@
+import {
+  registerCloudComputerRoutes,
+  type CloudComputerRouteOptions,
+} from "../cloud-computers/routes.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -79,6 +83,7 @@ export async function createControlPlaneServer(
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
+    readonly cloudComputers?: CloudComputerRouteOptions;
     /** Teams Opensteer hosts, and the check that admits only their provisioner. */
     readonly hostedTeams?: {
       readonly store: HostedTeamStore;
@@ -208,6 +213,12 @@ export async function createControlPlaneServer(
   pageFonts.register(app);
   registerControlPlaneRoutes(app, { ...dependencies, accountDeletion });
   registerNotificationRoutes(app, dependencies);
+  if (dependencies.cloudComputers) {
+    registerCloudComputerRoutes(app, {
+      ...dependencies.cloudComputers,
+      authenticator: dependencies.authenticator,
+    });
+  }
   if (dependencies.hostedTeams) {
     registerHostedTeamProvisionerRoutes(app, {
       hostedTeams: dependencies.hostedTeams.store,

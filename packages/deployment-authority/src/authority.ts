@@ -190,6 +190,12 @@ export const HostCapabilitySchema = z.enum([
 
   "task-marks-v1",
   /**
+   * Connected agents carry a grant: `connection.authorize` takes one, `connection.update` edits it
+   * by revision, `connection.remove` takes a revoked one off `connections.list`, and the list
+   * reports each connection's state.
+   */
+  "agent-grants-v1",
+  /**
    * A conversation's family can be read without its history: `triggers.list`
    * filters by `anchorThreadId`, and `thread.assignments.list` by `open`.
    */

@@ -1,6 +1,10 @@
-import { DeploymentIdSchema, HostKeyFingerprintSchema } from "@opensteer/core";
+import {
+  DeploymentIdSchema,
+  HostInstanceIdSchema,
+  HostKeyFingerprintSchema,
+} from "@opensteer/core";
 import { z } from "zod";
-import { prefixedIdSchema } from "./account-id.js";
+import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 
 export const CloudComputerIdSchema = prefixedIdSchema("cc")
   .refine((id) => id === id.toLowerCase())
@@ -182,12 +186,29 @@ export const CloudComputerBootRequestSchema = z.strictObject({
 });
 export type CloudComputerBootRequest = z.infer<typeof CloudComputerBootRequestSchema>;
 
+/**
+ * What a managed Home needs to accept its Account-bound claim and to sign its
+ * owner in with the Opensteer Account: which claim it is, and the OIDC client
+ * the Account registered for its address. Optional so an older Account still
+ * boots an older installer.
+ */
+export const CloudComputerManagedHomeSchema = z.strictObject({
+  cloudComputerId: CloudComputerIdSchema,
+  generation: CloudComputerGenerationSchema,
+  oidc: z.strictObject({
+    clientId: z.string().regex(/^occ_[0-9a-f-]{36}$/u),
+    clientSecret: z.string().regex(/^ocs_[A-Za-z0-9_-]{43}$/u),
+  }),
+});
+export type CloudComputerManagedHome = z.infer<typeof CloudComputerManagedHomeSchema>;
+
 export const CloudComputerBootResponseSchema = z.strictObject({
   hostname: CloudComputerHostnameSchema,
   accountOrigin: httpsUrl.refine((value) => new URL(value).origin === value),
   setupCodeDigest: CloudComputerInstallerSha256Schema,
   release: CloudComputerBootReleaseSchema,
   egress: CloudComputerEgressSchema.optional(),
+  managedHome: CloudComputerManagedHomeSchema.optional(),
   backup: z.strictObject({
     endpoint: httpsUrl.refine((value) => new URL(value).origin === value),
     bucket: z
@@ -264,3 +285,123 @@ export const accountCloudComputerSuspendPath = (id: CloudComputerId) =>
   `${accountCloudComputerPath(id)}/suspend`;
 export const accountCloudComputerResumePath = (id: CloudComputerId) =>
   `${accountCloudComputerPath(id)}/resume`;
+
+/** The Home route the Account claims a ready managed Home on, once. */
+export const managedHomeClaimPath = "/v1/managed-home/claim";
+
+const base64Url43 = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
+const bareHttpsOrigin = httpsUrl.refine((value) => new URL(value).origin === value);
+
+/** The exact Home a claim is for: what the Account pinned when the Home reported ready. */
+export const ManagedHomeClaimAuthoritySchema = z.strictObject({
+  canonicalOrigin: bareHttpsOrigin,
+  deploymentId: DeploymentIdSchema,
+  hostKeyFingerprint: HostKeyFingerprintSchema,
+});
+export type ManagedHomeClaimAuthority = z.infer<typeof ManagedHomeClaimAuthoritySchema>;
+
+const ManagedHomeClaimTargetSchema = z.strictObject({
+  cloudComputerId: CloudComputerIdSchema,
+  generation: CloudComputerGenerationSchema,
+});
+
+/**
+ * Account-signed (EdDSA, the Account's JWKS) statement of who owns this Home.
+ * It names the owner subject, binds the Home's identity, canonical origin and
+ * claim generation, and pins the link credential that travels beside it.
+ */
+export const ManagedHomeClaimClaimsSchema = z
+  .strictObject({
+    tokenUse: z.literal("opensteer-managed-home-claim"),
+    iss: bareHttpsOrigin,
+    aud: bareHttpsOrigin,
+    sub: ControlPlaneAccountIdSchema,
+    iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    jti: prefixedIdSchema("mhc"),
+    authority: ManagedHomeClaimAuthoritySchema,
+    claim: ManagedHomeClaimTargetSchema,
+    owner: z.strictObject({
+      email: z.email().max(320),
+      displayName: z.string().trim().min(1).max(120),
+      emailVerified: z.literal(true),
+    }),
+    link: z.strictObject({ generation: base64Url43, hostCredentialSha256: base64Url43 }),
+  })
+  .superRefine((claims, context) => {
+    if (claims.exp <= claims.iat || claims.exp - claims.iat > 5 * 60) {
+      context.addIssue({
+        code: "custom",
+        message: "A managed Home claim may live for at most five minutes",
+        path: ["exp"],
+      });
+    }
+    if (claims.aud !== claims.authority.canonicalOrigin) {
+      context.addIssue({
+        code: "custom",
+        message: "A managed Home claim's audience is the Home's canonical origin",
+        path: ["aud"],
+      });
+    }
+  });
+export type ManagedHomeClaimClaims = z.infer<typeof ManagedHomeClaimClaimsSchema>;
+
+export const ManagedHomeClaimRequestSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  setupCode: z.string().min(32).max(4096),
+  assertion: z
+    .string()
+    .min(64)
+    .max(16_384)
+    .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u),
+  hostCredential: z.string().regex(/^osc_[A-Za-z0-9_-]{43}$/u),
+});
+export type ManagedHomeClaimRequest = z.infer<typeof ManagedHomeClaimRequestSchema>;
+
+export const ManagedHomeClaimReceiptDocumentSchema = z.strictObject({
+  purpose: z.literal("opensteer-managed-home-claim-receipt"),
+  documentVersion: z.literal(1),
+  account: z.strictObject({ issuer: bareHttpsOrigin, subject: ControlPlaneAccountIdSchema }),
+  authority: ManagedHomeClaimAuthoritySchema.extend({ hostInstanceId: HostInstanceIdSchema }),
+  claim: ManagedHomeClaimTargetSchema,
+  linkGeneration: base64Url43,
+  claimedAt: z.iso.datetime({ offset: true }),
+});
+export type ManagedHomeClaimReceiptDocument = z.infer<typeof ManagedHomeClaimReceiptDocumentSchema>;
+
+/** Signed by the Home's own Host key, so Account can trust it read back from the Home. */
+export const ManagedHomeClaimReceiptSchema = z.strictObject({
+  document: ManagedHomeClaimReceiptDocumentSchema,
+  publicKey: z.strictObject({
+    algorithm: z.literal("Ed25519"),
+    spki: z.string().regex(/^[A-Za-z0-9_-]{59}$/u),
+  }),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/u),
+});
+export type ManagedHomeClaimReceipt = z.infer<typeof ManagedHomeClaimReceiptSchema>;
+
+/** Exact bytes the Home signs, in a fixed field order every runtime agrees on. */
+export function managedHomeClaimReceiptSigningBytes(
+  documentInput: ManagedHomeClaimReceiptDocument,
+): Uint8Array {
+  const document = ManagedHomeClaimReceiptDocumentSchema.parse(documentInput);
+  return new TextEncoder().encode(
+    `opensteer-managed-home-claim-receipt-v1\0${JSON.stringify({
+      account: { issuer: document.account.issuer, subject: document.account.subject },
+      authority: {
+        canonicalOrigin: document.authority.canonicalOrigin,
+        deploymentId: document.authority.deploymentId,
+        hostInstanceId: document.authority.hostInstanceId,
+        hostKeyFingerprint: document.authority.hostKeyFingerprint,
+      },
+      claim: {
+        cloudComputerId: document.claim.cloudComputerId,
+        generation: document.claim.generation,
+      },
+      claimedAt: document.claimedAt,
+      documentVersion: document.documentVersion,
+      linkGeneration: document.linkGeneration,
+      purpose: document.purpose,
+    })}`,
+  );
+}

@@ -176,7 +176,7 @@ integration("control-plane baseline", () => {
   beforeAll(async () => migrateControlPlaneToLatest(database));
   afterAll(async () => database.destroy());
 
-  it("contains the account-service schema without provider fleet tables", async () => {
+  it("contains the account-service schema without the retired fleet tables", async () => {
     const result = await sql<{ readonly tableName: string }>`
       select table_name as "tableName"
       from information_schema.tables
@@ -191,11 +191,11 @@ integration("control-plane baseline", () => {
       "hosted_oauth_broker_attempts",
       "personal_host_account_link_challenges",
       "portal_sessions",
+      "cloud_computers",
     ]) {
       expect(tables).toContain(table);
     }
     for (const table of [
-      "cloud_computers",
       "cloud_computer_attachments",
       "managed_cloud_deployments",
       "managed_cloud_provisioning_intents",

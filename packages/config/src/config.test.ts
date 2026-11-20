@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertHostConfigInvariants,
+  hostTrustedProxy,
   parseHostConfig,
   parseRunnerConfig,
   resolveRunnerNodeExecutable,
@@ -255,7 +256,7 @@ describe("configuration", () => {
 
     expect(() =>
       parseHostConfig({ ...personalEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }),
-    ).toThrow(/Personal Deployment cannot serve native OAuth/u);
+    ).toThrow(/loopback Personal Host cannot serve native OAuth/u);
     expect(
       parseHostConfig({ ...hostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }).identity
         .nativeOAuth?.clients,
@@ -600,7 +601,7 @@ describe("configuration", () => {
         OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token,
         OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       }),
-    ).toThrow(/Personal Deployment must be confined to loopback/u);
+    ).toThrow(/local owner claim token is allowed only for an unmanaged loopback Personal Host/u);
 
     const accountBundle = accountAdoptionBundle();
     expect(() =>
@@ -856,4 +857,270 @@ it("rejects a malformed passkey flag", () => {
   expect(() => parseHostConfig({ ...localHostEnvironment, OPENSTEER_PASSKEYS: "enabled" })).toThrow(
     "OPENSTEER_PASSKEYS",
   );
+});
+
+describe("networked Personal Home", () => {
+  const setupCode = "home-setup-code".padEnd(40, "x");
+  const home = {
+    OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
+    OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
+    OPENSTEER_DEPLOYMENT_KIND: "personal",
+    OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+    OPENSTEER_CANONICAL_ORIGIN: "https://home.example.com",
+    OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+    OPENSTEER_AGENT_HOME: "/srv/opensteer/agent-home",
+    OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: setupCode,
+  } as const;
+  const production = {
+    ...home,
+    OPENSTEER_MODE: "production",
+    OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
+    OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
+    OPENSTEER_HOST_RELEASE_VERSION: "1.2.3",
+    OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: "/release/web",
+    OPENSTEER_WEB_DISTRIBUTION_MANIFEST: "/release/web/opensteer-web.json",
+  } as const;
+
+  it("accepts a Home behind an HTTPS reverse proxy with an operator setup code", () => {
+    const config = parseHostConfig(production);
+    expect(config.deploymentShape).toEqual({ kind: "personal" });
+    expect(config.exposure).toBe("networked");
+    expect(config.identity.initialOwnerEnrollment).toEqual({
+      lifetimeSeconds: 24 * 60 * 60,
+      tokenDigest: digestSecret(setupCode),
+    });
+    expect(config.identity.localOwnerClaimToken).toBeUndefined();
+    expect(config.identity.localPasswordEnabled).toBe(true);
+    expect(config.identity.nativeOAuth?.clients).toEqual(opensteerHostNativeOAuthClients);
+    expect(config.webDistribution?.directory).toBe("/release/web");
+    expect(config.personal?.agentHome).toBe("/srv/opensteer/agent-home");
+    expect(hostTrustedProxy(config)).toBe("loopback");
+    expect(parseHostConfig({ ...home, OPENSTEER_BIND_ADDRESS: "0.0.0.0" }).exposure).toBe(
+      "networked",
+    );
+  });
+
+  it("takes the setup code as a digest or a file, as a team does", () => {
+    const { OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: _code, ...withoutCode } = home;
+    const expected = { lifetimeSeconds: 24 * 60 * 60, tokenDigest: digestSecret(setupCode) };
+    expect(
+      parseHostConfig({
+        ...withoutCode,
+        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digestSecret(setupCode),
+      }).identity.initialOwnerEnrollment,
+    ).toEqual(expected);
+    const directory = mkdtempSync(join(tmpdir(), "opensteer-config-home-"));
+    temporaryDirectories.push(directory);
+    const codeFile = join(directory, "setup-code");
+    writeFileSync(codeFile, `${setupCode}\n`, { mode: 0o600 });
+    expect(
+      parseHostConfig({ ...withoutCode, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE: codeFile })
+        .identity.initialOwnerEnrollment,
+    ).toEqual(expected);
+    // A claimed Home may drop its spent code; startup refuses an unclaimed one without it.
+    expect(parseHostConfig(withoutCode).identity.initialOwnerEnrollment).toBeUndefined();
+  });
+
+  it("refuses each input a networked Home must not have or cannot run without", () => {
+    expect(() =>
+      parseHostConfig({ ...production, OPENSTEER_CANONICAL_ORIGIN: "http://home.example.com" }),
+    ).toThrow(/OPENSTEER_CANONICAL_ORIGIN must use HTTPS in production/u);
+    expect(() =>
+      parseHostConfig({
+        ...production,
+        OPENSTEER_CANONICAL_ORIGIN: "https://home.example.com",
+        OPENSTEER_RUNTIME_ORIGIN: "http://home.example.com",
+      }),
+    ).toThrow(/OPENSTEER_RUNTIME_ORIGIN must use HTTPS in production/u);
+    expect(() => parseHostConfig({ ...home, OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token })).toThrow(
+      /allowed only for an unmanaged loopback Personal Host/u,
+    );
+    expect(() => parseHostConfig({ ...home, OPENSTEER_SIGNUP_POLICY: "open" })).toThrow(
+      /cannot allow open signup/u,
+    );
+    expect(() => parseHostConfig({ ...home, OPENSTEER_LOCAL_PASSWORD_ENABLED: "false" })).toThrow(
+      /requires password or OIDC sign-in/u,
+    );
+    expect(() =>
+      parseHostConfig({
+        ...home,
+        OPENSTEER_BIND_ADDRESS: "0.0.0.0",
+        OPENSTEER_CANONICAL_ORIGIN: "http://localhost:4310",
+      }),
+    ).toThrow(/requires its public canonical origin/u);
+    const {
+      OPENSTEER_HOST_RELEASE_VERSION: _version,
+      OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: _directory,
+      OPENSTEER_WEB_DISTRIBUTION_MANIFEST: _manifest,
+      ...withoutWeb
+    } = production;
+    let missingDistribution: unknown;
+    try {
+      parseHostConfig(withoutWeb);
+    } catch (error) {
+      missingDistribution = error;
+    }
+    expect(missingDistribution).toMatchObject({
+      code: "packaged-personal-web-distribution-required",
+    });
+  });
+
+  it("enrolls its colocated Main Runner from an operator token, only on a networked Home", () => {
+    const main = "main-runner-enrollment".padEnd(48, "m");
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: main })
+        .initialMainRunnerEnrollmentToken,
+    ).toBe(main);
+    const directory = mkdtempSync(join(tmpdir(), "opensteer-config-main-"));
+    temporaryDirectories.push(directory);
+    const mainFile = join(directory, "main");
+    writeFileSync(mainFile, `${main}\n`, { mode: 0o600 });
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN_FILE: mainFile })
+        .initialMainRunnerEnrollmentToken,
+    ).toBe(main);
+    expect(() =>
+      parseHostConfig({ ...home, OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: "short" }),
+    ).toThrow();
+    expect(() =>
+      parseHostConfig({
+        ...localHostEnvironment,
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
+        OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: main,
+      }),
+    ).toThrow(/only for a networked Personal Host/u);
+    expect(() =>
+      parseHostConfig({
+        ...networkedHostEnvironment,
+        OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: main,
+      }),
+    ).toThrow(/only for a networked Personal Host/u);
+  });
+
+  it("lets the operator turn native OAuth off, and links a Personal Account", () => {
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_NATIVE_OAUTH_ENABLED: "false" }).identity.nativeOAuth,
+    ).toBeUndefined();
+    expect(
+      parseHostConfig({
+        ...home,
+        OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
+      }).personalAccountIssuer,
+    ).toEqual(new URL("https://accounts.example.com"));
+    expect(
+      parseHostConfig({
+        ...localHostEnvironment,
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
+        OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
+      }).personalAccountIssuer,
+    ).toEqual(new URL("https://accounts.example.com"));
+    expect(() =>
+      parseHostConfig({
+        ...networkedHostEnvironment,
+        OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
+      }),
+    ).toThrow(/only for an unmanaged Personal Host/u);
+  });
+
+  it("boots a managed Home that is claimed and signed in to by its Account alone", () => {
+    const managed = {
+      ...home,
+      OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+      OPENSTEER_MANAGED_HOME_ID: "cc_0192f4a1-1111-4000-8000-000000000001",
+      OPENSTEER_MANAGED_HOME_GENERATION: "2",
+      OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: "https://accounts.example.com",
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: "occ_0192f4a1-1111-4000-8000-000000000001",
+      OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: `ocs_${"s".repeat(43)}`,
+    } as const;
+    const config = parseHostConfig(managed);
+    expect(config.managedHome).toEqual({
+      accountOrigin: new URL("https://accounts.example.com"),
+      cloudComputerId: "cc_0192f4a1-1111-4000-8000-000000000001",
+      generation: 2,
+      oidc: {
+        clientId: "occ_0192f4a1-1111-4000-8000-000000000001",
+        clientSecret: `ocs_${"s".repeat(43)}`,
+      },
+    });
+    // It links to the Account that booted it, for push and the hosted OAuth broker.
+    expect(config.personalAccountIssuer).toEqual(new URL("https://accounts.example.com"));
+    const directory = mkdtempSync(join(tmpdir(), "opensteer-config-managed-"));
+    temporaryDirectories.push(directory);
+    const secretFile = join(directory, "oidc");
+    writeFileSync(secretFile, `ocs_${"s".repeat(43)}\n`, { mode: 0o600 });
+    const { OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: _secret, ...withoutSecret } = managed;
+    expect(
+      parseHostConfig({
+        ...withoutSecret,
+        OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: secretFile,
+      }).managedHome?.oidc.clientSecret,
+    ).toBe(`ocs_${"s".repeat(43)}`);
+    // A bring-your-own Home's empty secret file is no managed Home at all.
+    const empty = join(directory, "empty");
+    writeFileSync(empty, "", { mode: 0o600 });
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: empty })
+        .managedHome,
+    ).toBeUndefined();
+
+    expect(() => parseHostConfig({ ...withoutSecret })).toThrow(/must be configured together/u);
+    expect(() => parseHostConfig({ ...managed, OPENSTEER_LOCAL_PASSWORD_ENABLED: "true" })).toThrow(
+      /Opensteer Account only/u,
+    );
+    expect(() =>
+      parseHostConfig({
+        ...managed,
+        OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://other-accounts.example.com",
+      }),
+    ).toThrow(/Account it was booted by/u);
+    expect(() =>
+      parseHostConfig({
+        ...localHostEnvironment,
+        ...managed,
+        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+        OPENSTEER_CANONICAL_ORIGIN: "http://127.0.0.1:4310",
+        OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token,
+        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: "",
+      }),
+    ).toThrow(/networked Personal Host/u);
+  });
+
+  it("believes forwarding headers from one configured proxy, defaulting by exposure", () => {
+    expect(hostTrustedProxy(parseHostConfig({ ...home, OPENSTEER_TRUSTED_PROXY: "none" }))).toBe(
+      "none",
+    );
+    expect(
+      hostTrustedProxy(
+        parseHostConfig({ ...home, OPENSTEER_TRUSTED_PROXY: "loopback-cloudflared" }),
+      ),
+    ).toBe("loopback-cloudflared");
+    expect(() => parseHostConfig({ ...home, OPENSTEER_TRUSTED_PROXY: "anyone" })).toThrow();
+    expect(
+      hostTrustedProxy(
+        parseHostConfig({ ...localHostEnvironment, OPENSTEER_DEPLOYMENT_KIND: "personal" }),
+      ),
+    ).toBe("loopback-cloudflared");
+  });
+
+  it("keeps the colocated Main Runner on loopback and lets other computers use HTTPS", () => {
+    const runner = {
+      OPENSTEER_DEPLOYMENT_KIND: "personal",
+      OPENSTEER_MODE: "production",
+      OPENSTEER_NODE_EXECUTABLE: "/usr/bin/node",
+    } as const;
+    expect(
+      parseRunnerConfig({ ...runner, OPENSTEER_HOST_URL: "http://127.0.0.1:4310" }).hostUrl,
+    ).toEqual(new URL("http://127.0.0.1:4310"));
+    expect(() =>
+      parseRunnerConfig({ ...runner, OPENSTEER_HOST_URL: "https://home.example.com" }),
+    ).toThrow(/requires a loopback OPENSTEER_HOST_URL/u);
+    expect(
+      parseRunnerConfig({
+        ...runner,
+        OPENSTEER_HOST_URL: "https://home.example.com",
+        OPENSTEER_RUNNER_KIND: "local",
+        OPENSTEER_RUNNER_MODULES: "browser",
+      }).hostUrl,
+    ).toEqual(new URL("https://home.example.com"));
+  });
 });

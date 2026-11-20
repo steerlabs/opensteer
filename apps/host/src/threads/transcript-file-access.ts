@@ -1,28 +1,27 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import path from "node:path";
-import { isNetworkPath } from "@opensteer/shared/fileHref";
 import { fileURLToPath } from "node:url";
 import {
   OpensteerError,
   attachmentMaxBytes,
   type ExecutionNodeId,
   type ThreadId,
-  type UserId,
   type ToolOutputImage,
+  type UserId,
 } from "@opensteer/core";
 import {
   type FileResource,
   type FileSource,
   transcriptFileContentMaxBytes,
 } from "@opensteer/protocol";
+import { isNetworkPath } from "@opensteer/shared/fileHref";
 import type { AttachmentService } from "../attachments/attachment-service.js";
 import type { AgentHomeFiles } from "./agent-home-files.js";
+import type { HostOutputImageStore } from "./host-output-images.js";
 import {
-  RootedFileReader,
-  absoluteFileKey,
-  fileUnavailable,
   fileTooLarge,
+  fileUnavailable,
+  rootedFileKey,
   rootedFileSegments,
 } from "./rooted-file-reader.js";
 
@@ -35,6 +34,8 @@ export type ResolvedTranscriptFile = {
   mediaType: string;
 };
 type OutputImage = Pick<ToolOutputImage, "path" | "mediaType"> & { id: string };
+
+const outputImageFilenamePattern = /^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp|avif|svg)$/u;
 const types: Readonly<Record<string, string>> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -56,20 +57,28 @@ const types: Readonly<Record<string, string>> = {
 };
 export const transcriptMediaType = (name: string) =>
   types[path.extname(name).toLowerCase()] ?? "application/octet-stream";
+
 function privateReadError(error: unknown, signal?: AbortSignal): never {
   signal?.throwIfAborted();
   if (error instanceof OpensteerError && error.code === "resource_exhausted") throw error;
   throw fileUnavailable();
 }
 
+function remoteBasename(filePath: string): string {
+  const parts = filePath.split(/[/\\]/u);
+  return parts.at(-1) ?? "";
+}
+
+function isAbsoluteAnyPlatform(filePath: string): boolean {
+  return filePath.startsWith("/") || /^[A-Za-z]:[/\\]/u.test(filePath);
+}
+
 /** Sole admission policy for personal transcript files and media. Locators confer no authority. */
 export class TranscriptFileAccess {
-  readonly #images: RootedFileReader;
   readonly options: {
     home: AgentHomeFiles;
     attachments: AttachmentService;
-    imagesRoot: string;
-    helperPath: string | undefined;
+    outputImageStore: HostOutputImageStore;
     admit: (context: FileContext) => Promise<boolean>;
     outputImages: (input: {
       ownerId: UserId;
@@ -82,15 +91,11 @@ export class TranscriptFileAccess {
       imageId: string;
       nodeId?: ExecutionNodeId;
     }) => Promise<OutputImage | null>;
-    homeDirectory?: string;
   };
   constructor(options: TranscriptFileAccess["options"]) {
     this.options = options;
-    this.#images = new RootedFileReader({
-      root: async () => options.imagesRoot,
-      helperPath: options.helperPath,
-    });
   }
+
   async admit(context: FileContext) {
     try {
       if (!(await this.options.admit(context))) throw fileUnavailable();
@@ -100,6 +105,8 @@ export class TranscriptFileAccess {
       throw e;
     }
   }
+
+  /** Validates syntax and decodes legacy `file://` URLs without expanding `~/` on the Host. */
   async normalizeImageSource(source: FileSource): Promise<FileSource> {
     if (source.kind !== "path") return source;
     let value = source.path;
@@ -122,56 +129,42 @@ export class TranscriptFileAccess {
       )
         throw fileUnavailable();
       // fileURLToPath is the only decoding boundary, for legacy image URLs only.
-      value = fileURLToPath(url);
+      value = fileURLToPath(url, { windows: /^\/[A-Za-z]:\//u.test(url.pathname) });
     } else if (/^[a-z][a-z\d+.-]*:/iu.test(value) && !/^[a-z]:[/\\]/iu.test(value))
       throw fileUnavailable();
     if (
       /\p{Cc}/u.test(value) ||
-      (process.platform !== "win32" && value.includes("\\")) ||
       isNetworkPath(value) ||
       value.split(/[/\\]/u).some((p) => p === "..")
     )
       throw fileUnavailable();
-    if (value.startsWith("~/"))
-      value = path.join(this.options.homeDirectory ?? homedir(), value.slice(2));
-    else if (!path.isAbsolute(value))
-      value = path.join((await this.options.home.options.agentHome()).path, value);
-    return { kind: "path", path: path.normalize(value) };
+    // Preserve `~/` and relative paths so the hosting Runner expands them against its own home.
+    return { kind: "path", path: value };
   }
-  #managedKey(file: string) {
-    const key = absoluteFileKey(this.options.imagesRoot, file);
-    if (
-      path.dirname(file) !== this.options.imagesRoot ||
-      !/^[a-f0-9]{64}\.(png|jpg|jpeg|gif|webp|avif|svg)$/u.test(path.basename(file))
-    )
-      throw fileUnavailable();
-    return key;
-  }
+
   async resolveMany(sources: readonly FileSource[], context: FileContext, signal?: AbortSignal) {
     await this.admit(context);
     signal?.throwIfAborted();
-    const paths = sources.flatMap((s) => {
-      if (s.kind !== "path") return [];
-      try {
-        this.#managedKey(s.path);
-        return [s.path];
-      } catch {
-        return [];
-      }
+    const candidateImagePaths = sources.flatMap((s) => {
+      if (s.kind !== "path" || !isAbsoluteAnyPlatform(s.path)) return [];
+      const name = remoteBasename(s.path);
+      return outputImageFilenamePattern.test(name) ? [s.path] : [];
     });
     const images =
-      context.threadId && paths.length
+      context.threadId && candidateImagePaths.length
         ? await this.options.outputImages({
             ownerId: context.userId,
             threadId: context.threadId,
-            paths: [...new Set(paths)],
+            paths: [...new Set(candidateImagePaths)],
           })
         : [];
     return Promise.all(sources.map((s) => this.#resolve(s, context, images, signal)));
   }
+
   async resolve(source: FileSource, context: FileContext, signal?: AbortSignal) {
     return (await this.resolveMany([source], context, signal))[0] ?? null;
   }
+
   async #resolve(
     source: FileSource,
     context: FileContext,
@@ -205,19 +198,15 @@ export class TranscriptFileAccess {
         });
         return image ? await this.#resolveImage(image, source.nodeId, signal) : null;
       }
-      let managed = false;
-      try {
-        this.#managedKey(source.path);
-        managed = true;
-      } catch {
-        /* home containment still applies */
-      }
-      if (managed) {
+      if (context.threadId) {
         const image = images.find((i) => i.path === source.path);
-        if (!image || !context.threadId) return null;
-        return await this.#resolveImage(image, undefined, signal);
+        if (image) return await this.#resolveImage(image, undefined, signal);
       }
-      const f = await this.options.home.resolveAbsolutePath(source.path, signal);
+      const f = await this.options.home.resolvePath(
+        source.path,
+        { allowRelative: true, allowTilde: true },
+        signal,
+      );
       return {
         resource: { kind: "home", key: f.key, revision: f.revision },
         name: f.name,
@@ -226,21 +215,52 @@ export class TranscriptFileAccess {
       };
     } catch (e) {
       signal?.throwIfAborted();
-      if (
-        e instanceof OpensteerError ||
-        (e instanceof Error && (e.name === "NativeFsHelperError" || "code" in e))
-      )
-        return null;
+      if (e instanceof OpensteerError) return null;
       throw e;
     }
   }
+
   async #resolveImage(
     image: OutputImage,
     nodeId: ExecutionNodeId | undefined,
     signal?: AbortSignal,
-  ) {
-    this.#managedKey(image.path);
-    const f = await this.#images.resolveAbsolutePath(image.path, signal);
+  ): Promise<ResolvedTranscriptFile> {
+    const name = remoteBasename(image.path);
+    if (outputImageFilenamePattern.test(name)) {
+      const hostStored = await this.options.outputImageStore.stat(name, signal);
+      if (hostStored) {
+        return {
+          name: hostStored.name,
+          sizeBytes: hostStored.sizeBytes,
+          resource: {
+            kind: "output-image" as const,
+            imageId: image.id,
+            ...(nodeId ? { nodeId } : {}),
+            revision: hostStored.revision,
+          },
+          mediaType: image.mediaType,
+        };
+      }
+      // Legacy output image recorded before Host-owned publishing: fetch through the hosting Runner.
+      const key = rootedFileKey([Buffer.from(name).toString("base64url")]);
+      const probe = await this.options.home.read(
+        key,
+        { maxBytes: 1, root: "output-images" },
+        signal,
+      );
+      return {
+        name,
+        sizeBytes: probe.metadata.sizeBytes,
+        resource: {
+          kind: "output-image" as const,
+          imageId: image.id,
+          ...(nodeId ? { nodeId } : {}),
+          revision: probe.metadata.revision,
+        },
+        mediaType: image.mediaType,
+      };
+    }
+    const f = await this.options.home.resolveAbsolutePath(image.path, signal);
     return {
       name: f.name,
       sizeBytes: f.sizeBytes,
@@ -253,6 +273,7 @@ export class TranscriptFileAccess {
       mediaType: image.mediaType,
     };
   }
+
   async read(
     resource: FileResource,
     context: FileContext,
@@ -287,47 +308,105 @@ export class TranscriptFileAccess {
         privateReadError(e, signal);
       }
     }
-    let reader: Pick<AgentHomeFiles, "read" | "readContent"> = this.options.home;
-    let key: string, name: string, mediaType: string;
     if (resource.kind === "home") {
-      key = resource.key;
+      const key = resource.key;
+      let name: string;
       try {
         name = Buffer.from(rootedFileSegments(key).at(-1)!, "base64url").toString();
       } catch {
         throw fileUnavailable();
       }
-      mediaType = transcriptMediaType(name);
-    } else {
-      if (!context.threadId) throw fileUnavailable();
-      const image = await this.options.outputImage({
-        ownerId: context.userId,
-        threadId: context.threadId,
-        imageId: resource.imageId,
-        ...(resource.nodeId ? { nodeId: resource.nodeId } : {}),
-      });
-      if (!image) throw fileUnavailable();
-      key = this.#managedKey(image.path);
-      name = path.basename(image.path);
-      mediaType = image.mediaType;
-      reader = this.#images;
+      const mediaType = transcriptMediaType(name);
+      try {
+        const result = options.full
+          ? await this.options.home.readContent(
+              key,
+              { expectedRevision: resource.revision, maxBytes: options.maxBytes },
+              signal,
+            )
+          : await this.options.home.read(
+              key,
+              {
+                expectedRevision: resource.revision,
+                maxBytes: Math.min(options.maxBytes, 512 * 1024),
+              },
+              signal,
+            );
+        return {
+          bytes: result.bytes,
+          name,
+          mediaType,
+          metadata: {
+            contentType: mediaType,
+            etag: `"${resource.revision}"`,
+            modifiedAt: result.metadata.modifiedAt,
+            sizeBytes: result.metadata.sizeBytes,
+            truncated: !result.eof,
+          },
+        };
+      } catch (e) {
+        privateReadError(e, signal);
+      }
     }
+    if (!context.threadId) throw fileUnavailable();
+    const image = await this.options.outputImage({
+      ownerId: context.userId,
+      threadId: context.threadId,
+      imageId: resource.imageId,
+      ...(resource.nodeId ? { nodeId: resource.nodeId } : {}),
+    });
+    if (!image) throw fileUnavailable();
+    const name = remoteBasename(image.path);
+    const mediaType = image.mediaType;
     try {
+      if (
+        outputImageFilenamePattern.test(name) &&
+        resource.revision.startsWith(`${this.options.outputImageStore.scope}.`)
+      ) {
+        const result = await this.options.outputImageStore.read(
+          name,
+          {
+            expectedRevision: resource.revision,
+            ...(options.full ? { full: true } : {}),
+            maxBytes: options.full ? options.maxBytes : Math.min(options.maxBytes, 512 * 1024),
+          },
+          signal,
+        );
+        return {
+          bytes: result.bytes,
+          name,
+          mediaType,
+          metadata: {
+            contentType: mediaType,
+            etag: `"${resource.revision}"`,
+            modifiedAt: result.metadata.modifiedAt,
+            sizeBytes: result.metadata.sizeBytes,
+            truncated: !result.eof,
+          },
+        };
+      }
+      const isManagedImage = outputImageFilenamePattern.test(name);
+      const key = isManagedImage
+        ? rootedFileKey([Buffer.from(name).toString("base64url")])
+        : (await this.options.home.resolveAbsolutePath(image.path, signal)).key;
+      const root = isManagedImage ? ("output-images" as const) : ("agent-home" as const);
       const result = options.full
-        ? await reader.readContent(
+        ? await this.options.home.readContent(
             key,
-            { expectedRevision: resource.revision, maxBytes: options.maxBytes },
+            { expectedRevision: resource.revision, maxBytes: options.maxBytes, root },
             signal,
           )
-        : await reader.read(
+        : await this.options.home.read(
             key,
             {
               expectedRevision: resource.revision,
               maxBytes: Math.min(options.maxBytes, 512 * 1024),
+              root,
             },
             signal,
           );
       if (
-        resource.kind === "output-image" &&
+        isManagedImage &&
         options.full &&
         createHash("sha256").update(result.bytes).digest("hex") !== name.split(".")[0]
       )
@@ -348,7 +427,6 @@ export class TranscriptFileAccess {
       privateReadError(e, signal);
     }
   }
-  close() {
-    this.#images.close();
-  }
+
+  close() {}
 }

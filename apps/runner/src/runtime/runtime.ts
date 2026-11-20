@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
@@ -49,6 +49,7 @@ import {
   type RuntimeMode,
   type RunId,
   type ThreadId,
+  type ToolOutputImage,
   type TriggerOccurrenceId,
   type TriggerWatchActivationId,
 } from "@opensteer/core";
@@ -160,6 +161,8 @@ export interface RunnerMessageSink {
   send(message: RunnerOperationalReport): Promise<void>;
   /** Undefined when the Host gave no answer; the Run keeps its tokens and retries. */
   refreshRunCredentials?(runId: RunId): Promise<RefreshedRunCredentials | undefined>;
+  /** Uploads a recorded tool output image into Host-owned storage before the event is emitted. */
+  publishOutputImage?(image: ToolOutputImage, signal: AbortSignal): Promise<void>;
 }
 
 export interface RunnerRuntimeOptions {
@@ -432,6 +435,7 @@ export class RunnerRuntime {
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
   readonly #agentHome: AgentHomeAccess;
+  readonly #nativeFsHelperBinary: string | undefined;
   #skillObserver:
     ((bindingGeneration: number, scan: AgentHomeSkills | undefined) => Promise<void>) | undefined;
   /** Hears every scan of Agent home's skills, so the Host's inventory follows what agents add. */
@@ -456,6 +460,30 @@ export class RunnerRuntime {
   #settingsHome: string | undefined;
   #stopSettingsWatch: (() => void) | undefined;
   #settingsReports: Promise<void> = Promise.resolve();
+  async ensureAgentHome(
+    agentHome: ComputerFolder,
+    signal: AbortSignal,
+    requireCanonical: boolean,
+  ): Promise<string> {
+    const canonical = this.#agentHome.ensure
+      ? await this.#agentHome.ensure(agentHome, signal, requireCanonical)
+      : (
+          await this.#agentHome.prepare({
+            agentHome,
+            personalContext: false,
+            signal,
+          })
+        ).path;
+    this.#settingsHome = canonical;
+    return canonical;
+  }
+
+  homeFileOptions(): { readonly dataDirectory: string; readonly helperBinary: string } | undefined {
+    return this.#nativeFsHelperBinary
+      ? { dataDirectory: this.#dataDirectory, helperBinary: this.#nativeFsHelperBinary }
+      : undefined;
+  }
+
   /**
    * Hears every read of Agent home's settings.json while a Host connection is open.
    * The Host names Agent home in its welcome; otherwise a Run makes it known.
@@ -525,6 +553,7 @@ export class RunnerRuntime {
     this.#agentSkills = options.agentSkills;
     this.#browserHarnessExecutable = resolve(options.browserHarnessExecutable);
     this.#dataDirectory = resolve(options.dataDirectory);
+    this.#nativeFsHelperBinary = options.nativeFsHelperBinary;
     this.#imageStore = createToolImageStore(this.#dataDirectory);
     this.#deploymentShape = options.deploymentShape;
     this.#environmentId = options.environmentId;
@@ -3185,6 +3214,30 @@ export class RunnerRuntime {
           throw new Error("Harness emitted a terminal event with pending Requests");
         }
         return event;
+      }
+      if (event.type === "tool.completed" && event.data.output.images?.length) {
+        const connection = this.#connection;
+        const imageDirectory = this.#imageStore.directory;
+        if (connection?.publishOutputImage && imageDirectory) {
+          const publishing = new AbortController();
+          const signal = AbortSignal.any([active.abort.signal, publishing.signal]);
+          try {
+            await withTimeout(
+              Promise.all(
+                event.data.output.images.map(async (image) => {
+                  if (dirname(image.path) === imageDirectory)
+                    await connection.publishOutputImage?.(image, signal).catch(() => undefined);
+                }),
+              ),
+              15_000,
+              { signal, timeoutError: () => new Error("Output image publishing timed out") },
+            );
+          } catch {
+            // The transcript still refers to the Runner's recorded image.
+          } finally {
+            publishing.abort();
+          }
+        }
       }
       await this.#emitDurable(active, event);
     }

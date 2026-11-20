@@ -2103,7 +2103,7 @@ integration("Host vertical slice", () => {
     const settings = await testResourceData(origin, "settings", { headers: sessionHeaders });
     expect(settings.settings?.agentHome).toEqual({
       computerId: mainRunner.fence.runnerId,
-      path: await realpath(join(dataDirectory, "home")),
+      path: join(dataDirectory, "home"),
     });
     // Setup is spent. The Main Runner enrollment stays replayable so a
     // supervisor that restarts mid-handshake can finish against the same

@@ -19,6 +19,7 @@ import {
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   PersonalHostAccessAuthoritySchema,
   PersonalHostAccessRouteEnvelopeSchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccountLinkCompletionGrantClaimsSchema,
   PersonalHostAccountLinkCompletionGrantSchema,
@@ -59,6 +60,7 @@ import type {
 import { PersonalAccountLinkOperationCipher } from "./personal-account-link-operation-crypto.js";
 import {
   personalHostAccountLinkProofSha256,
+  personalReachability,
   verifyPersonalHostAccessRoute,
   verifyPersonalHostAccountLinkProof,
 } from "./personal-host-proof.js";
@@ -110,7 +112,7 @@ export class PersonalRemoteAccountService {
     const ownerAccountId = ControlPlaneAccountIdSchema.parse(ownerAccountIdInput);
     const request = IssuePersonalHostAccountLinkChallengeRequestSchema.parse(requestInput);
     const authorityEnvelope = request.authorityEnvelope;
-    const authority = PersonalHostAccessAuthoritySchema.parse(
+    const authority = PersonalHostAccountAuthoritySchema.parse(
       verifyHostDiscoveryEnvelope(authorityEnvelope),
     );
     const authorityFingerprint = hostKeyFingerprint(authorityEnvelope.publicKey.spki);
@@ -279,7 +281,7 @@ export class PersonalRemoteAccountService {
         }
         const stored = this.#cipher.open(challengeId, challenge.sealedResult);
         const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse(challenge.authority);
-        const authority = PersonalHostAccessAuthoritySchema.parse(
+        const authority = PersonalHostAccountAuthoritySchema.parse(
           verifyHostDiscoveryEnvelope(authorityEnvelope),
         );
         const refreshed = PersonalHostAccountLinkCompletionPayloadSchema.parse({
@@ -310,7 +312,7 @@ export class PersonalRemoteAccountService {
         });
       }
       const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse(challenge.authority);
-      const authority = PersonalHostAccessAuthoritySchema.parse(
+      const authority = PersonalHostAccountAuthoritySchema.parse(
         verifyHostDiscoveryEnvelope(authorityEnvelope),
       );
       const proof = verifyPersonalHostAccountLinkProof(request.proof);
@@ -468,7 +470,7 @@ export class PersonalRemoteAccountService {
         throw personalLinkNotFound();
       }
       const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse(challenge.authority);
-      const authority = PersonalHostAccessAuthoritySchema.parse(
+      const authority = PersonalHostAccountAuthoritySchema.parse(
         verifyHostDiscoveryEnvelope(authorityEnvelope),
       );
       if (challenge.state === "activated") {
@@ -535,7 +537,7 @@ export class PersonalRemoteAccountService {
           createdAt: now,
           directoryGeneration: 1,
           hostKeyFingerprint: authorityFingerprint,
-          reachability: "routed",
+          reachability: personalReachability(authority),
           id: authority.deploymentId,
           lifecycle: "active",
           name: challenge.name,
@@ -639,6 +641,7 @@ export class PersonalRemoteAccountService {
             "deployments.id",
           )
           .select([
+            "deployments.authorityEnvelope",
             "deployments.reachability",
             "deployments.lifecycle",
             "deploymentCredentials.tokenHash",
@@ -649,7 +652,7 @@ export class PersonalRemoteAccountService {
           .executeTakeFirst();
         if (
           !deployment ||
-          deployment.reachability !== "routed" ||
+          deployment.reachability !== personalReachability(deployment.authorityEnvelope) ||
           deployment.lifecycle !== "active" ||
           deployment.tokenHash !== credentialHash
         ) {

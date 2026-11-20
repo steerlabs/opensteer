@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { PersonalHostAccountLinkProofEnvelopeSchema } from "@opensteer/control-plane-protocol";
 import { createId, HostInstanceIdSchema } from "@opensteer/core";
 import type { IdentityService } from "@opensteer/identity";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -213,6 +214,53 @@ describe("PersonalRemoteAccessService", () => {
     ).rejects.toMatchObject({
       name: "ZodError",
     });
+  });
+
+  it("signs an Account-link proof for a Home on its own server, which has no Remote access", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const issuer = "https://accounts.opensteer.test";
+    const home = { ...authority, canonicalOrigin: "https://home.opensteer.test" };
+    const service = new PersonalRemoteAccessService({
+      authority: home,
+      database: owner.database as never,
+      grantVerifier: { issuer } as never,
+      identity: fakeIdentity(),
+      keys,
+    });
+    const caller = ownerSession();
+    await owner.database
+      .insertInto("authSessions")
+      .values({
+        absoluteExpiresAt: new Date(caller.session.absoluteExpiresAt),
+        deviceLabel: "Owner device",
+        expiresAt: new Date(caller.session.expiresAt),
+        id: caller.session.id,
+        memberGeneration: "1",
+        token: crypto.randomUUID(),
+        userId: ownerId,
+      })
+      .execute();
+    const challengeId = `phc_${crypto.randomUUID()}`;
+    const proof = PersonalHostAccountLinkProofEnvelopeSchema.parse(
+      await service.approveAccountLink(caller, {
+        account: { issuer, subject: `acct_${crypto.randomUUID()}` },
+        authorityEnvelope: signHostDiscovery(keys, home),
+        completionFormat: "sealed-v1",
+        challengeCredential: `olc_${"a".repeat(43)}`,
+        challengeId,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+    expect(proof.document.authority).toEqual(home);
+    expect(proof.document.challenge.id).toBe(challengeId);
+    await expect(
+      service.configure(caller, {
+        mode: "private",
+        routeOrigin: "https://home-route.opensteer.test",
+        schemaVersion: 1,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(service.status()).resolves.toMatchObject({ mode: "off", route: null });
   });
 
   it("keeps the Host link until central unlink acknowledges the exact Deployment", async () => {

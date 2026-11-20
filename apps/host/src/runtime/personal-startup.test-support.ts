@@ -334,6 +334,7 @@ export async function startPersonalRuntime(input: {
       privateStateDirectory: join(directory, "private", "harness-state"),
       projectContinuationIdentity: providerContinuationIdentityProjector(keys.privateKey),
       agentHome: {
+        ensure: (home, signal) => agentHome.ensure(home, signal),
         prepare: async (input) => {
           agentHomePreparations.push(input);
           return agentHome.prepare(input);

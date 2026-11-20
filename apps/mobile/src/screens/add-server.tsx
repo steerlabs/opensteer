@@ -1,6 +1,7 @@
+import { ClientOperationError } from "@opensteer/client/connections";
 import { clientIssue } from "@opensteer/client/feedback";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
-import type { VerifiedHostEndpoint } from "@opensteer/client/connections";
+import type { VerifiedDeploymentAddress } from "@opensteer/client/connections";
 import { useCallback, useState, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
@@ -17,7 +18,8 @@ import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 
 /**
- * The server door, in two steps on one screen.
+ * The address door, for a Home on someone's own server or a team, in two
+ * steps on one screen.
  *
  * Step one asks the address and nothing else; step two shows what answered —
  * the Deployment's name and the fingerprint of the key that signed its
@@ -29,7 +31,7 @@ export function AddServerScreen(): ReactNode {
   const client = useMobileClient();
   const column = useReadingColumn();
   const [origin, setOrigin] = useState("https://");
-  const [verified, setVerified] = useState<VerifiedHostEndpoint | null>(null);
+  const [verified, setVerified] = useState<VerifiedDeploymentAddress | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -40,7 +42,7 @@ export function AddServerScreen(): ReactNode {
       .then(setVerified)
       .catch((error: unknown) => {
         if (clientIssue(error, { operation: "action", label: "check" }) !== null)
-          setFailure("Nothing at that address answered as Opensteer.");
+          setFailure(addressFailure(error));
       })
       .finally(() => setBusy(false));
   }, [origin]);
@@ -60,7 +62,7 @@ export function AddServerScreen(): ReactNode {
       .then(() => resetToDeployment(deploymentId))
       .catch((error: unknown) => {
         if (clientIssue(error, { operation: "action", label: "add" }) !== null)
-          setFailure("Couldn't add this server.");
+          setFailure("Couldn’t add this Home.");
       })
       .finally(() => setBusy(false));
   }, [client, verified]);
@@ -76,7 +78,7 @@ export function AddServerScreen(): ReactNode {
             <DeploymentDoorSymbol kind="server" size={22} />
           </View>
           <AppText role="displaySmall" style={styles.headingText}>
-            Add a server by address
+            Add a Home by address
           </AppText>
         </View>
         {failure === null ? null : (
@@ -97,25 +99,25 @@ export function AddServerScreen(): ReactNode {
               {[
                 <View key="address" style={styles.fieldRow}>
                   <Field
-                    hint="An HTTPS address, such as https://opensteer.example.com"
+                    hint="The address of an Opensteer you run on your own server."
                     input={{
                       autoCapitalize: "none",
                       autoCorrect: false,
                       inputMode: "url",
                       onChangeText: setOrigin,
                       onSubmitEditing: verify,
-                      placeholder: "https://",
+                      placeholder: "https://home.example.com",
                       returnKeyType: "go",
                       value: origin,
                     }}
-                    label="Address"
+                    label="Home address"
                   />
                 </View>,
               ]}
             </RowGroup>
             {/* Looking an address up commits to nothing, so it does not get
                 the ember; that is spent on the step that adds the deployment. */}
-            <SecondaryButton disabled={busy} label="Look it up" onPress={verify} />
+            <SecondaryButton disabled={busy} label="Continue" onPress={verify} />
           </>
         ) : (
           <>
@@ -138,13 +140,24 @@ export function AddServerScreen(): ReactNode {
               Check that fingerprint against what the person who runs it told you. This phone will
               only ever talk to this exact deployment.
             </AppText>
-            <PrimaryButton busy={busy} label="Add deployment" onPress={add} />
+            <PrimaryButton
+              busy={busy}
+              label={verified.kind === "personal" ? "Add Home" : "Add team"}
+              onPress={add}
+            />
             <SecondaryButton label="Use a different address" onPress={() => setVerified(null)} />
           </>
         )}
       </ScrollView>
     </Screen>
   );
+}
+
+/** The address door's own refusals say what to do; anything else means nothing answered. */
+function addressFailure(error: unknown): string {
+  return error instanceof ClientOperationError && error.classification === "blocked"
+    ? error.message
+    : "Opensteer isn’t answering at that address.";
 }
 
 const styles = StyleSheet.create({

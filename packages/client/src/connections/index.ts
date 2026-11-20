@@ -6,6 +6,7 @@ export * from "./configured-deployment.js";
 export * from "./connection-resolver.js";
 export * from "./deployment-catalog.js";
 export * from "./direct-host-route.js";
+export * from "./home-address.js";
 export * from "./host-attachment-fence.js";
 export * from "./host-transport.js";
 export { bufferedHostResponseTimeoutMs } from "./host-response-deadline.js";

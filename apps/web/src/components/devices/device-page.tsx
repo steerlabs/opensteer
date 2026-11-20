@@ -681,9 +681,12 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
 
         {home ? (
           <>
-            <div id="use-from-anywhere">
-              <RemoteAccessCard />
-            </div>
+            {/* A networked Home is reached at its own address; only a loopback one has Remote access. */}
+            {snapshot.identityConfig?.exposure === "loopback" ? (
+              <div id="use-from-anywhere">
+                <RemoteAccessCard />
+              </div>
+            ) : null}
             {snapshot.personalSettings ? (
               <section aria-labelledby="device-home-folder" className="settings-group">
                 <h2 className="settings-group__title" id="device-home-folder">

@@ -6,9 +6,10 @@ import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import sharp from "sharp";
 import { createId, ThreadIdSchema, UserIdSchema } from "@opensteer/core";
-import { fileURLToPath } from "node:url";
 import { createHmac, randomBytes } from "node:crypto";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
+import { HostOutputImageStore } from "../threads/host-output-images.js";
+import { createInProcessHomeFilesTransport } from "../threads/home-files.test-support.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import type { AttachmentService } from "../attachments/attachment-service.js";
 import { AssetService } from "./asset-service.js";
@@ -30,19 +31,22 @@ beforeEach(async () => {
     await mkdir(path.join(root, name), { recursive: true });
   now = 100_000_000;
   sessionLive = threadLive = true;
-  const helperPath = fileURLToPath(
-    new URL("../../../runner/native-fs-helper/opensteer-native-fs", import.meta.url),
-  );
+  const runnerId = createId("runner");
+  const homePath = path.join(root, "home");
+  const { transport } = createInProcessHomeFilesTransport({
+    agentHomePath: homePath,
+    dataDirectory: path.join(root, "runner"),
+    homeDirectory: homePath,
+    runnerId,
+  });
   home = new AgentHomeFiles({
-    agentHome: async () => ({ computerId: createId("runner"), path: path.join(root, "home") }),
-    helperPath,
+    agentHome: async () => ({ computerId: runnerId, path: homePath }),
+    transport,
   });
   access = new TranscriptFileAccess({
     home,
     attachments: {} as AttachmentService,
-    imagesRoot: path.join(root, "runner/images"),
-    helperPath,
-    homeDirectory: path.join(root, "home"),
+    outputImageStore: new HostOutputImageStore(path.join(root, "host")),
     admit: async ({ userId, threadId: id }) =>
       userId === owner && (id === null || (threadLive && id === threadId)),
     outputImages: async () => [],

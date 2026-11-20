@@ -67,7 +67,7 @@ function SecondaryPaths({
         </>
       ) : null}
       <button className="link-btn" onClick={() => onConnect("team")} type="button">
-        Join a team server
+        Add a Home by address
       </button>
     </p>
   );
@@ -515,14 +515,14 @@ export function DesktopConnect({
       description={
         kind === "pairing"
           ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device."
-          : "Use the HTTPS address your team gave you."
+          : "The address of an Opensteer you run on your own server, or your team’s."
       }
       live
-      title={kind === "pairing" ? "Use a pairing code" : "Join a team server"}
+      title={kind === "pairing" ? "Use a pairing code" : "Add a Home by address"}
     >
       <form className="desktop-entry__form" onSubmit={submit}>
         <label className="field" htmlFor="desktop-connect-origin">
-          <span className="field__label">{kind === "pairing" ? "Address" : "Server address"}</span>
+          <span className="field__label">{kind === "pairing" ? "Address" : "Home address"}</span>
           <input
             autoCapitalize="none"
             autoComplete="url"
@@ -533,9 +533,7 @@ export function DesktopConnect({
             inputMode="url"
             onChange={(event) => setOrigin(event.target.value)}
             placeholder={
-              kind === "pairing"
-                ? "https://mac-mini.example.ts.net"
-                : "https://opensteer.example.com"
+              kind === "pairing" ? "https://mac-mini.example.ts.net" : "https://home.example.com"
             }
             required
             spellCheck={false}

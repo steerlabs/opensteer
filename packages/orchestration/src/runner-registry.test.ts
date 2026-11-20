@@ -3732,3 +3732,160 @@ describe("long Request holds", () => {
     }
   });
 });
+
+describe("Agent home files and output image hooks", () => {
+  it("gates requestHomeFile on connection and agent-home-files-v1, cancels on abort, and routes reports", async () => {
+    const agentHomeReports: unknown[] = [];
+    const outputImagePublishes: unknown[] = [];
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: async () => undefined,
+        onEvent: commitThrough,
+        onAgentHomeReport: async (_identity, report) => {
+          agentHomeReports.push(report);
+          return true;
+        },
+        onOutputImagePublish: async (_identity, request) => {
+          outputImagePublishes.push(request);
+          return { status: "exists" };
+        },
+      },
+    });
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const peer = new MemoryRunnerPeer("home-files-runner");
+    try {
+      // Offline Runner -> runner_offline.
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+          AbortSignal.timeout(1_000),
+        ),
+      ).rejects.toMatchObject({ code: "runner_offline" });
+
+      // Connected Runner without agent-home-files-v1 -> conflict / unsupported-runner.
+      const baseIdentity = hello(runnerId, environmentId, `rbt_${crypto.randomUUID()}`);
+      await registerAttached(
+        registry,
+        {
+          ...baseIdentity,
+          capabilities: baseIdentity.capabilities.filter((cap) => cap !== "agent-home-files-v1"),
+        },
+        peer,
+      );
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+          AbortSignal.timeout(1_000),
+        ),
+      ).rejects.toMatchObject({ code: "conflict", reason: "unsupported-runner" });
+
+      // Reconnect with agent-home-files-v1 -> routes request, response, cancel, and reports.
+      const peer2 = new MemoryRunnerPeer("home-files-runner-2");
+      await registerAttached(
+        registry,
+        {
+          ...hello(runnerId, environmentId, `rbt_${crypto.randomUUID()}`),
+          capabilities: [...baseIdentity.capabilities, "agent-home-files-v1"],
+          connectionGeneration: baseIdentity.connectionGeneration + 1,
+        },
+        peer2,
+      );
+      const fence = fenceOf(peer2);
+      const list = {
+        limit: 10,
+        offset: 0,
+        pathSegmentsBase64: [],
+        type: "host.home-files.list",
+      } as const;
+      await expect(
+        registry.requestHomeFile(
+          runnerId,
+          { ...list, pathSegmentsBase64: [] },
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "folder_unavailable" });
+
+      await registry.handle(peer2, {
+        ...fence,
+        environmentId,
+        path: "/Users/alice/Opensteer",
+        rootIdentity: { fileId: "99", kind: "posix", volumeId: "1" },
+        type: "runner.agent-home.report",
+      });
+      await registry.handle(peer2, {
+        ...fence,
+        environmentId,
+        path: "/Users/alice/Elsewhere",
+        rootIdentity: { fileId: "100", kind: "posix", volumeId: "1" },
+        type: "runner.agent-home.report",
+      });
+      expect(agentHomeReports).toMatchObject([{ path: "/Users/alice/Opensteer" }]);
+
+      const publishRequestId = crypto.randomUUID();
+      await registry.handle(peer2, {
+        ...fence,
+        extension: "png",
+        mediaType: "image/png",
+        requestId: publishRequestId,
+        sha256: "a".repeat(64),
+        sizeBytes: 128,
+        type: "runner.output-image.publish",
+      });
+      expect(outputImagePublishes).toHaveLength(1);
+      expect(peer2.messages.findLast((m) => m.type === "host.output-image.upload")).toMatchObject({
+        requestId: publishRequestId,
+        status: "exists",
+      });
+
+      const pending = registry.requestHomeFile(
+        runnerId,
+        { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+        AbortSignal.timeout(2_000),
+      );
+      const sent = peer2.messages.findLast((m) => m.type === "host.home-files.list");
+      expect(sent).toBeDefined();
+      if (!sent || sent.type !== "host.home-files.list") throw new Error("expected list");
+      const rev = "b".repeat(43);
+      await registry.handle(peer2, {
+        ...fence,
+        data: {
+          kind: "list",
+          listing: { directoryRevision: rev, entries: [], hasMore: false, nextOffset: 0 },
+          rootScope: rev,
+        },
+        ok: true,
+        requestId: sent.requestId,
+        type: "runner.home-files.result",
+      });
+      await expect(pending).resolves.toMatchObject({ ok: true, data: { kind: "list" } });
+
+      // Abort sends host.home-files.cancel.
+      const abort = new AbortController();
+      const canceled = registry.requestHomeFile(
+        runnerId,
+        { limit: 10, offset: 0, pathSegmentsBase64: [], type: "host.home-files.list" },
+        abort.signal,
+      );
+      const sent2 = peer2.messages.findLast((m) => m.type === "host.home-files.list");
+      abort.abort(new Error("caller canceled"));
+      await expect(canceled).rejects.toThrow("caller canceled");
+      expect(peer2.messages.findLast((m) => m.type === "host.home-files.cancel")).toMatchObject({
+        requestId: sent2?.type === "host.home-files.list" ? sent2.requestId : "",
+      });
+
+      vi.spyOn(peer2, "send").mockImplementationOnce(() => new Promise<void>(() => undefined));
+      const disconnected = registry.requestHomeFile(
+        runnerId,
+        { ...list, pathSegmentsBase64: [] },
+        new AbortController().signal,
+      );
+      registry.disconnect(peer2);
+      await expect(disconnected).rejects.toThrow(/disconnected/i);
+    } finally {
+      await registry.close();
+    }
+  });
+});

@@ -1,5 +1,4 @@
-import { mkdir, realpath } from "node:fs/promises";
-import { OpensteerError, type EnvironmentId } from "@opensteer/core";
+import { OpensteerError, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import {
   personalDeploymentOwner,
   initializePersonalSettings,
@@ -8,6 +7,7 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
+import { agentHomeFilesCapability } from "@opensteer/protocol";
 import type { Kysely } from "kysely";
 import { PersonalExecution } from "./personal-execution.js";
 
@@ -16,38 +16,51 @@ export async function initializePersonalState(
   config: {
     readonly environmentId: EnvironmentId;
     readonly agentHome: string;
+    readonly signal?: AbortSignal;
+    readonly reportedAgentHome?: {
+      readonly computerId: RunnerId;
+      readonly path: string;
+    };
   },
 ): Promise<PersonalExecution | null> {
   const ownerId = await personalDeploymentOwner(database);
   const hosting = await database
     .selectFrom("runners")
-    .select("id")
+    .select(["id", "capabilities"])
     .where("kind", "=", "main")
     .where("ownerKind", "=", "deployment")
     .where("revokedAt", "is", null)
     .executeTakeFirst();
   if (!ownerId || !hosting) return null;
+  const reportedPath =
+    config.reportedAgentHome?.computerId === hosting.id ? config.reportedAgentHome.path : undefined;
   const existing = await database
     .selectFrom("personalSettings")
     .select("singletonKey")
     .where("singletonKey", "=", "personal")
     .executeTakeFirst();
-  // Agent home comes back if it was deleted; a path that now resolves elsewhere is refused below.
-  await mkdir(config.agentHome, { recursive: true });
-  const path = await realpath(config.agentHome);
-  // Reconciliation can skip the personal mutation fence once settings exist.
-  if (!existing)
+  if (!existing) {
+    if (!reportedPath && hosting.capabilities.includes(agentHomeFilesCapability)) return null;
+    config.signal?.throwIfAborted();
+    const initialPath = reportedPath ?? config.agentHome;
     await commitPersonalMutation(database, async (tx, mutation) => {
-      if (await initializePersonalSettings(tx, ownerId, { computerId: hosting.id, path })) {
+      config.signal?.throwIfAborted();
+      if (
+        await initializePersonalSettings(tx, ownerId, {
+          computerId: hosting.id,
+          path: initialPath,
+        })
+      ) {
         for (const kind of ["settings", "identity", "owner-profile"] as const)
           mutation.bumpResource(kind);
       }
     });
+  }
   const settings = await personalSettings(database);
   if (
     settings.ownerId !== ownerId ||
     settings.agentHome.computerId !== hosting.id ||
-    settings.agentHome.path !== path
+    (reportedPath !== undefined && settings.agentHome.path !== reportedPath)
   )
     throw new OpensteerError({
       code: "conflict",

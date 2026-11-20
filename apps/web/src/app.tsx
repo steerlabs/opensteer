@@ -327,7 +327,7 @@ export function App({
   if (authorizationError) {
     return (
       <OnboardingCard
-        description="Go back to the Opensteer app on this computer and start signing in again."
+        description="Go back to the Opensteer app you were signing in from and start again."
         eyebrow="Authorization"
         footnote={`Error code: ${authorizationError.error}`}
         title="Sign-in couldn’t be completed"

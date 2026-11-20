@@ -1,4 +1,9 @@
-import { describeConnectionAccess, type DeploymentConnection } from "@opensteer/client/connections";
+import {
+  describeConnectionAccess,
+  isNetworkedHome,
+  usesHostNativeOAuth,
+  type DeploymentConnection,
+} from "@opensteer/client/connections";
 import type { HostSessionExchangeFailure } from "@opensteer/client/auth";
 import type { DeploymentId } from "@opensteer/core";
 
@@ -103,7 +108,7 @@ export function describeDeploymentRow(
           ? "account-grant"
           : sessionFailure === "pairing-required"
             ? "pairing-code"
-            : connection.kind === "team"
+            : usesHostNativeOAuth(connection)
               ? "host-oauth"
               : access.access === "connect"
                 ? "account-grant"
@@ -145,6 +150,7 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  * are facts the Host itself declares in its descriptor, and are used as such.
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
+  if (isNetworkedHome(connection.authority.document)) return "Home";
   if (connection.kind === "personal") return "Personal computer";
   return "Team";
 }

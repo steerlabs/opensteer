@@ -84,7 +84,10 @@ import type {
   DeploymentConnectRow,
   DeploymentRow,
 } from "./schema.js";
-import { verifyPersonalHostAccessRoute } from "../account/personal-host-proof.js";
+import {
+  personalReachability,
+  verifyPersonalHostAccessRoute,
+} from "../account/personal-host-proof.js";
 
 const hostOidcScopes = ["openid", "profile", "email"] as const;
 const adoptionResultLifetimeMilliseconds = 24 * 60 * 60 * 1_000;
@@ -1105,7 +1108,10 @@ export class ControlPlaneStore {
         DeploymentIdSchema.parse(deploymentId),
         true,
       );
-      if (deployment.reachability !== "routed" || deployment.lifecycle !== "active") {
+      if (
+        deployment.reachability !== personalReachability(deployment.authorityEnvelope) ||
+        deployment.lifecycle !== "active"
+      ) {
         throw new ControlPlaneError("conflict", "Only an active Personal Host can be renamed here");
       }
       await transaction

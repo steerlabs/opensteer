@@ -10,9 +10,7 @@ export const maximumPersonalHostAccessRouteSigningBytes = 8 * 1_024;
 export function isPersonalHost(
   discovery: Pick<z.infer<typeof HostDiscoveryDocumentSchema>, "deploymentShape">,
 ): boolean {
-  return deploymentPolicy({
-    kind: discovery.deploymentShape.kind,
-  }).personalRemoteAccess;
+  return deploymentPolicy({ kind: discovery.deploymentShape.kind }).services.personal;
 }
 
 export const PersonalAccessRouteGenerationSchema = z
@@ -63,6 +61,57 @@ export const PersonalHostAccessAuthoritySchema = HostDiscoveryDocumentSchema.sup
   },
 );
 export type PersonalHostAccessAuthority = z.infer<typeof PersonalHostAccessAuthoritySchema>;
+
+/**
+ * The authority an Opensteer Account link names: a Mac Home's explicit HTTP
+ * loopback origin, or a Home on its own server at its public HTTPS origin.
+ * Only the first has Remote access routes, whose documents keep
+ * `PersonalHostAccessAuthoritySchema`.
+ */
+export const PersonalHostAccountAuthoritySchema = HostDiscoveryDocumentSchema.superRefine(
+  (authority, context) => {
+    if (!isLoopbackPersonalAuthority(authority) && !isNetworkedPersonalAuthority(authority)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "A Personal Host links at its explicit HTTP loopback origin or its public HTTPS origin",
+        path: ["canonicalOrigin"],
+      });
+    }
+    if (!isPersonalHost(authority)) {
+      context.addIssue({
+        code: "custom",
+        message: "Expected a Personal deployment",
+        path: ["deploymentShape"],
+      });
+    }
+  },
+);
+export type PersonalHostAccountAuthority = z.infer<typeof PersonalHostAccountAuthoritySchema>;
+
+/** A Home on its own server: no Remote access route, its canonical origin is its route. */
+export function isNetworkedPersonalAuthority(
+  authority: Pick<
+    z.infer<typeof HostDiscoveryDocumentSchema>,
+    "canonicalOrigin" | "deploymentShape"
+  >,
+): boolean {
+  const canonical = new URL(authority.canonicalOrigin);
+  return (
+    isPersonalHost(authority) &&
+    canonical.protocol === "https:" &&
+    !isLoopbackHostname(canonical.hostname)
+  );
+}
+
+function isLoopbackPersonalAuthority(
+  authority: Pick<z.infer<typeof HostDiscoveryDocumentSchema>, "canonicalOrigin">,
+): boolean {
+  const canonical = new URL(authority.canonicalOrigin);
+  return (
+    canonical.protocol === "http:" && isLoopbackHostname(canonical.hostname) && !!canonical.port
+  );
+}
 
 export const PersonalHostAccessRouteDocumentSchema = z
   .strictObject({

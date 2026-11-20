@@ -1,4 +1,4 @@
-import { teamApiVersion } from "@opensteer/deployment-authority";
+import { teamApiVersion, teamOAuthVersionParameter } from "@opensteer/deployment-authority";
 import type {
   HostApiCommandInput,
   HostApiCommandOutput,
@@ -2470,6 +2470,32 @@ describe("MobileClient sign-in", () => {
     expect(deleted).toContain(serverId);
     expect(deleted).not.toContain(otherId);
     expect(port.disposed).toEqual([]);
+    client.dispose();
+  });
+
+  it("signs in to a Home at its own address with its native OAuth, and signs out of it", async () => {
+    const port = testPort({ held: true });
+    const { client, opened } = open(port.factory);
+    const home = testDeploymentConnection({ home: true, deploymentId: otherId });
+    await client.catalog.upsert(asInput(home));
+    await client.initialize();
+
+    const signingIn = client.signIn(otherId);
+    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
+    const authorize = new URL(opened[0]!);
+    expect(authorize.origin).toBe("https://home.example.com");
+    expect(authorize.pathname).toBe("/v1/auth/native/oauth2/authorize");
+    expect(authorize.searchParams.has(teamOAuthVersionParameter)).toBe(false);
+    await client.oauth.handleCallback(
+      `${opensteerMobileHostOAuthCallback}?code=home-code&iss=https%3A%2F%2Fhome.example.com&state=${authorize.searchParams.get("state")}`,
+    );
+    await signingIn;
+    expect(client.oauth.hostCredentialState(home).status).toBe("signed-in");
+    expect(await client.oauth.authorizationHeader(home)).toMatch(/^Bearer host-access-/u);
+
+    await client.signOut(otherId);
+    expect(client.oauth.hostCredentialState(home).status).toBe("signed-out");
+    expect(await client.oauth.authorizationHeader(home)).toBeNull();
     client.dispose();
   });
 

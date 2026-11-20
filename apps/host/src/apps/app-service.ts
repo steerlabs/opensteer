@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { Readable } from "node:stream";
 import {
   AppIdSchema,
@@ -94,6 +94,12 @@ const unavailable = () =>
 const missing = () => new OpensteerError({ code: "not_found", message: "App not found" });
 const startTimeoutMs = 30_000;
 
+function joinComputerPath(root: string, segments: readonly string[]): string {
+  if (segments.length === 0) return root;
+  const isWindows = /^[A-Za-z]:[\\/]/u.test(root) || root.startsWith("\\\\");
+  return isWindows ? win32.join(root, ...segments) : posix.join(root, ...segments);
+}
+
 export class AppService {
   readonly #views = new Map<string, { appId: AppId; userId: UserId }>();
   readonly #tokensByPair = new Map<string, string>();
@@ -161,7 +167,10 @@ export class AppService {
       });
     }
     const server: AppServerSpec = {
-      folder: { computerId: agentHome.computerId, path: join(agentHome.path, ...segments) },
+      folder: {
+        computerId: agentHome.computerId,
+        path: joinComputerPath(agentHome.path, segments),
+      },
       command: start,
     };
     await this.#ready(agentHome.computerId, lifetime.signal);
@@ -292,7 +301,14 @@ export class AppService {
       } while (cursor);
       if (!found) throw unavailable();
     }
-    const response = await this.#options.files.download(key, signal);
+    const response = await this.#options.files.download(key, signal, "app-html").catch((error) => {
+      if (error instanceof OpensteerError && error.reason === "file-too-large")
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "App HTML exceeds the 5 MiB limit",
+        });
+      throw error;
+    });
     if (!response.ok) {
       await response.body?.cancel();
       throw unavailable();
@@ -737,6 +753,8 @@ export class AppService {
       const { access } = await resolveResourceAccess(database, {
         ownerUserId: ownerOf(actor),
         explicitAccess: "read-write",
+        // Mini-apps have no selected resource kind; only unlimited lineage reaches them.
+        grantTarget: { kind: "device" },
         ...(actor.kind === "run"
           ? { agentBindingId: `run:${actor.claims.runId}` }
           : actor.kind === "connection"

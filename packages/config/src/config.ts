@@ -1,5 +1,5 @@
 import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
-import { deploymentPolicy, normalizePersonName } from "@opensteer/core";
+import { deploymentPolicy, hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
   DeploymentIdSchema,
@@ -147,6 +147,21 @@ const optionalLocalOwnerClaimToken = z.preprocess(
   z.string().trim().min(32).max(4_096).optional(),
 );
 
+const optionalRunnerEnrollmentToken = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().trim().min(32).max(4_096).optional(),
+);
+
+/**
+ * Which forwarding headers a Personal Host believes, and only from a peer on
+ * its own loopback interface. `loopback` is a reverse proxy such as Caddy in
+ * front of a networked Home (`X-Forwarded-For`, `X-Forwarded-Proto`);
+ * `loopback-cloudflared` is a Cloudflare tunnel connector on the same computer
+ * (`CF-Connecting-IP`, `X-Forwarded-Proto`); `none` believes no header.
+ */
+export const TrustedProxySchema = z.enum(["none", "loopback", "loopback-cloudflared"]);
+export type TrustedProxy = z.infer<typeof TrustedProxySchema>;
+
 const optionalFileDescriptor = z.preprocess(
   (value) => (value === undefined || value === "" ? undefined : Number(value)),
   z.number().int().min(3).max(1_024).optional(),
@@ -185,13 +200,13 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: optionalEnrollmentTokenDigest,
   OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: optionalPositiveInteger,
   OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
+  OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: optionalRunnerEnrollmentToken,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_LIFETIME_SECONDS: positiveInteger(24 * 60 * 60),
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
   OPENSTEER_LOCAL_PASSWORD_ENABLED: booleanValue(true),
   OPENSTEER_PASSKEYS: PasskeysEnvironmentSchema.shape.OPENSTEER_PASSKEYS,
   OPENSTEER_HOSTING_ENVIRONMENT_ID: EnvironmentIdSchema.optional(),
   OPENSTEER_AGENT_HOME: optionalPath,
-  OPENSTEER_NATIVE_FS_HELPER: optionalPath,
   OPENSTEER_BROWSER_EXTENSION_DIRECTORY: optionalPath,
   OPENSTEER_NATIVE_OAUTH_ENABLED: optionalBooleanValue,
   OPENSTEER_DEPLOYMENT_KIND: DeploymentKindSchema.optional(),
@@ -200,8 +215,6 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_HOST_PRIVATE_KEY_PATH: optionalPath,
   OPENSTEER_HOST_PUBLIC_KEY_PATH: optionalPath,
   OPENSTEER_HOST_DATA_DIR: z.string().min(1).default(".opensteer/host"),
-  /** The hosting Runner's data directory; its `images` subtree is served, the rest denied. */
-  OPENSTEER_RUNNER_DATA_DIR: optionalPath,
   OPENSTEER_MODE: RuntimeModeSchema.default("development"),
   /**
    * How long a Run survives without word from its Runner: the grace a network
@@ -220,6 +233,33 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_CANONICAL_ORIGIN: z.url(),
   OPENSTEER_RUNTIME_ORIGIN: optionalUrl,
   OPENSTEER_SIGNUP_POLICY: z.enum(["closed", "invite-only", "open"]).default("invite-only"),
+  OPENSTEER_MANAGED_HOME_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^cc_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+      .optional(),
+  ),
+  OPENSTEER_MANAGED_HOME_GENERATION: optionalPositiveInteger,
+  OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: optionalUrl,
+  OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^occ_[0-9a-f-]{36}$/u)
+      .optional(),
+  ),
+  OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^ocs_[A-Za-z0-9_-]{43}$/u)
+      .optional(),
+  ),
+  OPENSTEER_TRUSTED_PROXY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    TrustedProxySchema.optional(),
+  ),
   OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: optionalPath,
   OPENSTEER_WEB_DISTRIBUTION_MANIFEST: optionalPath,
   OPENSTEER_HOST_RELEASE_VERSION: optionalReleaseVersion,
@@ -241,7 +281,6 @@ export interface HostConfig {
   readonly personal?: {
     readonly environmentId: EnvironmentId;
     readonly agentHome: string;
-    readonly nativeFsHelperPath?: string;
     /** The unpacked extension folder the desktop app keeps current on this computer. */
     readonly browserExtensionDirectory?: string;
   };
@@ -262,7 +301,6 @@ export interface HostConfig {
   readonly databaseUrl: string;
   readonly credentialKeyPath: string | undefined;
   readonly dataDirectory: string;
-  readonly runnerDataDirectory: string;
   readonly deploymentIdentity?:
     | {
         readonly deploymentId: DeploymentId;
@@ -278,7 +316,7 @@ export interface HostConfig {
     /**
      * The Host's own OAuth authorization server and the applications allowed
      * to use it. Absent means the surface is not served at all, which is the
-     * only state a Personal Deployment may be in.
+     * only state a loopback Personal Host may be in.
      */
     readonly nativeOAuth?: { readonly clients: readonly NativeOAuthClient[] };
     readonly oidcConfigPath: string | undefined;
@@ -290,6 +328,11 @@ export interface HostConfig {
    * browser service can never come back as a machine that executes agents.
    */
   readonly initialMessagingRunnerEnrollmentToken?: string | undefined;
+  /**
+   * The hosting Runner's one-use enrollment on a networked Home, where no
+   * desktop app reads `/v1/local-bootstrap` to obtain it.
+   */
+  readonly initialMainRunnerEnrollmentToken?: string | undefined;
   /**
    * How long a Run's execution lease lasts without renewal. It is the grace a
    * Runner has to reconnect after a network blip or a Host restart.
@@ -312,9 +355,21 @@ export interface HostConfig {
   readonly portalOrigin?: URL;
   /** Pinned trust root for Account-signed Personal link/session grants. It is
    * separate from an Account adoption bundle because a Personal Host keeps
-   * its own loopback canonical authority. */
+   * its own canonical authority. */
   readonly personalAccountIssuer?: URL;
   readonly exposure: HostExposure;
+  /** Absent means the default for the exposure: see `hostTrustedProxy`. */
+  readonly trustedProxy?: TrustedProxy;
+  /**
+   * An Opensteer Cloud Computer's Home: claimed once for its paying Account
+   * with an Account-signed assertion, and signed in to with that Account only.
+   */
+  readonly managedHome?: {
+    readonly accountOrigin: URL;
+    readonly cloudComputerId: string;
+    readonly generation: number;
+    readonly oidc: { readonly clientId: string; readonly clientSecret: string };
+  };
   readonly privateKeyPath: string | undefined;
   readonly publicKeyPath: string | undefined;
   readonly runtimeOrigin: URL;
@@ -356,8 +411,10 @@ export function assertHostConfigInvariants(config: HostConfig): void {
     );
   }
   const personal = deploymentPolicy(config.deploymentShape).services.personal;
-  if (personal && config.exposure !== "loopback") {
-    throw new Error("A Personal Deployment must be confined to loopback");
+  const exposure = hostExposurePolicy(config.deploymentShape, config.exposure);
+  const networkedPersonal = personal && config.exposure === "networked";
+  if (networkedPersonal && isLoopbackHostname(config.canonicalOrigin.hostname)) {
+    throw new Error("A networked Personal Host requires its public canonical origin");
   }
   if (personal !== (config.personal !== undefined)) {
     throw new Error("Only a Personal Host requires hosting environment and agent home settings");
@@ -365,17 +422,39 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (
     config.personal &&
     (!isAbsolute(config.personal.agentHome) ||
-      (config.personal.nativeFsHelperPath && !isAbsolute(config.personal.nativeFsHelperPath)) ||
       (config.personal.browserExtensionDirectory &&
         !isAbsolute(config.personal.browserExtensionDirectory)))
   ) {
     throw new Error("Agent home must be an absolute path");
   }
-  if (personal && config.identity.nativeOAuth !== undefined) {
-    throw new Error("A Personal Deployment cannot serve native OAuth");
+  if (exposure.localOwnerClaim && config.identity.nativeOAuth !== undefined) {
+    throw new Error("A loopback Personal Host cannot serve native OAuth");
   }
-  if (personal && config.identity.initialOwnerEnrollment !== undefined) {
-    throw new Error("A Personal Host uses the app-held local owner claim");
+  if (exposure.localOwnerClaim && config.identity.initialOwnerEnrollment !== undefined) {
+    throw new Error("A loopback Personal Host uses the app-held local owner claim");
+  }
+  if (networkedPersonal && config.identity.signupPolicy === "open") {
+    throw new Error("A networked Personal Host cannot allow open signup");
+  }
+  if (
+    networkedPersonal &&
+    !config.identity.localPasswordEnabled &&
+    config.identity.oidcConfigPath === undefined &&
+    config.managedHome === undefined
+  ) {
+    throw new Error("A networked Personal Host requires password or OIDC sign-in");
+  }
+  if (config.managedHome) {
+    if (!networkedPersonal || config.account !== undefined)
+      throw new Error("A managed Home is a networked Personal Host");
+    if (config.identity.localPasswordEnabled || config.identity.oidcConfigPath !== undefined)
+      throw new Error("A managed Home signs its owner in with the Opensteer Account only");
+    assertPublicHttpsOrigin(config.managedHome.accountOrigin, "Managed Home Account origin");
+    if (config.personalAccountIssuer?.origin !== config.managedHome.accountOrigin.origin)
+      throw new Error("A managed Home links to the Opensteer Account it was booted by");
+  }
+  if (config.initialMainRunnerEnrollmentToken !== undefined && !networkedPersonal) {
+    throw new Error("A configured Main Runner enrollment is only for a networked Personal Host");
   }
   if (!personal && (config.identity.localPasswordEnabled || config.identity.oidcConfigPath)) {
     throw new Error("A team Host uses Opensteer Account sign-in only");
@@ -397,34 +476,19 @@ export function assertHostConfigInvariants(config: HostConfig): void {
       );
     }
   }
-  if (
-    config.mode === "production" &&
-    personal &&
-    config.exposure === "loopback" &&
-    !config.webDistribution
-  ) {
+  if (config.mode === "production" && personal && !config.webDistribution) {
     throw new HostConfigurationIssue(
       "packaged-personal-web-distribution-required",
       "A packaged Personal Host requires its version-matched Web distribution.",
     );
   }
   if (config.personalAccountIssuer) {
-    if (!personal || config.exposure !== "loopback" || config.account !== undefined) {
-      throw new Error(
-        "A Personal Account issuer is valid only for an unmanaged loopback Personal Host",
-      );
+    if (!personal || config.account !== undefined) {
+      throw new Error("A Personal Account issuer is valid only for an unmanaged Personal Host");
     }
     assertPublicHttpsOrigin(config.personalAccountIssuer, "Personal Account issuer");
   }
-  if (personal && config.deploymentIdentity && !config.account) {
-    if (config.exposure !== "loopback") {
-      throw new Error(
-        "An explicit Personal Deployment identity is allowed only for a loopback Personal Host",
-      );
-    }
-  }
-  const requiresLocalOwnerClaim =
-    personal && config.exposure === "loopback" && config.account === undefined;
+  const requiresLocalOwnerClaim = exposure.localOwnerClaim && config.account === undefined;
   if (requiresLocalOwnerClaim !== (config.identity.localOwnerClaimToken !== undefined)) {
     throw new Error(
       requiresLocalOwnerClaim
@@ -444,6 +508,8 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_DATABASE_URL",
     "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN",
     "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST",
+    "OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN",
+    "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
   ] as const) {
     const file = environment[`${name}_FILE`];
     if (!file) continue;
@@ -455,7 +521,12 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     );
     try {
       if (!fstatSync(descriptor).isFile()) throw new Error(`${name}_FILE must be a regular file`);
-      values[name] = readBoundedDescriptor(descriptor, 16 * 1024).replace(/\r?\n$/u, "");
+      // A bring-your-own Home mounts the managed Home's secret file empty.
+      values[name] = readBoundedDescriptor(
+        descriptor,
+        16 * 1024,
+        name === "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
+      ).replace(/\r?\n$/u, "");
     } finally {
       closeSync(descriptor);
     }
@@ -528,13 +599,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       : {}),
   });
   const account = accountConfig(accountBundle, parsed.OPENSTEER_MODE);
-  // A bearer token minted by the Host's own OAuth server skips every origin
-  // check, and on a Personal Deployment the canonical-origin fence is what
-  // stands in for "the owner is at this keyboard". A Personal Host therefore
-  // does not serve the surface at all, and saying otherwise is refused by
-  // assertHostConfigInvariants rather than quietly ignored.
-  const nativeOAuthEnabled =
-    parsed.OPENSTEER_NATIVE_OAUTH_ENABLED ?? deploymentPolicy(deploymentShape).services.team;
   const browserRuntime = { attachKeyId: parsed.OPENSTEER_BROWSER_ATTACH_KEY_ID };
   requireProductionKeyPair(parsed.OPENSTEER_MODE, parsed);
   requireSecureServiceUrl(
@@ -567,6 +631,15 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
   });
+  // A bearer token minted by the Host's own OAuth server skips every origin
+  // check, and on a loopback Personal Host the canonical-origin fence is what
+  // stands in for "the owner is at this keyboard". That Host therefore does not
+  // serve the surface at all, and saying otherwise is refused by
+  // assertHostConfigInvariants rather than quietly ignored. A networked Home
+  // signs its owner in at a public origin, so its phone and desktop apps use it.
+  const nativeOAuthEnabled =
+    parsed.OPENSTEER_NATIVE_OAUTH_ENABLED ??
+    !hostExposurePolicy(deploymentShape, exposure).localOwnerClaim;
   // Navigation metadata, not trust material: any Deployment may name the apex
   // portal it belongs to; absent metadata renders no portal link.
   const portalOrigin = parsed.OPENSTEER_PORTAL_ORIGIN
@@ -581,6 +654,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     throw new Error("OPENSTEER_PORTAL_ORIGIN must use HTTPS except for loopback development");
   }
   const personal = deploymentPolicy(deploymentShape).services.personal;
+  const managedHome = parseManagedHome(parsed);
   const dataDirectory = resolve(parsed.OPENSTEER_HOST_DATA_DIR);
   const accountBundlePath =
     parsed.OPENSTEER_ACCOUNT_BUNDLE_PATH ?? join(dataDirectory, "account-bundle.json");
@@ -625,9 +699,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       ? {
           personal: {
             environmentId: environmentId!,
-            ...(parsed.OPENSTEER_NATIVE_FS_HELPER
-              ? { nativeFsHelperPath: parsed.OPENSTEER_NATIVE_FS_HELPER }
-              : {}),
             ...(parsed.OPENSTEER_BROWSER_EXTENSION_DIRECTORY
               ? { browserExtensionDirectory: parsed.OPENSTEER_BROWSER_EXTENSION_DIRECTORY }
               : {}),
@@ -659,9 +730,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory,
-    runnerDataDirectory: resolve(
-      parsed.OPENSTEER_RUNNER_DATA_DIR ?? join(dataDirectory, "..", "runner"),
-    ),
     deploymentIdentity:
       explicitPersonalIdentity ??
       (accountBundle
@@ -689,6 +757,11 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     },
     initialMessagingRunnerEnrollmentToken:
       parsed.OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN,
+    ...(parsed.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN === undefined
+      ? {}
+      : {
+          initialMainRunnerEnrollmentToken: parsed.OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN,
+        }),
     executionLeaseMs: parsed.OPENSTEER_EXECUTION_LEASE_SECONDS * 1_000,
     maxConcurrentDispatches: parsed.OPENSTEER_MAX_CONCURRENT_DISPATCHES,
     maxConcurrentTriggerDispatches: parsed.OPENSTEER_MAX_CONCURRENT_TRIGGER_DISPATCHES,
@@ -703,9 +776,15 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       : {}),
     ...(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER
       ? { personalAccountIssuer: new URL(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER) }
-      : {}),
+      : managedHome
+        ? { personalAccountIssuer: managedHome.accountOrigin }
+        : {}),
+    ...(managedHome ? { managedHome } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
     exposure,
+    ...(parsed.OPENSTEER_TRUSTED_PROXY === undefined
+      ? {}
+      : { trustedProxy: parsed.OPENSTEER_TRUSTED_PROXY }),
     privateKeyPath: parsed.OPENSTEER_HOST_PRIVATE_KEY_PATH,
     publicKeyPath: parsed.OPENSTEER_HOST_PUBLIC_KEY_PATH,
     runtimeOrigin,
@@ -721,6 +800,53 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   };
   assertHostConfigInvariants(config);
   return config;
+}
+
+function parseManagedHome(parsed: {
+  readonly OPENSTEER_MANAGED_HOME_ID?: string | undefined;
+  readonly OPENSTEER_MANAGED_HOME_GENERATION?: number | undefined;
+  readonly OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN?: string | undefined;
+  readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID?: string | undefined;
+  readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET?: string | undefined;
+}): HostConfig["managedHome"] {
+  const values = [
+    parsed.OPENSTEER_MANAGED_HOME_ID,
+    parsed.OPENSTEER_MANAGED_HOME_GENERATION,
+    parsed.OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN,
+    parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID,
+    parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET,
+  ];
+  const configured = values.filter((value) => value !== undefined).length;
+  if (configured === 0) return undefined;
+  if (configured !== values.length)
+    throw new Error(
+      "OPENSTEER_MANAGED_HOME_ID, OPENSTEER_MANAGED_HOME_GENERATION, OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID and OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET must be configured together",
+    );
+  return {
+    accountOrigin: originUrl(
+      parsed.OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN!,
+      "OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN",
+    ),
+    cloudComputerId: parsed.OPENSTEER_MANAGED_HOME_ID!,
+    generation: parsed.OPENSTEER_MANAGED_HOME_GENERATION!,
+    oidc: {
+      clientId: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID!,
+      clientSecret: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET!,
+    },
+  };
+}
+
+/**
+ * The proxy a Host believes forwarding headers from. A loopback Personal Host
+ * keeps reading the Cloudflare tunnel connector beside it, as it always has; a
+ * networked Home believes the reverse proxy on its own loopback interface.
+ */
+export function hostTrustedProxy(
+  config: Pick<HostConfig, "exposure" | "trustedProxy">,
+): TrustedProxy {
+  return (
+    config.trustedProxy ?? (config.exposure === "loopback" ? "loopback-cloudflared" : "loopback")
+  );
 }
 
 function accountConfig(
@@ -787,7 +913,11 @@ export function readAccountAdoptionBundle(parsed: {
   }
 }
 
-function readBoundedDescriptor(descriptor: number, maximumBytes: number): string {
+function readBoundedDescriptor(
+  descriptor: number,
+  maximumBytes: number,
+  allowEmpty = false,
+): string {
   const chunks: Buffer[] = [];
   let total = 0;
   while (total <= maximumBytes) {
@@ -797,7 +927,7 @@ function readBoundedDescriptor(descriptor: number, maximumBytes: number): string
     chunks.push(chunk.subarray(0, bytesRead));
     total += bytesRead;
   }
-  if (total === 0 || total > maximumBytes) {
+  if ((total === 0 && !allowEmpty) || total > maximumBytes) {
     throw new Error("Opensteer Account provisioning bundle has an invalid size");
   }
   return Buffer.concat(chunks, total).toString("utf8");
@@ -980,11 +1110,12 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
     throw new Error("OPENSTEER_HOST_URL must be an uncredentialed HTTP(S) origin");
   }
   // The hosting Runner is the one that shares a computer with its Personal Host,
-  // so only it must reach that Host over loopback. Every other computer on a
-  // Personal Deployment is reachable-only and connects to the signed access
-  // route, which is an HTTPS origin.
+  // so only it must reach that Host over loopback, on a networked Home too.
+  // Every other computer on a Personal Deployment is reachable-only and
+  // connects over HTTPS: the signed access route of a loopback Host, or a
+  // networked Home's canonical origin.
   if (
-    deploymentPolicy(config.deploymentShape).loopbackOnly &&
+    deploymentPolicy(config.deploymentShape).colocatedHostingRunner &&
     config.runnerKind === "main" &&
     !isLoopbackHostname(hostUrl.hostname)
   ) {

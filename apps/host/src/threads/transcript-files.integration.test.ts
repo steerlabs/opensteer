@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createId } from "@opensteer/core";
 import { AttachmentStore } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
@@ -18,6 +17,11 @@ import {
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
 import { AgentHomeFiles } from "./agent-home-files.js";
+import { HostOutputImageStore } from "./host-output-images.js";
+import {
+  createInProcessHomeFilesTransport,
+  testNativeFsHelperBinary,
+} from "./home-files.test-support.js";
 import { TranscriptFileAccess } from "./transcript-file-access.js";
 import { createTranscriptFileServices } from "./transcript-files.js";
 
@@ -30,23 +34,26 @@ async function fixture() {
       imagesRoot = join(root, "runner/images");
     await mkdir(homePath, { recursive: true });
     await mkdir(imagesRoot, { recursive: true });
-    const helperPath = fileURLToPath(
-      new URL("../../../runner/native-fs-helper/opensteer-native-fs-test", import.meta.url),
-    );
+    const { transport } = createInProcessHomeFilesTransport({
+      agentHomePath: homePath,
+      dataDirectory: join(root, "runner"),
+      helperBinary: testNativeFsHelperBinary,
+      runnerId: task.agentHome.computerId,
+    });
     const home = new AgentHomeFiles({
       agentHome: async () => ({ ...task.agentHome, path: homePath }),
-      helperPath,
+      transport,
     });
     const attachments = new AttachmentService({
       dataDirectory: root,
       store: new AttachmentStore(f.database),
       runTokens: new RunAttachmentsTokenService({ authorizer: f.store, tokens: {} as never }),
     });
+    const outputImageStore = new HostOutputImageStore(root);
     const access = new TranscriptFileAccess({
       home,
       attachments,
-      imagesRoot,
-      helperPath,
+      outputImageStore,
       admit: (c) => admitTranscriptFiles(f.database, { ownerId: c.userId, threadId: c.threadId }),
       outputImages: (i) => resolveThreadOutputImages(f.database, i),
       outputImage: (i) => readThreadOutputImage(f.database, i),
@@ -81,7 +88,7 @@ async function fixture() {
 it("admits the personal owner and any supplied thread before touching file storage", async () => {
   const f = await fixture();
   try {
-    const resolve = vi.spyOn(f.home, "resolveAbsolutePath");
+    const resolve = vi.spyOn(f.home, "resolvePath");
     const p = join(f.homePath, "note.txt");
     await writeFile(p, "private");
     expect(

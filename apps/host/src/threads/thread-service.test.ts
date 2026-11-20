@@ -6,6 +6,8 @@ describe("new Thread access ceilings", () => {
   it("permits narrower work and forwards the caller's live authority", async () => {
     const actor: ConnectionCaller = {
       kind: "connection",
+      grant: { scope: "everything" },
+      grantRevision: 1,
       key: "connection:test",
       connectionId: "test",
       userId: createId("user"),

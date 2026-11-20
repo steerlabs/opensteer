@@ -15,6 +15,7 @@ interface OpenTransfer {
   /** Settles the upload's response once the download has taken every byte, or failed. */
   finish(failure?: Error): void;
   readonly finished: Promise<void>;
+  readonly maxBytes: number;
   /** Rejects when the transfer closes before an upload arrives. */
   readonly source: Promise<RelayedRunFile>;
   provide(file: RelayedRunFile): void;
@@ -54,7 +55,7 @@ function matches(expected: Buffer, presented: string): boolean {
 export class RunFileRelay {
   readonly #open = new Map<string, OpenTransfer>();
 
-  open(): RunFileRelayHandle {
+  open(maxBytes = runFileMaxBytes): RunFileRelayHandle {
     const id = randomUUID();
     const uploadToken = randomBytes(32).toString("base64url");
     const downloadToken = randomBytes(32).toString("base64url");
@@ -78,6 +79,7 @@ export class RunFileRelay {
       downloaded: false,
       finish: (failure) => (failure ? fail(failure) : settle()),
       finished,
+      maxBytes,
       provide,
       refuse,
       source,
@@ -106,22 +108,65 @@ export class RunFileRelay {
     const transfer = this.#open.get(id);
     if (!transfer || transfer.uploaded || !matches(transfer.uploadToken, token))
       throw refusedTransfer();
-    if (file.sizeBytes > runFileMaxBytes)
+    if (
+      !Number.isSafeInteger(file.sizeBytes) ||
+      file.sizeBytes < 0 ||
+      file.sizeBytes > transfer.maxBytes
+    )
       throw new OpensteerError({ code: "bad_request", message: "This file is too large to send." });
     transfer.uploaded = true;
+    const onError = (error: Error) => transfer.finish(error);
+    const onClose = () => {
+      if (!file.stream.readableEnded) onError(new Error("The upload stopped."));
+    };
+    file.stream.once("error", onError);
+    file.stream.once("close", onClose);
     transfer.provide(file);
-    await transfer.finished;
+    if (file.stream.destroyed) onClose();
+    try {
+      await transfer.finished;
+    } finally {
+      file.stream.off("error", onError);
+      file.stream.off("close", onClose);
+    }
   }
 
   /** Waits for the upload. The caller must report the end through `settled`. */
   async download(
     id: string,
     token: string,
+    signal?: AbortSignal,
   ): Promise<RelayedRunFile & { readonly settled: (failure?: Error) => void }> {
     const transfer = this.#open.get(id);
     if (!transfer || transfer.downloaded || !matches(transfer.downloadToken, token))
       throw refusedTransfer();
     transfer.downloaded = true;
-    return { ...(await transfer.source), settled: transfer.finish };
+    const file = signal ? await raceAbort(transfer.source, signal) : await transfer.source;
+    return { ...file, settled: transfer.finish };
   }
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error ? signal.reason : new Error("File transfer was aborted"),
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () =>
+      reject(
+        signal.reason instanceof Error ? signal.reason : new Error("File transfer was aborted"),
+      );
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }

@@ -7,6 +7,7 @@ export * from "@opensteer/runner-client";
 export * from "./runtime/logger.js";
 export * from "./main.js";
 export * from "./folders/agent-home.js";
+export * from "./folders/home-files.js";
 export * from "./runtime/native-fs-helper.js";
 export * from "./agent/program-executor.js";
 export * from "./runtime/runtime.js";

@@ -41,6 +41,7 @@ export * from "./voice.js";
 
 export * from "./apps.js";
 export * from "./run-files.js";
+export * from "./home-files.js";
 
 export * from "./agent-connections.js";
 export * from "./settings.js";

@@ -479,6 +479,9 @@ function hostSessionFixture(
     signInTeam: vi.fn<NativeOAuthManager["signInTeam"]>(
       async (connection): Promise<HostOAuthState> => oauth.beginHostSignIn(connection),
     ),
+    signInHome: vi.fn<NativeOAuthManager["signInHome"]>(
+      async (connection): Promise<HostOAuthState> => oauth.beginHostSignIn(connection),
+    ),
     beginHostSignIn: vi.fn<(connection: DeploymentConnection) => Promise<HostOAuthState>>(
       async (connection) => {
         oauthStatus.current = "authorizing";

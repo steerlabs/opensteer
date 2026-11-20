@@ -1,10 +1,29 @@
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
-import type { HostRunFileRequest } from "@opensteer/protocol";
-import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
+import {
+  HomeFilesError,
+  HomeFilesHandler,
+  createHttpHomeFilesTransferClient,
+  type HomeFilesTransferClient,
+} from "../folders/home-files.js";
+import type {
+  HostHomeFileRequest,
+  HostOutputImageUpload,
+  HostRunFileRequest,
+} from "@opensteer/protocol";
+import {
+  HomeFileOutputImageExtensionSchema,
+  agentHomeFilesCapability,
+  homeFilesOutputImageMaxBytes,
+  sameRunnerConnectionFence,
+  computerAppMaxTimeoutMs,
+} from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
 import type { AppServerState } from "../apps/app-server-manager.js";
@@ -16,6 +35,7 @@ import type {
   HarnessInstanceId,
   RunId,
   RunnerCapability,
+  ToolOutputImage,
 } from "@opensteer/core";
 import { sameStringSet } from "@opensteer/core";
 import {
@@ -721,6 +741,9 @@ export class ReconnectingHostConnection {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
+        ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()
+          ? [agentHomeFilesCapability]
+          : []),
         ...(agents ? ([runEventsCapability] as const) : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
@@ -1116,6 +1139,7 @@ export class ReconnectingHostConnection {
       ? new AgentsWorkSession({
           agents,
           agentHome: welcome.agentHome,
+          agentHomeIsProvisional: welcome.agentHomeIsProvisional === true,
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
@@ -1274,6 +1298,7 @@ interface AgentsWorkSessionOptions {
   readonly agents: RunnerAgentsConnection;
   /** The Agent home this computer hosts, as the Host's welcome named it. */
   readonly agentHome?: ComputerFolder | undefined;
+  readonly agentHomeIsProvisional?: boolean;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
@@ -1286,6 +1311,15 @@ interface AgentsWorkSessionOptions {
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
 export class AgentsWorkSession implements RunnerWorkSession {
   readonly #fileRequests = new Map<string, AbortController>();
+  readonly #homeFileRequests = new Map<string, AbortController>();
+  readonly #outputImagePublishes = new Map<
+    string,
+    {
+      readonly resolve: (response: HostOutputImageUpload) => void;
+    }
+  >();
+  readonly #homeFiles: HomeFilesHandler | undefined;
+  readonly #outputImageTransfers: HomeFilesTransferClient;
   readonly #appRequests = new Map<string, { appId: string; controller: AbortController }>();
   readonly #options: AgentsWorkSessionOptions;
   readonly #lifetime = new AbortController();
@@ -1311,6 +1345,25 @@ export class AgentsWorkSession implements RunnerWorkSession {
   constructor(options: AgentsWorkSessionOptions) {
     this.#options = options;
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
+    const transport = {
+      hostOrigin: options.appTransport.hostUrl,
+      mode: options.appTransport.mode,
+      ...(options.appTransport.controlCaPath
+        ? { controlCaPath: options.appTransport.controlCaPath }
+        : {}),
+    };
+    this.#outputImageTransfers = createHttpHomeFilesTransferClient(transport);
+    const homeFileOptions =
+      options.agents.runFileOptions ?? options.agents.runtime.homeFileOptions?.();
+    if (homeFileOptions) {
+      this.#homeFiles = new HomeFilesHandler({
+        ...homeFileOptions,
+        transport,
+      });
+    }
+    options.sink.setOutputImagePublisher((image, signal) =>
+      this.#publishOutputImage(image, signal),
+    );
     options.agents.runtime.observeAgentHomeSkills(async (bindingGeneration, scan) => {
       await this.#reportSkills(
         bindingGeneration,
@@ -1319,12 +1372,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
           : { status: "failed", reason: "unreadable" },
       );
     });
-    this.#initialSettings = options.agents.runtime
-      .observeAgentHomeSettings(
-        (read) => this.#reportSettings(read),
-        options.agentHome ? { agentHome: options.agentHome, signal: this.#signal } : undefined,
-      )
-      .catch(() => undefined);
+    this.#initialSettings = this.#initializeAgentHome(options.agentHome).catch(() => undefined);
     this.#initialSkills = Promise.resolve();
     this.#unobserveApps = options.agents.runtime.appServers.observe((state) =>
       this.#reportAppState(state),
@@ -1450,6 +1498,24 @@ export class AgentsWorkSession implements RunnerWorkSession {
           this.#options.fail("File response failed"),
         );
         return;
+      case "host.home-files.list":
+      case "host.home-files.read":
+      case "host.home-files.resolve":
+      case "host.home-files.download":
+      case "host.home-files.write":
+      case "host.home-files.cancel":
+        void this.#answerHomeFileRequest(message).catch(() =>
+          this.#options.fail("Home file response failed"),
+        );
+        return;
+      case "host.output-image.upload": {
+        const waiter = this.#outputImagePublishes.get(message.requestId);
+        if (waiter) {
+          this.#outputImagePublishes.delete(message.requestId);
+          waiter.resolve(message);
+        }
+        return;
+      }
       case "host.app.start":
       case "host.app.connect":
       case "host.app.stop":
@@ -1465,9 +1531,13 @@ export class AgentsWorkSession implements RunnerWorkSession {
   async close(): Promise<void> {
     this.#unsubscribePreparation();
     this.#unobserveApps();
+    this.#options.sink.setOutputImagePublisher(undefined);
     this.#options.agents.runtime.observeAgentHomeSkills(undefined);
     void this.#options.agents.runtime.observeAgentHomeSettings(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
+    for (const controller of this.#homeFileRequests.values()) controller.abort();
+    this.#homeFileRequests.clear();
+    this.#outputImagePublishes.clear();
     await withTimeout(
       Promise.allSettled([
         this.#ordered.then(() => Promise.allSettled(this.#commandResponses)),
@@ -1715,6 +1785,154 @@ export class AgentsWorkSession implements RunnerWorkSession {
     } finally {
       if (controller && this.#fileRequests.get(request.requestId) === controller)
         this.#fileRequests.delete(request.requestId);
+    }
+  }
+
+  async #initializeAgentHome(agentHome: ComputerFolder | undefined): Promise<void> {
+    let resolvedHome = agentHome;
+    if (agentHome && typeof this.#options.agents.runtime.ensureAgentHome === "function") {
+      try {
+        const canonicalPath = await this.#options.agents.runtime.ensureAgentHome(
+          agentHome,
+          this.#signal,
+          !this.#options.agentHomeIsProvisional,
+        );
+        resolvedHome = { ...agentHome, path: canonicalPath };
+        if (this.#homeFiles && !this.#signal.aborted) {
+          const rootIdentity = await this.#homeFiles.initializeAgentHome(
+            canonicalPath,
+            this.#signal,
+          );
+          await this.#options.sink.send({
+            environmentId: this.#options.environmentId(),
+            path: canonicalPath,
+            rootIdentity,
+            type: "runner.agent-home.report",
+          });
+        }
+      } catch {
+        return;
+      }
+    }
+    await this.#options.agents.runtime.observeAgentHomeSettings(
+      (read) => this.#reportSettings(read),
+      resolvedHome ? { agentHome: resolvedHome, signal: this.#signal } : undefined,
+    );
+  }
+
+  async #answerHomeFileRequest(request: HostHomeFileRequest): Promise<void> {
+    const echo = {
+      type: "runner.home-files.result" as const,
+      requestId: request.requestId,
+    };
+    let controller: AbortController | undefined;
+    try {
+      if (!sameRunnerConnectionFence(request, this.#options.fence.fence))
+        throw new HomeFilesError("conflict", "This Runner connection has changed.");
+      if (request.type === "host.home-files.cancel") {
+        const pending = this.#homeFileRequests.get(request.requestId);
+        if (pending) {
+          pending.abort();
+          return;
+        }
+        await this.#options.sink.send({ ...echo, data: { kind: "cancel" }, ok: true });
+        return;
+      }
+      if (this.#homeFileRequests.size >= 20)
+        throw new HomeFilesError("unavailable", "Agent home file requests are busy; retry soon.");
+      if (this.#homeFileRequests.has(request.requestId))
+        throw new HomeFilesError(
+          "conflict",
+          "A file request with this identity is already running.",
+        );
+      if (!this.#homeFiles)
+        throw new HomeFilesError("unavailable", "Update this Runner to serve Agent home files.");
+      controller = new AbortController();
+      this.#homeFileRequests.set(request.requestId, controller);
+      const signal = AbortSignal.any([
+        this.#signal,
+        controller.signal,
+        AbortSignal.timeout(computerAppMaxTimeoutMs),
+      ]);
+      const data = await this.#homeFiles.handle(request, signal);
+      await this.#options.sink.send({ ...echo, data, ok: true });
+    } catch (error) {
+      const mapped =
+        error instanceof HomeFilesError
+          ? error
+          : new HomeFilesError(
+              "unavailable",
+              error instanceof Error && error.message
+                ? error.message.slice(0, 500)
+                : "Agent home file operation failed",
+            );
+      await this.#options.sink.send({
+        ...echo,
+        errorCode: mapped.code,
+        message: mapped.message.slice(0, 500),
+        ok: false,
+        ...(mapped.sizeBytes !== undefined ? { sizeBytes: mapped.sizeBytes } : {}),
+      });
+    } finally {
+      if (controller && this.#homeFileRequests.get(request.requestId) === controller)
+        this.#homeFileRequests.delete(request.requestId);
+    }
+  }
+
+  async #publishOutputImage(image: ToolOutputImage, signal: AbortSignal): Promise<void> {
+    const transfers = this.#outputImageTransfers;
+    const fileName = basename(image.path);
+    const match = /^([a-f0-9]{64})\.([a-z0-9]+)$/u.exec(fileName);
+    if (!match) return;
+    const sha256 = match[1]!;
+    const extensionParsed = HomeFileOutputImageExtensionSchema.safeParse(match[2]);
+    if (!extensionParsed.success) return;
+    const linked = AbortSignal.any([this.#signal, signal]);
+    linked.throwIfAborted();
+    const handle = await open(
+      image.path,
+      constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag(),
+    );
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size < 1 || info.size > homeFilesOutputImageMaxBytes) return;
+      const requestId = randomUUID();
+      const response = Promise.withResolvers<HostOutputImageUpload>();
+      this.#outputImagePublishes.set(requestId, { resolve: response.resolve });
+      try {
+        linked.throwIfAborted();
+        const [, upload] = await withTimeout(
+          Promise.all([
+            this.#options.sink.send({
+              extension: extensionParsed.data,
+              mediaType: image.mediaType,
+              requestId,
+              sha256,
+              sizeBytes: info.size,
+              type: "runner.output-image.publish",
+            }),
+            response.promise,
+          ]),
+          15_000,
+          { signal: linked, timeoutError: () => new Error("Host did not answer image publish") },
+        );
+        if (upload.status !== "upload" || !upload.transfer) return;
+        linked.throwIfAborted();
+        const body = handle.createReadStream({ autoClose: false });
+        try {
+          await transfers.upload(
+            upload.transfer,
+            { body, name: fileName, size: info.size },
+            linked,
+          );
+        } finally {
+          body.destroy();
+        }
+      } finally {
+        this.#outputImagePublishes.delete(requestId);
+      }
+    } finally {
+      await handle.close().catch(() => undefined);
     }
   }
 
@@ -1980,6 +2198,22 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             message: notRunningAgents,
           });
           return;
+        case "host.home-files.list":
+        case "host.home-files.read":
+        case "host.home-files.resolve":
+        case "host.home-files.download":
+        case "host.home-files.write":
+        case "host.home-files.cancel":
+          await sink.send({
+            type: "runner.home-files.result",
+            requestId: message.requestId,
+            ok: false,
+            errorCode: "unavailable",
+            message: notRunningAgents,
+          });
+          return;
+        case "host.output-image.upload":
+          return;
         case "host.app.cancel":
           return;
         case "host.app.start":
@@ -2060,6 +2294,7 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   #closed = false;
 
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
+  #publishOutputImage: RunnerMessageSink["publishOutputImage"] | undefined;
 
   constructor(
     delegate: RunnerReportSink,
@@ -2067,6 +2302,15 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   ) {
     this.#delegate = delegate;
     this.#refresh = refresh;
+  }
+
+  setOutputImagePublisher(publisher: RunnerMessageSink["publishOutputImage"] | undefined): void {
+    this.#publishOutputImage = publisher;
+  }
+
+  publishOutputImage(image: ToolOutputImage, signal: AbortSignal): Promise<void> {
+    if (this.#closed || !this.#publishOutputImage) return Promise.resolve();
+    return this.#publishOutputImage(image, signal);
   }
 
   refreshRunCredentials(runId: RunId): Promise<RefreshedRunCredentials | undefined> {

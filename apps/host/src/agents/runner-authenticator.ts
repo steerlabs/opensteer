@@ -241,6 +241,35 @@ export class RunnerAuthenticator {
     });
   }
 
+  /**
+   * A networked Home's colocated Main Runner, from the token its operator
+   * configured beside the Host: the grant `/v1/local-bootstrap` gives a
+   * desktop. A restart with the same token replays it; a different token is
+   * refused as a different request.
+   */
+  async ensureConfiguredMainEnrollment(token: string): Promise<void> {
+    const input = {
+      idempotencyKey: "deployment-configured-main-runner",
+      lifetimeSeconds: 7 * 24 * 60 * 60,
+      token,
+    };
+    this.#assertConfiguredToken(input);
+    const requested: readonly RunnerModuleName[] = ["agents", "browser"];
+    await this.#store.createRunnerEnrollment({
+      allowedModules: computerRunnerGrant(requested),
+      createdBy: null,
+      expiresAt: new Date(this.#now() + input.lifetimeSeconds * 1_000),
+      id: `ren_${randomUUID()}`,
+      idempotencyKey: input.idempotencyKey,
+      issuanceModules: serviceRunnerGrant(requested),
+      mainEnrollmentPurpose: "initial",
+      name: "Main computer",
+      requestFingerprint: configuredEnrollmentFingerprint(input),
+      runnerKind: "main",
+      tokenHash: hashRunnerEnrollmentToken(token),
+    });
+  }
+
   #assertConfiguredToken(input: {
     readonly lifetimeSeconds: number;
     readonly token: string;

@@ -162,7 +162,9 @@ function IphoneScreenOnMac() {
 
 function SignInOnIt({ homeName }: { readonly homeName: string }) {
   const { hostClient, snapshot } = useShell();
-  const remote = usePersonalRemoteAccess(hostClient);
+  // A networked Home is reached at its own address; pairing codes ride a loopback Home's route.
+  const networked = snapshot.identityConfig?.exposure === "networked";
+  const remote = usePersonalRemoteAccess(networked ? null : hostClient);
   const portal = snapshot.identityConfig?.portalOrigin ?? null;
   const link = portal && snapshot.deploymentId ? phoneOpenUrl(portal, snapshot.deploymentId) : null;
   const [copied, setCopied] = useState(false);
@@ -202,29 +204,36 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
           </div>
         </div>
       ) : null}
-      <div className="add-device__pairing">
-        <span className="add-device__label">No account on it?</span>
-        {remote.pairing ? (
-          <p>
-            Enter <code>{remote.pairing.code}</code> on the other device. It works once, until{" "}
-            {new Date(remote.pairing.expiresAt).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
-            .
-          </p>
-        ) : (
-          <button
-            className="btn btn--small"
-            disabled={!remote.pair || remote.working || off}
-            onClick={() => void remote.pair?.()}
-            type="button"
-          >
-            Create a pairing code
-          </button>
-        )}
-        <SettingsError message={remote.actionError ?? null} />
-      </div>
+      {networked ? (
+        <p>
+          No account on it? Open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign
+          in with your password.
+        </p>
+      ) : (
+        <div className="add-device__pairing">
+          <span className="add-device__label">No account on it?</span>
+          {remote.pairing ? (
+            <p>
+              Enter <code>{remote.pairing.code}</code> on the other device. It works once, until{" "}
+              {new Date(remote.pairing.expiresAt).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+              .
+            </p>
+          ) : (
+            <button
+              className="btn btn--small"
+              disabled={!remote.pair || remote.working || off}
+              onClick={() => void remote.pair?.()}
+              type="button"
+            >
+              Create a pairing code
+            </button>
+          )}
+          <SettingsError message={remote.actionError ?? null} />
+        </div>
+      )}
     </div>
   );
 }

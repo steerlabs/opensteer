@@ -50,6 +50,7 @@ import {
   CapabilityVerificationError,
   emptyDeploymentCatalog,
   resolveConnection,
+  usesHostNativeOAuth,
   type AccountDeploymentDirectoryUnavailable,
   type DeploymentCatalog,
   type DeploymentConnection,
@@ -856,6 +857,12 @@ export class MobileClient {
       return;
     }
     const connection = this.#requireConnection(id, await this.catalog.load());
+    if (usesHostNativeOAuth(connection)) {
+      await this.#clearSignOutSuppression(id);
+      this.#sessionFailures.delete(id);
+      await this.oauth.signInHome(connection);
+      return;
+    }
     const verification = this.#verification.get(id);
     if (verification !== undefined) throw new Error(verificationFailureDetail(verification));
     await this.#clearSignOutSuppression(id);
@@ -1327,7 +1334,8 @@ export class MobileClient {
   };
 
   async signInHost(connection: DeploymentConnection): Promise<void> {
-    await this.oauth.signInTeam(connection);
+    if (connection.kind === "team") await this.oauth.signInTeam(connection);
+    else await this.oauth.signInHome(connection);
   }
 
   /** Forgets a Deployment this phone added itself. */
@@ -1927,7 +1935,7 @@ export class MobileClient {
   async #signOutNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "team") await this.oauth.signOutHost(connection);
+      if (usesHostNativeOAuth(connection)) await this.oauth.signOutHost(connection);
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
@@ -1955,7 +1963,7 @@ export class MobileClient {
   async #removeNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "team") await this.oauth.signOutHost(connection);
+      if (usesHostNativeOAuth(connection)) await this.oauth.signOutHost(connection);
       else {
         if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);

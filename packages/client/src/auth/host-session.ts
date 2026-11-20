@@ -144,6 +144,7 @@ export interface HostAttachment {
 type HostOAuth = Pick<
   NativeOAuthManager,
   | "abandonHostSignIn"
+  | "signInHome"
   | "signInTeam"
   | "hostCredentialState"
   | "recoverHostAuthorization"
@@ -497,7 +498,11 @@ export class HostSession implements HostSessionRecovery {
         );
       }
       try {
-        return oauthObservation(await this.#oauth.signInTeam(connection, undefined, interactive));
+        return oauthObservation(
+          connection.kind === "team"
+            ? await this.#oauth.signInTeam(connection, undefined, interactive)
+            : await this.#oauth.signInHome(connection, interactive),
+        );
       } catch (error) {
         if (error instanceof TeamEntryOutcomeError) {
           if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")

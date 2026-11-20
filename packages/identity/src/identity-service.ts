@@ -162,6 +162,14 @@ export function deriveLocalSetupToken(secret: string): string {
 export class IdentityService {
   readonly #admissionLifetimeMilliseconds: number;
   #auth: OpensteerAuth;
+  /**
+   * A Personal Host's first-owner steps, one at a time. Claiming spans Better
+   * Auth's own sign-up transaction, so no database lock can hold across it;
+   * one Host process owns a Personal database, so queuing here is what lets
+   * exactly one of several concurrent claims win without leaving the loser's
+   * account behind.
+   */
+  #ownerSetup: Promise<unknown> = Promise.resolve();
   readonly #database: Kysely<DatabaseSchema>;
   #options: IdentityServiceOptions;
 
@@ -177,6 +185,16 @@ export class IdentityService {
     if (options.localMachineOwner && options.exposure !== "loopback") {
       throw new Error("A local machine owner is allowed only on an unmanaged loopback Host");
     }
+    if (
+      options.managedOwner &&
+      (options.team ||
+        options.localMachineOwner ||
+        options.localPasswordEnabled ||
+        !options.oidcProviders.some(
+          (provider) => provider.providerId === options.managedOwner?.providerId,
+        ))
+    )
+      throw new Error("A managed Home signs its one owner in with its Opensteer Account only");
     this.#admissionLifetimeMilliseconds =
       options.exposure === "loopback"
         ? localAdmissionLifetimeMilliseconds
@@ -683,6 +701,10 @@ export class IdentityService {
     const enrollment = this.#options.initialOwnerEnrollment;
     if (!enrollment) return;
     const tokenHash = enrollment.tokenDigest;
+    // An operator holds a team's or a networked Home's code and re-issues it by
+    // starting the Host with a new one. A loopback Host's code is derived from
+    // the desktop's claim, so a different live one is stale configuration.
+    const operatorHeld = this.#options.team !== undefined || enrollment.renewable !== true;
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-enrollment");
       const existingAdministrator = this.#options.team
@@ -703,7 +725,7 @@ export class IdentityService {
         // fail to restart. Exchange also checks both durable conditions before admitting signup.
         return;
       }
-      if (this.#options.team)
+      if (operatorHeld)
         await transaction
           .selectFrom("authAdmissions")
           .select("id")
@@ -759,11 +781,12 @@ export class IdentityService {
       }
       if (
         existingEnrollment.consumedAt ||
-        (!this.#options.team && existingEnrollment.expiresAt > new Date())
+        (!operatorHeld && existingEnrollment.expiresAt > new Date())
       ) {
         throw new Error("Initial owner enrollment secret does not match durable Host state");
       }
-      if (this.#options.team)
+      // The old link stops admitting anyone, and so does every admission it issued.
+      if (operatorHeld)
         await transaction
           .updateTable("authAdmissions")
           .set({ expiresAt: new Date() })
@@ -1753,13 +1776,28 @@ export class IdentityService {
     credentials: PasswordCredentials,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
+    if (this.#options.managedOwner) throw managedOwnerSetupRefused();
     if (!this.#options.localPasswordEnabled) {
       throw new OpensteerError({ code: "not_found", message: "Password setup is disabled" });
     }
     return this.#claimInitialOwner(credentials, headers);
   }
 
-  async #claimInitialOwner(
+  #serializeOwnerSetup<Value>(step: () => Promise<Value>): Promise<Value> {
+    if (this.#options.team) return step();
+    const result = this.#ownerSetup.then(step, step);
+    this.#ownerSetup = result.catch(() => undefined);
+    return result;
+  }
+
+  #claimInitialOwner(
+    credentials: PasswordSignup,
+    headers: Headers,
+  ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
+    return this.#serializeOwnerSetup(() => this.#claimInitialOwnerNow(credentials, headers));
+  }
+
+  async #claimInitialOwnerNow(
     credentials: PasswordSignup,
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
@@ -1773,6 +1811,17 @@ export class IdentityService {
       .select("id")
       .where("email", "=", email)
       .executeTakeFirst();
+    // A Personal Host has one owner. Once anybody holds it, a setup admission
+    // signs nobody else up; the owner's own retry is answered below.
+    if (!this.#options.team) {
+      const owner = await this.#database
+        .selectFrom("users")
+        .select("id")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst();
+      if (owner && owner.id !== existing?.id)
+        throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
+    }
 
     // Re-running setup against an account that already exists is the normal
     // recovery path, not an error: an earlier attempt may have created the user
@@ -1808,13 +1857,13 @@ export class IdentityService {
     enrollmentToken: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
-    const configuredDigest = this.#options.initialOwnerEnrollment?.tokenDigest;
-    if (!configuredDigest || !equalSecretDigests(configuredDigest, digestSecret(enrollmentToken))) {
-      throw new OpensteerError({ code: "forbidden", message: "Local owner proof is invalid" });
-    }
     const owner = this.#options.localMachineOwner;
     if (!owner || this.#options.exposure !== "loopback") {
       throw new OpensteerError({ code: "not_found", message: "Local owner setup is unavailable" });
+    }
+    const configuredDigest = this.#options.initialOwnerEnrollment?.tokenDigest;
+    if (!configuredDigest || !equalSecretDigests(configuredDigest, digestSecret(enrollmentToken))) {
+      throw new OpensteerError({ code: "forbidden", message: "Local owner proof is invalid" });
     }
     const email = normalizeIdentityEmail(owner.email);
     const administrator = await this.#database
@@ -1856,6 +1905,133 @@ export class IdentityService {
       admittedHeaders,
     );
     return claimed;
+  }
+
+  /**
+   * Claims a managed Home for the Account subject a verified, Account-signed
+   * assertion names. The caller has already checked every binding of that
+   * assertion; this owns the setup code, the one owner and the receipt.
+   *
+   * Exactly one claim commits: the owner, its Account sign-in link, the spent
+   * setup code, whatever `commit` adds (the Account link) and the receipt in
+   * one transaction. The same claim again (same code, subject and `claimKey`)
+   * answers the first receipt; anything else against an owned Home is refused.
+   */
+  claimManagedOwner<Receipt>(input: {
+    readonly setupCode: string;
+    readonly subject: string;
+    readonly owner: {
+      readonly email: string;
+      readonly displayName: string;
+      readonly emailVerified: boolean;
+    };
+    readonly claimKey: string;
+    readonly receipt: Receipt;
+    readonly commit: (transaction: Transaction<DatabaseSchema>, owner: UserId) => Promise<void>;
+  }): Promise<{ readonly receipt: Receipt; readonly replayed: boolean }> {
+    const managed = this.#options.managedOwner;
+    if (!managed)
+      return Promise.reject(
+        new OpensteerError({
+          code: "not_found",
+          message: "This Home is claimed with its setup link, not by an Opensteer Account",
+        }),
+      );
+    const provider = this.#options.oidcProviders.find(
+      (candidate) => candidate.providerId === managed.providerId,
+    )!;
+    return this.#serializeOwnerSetup(async () => {
+      await this.#ensureInitialOwnerEnrollment();
+      const tokenHash = digestSecret(input.setupCode.trim());
+      return this.#database.transaction().execute(async (transaction) => {
+        await sqlAdvisoryLock(transaction, "initial-owner-setup");
+        const enrollment = await transaction
+          .selectFrom("ownerEnrollments")
+          .selectAll()
+          .where("kind", "=", "initial")
+          .where("tokenHash", "=", tokenHash)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const existing = await transaction
+          .selectFrom("users")
+          .select("id")
+          .where("disabledAt", "is", null)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (existing) {
+          const claimed = await transaction
+            .selectFrom("securityAudit")
+            .select("metadata")
+            .where("action", "=", "instance.managed-owner-claimed")
+            .where("targetId", "=", existing.id)
+            .executeTakeFirst();
+          if (
+            enrollment?.consumedBy === existing.id &&
+            claimed?.metadata["claimKey"] === input.claimKey
+          )
+            return { receipt: claimed.metadata["receipt"] as Receipt, replayed: true };
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This Home already has an owner",
+            reason: "managed-home-owned",
+          });
+        }
+        if (!enrollment || enrollment.consumedAt || enrollment.expiresAt <= new Date())
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "That setup code is incorrect or expired",
+            reason: "managed-home-setup-code-invalid",
+          });
+        const now = new Date();
+        const owner = createId("user");
+        await transaction
+          .insertInto("users")
+          .values({
+            createdAt: now,
+            disabledAt: null,
+            displayName: personNameFromSignIn(input.owner.displayName, input.owner.email),
+            email: normalizeIdentityEmail(input.owner.email),
+            emailVerified: input.owner.emailVerified,
+            id: owner,
+            image: null,
+            updatedAt: now,
+          })
+          .executeTakeFirstOrThrow();
+        // The owner's Opensteer Account is their only way in: SSO finds this link by subject.
+        await transaction
+          .insertInto("authAccounts")
+          .values({
+            accountId: input.subject,
+            createdAt: now,
+            id: createId("authAccount"),
+            providerId: oidcIdentityProviderId(provider),
+            updatedAt: now,
+            userId: owner,
+          })
+          .executeTakeFirstOrThrow();
+        await transaction
+          .updateTable("ownerEnrollments")
+          .set({ consumedAt: now, consumedBy: owner })
+          .where("id", "=", enrollment.id)
+          .where("consumedAt", "is", null)
+          .executeTakeFirstOrThrow();
+        await input.commit(transaction, owner);
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "instance.managed-owner-claimed",
+            actorSessionId: null,
+            actorUserId: null,
+            id: createId("securityAudit"),
+            metadata: sqlJson({ claimKey: input.claimKey, receipt: input.receipt }),
+            requestId: null,
+            targetId: owner,
+            targetType: "user",
+          })
+          .executeTakeFirstOrThrow();
+        return { receipt: input.receipt, replayed: false };
+      });
+    });
   }
 
   async signOut(headers: Headers): Promise<TokenFreeAuthResponse<{ readonly signedOut: true }>> {
@@ -2207,10 +2383,20 @@ export class IdentityService {
     };
   }
 
-  async exchangeInitialOwnerEnrollment(
+  exchangeInitialOwnerEnrollment(
     token: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
+    // Queued behind a claim in flight, so a second browser's exchange cannot
+    // replace the admission a claim is completing with.
+    return this.#serializeOwnerSetup(() => this.#exchangeInitialOwnerEnrollment(token, headers));
+  }
+
+  async #exchangeInitialOwnerEnrollment(
+    token: string,
+    headers: Headers,
+  ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
+    if (this.#options.managedOwner) throw managedOwnerSetupRefused();
     if (!this.#options.team) await this.#ensureInitialOwnerEnrollment();
     const tokenHash = digestSecret(token.trim());
     const [enrollment, administrator] = await Promise.all([
@@ -3391,4 +3577,12 @@ function personalRemoteRouteIntact(
     Number(remote.routeGeneration) === Number(state.generation) &&
     remote.routeOrigin === state.routeOrigin
   );
+}
+
+function managedOwnerSetupRefused(): OpensteerError {
+  return new OpensteerError({
+    code: "not_found",
+    message: "This Home is set up by its Opensteer Account, not with a setup link",
+    reason: "managed-home-setup-link-refused",
+  });
 }

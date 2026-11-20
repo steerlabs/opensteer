@@ -14,6 +14,8 @@ export {
   PersonalHostAccessAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
   PersonalHostAccessRouteEnvelopeSchema,
+  PersonalHostAccountAuthoritySchema,
+  isNetworkedPersonalAuthority,
   maximumPersonalHostAccessRouteSigningBytes,
   personalHostAccessRouteEnvelopeSha256,
   personalHostAccessRouteSigningBytes,
@@ -25,6 +27,7 @@ export type {
   PersonalHostAccessAuthority,
   PersonalHostAccessRouteDocument,
   PersonalHostAccessRouteEnvelope,
+  PersonalHostAccountAuthority,
 } from "@opensteer/deployment-authority/personal-access-route";
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";

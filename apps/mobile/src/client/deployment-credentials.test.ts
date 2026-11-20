@@ -47,6 +47,21 @@ describe("createDeploymentCredentials", () => {
     expect(await held.held(connection)).toBe(false);
   });
 
+  it("presents a Home on its own server the bearer its own sign-in issued", async () => {
+    const { credentials: held, sessions } = credentials("signed-in");
+    const connection = testDeploymentConnection({ home: true });
+    await sessions.save({
+      absoluteExpiresAt: "2026-09-21T00:00:00.000Z",
+      deploymentId: connection.authority.document.deploymentId,
+      expiresAt: "2026-09-15T00:00:00.000Z",
+      token,
+    });
+
+    expect(await held.authorization(connection)).toBe("Bearer host");
+    expect(await held.held(connection)).toBe(true);
+    expect(await credentials("signed-out").credentials.held(connection)).toBe(false);
+  });
+
   it("presents a personal computer its pairing session, never a bearer", async () => {
     const { credentials: held, sessions } = credentials("signed-in");
     const connection = testDeploymentConnection({ kind: "personal" });

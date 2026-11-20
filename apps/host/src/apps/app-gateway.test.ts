@@ -470,6 +470,37 @@ it("gives a shared Deployment no real origin, which would hold one person's logi
   expect(gateway.entryUrl(appId, session, "light", { host: "127.0.0.1:1234" })).toBeUndefined();
 });
 
+it("opens no app on a networked Home, which has no address apart from its own", async () => {
+  const response = vi.fn();
+  const gateway = new AppGateway({
+    apps: { get: vi.fn(), response, connect: vi.fn(), onRevoked: vi.fn() },
+    identity: { isSessionCurrent: async () => true },
+    signingKey,
+    canonicalOrigin: "https://home.example.test",
+    realOrigins: false,
+  });
+  expect(() => gateway.requireAppAddress()).toThrow(
+    expect.objectContaining({ code: "conflict", reason: "app-address-unavailable" }),
+  );
+  const app = Fastify();
+  gateway.installHttp(app);
+  try {
+    // A header steering the request at an app origin is refused, not served.
+    const refused = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: {
+        host: "home.example.test",
+        [appOriginHeader]: `https://${key}-${"a".repeat(32)}.example.test`,
+      },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(response).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
+
 it("streams at the upload cap and preserves loopback redirects", async () => {
   const f = await fixture();
   try {

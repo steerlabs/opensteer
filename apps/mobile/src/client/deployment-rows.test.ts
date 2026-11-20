@@ -41,6 +41,17 @@ describe("describeDeploymentRow", () => {
     expect(row.accountManaged).toBe(true);
   });
 
+  it("lists a Home on its own server as a Home that signs in at its address", () => {
+    const connection = testDeploymentConnection({ home: true });
+    const row = describeDeploymentRow(connection, signedOut);
+
+    expect(row.kindLabel).toBe("Home");
+    expect(row.origin).toBe("https://home.example.com");
+    expect(row.status).toBe("needs-sign-in");
+    expect(row.signIn).toBe("host-oauth");
+    expect(describeDeploymentRow(connection, held).status).toBe("signed-in");
+  });
+
   it("asks for a sign-in when no credential is held", () => {
     expect(
       describeDeploymentRow(testDeploymentConnection({ kind: "team" }), signedOut).status,

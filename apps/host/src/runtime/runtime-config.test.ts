@@ -2,8 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostConfig } from "@opensteer/config";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import * as core from "@opensteer/core";
+import { afterEach, describe, expect, it } from "vitest";
 import { createHostRuntime, hostAppRealOrigins } from "./runtime.js";
 
 const temporaryDirectories: string[] = [];
@@ -15,18 +14,10 @@ afterEach(() => {
 });
 
 describe("Host runtime configuration", () => {
-  it("uses the personal service policy for app origins", () => {
-    const shape = { kind: "personal" } as const;
-    const policy = core.deploymentPolicy(shape);
-    const mocked = vi.spyOn(core, "deploymentPolicy").mockReturnValue({
-      ...policy,
-      services: { personal: true, team: false },
-    } as core.DeploymentPolicy);
-    try {
-      expect(hostAppRealOrigins(shape)).toBe(true);
-    } finally {
-      mocked.mockRestore();
-    }
+  it("gives apps their own origins only where a loopback Personal Host has app addresses", () => {
+    expect(hostAppRealOrigins({ kind: "personal" }, "loopback")).toBe(true);
+    expect(hostAppRealOrigins({ kind: "personal" }, "networked")).toBe(false);
+    expect(hostAppRealOrigins({ kind: "team" }, "networked")).toBe(false);
   });
   it("rejects an unpinned Account-adopted Host before creating local state", async () => {
     const parent = mkdtempSync(join(tmpdir(), "opensteer-invalid-runtime-"));

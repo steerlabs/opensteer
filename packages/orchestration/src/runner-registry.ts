@@ -21,9 +21,15 @@ import type {
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
+  agentHomeFilesCapability,
   type HostAppRequest,
+  type HostHomeFileRequest,
+  type HostOutputImageUpload,
   type HostRunFileRequest,
+  type RunnerAgentHomeReport,
   type RunnerAppResult,
+  type RunnerHomeFileResult,
+  type RunnerOutputImagePublish,
   type RunnerRunFileResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
@@ -214,8 +220,21 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSettingsReport,
   ): Promise<void>;
+  onAgentHomeReport?(
+    identity: RunnerIdentity,
+    report: RunnerAgentHomeReport,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  onOutputImagePublish?(
+    identity: RunnerIdentity,
+    request: RunnerOutputImagePublish,
+    signal: AbortSignal,
+  ): Promise<Omit<HostOutputImageUpload, keyof RunnerConnectionFence | "requestId" | "type">>;
   /** The Agent home this Runner hosts, which its welcome names so it reports settings.json at once. */
-  agentHome?(identity: RunnerIdentity): Promise<import("@opensteer/core").ComputerFolder | null>;
+  agentHome?(identity: RunnerIdentity): Promise<{
+    agentHome: import("@opensteer/core").ComputerFolder;
+    agentHomeIsProvisional?: true;
+  } | null>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -368,6 +387,7 @@ interface OwnedRunBinding {
   readonly threadId: ThreadId;
 }
 interface RunnerConnection {
+  agentHomeReady: boolean;
   /**
    * Whether this connection's Runner has said which Runs it holds and the Host
    * has answered. Nothing is dispatched to it before: a Run sent earlier could
@@ -424,6 +444,13 @@ interface RunnerConnection {
     string,
     {
       resolve: (result: RunnerRunFileResult) => void;
+      reject: (error: unknown) => void;
+    }
+  >;
+  readonly pendingHomeFiles: Map<
+    string,
+    {
+      resolve: (result: RunnerHomeFileResult) => void;
       reject: (error: unknown) => void;
     }
   >;
@@ -683,6 +710,8 @@ export class RunnerRegistry {
       pendingApps: new Map(),
       pendingAppSyncs: new Map(),
       pendingRunFiles: new Map(),
+      pendingHomeFiles: new Map(),
+      agentHomeReady: false,
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
       ownedTriggerOccurrenceIds: new Set(),
@@ -708,7 +737,7 @@ export class RunnerRegistry {
         // Several renewals fit in one execution lease, so one lost heartbeat
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
-        ...(agentHome ? { agentHome } : {}),
+        ...agentHome,
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
       });
@@ -1805,6 +1834,69 @@ export class RunnerRegistry {
       connection.pendingRunFiles.delete(requestId);
     }
   }
+
+  /**
+   * Asks the hosting Runner to perform a rooted Agent-home file operation over
+   * its authenticated connection. Fenced and never replayed.
+   */
+  async requestHomeFile(
+    runnerId: RunnerId,
+    request: DistributiveOmit<
+      Exclude<HostHomeFileRequest, { readonly type: "host.home-files.cancel" }>,
+      keyof RunnerConnectionFence | "requestId"
+    >,
+    signal: AbortSignal,
+  ): Promise<RunnerHomeFileResult> {
+    const connection = this.#byRunner.get(runnerId);
+    if (!connection)
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "The hosting computer is offline",
+      });
+    if (!connection.identity.capabilities.includes(agentHomeFilesCapability))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "unsupported-runner",
+        message: "Update the hosting computer to access Agent home files",
+      });
+    if (connection.identity.runnerKind !== "main")
+      throw new OpensteerError({ code: "forbidden", message: "This is not the hosting computer" });
+    if (!("root" in request && request.root === "output-images") && !connection.agentHomeReady)
+      throw new OpensteerError({
+        code: "folder_unavailable",
+        message: "Agent home is not ready on the hosting computer",
+      });
+    signal.throwIfAborted();
+    const fence = connection.identity.fence;
+    const requestId = randomUUID();
+    const pending = deferred<RunnerHomeFileResult>();
+    connection.pendingHomeFiles.set(requestId, pending);
+    try {
+      const result = await withDeadline(
+        Promise.all([
+          pending.promise,
+          connection.peer.send({ ...fence, ...request, requestId }),
+        ]).then(([result]) => result),
+        runFileRequestTimeoutMs,
+        signal,
+        "The hosting computer did not finish the Agent home file operation in time",
+      );
+      if (!sameRunnerConnectionFence(result, fence))
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Agent home file response belongs to another connection",
+        });
+      return result;
+    } catch (error) {
+      if (!connection.disconnected.controller.signal.aborted)
+        void connection.peer
+          .send({ ...fence, requestId, type: "host.home-files.cancel" })
+          .catch(() => undefined);
+      throw error;
+    } finally {
+      connection.pendingHomeFiles.delete(requestId);
+    }
+  }
   /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
   async backgroundText(
     request: Omit<
@@ -2199,6 +2291,49 @@ export class RunnerRegistry {
       case "runner.settings.report":
         await this.#runHook(() => this.#hooks.onSettingsReport?.(connection.identity, message));
         break;
+      case "runner.agent-home.report":
+        if (
+          !connection.agentHomeReady &&
+          connection.identity.runnerKind === "main" &&
+          connection.identity.capabilities.includes(agentHomeFilesCapability) &&
+          connection.identity.environmentIds.includes(message.environmentId)
+        ) {
+          const signal = connection.disconnected.controller.signal;
+          connection.agentHomeReady =
+            (await this.#runHook(() =>
+              this.#hooks.onAgentHomeReport?.(connection.identity, message, signal),
+            )) === true;
+        }
+        break;
+      case "runner.output-image.publish":
+        await this.#runHook(async () => {
+          const signal = connection.disconnected.controller.signal;
+          const answer = await Promise.resolve()
+            .then(() =>
+              connection.identity.capabilities.includes(agentHomeFilesCapability)
+                ? this.#hooks.onOutputImagePublish?.(connection.identity, message, signal)
+                : undefined,
+            )
+            .then(
+              (result) =>
+                result ?? {
+                  message: "Output image publishing is unavailable on this Host",
+                  status: "rejected" as const,
+                },
+            )
+            .catch(() => ({
+              message: "Output image publishing failed on this Host",
+              status: "rejected" as const,
+            }));
+          if (signal.aborted) return;
+          await connection.peer.send({
+            ...connection.identity.fence,
+            ...answer,
+            requestId: message.requestId,
+            type: "host.output-image.upload",
+          });
+        });
+        break;
       case "runner.auxiliary.ticket-request":
         await this.#runHook(async () => {
           const ticket = await this.#hooks.issueAuxiliaryTicket?.(
@@ -2578,6 +2713,9 @@ export class RunnerRegistry {
       case "runner.run-file.result":
         connection.pendingRunFiles.get(message.requestId)?.resolve(message);
         break;
+      case "runner.home-files.result":
+        connection.pendingHomeFiles.get(message.requestId)?.resolve(message);
+        break;
       case "runner.harness-catalog-invalidated":
         connection.catalogGeneration += 1;
         connection.catalogCache.delete(message.harnessInstanceId);
@@ -2889,6 +3027,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
     for (const pending of connection.pendingRunFiles.values()) pending.reject(error);
+    for (const pending of connection.pendingHomeFiles.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
@@ -2900,6 +3039,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingAppSyncs.values()) pending.reject(error);
     connection.pendingAppSyncs.clear();
     connection.pendingRunFiles.clear();
+    connection.pendingHomeFiles.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();
     connection.ownedTriggerOccurrenceIds.clear();

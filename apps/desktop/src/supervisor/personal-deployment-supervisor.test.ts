@@ -540,7 +540,6 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(config.mode).toBe("production");
     expect(config.personal).toMatchObject({
       environmentId: runner.environment.OPENSTEER_ENVIRONMENT_ID,
-      nativeFsHelperPath: fixture.releaseValue.entrypoints.nativeFsHelper,
     });
     expect(host.environment).toMatchObject({
       OPENSTEER_DEPLOYMENT_NAME: "Studio Mac",
@@ -548,6 +547,8 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     });
     expect(host.environment).not.toHaveProperty("OPENSTEER_HOST_NATIVE_FS_HELPER");
+    expect(host.environment).not.toHaveProperty("OPENSTEER_NATIVE_FS_HELPER");
+    expect(host.environment).not.toHaveProperty("OPENSTEER_RUNNER_DATA_DIR");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_ROOT");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH");
     expect(host.secretEnvironment?.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toMatch(

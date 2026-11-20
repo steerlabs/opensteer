@@ -150,7 +150,7 @@ export function AddPersonalScreen(): ReactNode {
         contentContainerStyle={[styles.content, column]}
         keyboardShouldPersistTaps="handled"
       >
-        <Heading title="Connect by address" />
+        <Heading title="Pair your Mac" />
         <AppText role="secondary" tone="muted">
           Enter the address and pairing code your computer shows under Connect your phone.
         </AppText>

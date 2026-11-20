@@ -3,7 +3,12 @@ import {
   lockDeviceRemovalInTransaction,
   clearRemovedDeviceStopsInTransaction,
 } from "./device-removal-store.js";
-import { DeviceIdSchema, type DeviceId, type DeviceDriverIdentity } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  isLoopbackHostname,
+  type DeviceId,
+  type DeviceDriverIdentity,
+} from "@opensteer/core";
 import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-inventory-store.js";
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
@@ -575,7 +580,7 @@ async function assertPersonalRunnerAdmission(
 ): Promise<number | null> {
   const deployment = await transaction
     .selectFrom("deployments")
-    .select("deploymentShape")
+    .select(["canonicalOrigin", "deploymentShape"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
   if (deployment?.deploymentShape.kind !== "personal")
@@ -610,6 +615,9 @@ async function assertPersonalRunnerAdmission(
     });
   }
   if (input.stage === "issuance") return null;
+  // A networked Home's canonical origin is the route every other computer
+  // arrives on, so there is no Remote access generation to fence against.
+  if (!isLoopbackHostname(new URL(deployment.canonicalOrigin).hostname)) return null;
   const remoteAccess = await transaction
     .selectFrom("personalRemoteAccess")
     .select(["generation", "mode"])

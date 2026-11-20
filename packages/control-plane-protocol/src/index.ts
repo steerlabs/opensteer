@@ -28,6 +28,7 @@ import {
   ConnectOperationCompletionSchema,
   PersonalHostAccessAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
+  PersonalHostAccountAuthoritySchema,
 } from "./connect.js";
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
 import { HostedTeamIdSchema } from "./hosted-teams.js";
@@ -341,7 +342,7 @@ export type PersonalHostAccountLinkChallengeCredential = z.infer<
 
 export const IssuePersonalHostAccountLinkChallengeRequestSchema = z.strictObject({
   authorityEnvelope: HostDiscoveryEnvelopeSchema.refine(
-    (envelope) => PersonalHostAccessAuthoritySchema.safeParse(envelope.document).success,
+    (envelope) => PersonalHostAccountAuthoritySchema.safeParse(envelope.document).success,
     { message: "Account linking requires a Personal Host discovery envelope" },
   ),
   name: z.string().trim().min(1).max(120),
@@ -369,7 +370,7 @@ export type IssuePersonalHostAccountLinkChallengeResponse = z.infer<
 export const PersonalHostAccountLinkProofDocumentSchema = z
   .strictObject({
     account: HostAccountIdentitySchema,
-    authority: PersonalHostAccessAuthoritySchema,
+    authority: PersonalHostAccountAuthoritySchema,
     challenge: z.strictObject({
       credentialSha256: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
       id: PersonalHostAccountLinkChallengeIdSchema,
@@ -467,7 +468,7 @@ export const PersonalHostAccountLinkCompletionGrantClaimsSchema = z
   .strictObject({
     account: HostAccountIdentitySchema,
     aud: DeploymentOriginSchema,
-    authority: PersonalHostAccessAuthoritySchema,
+    authority: PersonalHostAccountAuthoritySchema,
     challengeId: PersonalHostAccountLinkChallengeIdSchema,
     exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -525,7 +526,7 @@ export type CompletePersonalHostAccountLinkResponse = z.infer<
 >;
 
 export function personalHostAccountLinkCompletionContext(
-  authority: z.infer<typeof PersonalHostAccessAuthoritySchema>,
+  authority: z.infer<typeof PersonalHostAccountAuthoritySchema>,
   challengeId: PersonalHostAccountLinkChallengeId,
   linkGeneration: z.infer<typeof AccountLinkGenerationSchema>,
 ) {

@@ -156,6 +156,9 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
           signInTeam: async () => {
             throw new Error("Unexpected sign-in");
           },
+          signInHome: async () => {
+            throw new Error("Unexpected sign-in");
+          },
           hostCredentialState: () => {
             throw new Error("Unexpected state");
           },

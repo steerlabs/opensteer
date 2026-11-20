@@ -37,6 +37,7 @@ import {
   tabComputers,
   authorizeTabTarget,
   authorizeTabActor,
+  authorizeTabRows,
   tabReadAuthority,
   canReadTab,
 } from "../tabs/tab-authority.js";
@@ -65,6 +66,7 @@ import { initializePersonalState } from "./personal-state.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
+import { HostOutputImageStore } from "../threads/host-output-images.js";
 import { createPersonalTeamLinkServices } from "../team-links/index.js";
 import {
   personalTeamRunPort,
@@ -78,7 +80,7 @@ import {
   reportAgentHomeSkills,
   ensureDeployment,
 } from "@opensteer/database";
-import { deploymentPolicy, localMachineOwnerEmail } from "@opensteer/core";
+import { deploymentPolicy, hostExposurePolicy, localMachineOwnerEmail } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
@@ -96,7 +98,12 @@ import {
   AesGcmCredentialVault,
   StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
-import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
+import {
+  assertHostConfigInvariants,
+  HostConfigurationIssue,
+  hostTrustedProxy,
+  type HostConfig,
+} from "@opensteer/config";
 import { createPluginChangeNotices, type PluginChangeNotices } from "./plugin-change-notices.js";
 import { TaskQuestionNotices } from "../threads/task-question-notices.js";
 
@@ -140,6 +147,7 @@ import {
 import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
 import { IdentityService } from "@opensteer/identity";
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/control-plane-protocol/broker-sealing";
+import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import { computerAppIntegrations, deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { type ComputerAppPlatform } from "@opensteer/integration-core/computer-app";
 import {
@@ -152,6 +160,7 @@ import {
   type RunnerStreamLossReason,
 } from "@opensteer/orchestration";
 import {
+  agentHomeFilesCapability,
   personalWebBuildId,
   type HarnessInstanceCatalog,
   type RunnerAuxiliaryModule,
@@ -167,6 +176,7 @@ import { AccountDirectoryPublisher } from "../access/account-directory-publisher
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
+import { ManagedHomeClaimService } from "../identity/managed-home-claim.js";
 import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
 import { RunToolTokenService } from "../agents/run-tool-tokens.js";
@@ -575,9 +585,21 @@ export async function createHostRuntime(
     let initializedPersonal: Awaited<ReturnType<typeof initializePersonalState>> = null;
     let initializingPersonal:
       Promise<Awaited<ReturnType<typeof initializePersonalState>>> | undefined;
+    let reportedAgentHome:
+      | {
+          readonly computerId: RunnerId;
+          readonly path: string;
+          readonly signal: AbortSignal;
+        }
+      | undefined;
     const initializePersonal = async () => {
       if (initializedPersonal) return initializedPersonal;
-      initializingPersonal ??= initializePersonalState(database, personalConfig)
+      initializingPersonal ??= initializePersonalState(database, {
+        ...personalConfig,
+        ...(reportedAgentHome && !reportedAgentHome.signal.aborted
+          ? { reportedAgentHome, signal: reportedAgentHome.signal }
+          : {}),
+      })
         .then(async (execution) => {
           // The owner's first name is in place before anyone reads it.
           if (execution) await ownerProfile.seed(config.ownerNameSeed ?? null);
@@ -735,12 +757,22 @@ export async function createHostRuntime(
     });
     const triggerStore = new TriggerStore(database);
     const accountDirectoryStore = new AccountDirectoryStore(database);
-    const localSetupToken = config.identity.localOwnerClaimToken!;
-    const initialOwnerEnrollment = {
-      expiresAt: new Date(Date.now() + localSetupEnrollmentLifetimeMilliseconds),
-      renewable: true,
-      tokenDigest: digestSecret(localSetupToken),
-    };
+    const exposurePolicy = hostExposurePolicy(config.deploymentShape, config.exposure);
+    // The desktop's own claim on a loopback Host; an operator's setup link on a networked Home.
+    const localSetupToken = config.identity.localOwnerClaimToken;
+    const operatorSetup = config.identity.initialOwnerEnrollment;
+    const initialOwnerEnrollment = localSetupToken
+      ? {
+          expiresAt: new Date(Date.now() + localSetupEnrollmentLifetimeMilliseconds),
+          renewable: true,
+          tokenDigest: digestSecret(localSetupToken),
+        }
+      : operatorSetup
+        ? {
+            expiresAt: new Date(Date.now() + operatorSetup.lifetimeSeconds * 1_000),
+            tokenDigest: operatorSetup.tokenDigest,
+          }
+        : undefined;
     const hostAuthority = {
       canonicalOrigin: deployment.canonicalOrigin,
       deploymentId: deployment.id,
@@ -752,6 +784,19 @@ export async function createHostRuntime(
     };
     let closeBrowserSession: (sessionId: import("@opensteer/core").AuthSessionId) => void = () =>
       undefined;
+    // A Cloud Computer's Home signs its one owner in with the Opensteer Account
+    // that booted it, through the OIDC client that Account registered for it.
+    const managedAccountProvider = config.managedHome
+      ? {
+          allowPrivateNetwork: false,
+          clientId: config.managedHome.oidc.clientId,
+          clientSecret: config.managedHome.oidc.clientSecret,
+          issuer: config.managedHome.accountOrigin.origin,
+          label: "Opensteer",
+          providerId: officialOpensteerAccountProviderId,
+          trustedOrigins: [],
+        }
+      : undefined;
     const identity = new IdentityService(database, {
       deployment: {
         kind: "personal",
@@ -775,7 +820,10 @@ export async function createHostRuntime(
       ...(config.identity.nativeOAuth
         ? { nativeOAuth: { clients: config.identity.nativeOAuth.clients } }
         : {}),
-      oidcProviders: [],
+      oidcProviders: managedAccountProvider ? [managedAccountProvider] : [],
+      ...(managedAccountProvider
+        ? { managedOwner: { providerId: managedAccountProvider.providerId } }
+        : {}),
       exposure: config.exposure,
       ...(config.portalOrigin ? { portalOrigin: config.portalOrigin } : {}),
       publicOrigin: config.canonicalOrigin,
@@ -783,6 +831,15 @@ export async function createHostRuntime(
       signupPolicy: config.identity.signupPolicy,
     });
     await identity.initialize();
+    if (
+      exposurePolicy.operatorOwnerSetup &&
+      !initialOwnerEnrollment &&
+      (await identity.configuration()).setupState === "required"
+    )
+      throw new HostConfigurationIssue(
+        "home-setup-code-required",
+        "An unclaimed Home requires OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN or its digest.",
+      );
     // The Runner registry is built further down, once the services its hooks
     // need exist. Everything above that reaches it only while a request is in
     // flight, so those callers address it through this indirection rather than
@@ -790,14 +847,21 @@ export async function createHostRuntime(
     let runnerRegistry: RunnerRegistry | undefined;
     const runFileRelay = new RunFileRelay();
     let disconnectBrowserSources = () => {};
-    const personalAccessAuthority =
-      deploymentPolicy(config.deploymentShape).personalRemoteAccess &&
-      config.exposure === "loopback"
-        ? hostAuthority
-        : undefined;
-    const personalRemoteAccess = personalAccessAuthority
+    // Every Personal Host holds its Opensteer Account link here; only a Mac
+    // Home also signs Remote access routes, because a networked Home's
+    // canonical origin is already its route to everything else.
+    const accountGrantVerifier = config.personalAccountIssuer
+      ? new RemotePersonalAccountGrantVerifier({
+          audience: config.canonicalOrigin.origin,
+          ...(options.personalAccountGrantFetch
+            ? { fetch: options.personalAccountGrantFetch }
+            : {}),
+          issuer: config.personalAccountIssuer,
+        })
+      : undefined;
+    const personalAccount = config.personal
       ? new PersonalRemoteAccessService({
-          authority: personalAccessAuthority,
+          authority: hostAuthority,
           database,
           // Every computer somebody lent this Deployment reached it over the
           // route that just changed, so none of their connections survives it.
@@ -807,17 +871,7 @@ export async function createHostRuntime(
             await runnerRegistry?.disconnectRouteAdmittedRunners("Remote access was reconfigured");
             disconnectBrowserSources();
           },
-          ...(config.personalAccountIssuer
-            ? {
-                grantVerifier: new RemotePersonalAccountGrantVerifier({
-                  audience: config.canonicalOrigin.origin,
-                  ...(options.personalAccountGrantFetch
-                    ? { fetch: options.personalAccountGrantFetch }
-                    : {}),
-                  issuer: config.personalAccountIssuer,
-                }),
-              }
-            : {}),
+          ...(accountGrantVerifier ? { grantVerifier: accountGrantVerifier } : {}),
           ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
           identity,
           keys,
@@ -826,14 +880,33 @@ export async function createHostRuntime(
           },
         })
       : undefined;
+    const personalRemoteAccess = exposurePolicy.personalRemoteAccess ? personalAccount : undefined;
+    const managedHomeClaim =
+      config.managedHome && accountGrantVerifier
+        ? new ManagedHomeClaimService({
+            authority: {
+              canonicalOrigin: config.canonicalOrigin.origin,
+              deploymentId: deployment.id,
+              hostInstanceId: deployment.activeHostInstanceId,
+              hostKeyFingerprint,
+            },
+            identity,
+            keys,
+            managed: {
+              cloudComputerId: config.managedHome.cloudComputerId,
+              generation: config.managedHome.generation,
+            },
+            verifier: accountGrantVerifier,
+          })
+        : undefined;
     let reportOwnerProfileError: (error: unknown) => void = () => {};
     const ownerProfile = new OwnerProfileService({
       store: store.ownerProfile,
-      account: personalRemoteAccess ?? null,
+      account: personalAccount ?? null,
       changed: () => undefined,
       report: (error) => reportOwnerProfileError(error),
     });
-    await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
+    await personalAccount?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
@@ -1450,6 +1523,7 @@ export async function createHostRuntime(
         ),
       authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
+      authorizeRows: authorizeTabRows,
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting
@@ -1457,9 +1531,18 @@ export async function createHostRuntime(
     // and the continuation outbox exist; both services signal into it from
     // every flow that completes a connection.
     let notifyIntegrationContinuations = (): void => undefined;
+    const outputImageStore = new HostOutputImageStore(dataDirectory);
     const files = new AgentHomeFiles({
       agentHome: async () => (await personalExecution()).options.agentHome,
-      helperPath: personalConfig.nativeFsHelperPath,
+      transport: {
+        relay: runFileRelay,
+        requestHomeFile: (runnerId, request, signal) =>
+          requiredService(runnerRegistry, "Runner registry").requestHomeFile(
+            runnerId,
+            request,
+            signal,
+          ),
+      },
     });
     let harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator | undefined;
     // A Runner can register before the Fastify instance that owns the log
@@ -1549,7 +1632,7 @@ export async function createHostRuntime(
               controlApiOrigin: accountAttachment.controlApiOrigin,
               hostCredential: accountAttachment.hostCredential,
             })
-        : personalRemoteAccess && personalAccountIssuer
+        : personalAccount && personalAccountIssuer
           ? async () => {
               const link = await database
                 .selectFrom("personalRemoteAccountLink")
@@ -1971,6 +2054,21 @@ export async function createHostRuntime(
     // The browser and messaging computers a Deployment supervises are
     // enrolled the same way any other machine is; the operator
     // minted their one-use tokens ahead of starting them.
+    // A networked Home has no desktop to read `/v1/local-bootstrap`, so its
+    // operator hands the hosting Runner's token to both processes. Once that
+    // Main has enrolled, a token left in place, or replaced, is simply spent.
+    if (config.initialMainRunnerEnrollmentToken)
+      await runnerAuthenticator
+        .ensureConfiguredMainEnrollment(config.initialMainRunnerEnrollmentToken)
+        .catch(async (error: unknown) => {
+          if (
+            error instanceof OpensteerError &&
+            error.code === "conflict" &&
+            (await store.deploymentMainRunnerState()) !== "absent"
+          )
+            return;
+          throw error;
+        });
     if (config.initialMessagingRunnerEnrollmentToken) {
       await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
         allowedModules: ["integrations", "messaging"],
@@ -2111,10 +2209,96 @@ export async function createHostRuntime(
           );
           if (owner) pluginsChanged(owner);
         },
-        agentHome: async (identity) => {
-          if (!identity.capabilities.includes("agent-home-settings-v1")) return null;
+        onAgentHomeReport: async (identity, report, signal) => {
+          if (report.environmentId !== personalConfig.environmentId) return false;
+          const hosting = await database
+            .selectFrom("runners")
+            .select("id")
+            .where("id", "=", identity.runnerId)
+            .where("kind", "=", "main")
+            .where("ownerKind", "=", "deployment")
+            .where("revokedAt", "is", null)
+            .executeTakeFirst();
+          if (!hosting || signal.aborted) return false;
           const settings = await findPersonalSettings(database);
-          return settings?.agentHome.computerId === identity.runnerId ? settings.agentHome : null;
+          if (signal.aborted) return false;
+          if (
+            settings &&
+            (settings.agentHome.computerId !== identity.runnerId ||
+              settings.agentHome.path !== report.path)
+          ) {
+            app.log.warn("The hosting computer reported a different Agent home path");
+            return false;
+          }
+          reportedAgentHome = { computerId: identity.runnerId, path: report.path, signal };
+          try {
+            await initializingPersonal;
+            if (await initializePersonal()) await ensureLinks();
+            return !signal.aborted;
+          } catch (error) {
+            if (reportedAgentHome?.signal === signal) reportedAgentHome = undefined;
+            app.log.warn({ err: error }, "Agent home canonicalization report refused");
+            return false;
+          }
+        },
+        onOutputImagePublish: async (_identity, request, connectionSignal) => {
+          if (await outputImageStore.has(request.sha256, request.extension)) {
+            return { status: "exists" as const };
+          }
+          const signal = AbortSignal.any([connectionSignal, AbortSignal.timeout(15_000)]);
+          signal.throwIfAborted();
+          const transfer = runFileRelay.open(request.sizeBytes);
+          const onAbort = () => transfer.close(new Error("Output image upload ended"));
+          signal.addEventListener("abort", onAbort, { once: true });
+          void (async () => {
+            try {
+              const incoming = await runFileRelay.download(
+                transfer.download.id,
+                transfer.download.token,
+                signal,
+              );
+              try {
+                await outputImageStore.store({
+                  extension: request.extension,
+                  mediaType: request.mediaType,
+                  sha256: request.sha256,
+                  signal,
+                  sizeBytes: request.sizeBytes,
+                  stream: incoming.stream,
+                });
+                incoming.settled();
+              } catch (error) {
+                incoming.settled(
+                  error instanceof Error ? error : new Error("Output image store failed"),
+                );
+                incoming.stream.destroy();
+              }
+            } catch {
+              // Timed out or cancelled transfer; runner sees the closed upload.
+            } finally {
+              transfer.close();
+              signal.removeEventListener("abort", onAbort);
+            }
+          })();
+          return { status: "upload" as const, transfer: transfer.upload };
+        },
+        agentHome: async (identity) => {
+          const supportsSettings = identity.capabilities.includes("agent-home-settings-v1");
+          const supportsFiles = identity.capabilities.includes(agentHomeFilesCapability);
+          if (!supportsSettings && !supportsFiles) return null;
+          const settings = await findPersonalSettings(database);
+          if (settings) {
+            return settings.agentHome.computerId === identity.runnerId
+              ? { agentHome: settings.agentHome }
+              : null;
+          }
+          if (identity.runnerKind === "main" && supportsFiles) {
+            return {
+              agentHome: { computerId: identity.runnerId, path: personalConfig.agentHome },
+              agentHomeIsProvisional: true as const,
+            };
+          }
+          return null;
         },
         onLive: (_identity, live) => {
           liveText.accept(live, syncHead);
@@ -2773,7 +2957,7 @@ export async function createHostRuntime(
     const localBootstrap = localSetupToken
       ? new LocalBootstrapService({
           publicUrl: config.runtimeOrigin,
-          requireSetupCredential: deploymentPolicy(config.deploymentShape).localOwnerClaim,
+          requireSetupCredential: exposurePolicy.localOwnerClaim,
           runners: runnerAuthenticator,
           setupToken: localSetupToken,
           store,
@@ -2848,14 +3032,7 @@ export async function createHostRuntime(
       },
       exportFiles: async (caller, directory, source, authorize, signal) => {
         requirePluginRun(caller);
-        await exportPluginSource(
-          (await personalExecution()).options.agentHome.path,
-          directory,
-          source.files,
-          files.options.helperPath!,
-          authorize,
-          signal,
-        );
+        await exportPluginSource(files, directory, source.files, authorize, signal);
       },
     });
     const pluginOwnerApi = new PluginOwnerApi({
@@ -2923,7 +3100,7 @@ export async function createHostRuntime(
         tabs: new TabToolHandlers(tabs),
         product: productHandlers,
         devices: deviceTools,
-        triggers: new TriggerToolHandlers(triggers),
+        triggers: new TriggerToolHandlers(triggers, store),
         teamRequestForRun: async (runId, threadId) => {
           const run = await database
             .selectFrom("runs")
@@ -3041,8 +3218,7 @@ export async function createHostRuntime(
       access: new TranscriptFileAccess({
         home: files,
         attachments,
-        imagesRoot: resolve(config.runnerDataDirectory, "images"),
-        helperPath: personalConfig.nativeFsHelperPath,
+        outputImageStore,
         admit: ({ userId, threadId }) =>
           admitTranscriptFiles(database, { ownerId: userId, threadId }),
         outputImages: (input) => resolveThreadOutputImages(database, input),
@@ -3071,6 +3247,14 @@ export async function createHostRuntime(
     const app = await createHostServer(
       {
         connections,
+        connectionEffects: {
+          closeLineage: (connectionId) => agentTools.closeLineage(connectionId),
+          stopLineage: async (userId, connectionId, reason) => {
+            const { failures } = await store.stopConnectionLineage(userId, connectionId, reason);
+            for (const error of failures)
+              app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop");
+          },
+        },
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
@@ -3088,7 +3272,8 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins: hostAppRealOrigins(config.deploymentShape),
+        appRealOrigins: hostAppRealOrigins(config.deploymentShape, config.exposure),
+        trustedProxy: hostTrustedProxy(config),
         liveText,
         resourceRevisions,
         ...(options.onPersonalScopeCut ? { onPersonalScopeCut: options.onPersonalScopeCut } : {}),
@@ -3142,6 +3327,8 @@ export async function createHostRuntime(
         ...(personalRemoteAccess
           ? { personalRemoteAccess: { service: personalRemoteAccess } }
           : {}),
+        ...(personalAccount ? { personalAccountLink: { service: personalAccount } } : {}),
+        ...(managedHomeClaim ? { managedHomeClaim } : {}),
         ownerProfile,
         realtime,
         runnerAuthenticator,
@@ -3230,9 +3417,9 @@ export async function createHostRuntime(
     // Account.
     const publishHostAuthority = accountDirectoryClient
       ? () => accountDirectoryClient.publishAuthority()
-      : personalRemoteAccess
+      : personalAccount
         ? async () => {
-            await personalRemoteAccess.publishAccountAuthority();
+            await personalAccount.publishAccountAuthority();
           }
         : undefined;
     const hostAuthorityPublisher = publishHostAuthority
@@ -3555,8 +3742,16 @@ export async function ensureDefaultHarnesses(
   }
 }
 
-export function hostAppRealOrigins(shape: import("@opensteer/core").DeploymentShape): boolean {
-  return deploymentPolicy(shape).services.personal;
+/**
+ * Apps open on an origin of their own: `*.localhost` beside a loopback Host,
+ * or a Remote access route's app hosts. A networked Home has no app address,
+ * so its apps report themselves unavailable rather than open on its origin.
+ */
+export function hostAppRealOrigins(
+  shape: import("@opensteer/core").DeploymentShape,
+  exposure: import("@opensteer/core").HostExposure,
+): boolean {
+  return hostExposurePolicy(shape, exposure).personalRemoteAccess;
 }
 
 function requirePluginRun(caller: import("../mcp/agent-caller.js").AgentCaller) {

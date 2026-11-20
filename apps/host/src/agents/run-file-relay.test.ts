@@ -64,6 +64,31 @@ describe("RunFileRelay", () => {
     );
   });
 
+  it("refuses oversized uploads and settles when the uploader disconnects", async () => {
+    const relay = new RunFileRelay();
+    const handle = relay.open(1);
+    const stream = new Readable({ read() {} });
+    try {
+      await expect(
+        relay.upload(handle.upload.id, handle.upload.token, {
+          name: "a",
+          sizeBytes: 2,
+          stream,
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+      const upload = relay.upload(handle.upload.id, handle.upload.token, {
+        name: "a",
+        sizeBytes: 1,
+        stream,
+      });
+      await relay.download(handle.download.id, handle.download.token);
+      stream.destroy();
+      await expect(upload).rejects.toThrow("The upload stopped");
+    } finally {
+      handle.close();
+    }
+  });
+
   it("releases both sides when the call ends before they meet", async () => {
     const relay = new RunFileRelay();
     const waiting = relay.open();

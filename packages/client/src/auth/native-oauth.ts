@@ -1,6 +1,7 @@
 import { TeamRuntimeOwner } from "../team/team-runtime-owner.js";
 import {
   NativeTeamEntry,
+  TeamEntryOutcomeError,
   assertTeamEntryOutcome,
   verifyTeamEndpoint,
 } from "../team/native-team-entry.js";
@@ -61,6 +62,7 @@ import type {
   DeploymentConnection,
 } from "../connections/deployment-catalog.js";
 import { resolveConnection } from "../connections/connection-resolver.js";
+import { usesHostNativeOAuth } from "../connections/home-address.js";
 import type { HostCredentialProvider } from "../connections/host-attachment-fence.js";
 import type { NativeOAuthIdentity } from "./oauth-identity.js";
 import {
@@ -507,8 +509,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     entry = this.teamEntryFence(connectionInput.authority.document.deploymentId, true),
   ): Promise<HostOAuthState> {
     const connection = structuredClone(connectionInput);
-    if (connection.kind !== "team") {
-      throw new Error("Only a team server uses deployment-native OAuth.");
+    if (!usesHostNativeOAuth(connection)) {
+      throw new Error(
+        "Only a team server or a Home at its own address uses deployment-native OAuth.",
+      );
     }
     if (invite && !supportsTeamInviteContinuation(connection))
       throw new Error("Join this team in the browser first, then sign in to it here.");
@@ -578,6 +582,53 @@ export class NativeOAuthManager implements HostCredentialProvider {
         false,
       );
     });
+  }
+
+  /**
+   * A Home at its own address signs its owner in with its native OAuth, as a
+   * team server does but with no membership to enter: a held credential
+   * answers at once, and only an interactive call opens the browser.
+   */
+  async signInHome(connection: DeploymentConnection, interactive = true): Promise<HostOAuthState> {
+    if (connection.kind === "team" || !usesHostNativeOAuth(connection))
+      throw new Error("Only a Home at its own address signs in here.");
+    if (await this.authorizationHeader(connection)) return this.hostCredentialState(connection);
+    if (!interactive) throw new TeamEntryOutcomeError({ status: "sign-in-required" });
+    const deploymentId = connection.authority.document.deploymentId;
+    const entry = this.teamEntryFence(deploymentId, true);
+    let stop = () => {};
+    let stopAbort = () => {};
+    const ended = new Promise<HostOAuthState>((resolve) => {
+      let authorizing = false;
+      stop = this.subscribeHostCredentials((state) => {
+        if (state.connection.authority.document.deploymentId !== deploymentId) return;
+        if (state.status === "authorizing") authorizing = true;
+        else if (authorizing) resolve(state);
+      });
+    });
+    try {
+      const final = await Promise.race([
+        this.beginHostSignIn(connection, undefined, entry).then((begun) =>
+          begun.status === "authorizing" ? ended : begun,
+        ),
+        ended,
+        new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(entry.signal.reason);
+          stopAbort = () => entry.signal.removeEventListener("abort", abort);
+          if (entry.signal.aborted) abort();
+          else entry.signal.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+      if (final.status !== "signed-in")
+        throw new ClientOperationError(
+          final.detail ?? "Signing in to your Home didn’t finish. Try again.",
+          "blocked",
+        );
+      return final;
+    } finally {
+      stop();
+      stopAbort();
+    }
   }
 
   async signInTeam(
@@ -991,8 +1042,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async authorizationHeader(connection: DeploymentConnection): Promise<string | null> {
     this.#assertStorageReady();
     // Personal connections ride the partition session cookie, so they must
-    // never also carry a self-hosted bearer token.
-    if (connection.kind !== "team") return null;
+    // never also carry a self-hosted bearer token; only a Home at its own
+    // address signs in here as a team server does.
+    if (!usesHostNativeOAuth(connection)) return null;
     const owner = this.#teamRuntime;
     await owner.run(() => this.#retryCredentialWrite(connection.authority.document.deploymentId));
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
@@ -1016,6 +1068,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     connection: DeploymentConnection,
     rejectedAuthorization?: string | null,
   ): Promise<boolean> {
+    if (connection.kind !== "team") {
+      const refreshed = await this.refreshTeamAuthorization(connection, rejectedAuthorization);
+      return refreshed !== null && refreshed !== rejectedAuthorization;
+    }
     const outcome = await this.#teamEntry().authorize({
       deploymentId: connection.authority.document.deploymentId,
       origin: connection.authority.document.canonicalOrigin,
@@ -2009,7 +2065,8 @@ function authorizationUrl(
   clientId: string,
 ): string {
   const url = new URL(endpoints.authorization);
-  if (flow.kind === "host") url.searchParams.set(teamOAuthVersionParameter, String(teamApiVersion));
+  if (flow.kind === "host" && flow.connection.kind === "team")
+    url.searchParams.set(teamOAuthVersionParameter, String(teamApiVersion));
   const resource =
     flow.kind === "account"
       ? flow.issuerOrigin
@@ -2142,9 +2199,9 @@ function credentialMatchesConnection(
 }
 
 /**
- * Only a team connection reaches Host-native OAuth, and a self-hosted
- * Host is never a Personal stack this client supervises, so its access arm
- * resolves without any live runtime.
+ * Only a team or a networked Home reaches Host-native OAuth, and neither is a
+ * Personal stack this client supervises, so its access arm resolves without
+ * any live runtime.
  */
 function hostAttachmentKey(connection: DeploymentConnection): string {
   return resolveConnection(connection, null, { authorization: null }).key;

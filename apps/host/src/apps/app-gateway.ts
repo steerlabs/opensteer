@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import {
   AppIdSchema,
   AuthSessionIdSchema,
+  OpensteerError,
   UserIdSchema,
   type AuthenticatedSession,
 } from "@opensteer/core";
@@ -43,6 +44,9 @@ const identitySchema = z.strictObject({
 type AppIdentity = z.infer<typeof identitySchema>;
 type UpgradeListener = (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
+/** Said when a Host has no address apart from its own to open an app on. */
+export const appAddressUnavailableReason = "app-address-unavailable";
+
 export function hasAppAuthority(headers: IncomingHttpHeaders): boolean {
   return (
     headers[appOriginHeader] !== undefined ||
@@ -74,6 +78,20 @@ export class AppGateway {
         socket.destroy();
       }
       this.#admitted.delete(appId);
+    });
+  }
+
+  /**
+   * An app's own HTML never runs on the signed-in Host's origin. A Host with
+   * no app address — a networked Home — refuses to open it at all, rather
+   * than fall back to a frame on that origin.
+   */
+  requireAppAddress(): void {
+    if (this.#options.realOrigins) return;
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Apps can’t open on this Home yet: it has no separate address for them.",
+      reason: appAddressUnavailableReason,
     });
   }
 
@@ -295,6 +313,7 @@ export class AppGateway {
   }
 
   #authority(headers: IncomingHttpHeaders): AppOriginMode & { appId: string } {
+    if (!this.#options.realOrigins) throw new Error("This Host has no app addresses");
     const forwarded = headers[appOriginHeader];
     const origin =
       forwarded === undefined

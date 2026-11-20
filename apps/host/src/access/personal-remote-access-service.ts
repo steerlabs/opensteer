@@ -27,8 +27,9 @@ import {
   PersonalHostAccountLinkCompletionPayloadSchema,
   personalHostAccountLinkCompletionContext,
   PersonalHostAccountLinkChallengeIdSchema,
-  PersonalHostAccessAuthoritySchema,
+  PersonalHostAccountAuthoritySchema,
   PersonalHostAccessRouteDocumentSchema,
+  isNetworkedPersonalAuthority,
   PersonalHostAccountLinkProofEnvelopeSchema,
   RevokeConnectRequestSchema,
   type RevokeConnectRequest,
@@ -36,7 +37,7 @@ import {
   type UpdateAccountProfileRequest,
   personalHostAccessRouteEnvelopeSha256,
   type IssuePersonalHostAccountLinkChallengeResponse,
-  type PersonalHostAccessAuthority,
+  type PersonalHostAccountAuthority,
   type PersonalHostAccessRouteDocument,
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
@@ -104,13 +105,15 @@ export interface PersonalRemoteSessionAuthenticator {
 }
 
 /**
- * Durable Personal reachability authority. The canonical Host remains
- * loopback-only; this service signs and fences optional HTTPS access routes.
+ * Durable Personal reachability authority and the Opensteer Account link.
+ * A Mac Home stays loopback-only and this service signs and fences its
+ * optional HTTPS access routes. A Home on its own server has no routes — its
+ * canonical origin is its route — so only the Account link is used there.
  */
 export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthenticator {
   readonly desktopUpdates: PersonalDesktopUpdate;
   readonly administration: PersonalRemoteAdministration;
-  readonly #authority: PersonalHostAccessAuthority;
+  readonly #authority: PersonalHostAccountAuthority;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #identity: IdentityService;
   readonly #keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
@@ -122,7 +125,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #accountLinkChanged: () => void;
 
   constructor(options: {
-    readonly authority: PersonalHostAccessAuthority;
+    readonly authority: PersonalHostAccountAuthority;
     readonly database: Kysely<DatabaseSchema>;
     /**
      * Drops the computers that reached this Deployment over the route being
@@ -149,7 +152,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       resumeAccountOperation: (intent) => this.#resumeAccountOperation(intent.action === "unlink"),
       accountIssuer: options.grantVerifier?.issuer ?? null,
     });
-    this.#authority = PersonalHostAccessAuthoritySchema.parse(options.authority);
+    this.#authority = PersonalHostAccountAuthoritySchema.parse(options.authority);
     this.#database = options.database;
     this.#identity = options.identity;
     this.#keys = options.keys;
@@ -203,6 +206,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     input: ConfigurePersonalRemoteAccessRequest | unknown,
     afterResponse?: (effect: () => void) => void,
   ): Promise<PersonalRemoteAccessStatus> {
+    if (isNetworkedPersonalAuthority(this.#authority))
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Remote access is for a Home on a Mac; this Home is reached at its own address",
+      });
     await requirePersonalAdministrator(this.#database, caller.session);
     const request = ConfigurePersonalRemoteAccessRequestSchema.parse(input);
     let reconfigured = false;

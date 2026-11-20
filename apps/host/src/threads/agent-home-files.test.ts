@@ -1,22 +1,27 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
-import { mkdtemp, realpath, rm, writeFile, mkdir, symlink, rename } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createId } from "@opensteer/core";
 import { expect, it } from "vitest";
+import { RunFileRelay } from "../agents/run-file-relay.js";
 import { AgentHomeFiles } from "./agent-home-files.js";
+import { createInProcessHomeFilesTransport } from "./home-files.test-support.js";
 
-it("lists, previews and downloads Agent home through the real native helper", async () => {
+it("lists, previews and downloads Agent home through the hosting Runner", async () => {
   const path = await realpath(await mkdtemp(join(tmpdir(), "host-agent-home-files-")));
-  const files = new AgentHomeFiles({
-    agentHome: async () => ({ computerId: createId("runner"), path }),
-    helperPath: fileURLToPath(
-      new URL("../../../runner/native-fs-helper/opensteer-native-fs", import.meta.url),
-    ),
-  });
+  const files = makeFiles(path);
   try {
     await writeFile(join(path, "note.txt"), "Folder content");
     const page = await files.list({ parentKey: "", limit: 20 });
@@ -139,11 +144,95 @@ it("enforces preview and content caps and propagates cancellation", async () => 
     await rm(home, { recursive: true, force: true });
   }
 });
+
+it("fails clearly when the hosting Runner is offline, lacks capability, or cancels a transfer", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "host-home-proxy-errors-")));
+  const runnerId = createId("runner");
+  let online = false;
+  let supported = true;
+  const { transport } = createInProcessHomeFilesTransport({
+    agentHomePath: home,
+    online: () => online,
+    runnerId,
+    supported: () => supported,
+  });
+  const files = new AgentHomeFiles({
+    agentHome: async () => ({ computerId: runnerId, path: home }),
+    transport,
+  });
+  try {
+    await writeFile(join(home, "hello.txt"), "hello");
+    await expect(files.list({ parentKey: "", limit: 10 })).rejects.toMatchObject({
+      code: "runner_offline",
+    });
+
+    online = true;
+    supported = false;
+    await expect(files.list({ parentKey: "", limit: 10 })).rejects.toMatchObject({
+      code: "conflict",
+      reason: "unsupported-runner",
+    });
+
+    supported = true;
+    await files.writeDirectory({
+      directory: "exported-draft",
+      files: [{ bytes: Buffer.from("export const a = 1;"), path: "index.ts" }],
+    });
+    expect(await readFile(join(home, "exported-draft/index.ts"), "utf8")).toBe(
+      "export const a = 1;",
+    );
+    await expect(
+      files.writeDirectory({
+        directory: "exported-draft",
+        files: [{ bytes: Buffer.from("export const a = 2;"), path: "index.ts" }],
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    // Cancelled in-flight transfer rejects cleanly without hanging.
+    const relay = new RunFileRelay();
+    const started = Promise.withResolvers<void>();
+    const stalledFiles = new AgentHomeFiles({
+      agentHome: async () => ({ computerId: runnerId, path: home }),
+      transport: {
+        relay,
+        requestHomeFile: (_runnerId, _request, signal) =>
+          new Promise((_resolve, reject) => {
+            started.resolve();
+            if (signal.aborted) {
+              reject(signal.reason ?? new Error("transfer aborted"));
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => reject(signal.reason ?? new Error("transfer aborted")),
+              { once: true },
+            );
+          }),
+      },
+    });
+    const controller = new AbortController();
+    const pending = stalledFiles.download(
+      Buffer.from("hello.txt").toString("base64url"),
+      controller.signal,
+    );
+    await started.promise;
+    controller.abort(new Error("user cancelled"));
+    await expect(pending).rejects.toThrow("user cancelled");
+    stalledFiles.close();
+  } finally {
+    files.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 function makeFiles(path: string) {
+  const runnerId = createId("runner");
+  const { transport } = createInProcessHomeFilesTransport({
+    agentHomePath: path,
+    runnerId,
+  });
   return new AgentHomeFiles({
-    agentHome: async () => ({ computerId: createId("runner"), path }),
-    helperPath: fileURLToPath(
-      new URL("../../../runner/native-fs-helper/opensteer-native-fs", import.meta.url),
-    ),
+    agentHome: async () => ({ computerId: runnerId, path }),
+    transport,
   });
 }

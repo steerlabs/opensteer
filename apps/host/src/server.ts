@@ -15,7 +15,7 @@ import { personalClientFrameMaxBytes } from "@opensteer/protocol/personal-sync";
 import { attachPersonalSocket } from "./server/personal-socket.js";
 import { readThreadHistory } from "@opensteer/database";
 import type { AuthenticatedHostSession } from "./identity/auth.js";
-import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { isLoopbackHostname, isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { TabService } from "./tabs/tab-service.js";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import { registerAgentToolRoute } from "./mcp/agent-tool-route.js";
@@ -30,6 +30,8 @@ import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import type { DeviceDriverManagementPort } from "./administration/device-driver-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
+import { installTrustedProxy } from "./identity/anonymous-client-address.js";
+import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
@@ -55,6 +57,8 @@ import {
   registerConnectionRoutes,
   createConnectionRpcHandlers,
   handleConnectionCommand,
+  isConnectionCommand,
+  type ConnectionCommandEffects,
   type ConnectionOAuth,
 } from "./mcp/connections/index.js";
 import { afterResponse } from "./server/after-response.js";
@@ -361,6 +365,7 @@ export interface HostServerDependencies {
   readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
+  readonly connectionEffects?: ConnectionCommandEffects;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -369,6 +374,8 @@ export interface HostServerDependencies {
   readonly apps: AppService;
   readonly appOriginSigningKey: Uint8Array;
   readonly appRealOrigins: boolean;
+  /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
+  readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
@@ -423,6 +430,13 @@ export interface HostServerDependencies {
   readonly localBootstrap?: { readonly service: LocalBootstrapService } | undefined;
   /** Present when reachability is routed personal. */
   readonly personalRemoteAccess?: { readonly service: PersonalRemoteAccessService } | undefined;
+  /** A Cloud Computer's Home: where its Account claims it, once. */
+  readonly managedHomeClaim?: Pick<
+    import("./identity/managed-home-claim.js").ManagedHomeClaimService,
+    "claim"
+  >;
+  /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
+  readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
   /** The personal owner's name; absent on a team Host. */
   readonly ownerProfile?: OwnerProfileService;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
@@ -471,6 +485,7 @@ export async function createHostServer(
       },
     }),
   });
+  installTrustedProxy(app, dependencies.trustedProxy ?? "loopback-cloudflared");
   const noSendKeys: ReadonlyMap<string, string> = new Map();
   const readSendKeys =
     (session: AuthenticatedHostSession["session"]) => async (ids: readonly MessageId[]) => {
@@ -594,13 +609,25 @@ export async function createHostServer(
     ? {
         oauth: dependencies.connections,
         canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-        loopbackOriginAliases: true,
+        // A networked Home answers agents at its public origin alone.
+        loopbackOriginAliases: isLoopbackHostname(
+          new URL(dependencies.discovery.document.canonicalOrigin).hostname,
+        ),
         remoteOrigin: async () =>
           (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
             .origin ?? null,
       }
     : undefined;
   if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
+  if (dependencies.managedHomeClaim)
+    registerManagedHomeClaimRoute(app, dependencies.managedHomeClaim, (address) =>
+      consumeAnonymousRateLimit(
+        dependencies.store.database,
+        `managed-home-claim:${address}`,
+        30,
+        new Date(),
+      ),
+    );
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
@@ -702,6 +729,65 @@ export async function createHostServer(
     dependencies.personalRemoteAccess?.service.desktopUpdates ?? null,
     dependencies.store.database,
   );
+  // The Account link is its own subsystem: a Home on its own server links to an
+  // Opensteer Account with no Remote access at all.
+  if (dependencies.personalAccountLink) {
+    const accountLink = dependencies.personalAccountLink.service;
+    app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
+      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
+        mutation: true,
+      });
+      return reply
+        .header("cache-control", "no-store")
+        .send(
+          await accountLink.approveAccountLink(
+            caller,
+            ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
+          ),
+        );
+    });
+    app.post("/v1/personal-remote-access/account-link/consume", async (request, reply) => {
+      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
+        mutation: true,
+      });
+      return reply
+        .header("cache-control", "no-store")
+        .send(
+          await accountLink.consumeAccountLink(
+            caller,
+            ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
+          ),
+        );
+    });
+    app.post("/v1/personal-remote-access/account-link/resume", async (request, reply) => {
+      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
+        mutation: true,
+      });
+      return reply
+        .header("cache-control", "no-store")
+        .send(await accountLink.resumeAccountLink(caller, request.body));
+    });
+    app.post(
+      "/v1/personal-remote-access/account-unlink/revoke-sessions",
+      async (request, reply) => {
+        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
+        const caller = await dependencies.authenticator.authenticateSessionContext(
+          request.headers,
+          { mutation: true },
+        );
+        await accountLink.revokeAccountSessions(caller, (effect) => afterResponse(reply, effect));
+        return reply.code(204).send();
+      },
+    );
+    app.post("/v1/personal-remote-access/account-unlink/remove-link", async (request, reply) => {
+      PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
+      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
+        mutation: true,
+      });
+      await accountLink.removeAccountLink(caller, (effect) => afterResponse(reply, effect));
+      return reply.code(204).send();
+    });
+  }
   // One optional subsystem, one registration decision. A Deployment without
   // Personal reachability does not answer on these paths at all, so no handler
   // repeats an availability check the router already made.
@@ -754,64 +840,6 @@ export async function createHostServer(
       return reply
         .header("cache-control", "no-store")
         .send(await personalRemoteAccess.issuePairingCode(caller));
-    });
-    app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await personalRemoteAccess.approveAccountLink(
-            caller,
-            ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
-    });
-    app.post("/v1/personal-remote-access/account-link/consume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await personalRemoteAccess.consumeAccountLink(
-            caller,
-            ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
-    });
-    app.post("/v1/personal-remote-access/account-link/resume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(await personalRemoteAccess.resumeAccountLink(caller, request.body));
-    });
-    app.post(
-      "/v1/personal-remote-access/account-unlink/revoke-sessions",
-      async (request, reply) => {
-        PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-        const caller = await dependencies.authenticator.authenticateSessionContext(
-          request.headers,
-          { mutation: true },
-        );
-        await personalRemoteAccess.revokeAccountSessions(caller, (effect) =>
-          afterResponse(reply, effect),
-        );
-        return reply.code(204).send();
-      },
-    );
-    app.post("/v1/personal-remote-access/account-unlink/remove-link", async (request, reply) => {
-      PersonalHostAccountUnlinkStepRequestSchema.parse(request.body);
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      await personalRemoteAccess.removeAccountLink(caller, (effect) =>
-        afterResponse(reply, effect),
-      );
-      return reply.code(204).send();
     });
     app.put("/v1/personal-remote-access/connect-projection", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
@@ -1602,13 +1630,18 @@ export async function createHostServer(
   >;
 
   const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
-    if (command.type === "connection.authorize" || command.type === "connection.revoke") {
+    if (isConnectionCommand(command)) {
       if (!dependencies.connections)
         throw new OpensteerError({
           code: "not_found",
           message: "Agent connections are unavailable.",
         });
-      const result = await handleConnectionCommand(dependencies.connections, command, context);
+      const result = await handleConnectionCommand(
+        dependencies.connections,
+        command,
+        context,
+        dependencies.connectionEffects,
+      );
       // The person's other devices may be showing the list.
       if (context.session) dependencies.realtime.publishConnectionsChanged(context.session.user.id);
       return result;
@@ -2260,19 +2293,25 @@ export async function createHostServer(
         context.afterResponse?.(() => administration.release(operation.id));
         return { type: command.type, operation };
       }
-      case "personal.remoteAccess.pairing.create":
-      case "personal.accountLink.approve":
-      case "personal.accountLink.complete":
-      case "personal.accountLink.resume": {
+      case "personal.remoteAccess.pairing.create": {
         const service = dependencies.personalRemoteAccess?.service;
         if (!service)
           throw new OpensteerError({
             code: "not_found",
             message: "Personal remote access is unavailable",
           });
+        return { type: command.type, pairing: await service.issuePairingCode({ session }) };
+      }
+      case "personal.accountLink.approve":
+      case "personal.accountLink.complete":
+      case "personal.accountLink.resume": {
+        const service = dependencies.personalAccountLink?.service;
+        if (!service)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Opensteer Account linking is unavailable",
+          });
         const caller = { session };
-        if (command.type === "personal.remoteAccess.pairing.create")
-          return { type: command.type, pairing: await service.issuePairingCode(caller) };
         if (command.type === "personal.accountLink.approve")
           return {
             type: command.type,
@@ -2927,6 +2966,7 @@ export function advertisedCapabilities(
     "thread-titles-v1",
     "message-origin-v1",
     "task-marks-v1",
+    "agent-grants-v1",
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",

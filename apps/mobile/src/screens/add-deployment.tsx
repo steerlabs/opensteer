@@ -263,18 +263,18 @@ function manualDeploymentDoorRows(props: {
       title="Scan a code"
     />,
     <DeploymentDoorRow
-      description="For Tailscale or an address your computer already has."
+      description="For your Mac’s Tailscale or Remote access address and its pairing code."
       key="personal"
       onPress={props.onPersonal}
       symbol="computer"
-      title="Connect by address"
+      title="Pair your Mac"
     />,
     <DeploymentDoorRow
-      description="You know the address of a deployment someone runs."
+      description="The address of an Opensteer you run on your own server, or a team’s."
       key="server"
       onPress={props.onServer}
       symbol="server"
-      title="Add a server by address"
+      title="Add a Home by address"
     />,
   ];
 }
