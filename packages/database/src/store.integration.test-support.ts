@@ -93,7 +93,12 @@ export async function createStoreFixture() {
     const { OpensteerStore } = await import("./store.js");
     const reactions: import("./personal-mutation.js").PersonalCommitReaction[] = [];
     const commitListeners = new Set<(head: string, scopes: ReadonlySet<string>) => void>();
-    const noticeListeners = new Set<(resourceKinds: ReadonlySet<string>) => void>();
+    const noticeListeners = new Set<
+      (notice: {
+        readonly resourceKinds: ReadonlySet<string>;
+        readonly changedTabs: ReadonlySet<string>;
+      }) => void
+    >();
     const reactionListeners = new Set<
       (reaction: import("./personal-mutation.js").PersonalCommitReaction) => void
     >();
@@ -101,7 +106,7 @@ export async function createStoreFixture() {
     installPersonalMutationHooks(database, {
       wake(notice) {
         for (const listener of commitListeners) listener(notice.head, notice.changedScopes);
-        for (const listener of noticeListeners) listener(notice.resourceKinds);
+        for (const listener of noticeListeners) listener(notice);
       },
       react(reaction) {
         reactions.push(reaction);
@@ -750,7 +755,10 @@ export async function createStoreFixture() {
       reactions,
       /** Each commit's resource kinds and reactions, as the Host's own hooks receive them. */
       observePersonalReactions(listeners: {
-        readonly notice: (resourceKinds: ReadonlySet<string>) => void;
+        readonly notice: (notice: {
+          readonly resourceKinds: ReadonlySet<string>;
+          readonly changedTabs: ReadonlySet<string>;
+        }) => void;
         readonly reaction: (
           reaction: import("./personal-mutation.js").PersonalCommitReaction,
         ) => void;

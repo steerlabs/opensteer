@@ -139,7 +139,7 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
-import { ShadowHostSession } from "./shadow-host.js";
+import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
 import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
 
 const olderBrowserDialogSchema = BrowserDialogSchema.omit({ id: true });
@@ -353,6 +353,7 @@ export interface BrowserSessionRepository {
   readBrowserSessionCut?(
     ownerId: UserId,
     sessionId: BrowserSessionId,
+    surfaces?: readonly string[],
   ): Promise<BrowserSessionCut | null>;
   /** A person brought a browser, or one of its pages, into a conversation. */
   recordBrowserSessionUse(input: {
@@ -695,6 +696,8 @@ export class BrowserService {
   readonly #actorKeys = new Map<string, string | null>();
   /** Shadow comparisons of the catalog with what each session's runtime reports. */
   readonly #shadows = new Map<BrowserSessionId, ShadowHostSession>();
+  /** Reads every shadow comparison's cut, one at a time for the whole Host. */
+  readonly #shadowReader = new ShadowReader();
   readonly #activityTimers = new Map<string, NodeJS.Timeout>();
   readonly #activityPending = new Map<
     string,
@@ -2286,9 +2289,36 @@ export class BrowserService {
     if (this.#actorKeys.size > 4096) this.#actorKeys.delete(this.#actorKeys.keys().next().value!);
   }
 
-  /** A commit may have changed the catalog or Run authority behind every shadow comparison. */
-  shadowCatalogChanged(): void {
-    for (const shadow of this.#shadows.values()) shadow.catalogChanged();
+  /**
+   * A commit changed these catalog tabs: only the sessions that report or
+   * bound one of them read their cut again.
+   */
+  shadowTabsChanged(tabIds: ReadonlySet<string>): void {
+    if (tabIds.size === 0) return;
+    for (const [sessionId, shadow] of this.#shadows) {
+      const surfaces = this.#brokers.get(sessionId)?.shadowFacts()?.surfaces;
+      const prefix = `${sessionId}:`;
+      if (
+        [...tabIds].some(
+          (id) => surfaces?.has(id) || this.#workspacePageGenerations.has(`${prefix}${id}`),
+        )
+      )
+        shadow.catalogChanged();
+    }
+  }
+
+  /**
+   * A commit may have changed these Runs' eligibility (null: any Run's): only
+   * the sessions whose cut or actors involve them read their cut again.
+   */
+  shadowRunsChanged(runIds: readonly string[] | null): void {
+    for (const [sessionId, shadow] of this.#shadows) {
+      const involved = new Set(shadow.runs);
+      for (const actor of this.#actors.values())
+        if (actor.sessionId === sessionId) involved.add(actor.runId);
+      if (runIds === null ? involved.size > 0 : runIds.some((id) => involved.has(id)))
+        shadow.catalogChanged();
+    }
   }
 
   #startShadow(sessionId: BrowserSessionId, ownerId: UserId): void {
@@ -2300,18 +2330,24 @@ export class BrowserService {
       return;
     const shadow = new ShadowHostSession({
       session: sessionId,
-      read: () => this.#shadowCatalog(sessionId, ownerId),
+      reader: this.#shadowReader,
+      read: (surfaces, signal) => this.#shadowCatalog(sessionId, ownerId, surfaces, signal),
       inventory: () => this.#shadowInventory(sessionId),
     });
     this.#shadows.set(sessionId, shadow);
     shadow.catalogChanged();
   }
 
+  /** One cut, bounded by the reader's deadline and abandoned when the comparison stops. */
   async #shadowCatalog(
     sessionId: BrowserSessionId,
     ownerId: UserId,
+    surfaces: readonly string[],
+    signal: AbortSignal,
   ): Promise<ShadowCatalog | null> {
-    const cut = await this.#repository.readBrowserSessionCut?.(ownerId, sessionId);
+    const cut = await withDatabaseOperationSignal(signal, Date.now() + 5_000, () =>
+      this.#repository.readBrowserSessionCut!(ownerId, sessionId, surfaces),
+    );
     if (!cut) return null;
     return {
       ended: cut.state === "closing" || cut.state === "closed" || cut.state === "failed",
@@ -2323,6 +2359,10 @@ export class BrowserService {
             ? [`${run.runId}:${run.bindingGeneration}`]
             : [],
         ),
+      ),
+      // A Run with no facts at all is unknown, never taken as ineligible.
+      known: new Set(
+        cut.bindings.flatMap(({ run }) => (run && run.refusal !== "no-run" ? [run.runId] : [])),
       ),
     };
   }

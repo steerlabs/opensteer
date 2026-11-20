@@ -732,8 +732,12 @@ export class OpensteerStore {
     );
   }
   /** A session's open catalog tabs and its Run bindings' eligibility, from one snapshot. */
-  async readBrowserSessionCut(ownerId: UserId, sessionId: BrowserSessionId) {
-    return browserSessionStore.readBrowserSessionCut(this.#database, ownerId, sessionId);
+  async readBrowserSessionCut(
+    ownerId: UserId,
+    sessionId: BrowserSessionId,
+    surfaces: readonly string[] = [],
+  ) {
+    return browserSessionStore.readBrowserSessionCut(this.#database, ownerId, sessionId, surfaces);
   }
   async countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number> {
     return browserSessionStore.countBrowserSessionAttachments(this.#database, sessionId);

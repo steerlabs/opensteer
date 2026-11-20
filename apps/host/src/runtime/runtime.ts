@@ -6,7 +6,7 @@ import {
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
 import { createRunFinishDrain, republishThreads } from "@opensteer/database";
-import { shadowAuthorityTouched, shadowCatalogTouched } from "../browser/shadow-host.js";
+import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { RequestDeadlines, settleEach } from "../agents/request-deadlines.js";
@@ -671,7 +671,7 @@ export async function createHostRuntime(
         `${config.canonicalOrigin.origin}/tasks/${threadId}`,
     };
     let react = (_reaction: PersonalCommitReaction): void => undefined;
-    let browserCatalogChanged = (): void => undefined;
+    let browserTabsChanged = (_tabIds: ReadonlySet<string>): void => undefined;
     let wakeExecutionCoordinator = (): void => undefined;
     let syncHead = "0";
     const reportMutationFailure = (error: unknown) =>
@@ -692,7 +692,7 @@ export async function createHostRuntime(
         for (const threadId of liveText.provisionalThreads())
           if (notice.changedScopes.has(`thread:${threadId}`)) readLiveTail(threadId);
         resourceRevisions.committed(notice.resourceKinds, notice.head);
-        if (shadowCatalogTouched(notice.resourceKinds)) browserCatalogChanged();
+        browserTabsChanged(notice.changedTabs);
       },
       suspend: (scopes) => realtime.suspendAuthority(scopes),
       react: (reaction) => {
@@ -1644,9 +1644,10 @@ export async function createHostRuntime(
         onError: reportMutationFailure,
       }),
     });
-    browserCatalogChanged = () => browser.shadowCatalogChanged();
+    browserTabsChanged = (tabIds) => browser.shadowTabsChanged(tabIds);
     react = (reaction) => {
-      if (shadowAuthorityTouched(reaction)) browserCatalogChanged();
+      const runs = shadowRunsTouched(reaction);
+      if (runs !== undefined) browser.shadowRunsChanged(runs);
       switch (reaction.type) {
         case "deadlinesChanged":
           deadlines?.wake();

@@ -501,7 +501,7 @@ export interface BrowserSessionCut {
   readonly state: HostedBrowserSessionState;
   /** The session's open page tabs, by catalog identity. */
   readonly tabs: readonly { readonly tabId: string; readonly generation: number }[];
-  /** Its page tabs the catalog has closed. */
+  /** Which of the surfaces asked about are tabs of this session the catalog has closed. */
   readonly closed: readonly string[];
   /**
    * Its attachments. A Run's binding is eligible only while its execution
@@ -524,37 +524,61 @@ export interface BrowserSessionCut {
   }[];
 }
 
+/** At most this many reported surfaces are looked up by id in one cut. */
+const maxCutSurfaces = 2_048;
+
 /**
- * One session's open catalog tabs and its attachments' eligibility, read in
- * one repeatable-read snapshot so the two describe the same moment. Null when
- * the session does not exist: no information, never an empty set.
+ * One session of this owner: its open catalog tabs, which of the given
+ * surfaces the catalog has closed, and its attachments' eligibility, read in
+ * one repeatable-read snapshot so they describe the same moment. Open tabs come
+ * from the open-page index by session; closed ones only by primary key for
+ * the surfaces asked about. Null when the owner has no such session: no
+ * information, never an empty set.
  */
 export async function readBrowserSessionCut(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
   sessionId: BrowserSessionId,
+  surfaces: readonly string[] = [],
   now: () => number = Date.now,
 ): Promise<BrowserSessionCut | null> {
   return withPersonalReadTransaction(database, async (transaction) => {
     const session = await transaction
       .selectFrom("browserSessions")
-      .select("state")
-      .where("id", "=", sessionId)
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select("browserSessions.state")
+      .where("browserSessions.id", "=", sessionId)
+      // The same owner fence as every owner read of a session.
+      .where((expression) => ownedBrowserSession(expression, ownerId))
       .executeTakeFirst(databaseOperationOptions());
     if (!session) return null;
-    const [tabs, attachments] = await Promise.all([
+    const asked = [...new Set(surfaces)].slice(0, maxCutSurfaces);
+    const [tabs, closed, attachments] = await Promise.all([
       transaction
         .selectFrom("personalTabs")
-        .select(["id", "generation", "closedAt"])
+        .select(["id", "generation"])
         .where("ownerId", "=", ownerId)
         .where("kind", "=", "page")
+        .where("closedAt", "is", null)
         .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
         .orderBy("id")
         .execute(databaseOperationOptions()),
+      asked.length
+        ? transaction
+            .selectFrom("personalTabs")
+            .select("id")
+            .where(sql<boolean>`id = any(${asked}::text[])`)
+            .where("ownerId", "=", ownerId)
+            .where("kind", "=", "page")
+            .where("closedAt", "is not", null)
+            .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
+            .execute(databaseOperationOptions())
+        : [],
       transaction
         .selectFrom("browserSessionAttachments")
         .select("agentBindingId")
         .where("sessionId", "=", sessionId)
+        .where("ownerId", "=", ownerId)
         .orderBy("agentBindingId")
         .execute(databaseOperationOptions()),
     ]);
@@ -566,7 +590,12 @@ export async function readBrowserSessionCut(
       ? await Promise.all([
           transaction
             .selectFrom("runs")
-            .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
+            // Personal authority only: a Run whose owner has no Personal settings is not eligible.
+            .leftJoin("personalSettings", (join) =>
+              join
+                .onRef("personalSettings.ownerId", "=", "runs.requestedBy")
+                .on("personalSettings.singletonKey", "=", "personal"),
+            )
             .leftJoin("providerSessions", (join) =>
               join
                 .onRef("providerSessions.id", "=", "runs.providerSessionId")
@@ -587,7 +616,7 @@ export async function readBrowserSessionCut(
             )
             .select([
               "runs.id as runId",
-              "personalSettings.singletonKey",
+              "personalSettings.ownerId as personalOwnerId",
               "users.disabledAt",
               "executionEnvironments.id as admittedEnvironmentId",
               "runs.finishIntent",
@@ -607,7 +636,7 @@ export async function readBrowserSessionCut(
             .execute(databaseOperationOptions()),
           transaction
             .selectFrom("runAttempts")
-            .select(["runId", "id"])
+            .select(["runId", "id", "bindingGeneration"])
             .where("runId", "in", runIds)
             .where("status", "=", "current")
             .execute(databaseOperationOptions()),
@@ -618,7 +647,7 @@ export async function readBrowserSessionCut(
             .where("status", "=", "active")
             .execute(databaseOperationOptions()),
           // Every Run whose assignment, or any ancestor of it, was cancelled: one query for all.
-          sql<{ run_id: string }>`
+          sql<{ runId: string }>`
             with recursive ancestors(run_id, id, parent_assignment_id, status) as (
               select r.id, d.id, d.parent_assignment_id, d.status
               from runs r join delegations d on d.id = r.assignment_id
@@ -630,18 +659,19 @@ export async function readBrowserSessionCut(
             select distinct run_id from ancestors where status = 'cancelled'
           `
             .execute(transaction)
-            .then((result) => new Set(result.rows.map((row) => row.run_id))),
+            // The connection maps result columns to camel case.
+            .then((result) => new Set(result.rows.map((row) => row.runId))),
         ])
       : [[], [], [], new Set<string>()];
     const factsByRun = new Map(facts.map((row) => [row.runId, row]));
-    const attemptByRun = new Map<string, string>(attempts.map((row) => [row.runId, row.id]));
+    const attemptByRun = new Map(attempts.map((row) => [row.runId as string, row]));
     const at = now();
     const refusal = (runId: RunId): BrowserBindingRefusal | null => {
       const fact = factsByRun.get(runId);
       if (!fact) return "no-run";
       if (fact.finishIntent !== null) return "finishing";
       if (
-        fact.singletonKey !== "personal" ||
+        fact.personalOwnerId === null ||
         fact.disabledAt !== null ||
         fact.admittedEnvironmentId === null
       )
@@ -669,15 +699,20 @@ export async function readBrowserSessionCut(
         )
       )
         return "grant";
-      if (!attemptByRun.has(runId)) return "attempt";
+      const attempt = attemptByRun.get(runId);
+      // The current attempt, under this binding once it has been dispatched at all.
+      if (
+        !attempt ||
+        (attempt.bindingGeneration !== null &&
+          Number(attempt.bindingGeneration) !== Number(fact.runBindingGeneration))
+      )
+        return "attempt";
       return null;
     };
     return {
       state: session.state,
-      tabs: tabs.flatMap((row) =>
-        row.closedAt ? [] : [{ tabId: row.id, generation: Number(row.generation) }],
-      ),
-      closed: tabs.flatMap((row) => (row.closedAt ? [row.id] : [])),
+      tabs: tabs.map((row) => ({ tabId: row.id, generation: Number(row.generation) })),
+      closed: closed.map((row) => row.id),
       bindings: attachments.map(({ agentBindingId }) => {
         const runId = bindingRunId(agentBindingId);
         if (!runId) return { bindingId: agentBindingId, run: null };
@@ -687,7 +722,7 @@ export async function readBrowserSessionCut(
           bindingId: agentBindingId,
           run: {
             runId,
-            attempt: refused ? null : (attemptByRun.get(runId) ?? null),
+            attempt: refused ? null : (attemptByRun.get(runId)?.id ?? null),
             bindingGeneration:
               refused || !fact?.runBindingGeneration ? null : Number(fact.runBindingGeneration),
             refusal: refused,

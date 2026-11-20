@@ -64,10 +64,15 @@ Before Close and admission move to comparing what the catalog says should exist 
 runtime holds, the Host makes that comparison in shadow from facts it already has: the open tabs and
 eligible Run attempts from one consistent catalog read, and the surfaces the runtime already
 reports. It logs what it would destroy, which open tabs have no page, and which holds a Run may no
-longer keep, and acts on none of it. It adds nothing to any wire, and it runs only when a commit
-changes the catalog or Run authority or the runtime reports a change, never on a timer, so an idle
-Host does no work for it. The runtime reports no catalog generation, so a page bound at an earlier
-generation of a reopened tab is recognised only by the generation the Host bound it at.
+longer keep, and acts on none of it. It adds nothing to any wire. It reads again only for a session
+whose tab a commit changed or whose Runs a commit may have changed (binding acquisition, a Run
+change or finish, a grant or Runner revoked), one read at a time for the whole Host, and compares
+only against a read no later commit superseded; it never runs on a timer, so an idle Host does no
+work for it. What it cannot judge (a page still being admitted, a tab whose generation the Host
+never bound, a hold by an unknown Run) is counted, not logged as a disagreement, and an id the
+runtime supplied is logged only if it has the shape the runtime issues. The runtime reports no
+catalog generation, so a page bound at an earlier generation of a reopened tab is recognised only by
+the generation the Host bound it at.
 
 ## Agents address tabs
 

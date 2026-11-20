@@ -19,7 +19,9 @@ import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import {
   answeredQuestionRecordsMigrationName,
   applyAnsweredQuestionRecords,
+  applyBrowserSessionTabsIndex,
   applyPersonalStateSchema,
+  browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
@@ -602,6 +604,7 @@ export function migrationProvider(options?: {
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
             }
           : {}),
+        [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
       };
     },
   };

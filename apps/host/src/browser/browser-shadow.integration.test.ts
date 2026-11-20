@@ -25,7 +25,7 @@ import { sql, type Kysely } from "kysely";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserService, type BrowserRuntimeConnection } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
-import { shadowAuthorityTouched, shadowCatalogTouched } from "./shadow-host.js";
+import { shadowRunsTouched } from "./shadow-host.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 
 /** One live Host↔runtime connection in-process, exactly the existing attachment. */
@@ -113,10 +113,21 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     });
     let readFails = false;
     const readCut = store.readBrowserSessionCut.bind(store);
+    /** Every cut read, by session, and the most read at once. */
+    const reads: string[] = [];
+    let reading = 0;
+    let mostAtOnce = 0;
     const repository = Object.assign(personalBrowserRepository(store), {
-      readBrowserSessionCut: (...args: Parameters<typeof readCut>) => {
-        if (readFails) return Promise.reject(new Error("connection reset"));
-        return readCut(...args);
+      readBrowserSessionCut: async (...args: Parameters<typeof readCut>) => {
+        reads.push(args[1]);
+        reading++;
+        mostAtOnce = Math.max(mostAtOnce, reading);
+        try {
+          if (readFails) throw new Error("connection reset");
+          return await readCut(...args);
+        } finally {
+          reading--;
+        }
       },
     });
     const browser = new BrowserService({
@@ -162,11 +173,10 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
     });
     // The Host's own post-commit hooks, as the runtime wires them.
     const stopObserving = fixture.observePersonalReactions({
-      notice: (kinds) => {
-        if (shadowCatalogTouched(kinds)) browser.shadowCatalogChanged();
-      },
+      notice: (notice) => browser.shadowTabsChanged(notice.changedTabs),
       reaction: (reaction) => {
-        if (shadowAuthorityTouched(reaction)) browser.shadowCatalogChanged();
+        const runs = shadowRunsTouched(reaction);
+        if (runs !== undefined) browser.shadowRunsChanged(runs);
       },
     });
     await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
@@ -311,6 +321,18 @@ integration("the Host's shadow comparison of catalog and runtime", () => {
       expect(shadow("browser.shadow.appeared").at(-1)).toMatchObject({ reason: "closed" }),
     );
     expect(page.isClosed()).toBe(false);
+
+    // Fifty more sessions: one tab commit reads the one session it touches, one read at a time.
+    for (let index = 0; index < 50; index++)
+      await browser.start({ fresh: true, ownerId: f.userId });
+    await converges(() => expect(reading).toBe(0));
+    await vi.advanceTimersByTimeAsync(1_000);
+    const before = reads.length;
+    await tabs.reopen(f.userId, descriptor.id, "reopen-fanout");
+    await converges(() => expect(reads.length).toBeGreaterThan(before));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reads.slice(before), "Only the session that holds the tab").toEqual([sessionId]);
+    expect(mostAtOnce, "Never more than one cut, so one pooled connection, at a time").toBe(1);
 
     // Idle: sessions attached, nothing changing, no statement for this, or anything, at all.
     await vi.advanceTimersByTimeAsync(60_000);
