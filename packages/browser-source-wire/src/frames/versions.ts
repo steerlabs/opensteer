@@ -6,7 +6,7 @@
  * weakens one.
  */
 export const browserSourceWireFloor = 4;
-export const browserSourceWireCurrent = 7;
+export const browserSourceWireCurrent = 8;
 
 /** A peer that states no wire version speaks wire 4, whatever the floor is now. */
 const unstatedWire = 4;

@@ -2,6 +2,7 @@ import { DeviceIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { RunnerIdSchema, UserIdSchema, WindowIdSchema } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
+import { ComputerViewRemovedSchema } from "@opensteer/protocol";
 import type {
   ComputerViewNativeResult,
   ComputerViewTarget,
@@ -128,6 +129,28 @@ function harness(phone = false) {
 }
 
 describe("owner windows", () => {
+  it("reports a device restart on the exact removed owner view and leaves ordinary disconnects unchanged", async () => {
+    const h = harness();
+    try {
+      const view = await h.open();
+      h.service.forgetRunner(machine, "device-restarting");
+      expect(ComputerViewRemovedSchema.parse(h.notices.at(-1))).toEqual({
+        type: "host.computer-view.removed",
+        machineId: machine,
+        viewId: view.viewId,
+        generation: view.generation,
+        reason: "disconnected",
+        displayReason: "device-restarting",
+      });
+      const reopened = await h.open();
+      expect(reopened.generation).toBeGreaterThan(view.generation);
+      h.service.forgetRunner(machine);
+      expect(ComputerViewRemovedSchema.parse(h.notices.at(-1))).not.toHaveProperty("displayReason");
+    } finally {
+      h.service.shutdown();
+    }
+  });
+
   it("deduplicates exact windows and preserves independent viewing generations", async () => {
     const h = harness();
     try {

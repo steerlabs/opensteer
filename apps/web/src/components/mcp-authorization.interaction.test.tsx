@@ -32,6 +32,7 @@ describe("signed-in MCP connection consent", () => {
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
           chromeTabs: [{ sourceId, computerName: "Work Mac", paired: true }],
           chromeTabsNeedPairing: true,
+          chromeTabsRepairNames: ["Home Mac"],
         },
       });
       vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
@@ -53,8 +54,12 @@ describe("signed-in MCP connection consent", () => {
       expect(
         container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')?.value,
       ).toBe("Grok Verified");
-      expect(container.textContent).not.toContain("pair Chrome again");
-      expect(container.textContent).not.toContain("pair it again");
+      expect(container.textContent).toContain(
+        "To share tabs from Chrome on Home Mac, pair it again.",
+      );
+      expect(
+        container.querySelector('[aria-label="Tabs you share from Chrome on Home Mac"]'),
+      ).toBeNull();
       const chrome = container.querySelector<HTMLInputElement>(
         '[aria-label="Tabs you share from Chrome on Work Mac"]',
       )!;

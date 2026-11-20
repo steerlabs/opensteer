@@ -7,10 +7,10 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
-import type { ConnectionCaller } from "../apps/host/src/mcp/agent-caller.js";
+import { fixtureConnectionCaller } from "./connection-caller.test-support.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -75,6 +75,128 @@ it.skipIf(databaseMissing)(
 it.skipIf(databaseMissing)(
   "grants a selected connected agent one shared Chrome and detaches it on Disconnect",
   () => proveChromeShares("connected agents"),
+);
+
+it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
+  "settles a shared Chrome Disconnect from a matching late receipt on the %s",
+  async (home) => {
+    const fixture = await createStoreFixture();
+    const { userId: ownerId, runnerId } = await fixture.createRunFixture("chrome-detach-receipt");
+    const deviceId = await fixture.store.requireSelfDeviceId(runnerId);
+    const sourceId = createId("browserSource");
+    const shareId = crypto.randomUUID();
+    const connections = new AgentConnectionStore(fixture.database);
+    const connection = await connections.create({
+      userId: ownerId,
+      label: "Late detach",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "chrome-tabs", sourceId }],
+      }),
+    });
+    expect(await connections.activate(connection.id, crypto.randomUUID())).toBe(true);
+    const { session } = await beginAgentSession(fixture.database, {
+      userId: ownerId,
+      agentConnectionId: connection.id,
+    });
+    const authority = { ownerId, agentBindingId: `session:${session.id}` };
+    const newHome = () =>
+      new ChromeSharedTabs(fixture.store, {
+        attempts: sharedChromeAttempts(fixture.database),
+        device: async () => "Hosting computer",
+      });
+    let homeTabs = newHome();
+    const connectChrome = (id = sourceId) =>
+      homeTabs.connectSource({
+        ownerId,
+        sourceId: id,
+        deviceId,
+        name: "Chrome",
+        detachReceipts: true,
+        detachReplay: true,
+        write: () => true,
+        fail: () => {},
+      });
+    const attempts = () => connectionAttempts(fixture.database, connection.id);
+    const state = async () =>
+      (await connections.list(ownerId, { includeRevoked: true })).find(
+        ({ id }) => id === connection.id,
+      )?.state;
+    const drive = () =>
+      fixture.store.driveConnectionCleanups({
+        stopper: {
+          async stop(attempt) {
+            if (attempt.kind === "shared-chrome") await homeTabs.stopAttempt(attempt.id);
+          },
+        },
+      });
+    try {
+      let chrome = connectChrome();
+      await chrome.receive({
+        type: "tab.shared",
+        shareId,
+        targetId: "fixture-target",
+        title: "Fixture",
+        url: "https://fixture.test/",
+      });
+      const port = homeTabs.browserUsePort(async () => authority, shareId);
+      await port.openPage(shareId, {
+        contextKey: "fixture",
+        signal: new AbortController().signal,
+        deadline: Date.now() + 5_000,
+        maxBytes: 4096,
+        maxDepth: 16,
+        maxEntries: 256,
+      });
+      expect(await connections.revoke(ownerId, connection.id)).toBe(true);
+      const attempt = (await attempts()).find(({ kind }) => kind === "shared-chrome");
+      expect(attempt?.terminalEvidenceAt).toBeNull();
+      if (!attempt) throw new Error("Expected a shared Chrome attempt");
+      if (home === "same Home") {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const stopped = homeTabs.stopAttempt(attempt.id);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await stopped;
+        } finally {
+          vi.useRealTimers();
+        }
+      } else {
+        homeTabs.close();
+        await sharedChromeAttempts(fixture.database).recover();
+        homeTabs = newHome();
+        chrome = connectChrome();
+      }
+
+      expect((await drive()).settled).not.toContain(connection.id);
+      expect(await state()).toBe("stopping");
+      const unrelated = connectChrome(createId("browserSource"));
+      await unrelated.receive({ type: "tab.detached", shareId });
+      await chrome.receive({ type: "tab.detached", shareId: crypto.randomUUID() });
+      expect(await attempts()).toContainEqual(
+        expect.objectContaining({
+          id: attempt.id,
+          terminalEvidenceAt: null,
+          contactLostAt: expect.any(Date),
+        }),
+      );
+
+      await chrome.receive({ type: "tab.detached", shareId });
+      const ended = (await attempts()).find(({ id }) => id === attempt.id);
+      expect(ended?.terminalEvidenceAt).toBeInstanceOf(Date);
+      await chrome.receive({ type: "tab.detached", shareId });
+      expect((await attempts()).find(({ id }) => id === attempt.id)).toEqual(ended);
+      expect(await drive()).toEqual({ failures: [], settled: [connection.id] });
+      expect(await state()).toBe("stopped");
+    } finally {
+      homeTabs.close();
+    }
+  },
 );
 
 async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "connected agents") {
@@ -329,7 +451,7 @@ async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "co
         flushPendingTabDescriptors: unexpected,
         listAgentProfiles: unexpected,
         tabOccupants: () => [],
-        detachAgentSessionsForBinding: async () => {},
+        detachAgentSessionsForBinding: async () => [],
         browserBindingEnded: () => false,
       },
     });
@@ -412,15 +534,7 @@ async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "co
         agentConnectionId: connection.id,
       });
       const subject = { kind: "binding" as const, bindingId: `session:${session.id}` };
-      const caller: ConnectionCaller = {
-        kind: "connection",
-        key: `connection:${connection.id}`,
-        userId: ownerId,
-        connectionId: connection.id,
-        grant: connection.grant,
-        grantRevision: connection.grantRevision,
-        accessMode: connection.accessMode,
-      };
+      const caller = fixtureConnectionCaller(connection);
       return {
         caller,
         session,

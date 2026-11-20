@@ -24,6 +24,13 @@ final class WindowIdentityRegistry<Value> {
     return value
   }
 
+  func resolve(_ id: String, inScope: (Value) -> Bool) throws -> Value {
+    guard let value = entries[id], !retired.contains(id), inScope(value) else {
+      throw SessionWindows.closed
+    }
+    return value
+  }
+
   func retire(_ id: String) {
     guard entries.removeValue(forKey: id) != nil else { return }
     retired.insert(id)
@@ -74,8 +81,10 @@ enum WindowIdentities {
     return app
   }
 
-  static func resolve(_ id: String) throws -> WindowLiveness {
-    let identity = try registry.resolve(id)
+  static func resolve(_ id: String, process: ProcessStamp? = nil) throws -> WindowLiveness {
+    let identity =
+      if let process { try registry.resolve(id) { $0.liveness.process == process } }
+      else { try registry.resolve(id) }
     do { _ = try identity.liveness.read() }
     catch let error as HelperError where error == SessionWindows.closed {
       registry.retire(id)

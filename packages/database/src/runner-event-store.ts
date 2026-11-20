@@ -922,7 +922,10 @@ export async function commitRunnerEvent(
     if (!terminalReceipt || !connectionId) return;
     await database
       .updateTable("runAttempts")
-      .set({ terminalEvidenceAt: new Date(), contactLostAt: input.verifiedContainment ? null : new Date() })
+      .set({
+        terminalEvidenceAt: new Date(),
+        contactLostAt: input.verifiedContainment ? null : new Date(),
+      })
       .where("runId", "=", event.runId)
       .where("bindingGeneration", "=", event.bindingGeneration)
       .where("runnerId", "=", input.runnerId)
@@ -988,9 +991,13 @@ export async function commitRunnerEvent(
             event.type === "run.completed" ||
             event.type === "run.failed" ||
             event.type === "run.interrupted";
+          // A restart waiting to interrupt this binding can still lose to its final reply.
+          const replyFromLiveAttempt =
+            event.type === "assistant.message" && attempt.endedAt === null;
           if (
             authority.kind === "superseded" &&
-            (!terminal || (event.type === "run.interrupted" && !(await runWasStopped(tx, run.id))))
+            ((!terminal && !replyFromLiveAttempt) ||
+              (event.type === "run.interrupted" && !(await runWasStopped(tx, run.id))))
           ) {
             if (event.type === "run.interrupted") {
               const scope = { attemptId: attempt.id, bindingGeneration: event.bindingGeneration };

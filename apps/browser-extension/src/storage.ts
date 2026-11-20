@@ -11,6 +11,7 @@ import { z } from "zod";
 export const dailyNewSiteBudget = 20;
 export const budgetWindowMs = 24 * 60 * 60 * 1_000;
 const maximumConnections = 16;
+export const maxChromeDetachReceipts = 64;
 
 const SiteShareSchema = z.object({
   firstSharedAt: z.number().int().nonnegative(),
@@ -37,6 +38,7 @@ const ConnectionSchema = z.object({
     })
     .optional(),
   connectedAt: z.number().int().nonnegative(),
+  chromeDetachReceipts: z.array(z.uuid()).max(maxChromeDetachReceipts).optional(),
   deploymentName: z.string().trim().min(1).max(120),
   name: BrowserSourceNameSchema,
   /** When each newly shared site was first shared, for the rolling daily budget. */

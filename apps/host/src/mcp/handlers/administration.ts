@@ -54,7 +54,9 @@ function command(value: Record<string, unknown>): AdministrationCommand {
 function liveGrantedApps(
   grant: Extract<AgentGrant, { scope: "selected" }>,
   connections: Awaited<
-    ReturnType<AdministrationService["dependencies"]["integrations"]["devices"]["deviceConnections"]>
+    ReturnType<
+      AdministrationService["dependencies"]["integrations"]["devices"]["deviceConnections"]
+    >
   >,
 ) {
   return grant.resources.flatMap((resource) =>
@@ -410,13 +412,15 @@ export class AdministrationToolHandlers {
           if (grantedDevices) {
             const display = grantedPhones.has(device.id) ? summary?.phoneDisplay : null;
             const driver = display?.driver;
-            const driverVisible = driver && drivers.some(
-              (binding) =>
-                binding.runnerId === driver.runnerId &&
-                binding.role === "self" &&
-                binding.detachedAt === null &&
-                grantedDevices.has(binding.deviceId),
-            );
+            const driverVisible =
+              driver &&
+              drivers.some(
+                (binding) =>
+                  binding.runnerId === driver.runnerId &&
+                  binding.role === "self" &&
+                  binding.detachedAt === null &&
+                  grantedDevices.has(binding.deviceId),
+              );
             const phoneDisplay =
               display && !driverVisible
                 ? { ...display, driver: null, setup: { location: display.setup.location } }

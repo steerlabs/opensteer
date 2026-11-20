@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { Worker } from "node:worker_threads";
 import { OpensteerError, refused } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import {
   computerReplLimits as limits,
   FromWorkerSchema,
@@ -87,15 +88,38 @@ const bind = 'globalThis.page = await openPage("tab-root");';
 const text = (value: unknown) => ({ type: "text", text: JSON.stringify(value) });
 
 describe("browser REPL", () => {
+  it("rechecks authority before a command on an already bound page", async () => {
+    const { service, run, port } = setup();
+    await run(bind);
+    const recheck = vi.fn(async () => {
+      throw new OperationOutcomeUnknown("Access changed.");
+    });
+    expect(
+      await service.execute("context", "await page.close()", undefined, undefined, recheck),
+    ).toMatchObject({ isError: true, structuredContent: { error: { code: "outcome-unknown" } } });
+    expect(recheck).toHaveBeenCalledOnce();
+    expect(port.command).not.toHaveBeenCalled();
+  });
+
   it("prints the browser API without touching a page, and closes a bound page", async () => {
     const { run, port } = setup();
     const result = await run("help()");
-    expect(result.content).toEqual([{ type: "text", text: expect.stringMatching(/newPage.*close\(\).*waitForNetworkIdle.*getAttribute/su) }]);
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringMatching(/newPage.*close\(\).*waitForNetworkIdle.*getAttribute/su),
+      },
+    ]);
     expect(port.openPage).not.toHaveBeenCalled();
     expect(port.command).not.toHaveBeenCalled();
     await run(`${bind} await page.close()`);
-    expect(port.command).toHaveBeenCalledWith(expect.anything(), "Target.closeTarget",
-      { targetId: root.targetId }, undefined, expect.anything());
+    expect(port.command).toHaveBeenCalledWith(
+      expect.anything(),
+      "Target.closeTarget",
+      { targetId: root.targetId },
+      undefined,
+      expect.anything(),
+    );
   });
 
   it("lists, binds and opens pages with a persistent Page API and no ambient authority", async () => {

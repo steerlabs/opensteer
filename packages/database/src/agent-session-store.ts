@@ -1,13 +1,11 @@
 import {
-  AgentGrantSchema,
   AgentOperationTargetSchema,
-  agentGrantAccess,
   agentSessionIdleMs,
   minThreadAccessMode,
-  type AgentGrantTarget,
   OpensteerError,
   createId,
   nextMarkColor,
+  formatRequestOperationDetail,
   type AgentOperationDecision,
   type AgentOperationId,
   type AgentOperationOutcome,
@@ -32,7 +30,6 @@ import { cancelPending } from "./request-cancellation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   assertRequestRevision,
-  lockRequestThreads,
   refreshRequestState,
   requestFromRow,
 } from "./request-persistence.js";
@@ -353,14 +350,21 @@ export async function endAgentSessions(
 export const agentOperationRequestLifetimeMs = 24 * 60 * 60_000;
 
 function pendingDirectRequests(database: Kysely<DatabaseSchema>) {
-  return database.selectFrom("agentOperations")
+  return database
+    .selectFrom("agentOperations")
     .innerJoin("requests", "requests.id", "agentOperations.requestId")
-    .select(["agentOperations.id as id", "requests.id as requestId", "requests.originatingThreadId"])
+    .select([
+      "agentOperations.id as id",
+      "requests.id as requestId",
+      "requests.originatingThreadId",
+    ])
     .where("agentOperations.state", "=", "pending")
     .where("requests.status", "=", "pending");
 }
 
-type PendingDirectRequest = Awaited<ReturnType<ReturnType<typeof pendingDirectRequests>["execute"]>>[number];
+type PendingDirectRequest = Awaited<
+  ReturnType<ReturnType<typeof pendingDirectRequests>["execute"]>
+>[number];
 
 async function closeDirectRequests(
   tx: Tx,
@@ -369,34 +373,86 @@ async function closeDirectRequests(
   expired: boolean,
 ) {
   if (!pending.length) return [];
-  const operations = await tx.updateTable("agentOperations").set({
-    state: "refused", outcome: "refused", terminalEvidenceAt: now, completedAt: now, updatedAt: now,
-    decision: jsonValue({
-      by: "refused", reason: "authority",
-      message: expired ? "The Request expired before the person answered." : "The connected agent's access changed or ended.",
-    } satisfies AgentOperationDecision),
-  }).where("id", "in", pending.map(({ id }) => id)).where("state", "=", "pending")
-    .returningAll().execute();
+  await tx
+    .selectFrom("agentOperations")
+    .select("id")
+    .where(
+      "id",
+      "in",
+      pending.map(({ id }) => id),
+    )
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  const operations = await tx
+    .updateTable("agentOperations")
+    .set({
+      state: "refused",
+      outcome: "refused",
+      terminalEvidenceAt: now,
+      completedAt: now,
+      updatedAt: now,
+      decision: jsonValue({
+        by: "refused",
+        reason: "authority",
+        message: expired
+          ? "The Request expired before the person answered."
+          : "The connected agent's access changed or ended.",
+      } satisfies AgentOperationDecision),
+    })
+    .where(
+      "id",
+      "in",
+      pending.map(({ id }) => id),
+    )
+    .where("state", "=", "pending")
+    .returningAll()
+    .execute();
   await cancelPending(tx, {
-    reason: "authority-revoked", resolvedAt: now,
-    requestIds: pending.map(({ requestId }) => requestId), expireAgentOperation: expired,
+    reason: "authority-revoked",
+    resolvedAt: now,
+    requestIds: pending.map(({ requestId }) => requestId),
+    expireAgentOperation: expired,
   });
-  for (const threadId of [...new Set(pending.map(({ originatingThreadId }) => originatingThreadId))].sort())
+  for (const threadId of [
+    ...new Set(pending.map(({ originatingThreadId }) => originatingThreadId)),
+  ].sort())
     await projectThreadState(tx, threadId);
   return operations;
 }
 
-export async function closeObsoleteAgentOperationRequests(tx: Tx, connectionId: string, revision: number, now: Date) {
-  await closeDirectRequests(tx, await pendingDirectRequests(tx)
-    .where("agentOperations.connectionId", "=", connectionId)
-    .where("agentOperations.grantRevision", "<", revision).execute(), now, false);
+export async function closeObsoleteAgentOperationRequests(
+  tx: Tx,
+  connectionId: string,
+  revision: number,
+  now: Date,
+) {
+  await closeDirectRequests(
+    tx,
+    await pendingDirectRequests(tx)
+      .where("agentOperations.connectionId", "=", connectionId)
+      .where("agentOperations.grantRevision", "<", revision)
+      .execute(),
+    now,
+    false,
+  );
 }
 
 export function expireAgentOperationRequests(database: Kysely<DatabaseSchema>, now: Date) {
-  return commitPersonalMutation(database, async (tx) => closeDirectRequests(tx,
-    await pendingDirectRequests(tx)
-      .where("requests.createdAt", "<=", new Date(now.getTime() - agentOperationRequestLifetimeMs))
-      .execute(), now, true));
+  return commitPersonalMutation(database, async (tx) =>
+    closeDirectRequests(
+      tx,
+      await pendingDirectRequests(tx)
+        .where(
+          "requests.createdAt",
+          "<=",
+          new Date(now.getTime() - agentOperationRequestLifetimeMs),
+        )
+        .execute(),
+      now,
+      true,
+    ),
+  );
 }
 
 /** Active sessions quiet past `before` with no open Request of their own still in its lifetime. */
@@ -406,9 +462,14 @@ function idleSessionQuery(database: Kysely<DatabaseSchema>, now: Date) {
     .where("status", "=", "active")
     .where("lastActiveAt", "<", new Date(now.getTime() - agentSessionIdleMs))
     .where(({ not, exists, selectFrom }) =>
-      not(exists(selectFrom("agentOperations").select("id")
-        .whereRef("agentOperations.sessionId", "=", "agentSessions.id")
-        .where("agentOperations.state", "=", "handed-off"))),
+      not(
+        exists(
+          selectFrom("agentOperations")
+            .select("id")
+            .whereRef("agentOperations.sessionId", "=", "agentSessions.id")
+            .where("agentOperations.state", "=", "handed-off"),
+        ),
+      ),
     )
     .where(({ not, exists, selectFrom }) =>
       not(
@@ -449,7 +510,7 @@ export interface AdmitOperationInput {
 }
 
 /**
- * Persists the operation before any review or effect, unique on (session, operation key). A
+ * Persists the operation before any review or effect, unique on (connection, operation key). A
  * repeat with the same digest returns the recorded operation; a different digest is refused.
  */
 export async function admitAgentOperation(
@@ -468,7 +529,7 @@ export async function admitAgentOperation(
     const existing = await tx
       .selectFrom("agentOperations")
       .selectAll()
-      .where("sessionId", "=", input.sessionId)
+      .where("connectionId", "=", input.agentConnectionId)
       .where("operationKey", "=", input.operationKey)
       .executeTakeFirst();
     if (existing) {
@@ -548,6 +609,28 @@ export async function readAgentOperation(
     .executeTakeFirstOrThrow();
 }
 
+export function findAgentOperation(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly userId: UserId;
+    readonly agentConnectionId: string;
+    readonly identity: { readonly id: AgentOperationId } | { readonly key: string };
+  },
+) {
+  const query = database
+    .selectFrom("agentOperations")
+    .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+    .selectAll("agentOperations")
+    .select(["agentSessions.threadId as taskId", "agentSessions.status as sessionStatus"])
+    .where("agentOperations.userId", "=", input.userId)
+    .where("agentOperations.connectionId", "=", input.agentConnectionId);
+  return (
+    "id" in input.identity
+      ? query.where("agentOperations.id", "=", input.identity.id)
+      : query.where("agentOperations.operationKey", "=", input.identity.key)
+  ).executeTakeFirst();
+}
+
 export const operationDecisionFieldId = "decision";
 export const operationAllow = "allow";
 export const operationDeny = "deny";
@@ -563,7 +646,10 @@ export async function askForAgentOperation(
     readonly operation: AgentOperationRow;
     readonly threadId: ThreadId;
     readonly copy: (agent: string) => { readonly title: string; readonly summary: string };
-    readonly presentation?: Extract<import("@opensteer/core").RequestPresentation, { kind: "form" }>;
+    readonly presentation?: Extract<
+      import("@opensteer/core").RequestPresentation,
+      { kind: "form" }
+    >;
   },
 ): Promise<AgentOperationRow> {
   return commitPersonalMutation(database, async (tx) => {
@@ -592,7 +678,30 @@ export async function askForAgentOperation(
       ? `\n\nThe agent's own reason (its words, not checked): ${operation.agentReason}`
       : "";
     const { title, summary } = input.copy(connection.label);
-    const detail = `${summary}\n\nWhat it will run:\n${operation.calls}${reason}`.slice(0, 20_000);
+    const { untrustedTitle: suppliedTitle, ...target } = operation.target;
+    const titleLabel =
+      target.grant.kind === "computer-app"
+        ? "The app calls itself"
+        : target.grant.kind === "chrome-tabs"
+          ? "The page's title"
+          : null;
+    const untrustedTitle = suppliedTitle
+      ?.replace(/[\r\n\t\u0085\p{Zl}\p{Zp}]+/gu, " ")
+      .replace(/[\p{Cc}\p{Cf}]/gu, "")
+      .trim()
+      .replace(/[!-/:-@\x5b-\x60{-~]/gu, (character) =>
+        String.fromCharCode(character.charCodeAt(0) + 0xfee0),
+      );
+    const titleLine =
+      titleLabel && untrustedTitle
+        ? `\n\n${titleLabel}: "${Array.from(untrustedTitle).slice(0, 160).join("")}"`
+        : "";
+    const detail = formatRequestOperationDetail({
+      summary,
+      titleLine,
+      calls: operation.calls,
+      reason,
+    });
     const created = await requests.create(
       {
         // One Request per review round: a fresh review after a grant change asks again.
@@ -606,6 +715,7 @@ export async function askForAgentOperation(
           kind: "form",
           title: title.slice(0, 200),
           detail,
+          ...(titleLine ? { detailFormat: "plain" } : {}),
           fields: [
             {
               id: operationDecisionFieldId,
@@ -634,9 +744,9 @@ export async function askForAgentOperation(
             operationId: operation.id,
             connectionId: operation.connectionId,
             summary: summary.slice(0, 20_000),
-            calls: operation.calls.slice(0, 20_000),
+            calls: operation.calls,
             agentReason: operation.agentReason,
-            target: operation.target,
+            target,
             decisionFieldId: operationDecisionFieldId,
           }),
         })
@@ -668,7 +778,7 @@ export async function respondToAgentOperation(
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   },
-): Promise<AgentOperationRow> {
+): Promise<{ operation: AgentOperationRow; expired: boolean }> {
   return commitPersonalMutation(database, async (tx) => {
     const linked = await tx
       .selectFrom("agentOperations")
@@ -678,7 +788,7 @@ export async function respondToAgentOperation(
     if (!linked) throw new OpensteerError({ code: "not_found", message: "Request not found" });
     const connection = await lockLiveConnection(tx, input.resolvedBy, linked.connectionId);
     if (connection.grantRevision !== linked.grantRevision) throw refused(lineageEndedMessage);
-    await tx
+    const session = await tx
       .selectFrom("agentSessions")
       .select(["id", "threadId"])
       .where("id", "=", linked.sessionId)
@@ -694,16 +804,22 @@ export async function respondToAgentOperation(
     if (operation.state !== "pending" || operation.requestId !== input.requestId)
       throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });
     const now = new Date();
-    const expired = await pendingDirectRequests(tx).where("requests.id", "=", input.requestId)
+    const expired = await pendingDirectRequests(tx)
+      .where("requests.id", "=", input.requestId)
       .where("requests.createdAt", "<=", new Date(now.getTime() - agentOperationRequestLifetimeMs))
       .executeTakeFirst();
-    if (expired) return (await closeDirectRequests(tx, [expired], now, true))[0]!;
-    const origin = await tx
-      .selectFrom("requests")
-      .select("originatingThreadId")
-      .where("id", "=", input.requestId)
+    if (expired) {
+      const [closed] = await closeDirectRequests(tx, [expired], now, true);
+      return { operation: closed!, expired: true };
+    }
+    const thread = await tx
+      .selectFrom("threads")
+      .select("accessMode")
+      .where("id", "=", session.threadId)
+      .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    await lockRequestThreads(tx, [origin.originatingThreadId]);
+    if (operation.mode !== minThreadAccessMode(thread.accessMode, connection.accessMode))
+      throw refused(lineageEndedMessage);
     const row = await tx
       .selectFrom("requests")
       .selectAll()
@@ -772,8 +888,8 @@ export async function respondToAgentOperation(
       .execute();
     await requestSettlementActor(tx, input.resolvedBy, input.settlementSessionId);
     await refreshRequestState(tx, requestFromRow(row).id);
-    await projectThreadState(tx, origin.originatingThreadId);
-    return reviewedOperationUpdate(tx, operation, "pending")
+    await projectThreadState(tx, session.threadId);
+    const decided = await reviewedOperationUpdate(tx, operation, "pending")
       .set(
         allowed
           ? {
@@ -796,6 +912,7 @@ export async function respondToAgentOperation(
       )
       .returningAll()
       .executeTakeFirstOrThrow();
+    return { operation: decided, expired: false };
   });
 }
 
@@ -808,7 +925,7 @@ export async function handOffAgentOperation(
   input: {
     readonly userId: UserId;
     readonly agentConnectionId: string;
-    readonly reviewed: ReviewedOperation,
+    readonly reviewed: ReviewedOperation;
   },
 ): Promise<AgentOperationRow | null> {
   return commitPersonalMutation(database, async (tx) => {
@@ -817,12 +934,21 @@ export async function handOffAgentOperation(
       .selectFrom("agentOperations")
       .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
       .innerJoin("threads", "threads.id", "agentSessions.threadId")
-      .select(["agentOperations.grantRevision", "agentOperations.mode", "agentSessions.status", "threads.accessMode"])
+      .select([
+        "agentOperations.grantRevision",
+        "agentOperations.mode",
+        "agentSessions.status",
+        "threads.accessMode",
+      ])
       .where("agentOperations.id", "=", input.reviewed.id)
       .where("agentOperations.connectionId", "=", connection.id)
       .executeTakeFirstOrThrow();
-    if (operation.status !== "active" || operation.grantRevision !== connection.grantRevision ||
-      operation.mode !== minThreadAccessMode(operation.accessMode, connection.accessMode)) return null;
+    if (
+      operation.status !== "active" ||
+      operation.grantRevision !== connection.grantRevision ||
+      operation.mode !== minThreadAccessMode(operation.accessMode, connection.accessMode)
+    )
+      return null;
     return (
       (await approvedOperationUpdate(tx, input.reviewed)
         .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
@@ -832,25 +958,41 @@ export async function handOffAgentOperation(
   });
 }
 
-type ReviewedOperation = Pick<AgentOperationRow, "id" | "grantRevision" | "mode" | "requestId" | "target" | "targetGeneration">;
+type ReviewedOperation = Pick<
+  AgentOperationRow,
+  "id" | "grantRevision" | "mode" | "requestId" | "target" | "targetGeneration"
+>;
 
 function approvedOperationUpdate(database: Kysely<DatabaseSchema>, reviewed: ReviewedOperation) {
   return reviewedOperationUpdate(database, reviewed, "approved");
 }
 
 function sameReview(current: ReviewedOperation, reviewed: ReviewedOperation) {
-  return current.grantRevision === reviewed.grantRevision && current.mode === reviewed.mode &&
-    current.targetGeneration === reviewed.targetGeneration && current.requestId === reviewed.requestId;
+  return (
+    current.grantRevision === reviewed.grantRevision &&
+    current.mode === reviewed.mode &&
+    current.targetGeneration === reviewed.targetGeneration &&
+    current.requestId === reviewed.requestId
+  );
 }
 
-function reviewedOperationUpdate(database: Kysely<DatabaseSchema>, reviewed: ReviewedOperation, state: AgentOperationState) {
-  return database.updateTable("agentOperations")
+function reviewedOperationUpdate(
+  database: Kysely<DatabaseSchema>,
+  reviewed: ReviewedOperation,
+  state: AgentOperationState,
+) {
+  return database
+    .updateTable("agentOperations")
     .where("id", "=", reviewed.id)
     .where("state", "=", state)
     .where("grantRevision", "=", reviewed.grantRevision)
     .where("mode", "=", reviewed.mode)
     .where("requestId", reviewed.requestId === null ? "is" : "=", reviewed.requestId)
-    .where("targetGeneration", reviewed.targetGeneration === null ? "is" : "=", reviewed.targetGeneration)
+    .where(
+      "targetGeneration",
+      reviewed.targetGeneration === null ? "is" : "=",
+      reviewed.targetGeneration,
+    )
     .where("target", "=", jsonValue(reviewed.target));
 }
 
@@ -883,13 +1025,24 @@ export async function refuseUnsentAgentOperation(
   grantRevision: number,
 ): Promise<void> {
   const now = new Date();
-  await database.updateTable("agentOperations").set({
-    state: "refused", outcome: "refused", terminalEvidenceAt: now, completedAt: now, updatedAt: now,
-    decision: jsonValue({
-      by: "refused", reason: "authority", message: "The connected agent's access changed or ended.",
-    } satisfies AgentOperationDecision),
-  }).where("id", "=", id).where("grantRevision", "=", grantRevision)
-    .where("state", "in", ["admitted", "pending", "approved"]).where("handedOffAt", "is", null)
+  await database
+    .updateTable("agentOperations")
+    .set({
+      state: "refused",
+      outcome: "refused",
+      terminalEvidenceAt: now,
+      completedAt: now,
+      updatedAt: now,
+      decision: jsonValue({
+        by: "refused",
+        reason: "authority",
+        message: "The connected agent's access changed or ended.",
+      } satisfies AgentOperationDecision),
+    })
+    .where("id", "=", id)
+    .where("grantRevision", "=", grantRevision)
+    .where("state", "in", ["admitted", "pending", "approved"])
+    .where("handedOffAt", "is", null)
     .execute();
 }
 
@@ -984,24 +1137,22 @@ export async function listAgentOperations(
   const page = rows.slice(0, input.limit);
   const last = page.at(-1);
   return {
-    operations: page.map(
-      (row): AgentOperationView => ({
-        id: row.id,
-        sessionId: row.sessionId,
-        taskId: row.threadId,
-        tool: row.tool,
-        target: row.target,
-        mode: row.mode,
-        effect: row.effect,
-        state: row.state,
-        decision: row.decision,
-        outcome: row.outcome,
-        requestId: row.requestId,
-        createdAt: row.createdAt.toISOString(),
-        handedOffAt: row.handedOffAt?.toISOString() ?? null,
-        completedAt: row.completedAt?.toISOString() ?? null,
-      }),
-    ),
+    operations: page.map((row): AgentOperationView => ({
+      id: row.id,
+      sessionId: row.sessionId,
+      taskId: row.threadId,
+      tool: row.tool,
+      target: row.target,
+      mode: row.mode,
+      effect: row.effect,
+      state: row.state,
+      decision: row.decision,
+      outcome: row.outcome,
+      requestId: row.requestId,
+      createdAt: row.createdAt.toISOString(),
+      handedOffAt: row.handedOffAt?.toISOString() ?? null,
+      completedAt: row.completedAt?.toISOString() ?? null,
+    })),
     nextBefore:
       rows.length > input.limit && last ? `${last.createdAt.toISOString()}|${last.id}` : null,
   };
@@ -1015,40 +1166,9 @@ export function agentOperationCursor(
   const [at, id] = before.split("|");
   const createdAt = new Date(at ?? "");
   if (!id || Number.isNaN(createdAt.getTime()))
-    throw new OpensteerError({ code: "bad_request", message: "That cursor is not from this list." });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "That cursor is not from this list.",
+    });
   return { createdAt, id };
-}
-
-/**
- * Of these active sessions, those that used a target the connection's current grant no longer
- * reaches, or wrote to one it now reaches only for reading.
- */
-export async function sessionsUsingWithdrawn(
-  database: Kysely<DatabaseSchema>,
-  userId: UserId,
-  connectionId: string,
-  sessionIds: readonly AgentSessionId[],
-): Promise<readonly AgentSessionId[]> {
-  if (!sessionIds.length) return [];
-  const connection = await database
-    .selectFrom("agentConnections")
-    .select("grant")
-    .where("id", "=", connectionId)
-    .where("userId", "=", userId)
-    .executeTakeFirst();
-  if (!connection) return [...sessionIds];
-  const grant = AgentGrantSchema.parse(connection.grant);
-  const used = await database
-    .selectFrom("agentOperations")
-    .select(["sessionId", "target", "effect"])
-    .where("sessionId", "in", [...sessionIds])
-    .where("state", "not in", ["refused"])
-    .execute();
-  const ending = new Set<AgentSessionId>();
-  for (const { sessionId, target, effect } of used) {
-    if (target.grant.kind === "device") continue;
-    const access = agentGrantAccess(grant, target.grant as AgentGrantTarget);
-    if (!access || (effect === "write" && access !== "read-write")) ending.add(sessionId);
-  }
-  return [...ending];
 }

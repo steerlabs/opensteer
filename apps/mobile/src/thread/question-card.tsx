@@ -181,7 +181,8 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
                 onToggle={() => setUnfolded(!unfolded)}
                 open={unfolded}
               >
-                {request.kind === "person.question" ? (
+                {request.kind === "person.question" &&
+                !(presentation.kind === "form" && presentation.detailFormat === "plain") ? (
                   <Markdown text={detail} />
                 ) : (
                   <AppText role="caption" tone="soft">

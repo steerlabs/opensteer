@@ -268,7 +268,7 @@ describe("Devices on the phone", () => {
     });
     expect(cloud?.footer).toContain("lives on your Cloud Computer.");
     const work = home({ kind: "work", from: "account", organization: "Acme" });
-    expect(work?.rows[0]).toMatchObject({ title: "Acme · Work Home", symbol: "cloud" });
+    expect(work?.rows[0]).toMatchObject({ title: "Work Home", symbol: "cloud" });
     expect(work?.footer).toContain("lives on your Acme work Home.");
   });
 

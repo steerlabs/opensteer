@@ -382,7 +382,7 @@ export class LocalProviders {
       caller.kind === "run" || (caller.kind === "program" && caller.program.kind === "trigger");
     const requester: IntegrationRequester =
       caller.kind === "owner"
-        ? { ownerUserId: caller.userId }
+        ? { ownerUserId: caller.userId, kind: "person" }
         : caller.kind === "connection" && !bindingId
           ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
           : // The exact execution, so its own lineage and mode decide, never another Run's.

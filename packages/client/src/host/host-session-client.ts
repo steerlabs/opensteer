@@ -127,6 +127,7 @@ import type {
   EnvironmentSummary,
   HarnessSummary,
   HostSnapshot,
+  ComputerViewRemovedListener,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   HostClient as OwnerViewHostClient,
@@ -265,6 +266,11 @@ export class HttpHostClient {
   readonly #attachmentCache = new Map<string, Blob>();
   #attachmentCacheBytes = 0;
   readonly #ownerViews = new OwnerViewRecords();
+  readonly #computerViewRemovedListeners = new Set<ComputerViewRemovedListener>();
+  subscribeComputerViewRemoved = (listener: ComputerViewRemovedListener): (() => void) => {
+    this.#computerViewRemovedListeners.add(listener);
+    return () => this.#computerViewRemovedListeners.delete(listener);
+  };
   #computerViews: { clear(): void; setConnected(connected: boolean): void } = {
     clear: () => undefined,
     setConnected: () => undefined,
@@ -552,9 +558,11 @@ export class HttpHostClient {
   }
   readonly #tabsClient = createTabsClient({
     store: this.#tabs,
-    dispatch: async (command) => {
+    dispatch: async (command, signal) => {
       const viewer = this.#viewer.generation;
-      const result = unwrapRpcResult(await this.rpc["commands.dispatch"](command));
+      const result = unwrapRpcResult(
+        await this.rpc["commands.dispatch"](command, signal ? { signal } : undefined),
+      );
       if (viewer !== this.#viewer.generation)
         throw new HostClientRequestError({
           code: "unauthorized",
@@ -1928,11 +1936,13 @@ export class HttpHostClient {
       old?.attention !== state.attention ||
       old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
+    const effectiveWorkPolicy = shell.effectiveWorkPolicy ?? null;
     if (
       tasksChanged ||
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
+      effectiveWorkPolicy !== this.#snapshot.effectiveWorkPolicy ||
       connection !== this.#snapshot.connection
     ) {
       const taskLists =
@@ -1948,6 +1958,7 @@ export class HttpHostClient {
           ...this.#snapshot,
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
+          effectiveWorkPolicy,
           ...taskLists,
           ...(attentionChanged
             ? {
@@ -3497,6 +3508,7 @@ export class HttpHostClient {
     clearRunPlacePictures(this);
     this.#clearAttachmentReads();
     this.#computerViews.clear();
+    this.#computerViewRemovedListeners.clear();
     this.#placeActivity.dispose();
     this.#runPlaces.dispose();
     this.#targetedControl.dispose();
@@ -4525,6 +4537,7 @@ export class HttpHostClient {
         });
         break;
       case "host.computer-view.removed":
+        for (const listener of this.#computerViewRemovedListeners) listener(message);
         this.#update({
           ...this.#snapshot,
           machines: [...this.#ownerViews.remove(this.#snapshot.machines, message)],

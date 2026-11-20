@@ -1256,6 +1256,18 @@ export interface TriggerOccurrenceTable {
   updatedAt: Timestamp;
 }
 
+export interface TriggerOccurrenceAttemptTable {
+  occurrenceId: TriggerOccurrenceId;
+  executionGeneration: number;
+  connectionId: string;
+  runnerId: RunnerId;
+  runnerBootId: string;
+  admittedGrantRevision: number | null;
+  admittedAccessMode: ThreadAccessMode | null;
+  terminalEvidenceAt: Date | null;
+  contactLostAt: Date | null;
+}
+
 export interface ProviderSessionTable {
   contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
@@ -2073,6 +2085,7 @@ export interface DatabaseSchema {
     versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
   };
   pluginExecutions: {
+    engineProcess: Generated<Readonly<{ launchId: string; namespace: string; pid: number }> | null>;
     connectionId: Generated<string | null>;
     admittedGrantRevision: Generated<number | null>;
     admittedAccessMode: Generated<ThreadAccessMode | null>;
@@ -2353,6 +2366,7 @@ export interface DatabaseSchema {
   triggerWatchActivations: TriggerWatchActivationTable;
   watchControlRequests: WatchControlRequestTable;
   triggerOccurrences: TriggerOccurrenceTable;
+  triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;
   commands: CommandTable;
   agentControlRequests: AgentControlRequestTable;

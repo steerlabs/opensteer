@@ -1,6 +1,7 @@
 import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import type { Clock } from "@opensteer/shared/clock";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import {
   ReplService,
   type ComputerReplContext,
@@ -128,6 +129,8 @@ const replyTooLarge = () =>
   );
 
 function publicFailure(error: unknown): ReplFailure {
+  if (error instanceof OperationOutcomeUnknown)
+    return { code: "outcome-unknown", message: error.message, performed: [] };
   if (
     error instanceof OpensteerError &&
     (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
@@ -218,12 +221,18 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     code: string,
     signal?: AbortSignal,
     bindingKey?: string,
+    recheck?: () => Promise<void>,
   ): Promise<ReplResult> {
     return this.#repl.execute(
       { runId: contextKey, generation: 0 },
       code,
       signal,
-      undefined,
+      recheck
+        ? async (request) => {
+            await recheck();
+            return this.#invoke(request);
+          }
+        : undefined,
       bindingKey,
     );
   }

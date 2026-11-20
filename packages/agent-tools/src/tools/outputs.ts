@@ -302,6 +302,7 @@ export const SessionPersonOutputSchema = z.object({
   operationId: AgentOperationIdSchema,
   requestId: RequestIdSchema.nullable().optional(),
   status: z.enum(["pending", "completed", "failed", "unknown"]),
+  summary: z.record(z.string(), z.unknown()).nullable().optional(),
   next: z.string().optional(),
   answer: z.string().optional(),
   loginStatus: z.string().optional(),

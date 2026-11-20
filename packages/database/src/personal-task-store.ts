@@ -1,6 +1,12 @@
 import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
-import type { AgentSessionEndReason, AgentSessionId, Thread, ThreadId, UserId } from "@opensteer/core";
+import type {
+  AgentSessionEndReason,
+  AgentSessionId,
+  Thread,
+  ThreadId,
+  UserId,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { personalShellSettledTasks } from "@opensteer/protocol/personal-sync";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";

@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { HostClientRequestError } from "@opensteer/client/host";
-import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "../../app-shell.js";
@@ -26,6 +26,7 @@ const view = {
   name: "Mac mini",
   facts: { desktop: true, onThisComputer: true, remote: false },
 } as unknown as SettingsView;
+const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const grok = "mcn_00000000-0000-4000-8000-000000000001";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
 const oldNotes = "mcn_00000000-0000-4000-8000-000000000005";
@@ -61,6 +62,7 @@ async function mount(client: MockHostClient, at = base) {
                 </>
               }
             />
+            <Route path="/tasks/:threadId" element={<Where />} />
           </Routes>
         </ShellContext>
       </MemoryRouter>,
@@ -126,6 +128,38 @@ describe("Connected agents list", () => {
 });
 
 describe("one connected agent", () => {
+  it("shows the working task, hides Watch when it ends, and opens the task from Watch", async () => {
+    const client = seeded();
+    host = client;
+    const activity = vi.fn(client.rpc["connections.activity"]);
+    Object.defineProperty(client.rpc, "connections.activity", {
+      value: activity,
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${claude}`);
+    const watch = () => page.querySelector<HTMLAnchorElement>(".connected-agent__header a");
+    expect(status(page)).toContain("Not doing anything");
+    expect(watch()).toBeNull();
+    await act(async () => client.mockAgentWork());
+    expect(status(page)).toContain("Working now");
+    expect(status(page)).toContain("Find flights to Lisbon");
+    expect(activity).toHaveBeenCalledWith(
+      { connectionId: claude },
+      { signal: expect.any(AbortSignal) },
+    );
+    const threadId = mockAgentWorkThreads.working;
+    const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)
+      ?.thread.agentSessionId;
+    expect(sessionId).toBeTruthy();
+    await act(async () => expect(client.stopAgentSession(threadId, sessionId!)).toBe(true));
+    expect(status(page)).toContain("Not doing anything");
+    expect(watch()).toBeNull();
+    await act(async () => client.mockAgentWork());
+    expect(watch()?.textContent).toBe("Watch");
+    await act(async () => watch()!.click());
+    expect(path).toBe(`/tasks/${threadId}`);
+  });
+
   it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {
     const sourceId = createId("browserSource");
     host = seeded();
@@ -136,6 +170,7 @@ describe("one connected agent", () => {
         sources: [],
         sites: [],
         chromeTabs: [{ paired: true, sourceId, computerName: "Work Mac" }],
+        chromeTabsRepairNames: ["Home Mac"],
       },
     }));
     Object.defineProperty(host.rpc, "browser.sources.get", { value: read, configurable: true });
@@ -148,6 +183,7 @@ describe("one connected agent", () => {
     )!;
     expect(read).toHaveBeenCalled();
     expect(option.checked).toBe(false);
+    expect(page.textContent).toContain("To share tabs from Chrome on Home Mac, pair it again.");
     await act(async () => option.click());
     await act(async () => buttonNamed(page, "Save").click());
     expect(dispatch).toHaveBeenCalledWith(

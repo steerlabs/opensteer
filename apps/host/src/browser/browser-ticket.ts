@@ -12,6 +12,7 @@ const ticketType = "opensteer-browser-attach+jwt";
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
   readonly standardCdp?: BrowserAttachTicketClaims["standardCdp"];
+  readonly standardCdpLineage?: BrowserAttachTicketClaims["standardCdpLineage"];
   readonly standardCdpLease?: BrowserAttachTicketClaims["standardCdpLease"];
   readonly creationOrigin: "agent" | "person";
   /** Whom the attachment acts for; only for a runtime that reads it. */
@@ -81,6 +82,7 @@ export class BrowserAttachTicketSigner {
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
+      ...(input.standardCdpLineage ? { standardCdpLineage: input.standardCdpLineage } : {}),
       ...(input.standardCdpLease ? { standardCdpLease: input.standardCdpLease } : {}),
       creationOrigin: input.creationOrigin,
       ...(input.actor ? { actor: input.actor } : {}),

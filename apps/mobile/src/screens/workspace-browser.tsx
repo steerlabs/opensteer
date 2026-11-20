@@ -281,7 +281,9 @@ function TabSurface(props: TabSurfaceProps): ReactNode {
         )}
       </Screen>
     );
-  if (tab.state === "unavailable")
+  const nativeOffline =
+    (tab.kind === "window" || tab.kind === "phone") && tab.unavailableCode === "computer-offline";
+  if (tab.state === "unavailable" && !nativeOffline)
     return (
       <Screen>
         <UnavailableTab hostClient={hostClient} key={tab.tabId} tab={tab} />
@@ -370,11 +372,13 @@ function ViewedTab(
   props: TabSurfaceProps & { readonly intent: OpenIntent; readonly tab: Tab },
 ): ReactNode {
   const { intent, ...rest } = props;
-  const { state, retry } = useTabViewer(
+  const available = props.tab.state !== "unavailable";
+  const { state, retry, reconnect } = useTabViewer(
     props.hostClient,
     props.tab.tabId,
     props.presence.shown,
     intent,
+    available,
   );
   const last = useRef<TabViewer | null>(null);
   const viewer: TabViewer | null =
@@ -384,6 +388,12 @@ function ViewedTab(
         ? { ...last.current, surfaceId: props.tab.tabId }
         : null;
   last.current = viewer ?? last.current;
+  if (!available && reconnect.state !== "reconnecting" && reconnect.state !== "timed-out")
+    return (
+      <Screen>
+        <UnavailableTab hostClient={props.hostClient} key={props.tab.tabId} tab={props.tab} />
+      </Screen>
+    );
   if (viewer === null)
     return (
       <Screen>
@@ -394,7 +404,7 @@ function ViewedTab(
         )}
       </Screen>
     );
-  return <Focused {...rest} onReactivate={retry} viewer={viewer} />;
+  return <Focused {...rest} onReactivate={retry} reconnect={reconnect} viewer={viewer} />;
 }
 
 /** What is beside the page: a Thread, or Home's new task being started from it. */
@@ -408,6 +418,7 @@ type Companion = { readonly kind: "thread"; readonly threadId: string } | { read
 function Focused(
   props: TabSurfaceProps & {
     readonly onReactivate: () => void;
+    readonly reconnect: ReturnType<typeof useTabViewer>["reconnect"];
     readonly tab: Tab;
     readonly viewer: TabViewer;
   },
@@ -743,6 +754,7 @@ function Focused(
         menu={[closeItem]}
         onReopen={props.onReactivate}
         onTyping={setTyping}
+        reconnect={props.reconnect}
         viewId={viewer.view.viewId}
       />
     ) : (

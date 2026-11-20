@@ -6,7 +6,11 @@ import {
   type NativeViewerSource,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useOwnerViewRemoval,
+  type useOwnerViewReconnect,
+} from "@opensteer/client/react";
 import type { ComputerView } from "@opensteer/protocol";
 import { usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/app-icons.js";
@@ -42,6 +46,7 @@ export function OwnerView({
   opening = false,
   phone,
   place,
+  reconnect,
   source,
   trailing,
 }: {
@@ -56,12 +61,14 @@ export function OwnerView({
   readonly opening?: boolean;
   readonly phone: boolean;
   readonly place: PlaceItem | null;
+  readonly reconnect?: ReturnType<typeof useOwnerViewReconnect>;
   readonly source: Extract<NativeViewerSource, { kind: "owner-view" }> | null;
   readonly trailing: ReactNode;
 }) {
   const visible = usePageVisible();
   const viewId = source?.viewId ?? "";
   const generation = source?.generation ?? 0;
+  useOwnerViewRemoval(hostClient, viewId, generation, reconnect?.removed);
   const { localMachine } = useWorkspace();
   const toast = useToast();
   const toolbarRef = useToastToolbar();
@@ -95,13 +102,16 @@ export function OwnerView({
         .filter(Boolean)
         .join(" — ");
   const readiness = ownerViewReadiness(machine, current, phone);
+  const restarting = reconnect?.state === "reconnecting";
+  const timedOut = reconnect?.state === "timed-out";
   const live = readiness === null && machine !== null && canStreamComputerDisplay(machine);
   const display = useComputerDisplay({
     macWindow: !phone,
     // Hiding the page pauses the picture in the client, which keeps the last one.
-    enabled: live,
+    enabled: live && !timedOut,
     disabledReason: "unavailable",
     hostClient,
+    ...(reconnect ? { ownerReconnect: reconnect } : {}),
     source,
     streamable: machine !== null && canStreamComputerDisplay(machine),
   });
@@ -109,7 +119,7 @@ export function OwnerView({
   // Kept alive only while on screen here: a hidden or unmounted viewer stops
   // renewing and leaves the view to expire when nobody anywhere looks. Shown
   // again close to its expiry, it renews at once rather than lapse in sight.
-  const alive = current !== null && current.state === "ready";
+  const alive = current !== null && current.state === "ready" && !timedOut;
   const owned = source !== null;
   // Read when shown, not followed: a renewal's later expiry starts no other retention.
   const expiresAt = useRef<string | null>(null);
@@ -123,7 +133,7 @@ export function OwnerView({
     return () => held.release();
   }, [alive, generation, hostClient, owned, viewId, visible]);
 
-  const shown = live ? display.picture : null;
+  const shown = live && !restarting && !timedOut ? display.picture : null;
   const inputAvailable = display.snapshot.input === "available";
   useEffect(() => {
     if (!visible) display.lease?.resetInput();
@@ -219,7 +229,11 @@ export function OwnerView({
   const computer = ownerViewComputerReadiness(machine, phone);
   const reopenEligible = hostConnected && computer === null;
   const resting = phone && source === null;
-  const state: { readonly words: string; readonly busy: boolean; readonly reopen: boolean } | null =
+  const ordinaryState: {
+    readonly words: string;
+    readonly busy: boolean;
+    readonly reopen: boolean;
+  } | null =
     readiness !== null
       ? {
           busy: opening || readiness === "opening" || readiness === "connecting",
@@ -257,6 +271,19 @@ export function OwnerView({
               reopen: false,
               words: phone ? `Connecting to ${machineName}…` : display.startingWords,
             };
+  const state = restarting
+    ? { busy: true, reopen: false, words: "Reconnecting…" }
+    : timedOut
+      ? {
+          busy: false,
+          reopen: hostConnected,
+          words: computerReasonWords("ended", {
+            machine: machineName,
+            phone,
+            target: targetName,
+          }),
+        }
+      : ordinaryState;
 
   return (
     <section
@@ -318,7 +345,7 @@ export function OwnerView({
           <ComputerDisplayScreen
             dim={false}
             display={display}
-            interactive={inputAvailable && visible}
+            interactive={inputAvailable && visible && !restarting && !timedOut}
             label={targetName}
             onEnlarge={() => setZoomed((value) => !value)}
             shown={shown !== null}

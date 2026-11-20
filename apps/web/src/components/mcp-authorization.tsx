@@ -21,6 +21,7 @@ import {
   agentConsentHeading,
   workWords,
   workHomeMark,
+  withinWorkPolicy,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
@@ -95,7 +96,7 @@ export function McpAuthorization({
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [allowed, setAllowed] = useState(false);
   const [label, setLabel] = useState("");
-  const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
+  const [pickedMode, setMode] = useState<ThreadAccessMode>("approval-required");
   const [draft, setDraft] = useState<AgentGrantDraft | null>(null);
   // A retried approval reuses the profile the first attempt created.
   const createdProfile = useRef<string | null>(null);
@@ -139,12 +140,14 @@ export function McpAuthorization({
     };
   }, [attempt, client, requestId]);
   // The default waits for the Devices list, so a new profile lands where the Home keeps them.
-  const chosen: AgentGrantDraft = draft ?? {
+  const picked: AgentGrantDraft = draft ?? {
     scope: "selected",
     tasks: false,
     resources: [],
     newProfile: canCreate ? { homeRunnerId: defaultHome } : null,
   };
+  // A newer policy version can rule out what was picked; Allow asks only for what it allows.
+  const { draft: chosen, mode } = withinWorkPolicy({ draft: picked, mode: pickedMode }, workPolicy);
 
   async function decide(approve: boolean) {
     if (load.kind !== "ready" || busy) return;

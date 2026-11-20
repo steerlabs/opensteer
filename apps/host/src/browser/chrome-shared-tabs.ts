@@ -55,7 +55,15 @@ type ChromeSource = {
   readonly name: string;
   readonly deviceId?: DeviceId;
   readonly detachReceipts?: boolean;
-  readonly detaching: Map<string, PromiseWithResolvers<boolean>>;
+  readonly detachReplay?: boolean;
+  readonly detaching: Map<
+    string,
+    {
+      evidence: PromiseWithResolvers<boolean>;
+      finished: Promise<void>;
+      root: boolean;
+    }
+  >;
   readonly backend: ChromeTabBackend;
   readonly router: SessionCdpRouter;
   readonly shares: Map<string, Share>;
@@ -155,9 +163,10 @@ export class ChromeSharedTabs {
     name: string;
     deviceId?: DeviceId;
     detachReceipts?: boolean;
+    detachReplay?: boolean;
     write: (frame: BrowserSourceTabPart<"tab.command">) => boolean;
     fail: () => void;
-  }): { receive(frame: SourceFrame): void; close(): void } {
+  }): { receive(frame: SourceFrame): void | Promise<void>; close(): void } {
     this.closeForSource(options.sourceId);
     const backend = new ChromeTabBackend(options.write, options.fail);
     const source: ChromeSource = {
@@ -170,13 +179,15 @@ export class ChromeSharedTabs {
     };
     this.#sources.set(options.sourceId, source);
     return {
-      receive: (frame) => {
+      receive: (frame): void | Promise<void> => {
         if (this.#sources.get(source.sourceId) !== source) return;
         if (frame.type === "tab.shared") {
           if (!source.stopping) this.#share(source, frame);
         } else if (frame.type === "tab.unshared") void this.#unshare(source, frame.shareId);
-        else if (frame.type === "tab.detached") source.detaching.get(frame.shareId)?.resolve(true);
-        else backend.read(frame);
+        else if (frame.type === "tab.detached") {
+          return source.detachReceipts ? this.#recordDetach(source, frame.shareId) : undefined;
+        } else backend.read(frame);
+        return;
       },
       close: () => {
         if (this.#sources.get(source.sourceId) === source) this.closeForSource(source.sourceId);
@@ -201,6 +212,7 @@ export class ChromeSharedTabs {
   }
 
   async tabPlaces(ownerId: UserId, subject: AuthoritySubject): Promise<Tab[]> {
+    if (this.#shares.size === 0) return [];
     return (await this.#visible(ownerId, subject)).flatMap(({ share, computerName, execution }) => {
       const computerId = share.source.deviceId;
       if (!computerId || !computerName) return [];
@@ -498,9 +510,10 @@ export class ChromeSharedTabs {
     const source = this.#sources.get(sourceId);
     if (!source) return;
     source.stopping = true;
-    const closing = [...this.#attempts.values()]
-      .filter((attempt) => attempt.source === source && attempt.finishing)
-      .map((attempt) => attempt.finishing);
+    const closing: Promise<void>[] = [];
+    for (const attempt of this.#attempts.values()) {
+      if (attempt.source === source && attempt.finishing) closing.push(attempt.finishing);
+    }
     for (const { info, group } of source.shares.values()) {
       if (info.shareId !== group.root) continue;
       source.backend.stopSharing(group.root);
@@ -513,7 +526,7 @@ export class ChromeSharedTabs {
     const source = this.#sources.get(sourceId);
     if (!source) return;
     this.#sources.delete(sourceId);
-    for (const receipt of source.detaching.values()) receipt.resolve(false);
+    for (const receipt of source.detaching.values()) receipt.evidence.resolve(false);
     for (const share of source.shares.values())
       if (share.info.shareId === share.group.root) void this.#unshare(source, share.info.shareId);
     source.backend.close();
@@ -522,6 +535,22 @@ export class ChromeSharedTabs {
 
   close(): void {
     for (const id of this.#sources.keys()) this.closeForSource(id);
+  }
+
+  async #recordDetach(source: ChromeSource, shareId: string): Promise<void> {
+    if (source.shares.has(shareId)) return;
+    const waiting = source.detaching.get(shareId);
+    if (waiting) {
+      waiting.evidence.resolve(true);
+      await waiting.finished;
+      if (!waiting.root || (await waiting.evidence.promise)) return;
+    }
+    if (!source.detachReplay) return;
+    await this.#receipts?.recordDetach({
+      ownerId: source.ownerId,
+      sourceId: source.sourceId,
+      shareId,
+    });
   }
 
   #subject(authority: CdpAuthority): AuthoritySubject {
@@ -609,6 +638,8 @@ export class ChromeSharedTabs {
           connectionId,
           grantRevision,
           ownerId: source.ownerId,
+          sourceId: source.sourceId,
+          shareId: group.root,
           mode: execution.mode,
           threadId: execution.threadId,
         }),
@@ -746,7 +777,6 @@ export class ChromeSharedTabs {
     const root = group.root === tabId;
     const attempt = group.attempt;
     const evidence = attempt && Promise.withResolvers<boolean>();
-    if (evidence) source.detaching.set(tabId, evidence);
     source.shares.delete(tabId);
     this.#shares.delete(tabId);
     for (const client of share.clients) client.close();
@@ -760,25 +790,23 @@ export class ChromeSharedTabs {
     const timer = setTimeout(() => evidence.resolve(false), 10_000);
     timer.unref();
     if (this.#sources.get(source.sourceId) !== source) evidence.resolve(false);
-    const observed = evidence.promise.then((detached) => {
-      clearTimeout(timer);
-      source.detaching.delete(tabId);
-      return detached;
-    });
-    if (root) {
-      const allDetached = Promise.all([observed, ...group.detaching]).then(
-        ([detached]) => detached === true && !group.detachUnconfirmed,
-      );
-      const finishing = this.#finish(attempt, allDetached);
-      void finishing.catch(this.#onError);
-      return finishing;
-    }
-    const settled = observed.then((detached) => {
-      group.detachUnconfirmed ||= !detached;
-      group.detaching.delete(settled);
-      void this.#releaseGroup(source, group).catch(this.#onError);
-    });
-    group.detaching.add(settled);
+    const observed = evidence.promise.finally(() => clearTimeout(timer));
+    // Replay-capable companions include previously unshared popups in the root receipt.
+    const rootEvidence = source.detachReplay
+      ? observed
+      : Promise.all([observed, ...group.detaching]).then(
+          ([detached]) => detached === true && !group.detachUnconfirmed,
+        );
+    const settled = root
+      ? this.#finish(attempt, rootEvidence)
+      : observed.then((detached) => {
+          group.detachUnconfirmed ||= !detached;
+          group.detaching.delete(settled);
+          void this.#releaseGroup(source, group).catch(this.#onError);
+        });
+    source.detaching.set(tabId, { evidence, finished: settled, root });
+    if (!root) group.detaching.add(settled);
+    void settled.finally(() => source.detaching.delete(tabId)).catch(this.#onError);
     return settled;
   }
 

@@ -476,18 +476,19 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const { runConnectionId, taskOriginConnectionId } = context.lineage;
     if (taskOriginConnectionId !== null && runConnectionId !== taskOriginConnectionId)
       throw new CommandDispatchError("This task's authority no longer matches.", "failed");
-    const authority = await (runConnectionId === null
-      ? Promise.resolve({ agentConnection: null, mode: context.run.accessMode } as const)
-      : this.#store.admitExecution({
-          ownerUserId: command.requestedBy,
-          subject: { kind: "binding", bindingId: `run:${context.run.id}` },
-        }))
-      .catch((error: unknown) => {
-        throw new CommandDispatchError(
-          error instanceof OpensteerError ? error.message : "This task's access ended.",
-          "failed",
-        );
-      });
+    const authority = await (
+      runConnectionId === null
+        ? Promise.resolve({ agentConnection: null, mode: context.run.accessMode } as const)
+        : this.#store.admitExecution({
+            ownerUserId: command.requestedBy,
+            subject: { kind: "binding", bindingId: `run:${context.run.id}` },
+          })
+    ).catch((error: unknown) => {
+      throw new CommandDispatchError(
+        error instanceof OpensteerError ? error.message : "This task's access ended.",
+        "failed",
+      );
+    });
     const lineageGrant = authority.agentConnection?.grant;
     const selectedGrant = lineageGrant?.scope === "selected" ? lineageGrant : undefined;
     const grantFamilies = selectedGrant ? agentGrantToolFamilies(selectedGrant) : null;
@@ -885,24 +886,43 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
     });
+    const notAdmitted = connectionId
+      ? () => this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
+      : undefined;
     this.#onTriggerChanged();
     const program = context.revision.program;
     if (!isExecutableTriggerProgram(program)) {
+      await notAdmitted?.();
       throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
     }
-    const capabilityToken = this.#triggerControlTokens.issue({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-      toolContractVersion: program.toolContractVersion,
-    });
-    const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
+    const { capabilityToken, hasBrowser } = await (async () => {
+      try {
+        const capabilityToken = this.#triggerControlTokens.issue({
+          environmentId: context.anchorThread.environmentId,
+          executionGeneration,
+          occurrenceId: context.occurrence.id,
+          requestedBy: context.trigger.createdBy,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+          threadId: context.anchorThread.id,
+          toolContractVersion: program.toolContractVersion,
+        });
+        const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
+        signal.throwIfAborted();
+        return { capabilityToken, hasBrowser };
+      } catch (error) {
+        await notAdmitted?.();
+        throw error;
+      }
+    })();
+    const digest = createHash("sha256")
+      .update(`trigger.execute:${command.id}:${executionGeneration}`)
+      .digest("hex");
+    const attemptCommandId = CommandIdSchema.parse(
+      `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+    );
     const runnerCommand: RunnerCommand = {
-      commandId: command.id,
+      commandId: attemptCommandId,
       context: {
         anchorThreadId: context.anchorThread.id,
         browserCdp: hasBrowser
@@ -922,7 +942,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         revisionId: context.revision.id,
         triggerId: context.trigger.id,
       },
-      correlationId: CorrelationIdSchema.parse(command.id),
+      correlationId: CorrelationIdSchema.parse(attemptCommandId),
       environmentId: context.anchorThread.environmentId,
       agentHome: context.agentHome,
       type: "trigger.execute",
@@ -930,17 +950,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // Trigger setup can cross a stop transaction. Make the
     // running occurrence generation and its execution authority current at the
     // same boundary where the command leaves the Host.
-    if (signal.aborted) {
-      throw (
-        signal.reason ??
-        new OpensteerError({
-          code: "internal",
-          message: "Dispatch aborted",
-        })
-      );
-    }
     await this.#runners.dispatch(runnerCommand, signal, {
       connectionGeneration: identity.connectionGeneration,
+      beforeAck: () =>
+        this.#triggers.acceptExecution({
+          commandId: command.id,
+          executionGeneration,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+        }),
       beforeSend: () =>
         this.#triggers.assertActiveExecutionBinding({
           environmentId: context.anchorThread.environmentId,
@@ -951,15 +969,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           runnerId: identity.runnerId,
           threadId: context.anchorThread.id,
         }),
-      ...(connectionId
-        ? {
-            onNotAdmitted: () =>
-              this.#triggers.recordOccurrenceNotAdmitted(
-                context.occurrence.id,
-                executionGeneration,
-              ),
-          }
-        : {}),
+      ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
     });
   }
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
@@ -1015,8 +1025,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       case "run.interrupt":
         runnerCommand = {
           ...base,
-          ...(payload.data.stop && this.#runners.identityForEnvironment(command.environmentId)
-            ?.capabilities.includes(attemptStopStateCapability) ? { stop: payload.data.stop } : {}),
+          ...(payload.data.stop &&
+          this.#runners
+            .identityForEnvironment(command.environmentId)
+            ?.capabilities.includes(attemptStopStateCapability)
+            ? { stop: payload.data.stop }
+            : {}),
           ...(payload.data.expectedBindingGeneration
             ? { bindingGeneration: payload.data.expectedBindingGeneration }
             : {}),
@@ -1096,25 +1110,31 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           threadId: steer.threadId,
           type: "run.steer",
         };
-        await this.#dispatchSteer(command, runnerCommand, signal, async () => {
-          if (!steer.message.content.some((part) => part.type !== "text")) return;
-          const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
-          if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
-            throw new CommandDispatchError(
-              "The active AI engine is no longer available.",
-              "failed",
-            );
-          }
-          const failure = this.#runners.attachmentInputFailure({
-            content: steer.message.content,
-            driverKind: harness.driverKind,
-            environmentId: steer.run.environmentId,
-            harnessInstanceId: steer.run.harnessInstanceId,
-            modelSelection: steer.run.modelSelection,
-            steering: true,
-          });
-          if (failure) throw new CommandDispatchError(failure, "failed");
-        }, steer.reauthorize);
+        await this.#dispatchSteer(
+          command,
+          runnerCommand,
+          signal,
+          async () => {
+            if (!steer.message.content.some((part) => part.type !== "text")) return;
+            const harness = await this.#store.getHarnessInstance(steer.run.harnessInstanceId);
+            if (!harness?.enabled || harness.environmentId !== steer.run.environmentId) {
+              throw new CommandDispatchError(
+                "The active AI engine is no longer available.",
+                "failed",
+              );
+            }
+            const failure = this.#runners.attachmentInputFailure({
+              content: steer.message.content,
+              driverKind: harness.driverKind,
+              environmentId: steer.run.environmentId,
+              harnessInstanceId: steer.run.harnessInstanceId,
+              modelSelection: steer.run.modelSelection,
+              steering: true,
+            });
+            if (failure) throw new CommandDispatchError(failure, "failed");
+          },
+          steer.reauthorize,
+        );
         return;
       }
     }
@@ -1140,14 +1160,16 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   ): Promise<void> {
     try {
       await validate();
-      const beforeSend = reauthorize && (async () => {
-        try {
-          await reauthorize();
-        } catch (error) {
-          if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
-          throw new CommandDispatchError(error.message, "failed");
-        }
-      });
+      const beforeSend =
+        reauthorize &&
+        (async () => {
+          try {
+            await reauthorize();
+          } catch (error) {
+            if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
+            throw new CommandDispatchError(error.message, "failed");
+          }
+        });
       if (command.authoritySource.kind === "channel-ingress") {
         await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
           await this.#runners.dispatch(runnerCommand, signal, {

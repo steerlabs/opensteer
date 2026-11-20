@@ -52,6 +52,7 @@ export function SetupStep(props: {
         ready === null ? (
           <Pinned
             busy={props.setup.busy}
+            disabled={props.setup.blocked}
             label={props.setup.continueLabel}
             onPress={props.setup.onContinue}
           />
@@ -70,6 +71,13 @@ function SetupForm(props: SetupFormProps): ReactNode {
     <NavigationStack>
       <Toolbar modifiers={[navigationTitle(props.title), navigationBarTitleDisplayMode("large")]}>
         <Form>
+          {props.work === null ? null : (
+            <Section>
+              <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.textSoft)]}>
+                {props.work}
+              </Text>
+            </Section>
+          )}
           <Section>
             <Name busy={props.busy} name={props.name} onName={props.onName} />
           </Section>
@@ -234,10 +242,19 @@ function Page(props: { readonly action: ReactNode; readonly children: ReactNode 
 
 function Pinned(props: {
   readonly busy: boolean;
+  readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
 }): ReactNode {
-  return <PrimaryButton busy={props.busy} label={props.label} onPress={props.onPress} prominent />;
+  return (
+    <PrimaryButton
+      busy={props.busy}
+      disabled={props.disabled === true}
+      label={props.label}
+      onPress={props.onPress}
+      prominent
+    />
+  );
 }
 
 const styles = StyleSheet.create({

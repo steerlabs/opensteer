@@ -1763,6 +1763,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (!running) continue;
       running.expectedExit = true;
       let stopped = false;
+      let forced = false;
       this.#setStatus({
         components: componentState(this.#status.components, component, "stopping"),
       });
@@ -1779,6 +1780,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         );
         stopped = true;
       } catch (error) {
+        forced = true;
         try {
           await runShutdownStep(
             this.#log,
@@ -1797,13 +1799,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       } finally {
         if (stopped && running.runnerReceipt) {
           const { file, directory } = running.runnerReceipt;
-          const confirmed = await readFile(file, "utf8")
-            .then((raw) =>
-              confirmRunnerShutdown(directory, RunnerShutdownProofSchema.parse(JSON.parse(raw))),
-            )
-            .catch(() => false);
+          const proof = await readFile(file, "utf8")
+            .then((raw) => RunnerShutdownProofSchema.parse(JSON.parse(raw)))
+            .catch(() => undefined);
+          const confirmed = await confirmRunnerShutdown(directory, proof).catch(() => false);
           await rm(file, { force: true }).catch(() => undefined);
-          if (!confirmed) {
+          if (!confirmed || forced) {
             this.#runnerShutdownUnconfirmed = true;
             errors.push(new Error(hostedStopProblem));
           }

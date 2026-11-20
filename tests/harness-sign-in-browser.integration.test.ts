@@ -268,16 +268,33 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     await closed(replacement);
 
     await begin(stack, loopbackSignIn);
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    let expiring: typeof viewer;
+    const nativeSetTimeout = globalThis.setTimeout;
+    const signInExpiryTimers: (() => void)[] = [];
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      handler: (...args: unknown[]) => void,
+      timeout?: number,
+      ...args: unknown[]
+    ) => {
+      const timer = nativeSetTimeout(handler, timeout, ...args);
+      if (typeof timeout === "number" && timeout >= 14 * 60_000 && timeout <= 15 * 60_000) {
+        signInExpiryTimers.push(() => {
+          clearTimeout(timer);
+          handler(...args);
+        });
+      }
+      return timer;
+    }) as typeof setTimeout);
+    let expiringTabId: TabId;
     try {
-      expiring = await activate(await browse(stack));
-      expect((await tabs()).map((tab) => tab.tabId)).toEqual([expiring.surfaceId]);
-      // Advance the timer without advancing the clock on the browser capability lease.
-      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expiringTabId = await browse(stack);
     } finally {
-      vi.useRealTimers();
+      setTimeoutSpy.mockRestore();
     }
+    expect(signInExpiryTimers).toHaveLength(1);
+    const expiring = await activate(expiringTabId);
+    expect((await tabs()).map((tab) => tab.tabId)).toEqual([expiring.surfaceId]);
+    // Fire only the sign-in tab's deadline timer so real Runner and browser lease timers stay intact.
+    signInExpiryTimers[0]!();
     await expect.poll(tabs).toEqual([]);
     await closed(expiring);
     await cancel(stack);

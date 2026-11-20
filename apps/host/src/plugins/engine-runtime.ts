@@ -19,7 +19,7 @@ import {
   scheduledRunPage,
   workflowRunPage,
 } from "./engine-storage.js";
-import { pluginNamespace } from "./provider-names.js";
+import { isLocalProviderId, pluginNamespace } from "./provider-names.js";
 import { holdEngineDirectory } from "./engine-ownership.js";
 import { folderSkills } from "apps/skills";
 import { oauthReviewDigest } from "./oauth-review.js";
@@ -122,7 +122,11 @@ import {
   type McpExecutionResult,
 } from "@opensteer/plugin-engine-mcp";
 import { engineAccounts, InstallAuthor, migrateEngineProduct } from "./engine-accounts.js";
-import { compositeBackend, type EngineHostCallbacks } from "./engine-backend.js";
+import {
+  accountSelectionDigest,
+  compositeBackend,
+  type EngineHostCallbacks,
+} from "./engine-backend.js";
 import { catalogPage } from "./catalog-page.js";
 import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
 import { pluginIconSources } from "./plugin-icons.js";
@@ -141,6 +145,7 @@ import {
   type EngineInit,
   type PluginCaller,
   type PluginExecution,
+  type PluginExecutionTarget,
   type PluginOperation,
   type PluginCallback,
 } from "./engine-protocol.js";
@@ -502,10 +507,14 @@ export async function startEngine(
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
           background: (work) =>
-            Effect.forkIn(
-              work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
-              hostScope,
-            ).pipe(Effect.as(true)),
+            Effect.flatMap(CurrentPluginRequest, (request) =>
+              request?.connected
+                ? Effect.succeed(false)
+                : Effect.forkIn(
+                    work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
+                    hostScope,
+                  ).pipe(Effect.as(true)),
+            ),
           oauth,
           events: {
             sender: httpEventSender(egress),
@@ -551,6 +560,7 @@ export async function startEngine(
             driving: boolean;
             driverDone: ReturnType<typeof Promise.withResolvers<void>>;
             direct: boolean;
+            targets: Map<string, PluginExecutionTarget>;
             drain?: PromiseWithResolvers<void>;
           }
         >();
@@ -601,8 +611,17 @@ export async function startEngine(
         };
       }),
     );
-    const { engine, owner, accountAdapter, catalog, readIcon, manager, executions, stoppedExecutions, blobs } =
-      composed;
+    const {
+      engine,
+      owner,
+      accountAdapter,
+      catalog,
+      readIcon,
+      manager,
+      executions,
+      stoppedExecutions,
+      blobs,
+    } = composed;
     /** The icons of the catalog as last read, so reading them never reads the feed again. */
     let catalogIcons: readonly unknown[] | undefined;
     const listedCatalog = (listing: Effect.Success<typeof catalog.list>) => {
@@ -645,6 +664,8 @@ export async function startEngine(
       execution?: string,
       direct = false,
       providers: EngineHostCallbacks["providers"] = () => callback("providers", context),
+      publishedOnly = false,
+      targets?: Map<string, PluginExecutionTarget>,
     ) =>
       compositeBackend(
         engine,
@@ -671,8 +692,13 @@ export async function startEngine(
             ),
         },
         direct,
+        publishedOnly,
+        targets && ((target) => targets.set(JSON.stringify(target), target)),
       );
-    const update = (record: { view: PluginExecution; drain?: PromiseWithResolvers<void>; scopeDrained?: boolean }, value: Partial<PluginExecution>) => {
+    const update = (
+      record: { view: PluginExecution; drain?: PromiseWithResolvers<void>; scopeDrained?: boolean },
+      value: Partial<PluginExecution>,
+    ) => {
       record.view = { ...record.view, ...value };
       if (!["running", "waiting", "answered", "completed"].includes(record.view.state))
         delete record.view.result;
@@ -681,16 +707,31 @@ export async function startEngine(
         record.view.drained = true;
       }
       report(record.view);
-      if ((!record.drain || record.view.drained) && !["running", "waiting", "answered"].includes(record.view.state))
+      if (
+        (!record.drain || record.view.drained) &&
+        !["running", "waiting", "answered"].includes(record.view.state)
+      )
         executions.delete(record.view.id);
       return record.view;
     };
     const completed = (
-      record: { view: PluginExecution; direct: boolean },
+      record: {
+        view: PluginExecution;
+        direct: boolean;
+        targets: Map<string, PluginExecutionTarget>;
+      },
       result: McpExecutionResult,
       catalog: ReturnType<typeof backend>,
     ) =>
       Effect.gen(function* () {
+        if (
+          (result.status === "completed" &&
+            result.execution.toolCalls.some(({ outcome }) => outcome === "interrupted")) ||
+          (result.status === "unavailable" && ["lost", "ended", "answered"].includes(result.reason))
+        )
+          return update(record, { state: "interrupted", interaction: null });
+        if (result.status === "unavailable" && result.reason === "expired")
+          return update(record, { state: "expired", interaction: null });
         const pending = result.status === "approval-required" || result.status === "input-required";
         const presented =
           record.direct && !pending
@@ -715,12 +756,18 @@ export async function startEngine(
         }
         return update(record, {
           state: pending ? "waiting" : "completed",
+          targets: [...record.targets.values()],
           interaction: pending ? JSON.parse(JSON.stringify(result)) : null,
           result: operations.execute.output.shape.result.parse(
             JSON.parse(JSON.stringify(presented)),
           ),
         });
       });
+    const publishTools = (app: AppId) =>
+      Effect.gen(function* () {
+        const accounts = yield* accountAdapter.accounts(app);
+        yield* engine.tools.index({ app, accounts });
+      }).pipe(Effect.timeoutOption("5 seconds"), Effect.ignore);
     const perform = (
       operation: PluginOperation,
       raw: unknown,
@@ -961,6 +1008,7 @@ export async function startEngine(
               input.kind,
             );
             const result = operations.install.output.parse(JSON.parse(JSON.stringify(installed)));
+            if (result.status === "installed") yield* publishTools(AppId.make(result.plugin.id));
             return result.status === "installed"
               ? {
                   ...result,
@@ -1094,11 +1142,14 @@ export async function startEngine(
             });
           case "activate": {
             const input = operations.activate.input.parse(raw);
-            return yield* engine.apps.activate({
-              app: AppId.make(input.plugin),
+            const app = AppId.make(input.plugin);
+            const activated = yield* engine.apps.activate({
+              app,
               version: VersionId.make(input.version),
               owner,
             });
+            yield* publishTools(app);
+            return activated;
           }
           case "remove":
             return yield* engine.apps.remove({
@@ -1132,12 +1183,16 @@ export async function startEngine(
           case "reviewAccountLink":
             return yield* accountAdapter.review(operations.reviewAccountLink.input.parse(raw));
           case "linkAccount": {
-            const result = yield* accountAdapter.link(operations.linkAccount.input.parse(raw));
+            const input = operations.linkAccount.input.parse(raw);
+            const result = yield* accountAdapter.link(input);
+            yield* publishTools(AppId.make(input.plugin));
             yield* composed.scheduler.wakeWebhookSources;
             return result;
           }
           case "unlinkAccount":
-            yield* accountAdapter.unlink(operations.unlinkAccount.input.parse(raw));
+            const input = operations.unlinkAccount.input.parse(raw);
+            yield* accountAdapter.unlink(input);
+            yield* publishTools(AppId.make(input.plugin));
             yield* composed.scheduler.wakeWebhookSources;
             return null;
           case "pinOAuth":
@@ -1307,7 +1362,13 @@ export async function startEngine(
           case "describe": {
             // This response's inventory, which the backend marks each blocked app and tool from.
             const providers = yield* Effect.cached(callback("providers", context));
-            const discovery = backend(context, undefined, false, () => providers);
+            const discovery = backend(
+              context,
+              undefined,
+              false,
+              () => providers,
+              permission.connected,
+            );
             if (operation === "resolveTools")
               return yield* resolveCatalogTools(
                 discovery,
@@ -1320,7 +1381,10 @@ export async function startEngine(
             return result;
           }
           case "skills":
-            return yield* skills(Schema.decodeUnknownSync(SkillsInput)(raw), backend(context));
+            return yield* skills(
+              Schema.decodeUnknownSync(SkillsInput)(raw),
+              backend(context, undefined, false, undefined, permission.connected),
+            );
           case "skillFiles": {
             const app = AppId.make(operations.skillFiles.input.parse(raw).plugin);
             const plugin = yield* engine.apps.get({ app, owner });
@@ -1350,11 +1414,15 @@ export async function startEngine(
           }
           case "call":
           case "execute": {
-            const executionId = operation === "call" ? operations.call.input.parse(raw).executionId
-              : operations.execute.input.parse(raw).executionId;
+            const executionId =
+              operation === "call"
+                ? operations.call.input.parse(raw).executionId
+                : operations.execute.input.parse(raw).executionId;
             const id = executionId ?? randomUUID();
             if (stoppedExecutions.has(id) || executions.has(id))
-              return yield* Effect.fail(new PluginServiceError("invalid", "Execution already stopped or running"));
+              return yield* Effect.fail(
+                new PluginServiceError("invalid", "Execution already stopped or running"),
+              );
             const controller = new AbortController();
             const drain = executionId ? Promise.withResolvers<void>() : undefined;
             let managerStarted = false;
@@ -1370,14 +1438,16 @@ export async function startEngine(
               driving: true,
               driverDone: Promise.withResolvers<void>(),
               direct: operation === "call",
+              targets: new Map<string, PluginExecutionTarget>(),
               scopeDrained: false,
               ...(drain ? { drain } : {}),
             };
-            if (drain) void drain.promise.then(() => {
-              record.scopeDrained = true;
-              if (["running", "waiting", "answered"].includes(record.view.state)) return;
-              update(record, { drained: true });
-            });
+            if (drain)
+              void drain.promise.then(() => {
+                record.scopeDrained = true;
+                if (["running", "waiting", "answered"].includes(record.view.state)) return;
+                update(record, { drained: true });
+              });
             executions.set(id, record);
             report(record.view);
             const abort = () => controller.abort();
@@ -1387,7 +1457,7 @@ export async function startEngine(
                 operation === "call"
                   ? callTools(operations.call.input.parse(raw))
                   : executeProgram(operations.execute.input.parse(raw).code);
-              const catalog = backend(context, id, record.direct);
+              const catalog = backend(context, id, record.direct, undefined, false, record.targets);
               const result = yield* Effect.tryPromise({
                 try: () =>
                   run(
@@ -1398,13 +1468,22 @@ export async function startEngine(
                         program,
                         "result",
                         context.mode === "automatic" ? "client" : "ask",
-                        drain ? { id, onAdmitted: () => { managerStarted = true; }, onDrained: drain.resolve } : undefined,
+                        drain
+                          ? {
+                              id,
+                              onAdmitted: () => {
+                                managerStarted = true;
+                              },
+                              onDrained: drain.resolve,
+                            }
+                          : undefined,
                       )
                       .pipe(
                         Effect.provideService(CurrentPluginRequest, {
                           context,
                           operation: "call",
                           execution: id,
+                          ...(permission.connected ? { connected: true as const } : {}),
                         }),
                       ),
                     controller.signal,
@@ -1435,6 +1514,38 @@ export async function startEngine(
               signal.removeEventListener("abort", abort);
             }
           }
+          case "resultAccess": {
+            const { targets } = operations.resultAccess.input.parse(raw);
+            for (const target of targets) {
+              const permission = yield* callback("authorize", {
+                ...context,
+                operation: "resultAccess",
+                plugin: target.plugin,
+                write: target.write,
+              });
+              if (!permission.allowed) return false;
+              if (isLocalProviderId(target.plugin)) {
+                const providers = yield* callback("providers", context);
+                if (
+                  !providers.some(
+                    ({ id, version, blocked }) =>
+                      id === target.plugin && version === target.version && !blocked,
+                  )
+                )
+                  return false;
+              } else {
+                const app = AppId.make(target.plugin);
+                if ((yield* engine.apps.get({ app, owner })).activeVersion !== target.version)
+                  return false;
+                if (
+                  accountSelectionDigest(yield* accountAdapter.accounts(app)) !==
+                  target.accountSelection
+                )
+                  return false;
+              }
+            }
+            return true;
+          }
           case "executions":
             return [...executions.values()]
               .filter((record) => record.context.caller === context.caller)
@@ -1451,7 +1562,13 @@ export async function startEngine(
               const prior = stoppedExecutions.get(input.execution);
               if (!prior || prior === context.caller) {
                 stoppedExecutions.set(input.execution, context.caller);
-                return { id: input.execution, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+                return {
+                  id: input.execution,
+                  caller: context.caller,
+                  state: "cancelled",
+                  interaction: null,
+                  drained: true,
+                };
               }
             }
             if (
@@ -1470,7 +1587,13 @@ export async function startEngine(
                 yield* Effect.promise(() => record.drain!.promise);
                 stoppedExecutions.set(record.view.id, context.caller);
                 executions.delete(record.view.id);
-                return { id: record.view.id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
+                return {
+                  id: record.view.id,
+                  caller: context.caller,
+                  state: "cancelled",
+                  interaction: null,
+                  drained: true,
+                };
               }
               if (record.view.interaction)
                 yield* manager.discard(
@@ -1518,7 +1641,14 @@ export async function startEngine(
             const abort = () => record.controller.abort();
             signal.addEventListener("abort", abort, { once: true });
             try {
-              const catalog = backend(context, record.view.id, record.direct);
+              const catalog = backend(
+                context,
+                record.view.id,
+                record.direct,
+                undefined,
+                false,
+                record.targets,
+              );
               return yield* completed(
                 record,
                 yield* Effect.tryPromise({
@@ -1534,6 +1664,7 @@ export async function startEngine(
                             context,
                             operation: "resume",
                             execution: record.view.id,
+                            ...(permission.connected ? { connected: true as const } : {}),
                           }),
                         ),
                       record.controller.signal,
@@ -1557,15 +1688,18 @@ export async function startEngine(
             const definitions = (operation: "workflows.list" | "schedules.definitions") =>
               input.cursor
                 ? Effect.succeed({})
-                : manage({ operation, input: { app } }).pipe(
-                    Effect.map((value) => ({ definitions: agentDefinitions(value) })),
-                    Effect.catch(() => Effect.succeed({ definitions: null })),
-                  );
+                : permission.connected
+                  ? Effect.succeed({ definitions: null })
+                  : manage({ operation, input: { app } }).pipe(
+                      Effect.map((value) => ({ definitions: agentDefinitions(value) })),
+                      Effect.catch(() => Effect.succeed({ definitions: null })),
+                    );
             const cursor = input.cursor ? { cursor: input.cursor } : {};
             if (input.resource === "workflows") {
               const page = yield* workflowRunPage(composed.sql, { app, limit: 10, ...cursor });
               return {
                 items: yield* Effect.forEach(page.runs, (run) =>
+                  !permission.connected &&
                   input.outputs &&
                   permission.grants?.[app] !== "off" &&
                   (run.status === "complete" || run.status === "errored")

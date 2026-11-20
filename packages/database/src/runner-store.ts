@@ -537,6 +537,18 @@ export const personalReachableGrant: readonly RunnerModuleName[] = [
 ];
 const supervisedServiceModules: readonly RunnerModuleName[] = ["integrations", "messaging"];
 
+function isSupervisedServiceRunner(input: {
+  readonly allowedModules: readonly RunnerModuleName[];
+  readonly ownerKind: "deployment" | "user";
+  readonly runnerKind: RunnerDescriptor["runnerKind"];
+}): boolean {
+  return (
+    input.ownerKind === "deployment" &&
+    input.runnerKind === "managed" &&
+    sameStringSet(input.allowedModules, supervisedServiceModules)
+  );
+}
+
 /** Said when a Personal Deployment is asked for a computer that would execute. */
 export const personalReachableGrantRefusal =
   "Only reachable computers can join a Personal Deployment.";
@@ -598,13 +610,7 @@ async function assertPersonalRunnerAdmission(
   ) {
     return null;
   }
-  if (
-    input.ownerKind === "deployment" &&
-    input.runnerKind === "managed" &&
-    sameStringSet(input.allowedModules, supervisedServiceModules)
-  ) {
-    return null;
-  }
+  if (isSupervisedServiceRunner(input)) return null;
   // Phones lend browsers and apps without executing the Deployment's agents.
   if (
     !sameStringSet(input.allowedModules, personalReachableGrant) &&
@@ -1448,7 +1454,13 @@ export async function createRunnerEnrollment(
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    if (input.runnerKind !== "main") await assertWorkDeviceEnrollment(transaction);
+    const configuredService =
+      input.configuredInitial &&
+      input.createdBy === null &&
+      input.ownerUserId === undefined &&
+      isSupervisedServiceRunner({ ...input, ownerKind: "deployment" });
+    if (input.runnerKind !== "main" && !configuredService)
+      await assertWorkDeviceEnrollment(transaction);
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1744,7 +1756,6 @@ export async function enrollRunnerConnection(
   },
 ): Promise<RunnerConnectionRecord> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    if (input.descriptor.runnerKind !== "main") await assertWorkDeviceEnrollment(transaction);
     await sql`select pg_advisory_xact_lock(hashtextextended(${input.enrollmentTokenHash}, 0))`.execute(
       transaction,
       databaseOperationOptions(),
@@ -1779,6 +1790,12 @@ export async function enrollRunnerConnection(
         message: "Runner enrollment failed",
       });
     }
+    const configuredService =
+      enrollmentIdentity.createdBy === null &&
+      enrollmentIdentity.ownerUserId === null &&
+      isSupervisedServiceRunner(enrollmentIdentity);
+    if (enrollmentIdentity.runnerKind !== "main" && !configuredService)
+      await assertWorkDeviceEnrollment(transaction);
     if (enrollmentIdentity.runnerKind === "main") {
       await lockMainRunnerEnrollment(transaction);
     }

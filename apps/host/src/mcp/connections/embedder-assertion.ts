@@ -1,5 +1,4 @@
 import {
-  agentDirectoryKeyThumbprint,
   EmbedderAssertionClaimsSchema,
   EmbedderAssertionTokenSchema,
   embedderAssertionAlgorithms,
@@ -10,12 +9,13 @@ import {
   type AgentDirectoryEntry,
   type EmbedderAssertionClaims,
 } from "@opensteer/control-plane-protocol";
+import { agentDirectoryKeyThumbprint } from "@opensteer/database/agent-directory-verification";
 import { compactVerify, decodeProtectedHeader, importJWK } from "jose";
 import { z } from "zod";
 import { extractRedirectOrigin, isLoopbackRedirect, matchPlatform } from "./agent-directory.js";
 
 export const defaultEmbedderClockToleranceSeconds = 10;
-export const consentSelfStartWarning = "Only approve if you started this yourself.";
+export const consentSelfStartWarning = "Only allow this if you started it yourself.";
 
 export type ClaimEmbedderAssertion = (
   issuer: string,

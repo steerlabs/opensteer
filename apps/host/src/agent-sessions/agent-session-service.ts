@@ -5,6 +5,8 @@ import {
   ToolBlockedError,
   agentOperationHoldMs,
   refused,
+  requestOperationCallsMaxLength,
+  threadAccessModeAtMost,
   type AgentGrant,
   type AgentOperationDecision,
   type AgentOperationId,
@@ -16,6 +18,7 @@ import {
   type RequestPresentation,
   type ThreadAccessMode,
   type ThreadId,
+  type ToolFailureReceipt,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -27,6 +30,7 @@ import {
   decideAgentOperation,
   endAgentSessions,
   expireAgentOperationRequests,
+  findAgentOperation,
   handOffAgentOperation,
   idleAgentSessions,
   readAgentOperation,
@@ -40,6 +44,7 @@ import {
 } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { DeadlineDrain } from "../runtime/deadline-drain.js";
 
 /**
  * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
@@ -98,8 +103,7 @@ function directOperationAction(tool: string, target: string): string {
 }
 
 function directOperationCopy(tool: string, target: AgentOperationTarget, agent: string) {
-  const phone =
-    target.grant.kind === "computer-app" && target.grant.app.kind === "phone-screen";
+  const phone = target.grant.kind === "computer-app" && target.grant.app.kind === "phone-screen";
   const device = target.device?.name;
   const action =
     directOperationAction(tool, target.name) +
@@ -109,7 +113,11 @@ function directOperationCopy(tool: string, target: AgentOperationTarget, agent: 
       ? `Let ${agent} ${action}?`
       : `${action[0]!.toUpperCase()}${action.slice(1)}?`;
   const context = device ? (phone ? device : `${target.name} · ${device}`) : null;
-  const sentence = `${agent} wants to ${action}.`;
+  const scope =
+    tool === "browser_connect" && target.grant.kind === "browser-profile"
+      ? " It can control its own pages and access every cookie and signed-in site in this profile."
+      : "";
+  const sentence = `${agent} wants to ${action}.${scope}`;
   return { title, summary: context ? `${context}\n${sentence}` : sentence };
 }
 
@@ -136,6 +144,17 @@ export interface DirectOperationContext {
 
 /** An executor's way to say it cannot tell whether its effect happened. */
 export class OperationOutcomeUnknown extends Error {}
+
+export class AgentOperationFailure extends Error {
+  readonly receipt: ToolFailureReceipt;
+  override readonly cause: unknown;
+
+  constructor(cause: unknown, receipt: ToolFailureReceipt) {
+    super(cause instanceof Error ? cause.message : "The operation failed.");
+    this.cause = cause;
+    this.receipt = receipt;
+  }
+}
 
 export interface DirectOperation<Result> {
   readonly ownerUserId: UserId;
@@ -194,15 +213,24 @@ export type DirectOperationResult<Result> =
       readonly next: string;
     };
 
-const pendingNext =
-  "Waiting on the person in Needs you. Do not poll. Call again with the same operationKey and arguments after they answer.";
-const unknownNext =
+export const pendingNext = `Call the same tool again with the same arguments and this operationId to wait up to ${agentOperationHoldMs / 1_000} seconds for the person. If it is still pending, call again, but not in a tight loop.`;
+export const unknownNext =
   "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.";
 const interruptedNext =
   "Part of it may have happened. Check the current state before doing anything else.";
 
-function digest(tool: string, input: unknown): string {
-  return createHash("sha256").update(canonicalJson({ tool, input })).digest("hex");
+export function operationArgumentDigest(tool: string, input: unknown): string {
+  const args =
+    input !== null && typeof input === "object" && !Array.isArray(input)
+      ? Object.fromEntries(
+          Object.entries(input).filter(
+            ([key]) => !["taskId", "operationId", "operationKey"].includes(key),
+          ),
+        )
+      : input;
+  return createHash("sha256")
+    .update(canonicalJson({ tool, input: args }))
+    .digest("hex");
 }
 
 export class AgentSessionService {
@@ -216,13 +244,20 @@ export class AgentSessionService {
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
   /** Operations handed off in this process, joined by a concurrent resume of the same call. */
-  readonly #running = new Map<AgentOperationId, {
-    readonly controller: AbortController;
-    readonly result: Promise<DirectOperationResult<unknown>>;
-  }>();
+  readonly #running = new Map<
+    AgentOperationId,
+    {
+      readonly controller: AbortController;
+      readonly result: Promise<DirectOperationResult<unknown>>;
+      readonly taskId: ThreadId;
+      readonly mode: ThreadAccessMode;
+    }
+  >();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
-  #sweeper: ReturnType<typeof setInterval> | undefined;
+  readonly #reviewTimeoutMs: number;
+  readonly #sweeper: DeadlineDrain;
+  #sweeping = false;
 
   constructor(options: {
     readonly store: OpensteerStore;
@@ -232,13 +267,28 @@ export class AgentSessionService {
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
+    readonly reviewTimeoutMs?: number;
   }) {
     this.#store = options.store;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
+    this.#reviewTimeoutMs = options.reviewTimeoutMs ?? reviewerTimeoutMs;
     this.#reviewer = options.reviewer ?? alwaysAskReviewer;
     this.#closeBinding = options.closeBinding ?? (() => {});
     this.#onError = options.onError ?? (() => {});
     this.#decisions.setMaxListeners(0);
+    this.#sweeper = new DeadlineDrain({
+      onError: this.#onError,
+      drain: async () => {
+        await this.endIdle();
+        const active = await this.#store.database
+          .selectFrom("agentSessions")
+          .select("id")
+          .where("status", "=", "active")
+          .limit(1)
+          .executeTakeFirst();
+        return active ? new Date(Date.now() + 60_000) : null;
+      },
+    });
   }
 
   /**
@@ -247,17 +297,16 @@ export class AgentSessionService {
    */
   async start(): Promise<void> {
     await settleOrphanedAgentOperations(this.#store.database, new Set(this.#running.keys()));
-    this.#sweeper = setInterval(() => {
-      void this.endIdle().catch(this.#onError);
-    }, 60_000);
-    this.#sweeper.unref();
+    this.#sweeping = true;
+    this.#sweeper.start();
   }
   /** Settles once every operation handed off in this process has recorded its outcome. */
   async drain(): Promise<void> {
     await Promise.allSettled([...this.#running.values()].map(({ result }) => result));
+    await this.#sweeper.settled();
   }
   stop(): void {
-    clearInterval(this.#sweeper);
+    void this.#sweeper.close();
     for (const [id, entry] of this.#sessions) {
       entry.controller.abort(
         new OpensteerError({ code: "conflict", message: "The Home stopped." }),
@@ -268,14 +317,48 @@ export class AgentSessionService {
 
   /** The one entry point every direct tool calls. */
   async run<Result>(operation: DirectOperation<Result>): Promise<DirectOperationResult<Result>> {
+    if (!operation.question && operation.calls.length > requestOperationCallsMaxLength)
+      throw refused(
+        "bad_request",
+        `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected operation.`,
+      );
     if (!operation.target && operation.effect !== "read")
       throw new Error("An effect needs a concrete target");
-    const { session } = await beginAgentSession(this.#store.database, {
+    const argumentDigest = operationArgumentDigest(operation.tool, operation.input);
+    const existing = await findAgentOperation(this.#store.database, {
+      userId: operation.ownerUserId,
+      agentConnectionId: operation.agentConnectionId,
+      identity: { key: operation.operationKey },
+    });
+    if (existing) {
+      assertOperationArguments(existing, argumentDigest, operation.taskId);
+      if (
+        existing.state === "completed" &&
+        (!operation.replay || existing.sessionStatus === "ended")
+      )
+        return {
+          status: "completed",
+          taskId: existing.taskId,
+          operationId: existing.id,
+          summary: existing.resultSummary,
+        };
+      return withAgentOperationReceipt(
+        this.#store.database,
+        existing,
+        existing.taskId,
+        async () => {
+          const execution = await this.#admit(operation, `session:${existing.sessionId}`);
+          return this.#advance(operation, existing, existing.taskId, execution);
+        },
+      );
+    }
+    const { session, created } = await beginAgentSession(this.#store.database, {
       userId: operation.ownerUserId,
       agentConnectionId: operation.agentConnectionId,
       taskId: operation.taskId,
       purpose: operation.purpose,
     });
+    if (created && this.#sweeping) this.#sweeper.wake();
     const bindingId = `session:${session.id}` as const;
     const execution = await this.#admit(operation, bindingId);
     const target: AgentOperationTarget = operation.target ?? {
@@ -289,7 +372,7 @@ export class AgentSessionService {
       sessionId: session.id,
       operationKey: operation.operationKey,
       tool: operation.tool,
-      argumentDigest: digest(operation.tool, operation.input),
+      argumentDigest,
       target,
       targetGeneration: operation.targetGeneration ?? null,
       grantRevision: execution.agentConnection!.grantRevision,
@@ -298,7 +381,9 @@ export class AgentSessionService {
       calls: operation.calls,
       agentReason: operation.reason?.slice(0, 2_000) ?? null,
     });
-    return this.#advance(operation, row, session.threadId, execution);
+    return withAgentOperationReceipt(this.#store.database, row, session.threadId, () =>
+      this.#advance(operation, row, session.threadId, execution),
+    );
   }
 
   requestClosed(requestId: RequestId): void {
@@ -313,8 +398,9 @@ export class AgentSessionService {
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<void> {
-    const operation = await respondToAgentOperation(this.#store.database, input);
+    const { operation, expired } = await respondToAgentOperation(this.#store.database, input);
     this.#decisions.emit(operation.id);
+    if (expired) throw agentOperationRefusal(operation.decision);
   }
 
   /** The person's Stop on a session's task, bound to the session they saw. */
@@ -339,8 +425,18 @@ export class AgentSessionService {
    */
   async stopDirectOperation(operationId: AgentOperationId): Promise<void> {
     this.#running.get(operationId)?.controller.abort(
-      new OpensteerError({ code: "forbidden", message: "The connected agent's access to this work ended." }),
+      new OpensteerError({
+        code: "forbidden",
+        reason: "authority-changed",
+        message: "The connected agent's access to this work ended.",
+      }),
     );
+  }
+
+  async lowerTaskMode(taskId: ThreadId, mode: ThreadAccessMode): Promise<void> {
+    for (const [id, attempt] of this.#running)
+      if (attempt.taskId === taskId && !threadAccessModeAtMost(attempt.mode, mode))
+        await this.stopDirectOperation(id);
   }
 
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
@@ -368,10 +464,7 @@ export class AgentSessionService {
     const idleAt = new Date(now);
     for (const operation of await expireAgentOperationRequests(this.#store.database, idleAt))
       this.#decisions.emit(operation.id);
-    for (const session of await idleAgentSessions(
-      this.#store.database,
-      idleAt,
-    )) {
+    for (const session of await idleAgentSessions(this.#store.database, idleAt)) {
       const ended = await endAgentSessions(this.#store.database, {
         userId: session.userId,
         sessionIds: [session.id],
@@ -394,7 +487,13 @@ export class AgentSessionService {
     const entry = this.#sessions.get(sessionId);
     if (!entry) return;
     this.#sessions.delete(sessionId);
-    entry.controller.abort(new OpensteerError({ code: "forbidden", message }));
+    entry.controller.abort(
+      new OpensteerError({
+        code: "forbidden",
+        reason: reason === "stopped" ? "agent-session-stopped" : "authority-changed",
+        message,
+      }),
+    );
   }
 
   async #admit(
@@ -443,7 +542,10 @@ export class AgentSessionService {
         case "unknown":
           return { status: "unknown", ...base, next: unknownNext };
         case "refused":
-          throw this.#refusal(row.decision);
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
+            ...base,
+            status: "refused",
+          });
         case "handed-off": {
           const running = this.#running.get(row.id);
           if (running)
@@ -494,20 +596,24 @@ export class AgentSessionService {
   }
 
   async #review(row: AgentOperationRow, execution: ExecutionAuthority): Promise<"allow" | "ask"> {
-    const signal = AbortSignal.timeout(reviewerTimeoutMs);
+    const signal = AbortSignal.timeout(this.#reviewTimeoutMs);
     try {
-      const answer = await withTimeout(this.#reviewer.review(
-        {
-          ownerUserId: execution.ownerUserId,
-          grant: execution.agentConnection!.grant,
-          mode: row.mode,
-          tool: row.tool,
-          target: row.target,
-          calls: row.calls,
-          agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
-        },
-        signal,
-      ), reviewerTimeoutMs, { signal, timeoutError: () => new Error("Agent review timed out") });
+      const answer = await withTimeout(
+        this.#reviewer.review(
+          {
+            ownerUserId: execution.ownerUserId,
+            grant: execution.agentConnection!.grant,
+            mode: row.mode,
+            tool: row.tool,
+            target: row.target,
+            calls: row.calls,
+            agentReason: row.agentReason ? { untrusted: true, text: row.agentReason } : null,
+          },
+          signal,
+        ),
+        this.#reviewTimeoutMs,
+        { signal, timeoutError: () => new Error("Agent review timed out") },
+      );
       return answer === "allow" && !signal.aborted ? "allow" : "ask";
     } catch {
       return "ask";
@@ -589,8 +695,10 @@ export class AgentSessionService {
         execution,
       );
     const controller = new AbortController();
-    const running = this.#execute(operation, handed, taskId, bindingId, controller.signal);
-    this.#running.set(handed.id, { controller, result: running });
+    const running = withAgentOperationReceipt(this.#store.database, handed, taskId, () =>
+      this.#execute(operation, handed, taskId, bindingId, controller.signal),
+    );
+    this.#running.set(handed.id, { controller, result: running, taskId, mode: handed.mode });
     const forget = () => this.#running.delete(handed.id);
     void running.then(forget, forget);
     return this.#awaitExecution(operation, handed, taskId, running);
@@ -666,9 +774,15 @@ export class AgentSessionService {
           deadline,
           recheck: async () => {
             signal.throwIfAborted();
-            const execution = await this.#admit(operation, bindingId);
-            if (execution.agentConnection!.grantRevision !== row.grantRevision)
-              throw refused("forbidden", "The connected agent's access changed during this work.");
+            const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
+              if (error instanceof OpensteerError) throw new OperationOutcomeUnknown(error.message);
+              throw error;
+            });
+            if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
+              throw new OperationOutcomeUnknown(
+                "The connected agent's access changed during this work.",
+              );
+            signal.throwIfAborted();
           },
         });
       } catch (error) {
@@ -680,17 +794,35 @@ export class AgentSessionService {
         // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
         // it had already done is uncertain; the record says so and the next step repeats it.
         if (ended)
-          throw new ToolBlockedError({
-            code: ended.code,
-            message: ended.message,
-            next: interruptedNext,
-          });
+          throw new ToolBlockedError(
+            {
+              code:
+                ended.reason === "agent-session-stopped"
+                  ? "stopped_by_person"
+                  : ended.reason === "authority-changed"
+                    ? "access_changed"
+                    : ended.code,
+              message: ended.message,
+              next: interruptedNext,
+            },
+            { ...base, status: "unknown" },
+          );
         if (!settled || outcome === "unknown")
           return { status: "unknown", ...base, next: unknownNext };
-        throw error;
+        throw new AgentOperationFailure(error, { ...base, status: "failed" });
       }
-      const summary = operation.summarize?.(result) ?? null;
-      const settled = await settleAgentOperation(this.#store.database, row.id, "completed", summary);
+      let summary: Readonly<Record<string, unknown>> | null = null;
+      try {
+        summary = operation.summarize?.(result) ?? null;
+      } catch (error) {
+        this.#onError(error);
+      }
+      const settled = await settleAgentOperation(
+        this.#store.database,
+        row.id,
+        "completed",
+        summary,
+      );
       if (!settled) return { status: "unknown", ...base, next: unknownNext };
       return { status: "completed", ...base, result, summary };
     } finally {
@@ -698,19 +830,58 @@ export class AgentSessionService {
         this.#sessions.delete(row.sessionId);
     }
   }
+}
 
-  #refusal(decision: AgentOperationDecision | null): OpensteerError {
-    if (decision?.by === "refused")
-      return new OpensteerError({
-        code: "forbidden",
-        reason:
-          decision.reason === "person"
-            ? "person-declined"
-            : decision.reason === "stopped"
-              ? "agent-session-stopped"
-              : "authority-changed",
-        message: decision.message,
-      });
-    return new OpensteerError({ code: "forbidden", message: "This operation was refused." });
+export async function withAgentOperationReceipt<Result>(
+  database: OpensteerStore["database"],
+  row: Pick<AgentOperationRow, "id">,
+  taskId: ThreadId,
+  perform: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await perform();
+  } catch (error) {
+    if (
+      error instanceof AgentOperationFailure ||
+      (error instanceof ToolBlockedError && error.receipt)
+    )
+      throw error;
+    const current = await readAgentOperation(database, row.id).catch(() => null);
+    const state = current?.state;
+    throw new AgentOperationFailure(error, {
+      taskId,
+      operationId: row.id,
+      ...(state === "refused" || state === "failed" || state === "unknown"
+        ? { status: state }
+        : {}),
+    });
   }
+}
+
+export function agentOperationRefusal(decision: AgentOperationDecision | null): OpensteerError {
+  if (decision?.by === "refused")
+    return new OpensteerError({
+      code: "forbidden",
+      reason:
+        decision.reason === "person"
+          ? "person-declined"
+          : decision.reason === "stopped"
+            ? "agent-session-stopped"
+            : "authority-changed",
+      message: decision.message,
+    });
+  return new OpensteerError({ code: "forbidden", message: "This operation was refused." });
+}
+
+export function assertOperationArguments(
+  row: Pick<AgentOperationRow, "argumentDigest"> & { readonly taskId: ThreadId },
+  digest: string,
+  taskId?: ThreadId,
+) {
+  if (row.argumentDigest !== digest || (taskId && taskId !== row.taskId))
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "operation-key-reused",
+      message: "This operationKey already names a different call.",
+    });
 }

@@ -4,6 +4,8 @@ import {
   localToolPath,
   pluginNamespace,
 } from "./provider-names.js";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { Blocked } from "@opensteer/core";
 import { Effect, Schema } from "effect";
 import {
@@ -31,6 +33,7 @@ import {
   PluginServiceError,
   type PluginCaller,
   type PluginHostProvider,
+  type PluginExecutionTarget,
   type PluginAuthorizationResult,
   type PluginJson,
   type HostToolResult,
@@ -87,6 +90,9 @@ export interface EngineHostCallbacks {
     elicitation: ElicitationHandler | undefined,
   ): Effect.Effect<HostToolResult, Error>;
 }
+export const accountSelectionDigest = (accounts: unknown) =>
+  createHash("sha256").update(canonicalJson(accounts)).digest("hex");
+
 export function compositeBackend(
   engine: PluginEngine,
   accounts: ReturnType<typeof engineAccounts>,
@@ -94,6 +100,8 @@ export function compositeBackend(
   context: PluginCaller,
   host: EngineHostCallbacks,
   direct = false,
+  publishedOnly = false,
+  recordTarget?: (target: PluginExecutionTarget) => void,
 ) {
   const namespaces = new Map<string, string>();
   /** What keeps each app, as this backend last listed it. */
@@ -279,7 +287,7 @@ export function compositeBackend(
             items: hostTools(local).map((tool) => projectTool(tool, access, local)),
             routers: [],
           };
-        const page = yield* listCloud(input, options, access === "off");
+        const page = yield* listCloud(input, options, publishedOnly || access === "off");
         return {
           ...page,
           items: page.items.map((tool) => projectTool(tool, access)),
@@ -296,7 +304,7 @@ export function compositeBackend(
             accounts: { app: {}, user: {} },
             routers: [],
           };
-        if (grants?.[input.app] === "off") {
+        if (publishedOnly || grants?.[input.app] === "off") {
           const page = yield* listCloud(input, { unboundedPages: true }, true);
           retained.set(input.app, page.items);
           return {
@@ -388,6 +396,11 @@ export function compositeBackend(
             return yield* Effect.fail(
               new PluginServiceError("invalid", "Host tool call has no execution identity"),
             );
+          recordTarget?.({
+            plugin: input.app,
+            version: local.version,
+            write: current.readOnly !== true,
+          });
           const result = yield* host
             .call(
               {
@@ -418,12 +431,23 @@ export function compositeBackend(
             new PluginServiceError("invalid", "The plugin changed after review"),
           );
         const version = pinned ? VersionId.make(pinned) : input.version;
+        const selectedVersion =
+          version ??
+          (recordTarget ? (yield* engine.apps.get({ app: input.app, owner })).activeVersion : null);
+        const selection = yield* accounts.accounts(input.app, selectedVersion ?? version);
+        if (selectedVersion)
+          recordTarget?.({
+            plugin: input.app,
+            version: selectedVersion,
+            write: input.kind !== "query",
+            accountSelection: accountSelectionDigest(selection),
+          });
         return yield* engine.tools
           .call(
             {
               ...input,
-              ...(version === undefined ? {} : { version }),
-              accounts: yield* accounts.accounts(input.app, version),
+              ...(selectedVersion === null ? {} : { version: selectedVersion }),
+              accounts: selection,
             },
             options,
           )
@@ -456,6 +480,12 @@ export function compositeBackend(
               "Linked accounts changed while approval was pending",
             ),
           );
+        recordTarget?.({
+          plugin: app,
+          version,
+          write: pending.invocation.kind !== "query",
+          accountSelection: accountSelectionDigest(current),
+        });
         return yield* engine.tools
           .resume({ requestId: pending.requestId, response }, options)
           .pipe(Effect.map(wrapDirectResult));
@@ -471,7 +501,7 @@ export function compositeBackend(
         const selection = yield* selected(input);
         const catalog = yield* engine.skills.list(
           { ...input, accounts: selection.accounts },
-          options,
+          publishedOnly ? { publishedOnly: true } : options,
         );
         return {
           ...catalog,
@@ -481,10 +511,10 @@ export function compositeBackend(
     readSkill: (input) =>
       Effect.gen(function* () {
         yield* checked("readSkill", input.app);
-        const document = yield* engine.skills.read({
-          ...input,
-          accounts: yield* accounts.accounts(input.app, input.version),
-        });
+        const document = yield* engine.skills.read(
+          { ...input, accounts: yield* accounts.accounts(input.app, input.version) },
+          publishedOnly ? { publishedOnly: true } : undefined,
+        );
         return {
           ...document,
           app: { ...document.app, slug: AppSlug.make(pluginNamespace(document.app.slug)) },

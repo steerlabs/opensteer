@@ -26,18 +26,19 @@ export function cancelPending(
   transaction: Transaction<DatabaseSchema>,
   input: Cancellation,
 ): Promise<readonly RequestId[]> {
-  if (isOfflineSettlement(transaction)) return cancelInTransaction(transaction, input, false);
-  return commitPersonalMutation(transaction, (tx) => cancelInTransaction(tx, input, true));
+  if (input.requestIds?.length === 0) return Promise.resolve([]);
+  const cancel = async (tx: Transaction<DatabaseSchema>) => {
+    const prepared = await preparePendingCancellation(tx, input);
+    await prepared.lockThreads();
+    return prepared.apply();
+  };
+  if (isOfflineSettlement(transaction)) return cancel(transaction);
+  return commitPersonalMutation(transaction, cancel);
 }
 
-async function cancelInTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: Cancellation,
-  refresh: boolean,
-): Promise<readonly RequestId[]> {
+function pendingCancellationQuery(transaction: Transaction<DatabaseSchema>, input: Cancellation) {
   let pending = transaction.selectFrom("requests").selectAll().where("status", "=", "pending");
   if (input.requestIds) {
-    if (input.requestIds.length === 0) return [];
     pending = pending.where("id", "in", [...input.requestIds]);
   }
   if (input.runId)
@@ -66,27 +67,62 @@ async function cancelInTransaction(
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
-  if (["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(input.reason)) {
-    const durable = await pending.where("mode", "=", "durable")
-      .where("originatingAgentSessionId", "is", null).orderBy("id", "asc").execute();
+  return pending;
+}
+
+export async function preparePendingCancellation(
+  transaction: Transaction<DatabaseSchema>,
+  input: Cancellation,
+) {
+  const pending = pendingCancellationQuery(transaction, input);
+  const refresh = !isOfflineSettlement(transaction);
+  if (
+    ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
+      input.reason,
+    )
+  ) {
+    const durable = await pending
+      .clearSelect()
+      .select("id")
+      .where("mode", "=", "durable")
+      .where("originatingAgentSessionId", "is", null)
+      .orderBy("id", "asc")
+      .execute();
     for (const row of durable) {
-      await transaction.insertInto("requestContinuations").values({
-        requestId: row.id,
-        status: "waiting",
-        reason: null,
-        attemptedAt: null,
-        createdAt: input.resolvedAt,
-        updatedAt: input.resolvedAt,
-      }).onConflict((conflict) => conflict.column("requestId").doNothing()).execute();
+      await transaction
+        .insertInto("requestContinuations")
+        .values({
+          requestId: row.id,
+          status: "waiting",
+          reason: null,
+          attemptedAt: null,
+          createdAt: input.resolvedAt,
+          updatedAt: input.resolvedAt,
+        })
+        .onConflict((conflict) => conflict.column("requestId").doNothing())
+        .execute();
     }
   }
-  if (refresh) {
+  const lockThreads = async () => {
+    if (!refresh) return;
     const parents = await pending.clearSelect().select("originatingThreadId").distinct().execute();
     await lockRequestThreads(
       transaction,
       parents.map(({ originatingThreadId }) => originatingThreadId),
     );
-  }
+  };
+  return {
+    lockThreads,
+    apply: () => cancelInTransaction(transaction, input, pending, refresh),
+  };
+}
+
+async function cancelInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: Cancellation,
+  pending: ReturnType<typeof pendingCancellationQuery>,
+  refresh: boolean,
+): Promise<readonly RequestId[]> {
   const locked = await pending.orderBy("id", "asc").forNoKeyUpdate().execute();
   if (locked.length === 0) return [];
   const responseCommandIds = locked

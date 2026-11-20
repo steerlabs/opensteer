@@ -105,6 +105,7 @@ export const ComputerViewRemovedSchema = z.object({
   ...ComputerViewRefSchema.shape,
   machineId: DeviceIdSchema,
   reason: z.enum(["closed", "expired", "revoked", "disconnected", "host-restarted"]),
+  displayReason: z.literal("device-restarting").optional(),
 });
 /** Joins existing connected, unblocked, owner-approved connections to device identities and icons. */
 export const ApprovedComputerAppSchema = z.object({

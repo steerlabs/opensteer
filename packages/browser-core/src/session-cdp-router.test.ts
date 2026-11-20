@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   SessionCdpRouter,
+  SessionCdpRouterError,
   type BrowserCdpBackend,
   type CdpChannel,
   type CdpCommand,
@@ -101,6 +102,121 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("scopes a connected client and its alias to the seed, creations, and their popups", async () => {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = ["seed", "person", "sibling"].map((targetId) => ({
+      targetId,
+      type: "page",
+    }));
+    const sendToBrowser = backend.send.bind(backend);
+    vi.spyOn(backend, "send").mockImplementation(async (method, params) => {
+      const result = await sendToBrowser(method, params);
+      if (method === "Target.createTarget")
+        backend.emit("Target.targetCreated", { targetInfo: backend.targetInfos.at(-1) });
+      return result;
+    });
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "person", async () => true, "/files/a");
+    router.claimTarget("a", "seed");
+    router.claimTarget("a", "sibling");
+    const client = router.openStandardClient("a", {
+      wholeContext: true,
+      lineage: { attachmentId: "first", seedTargetId: "seed" },
+    });
+    const other = router.openStandardClient("a", {
+      wholeContext: false,
+      lineage: { attachmentId: "second", seedTargetId: "sibling" },
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({ method: "Target.attachToBrowserTarget" })) as {
+      sessionId: string;
+    };
+    const discover = { method: "Target.setDiscoverTargets", parameters: { discover: true } };
+    await client.send(discover);
+    await client.send({ ...discover, sessionId });
+    await client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true },
+    });
+    await client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, flatten: true },
+      sessionId,
+    });
+
+    const targets = (ids: string[]) => ({
+      targetInfos: ids.map((targetId) => expect.objectContaining({ targetId })),
+    });
+    await expect(client.send({ method: "Target.getTargets" })).resolves.toEqual(targets(["seed"]));
+    await expect(client.send({ method: "Target.getTargets", sessionId })).resolves.toEqual(
+      targets(["seed"]),
+    );
+    const { targetId } = (await client.send({
+      method: "Target.createTarget",
+      parameters: { url: "about:blank" },
+      sessionId,
+    })) as { targetId: string };
+    const siblingPage = (await other.send({
+      method: "Target.createTarget",
+      parameters: { url: "about:blank" },
+    })) as { targetId: string };
+    for (const info of [
+      { targetId: "popup", type: "page", openerId: targetId },
+      { targetId: "person-popup", type: "page", openerId: "person" },
+    ]) {
+      backend.targetInfos.push(info);
+      backend.emit("Target.targetCreated", { targetInfo: info });
+    }
+    expect(router.claimTarget("a", "popup", targetId)).toBe("first");
+    expect(router.claimTarget("a", targetId)).toBe("first");
+    expect(router.claimTarget("a", "person-popup", "person")).toBeUndefined();
+    await expect(client.send({ method: "Target.getTargets", sessionId })).resolves.toEqual(
+      targets(["seed", targetId, "popup"]),
+    );
+    await expect(other.send({ method: "Target.getTargets" })).resolves.toEqual(
+      targets(["sibling", siblingPage.targetId]),
+    );
+
+    for (const method of [
+      "Target.attachToTarget",
+      "Target.getTargetInfo",
+      "Target.closeTarget",
+      "Target.activateTarget",
+    ]) {
+      for (const root of [{}, { sessionId }]) {
+        const send = (id: string) =>
+          client
+            .send({ method, parameters: { targetId: id }, ...root })
+            .catch((error: unknown) => error);
+        const missing = await send("missing");
+        expect(missing).toBeInstanceOf(SessionCdpRouterError);
+        for (const id of ["person", "person-popup", "sibling", siblingPage.targetId])
+          expect(await send(id)).toMatchObject(missing as SessionCdpRouterError);
+      }
+    }
+    await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "popup" },
+      sessionId,
+    });
+    await client.send({ method: "Target.attachToTarget", parameters: { targetId: "popup" } });
+    const announced = (method: string, root?: string) =>
+      events
+        .filter((event) => event.method === method && event.sessionId === root)
+        .map((event) => event.parameters.targetInfo);
+    for (const root of [undefined, sessionId]) {
+      expect(announced("Target.targetCreated", root)).toEqual(
+        targets(["seed", targetId, "popup"]).targetInfos,
+      );
+      expect(announced("Target.attachedToTarget", root)).toEqual(
+        targets(["seed", targetId, "popup"]).targetInfos,
+      );
+    }
+    await router.close();
+  });
+
   it("gives a browser CDP alias the same confined root in session mode", async () => {
     const backend = new FakeBackend();
     const page = { targetId: "owned", type: "page" };

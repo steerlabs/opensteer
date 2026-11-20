@@ -255,7 +255,9 @@ export function createConnectionRpcHandlers(
   oauth: ConnectionOAuth,
   chromeTabGrantCatalog?: (
     ownerId: UserId,
-  ) => Promise<Pick<AgentConnectionConsent, "chromeTabs" | "chromeTabsNeedPairing">>,
+  ) => Promise<
+    Pick<AgentConnectionConsent, "chromeTabs" | "chromeTabsNeedPairing" | "chromeTabsRepairNames">
+  >,
 ): Pick<
   HostApiHandlers,
   "connections.list" | "connections.authorization.get" | "connections.activity" | "threads.activity"

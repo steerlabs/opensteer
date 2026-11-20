@@ -5,6 +5,7 @@ import {
   browserSourceTabHostSchemas,
   browserSourceTabWire,
   browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
 } from "./tab.js";
 import { browserSourceWireCurrent } from "./versions.js";
 import { BrowserSourceOriginSchema } from "../frozen/browser-source.js";
@@ -130,7 +131,7 @@ export function readHostMessage(
   raw: string,
   wire = browserSourceWireCurrent,
 ): BrowserSourceHostFrame | UnknownMessage | null {
-  return readMessage(raw, hostMessageSchemas, wire);
+  return readMessage(raw, hostMessageSchemas, wire, browserSourceTabDetachReplayWire);
 }
 
 /** One frame a wire >= 5 extension sent, as JSON text. */
@@ -138,13 +139,14 @@ export function readClientMessage(
   raw: string,
   wire = browserSourceWireCurrent,
 ): BrowserSourceClientFrame | UnknownMessage | null {
-  return readMessage(raw, clientMessageSchemas, wire);
+  return readMessage(raw, clientMessageSchemas, wire, browserSourceTabDetachWire);
 }
 
 function readMessage<Schemas extends Record<string, z.ZodType>>(
   raw: string,
   schemas: Schemas,
   wire: number,
+  detachWire: number,
 ): Known<Schemas> | UnknownMessage | null {
   let value: unknown;
   try {
@@ -157,7 +159,7 @@ function readMessage<Schemas extends Record<string, z.ZodType>>(
   if (typeof type !== "string") return null;
   if ((wire < browserSourceTabWire && type.startsWith("tab.")) || !Object.hasOwn(schemas, type))
     return { type: "unknown" };
-  if (wire < browserSourceTabDetachWire && type === "tab.detached") return { type: "unknown" };
+  if (wire < detachWire && type === "tab.detached") return { type: "unknown" };
   const parsed = schemas[type as keyof Schemas]!.safeParse(value);
   return parsed.success ? (parsed.data as Known<Schemas>) : null;
 }

@@ -80,6 +80,7 @@ import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
   agentGrantAllows,
+  threadAccessModeAtMost,
   RunnerIdSchema,
   RunIdSchema,
   type AuthSessionId,
@@ -535,6 +536,7 @@ export interface BrowserRuntimeTarget {
   readonly computer?: { readonly name: string; readonly runnerId: RunnerId };
   connect(ticket: string): BrowserRuntimeConnection;
   readonly wholeContextCdp?: boolean;
+  readonly standardCdpLineage?: boolean;
   readonly standardCdpRecovery?: {
     readonly relayId: string;
     boot(): Promise<string>;
@@ -2085,14 +2087,37 @@ export class BrowserService {
     return new Set((await this.#repository.authorizedPlaceThreadIds?.(ownerId, ids)) ?? []);
   }
 
+  #requestPhysicalTabClose(
+    broker: HostedBrowserBroker,
+    surfaceId: BrowserSurfaceId,
+    durable: boolean,
+  ) {
+    return broker.requestCdp({
+      type: "cdp.command",
+      requestId: randomUUID(),
+      command: {
+        method: browserHostMethods.closeTab,
+        parameters: {
+          surfaceId,
+          inventoryRevision: broker.inventoryRevision,
+          ...(durable ? { durable: true } : {}),
+        },
+      },
+    });
+  }
+
   async closeEngineSignInPage(
     ownerId: UserId,
     tabId: TabId,
     idempotencyKey: string,
   ): Promise<void> {
     const tab = await this.#workspaceTabs?.get(ownerId, tabId, true);
-    const binding = tab?.pageBinding;
-    if (!tab?.closedAt || !binding) return;
+    if (tab?.closedAt) await this.#closeDurablePage(ownerId, tab, idempotencyKey);
+  }
+
+  async #closeDurablePage(ownerId: UserId, tab: TabRecord, idempotencyKey: string): Promise<void> {
+    const binding = tab.pageBinding;
+    if (!binding) return;
     const broker = this.#brokers.get(binding.sessionId);
     if (!broker?.live || !broker.pageOf(binding.surfaceId)) return;
     await this.closeTab(
@@ -2134,39 +2159,30 @@ export class BrowserService {
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
         });
-      const durable = durableClose && broker.tabRestoreVersion;
+      const durable = durableClose && broker.tabRestoreVersion === 1;
       if (!durable && broker.inventoryRevision !== command.inventoryRevision)
         throw new OpensteerError({
           code: "conflict",
           reason: staleBrowserTabInventoryReason,
           message: "The browser tabs changed. Review them before closing.",
         });
-      const response = await broker
-        .requestCdp({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          command: {
-            method: browserHostMethods.closeTab,
-            parameters: {
-              surfaceId: command.surfaceId,
-              inventoryRevision: broker.inventoryRevision,
-              ...(durable ? { durable: true } : {}),
-            },
-          },
-        })
-        .catch((error: unknown) => {
-          if (
-            error instanceof OpensteerError &&
-            (error.code === "conflict" || error.code === "not_found")
-          )
-            throw new OpensteerError({
-              code: "conflict",
-              reason: staleBrowserTabInventoryReason,
-              message: "The browser tabs changed. Review them before closing.",
-              cause: error,
-            });
-          throw error;
-        });
+      const response = await this.#requestPhysicalTabClose(
+        broker,
+        command.surfaceId,
+        durable,
+      ).catch((error: unknown) => {
+        if (
+          error instanceof OpensteerError &&
+          (error.code === "conflict" || error.code === "not_found")
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            reason: staleBrowserTabInventoryReason,
+            message: "The browser tabs changed. Review them before closing.",
+            cause: error,
+          });
+        throw error;
+      });
       const { outcome } = z
         .object({ outcome: z.enum(["tab-closed", "session-closed"]) })
         .parse(response.result);
@@ -2596,13 +2612,32 @@ export class BrowserService {
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
       if (broker && this.#workspaceTabs) {
         const changes = broker.tabChanges();
-        const ownerId = (await this.#repository.listBrowserSessionViewers(sessionId))?.userIds[0];
-        const record = ownerId
-          ? await this.#repository.getBrowserSessionForOwner(sessionId, ownerId)
-          : null;
-        const pending = record
-          ? await this.#writeWorkspacePages(record, broker.groupId, changes.tabs, changes.closed)
-          : new Set<BrowserSurfaceId>();
+        let ownerId: UserId | undefined;
+        let record: BrowserSessionRecord | null = null;
+        try {
+          ownerId = (await this.#repository.listBrowserSessionViewers(sessionId))?.userIds[0];
+          if (ownerId)
+            record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
+        } finally {
+          if (!record) {
+            for (const tab of changes.tabs)
+              if (
+                tab.creatorAttachmentId &&
+                !this.#workspacePageGenerations.has(`${sessionId}:${tab.id}`)
+              )
+                await this.#closeUnrecordedStandardCdpPage(sessionId, tab);
+          }
+        }
+        const pending =
+          record && ownerId
+            ? await this.#writeWorkspacePages(
+                record,
+                ownerId,
+                broker.groupId,
+                changes.tabs,
+                changes.closed,
+              )
+            : new Set<BrowserSurfaceId>();
         broker.acknowledgeTabChanges({
           ...changes,
           tabs: changes.tabs.filter((tab) => !pending.has(tab.id)),
@@ -2900,9 +2935,24 @@ export class BrowserService {
         });
       return this.#bindWorkspacePage(actor.authority, row, actor.signal);
     },
-    closeViewers: async (_ownerId, row) => {
+    closeViewers: async (ownerId, row) => {
       if (row.pageBinding)
         this.#brokers.get(row.pageBinding.sessionId)?.removePersonTab(row.id, row.generation);
+      if (
+        !row.pageBinding ||
+        !row.openedBy ||
+        row.openedBy === "person" ||
+        !(this.#repository instanceof OpensteerStore)
+      )
+        return;
+      const task = await this.#repository.database
+        .selectFrom("threads")
+        .select("originConnectionId")
+        .where("id", "=", row.openedBy.taskId)
+        .where("createdBy", "=", ownerId)
+        .executeTakeFirst();
+      if (task?.originConnectionId)
+        await this.#closeDurablePage(ownerId, row, `task-page:${row.id}:${row.generation}`);
     },
   };
 
@@ -3176,6 +3226,7 @@ export class BrowserService {
   }
   async #writeWorkspacePages(
     record: BrowserSessionRecord,
+    ownerId: UserId,
     lineageId: BrowserSessionId,
     descriptors: readonly PageDescriptor[],
     closed: readonly BrowserSurfaceId[],
@@ -3184,11 +3235,19 @@ export class BrowserService {
     const pending = new Set<BrowserSurfaceId>();
     if (!tabs || record.origin === "trigger" || record.opener?.kind === "automation")
       return pending;
-    const ownerId = (await this.#repository.listBrowserSessionViewers(record.id))?.userIds[0];
-    if (!ownerId) return pending;
     for (const descriptor of descriptors) {
-      let row = await tabs.get(ownerId, descriptor.id, true);
       const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
+      let row: TabRecord | null;
+      if (descriptor.creatorAttachmentId) {
+        try {
+          row = await this.#recordStandardCdpPage(record, descriptor, binding, ownerId, tabs);
+          this.#workspacePageGenerations.set(`${record.id}:${row.id}`, row.generation);
+        } catch (error) {
+          await this.#closeUnrecordedStandardCdpPage(record.id, descriptor);
+          if (!(error instanceof BrowserCdpConnectionEnded)) this.#onError(error);
+          continue;
+        }
+      } else row = await tabs.get(ownerId, descriptor.id, true);
       if (!row && !descriptor.openerId && record.origin === "person") {
         const opens = this.#taskPageOpens.get(record.id);
         const openedBy = opens?.openers.get(descriptor.id);
@@ -3298,11 +3357,87 @@ export class BrowserService {
     if (pending.size && pending.size < descriptors.length)
       return this.#writeWorkspacePages(
         record,
+        ownerId,
         lineageId,
         descriptors.filter((descriptor) => pending.has(descriptor.id)),
         [],
       );
     return pending;
+  }
+
+  async #recordStandardCdpPage(
+    record: BrowserSessionRecord,
+    descriptor: PageDescriptor,
+    pageBinding: PageBinding,
+    ownerId: UserId,
+    tabs: TabStore,
+  ): Promise<TabRecord> {
+    const claims = this.#standardCdpAttachments.get(descriptor.creatorAttachmentId!)?.claims;
+    const threadId = claims?.facts.threadId;
+    const existing = await tabs.get(ownerId, descriptor.id, true);
+    if (existing) {
+      if (
+        existing.closedAt ||
+        existing.openedBy === "person" ||
+        !existing.openedBy ||
+        (threadId && existing.openedBy.taskId !== threadId) ||
+        existing.pageBinding?.sessionId !== record.id
+      )
+        throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
+      return existing;
+    }
+    if (
+      !claims?.facts.seed ||
+      !threadId ||
+      claims.browserSessionId !== record.id ||
+      claims.authority.ownerId !== ownerId
+    )
+      throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
+    const actor = { kind: "browser-binding", authority: claims.authority, threadId } as const;
+    const profile = (await this.#repository.listBrowserProfiles(ownerId)).find(
+      (item) => item.id === record.profileId,
+    );
+    const opener = descriptor.openerId ? await tabs.get(ownerId, descriptor.openerId, true) : null;
+    const write: TabWrite = {
+      id: descriptor.id,
+      ownerId,
+      kind: "page",
+      computerId: await this.#selfDeviceId(record.runnerId),
+      title: descriptor.title,
+      url: descriptor.url,
+      profileId: record.profileId,
+      profileName: profile?.name ?? null,
+      openedBy: { taskId: threadId },
+      ...(opener?.pageBinding?.sessionId === record.id ? { openerTabId: opener.id } : {}),
+      pageBinding,
+      ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
+    };
+    await tabs.open(write, `connected-page:${record.id}:${descriptor.id}`, async (tx) => {
+      if (
+        this.#endedBindings.has(claims.authority.agentBindingId) ||
+        (claims.authority.expiresAt ?? Infinity) <= Date.now()
+      )
+        throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
+      await authorizeTabTarget(actor, write, tx);
+    });
+    const row = await tabs.get(ownerId, descriptor.id);
+    if (!row) throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
+    return row;
+  }
+
+  async #closeUnrecordedStandardCdpPage(
+    sessionId: BrowserSessionId,
+    descriptor: PageDescriptor,
+  ): Promise<void> {
+    const broker = this.#brokers.get(sessionId);
+    if (!broker?.live || !broker.pageOf(descriptor.id)) return;
+    try {
+      await this.#requestPhysicalTabClose(broker, descriptor.id, broker.tabRestoreVersion === 1);
+    } catch (error) {
+      const creator = this.#standardCdpAttachments.get(descriptor.creatorAttachmentId!);
+      creator?.close("A page could not be added to Tabs.");
+      throw error;
+    }
   }
 
   async #recordAgentTabPlace(
@@ -3739,8 +3874,9 @@ export class BrowserService {
     readonly browserSessionId: BrowserSessionId;
     readonly mode: StandardCdpMode;
     readonly ttl?: number;
+    readonly seedTabId?: TabId;
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: StandardCdpMode }> {
-    const { facts, mode } = await this.#standardCdpAdmission(input);
+    const { facts, mode } = await this.#standardCdpAdmission(input, input.seedTabId);
     if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
       throw new BrowserCdpConnectionEnded("This browser authority has ended.");
     const ticket = this.standardCdpTickets.issue({ ...input, facts, mode });
@@ -3790,11 +3926,15 @@ export class BrowserService {
         : undefined;
     let attemptRecorded = false;
     let handedOff = false;
-    const verify = async (check: AbortSignal, expiresAt: number) => {
+    const verify = async (check: AbortSignal, expiresAt: number, checkSeed = false) => {
       const checked = AbortSignal.any([life, check]);
       checked.throwIfAborted();
       const admitted = await withDatabaseOperationSignal(checked, expiresAt, () =>
-        this.#standardCdpAdmission(claims),
+        this.#standardCdpAdmission(
+          claims,
+          checkSeed ? claims.facts.seed?.surfaceId : undefined,
+          claims.facts.seed,
+        ),
       );
       if (
         JSON.stringify(admitted.facts) !== JSON.stringify(claims.facts) ||
@@ -3813,7 +3953,7 @@ export class BrowserService {
       ]);
       const expiresAt = Date.now() + standardCdpAdmissionMs;
       const admitted = await this.#standardCdpProfiles.run(claims.facts.profileId, async () => {
-        const verified = await verify(deadline, expiresAt);
+        const verified = await verify(deadline, expiresAt, true);
         const { profileId } = verified.facts;
         const current = profileId ? this.#standardCdpProfiles.held(profileId) : undefined;
         if (current)
@@ -3893,6 +4033,14 @@ export class BrowserService {
           creationOrigin: "agent",
           ...(target.actorClaim ? { actor: "agent" } : {}),
           standardCdp: mode,
+          ...(claims.facts.seed
+            ? {
+                standardCdpLineage: {
+                  attachmentId: id,
+                  seedSurfaceId: claims.facts.seed.surfaceId,
+                },
+              }
+            : {}),
           ...(lease ? { standardCdpLease: lease } : {}),
           identity: identity ?? { kind: "fresh" },
           runtimeId: target.runtimeId,
@@ -3914,7 +4062,15 @@ export class BrowserService {
       const terminal = transport.contactLost
         ? Promise.race([transport.settled, transport.contactLost])
         : transport.settled;
-      void terminal.then(() => this.#standardCdpAttachments.delete(id));
+      void terminal
+        .then(async () => {
+          try {
+            if (claims.facts.seed) await this.#flushTabDescriptors(record.id, broker);
+          } finally {
+            this.#standardCdpAttachments.delete(id);
+          }
+        })
+        .catch(this.#onError);
       if (attempts) {
         void transport.settled.then(() => attempts.settled(record.id, id)).catch(this.#onError);
         if (transport.contactLost)
@@ -3977,6 +4133,21 @@ export class BrowserService {
     this.#standardCdpAttachments.get(id)?.close("Agent connection authority ended.");
   }
 
+  lowerStandardCdpTaskMode(threadId: ThreadId, accessMode: StandardCdpAuthority["mode"]): void {
+    for (const [
+      id,
+      {
+        claims: { facts },
+      },
+    ] of this.#standardCdpAttachments)
+      if (
+        facts.threadId === threadId &&
+        facts.accessMode &&
+        !threadAccessModeAtMost(facts.accessMode, accessMode)
+      )
+        this.stopStandardCdpAttempt(id);
+  }
+
   closeStandardCdpForConnection(connectionId: string, reason: string): void {
     const bindings = this.standardCdpTickets.bindingsForConnection(connectionId);
     for (const { claims } of this.#standardCdpAttachments.values())
@@ -4002,6 +4173,8 @@ export class BrowserService {
 
   async #standardCdpAdmission(
     input: Pick<StandardCdpTicketClaims, "authority" | "browserSessionId" | "mode">,
+    seedTabId?: TabId,
+    previousSeed?: StandardCdpFacts["seed"],
   ) {
     const { authority, browserSessionId } = input;
     if (
@@ -4025,6 +4198,36 @@ export class BrowserService {
     if (!held.some(({ id }) => id === record.id))
       throw new BrowserCdpConnectionEnded("This task does not have access to that browser tab.");
     const target = this.#resolveTarget(placementOf(record));
+    const connected =
+      authority.agentBindingId.startsWith("session:") ||
+      (authorityDetails?.agentConnectionId && !authority.agentBindingId.startsWith("run:"));
+    let seed: StandardCdpFacts["seed"];
+    if (connected) {
+      if (!target?.standardCdpLineage)
+        throw new BrowserCdpConnectionEnded(
+          "This device needs a newer version of Opensteer for a direct browser connection. You can still use browser_use.",
+        );
+      if (!authorityDetails?.agentConnectionId || !authorityDetails.threadId)
+        throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      if (seedTabId) {
+        const row = await this.#workspaceTabs?.get(authority.ownerId, seedTabId);
+        if (
+          !row ||
+          row.kind !== "page" ||
+          row.openedBy === "person" ||
+          row.openedBy?.taskId !== authorityDetails.threadId ||
+          row.pageBinding?.sessionId !== record.id ||
+          row.pageBinding.surfaceId !== seedTabId ||
+          !broker.pageOf(seedTabId)
+        )
+          throw new BrowserCdpConnectionEnded(
+            "This task does not have access to that browser tab.",
+          );
+        seed = { surfaceId: row.pageBinding.surfaceId, generation: row.generation };
+      } else if (previousSeed) seed = previousSeed;
+      else
+        throw new BrowserCdpConnectionEnded("This task does not have access to that browser tab.");
+    }
     if (
       !broker.live ||
       !target ||
@@ -4046,8 +4249,12 @@ export class BrowserService {
       profileBindingId: identity?.binding.bindingId ?? null,
       runtimeId: target.runtimeId,
       placementKey: target.placementKey,
+      ...(seed ? { seed } : {}),
       agentConnectionId: authorityDetails?.agentConnectionId ?? null,
       grantRevision: authorityDetails?.grantRevision ?? null,
+      ...(authorityDetails?.agentConnectionId
+        ? { accessMode: authorityDetails.mode, threadId: authorityDetails.threadId }
+        : {}),
     };
     let mode: StandardCdpMode = "session";
     if (input.mode === "whole-context" && record.profileId && target.wholeContextCdp) {
@@ -5550,12 +5757,15 @@ export class BrowserService {
                 !agentGrantAllows(grant, { kind: "browser-profile", profileId }, access),
             )
           : !grant.resources.some((resource) => resource.kind === "browser-profile"))
-      )
+      ) {
+        if (input.agentBindingId.startsWith("session:") && profiles.length)
+          throw new OpensteerError({ code: "not_found", message: "Tab not found." });
         throw new OpensteerError({
           code: "forbidden",
           message:
             "This browser profile is not one this connected agent may use. The person can change what it may use under Connected agents.",
         });
+      }
       if (authority.execution.agentConnection && profiles.includes(null))
         throw new OpensteerError({
           code: "forbidden",
@@ -6700,11 +6910,17 @@ export class HostedBrowserBroker {
       outlet.clipboard = Boolean(
         outlet.editing && (version === 1 || this.#snapshot.clipboard === true),
       );
+      const {
+        cdpReplyBudget: _cdpReplyBudget,
+        scriptAttachments: _scriptAttachments,
+        scriptCancellation: _scriptCancellation,
+        ...viewerSnapshot
+      } = this.#snapshot;
       await outlet.sendText(
         JSON.stringify(
           browserViewerMessage(
             {
-              ...this.#snapshot,
+              ...viewerSnapshot,
               surfaces: this.#surfaces,
               inventoryRevision: this.inventoryRevision,
             },
@@ -7312,12 +7528,13 @@ export class HostedBrowserBroker {
         if (icon || (restored && row.url !== restored.url && row.url !== "about:blank"))
           this.#restoredIcons.delete(row.id);
         if (
-          this.#restoreTabs &&
+          (this.#restoreTabs || row.creatorAttachmentId !== undefined) &&
           (!previous ||
             previous.title !== row.title ||
             previous.url !== row.url ||
             previous.order !== row.order ||
             previous.openerId !== row.openerId ||
+            row.creatorAttachmentId !== undefined ||
             (previous.favicon ?? null) !== favicon)
         )
           this.#dirtyTabs.set(id, {
@@ -7326,6 +7543,7 @@ export class HostedBrowserBroker {
             url: row.url,
             order: row.order,
             openerId: row.openerId,
+            ...(row.creatorAttachmentId ? { creatorAttachmentId: row.creatorAttachmentId } : {}),
             favicon,
           });
       }
@@ -7353,7 +7571,7 @@ export class HostedBrowserBroker {
       }
       this.#onPersonUseChanged();
       this.#surfaces = [...this.#tabs.rows.values()].map((row) => {
-        const { icon, ...surface } = row;
+        const { icon, creatorAttachmentId: _creator, ...surface } = row;
         return {
           ...surface,
           active: row.id === active,
@@ -7627,7 +7845,13 @@ export class HostedBrowserBroker {
       outlet.sendSurface(outlet.surfaceId, null);
       return;
     }
-    const { icon: _icon, order: _order, openerId: _opener, ...surface } = row;
+    const {
+      icon: _icon,
+      order: _order,
+      openerId: _opener,
+      creatorAttachmentId: _creator,
+      ...surface
+    } = row;
     const icon = this.#surfaceIcon(row);
     outlet.sendSurface(
       row.id,
@@ -9033,7 +9257,10 @@ interface BrowserLiveRows {
   readonly page: BrowserPagePresence | null;
   iconRef(id: string): string | null;
 }
-type PageDescriptor = Pick<BrowserTabRecord, "id" | "title" | "url" | "order" | "openerId"> & {
+type PageDescriptor = Pick<
+  BrowserTabRecord,
+  "id" | "title" | "url" | "order" | "openerId" | "creatorAttachmentId"
+> & {
   readonly favicon?: string | null;
 };
 

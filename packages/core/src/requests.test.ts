@@ -7,6 +7,11 @@ import {
   readableRequestList,
   ResolvedRequestEventSchema,
   createId,
+  formatRequestOperationDetail,
+  requestOperationCallsHeading,
+  requestOperationCallsMaxLength,
+  requestOperationContextMaxLength,
+  requestTextMaxLength,
   requestReasonMaxLength,
   requestIsAgentAnswerable,
   RequestKindSchema,
@@ -15,6 +20,24 @@ import {
 } from "./index.js";
 
 const createdAt = "2026-08-22T12:00:00.000Z";
+
+it("keeps every character of a maximum-length script in Request plain detail", () => {
+  const calls = "x".repeat(requestOperationCallsMaxLength - 1) + "!";
+  const titleLine = `\n\nThe page's title: "🔎"`;
+  const detail = formatRequestOperationDetail({
+    summary: "s".repeat(requestOperationContextMaxLength + 100),
+    titleLine,
+    calls,
+    reason: "Optional reason",
+  });
+  expect(detail).toHaveLength(requestTextMaxLength);
+  expect(detail).toBe(
+    "s".repeat(requestOperationContextMaxLength - titleLine.length) +
+      titleLine +
+      requestOperationCallsHeading +
+      calls,
+  );
+});
 
 describe("agent answer classification", () => {
   const decisions = {

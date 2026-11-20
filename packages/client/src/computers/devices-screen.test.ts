@@ -218,7 +218,7 @@ describe("the Devices screen", () => {
     expect(cloud.lead).toContain("lives on your Cloud Computer.");
     const work = screen({ kind: "work", from: "account", organization: "Acme" });
     expect(work.home).toMatchObject({
-      title: "Acme · Work Home",
+      title: "Work Home",
       badge: "Work · Acme",
       symbol: "cloud",
     });

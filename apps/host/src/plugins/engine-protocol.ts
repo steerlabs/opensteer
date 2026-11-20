@@ -179,6 +179,14 @@ const agentResult = z
       .optional(),
   })
   .catchall(JsonSchema);
+const executionTarget = z.strictObject({
+  plugin: id,
+  version: id,
+  write: z.boolean(),
+  accountSelection: id.optional(),
+});
+export type PluginExecutionTarget = z.infer<typeof executionTarget>;
+
 export const ExecutionSchema = z.strictObject({
   id,
   caller: id,
@@ -209,6 +217,7 @@ export const ExecutionSchema = z.strictObject({
     )
     .optional(),
   reason: z.string().optional(),
+  targets: z.array(executionTarget).optional(),
 });
 export type PluginExecution = z.infer<typeof ExecutionSchema>;
 const call = z.strictObject({ path: id, input: JsonSchema });
@@ -454,14 +463,24 @@ export const operations = {
     ),
   },
   call: {
-    input: z.strictObject({ calls: z.union([call, z.array(call).min(1)]), executionId: id.optional() }),
+    input: z.strictObject({
+      calls: z.union([call, z.array(call).min(1)]),
+      executionId: id.optional(),
+    }),
     output: ExecutionSchema,
   },
-  execute: { input: z.strictObject({ code: z.string().max(65536), executionId: id.optional() }), output: ExecutionSchema },
+  execute: {
+    input: z.strictObject({ code: z.string().max(65536), executionId: id.optional() }),
+    output: ExecutionSchema,
+  },
   resume: { input: execution, output: ExecutionSchema },
   answer: { input: z.strictObject({ execution: id, response: answer }), output: ExecutionSchema },
   cancel: { input: execution, output: ExecutionSchema },
   executions: { input: z.strictObject({}), output: z.array(ExecutionSchema) },
+  resultAccess: {
+    input: z.strictObject({ targets: z.array(executionTarget) }),
+    output: z.boolean(),
+  },
   skills: {
     input: z.strictObject({
       app: id.optional(),
@@ -511,6 +530,7 @@ export const AuthorizationResultSchema = z.strictObject({
   /** For a connection's selected grant: the only apps it may learn exist. */
   visible: z.array(z.string()).optional(),
   pinnedVersion: id.optional(),
+  connected: z.literal(true).optional(),
 });
 export type PluginAuthorizationResult = z.infer<typeof AuthorizationResultSchema>;
 export const HostToolSchema = z.strictObject({

@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 
 import { OperationKeySchema } from "./inputs.js";
+import { directInput } from "./tabs.js";
 import {
   PersonMessageOutputSchema,
   PersonShowOutputSchema,
@@ -121,6 +122,7 @@ export const ask_person = defineAgentTool({
     questions: z.array(AskPersonQuestionSchema).min(1).max(askPersonQuestionLimit),
     taskId: ThreadIdSchema.optional().describe("Continue the connected agent’s current task."),
     operationKey: OperationKeySchema.optional(),
+    operationId: directInput.operationId,
   }),
   output: z.union([RequestCreationOutputSchema, SessionPersonOutputSchema]),
   access: "write",

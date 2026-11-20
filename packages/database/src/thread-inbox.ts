@@ -637,16 +637,22 @@ async function claimFollowUps(
     .execute();
   if (waiting.length === 0) return { claimed: 0 };
   const connection = run.connectionId
-    ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId)
-        .catch((error: unknown) => {
+    ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId).catch(
+        (error: unknown) => {
           if (error instanceof OpensteerError && error.code === "forbidden") return null;
           throw error;
-        })
+        },
+      )
     : null;
-  const eligible = run.connectionId === null ||
+  const eligible =
+    run.connectionId === null ||
     (connection !== null && sendEligible(connection, thread.originConnectionId));
-  if (eligible && connection && run.admittedGrantRevision !== null &&
-    !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
+  if (
+    eligible &&
+    connection &&
+    run.admittedGrantRevision !== null &&
+    !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode)
+  )
     return { claimed: 0 };
   const ids = waiting.map(({ messageId }) => messageId);
   const locked = await transaction

@@ -2,6 +2,7 @@ import {
   BrowserSourcePairV6InputSchema,
   browserSourceTabWire,
   browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
   browserSourceTabFrameBytes,
   browserSourceTabBufferedBytes,
 } from "@opensteer/browser-source-wire/frames";
@@ -474,7 +475,26 @@ export class BrowserSourceService {
           return;
         }
         try {
-          peer.tabRelay.receive(message);
+          const recorded = peer.tabRelay.receive(message);
+          if (recorded && message.type === "tab.detached") {
+            const source = peer;
+            void recorded
+              .then(() => {
+                if (
+                  wire.kind === "negotiated" &&
+                  wire.wire >= browserSourceTabDetachReplayWire &&
+                  socket.readyState === WebSocket.OPEN &&
+                  this.#connections.get(source.sourceId) === source
+                )
+                  socket.send(JSON.stringify(message), (error) => {
+                    if (error) socket.close();
+                  });
+              })
+              .catch((error: unknown) => {
+                this.#onError(error);
+                socket.close(1011, "Chrome detach receipt could not be recorded");
+              });
+          }
         } catch {
           socket.close(1007, "Invalid Chrome tab frame");
         }
@@ -510,13 +530,18 @@ export class BrowserSourceService {
       (source) => source.liveTabsOnly,
     );
     const entries = await Promise.all(
-      companions.map(async ({ id, deviceId }) => {
+      companions.map(async ({ id, name, deviceId }) => {
         const computerName = deviceId && (await this.#computerName?.(ownerId, deviceId));
-        return computerName ? { sourceId: id, computerName, paired: true } : null;
+        return computerName ? { sourceId: id, computerName, paired: true } : name;
       }),
     );
-    const chromeTabs = entries.filter((entry) => entry !== null);
-    return { chromeTabs, chromeTabsNeedPairing: chromeTabs.length < companions.length };
+    const chromeTabs = entries.filter((entry) => typeof entry !== "string");
+    const chromeTabsRepairNames = entries.filter((entry) => typeof entry === "string");
+    return {
+      chromeTabs,
+      chromeTabsNeedPairing: chromeTabsRepairNames.length > 0,
+      chromeTabsRepairNames,
+    };
   }
 
   async listState(input: { readonly ownerId: UserId }): Promise<BrowserSourcesState> {
@@ -1498,6 +1523,7 @@ export class BrowserSourceService {
           name: source.name,
           ...(source.deviceId ? { deviceId: source.deviceId } : {}),
           detachReceipts: wire.wire >= browserSourceTabDetachWire,
+          detachReplay: wire.wire >= browserSourceTabDetachReplayWire,
           fail,
           write: (frame) => {
             const data = JSON.stringify(frame);

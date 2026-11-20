@@ -20,6 +20,9 @@ import {
 } from "@opensteer/protocol";
 /** A connected agent's direct call: which of its tasks it belongs to, and why it is made. */
 export const directInput = {
+  operationId: AgentOperationIdSchema.optional().describe(
+    "Connected agents only: continue the same call with this ID and the same arguments.",
+  ),
   operationKey: z
     .string()
     .trim()
@@ -45,6 +48,7 @@ export const directOutput = {
   status: z.enum(["completed", "pending", "failed", "unknown"]).optional(),
   requestId: RequestIdSchema.nullable().optional(),
   next: z.string().max(500).optional(),
+  summary: z.record(z.string(), z.unknown()).nullable().optional(),
 };
 const AgentTabSchema = z.union([
   TabViewSchema,
@@ -73,7 +77,7 @@ export const tab_open = defineAgentTool({
   input: TabOpenInputSchema.extend(directInput),
   output: TabOpenResultSchema.partial().extend({ ...directOutput, tab: AgentTabSchema.optional() }),
   access: "write",
-  callers: ["run", "connection"] as const,
+  callers: ["run"] as const,
   capability: "tabs",
 });
 export const tab_close = defineAgentTool({
@@ -84,7 +88,7 @@ export const tab_close = defineAgentTool({
   input: TabCloseInputSchema.extend(directInput),
   output: TabCloseResultSchema.partial().extend(directOutput),
   access: "write",
-  callers: ["run", "connection"] as const,
+  callers: ["run"] as const,
   capability: "tabs",
 });
 export const tab_organize = defineAgentTool({

@@ -142,7 +142,8 @@ describe("Devices: the Home says what kind it is", () => {
     await vi.waitFor(() =>
       expect(homeRow(container)?.textContent).toContain("Work · Acme Robotics"),
     );
-    expect(homeRow(container)?.textContent).toContain("Acme Robotics · Work Home");
+    expect(homeRow(container)?.textContent).toContain("Work Home");
+    expect(homeRow(container)?.textContent).not.toContain("Acme Robotics · Work Home");
   });
 });
 

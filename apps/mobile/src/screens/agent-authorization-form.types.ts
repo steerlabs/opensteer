@@ -19,6 +19,8 @@ export type AgentAuthorizationFormProps =
   | {
       readonly kind: "ready";
       readonly title: string;
+      /** "Work · {organization}" on a work Home, so which Home it joins is never in doubt. */
+      readonly work: string | null;
       /** Its provider's mark when the Home proved its origin, its initial otherwise; null on an older Home. */
       readonly mark: { readonly providerId: string | null; readonly initial: string } | null;
       /** Where access goes, for an agent the Home didn't verify; a verified one's origins say it. */

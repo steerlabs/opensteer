@@ -2269,7 +2269,10 @@ export class CloudComputerStore {
           .set({ deletionRequestedAt: row.deletionRequestedAt ?? now, updatedAt: now })
           .executeTakeFirst();
         return row.stripeSubscriptionId;
-      } else if (action === "reissue" && row.generationReady) {
+      } else if (
+        action === "reissue" &&
+        (row.ownerAccessAt || (row.generationReady && !row.restoreSnapshot))
+      ) {
         throw new ControlPlaneError(
           "conflict",
           "A working Home can only be replaced from a named backup snapshot",

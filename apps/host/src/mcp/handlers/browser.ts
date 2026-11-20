@@ -3,7 +3,7 @@ import {
   TabIdSchema,
   agentGrantAccess,
   refused,
-  requestTextMaxLength,
+  requestOperationCallsMaxLength,
   type AgentOperationTarget,
   type BrowserProfileId,
   type DeviceId,
@@ -31,6 +31,8 @@ import type { ToolCall } from "./types.js";
 
 /** How long one reviewed attachment may hold full control of a profile. */
 export const browserConnectIntervalMs = 10 * 60_000;
+export const browserConnectCompletedNext =
+  "This connection was already handed out. Call browser_connect without the operationId for a new connection.";
 const intervalWords = "10 minutes";
 
 type ScriptTabs = Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
@@ -167,7 +169,13 @@ function scriptOutput(
   readonly structuredContent: Readonly<Record<string, unknown>>;
 } {
   const { status, taskId, operationId } = outcome;
-  const receipt = { status, taskId, operationId, ...(profileId ? { profileId } : {}) };
+  const receipt = {
+    status,
+    taskId,
+    operationId,
+    ...(profileId ? { profileId } : {}),
+    ...(outcome.status === "completed" ? { summary: outcome.summary } : {}),
+  };
   if (outcome.status === "completed")
     return outcome.result
       ? {
@@ -199,10 +207,10 @@ export class BrowserToolHandlers {
   async browser_use({ caller, input, operationKey }: ToolCall<"browser_use">) {
     const connection = requireConnection(caller);
     const { code, tabId, profileId, taskId, reason } = input;
-    if (code.length > requestTextMaxLength)
+    if (code.length > requestOperationCallsMaxLength)
       throw refused(
         "bad_request",
-        `Browser scripts can contain at most ${requestTextMaxLength} characters.`,
+        `Browser scripts can contain at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters.`,
       );
     const target = await this.#target(connection, { tabId, profileId });
     const outcome = await requireDirectWork(this.#ports.sessions).run({
@@ -212,7 +220,7 @@ export class BrowserToolHandlers {
       reason,
       operationKey,
       tool: "browser_use",
-      input: { code, profileId: target.profileId, tabId: target.tabId },
+      input,
       target: target.operation,
       targetGeneration: target.generation === null ? null : String(target.generation),
       effect: "write",
@@ -228,6 +236,7 @@ export class BrowserToolHandlers {
               ...(target.profileId === null ? { sharedChromeTabId: target.tabId } : {}),
               code,
               signal: context.signal,
+              recheck: context.recheck,
             }),
           );
         const result =
@@ -260,14 +269,14 @@ export class BrowserToolHandlers {
       reason,
       operationKey,
       tool: "browser_connect",
-      input: { profileId: target.profileId, tabId: target.tabId },
+      input,
       target: target.operation,
       targetGeneration: target.generation === null ? null : String(target.generation),
       effect: "write",
       calls:
         target.profileId === null
           ? `Control of the Chrome tab you shared${where} for up to ${intervalWords}, through CDP. The agent can navigate anywhere in the tab and access sites and cookies this Chrome is signed in to. Stop sharing in Chrome or stop this task to end access.`
-          : `Full control of the browser profile "${target.operation.name}"${where} for up to ${intervalWords}, through a raw browser connection (CDP): every page, cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.`,
+          : `Control of the agent's own pages in the browser profile "${target.operation.name}"${where} for up to ${intervalWords}, through a raw browser connection (CDP), with access to every cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.`,
       execute: async (context) => {
         await context.recheck();
         await this.#checkTab(connection, target);
@@ -285,7 +294,7 @@ export class BrowserToolHandlers {
       ...(outcome.status === "completed"
         ? outcome.result
           ? {}
-          : { next: "This connection was already handed out. Call again for a new one." }
+          : { next: browserConnectCompletedNext }
         : { next: outcome.next }),
     };
   }
@@ -326,6 +335,11 @@ export class BrowserToolHandlers {
         if (!this.#ports.sharedChromeTabs) throw tabNotFound();
         issued = await this.#ports.sharedChromeTabs.issueStandardCdpTicket({ authority, tabId });
       } else {
+        if (target.tabId) {
+          const tab = await this.#ports.tabs.connectionTab(actor, tabId);
+          if (tab.openedBy === "person" || tab.openedBy?.taskId !== actor.threadId)
+            throw tabNotFound();
+        }
         const page = await this.#ports.tabs.bindBrowserScript(actor, tabId, {
           savedProfileOnly: true,
           ...(target.generation !== null ? { expectedGeneration: target.generation } : {}),
@@ -334,6 +348,7 @@ export class BrowserToolHandlers {
         issued = await this.#ports.issueTicket({
           authority,
           browserSessionId: page.sessionId,
+          seedTabId: page.tabId,
           mode: "whole-context",
         });
       }

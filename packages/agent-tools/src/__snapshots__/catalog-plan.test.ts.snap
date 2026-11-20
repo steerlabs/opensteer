@@ -393,6 +393,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "string",
         },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -424,13 +429,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
-      "connection",
     ],
     "description": "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -679,13 +688,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
-      "connection",
     ],
     "description": "Remove these entries from the person's tab list. This does not quit a desktop app, stop a phone, stop agent work or stop an app server. Each ID is independent; closed lists successes and failed gives per-tab errors. Use app_stop to stop an app server.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -1125,6 +1138,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "description": "Connected agents only: the Mac or phone from computer_apps.",
         },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -1339,6 +1357,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -1380,11 +1403,16 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "connection",
     ],
-    "description": "Get a WebSocket endpoint for chromium.connectOverCDP() for a granted profile or a Chrome tab the person shared. For shared Chrome, pass its tabId from tab_list. Control extends to the tab and its popups, including the signed-in sites and cookies accessible there. Connect within a minute; the connection ends when the time runs out or the person stops the task or disconnects you. Use the returned connect line exactly.",
+    "description": "Get a WebSocket endpoint for chromium.connectOverCDP() for a granted profile or a Chrome tab the person shared. For a saved profile, control your task's own pages and access every cookie and signed-in site in the profile for up to 10 minutes. For shared Chrome, pass its tabId from tab_list. Control extends to the tab and its popups, including the signed-in sites and cookies accessible there. Connect within a minute; the connection ends when the time runs out or the person stops the task or disconnects you. Use the returned connect line exactly.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -1606,6 +1634,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
@@ -1698,6 +1731,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
@@ -2175,6 +2213,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             },
           ],
         },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -2222,6 +2265,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "operationKey": {
           "description": "Connected agents only: the key for retrying this call.",
           "maxLength": 200,
@@ -2262,6 +2310,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "executionId": {
           "maxLength": 256,
           "minLength": 1,
+          "type": "string",
+        },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "operationKey": {
@@ -3671,6 +3724,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "description": "Markdown shown above the questions. Lead with the work itself: words the person would send go first, in a draft fence, exactly as they would go out. Then at most two short sentences the decision needs. Leave out IDs, timestamps and how the work got here.",
           "maxLength": 20000,
           "minLength": 1,
+          "type": "string",
+        },
+        "operationId": {
+          "description": "Connected agents only: continue the same call with this ID and the same arguments.",
+          "pattern": "^aop_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "operationKey": {

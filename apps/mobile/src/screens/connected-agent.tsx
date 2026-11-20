@@ -19,7 +19,9 @@ import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useChromeTabGrantCatalog,
+  useConnectedAgentLive,
   useConnectedAgents,
+  useWorkPolicy,
 } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -60,10 +62,12 @@ export function ConnectedAgentController(props: {
   readonly deploymentId: string;
   readonly host: HostClient;
 }): ReactNode {
-  const { host, connectionId } = props;
+  const { host, connectionId, deploymentId } = props;
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
+  const live = useConnectedAgentLive(host, connectionId);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
+  const workPolicy = useWorkPolicy(host);
   const [sheet, setSheet] = useState<{
     readonly which: AgentGrantSheet;
     readonly draft: AgentGrantDraft;
@@ -79,6 +83,7 @@ export function ConnectedAgentController(props: {
       : connectedAgentDetail(connection, names, {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
+          live,
         });
   const agent = detail?.row.identity.label ?? null;
   useEffect(() => {
@@ -125,6 +130,7 @@ export function ConnectedAgentController(props: {
     apps,
     plugins,
     disabled: busy,
+    ...(workPolicy ? { workPolicy } : {}),
   };
   const current = draftFromGrant(detail.grant);
   const save = async (next: {
@@ -205,6 +211,7 @@ export function ConnectedAgentController(props: {
           busy,
           conflict: agents.conflict === connection.id,
           context,
+          workPolicyRead: workPolicy !== undefined,
           current,
           detail,
           error: agents.error,
@@ -214,6 +221,7 @@ export function ConnectedAgentController(props: {
           onOpen: (which) => setSheet({ which, draft: current }),
           onRemove: remove,
           onScope: changeScope,
+          onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
           onChromeTab: (resource, on) =>
             void save({ draft: toggleDraftResource(current, resource, on) }),
           onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
@@ -258,9 +266,13 @@ export function connectedAgentSections(props: {
   readonly onScope: (scope: AgentGrantDraft["scope"]) => void;
   readonly onChromeTab: Parameters<typeof agentGrantSections>[0]["onChromeTab"];
   readonly onTasks: (on: boolean) => void;
+  readonly onWatch: (threadId: string) => void;
   readonly pending: "revoke" | "update" | "remove" | null;
+  /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
+  readonly workPolicyRead?: boolean;
 }): readonly NativeSettingsSection[] {
   const { detail } = props;
+  const watchThreadId = detail.live?.threadId;
   const agent = detail.row.identity.label;
   const who = whoLines(detail.row.identity.who, { consent: false });
   const active = detail.row.phase === "active";
@@ -332,6 +344,18 @@ export function connectedAgentSections(props: {
           label: detail.status.label,
           ...(detail.status.steps.length ? { steps: detail.status.steps } : {}),
         },
+        ...(watchThreadId
+          ? [
+              {
+                key: "watch",
+                kind: "button" as const,
+                label: agentWords("agent.watch"),
+                symbol: "eye" as const,
+                opens: true,
+                onPress: () => props.onWatch(watchThreadId),
+              },
+            ]
+          : []),
       ],
       footer: {
         text: props.conflict ? agentWords("agent.conflict") : detail.status.detail,
@@ -361,7 +385,7 @@ export function connectedAgentSections(props: {
       rows: [],
       footer: { text: agentWords("agent.legacy") },
     });
-  if (detail.editable) {
+  if (detail.editable && props.workPolicyRead !== false) {
     const grant = agentGrantSections({
       ...props.context,
       draft: props.current,
@@ -373,7 +397,12 @@ export function connectedAgentSections(props: {
     });
     sections.push(
       ...grant,
-      agentModeSection({ mode: detail.accessMode, disabled: props.busy, onMode: props.onMode }),
+      agentModeSection({
+        mode: detail.accessMode,
+        disabled: props.busy,
+        onMode: props.onMode,
+        workPolicy: props.context.workPolicy,
+      }),
     );
     if (props.note !== null)
       sections.push({

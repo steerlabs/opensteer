@@ -428,7 +428,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const url = await serveMcp(storeFixture, {
       onToolError: (error) => toolErrors.push(error),
       administration: handler,
-      tabHandlers: new TabToolHandlers(tabs, sessions, async () => "Granted profile"),
+      tabHandlers: new TabToolHandlers(tabs, sessions),
       browser: new BrowserToolHandlers({
         sessions,
         tabs: tabs as never,

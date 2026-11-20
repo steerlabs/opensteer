@@ -8,10 +8,7 @@ import {
   type RunnerOperationalMessage,
 } from "@opensteer/protocol";
 import { RunnerRegistry } from "@opensteer/orchestration";
-import {
-  FileRunnerIdentityStore,
-  ReconnectingHostConnection,
-} from "@opensteer/runner";
+import { FileRunnerIdentityStore, ReconnectingHostConnection } from "@opensteer/runner";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";

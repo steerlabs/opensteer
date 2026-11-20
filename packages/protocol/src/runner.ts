@@ -1255,6 +1255,7 @@ export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
+    standardCdpLineage: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
     standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
     cardFill: z

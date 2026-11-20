@@ -1,7 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import { deviceAccess } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { OpensteerError, type DeviceId, type RunId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type DeviceId,
+  type RunId,
+  type RunnerId,
+  type UserId,
+} from "@opensteer/core";
 import type { OpensteerStore, RevokedRunGrant } from "@opensteer/database";
 import type {
   RunnerAuxiliaryStream,

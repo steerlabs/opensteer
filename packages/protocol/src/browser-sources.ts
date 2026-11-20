@@ -75,6 +75,7 @@ export const ChromeTabGrantCatalogSchema = z.object({
     .max(64)
     .optional(),
   chromeTabsNeedPairing: z.boolean().optional(),
+  chromeTabsRepairNames: z.array(BrowserSourceNameSchema).max(64).optional(),
 });
 
 export const BrowserSourcesStateSchema = ChromeTabGrantCatalogSchema.extend({

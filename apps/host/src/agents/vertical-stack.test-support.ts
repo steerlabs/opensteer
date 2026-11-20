@@ -153,7 +153,15 @@ export interface VerticalStackOptions {
   readonly personalAccountIssuer?: URL;
   readonly runnerWire?: RunnerWireOptions;
   /** Child-process Runner for crash/reaping acceptance journeys. */
-  readonly runnerChild?: { readonly fixture: string; readonly arguments: readonly string[] };
+  readonly runnerChild?: {
+    readonly fixture: string;
+    readonly arguments: readonly string[];
+    readonly stopJourney?: {
+      readonly beforeSignal: () => Promise<void>;
+      readonly computerUseBridge: { readonly url: URL; readonly token: string };
+      readonly afterProof: (pid: number) => void;
+    };
+  };
   /** Personal Main Runner with its desktop authority; no server enrollment shortcut. */
   readonly integrations?: () => PreparedIntegrationsModule;
   /**

@@ -84,7 +84,7 @@ export const LoginRefSchema = z
   .string()
   .regex(
     /^lgn_[0-9a-f]{32}$/u,
-    "Saved card references can only be used with fillCard in a Browser Session.",
+    "Saved login references can only be used with fillLogin in a Browser Session.",
   );
 /** Why `saved_login_request` has no login to hand over. */
 export const SavedLoginUnavailableReasonSchema = z.enum([

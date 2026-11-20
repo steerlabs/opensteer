@@ -269,6 +269,15 @@ it("validates the new surface cases with each caller's production inventory", as
         expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool}`).toBe(true);
       }
       if (c.caller === "connection") {
+        expect(names).toEqual(expect.arrayContaining(["browser_use", "browser_connect"]));
+        expect(names).not.toContain("tab_open");
+        expect(names).not.toContain("tab_close");
+        const apps = await client.callTool({
+          name: "computer_apps",
+          arguments: { taskId: host.scope.threadId },
+        });
+        expect(apps.isError).not.toBe(true);
+        expect(host.calls.at(-1)?.valid).toBe(true);
         const result = await client.callTool({
           name: "saved_login_request",
           arguments: { site: "example.com", reason: "Check account" },

@@ -60,7 +60,7 @@ describe("who a connected agent is", () => {
       verified: true,
       providerId: "anthropic",
     });
-    expect(claude.warning).toBe("Only approve if you started this yourself.");
+    expect(claude.warning).toBe("Only allow this if you started it yourself.");
   });
 
   it("marks a self-given name as self-given, with its origin or an app on this computer", () => {
@@ -281,8 +281,8 @@ describe("the Request a direct operation opens", () => {
 
   it("keeps the Home's question, the agent's words and the exact calls apart", () => {
     const view = operationRequestView({ request, session })!;
-    expect(view.question).toBe("Run a browser script in Shopping?");
-    expect(view.listTitle).toBe("Grok: Run a browser script in Shopping?");
+    expect(view.question).toBe("Run a script in Shopping?");
+    expect(view.listTitle).toBe("Grok: Run a script in Shopping?");
     // Where it acts, from the Home's parts; the summary only restates the question.
     expect(view.context).toBe("Shopping · Studio Mac");
     expect(view.agentWords).toEqual({

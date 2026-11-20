@@ -242,7 +242,7 @@ integration.sequential("automation failure notices", () => {
     ): Promise<TriggerOccurrence> {
       const runnerBootId = `boot-${suffix}-${randomUUID()}`;
       const started = await start(fixture, occurrence, runnerBootId);
-      return triggers.completeExecution({
+      const completed = await triggers.completeExecution({
         executionGeneration: started.executionGeneration,
         output: {
           completedAt: new Date().toISOString(),
@@ -262,6 +262,8 @@ integration.sequential("automation failure notices", () => {
         runnerBootId,
         runnerId: fixture.runnerId,
       });
+      if (!completed) throw new Error("Expected the current Trigger execution to complete");
+      return completed;
     }
     async function failManual(fixture: Fixture, triggerId: TriggerId, suffix: string) {
       return complete(fixture, await fireManual(fixture, triggerId), "failed", suffix);

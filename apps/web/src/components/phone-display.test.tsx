@@ -8,7 +8,11 @@ import { MockHostClient, mockDeviceMachine, mockIphoneScreenDevice } from "@open
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { type TabTarget } from "@opensteer/core";
 import { runPlacePicture, type HostSnapshot } from "@opensteer/client/host";
-import { useRunPlacePicture } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useOwnerViewReconnect,
+  useRunPlacePicture,
+} from "@opensteer/client/react";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
@@ -994,6 +998,96 @@ async function negotiatedMacOwner() {
   return document.querySelector<HTMLTextAreaElement>("textarea.remote-keyboard-input")!;
 }
 describe("Mac owner viewer", () => {
+  it("reopens the same Mac tab after a restart and replaces Reconnecting with fresh pixels", async () => {
+    const approved = (await client.listApprovedComputerApps()).find(
+      (app) => app.target.kind === "app",
+    );
+    if (approved?.target.kind !== "app") throw new Error("No Mac fixture");
+    const tab = await client.openTab({
+      kind: "window",
+      computerId: DeviceIdSchema.parse(approved.machineId),
+      bundleId: approved.target.app.bundleId,
+    });
+    const initial = await client.activateTab(tab.tabId);
+    if (initial.kind !== "window") throw new Error("Expected a window view");
+    const view = initial.view;
+    const activate = vi.spyOn(client, "activateTab");
+    function ViewedWindow() {
+      const viewer = useHostSelector(client, () => client.tabViewer(tab.tabId));
+      const reconnect = useOwnerViewReconnect(client, tab.tabId);
+      return (
+        <OwnerView
+          hostClient={client}
+          hostConnected
+          machineId={view.machineId}
+          marks={null}
+          leading={null}
+          onReopen={async () => {
+            throw new Error("No Retry should be needed");
+          }}
+          phone={false}
+          place={null}
+          reconnect={reconnect}
+          source={
+            viewer?.kind === "window"
+              ? {
+                  kind: "owner-view",
+                  viewId: viewer.view.viewId,
+                  generation: viewer.view.generation,
+                }
+              : null
+          }
+          trailing={null}
+        />
+      );
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    vi.useFakeTimers();
+    try {
+      await act(async () => root!.render(<ViewedWindow />));
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(shown()).toBe(true);
+
+      act(() =>
+        sockets[0]!.deliver({
+          type: "display.state",
+          state: "stopped",
+          reason: "device-restarting",
+          generation: 1,
+          width: 360,
+          height: 780,
+        }),
+      );
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Reconnecting…");
+      expect(shown()).toBe(false);
+      expect(activate).not.toHaveBeenCalled();
+      await act(async () => {
+        const closing = client.closeComputerView(view.viewId, view.generation);
+        await vi.advanceTimersByTimeAsync(0);
+        await closing;
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+      expect(activate).toHaveBeenCalledExactlyOnceWith(tab.tabId, {
+        signal: expect.any(AbortSignal),
+      });
+      const replacement = client.tabViewer(tab.tabId);
+      expect(replacement?.kind).toBe("window");
+      if (replacement?.kind !== "window") throw new Error("Expected a replacement view");
+      expect([replacement.view.viewId, replacement.view.generation]).not.toEqual([
+        view.viewId,
+        view.generation,
+      ]);
+      expect(sockets).toHaveLength(2);
+      expect(shown()).toBe(true);
+      expect(container.textContent).not.toContain("Reconnecting…");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a new Runner's baseline resolved Desktop/helper view passive", async () => {
     await macOwner();
     expect(requestedEditing).toEqual({ editing: 1 });

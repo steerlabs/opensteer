@@ -92,6 +92,7 @@ export const card_request = defineAgentTool({
     tabId: BrowserSurfaceIdSchema,
     taskId: ThreadIdSchema.optional(),
     operationKey: OperationKeySchema.optional(),
+    operationId: directInput.operationId,
   }),
   output: z.union([UseCardOutputSchema, SessionPersonOutputSchema]),
   access: "write",
@@ -143,7 +144,11 @@ export const saved_login_request = defineAgentTool({
       ),
       site: SiteInputSchema,
     })
-    .safeExtend({ taskId: ThreadIdSchema.optional(), operationKey: OperationKeySchema.optional() }),
+    .safeExtend({
+      taskId: ThreadIdSchema.optional(),
+      operationKey: OperationKeySchema.optional(),
+      operationId: directInput.operationId,
+    }),
   output: z.union([UseSavedLoginOutputSchema, SessionPersonOutputSchema]),
   access: "write",
   callers: ["run", "connection"] as const,
@@ -197,7 +202,7 @@ export const browser_connect = defineAgentTool({
   name: "browser_connect",
   title: "Connect to a browser profile",
   description:
-    "Get a WebSocket endpoint for chromium.connectOverCDP() for a granted profile or a Chrome tab the person shared. For shared Chrome, pass its tabId from tab_list. Control extends to the tab and its popups, including the signed-in sites and cookies accessible there. Connect within a minute; the connection ends when the time runs out or the person stops the task or disconnects you. Use the returned connect line exactly.",
+    "Get a WebSocket endpoint for chromium.connectOverCDP() for a granted profile or a Chrome tab the person shared. For a saved profile, control your task's own pages and access every cookie and signed-in site in the profile for up to 10 minutes. For shared Chrome, pass its tabId from tab_list. Control extends to the tab and its popups, including the signed-in sites and cookies accessible there. Connect within a minute; the connection ends when the time runs out or the person stops the task or disconnects you. Use the returned connect line exactly.",
   input: z.strictObject({ ...browserPlace, ...directInput }),
   output: z
     .object({

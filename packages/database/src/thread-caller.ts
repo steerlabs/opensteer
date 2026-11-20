@@ -192,7 +192,7 @@ export async function assertThreadCaller(
       ? minThreadAccessMode(thread.accessMode, accessMode)
       : thread && lineage && thread.originConnectionId === lineage.agentConnectionId
         ? minThreadAccessMode(thread.accessMode, lineage.accessMode)
-      : (thread?.accessMode ?? target?.accessMode ?? accessMode);
+        : (thread?.accessMode ?? target?.accessMode ?? accessMode);
   if (!target?.readOnly && !threadAccessModeAtMost(targetMode, accessMode))
     throw forbidden("Target task has a stronger access mode than this caller");
 }

@@ -4,7 +4,7 @@ import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { HostClientRequestError } from "@opensteer/client/host";
-import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   NativeSettingsPageProps,
@@ -126,6 +126,27 @@ async function answer(text: string) {
 const status = () => section("status")!.rows[0] as Extract<NativeSettingsRow, { kind: "status" }>;
 
 describe("one connected agent on the phone", () => {
+  it("shows the working task, opens it from Watch, and hides Watch when work stops", async () => {
+    const client = await open(claude);
+    expect(status().label).toBe("Not doing anything");
+    expect(section("status")?.rows.some(({ key }) => key === "watch")).toBe(false);
+    await act(async () => client.mockAgentWork());
+    expect(status().label).toBe("Working now");
+    expect(section("status")?.footer?.text).toBe("Find flights to Lisbon");
+    const threadId = mockAgentWorkThreads.working;
+    await press(row("status", "watch"));
+    expect(state.navigate).toHaveBeenCalledWith("Thread", {
+      deploymentId: "deployment-a",
+      threadId,
+    });
+    const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)
+      ?.thread.agentSessionId;
+    expect(sessionId).toBeTruthy();
+    await act(async () => expect(client.stopAgentSession(threadId, sessionId!)).toBe(true));
+    expect(status().label).toBe("Not doing anything");
+    expect(section("status")?.rows.some(({ key }) => key === "watch")).toBe(false);
+  });
+
   it.each([390, 1440])(
     "saves a paired Chrome on an active connection after verification is withdrawn at %d px",
     async (width) => {
@@ -144,6 +165,7 @@ describe("one connected agent on the phone", () => {
           sources: [],
           sites: [],
           chromeTabs: [{ paired: true, sourceId, computerName: "Work Mac" }],
+          chromeTabsRepairNames: ["Home Mac"],
         },
       }));
       Object.defineProperty(client.rpc, "browser.sources.get", { value: read, configurable: true });
@@ -158,6 +180,9 @@ describe("one connected agent on the phone", () => {
       expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");
       const option = row("resources", sourceId);
       expect(option.label).toBe("Tabs you share from Chrome on Work Mac");
+      expect(section("chrome-pairing")?.footer?.text).toBe(
+        "To share tabs from Chrome on Home Mac, pair it again.",
+      );
       if (option.kind !== "toggle") throw new Error("Expected a Chrome toggle");
       await act(async () => option.onChange(true));
       expect(dispatch).toHaveBeenCalledWith(

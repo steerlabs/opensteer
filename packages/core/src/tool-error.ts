@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentOperationIdSchema, ThreadIdSchema } from "./ids.js";
 export const ToolErrorSchema = z.strictObject({
   code: z.string().min(1).max(100),
   message: z.string().min(1).max(2000),
@@ -16,8 +17,15 @@ export const ToolErrorViewSchema = z.object({
   device: z.object(ToolErrorSchema.shape.device.unwrap().shape).optional(),
 });
 export type ToolError = z.infer<typeof ToolErrorSchema>;
-export const ToolFailureSchema = z.strictObject({ error: ToolErrorSchema });
+export const ToolFailureSchema = z.strictObject({
+  error: ToolErrorSchema,
+  taskId: ThreadIdSchema.optional(),
+  operationId: AgentOperationIdSchema.optional(),
+  status: z.enum(["refused", "failed", "unknown"]).optional(),
+});
 export type ToolFailure = z.infer<typeof ToolFailureSchema>;
+export type ToolFailureReceipt = Required<Pick<ToolFailure, "taskId" | "operationId">> &
+  Pick<ToolFailure, "status">;
 /** Why a visible target can't be used now, in a tool failure's shape; `next` is never empty. */
 export const BlockedSchema = z.strictObject({
   code: ToolErrorSchema.shape.code,
@@ -28,9 +36,11 @@ export type Blocked = z.infer<typeof BlockedSchema>;
 
 export class ToolBlockedError extends Error {
   readonly blocked: Blocked;
+  readonly receipt: ToolFailureReceipt | undefined;
 
-  constructor(blocked: Blocked) {
+  constructor(blocked: Blocked, receipt?: ToolFailureReceipt) {
     super(blocked.message);
     this.blocked = blocked;
+    this.receipt = receipt;
   }
 }

@@ -4,9 +4,11 @@ import {
   workAuditRecordKinds,
   workPolicyLines,
   type EffectiveWorkPolicy,
+  type WorkAuditRecord,
 } from "@opensteer/control-plane-protocol";
-import type { HostClient } from "./client.js";
-import { unwrapRpcResult } from "./host-session-client.js";
+import type { ThreadAccessMode } from "@opensteer/core";
+import type { AgentGrantDraft } from "./connected-agent-view.js";
+import { workPolicyLimits } from "./work-policy-limits.js";
 
 /**
  * A work Home, as the person who owns it reads it: whose it is, what that organization decided,
@@ -17,6 +19,7 @@ export const workHomeCopy = {
   "work.see.cannot": "{organization} can’t watch it, answer its Requests or act for you.",
   "work.policy.devices.cloud-computer-only": "Only this Cloud Computer",
   "work.policy.devices.assignee-may-enroll": "You may connect your own devices",
+  "work.enroll.notAllowed": "{organization} doesn’t allow other devices to join this work Home.",
   "work.enroll.joining":
     "This device is joining a work Home owned by {organization}. {organization} will see that it joined, never what’s on it.",
 } as const;
@@ -30,15 +33,19 @@ export function workHomeWords(
   );
 }
 
-/** The Home's own policy read: its effective work policy, or null on a personal Home. */
-export async function readWorkPolicy(
-  client: Pick<HostClient, "rpc">,
-  signal?: AbortSignal,
-): Promise<EffectiveWorkPolicy | null> {
-  const shell = unwrapRpcResult(
-    await client.rpc["personal.shell.get"]({}, signal ? { signal } : undefined),
-  );
-  return shell.effectiveWorkPolicy ?? null;
+/**
+ * The record kinds in the person's own voice, where the shared words speak of "the person" from
+ * the organization's side. Any kind not listed here keeps the shared words.
+ */
+const recordWordsForThePerson: Readonly<Partial<Record<WorkAuditRecord["kind"], string>>> = {
+  "owner.signed_in": "You signed in",
+  "owner.signed_out": "You signed out",
+};
+const sharedRecordWords = new Map(workAuditRecordKinds.map(({ kind, words }) => [kind, words]));
+
+/** What one record kind says on the Home: to the person, or in the shared words. */
+export function workRecordWords(kind: WorkAuditRecord["kind"]): string | null {
+  return recordWordsForThePerson[kind] ?? sharedRecordWords.get(kind) ?? null;
 }
 
 /** The quiet mark beside the Home's name, and the way to what its organization can see. */
@@ -84,7 +91,6 @@ export interface WorkHomeSeeView {
 
 export function workHomeSeeView(policy: EffectiveWorkPolicy): WorkHomeSeeView {
   const organization = policy.organizationName;
-  const words = new Map(workAuditRecordKinds.map(({ kind, words }) => [kind, words]));
   const [mode, tasks, everything] = workPolicyLines(policy);
   return {
     title: orgWords("org.work.see.title", { organization }),
@@ -105,7 +111,7 @@ export function workHomeSeeView(policy: EffectiveWorkPolicy): WorkHomeSeeView {
       items: [orgWords("org.work.see.status"), orgWords("org.work.see.policy")],
       recordsTitle: orgWords("org.work.see.records"),
       records: policy.auditRecordKinds.flatMap((kind) => {
-        const said = words.get(kind);
+        const said = workRecordWords(kind);
         return said ? [said] : [];
       }),
     },
@@ -121,9 +127,37 @@ export function workDeviceLimit(policy: EffectiveWorkPolicy | null | undefined):
   return policy?.devices === "cloud-computer-only" ? orgWords("org.work.notAllowed") : null;
 }
 
+type WorkEnrollmentPolicy = Pick<EffectiveWorkPolicy, "organizationName" | "devices">;
+
+/** Said on a device that would join, when the policy keeps it out. */
+export function workEnrollRefusal(policy: WorkEnrollmentPolicy | null | undefined): string | null {
+  return policy?.devices === "cloud-computer-only"
+    ? workHomeWords("work.enroll.notAllowed", { organization: policy.organizationName })
+    : null;
+}
+
 /** Said on the enrolling device before it joins, when it may. */
-export function workEnrollNotice(policy: EffectiveWorkPolicy | null | undefined): string | null {
+export function workEnrollNotice(policy: WorkEnrollmentPolicy | null | undefined): string | null {
   return policy?.devices === "assignee-may-enroll"
     ? workHomeWords("work.enroll.joining", { organization: policy.organizationName })
     : null;
+}
+
+/**
+ * A consent's choices as a work Home's policy allows them now: a choice a newer version rules
+ * out falls back to the nearest one it allows (Supervised, Choose, no Tasks), so Allow never
+ * asks for what the Home would refuse. What the person picked is kept, so a looser version
+ * brings it back.
+ */
+export function withinWorkPolicy<
+  Choice extends { readonly draft: AgentGrantDraft; readonly mode: ThreadAccessMode },
+>(choice: Choice, policy: EffectiveWorkPolicy | null | undefined): Choice {
+  if (!policy) return choice;
+  const limits = workPolicyLimits(policy);
+  const mode = limits.mode(choice.mode) === null ? choice.mode : "approval-required";
+  let draft = choice.draft;
+  if (draft.scope === "everything" && limits.everything !== null)
+    draft = { ...draft, scope: "selected" };
+  if (draft.tasks && limits.tasks !== null) draft = { ...draft, tasks: false };
+  return mode === choice.mode && draft === choice.draft ? choice : { ...choice, draft, mode };
 }

@@ -131,14 +131,27 @@ describe("agent directory mutations and signed GET route", () => {
       entries: Array.from({ length: 250 }, (_, index) => ({
         id: `platform-${index}`,
         displayName: "Platform",
-        origins: Array.from({ length: 16 }, (_, suffix) =>
-          `https://${"a".repeat(58)}.${"b".repeat(58)}.platform-${index}-${suffix}.example`),
+        origins: Array.from(
+          { length: 16 },
+          (_, suffix) =>
+            `https://${"a".repeat(58)}.${"b".repeat(58)}.platform-${index}-${suffix}.example`,
+        ),
       })),
     };
-    expect(() => applyAgentDirectoryChange(snapshot, {
-      kind: "add",
-      input: { id: "new-platform", displayName: "New platform", origins: ["https://new.example"] },
-    }, fixedNow)).toThrow("Signed agent directory would exceed its byte limit");
+    expect(() =>
+      applyAgentDirectoryChange(
+        snapshot,
+        {
+          kind: "add",
+          input: {
+            id: "new-platform",
+            displayName: "New platform",
+            origins: ["https://new.example"],
+          },
+        },
+        fixedNow,
+      ),
+    ).toThrow("Signed agent directory would exceed its byte limit");
   });
 
   it("serves a signed directory that verifies with Account's published JWKS and reflects rising revisions", async () => {

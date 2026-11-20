@@ -179,12 +179,14 @@ export class BrowserScriptService {
     contextKey,
     code,
     signal,
+    recheck,
   }: {
     authority: CdpAuthority;
     sharedChromeTabId?: string;
     contextKey: string;
     code: string;
     signal?: AbortSignal;
+    recheck?: () => Promise<void>;
   }) {
     signal?.throwIfAborted();
     if (this.#closed) throw refused("conflict", "The browser script service has closed.");
@@ -250,6 +252,7 @@ export class BrowserScriptService {
       code,
       callSignal ? AbortSignal.any([callSignal, binding.lifetime.signal]) : binding.lifetime.signal,
       JSON.stringify([ownerId, agentBindingId]),
+      recheck,
     );
   }
 

@@ -1,4 +1,4 @@
-import { UserIdSchema, type AgentGrant } from "@opensteer/core";
+import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
 import type { AgentConnection, PluginsInstalledView } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +9,8 @@ import {
 import {
   connectedAgentDetail,
   connectedAgentIdentity,
+  connectedAgentLive,
+  connectedAgentWorkingTasks,
   connectedAgentsView,
   draftChoosesSomething,
   draftFromGrant,
@@ -21,6 +23,7 @@ import {
   toggleDraftResource,
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
+import type { ThreadSummary } from "./client.js";
 import { agentWords, connectionModeDescriptions } from "./connected-agents-copy.js";
 
 const now = new Date("2026-11-19T12:00:00Z");
@@ -177,7 +180,7 @@ describe("connected agent identity", () => {
             heading: "ChatGPT",
             detail: "https://chatgpt.com",
             origins: [],
-            warning: "Only approve if you started this yourself.",
+            warning: "Only allow this if you started it yourself.",
           },
         }),
       ).providerId,
@@ -209,7 +212,7 @@ describe("connected agent identity", () => {
         heading: "ChatGPT",
         detail: "https://chatgpt.com",
         origins: [],
-        warning: "Only approve if you started this yourself.",
+        warning: "Only allow this if you started it yourself.",
       },
     });
     expect(connectedAgentIdentity(withdrawn).who).toMatchObject({
@@ -221,6 +224,55 @@ describe("connected agent identity", () => {
 });
 
 describe("connected agent detail", () => {
+  it("shows the current task and ignores operations from past sessions or other connections", () => {
+    const agent = connection();
+    const sessionId = createId("agentSession");
+    const otherSessionId = createId("agentSession");
+    const task = (
+      title: string,
+      work: NonNullable<ThreadSummary["externalWork"]>,
+      status: ThreadSummary["status"] = "running",
+    ) => ({
+      thread: { id: createId("thread"), title, status, externalWork: work },
+    });
+    const work = { sessionId, connection: agent, status: "active", endReason: null } as const;
+    const first = task("Prepare the itinerary", work);
+    const current = task("Check the booking", { ...work, sessionId: otherSessionId });
+    const waiting = task("Wait for approval", work, "waiting");
+    const ended = task("Finished work", { ...work, status: "ended", endReason: "stopped" });
+    const other = task("Someone else’s task", {
+      ...work,
+      connection: { ...agent, id: `${agent.id}-other` },
+    });
+    const tasks = connectedAgentWorkingTasks(agent.id, [waiting, ended, other, first, current]);
+    expect(tasks).toEqual([first, current]);
+    const live = connectedAgentLive(tasks, [
+      { taskId: other.thread.id, sessionId },
+      { taskId: first.thread.id, sessionId: createId("agentSession") },
+      { taskId: current.thread.id, sessionId: otherSessionId },
+    ]);
+    expect(live).toEqual({ what: "Check the booking", threadId: current.thread.id });
+    expect(connectedAgentDetail(agent, names, { grantsAvailable: true, now, live }).status).toEqual(
+      {
+        label: "Working now",
+        detail: "Check the booking",
+        tone: "good",
+        steps: [],
+      },
+    );
+    expect(
+      connectedAgentDetail(agent, names, {
+        grantsAvailable: true,
+        now,
+        live,
+        revoked: new Set([agent.id]),
+      }).live,
+    ).toBeNull();
+    expect(
+      connectedAgentLive(connectedAgentWorkingTasks(agent.id, [waiting, ended, other])),
+    ).toBeNull();
+  });
+
   it("is idle and editable while active", () => {
     const detail = connectedAgentDetail(connection(), names, { grantsAvailable: true, now });
     expect(detail.status).toMatchObject({

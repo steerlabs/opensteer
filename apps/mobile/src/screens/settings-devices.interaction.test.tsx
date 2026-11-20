@@ -123,7 +123,7 @@ it("names a Cloud Computer Home and a work Home for what they are", async () => 
     expect(section("home")?.rows.map(label)).toEqual(["Cloud Computer — Home · Always on"]);
   });
   await render({ kind: "work", from: "account", organization: "Acme" }, async () => {
-    expect(section("home")?.rows.map(label)).toEqual(["Acme · Work Home — Home · Always on"]);
+    expect(section("home")?.rows.map(label)).toEqual(["Work Home — Home · Always on"]);
     expect(section("home")?.footer?.text).toContain("your Acme work Home");
   });
 });

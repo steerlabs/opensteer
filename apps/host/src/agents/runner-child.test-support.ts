@@ -36,6 +36,8 @@ export function forkRunnerChild(
     readonly termGraceMs?: number;
     readonly environment?: NodeJS.ProcessEnv;
     readonly afterStop?: () => Promise<void>;
+    readonly beforeClose?: () => Promise<void>;
+    readonly closeMessage?: string;
   },
   own: (close: () => Promise<void>) => void,
 ) {
@@ -54,7 +56,12 @@ export function forkRunnerChild(
     (closing ??= (async () => {
       const failures: unknown[] = [];
       try {
-        if (child.connected) child.send("close", () => undefined);
+        await options.beforeClose?.();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (child.connected) child.send(options.closeMessage ?? "close", () => undefined);
         await withTimeout(exited, options.gracefulCloseMs ?? 1_000, {
           timeoutError: () => new Error("Runner ignored graceful close"),
         }).catch(() => undefined);

@@ -60,7 +60,8 @@ it("matches the caller-visible MCP context byte budget", async () => {
   }
   const narrow = await measureMcpContext("connection", {
     grant: {
-      scope: "selected", tasks: false,
+      scope: "selected",
+      tasks: false,
       resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
     },
   });

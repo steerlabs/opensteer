@@ -144,7 +144,7 @@ export function whoLines(
   readonly verified: boolean;
   /** "No longer verified since …" with what to do about it, once it was withdrawn. */
   readonly withdrawn: { readonly line: string; readonly detail: string } | null;
-  /** "Only approve if you started this yourself.", on consent only. */
+  /** "Only allow this if you started it yourself.", on consent only. */
   readonly warning: string | null;
 } {
   const line = agentWithdrawnLine(who);

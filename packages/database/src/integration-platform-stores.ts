@@ -14,8 +14,12 @@ import {
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { resolveResourceAccess } from "./resource-access.js";
-import { integrationConnectionGrantAccess, integrationConnectionGrantTargets, localServerGrantAccess } from "./agent-grant-targets.js";
+import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
+import {
+  integrationConnectionGrantAccess,
+  integrationConnectionGrantTargets,
+  localServerGrantAccess,
+} from "./agent-grant-targets.js";
 import { requestSettlementActor } from "./request-settlement.js";
 
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -75,7 +79,7 @@ import type {
   IntegrationServerTable,
   IntegrationToolTable,
 } from "./schema.js";
-import { cancelPending } from "./request-cancellation.js";
+import { cancelPending, preparePendingCancellation } from "./request-cancellation.js";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 import { deleteComputerAppSetupRequestsInTransaction } from "./computer-app-setup.js";
 import { declineComputerAppAccessRequestsInTransaction } from "./computer-app-approvals.js";
@@ -119,8 +123,7 @@ export interface IntegrationToolSchemas {
 }
 
 /**
- * Integration authority names an owned task or a live approved connection. Naming neither is the
- * personal owner looking in Settings, under no task's or connection's ceiling.
+ * Integration authority names an execution, a live approved connection or the person.
  */
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
@@ -133,17 +136,24 @@ export type IntegrationRequester = {
       readonly threadId?: undefined;
       readonly agentBindingId?: never;
     }
-  | { readonly threadId?: never; readonly connectionId?: never; readonly agentBindingId?: never }
+  | {
+      readonly kind: "person";
+      readonly threadId?: never;
+      readonly connectionId?: never;
+      readonly agentBindingId?: never;
+    }
 );
 
 /** The requester as the resolver names it; `connectionId` here is the external agent's. */
-function requesterSubject(input: IntegrationRequester) {
-  return {
-    ownerUserId: input.ownerUserId,
-    ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
-    ...(input.connectionId ? { agentConnectionId: input.connectionId } : {}),
-    ...(input.threadId ? { threadId: input.threadId } : {}),
-  };
+function requesterSubject(input: IntegrationRequester): ResourceAccessInput {
+  const { ownerUserId } = input;
+  if (input.agentBindingId !== undefined)
+    return { ownerUserId, agentBindingId: input.agentBindingId };
+  if (input.connectionId !== undefined)
+    return { ownerUserId, agentConnectionId: input.connectionId };
+  if (input.threadId !== undefined) return { ownerUserId, threadId: input.threadId };
+  if ("kind" in input && input.kind === "person") return { ownerUserId, kind: "person" };
+  throw new OpensteerError({ code: "forbidden", message: "Task authority is no longer available" });
 }
 
 type IntegrationReadinessTarget = {
@@ -901,6 +911,30 @@ export async function installIntegrationInTransaction(
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
+  const now = new Date();
+  const pendingAccessRequests =
+    current &&
+    (input.installation.status !== "active" || current.trust !== input.installation.trust)
+      ? await transaction
+          .selectFrom("requests")
+          .innerJoin(
+            "integrationRequestDetails",
+            "integrationRequestDetails.requestId",
+            "requests.id",
+          )
+          .select("requests.id")
+          .where("requests.kind", "=", "integration.access")
+          .where("requests.status", "=", "pending")
+          .where("integrationRequestDetails.installationId", "=", current.id)
+          .execute()
+      : [];
+  const cancellation = pendingAccessRequests.length
+    ? await preparePendingCancellation(transaction, {
+        reason: "authority-revoked",
+        requestIds: pendingAccessRequests.map(({ id }) => id),
+        resolvedAt: now,
+      })
+    : undefined;
   // Lock resource parents before replaceServerToolsInTransaction acquires tool rows.
   if (existingServers.length > 0)
     await transaction
@@ -915,9 +949,6 @@ export async function installIntegrationInTransaction(
       .forNoKeyUpdate()
       .execute();
 
-  const installationAuthorityChanged =
-    current !== undefined && current.trust !== input.installation.trust;
-  const now = new Date();
   const installation = current
     ? await transaction
         .updateTable("integrationInstallations")
@@ -961,6 +992,7 @@ export async function installIntegrationInTransaction(
         .returningAll()
         .executeTakeFirstOrThrow();
 
+  await cancellation?.lockThreads();
   for (const existing of existingServers) {
     const discovered = input.servers.find((s) => s.name === existing.name);
     if (!discovered) continue;
@@ -978,6 +1010,7 @@ export async function installIntegrationInTransaction(
       );
     }
   }
+  await cancellation?.apply();
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction
@@ -1074,24 +1107,6 @@ export async function installIntegrationInTransaction(
       tools: input.computerConnectionTools,
     });
   }
-  const pendingAccessRequests = await transaction
-    .selectFrom("requests")
-    .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-    .select("requests.id")
-    .where("requests.kind", "=", "integration.access")
-    .where("requests.status", "=", "pending")
-    .where("integrationRequestDetails.installationId", "=", installation.id)
-    .forNoKeyUpdate("requests")
-    .execute();
-  const invalidatedRequestIds =
-    input.installation.status !== "active" || installationAuthorityChanged
-      ? pendingAccessRequests.map(({ id }) => id)
-      : [];
-  await cancelPending(transaction, {
-    reason: "authority-revoked",
-    requestIds: invalidatedRequestIds,
-    resolvedAt: now,
-  });
   await transaction
     .insertInto("securityAudit")
     .values({
@@ -1696,9 +1711,10 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       const targetIds = tools.flatMap(({ grant, server }) =>
         grant.connectionId && server.transport.type !== "runner" ? [grant.connectionId] : [],
       );
-      const targets = authority.execution.agentConnection?.grant.scope === "selected" && targetIds.length
-        ? await integrationConnectionGrantTargets(this.database, [...new Set(targetIds)])
-        : null;
+      const targets =
+        authority.execution.agentConnection?.grant.scope === "selected" && targetIds.length
+          ? await integrationConnectionGrantTargets(this.database, [...new Set(targetIds)])
+          : null;
       if (targets) authority = await resolveResourceAccess(this.database, subject);
       const grant = authority.execution.agentConnection?.grant;
       return tools.filter((tool) => {
@@ -1710,7 +1726,9 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         const access =
           tool.server.transport.type === "runner"
             ? localServerGrantAccess(grant, tool.server.id)
-            : target ? agentGrantAccess(grant, target) : null;
+            : target
+              ? agentGrantAccess(grant, target)
+              : null;
         return access !== null && (!write || access === "read-write");
       });
     };

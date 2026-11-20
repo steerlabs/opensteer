@@ -124,6 +124,7 @@ export function mockScopedShell(
   );
 
   return PersonalNetworkShellSnapshotSchema.parse({
+    ...(snapshot.effectiveWorkPolicy ? { effectiveWorkPolicy: snapshot.effectiveWorkPolicy } : {}),
     deploymentId: snapshot.deploymentId,
     viewerId: snapshot.user?.id,
     session: {

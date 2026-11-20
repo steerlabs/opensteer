@@ -348,10 +348,18 @@ The reply that issues the ticket gives the mode. Use stock
 requires a new ticket. Closing the client disconnects it. The Browser Session and adopted pages
 have their own lifetime.
 
-The browser profile is the isolation boundary. Every Guest Browser Session gets a fresh
-Chromium context. A connected agent needs a saved profile. Granting the same saved profile to
-a person and an agent, or to two agents, shares signed-in state. CDP lists and drives only the
-pages owned by the attached Browser Session, including its popups and child frames.
+The browser profile is the isolation boundary for cookies, storage and permissions. Every Guest
+Browser Session gets a fresh Chromium context. A connected agent needs a saved profile and a
+device running an Opensteer version that supports page lineage. On older devices, use
+`browser_use`.
+
+For up to ten minutes, a connected agent can drive the tab its connection was issued for,
+pages it creates on that connection, and their popups and child frames. The Home records those
+pages as open tabs of the agent's task and closes any page it cannot record. Closing one of
+those tabs in Opensteer closes its browser page and ends its CDP channels. Whole-context mode
+gives the agent access to all cookies, storage, permissions and signed-in sites in the profile,
+including the state it shares with a person or another agent. Runs continue to use the pages
+owned by their attached Browser Session.
 
 The virtual root supports `Browser.getVersion`, `Target.getTargets`, `Target.getTargetInfo`,
 `Target.getBrowserContexts`, `Target.createTarget`, `Target.closeTarget`,

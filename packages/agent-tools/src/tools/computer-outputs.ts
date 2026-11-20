@@ -21,6 +21,12 @@ const PhoneSchema = z
   })
   .and(AccessSchema);
 export const ComputerAppsOutputSchema = z.object({
+  taskId: z.string().optional(),
+  operationId: z.string().optional(),
+  status: z.enum(["completed", "pending", "failed", "unknown"]).optional(),
+  requestId: z.string().nullable().optional(),
+  summary: z.object({ count: z.number() }).nullable().optional(),
+  next: z.string().optional(),
   guidance: z
     .object({ computers: z.string().optional(), phones: z.string().optional() })
     .optional(),

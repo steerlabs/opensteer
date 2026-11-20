@@ -850,13 +850,14 @@ export function AppShell({
     setNeedsYouNotification({ deploymentId, id: `menu-bar:${location.key}` });
     setSidebarCollapsed(false);
     setMobileNavigationOpen(true);
-    navigateTo(location.pathname, { replace: true });
+    void Promise.resolve(navigateTo(location.pathname, { replace: true })).catch(reportActionError);
   }, [
     deploymentId,
     location.key,
     location.pathname,
     location.search,
     navigateTo,
+    reportActionError,
     setSidebarCollapsed,
   ]);
 

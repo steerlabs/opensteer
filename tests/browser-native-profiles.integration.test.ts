@@ -451,6 +451,10 @@ it("advertises exact prepared storage through the reachable Personal browser com
   const capabilities = await bridge.capabilities();
   expect(capabilities).toEqual({
     wireVersion: 2,
+    standardCdp: 1,
+    standardCdpLineage: 1,
+    wholeContextCdp: 1,
+    standardCdpLeaseRecovery: 1,
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
   });
   await vi.waitFor(

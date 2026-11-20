@@ -16,6 +16,7 @@ export const devicesCopy = {
   "devices.home.mac": "Home · Online",
   "devices.home.server": "Home · Server · Online",
   "devices.home.cloud": "Home · Always on",
+  "devices.home.work": "Work Home",
   "devices.status.online": "Online",
   "devices.status.asleep": "Asleep · seen {time}",
   "devices.status.asleepNow": "Asleep",

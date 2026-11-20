@@ -45,7 +45,10 @@ describeStore("automatic database operation budgets", (it) => {
     const controlOpened = Promise.withResolvers<void>();
     const finishConnect = Promise.withResolvers<void>();
     const connect = Client.prototype.connect;
-    const connection = vi.spyOn(Client.prototype, "connect").mockImplementation(function (
+    const prototype: {
+      connect(callback?: Parameters<Client["connect"]>[0]): Promise<Client> | void;
+    } = Client.prototype;
+    const connection = vi.spyOn(prototype, "connect").mockImplementation(function (
       this: Client,
       callback?: Parameters<Client["connect"]>[0],
     ) {

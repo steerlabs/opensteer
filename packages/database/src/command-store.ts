@@ -27,7 +27,11 @@ import {
   runWasStopped,
   type RevokedRunGrant,
 } from "./run-grants.js";
-import { attemptForBinding, pendingReplacementAttempt, type RunAttemptRow } from "./run-attempts.js";
+import {
+  attemptForBinding,
+  pendingReplacementAttempt,
+  type RunAttemptRow,
+} from "./run-attempts.js";
 import {
   type CommandRow,
   type DatabaseSchema,
@@ -153,9 +157,8 @@ async function claimObservedCommand(
   > & { readonly connectionId: string | null },
   dispatcherId: string,
 ): Promise<ClaimedCommand | null> {
-  const lineage = observed.type === "run.execute" || observed.type === "run.steer"
-    ? observed.connectionId
-    : null;
+  const lineage =
+    observed.type === "run.execute" || observed.type === "run.steer" ? observed.connectionId : null;
   await lockLineageConnection(transaction, lineage);
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
   // just as the old Runner commits its terminal event.
@@ -302,17 +305,24 @@ async function claimObservedCommand(
   let terminalFailureInput: "seed-input" | undefined;
   if (lineage && run && !terminalFailure) {
     await lockThreadRow(transaction, run.threadId);
-    const thread = await transaction.selectFrom("threads").select("originConnectionId")
-      .where("id", "=", run.threadId).executeTakeFirstOrThrow();
-    const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage)
-      .catch((error: unknown) => {
+    const thread = await transaction
+      .selectFrom("threads")
+      .select("originConnectionId")
+      .where("id", "=", run.threadId)
+      .executeTakeFirstOrThrow();
+    const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage).catch(
+      (error: unknown) => {
         if (error instanceof OpensteerError && error.code === "forbidden") return null;
         throw error;
-      });
-    if (!connection || !agentGrantAllowsTasks(connection.grant) ||
+      },
+    );
+    if (
+      !connection ||
+      !agentGrantAllowsTasks(connection.grant) ||
       !sendEligible(connection, thread.originConnectionId) ||
       ((observed.type === "run.steer" || run.admittedGrantRevision !== null) &&
-        !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))) {
+        !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
+    ) {
       terminalFailure = "The connected agent's access ended before this work could be delivered.";
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
     }
@@ -872,7 +882,15 @@ export async function enqueueRunnerControlInTransaction(
   {
     const run = await transaction
       .selectFrom("runs")
-      .select(["bindingGeneration", "connectionId", "id", "requestedBy", "status", "threadId", "finishIntent"])
+      .select([
+        "bindingGeneration",
+        "connectionId",
+        "id",
+        "requestedBy",
+        "status",
+        "threadId",
+        "finishIntent",
+      ])
       .where("id", "=", input.runId)
       .forNoKeyUpdate()
       .executeTakeFirst();
@@ -886,7 +904,8 @@ export async function enqueueRunnerControlInTransaction(
       input.type === "run.interrupt" &&
       input.expectedBindingGeneration !== undefined &&
       run.bindingGeneration !== input.expectedBindingGeneration
-    ) throw new OpensteerError({ code: "conflict", message: "The Run execution changed" });
+    )
+      throw new OpensteerError({ code: "conflict", message: "The Run execution changed" });
     if (run.finishIntent)
       throw new OpensteerError({
         code: "conflict",
@@ -902,12 +921,18 @@ export async function enqueueRunnerControlInTransaction(
     targetRunStatus = run.status;
     targetRunMayHaveBeenSent = run.bindingGeneration !== null;
     if (
-      input.type === "run.interrupt" && input.expectedBindingGeneration !== undefined &&
-      run.status === "starting" && run.connectionId && run.bindingGeneration !== null
+      input.type === "run.interrupt" &&
+      input.expectedBindingGeneration !== undefined &&
+      run.status === "starting" &&
+      run.connectionId &&
+      run.bindingGeneration !== null
     ) {
       const attempt = await attemptForBinding(transaction, run.id, run.bindingGeneration);
-      if (attempt?.connectionId === run.connectionId &&
-        attempt.admittedGrantRevision === null && attempt.firstEventAt === null)
+      if (
+        attempt?.connectionId === run.connectionId &&
+        attempt.admittedGrantRevision === null &&
+        attempt.firstEventAt === null
+      )
         targetRunMayHaveBeenSent = false;
     }
     await requirePersonalOwner(transaction, input.requestedBy);
@@ -1545,7 +1570,16 @@ export async function claimCommand(
     const observed = await transaction
       .selectFrom("commands")
       .leftJoin("runs", "runs.id", "commands.runId")
-      .select(["commands.environmentId", "commands.id", "commands.payload", "commands.requestedBy", "commands.runId", "commands.threadId", "commands.type", "runs.connectionId"])
+      .select([
+        "commands.environmentId",
+        "commands.id",
+        "commands.payload",
+        "commands.requestedBy",
+        "commands.runId",
+        "commands.threadId",
+        "commands.type",
+        "runs.connectionId",
+      ])
       .where("commands.id", "=", commandId)
       .where("commands.status", "=", "pending")
       .executeTakeFirst();
@@ -1589,19 +1623,45 @@ export async function loadSteerDispatchInput(
     message: messageFromRow(row),
     origin: messageOriginFromRow(row),
     run: runFromRow(runRow),
-    ...(runRow.connectionId ? { reauthorize: async () => {
-      const current = await database.selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select(["runs.bindingGeneration", "runs.status", "runs.admittedGrantRevision",
-          "runs.admittedAccessMode", "threads.originConnectionId"])
-        .where("runs.id", "=", runRow.id).executeTakeFirst();
-      const connection = await liveAgentConnection(database, runRow.requestedBy, runRow.connectionId!);
-      if (!current || current.bindingGeneration !== runRow.bindingGeneration ||
-        !["running", "waiting"].includes(current.status) ||
-        !agentGrantAllowsTasks(connection.grant) || !sendEligible(connection, current.originConnectionId) ||
-        !meetsConnectionFloor(connection, current.admittedGrantRevision, current.admittedAccessMode))
-        throw new OpensteerError({ code: "forbidden", message: "The connected agent's access ended before this work could be delivered." });
-    } } : {}),
+    ...(runRow.connectionId
+      ? {
+          reauthorize: async () => {
+            const current = await database
+              .selectFrom("runs")
+              .innerJoin("threads", "threads.id", "runs.threadId")
+              .select([
+                "runs.bindingGeneration",
+                "runs.status",
+                "runs.admittedGrantRevision",
+                "runs.admittedAccessMode",
+                "threads.originConnectionId",
+              ])
+              .where("runs.id", "=", runRow.id)
+              .executeTakeFirst();
+            const connection = await liveAgentConnection(
+              database,
+              runRow.requestedBy,
+              runRow.connectionId!,
+            );
+            if (
+              !current ||
+              current.bindingGeneration !== runRow.bindingGeneration ||
+              !["running", "waiting"].includes(current.status) ||
+              !agentGrantAllowsTasks(connection.grant) ||
+              !sendEligible(connection, current.originConnectionId) ||
+              !meetsConnectionFloor(
+                connection,
+                current.admittedGrantRevision,
+                current.admittedAccessMode,
+              )
+            )
+              throw new OpensteerError({
+                code: "forbidden",
+                message: "The connected agent's access ended before this work could be delivered.",
+              });
+          },
+        }
+      : {}),
     runId: row.targetRunId,
     threadId: row.targetThreadId,
   };
@@ -1687,9 +1747,25 @@ export async function retryCommand(
         run,
       });
     } else if (command?.type === "trigger.execute") {
+      await sql`
+        insert into trigger_occurrence_attempts (
+          occurrence_id, execution_generation, connection_id, runner_id, runner_boot_id,
+          admitted_grant_revision, admitted_access_mode, terminal_evidence_at, contact_lost_at
+        )
+        select id, execution_generation, connection_id, runner_id, runner_boot_id,
+          admitted_grant_revision, admitted_access_mode, terminal_evidence_at, contact_lost_at
+        from trigger_occurrences
+        where command_id = ${commandId} and status = 'running'
+          and connection_id is not null and runner_id is not null and runner_boot_id is not null
+          and (terminal_evidence_at is null or contact_lost_at is not null)
+      `.execute(transaction);
       await transaction
         .updateTable("triggerOccurrences")
         .set({
+          admittedGrantRevision: null,
+          admittedAccessMode: null,
+          terminalEvidenceAt: null,
+          contactLostAt: null,
           runnerBootId: null,
           runnerId: null,
           startedAt: null,

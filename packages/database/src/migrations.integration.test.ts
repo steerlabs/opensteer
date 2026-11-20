@@ -46,6 +46,8 @@ import {
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 import { resolvePersonalReferences } from "./reference-store.js";
+import { connectionAttempts, outstandingAttempts } from "./connection-disconnect.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 
 let clone: TestDatabase;
 let database: Kysely<DatabaseSchema>;
@@ -819,6 +821,11 @@ describe("fresh personal/team lineage", () => {
       kind: "user-session",
       userId: owner.userId,
     });
+    await sql`insert into plugin_executions (id,owner_user_id,thread_id,run_id,caller,mode,state)
+      values ('legacy-connected',${owner.userId},${delegated.id},${sent.run.id},'delegated','automatic','running'),
+             ('legacy-personal',${owner.userId},${own.id},${typed.run.id},'personal','automatic','running')`.execute(
+      database,
+    );
     await migrateToLatest(database);
     expect(
       await database
@@ -881,6 +888,40 @@ describe("fresh personal/team lineage", () => {
     expect(await database.selectFrom("triggers").select("originConnectionId").execute()).toEqual(
       [],
     );
+    expect(
+      await database
+        .selectFrom("pluginExecutions")
+        .select(["id", "connectionId", "engineProcess"])
+        .orderBy("id")
+        .execute(),
+    ).toEqual([
+      { id: "legacy-connected", connectionId, engineProcess: null },
+      { id: "legacy-personal", connectionId: null, engineProcess: null },
+    ]);
+    const connections = new AgentConnectionStore(database);
+    await connections.revoke(owner.userId, connectionId);
+    const pluginAttempts = async () =>
+      outstandingAttempts(await connectionAttempts(database, connectionId))
+        .filter(({ kind }) => kind === "plugin")
+        .map(({ id }) => id);
+    expect(await pluginAttempts()).toEqual(["legacy-connected"]);
+    for (const state of ["interrupted", "cancelled"] as const) {
+      await database
+        .updateTable("pluginExecutions")
+        .set({ state })
+        .where("id", "=", "legacy-connected")
+        .execute();
+      expect(await pluginAttempts()).toEqual(["legacy-connected"]);
+    }
+    expect((await connections.list(owner.userId, { includeRevoked: true }))[0]?.state).toBe(
+      "stopping",
+    );
+    await database
+      .updateTable("pluginExecutions")
+      .set({ terminalEvidenceAt: new Date() })
+      .where("id", "=", "legacy-connected")
+      .execute();
+    expect(await pluginAttempts()).toEqual([]);
   });
   it("adds agent sessions without touching existing tasks, and keeps their invariants in the database", async () => {
     await migrateToLatest(database, migrationsBefore(agentSessionsMigrationName));

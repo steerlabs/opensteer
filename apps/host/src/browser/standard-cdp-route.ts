@@ -53,7 +53,9 @@ export function registerStandardCdpRoute(
             chromeTabs?.standardCdpTickets.consume(params.data.ticket))
           : undefined;
         if (!claims) {
-          void reply.code(401).send({ error: "This browser connection link is invalid or expired." });
+          void reply
+            .code(401)
+            .send({ error: "This browser connection link is invalid or expired." });
           return;
         }
         upgrades.set(request, claims);

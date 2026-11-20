@@ -5,6 +5,11 @@ import {
   agentDirectoryPath,
   agentDirectoryTokenUse,
 } from "@opensteer/control-plane-protocol";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  type TestDatabase,
+} from "@opensteer/database/test-support/database";
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, type JSONWebKeySet } from "jose";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -25,11 +30,19 @@ const portalOrigin = new URL("https://portal.agent-directory.example.test");
 const authSecret = "test-auth-secret-for-agent-directory-32";
 
 integration("AgentDirectoryStore and signed GET route integration", () => {
-  const database = createControlPlaneDatabase({ connectionString: url! });
-  const directoryStore = new AgentDirectoryStore(database);
+  let clone: TestDatabase | undefined;
+  let database: ReturnType<typeof createControlPlaneDatabase>;
+  let directoryStore: AgentDirectoryStore;
   let server: Awaited<ReturnType<typeof createControlPlaneServer>>;
 
   beforeAll(async () => {
+    clone = await cloneTestDatabase("controlPlane");
+    const connectionString = clone.url;
+    ({ database } = await ownTestDatabaseProducer(connectionString, async () => {
+      const database = createControlPlaneDatabase({ connectionString });
+      return { database, close: () => database.destroy() };
+    }));
+    directoryStore = new AgentDirectoryStore(database);
     await migrateControlPlaneToLatest(database);
     const store = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
     const auth = createControlPlaneAuth(database, {
@@ -68,8 +81,11 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await database.destroy();
+    try {
+      await server?.close();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("persists entries, bumps revision monotonically, and serves a document signed by Account JWKS", async () => {
@@ -109,7 +125,7 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
     expect(updated.revision).toBe(4);
 
     const response = await server.inject({ method: "GET", url: agentDirectoryPath });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect(response.headers["cache-control"]).toBe(agentDirectoryCacheControl);
     const { assertion } = AgentDirectoryResponseSchema.parse(response.json());
 
@@ -140,20 +156,22 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
 
   it("reads the revision and entries from one snapshot during a concurrent edit", async () => {
     let firstRead = true;
-    const reader = new AgentDirectoryStore(database.withPlugin({
-      transformQuery: ({ node }) => node,
-      async transformResult({ result }) {
-        if (firstRead) {
-          firstRead = false;
-          await directoryStore.add({
-            id: "platform",
-            displayName: "Platform",
-            origins: ["https://platform.example"],
-          });
-        }
-        return result;
-      },
-    }));
+    const reader = new AgentDirectoryStore(
+      database.withPlugin({
+        transformQuery: ({ node }) => node,
+        async transformResult({ result }) {
+          if (firstRead) {
+            firstRead = false;
+            await directoryStore.add({
+              id: "platform",
+              displayName: "Platform",
+              origins: ["https://platform.example"],
+            });
+          }
+          return result;
+        },
+      }),
+    );
     expect(await reader.document()).toMatchObject({ revision: 1, entries: [] });
     expect(await directoryStore.document()).toMatchObject({
       revision: 2,

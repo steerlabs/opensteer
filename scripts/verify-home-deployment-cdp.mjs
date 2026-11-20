@@ -18,8 +18,8 @@ globalThis.opensteerHomeProofCdp = (runtime) => {
       body += chunk;
     });
     socket.on("error", () => socket.destroy());
-    socket.on("end", async () => {
-      try {
+    socket.on("end", () => {
+      void (async () => {
         const { ownerId, threadId, environmentId } = JSON.parse(body);
         const authority = { ownerId, agentBindingId: `thread:${threadId}`, environmentId };
         const { session } = await runtime.browser.openAgentSession({ ...authority, fresh: true });
@@ -29,9 +29,9 @@ globalThis.opensteerHomeProofCdp = (runtime) => {
           mode: "session",
         });
         socket.end(JSON.stringify({ path, sessionId: session.id }));
-      } catch (error) {
+      })().catch((error) => {
         socket.end(JSON.stringify({ error: error.message }));
-      }
+      });
     });
   });
   server.listen(socketPath).unref();

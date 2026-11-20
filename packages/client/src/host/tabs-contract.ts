@@ -25,7 +25,10 @@ export interface TabsClient {
    * only it arms a phone's one-shot screen wake; selection restore, renewal
    * and reconnect never do.
    */
-  activateTab(tabId: TabId, options?: { readonly wake?: boolean }): Promise<TabViewer>;
+  activateTab(
+    tabId: TabId,
+    options?: { readonly wake?: boolean; readonly signal?: AbortSignal },
+  ): Promise<TabViewer>;
   organizeTabs(input: TabOrganizeInput): Promise<TabOrganizeResult>;
   updateTabGroup(input: TabGroupUpdateInput): Promise<TabGroup>;
   deleteTabGroup(groupId: TabGroupId): Promise<void>;

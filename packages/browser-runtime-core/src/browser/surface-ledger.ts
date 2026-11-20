@@ -80,7 +80,7 @@ interface SurfaceLedgerOptions {
    * Makes a page this ledger registers reachable by the session's agents. It
    * runs before the page is announced; throwing refuses the page.
    */
-  claimTarget?: (targetId: string) => void;
+  claimTarget?: (targetId: string, openerId?: string) => string | undefined | void;
   releaseTarget?: (targetId: string) => void;
   /** The size the session starts at, until the person's view gives it one. */
   initialViewport?: Viewport;
@@ -165,6 +165,7 @@ export interface TabRecord {
   live: LivePage | null;
   lastTargetId: string;
   origin: "agent" | "person";
+  creatorAttachmentId?: string;
   personUsed: boolean;
   agentActed: boolean;
   typed: boolean;
@@ -336,7 +337,7 @@ export class SurfaceLedger {
   private activeId: BrowserSurfaceId | null = null;
   private readonly adoptedTargetIds = new Set<string>();
   private readonly releaseTarget: SurfaceLedgerOptions["releaseTarget"];
-  private readonly claimTarget: ((targetId: string) => void) | undefined;
+  private readonly claimTarget: SurfaceLedgerOptions["claimTarget"];
   private readonly beforeResize: SurfaceLedgerOptions["beforeResize"];
   private closed = false;
   private tearingDown = false;
@@ -689,6 +690,7 @@ export class SurfaceLedger {
       icon: record.favicon ? createHash("sha256").update(record.favicon).digest("base64url") : null,
       order: record.order,
       openerId: record.openerId,
+      ...(record.creatorAttachmentId ? { creatorAttachmentId: record.creatorAttachmentId } : {}),
       documentId: record.documentId,
       geometryRevision: record.geometryRevision,
       loading: record.live?.loading ?? false,
@@ -1141,11 +1143,16 @@ export class SurfaceLedger {
    * ID is authoritative because callers may only pass the result of a
    * successful, session-scoped Target.createTarget.
    */
-  async adoptTarget(targetId: string): Promise<boolean> {
+  async adoptTarget(targetId: string, creatorAttachmentId?: string): Promise<boolean> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (this.recordForTarget(targetId)) {
       const record = this.recordForTarget(targetId)!;
       record.origin = "agent";
+      if (creatorAttachmentId && !record.creatorAttachmentId) {
+        record.creatorAttachmentId = creatorAttachmentId;
+        if (record.announced)
+          this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
+      }
       await this.settleTarget(targetId);
       return this.recordForTarget(targetId) !== undefined;
     }
@@ -1496,10 +1503,10 @@ export class SurfaceLedger {
           this.nativeGone(id, gone, end),
         );
         if (!incarnation) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-        this.claimTarget?.(targetId);
         const size = requestedViewport ?? this.startingSize(opener);
         const openerId = opener ? this.pageIds.get(opener) : undefined;
         const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
+        const creatorAttachmentId = this.claimTarget?.(targetId, openerRecord?.lastTargetId);
         const answersPerson =
           openerRecord?.userActivity?.kind === "click" &&
           openerRecord.userActivitySequence > openerRecord.agentSequence;
@@ -1531,9 +1538,11 @@ export class SurfaceLedger {
             popupInputSequence: 0,
             lease: new TabLease(() => this.policyChanged()),
             lastTargetId: targetId,
+            ...(creatorAttachmentId ? { creatorAttachmentId } : {}),
             origin:
-              openerRecord?.origin ??
-              (this.adoptedTargetIds.has(targetId) ? "agent" : this.creationOrigin),
+              creatorAttachmentId || this.adoptedTargetIds.has(targetId)
+                ? "agent"
+                : (openerRecord?.origin ?? this.creationOrigin),
             personUsed: false,
             agentActed: false,
             typed: false,

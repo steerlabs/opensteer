@@ -1,16 +1,18 @@
 import {
   AgentDirectoryOriginSchema,
-  agentDirectoryKeyThumbprint,
   agentDirectoryJwtTyp,
   agentDirectoryPath,
   agentDirectoryTokenUse,
-  isIdentityStillVerified,
   maximumAgentDirectoryEnvelopeBytes,
   type AgentConnectionIdentityAtConsent,
   type AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
+import {
+  agentDirectoryKeyThumbprint,
+  isIdentityStillVerified,
+} from "@opensteer/database/agent-directory-verification";
 import { generateKeyPairSync } from "node:crypto";
 import { ConnectionOAuth } from "./connection-oauth.js";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWK } from "jose";

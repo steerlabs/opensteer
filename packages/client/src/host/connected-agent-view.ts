@@ -5,11 +5,13 @@ import {
   agentGrantResourceKey,
   type AgentGrant,
   type AgentGrantResource,
+  type AgentOperationView,
   type ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
+import type { ThreadSummary } from "./client.js";
 import { agentWords } from "./connected-agents-copy.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -64,14 +66,40 @@ export interface ConnectedAgentStatus {
   }[];
 }
 
-/**
- * Live work the Home will report for a connection: what it is using now, and the tab to
- * watch. No Home serves it yet, so it is always null today.
- */
 export interface ConnectedAgentLive {
   readonly what: string;
-  readonly tabId: string | null;
-  readonly threadId: string | null;
+  readonly threadId: string;
+}
+
+type ConnectedAgentTask = {
+  readonly thread: Pick<ThreadSummary, "id" | "title" | "status" | "externalWork">;
+};
+
+export function connectedAgentWorkingTasks(
+  connectionId: string,
+  tasks: readonly ConnectedAgentTask[],
+) {
+  return tasks.filter(
+    ({ thread }) =>
+      thread.status === "running" &&
+      thread.externalWork?.status === "active" &&
+      thread.externalWork.connection.id === connectionId,
+  );
+}
+
+export function connectedAgentLive(
+  tasks: readonly ConnectedAgentTask[],
+  operations: readonly Pick<AgentOperationView, "taskId" | "sessionId">[] = [],
+): ConnectedAgentLive | null {
+  const byId = new Map(tasks.map(({ thread }) => [thread.id, thread]));
+  for (const operation of operations) {
+    const thread = byId.get(operation.taskId);
+    if (thread?.externalWork?.sessionId === operation.sessionId) {
+      return { what: thread.title, threadId: thread.id };
+    }
+  }
+  const thread = tasks[0]?.thread;
+  return thread ? { what: thread.title, threadId: thread.id } : null;
 }
 
 /** One finished or refused operation, for Recent activity once the Home lists them. */
@@ -286,22 +314,25 @@ function usedLine(lastUsedAt: string | null, now: Date): string {
   });
 }
 
-/** The status at the top of an agent's page: idle, or where its Disconnect stands. */
+/** The status at the top of an agent's page. */
 export function connectedAgentStatus(
   row: ConnectedAgentRow,
   now = new Date(),
+  live: ConnectedAgentLive | null = null,
 ): ConnectedAgentStatus {
   const { connection } = row;
   const agent = row.identity.label;
   const ended = connection.revokedAt ?? null;
   switch (row.phase) {
     case "active":
-      return {
-        label: agentWords("agent.status.idle"),
-        detail: usedLine(connection.lastUsedAt, now),
-        tone: "neutral",
-        steps: [],
-      };
+      return live
+        ? { label: agentWords("agent.status.working"), detail: live.what, tone: "good", steps: [] }
+        : {
+            label: agentWords("agent.status.idle"),
+            detail: usedLine(connection.lastUsedAt, now),
+            tone: "neutral",
+            steps: [],
+          };
     case "revoked":
       return {
         label: agentWords("disconnect.revoked.label", { agent }),
@@ -365,9 +396,10 @@ export function connectedAgentDetail(
   const row = connectedAgentRow(connection, names, options.revoked, now, options.withdrawnAt);
   const legacy = !options.grantsAvailable || connection.grant === undefined;
   const identity = row.identity;
+  const live = row.phase === "active" ? (options.live ?? null) : null;
   return {
     row,
-    status: connectedAgentStatus(row, now),
+    status: connectedAgentStatus(row, now, live),
     uncertain: row.uncertain
       ? {
           label: agentWords("disconnect.uncertain.label"),
@@ -379,7 +411,7 @@ export function connectedAgentDetail(
     grant: connectionGrant(connection),
     revision: connection.grantRevision ?? 1,
     accessMode: connection.accessMode,
-    live: row.phase === "active" ? (options.live ?? null) : null,
+    live,
     activity: options.activity ?? { kind: "unavailable" },
     about: [
       ...(identity.clientName !== identity.label

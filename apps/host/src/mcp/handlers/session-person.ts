@@ -108,7 +108,6 @@ export class SessionPersonTools {
         }
       : null;
     const tool = credential === "login" ? "saved_login_request" : "card_request";
-    const { taskId: _taskId, ...argumentsForOperation } = input;
     return directResult(
       await this.#options.sessions.run<CredentialResult>({
         ownerUserId: caller.userId,
@@ -116,7 +115,7 @@ export class SessionPersonTools {
         taskId: session?.threadId,
         operationKey,
         tool,
-        input: argumentsForOperation,
+        input,
         target: {
           grant: { kind: "browser-profile", profileId },
           name: target.profileName ?? "Browser profile",
@@ -213,7 +212,12 @@ export class SessionPersonTools {
     const choices = (question.options ?? [{ label: "Done" }, { label: "Unable to do it" }]).map(
       ({ label }) => ({ label, value: label }),
     );
-    const { taskId: _taskId, ...argumentsForOperation } = input;
+    const {
+      taskId: _taskId,
+      operationId: _id,
+      operationKey: _key,
+      ...argumentsForOperation
+    } = input;
     const answer = async (requestId: RequestId | null) => {
       const request = requestId && (await this.#options.store.requests.get(requestId));
       return request && request.status === "fulfilled" && request.response?.kind === "form"

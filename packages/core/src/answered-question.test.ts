@@ -117,6 +117,19 @@ describe("answered questions", () => {
     ).toBeNull();
   });
 
+  it("preserves plain detail when projecting and cutting a settled question", () => {
+    const request = answered({ question_1: ["yes"] });
+    if (request.presentation.kind !== "form") throw new Error("Expected a form.");
+    const receipt = answeredQuestion({
+      ...request,
+      presentation: { ...request.presentation, detailFormat: "plain" },
+    })!;
+    expect(receipt.detailFormat).toBe("plain");
+    expect(
+      answeredQuestionWithin({ ...receipt, detail: draft.repeat(100) }, 3 * 1024),
+    ).toMatchObject({ detailFormat: "plain", truncated: true });
+  });
+
   it("fits the thread's budget, keeping the answers' order and marking what it cut", () => {
     const whole = answeredQuestion(
       answered({ question_1: ["x".repeat(5_000)], question_2: ["crm"] }),

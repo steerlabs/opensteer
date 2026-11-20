@@ -2704,6 +2704,7 @@ describe("durable harness catalogs", () => {
           },
         }) as const,
     );
+    const lowerStandardCdpTaskMode = vi.fn();
     const updateThreadAccessMode = vi.fn(
       async (input: { readonly accessMode: ThreadAccessMode }) => ({
         asOfSequence: "0",
@@ -2733,6 +2734,7 @@ describe("durable harness catalogs", () => {
       authenticateSession,
       createHarnessInstance: store.createHarnessInstance,
       createThread,
+      lowerStandardCdpTaskMode,
       rememberExecutionChoice: rememberChoice,
       updateThreadAccessMode,
       updateThreadExecutionSelection,
@@ -2773,6 +2775,7 @@ describe("durable harness catalogs", () => {
         } as never,
         browser: {
           latestPlaces: async () => [],
+          lowerStandardCdpTaskMode,
           workspaceBootstrap: async () => ({
             available: false,
             placements: [],
@@ -3000,7 +3003,7 @@ describe("durable harness catalogs", () => {
   it("leaves an access-mode change alone while the work location is away", async () => {
     // Silence is not a declaration: an engine that has not advertised its modes
     // refuses none of them, and a Thread nobody can run is already blocked.
-    const { server, updateThreadAccessMode } = harnessCatalogServer({
+    const { server, updateThreadAccessMode, lowerStandardCdpTaskMode } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
       environmentKind: "main",
@@ -3018,6 +3021,7 @@ describe("durable harness catalogs", () => {
       expect(updateThreadAccessMode).toHaveBeenCalledWith(
         expect.objectContaining({ accessMode: "auto" }),
       );
+      expect(lowerStandardCdpTaskMode).toHaveBeenCalledWith(threadId, "auto");
     } finally {
       await app.close();
     }

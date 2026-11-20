@@ -10,8 +10,12 @@ import type { HostCrypto } from "./host-crypto.ts";
 import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
-import type { CatalogReadOptions } from "../contracts/declarations.ts";
-import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
+import {
+  AppSkillInputs,
+  AppSkillNotFound,
+  SkillRevisionChanged,
+  type SkillReadOptions,
+} from "../contracts/skills.ts";
 import { RequestInvalid } from "../contracts/shared.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { Query } from "./database.ts";
@@ -65,7 +69,7 @@ export const makeSkills = (
   declarations: Declarations,
   blobs: BlobStorage,
 ) => {
-  const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
+  const snapshot = (input: typeof AppSkillInputs.list.Type, read: SkillReadOptions = {}) =>
     Effect.gen(function* () {
       const app = yield* storedApp(db, input);
       const version = input.version ?? app.activeVersion;
@@ -87,7 +91,7 @@ export const makeSkills = (
       // Its immutable bundled skills remain readable until its owner deploys a newer build.
       const capabilities = retained.requirements.capabilities;
       const live =
-        capabilities?.skills === true
+        capabilities?.skills === true && read.publishedOnly !== true
           ? yield* Effect.gen(function* () {
               const state = yield* invocation(db, { ...input, version });
               const sources = capabilities.skillSources === true;
@@ -171,7 +175,7 @@ export const makeSkills = (
         Effect.flatMap(snapshot),
         Effect.withSpan("sdk.skills.bundle"),
       ),
-    list: (input: typeof AppSkillInputs.list.Type, options?: CatalogReadOptions) =>
+    list: (input: typeof AppSkillInputs.list.Type, options?: SkillReadOptions) =>
       Schema.decodeUnknownEffect(AppSkillInputs.list)(input).pipe(
         Effect.mapError(() => new RequestInvalid()),
         Effect.flatMap((input) => snapshot(input, options)),
@@ -181,12 +185,12 @@ export const makeSkills = (
         })),
         Effect.withSpan("sdk.skills.list"),
       ),
-    read: (input: typeof AppSkillInputs.read.Type) =>
+    read: (input: typeof AppSkillInputs.read.Type, options?: SkillReadOptions) =>
       Schema.decodeUnknownEffect(AppSkillInputs.read)(input).pipe(
         Effect.mapError(() => new RequestInvalid()),
         Effect.flatMap((input) =>
           Effect.gen(function* () {
-            const { skills, ...identity } = yield* snapshot(input);
+            const { skills, ...identity } = yield* snapshot(input, options);
             const { app } = identity;
             const skill = skills.find((skill) => skill.name === input.name);
             const file = input.file ?? "SKILL.md";

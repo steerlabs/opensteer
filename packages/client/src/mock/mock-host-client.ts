@@ -2380,7 +2380,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "personal.shell.get": async ({ selectedThreadId }) =>
       rpcSuccess({
         ...mockScopedShell(client.getSnapshot(), mockThread, selectedThreadId),
-        ...(client.workPolicy ? { effectiveWorkPolicy: client.workPolicy } : {}),
       }),
     "thread.snapshot.get": async ({ threadId, nodeId }) => {
       const detail = mockScopedDetail(
@@ -4980,6 +4979,13 @@ export class MockHostClient implements HostClient {
     this.#state.mockDeviceStates();
   }
 
+  /** The organization applies a new policy version, as the synced shell would bring it. */
+  applyWorkPolicy(
+    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
+  ): void {
+    this.#state.applyWorkPolicy(policy);
+  }
+
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(options: { readonly long?: boolean } = {}): void {
     this.#state.mockAgentWork(options);
@@ -5905,7 +5911,7 @@ class MockHostState {
   private connections: import("@opensteer/protocol").AgentConnection[];
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
-  readonly workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
+  workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
   connectionConsent(requestId: string) {
     const consent = this.pendingConnectionConsent;
@@ -6908,7 +6914,10 @@ class MockHostState {
           : {}),
       };
     const firstRun = options.world === "first-run";
-    this.snapshot = firstRun ? firstRunWorld(initial) : initial;
+    this.snapshot = {
+      ...(firstRun ? firstRunWorld(initial) : initial),
+      effectiveWorkPolicy: this.workPolicy,
+    };
     this.applyAutomaticEligibility();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
@@ -7498,6 +7507,13 @@ class MockHostState {
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });
+  }
+
+  applyWorkPolicy(
+    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
+  ): void {
+    this.workPolicy = policy;
+    this.update({ ...this.snapshot, effectiveWorkPolicy: policy });
   }
 
   mockDeviceStates(): void {

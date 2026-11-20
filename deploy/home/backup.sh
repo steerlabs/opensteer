@@ -110,34 +110,89 @@ restore_state() {
   identity_secrets=$(jq -er '.secrets.auth_secret.file | sub("/auth_secret$"; "")' <<< "$config")
 }
 
-restore_rollback() {
-  local journal="$home_dir/restore.pending" failed_set previous_set volume volume_set identity_secrets
-  [[ -d $journal ]] || return 0
+restore_selector() {
+  printf 'OPENSTEER_HOME_VOLUME_SET=%s\nOPENSTEER_HOME_IDENTITY_SECRETS=%s/identity/%s\n' "$1" "$home_dir" "$1"
+}
+
+restore_set_exists() {
+  local set=$1 volume
+  for volume in postgres-data postgres-socket "${payload_volumes[@]}"; do
+    docker volume inspect "${set}_$volume" >/dev/null 2>&1 || return
+  done
+}
+
+restore_evidence() {
+  local active="$home_dir/volumes.env" project marker
   failed_set=$(cat "$journal/volume-set") || return
   previous_set=$(cat "$journal/previous-set") || return
-  [[ $failed_set =~ ^[a-z0-9_-]+-restore-[0-9a-f]{12}$ &&
-    $previous_set =~ ^[a-z0-9_-]+$ && $failed_set != "$previous_set" ]] || return 1
+  project=$(compose_project) || return
+  [[ ! -L $active && $project =~ ^[a-z0-9_-]+$ &&
+    $failed_set == "$project"-restore-* && $failed_set =~ ^[a-z0-9_-]+-restore-[0-9a-f]{12}$ &&
+    $failed_set != "$previous_set" ]] || return 1
+  if [[ -L "$journal/previous.env" || -L "$journal/previous-default" ]]; then return 1; fi
+  if [[ -f "$journal/previous.env" && ! -e "$journal/previous-default" ]]; then
+    [[ $previous_set == "$project"-restore-* && $previous_set =~ ^[a-z0-9_-]+-restore-[0-9a-f]{12}$ ]] &&
+      cmp -s "$journal/previous.env" <(restore_selector "$previous_set") || return 1
+  elif [[ -f "$journal/previous-default" && ! -e "$journal/previous.env" ]]; then
+    [[ $previous_set == "$project" ]] || return 1
+  else
+    return 1
+  fi
+  for marker in cutover committed managed previous-empty; do
+    [[ ! -L "$journal/$marker" ]] || return 1
+    [[ ! -e "$journal/$marker" || ( -f "$journal/$marker" && ! -s "$journal/$marker" ) ]] || return 1
+  done
+  if [[ -f "$journal/previous-empty" ]]; then
+    [[ -f "$journal/managed" && -f "$journal/previous-default" ]] || return 1
+  fi
   restore_state || return
+  if [[ $volume_set == "$failed_set" && -f "$journal/cutover" ]]; then
+    cmp -s "$active" <(restore_selector "$failed_set")
+  elif [[ $volume_set == "$previous_set" && ! -e "$journal/committed" ]]; then
+    if [[ -f "$journal/previous.env" ]]; then
+      cmp -s "$active" "$journal/previous.env"
+    else
+      [[ ! -e $active && ! -L $active ]]
+    fi
+  else
+    return 1
+  fi
+}
+
+restore_rollback() {
+  local journal="$home_dir/restore.pending" failed_set previous_set volume volume_set identity_secrets staged
+  clean_retired_journal "$journal" || return
+  [[ -e $journal || -L $journal ]] || return 0
+  if [[ ! -d $journal || -L $journal ]] || ! restore_evidence; then
+    recovery_needs_operator "$journal"
+    return
+  fi
   if [[ -f "$journal/committed" ]]; then
-    [[ $volume_set == "$failed_set" ]] || return 1
+    restore_set_exists "$failed_set" || { recovery_needs_operator "$journal"; return 1; }
     sync "$home_dir/volumes.env" "$home_dir" "$journal/committed" "$journal" || return
     if [[ -f "$journal/managed" ]]; then
       durable_marker "$home_dir/boot/restored" || return
     fi
-    rm -f -- "$home_dir/setup-link.pending"
+    rm -f -- "$home_dir/setup-link.pending" || return
     for volume in postgres-data postgres-socket "${payload_volumes[@]}"; do
       if docker volume inspect "${previous_set}_$volume" >/dev/null 2>&1; then
         docker volume rm "${previous_set}_$volume" >/dev/null || return
       fi
     done
-    rm -rf -- "$home_dir/identity/$previous_set" "$journal"
+    rm -rf -- "$home_dir/identity/$previous_set" && retire_journal "$journal"
     return
   fi
-  if [[ -f "$journal/cutover" ]]; then
-    [[ $volume_set == "$failed_set" || $volume_set == "$previous_set" ]] || return 1
-    if [[ $volume_set == "$failed_set" ]]; then
-      [[ -f "$journal/previous.env" || -f "$journal/previous-default" ]] || return 1
+  if [[ ! -f "$journal/previous-empty" ]]; then
+    restore_set_exists "$previous_set" || { recovery_needs_operator "$journal"; return 1; }
+  fi
+  staged="$home_dir/identity/$failed_set/volumes.env"
+  if [[ -e $staged || -L $staged ]]; then
+    if [[ -L $staged ]] || ! cmp -s "$staged" <(restore_selector "$failed_set"); then
+      recovery_needs_operator "$journal"
+      return
     fi
+  fi
+  if [[ -f "$journal/cutover" ]]; then
     compose down || return
     if [[ -f "$journal/previous.env" ]]; then
       cp "$journal/previous.env" "$home_dir/volumes.env.new" || return
@@ -148,16 +203,18 @@ restore_rollback() {
     sync "$home_dir" || return
     if [[ ! -f "$journal/managed" ]]; then start_pod || return; fi
   fi
-  restore_state && [[ $volume_set == "$previous_set" ]] || return 1
-  if [[ -f "$home_dir/identity/$failed_set/volumes.env" ]]; then
-    volume_env="$home_dir/identity/$failed_set/volumes.env" stage_project="$failed_set" compose down --volumes || return
+  restore_evidence && [[ $volume_set == "$previous_set" ]] ||
+    { recovery_needs_operator "$journal"; return 1; }
+  sync "$home_dir" || return
+  if [[ -f $staged ]]; then
+    volume_env="$staged" stage_project="$failed_set" compose down --volumes || return
   fi
   for volume in postgres-data postgres-socket "${payload_volumes[@]}"; do
     if docker volume inspect "${failed_set}_$volume" >/dev/null 2>&1; then
       docker volume rm "${failed_set}_$volume" >/dev/null || return
     fi
   done
-  rm -rf -- "$home_dir/identity/$failed_set" "$journal"
+  retire_journal "$journal" && rm -rf -- "$home_dir/identity/$failed_set"
 }
 
 restore_home() {
@@ -192,7 +249,7 @@ restore_home() {
     [[ -d "$restored/volumes/$volume" ]] || fail "The selected snapshot is missing $volume."
   done
 
-  local stage_id stage_dir stage_env journal="$home_dir/restore.pending" old_set=$volume_set
+  local stage_id stage_dir stage_env previous_volumes journal="$home_dir/restore.pending" old_set=$volume_set
   stage_id="$project-restore-$(openssl rand -hex 6)"
   stage_dir="$home_dir/identity/$stage_id"
   mkdir "$staging/cutover"
@@ -203,13 +260,19 @@ restore_home() {
   else
     touch "$staging/cutover/previous-default"
   fi
-  if $managed_replace; then touch "$staging/cutover/managed"; fi
+  if $managed_replace; then
+    touch "$staging/cutover/managed"
+    previous_volumes=$(docker volume ls --format '{{.Name}}' --filter "name=^${old_set}_")
+    if [[ -z $previous_volumes ]]; then touch "$staging/cutover/previous-empty"; fi
+  fi
   sync -f "$home_dir"
+  cleanup_restore=true
   mv -- "$staging/cutover" "$journal"
   sync "$home_dir"
   install -d -m 0700 "$stage_dir"
   stage_env="$stage_dir/volumes.env"
-  printf 'OPENSTEER_HOME_VOLUME_SET=%s\nOPENSTEER_HOME_IDENTITY_SECRETS=%s\n' "$stage_id" "$stage_dir" > "$stage_env"
+  restore_selector "$stage_id" > "$staging/volumes.env"
+  publish_file "$staging/volumes.env" "$stage_env"
   save_secret "$stage_dir/auth_secret" < "$restored/auth_secret"
   save_secret "$stage_dir/environment_id" < "$restored/environment_id"
   volume_env="$stage_env" stage_project="$stage_id" compose create --no-build
@@ -235,6 +298,7 @@ restore_home() {
   compose down
   cp "$stage_env" "$home_dir/volumes.env.new"
   sync -f "$home_dir"
+  cleanup_restore=false
   publish_file "$home_dir/volumes.env.new" "$home_dir/volumes.env"
   if ! start_pod; then
     restore_rollback
@@ -247,7 +311,7 @@ restore_home() {
 cleanup_backup() {
   local result=$?
   trap - EXIT
-  if [[ $action == restore || $action == managed-restore ]]; then
+  if $cleanup_restore; then
     restore_rollback || echo 'Restore recovery is pending. The journal was retained.' >&2
   fi
   rm -rf -- "$staging"
@@ -265,7 +329,7 @@ cleanup_backup() {
 backup_command() {
   local action=$1
   shift
-  local backup_mounts=() volume_args=() project hostname staging resume_after_backup=false restored volume_set identity_secrets
+  local backup_mounts=() volume_args=() project hostname staging resume_after_backup=false cleanup_restore=false restored volume_set identity_secrets
   if ! backup_config; then
     [[ $action == scheduled-backup ]] && return 0
     fail "Configure RESTIC_REPOSITORY_FILE, RESTIC_PASSWORD_FILE, AWS_ACCESS_KEY_ID_FILE, and AWS_SECRET_ACCESS_KEY_FILE."

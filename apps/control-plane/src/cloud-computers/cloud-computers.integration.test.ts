@@ -1097,10 +1097,13 @@ integration("Cloud Computer Account service", () => {
       expect(String(target)).toBe(address + workPolicyChangedPath);
       const { assertion } = WorkAuditFlushRequestSchema.parse(JSON.parse(String(init?.body)));
       const verified = await jwtVerify(assertion, jwks, {
-        issuer: publicOrigin.origin, audience: address, algorithms: ["EdDSA"],
+        issuer: publicOrigin.origin,
+        audience: address,
+        algorithms: ["EdDSA"],
       });
       expect(WorkPolicyChangedClaimsSchema.parse(verified.payload)).toMatchObject({
-        assignmentId: assignment.assignmentId, deploymentId: identity.deploymentId,
+        assignmentId: assignment.assignmentId,
+        deploymentId: identity.deploymentId,
       });
       policyNoticeVerified = true;
       return new Response(null, { status: 204 });
@@ -3590,7 +3593,7 @@ integration("Cloud Computer Account service", () => {
     expect([one.computers[0]?.id, two.computers[0]?.id]).toEqual([first.id, second.id].sort());
   });
 
-  it("keeps the predecessor powered off until the restored Home is claimed and its owner signs in", async () => {
+  it("keeps the predecessor off until Account issues the owner a sign-in to the claimed replacement", async () => {
     const { id, account } = await buy();
     const first = (await getDesired(id))!;
     await bootable(first);
@@ -3658,6 +3661,7 @@ integration("Cloud Computer Account service", () => {
     });
     expect(token.statusCode).toBe(200);
     expect((await getDesired(id))?.replacementVerified).toBe(true);
+    await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
     await harness.pass();
     expect(harness.provider.delete).toHaveBeenCalledWith(
       vm(first.generation, "off").id,
@@ -3734,7 +3738,7 @@ integration("Cloud Computer Account service", () => {
     );
   });
 
-  it("reissues a never-ready replacement against a newly staged repository", async () => {
+  it("reissues a ready replacement from a newly staged repository before Account issues owner access", async () => {
     const { id } = await buy();
     const first = (await getDesired(id))!;
     await bootable(first);
@@ -3744,6 +3748,11 @@ integration("Cloud Computer Account service", () => {
     const previous = (await getDesired(id))!;
     await bootable(previous);
     expect((await complete(previous)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    expect((await getDesired(id))?.replacementVerified).toBe(false);
+    await expect(cloud.mutate(id, "replace", undefined, "aabbccdd")).rejects.toThrow(
+      "Use bootstrap reissue",
+    );
     await expect(cloud.mutate(id, "reissue")).rejects.toThrow(
       "fresh backup target containing the named snapshot",
     );

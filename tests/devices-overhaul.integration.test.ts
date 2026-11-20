@@ -349,6 +349,9 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
         signInTeam: async () => {
           throw new Error("Unexpected OAuth sign-in");
         },
+        signInHome: async () => {
+          throw new Error("Unexpected OAuth sign-in");
+        },
         hostCredentialState: () => {
           throw new Error("Unexpected OAuth read");
         },

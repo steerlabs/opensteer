@@ -633,10 +633,16 @@ export async function acquireExecutionBinding(
     }
     if (run.connectionId) {
       const connection = await assertSendEligible(
-        transaction, run.requestedBy, run.originConnectionId, run.connectionId,
+        transaction,
+        run.requestedBy,
+        run.originConnectionId,
+        run.connectionId,
       );
       if (!connection || !agentGrantAllowsTasks(connection.grant))
-        throw new OpensteerError({ code: "forbidden", message: "Run execution authority is no longer active" });
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Run execution authority is no longer active",
+        });
     }
     if (
       (await assignmentWasCancelled(transaction, run.assignmentId)) ||

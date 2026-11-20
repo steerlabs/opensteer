@@ -9,15 +9,20 @@ import {
   type WorkPolicyDocument,
   type EffectiveWorkPolicy,
 } from "@opensteer/control-plane-protocol";
-import { minThreadAccessMode, type AgentGrant, type DeploymentId } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import {
+  minThreadAccessMode,
+  OpensteerError,
+  type AgentGrant,
+  type DeploymentId,
+} from "@opensteer/core";
+import { sql, type Kysely } from "kysely";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { enableWorkHomeTriggers } from "./work-home-migration.js";
-import { markWorkHomeDatabase } from "./work-home-context.js";
+import { isWorkHomeDatabase, markWorkHomeDatabase } from "./work-home-context.js";
 
 const assignmentStates = ["active", "offboarding", "ended"] as const;
 
@@ -74,8 +79,39 @@ export class WorkHomeStore {
     };
   }
 
+  previewDeviceEnrollment(tokenHash: string) {
+    return withPersonalReadTransaction(this.#db, async (tx) => {
+      const enrollment = await tx
+        .selectFrom("runnerEnrollments as enrollment")
+        .innerJoin("personalSettings as home", "home.ownerId", "enrollment.ownerUserId")
+        .innerJoin("users as owner", "owner.id", "home.ownerId")
+        .select("enrollment.id")
+        .where("home.singletonKey", "=", "personal")
+        .where("owner.disabledAt", "is", null)
+        .where("enrollment.tokenHash", "=", tokenHash)
+        .where("enrollment.ownerKind", "=", "user")
+        .whereRef("enrollment.createdBy", "=", "home.ownerId")
+        .where("enrollment.runnerKind", "=", "local")
+        .where("enrollment.consumedAt", "is", null)
+        .where("enrollment.runnerId", "is", null)
+        .where("enrollment.expiresAt", ">", sql<Date>`clock_timestamp()`)
+        .executeTakeFirst();
+      if (!enrollment)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This device setup code is invalid or expired.",
+        });
+      if (!isWorkHomeDatabase(tx)) return {};
+      const { organizationName, policy } = await tx
+        .selectFrom("workHomePolicy")
+        .select(["organizationName", "policy"])
+        .executeTakeFirstOrThrow();
+      return { organizationName, devices: WorkPolicySchema.parse(policy).devices };
+    });
+  }
+
   apply(document: WorkPolicyDocument): Promise<{ revision: number; changed: boolean }> {
-    return commitPersonalMutation(this.#db, async (tx) => {
+    return commitPersonalMutation(this.#db, async (tx, mutation) => {
       const current = await tx.selectFrom("workHomePolicy").selectAll().executeTakeFirstOrThrow();
       if (
         document.assignmentId !== current.assignmentId ||
@@ -131,6 +167,7 @@ export class WorkHomeStore {
         .set({ revision: document.revision, state, policy: jsonValue(policy) })
         .where("singleton", "=", true)
         .execute();
+      if (document.revision !== current.revision) mutation.resetScope("shell");
       return { revision: document.revision, changed: true };
     });
   }

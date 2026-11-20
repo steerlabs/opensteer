@@ -89,27 +89,31 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
   }[] = [];
   const stderr = vi.spyOn(console, "error");
   const stdout = vi.spyOn(console, "log");
-  const server = createServer(async (req, res) => {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of req) chunks.push(chunk);
-    requests.push({
-      path: req.url,
-      method: req.method,
-      authorization: req.headers.authorization,
-      contentType: req.headers["content-type"],
-      idempotency: req.headers["idempotency-key"],
-      fields: Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())),
+  const server = createServer((req, res) => {
+    void (async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of req) chunks.push(chunk);
+      requests.push({
+        path: req.url,
+        method: req.method,
+        authorization: req.headers.authorization,
+        contentType: req.headers["content-type"],
+        idempotency: req.headers["idempotency-key"],
+        fields: Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())),
+      });
+      res.setHeader("content-type", "application/json");
+      if (requests.length === 3) {
+        res.writeHead(401).end(JSON.stringify({ error: { message: key } }));
+      } else if (requests.length === 4) {
+        res.end(JSON.stringify({ url: key }));
+      } else {
+        res.end(
+          JSON.stringify({ id: "cs_test_checkout", url: "https://billing.stripe.test/session" }),
+        );
+      }
+    })().catch((error: unknown) => {
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
     });
-    res.setHeader("content-type", "application/json");
-    if (requests.length === 3) {
-      res.writeHead(401).end(JSON.stringify({ error: { message: key } }));
-    } else if (requests.length === 4) {
-      res.end(JSON.stringify({ url: key }));
-    } else {
-      res.end(
-        JSON.stringify({ id: "cs_test_checkout", url: "https://billing.stripe.test/session" }),
-      );
-    }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -182,12 +186,18 @@ it("sends form-encoded Checkout and Billing Portal requests and redacts Stripe f
 
 it("returns a Checkout and Billing Portal to the address the call names", async () => {
   const fields: Record<string, string>[] = [];
-  const server = createServer(async (req, res) => {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of req) chunks.push(chunk);
-    fields.push(Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())));
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ id: "cs_test_checkout", url: "https://billing.stripe.test/session" }));
+  const server = createServer((req, res) => {
+    void (async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of req) chunks.push(chunk);
+      fields.push(Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())));
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({ id: "cs_test_checkout", url: "https://billing.stripe.test/session" }),
+      );
+    })().catch((error: unknown) => {
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {

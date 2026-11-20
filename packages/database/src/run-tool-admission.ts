@@ -268,9 +268,11 @@ export async function admitTriggerControlRequestInTransaction(
     throw new TypeError("Trigger-control request fingerprint must be a SHA-256 hex digest");
   }
   const actionClass = actionClasses[input.action];
+  const notFound = () =>
+    new OpensteerError({ code: "not_found", message: "Automation occurrence not found" });
   await lockLineageConnection(
     transaction,
-    await bindingAgentConnectionId(transaction, `trigger:${input.occurrenceId}`),
+    await bindingAgentConnectionId(transaction, `trigger:${input.occurrenceId}`, notFound),
   );
   {
     const occurrence = await transaction
@@ -279,12 +281,7 @@ export async function admitTriggerControlRequestInTransaction(
       .where("id", "=", input.occurrenceId)
       .$if(mode === "admit", (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
-    if (!occurrence) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Automation occurrence not found",
-      });
-    }
+    if (!occurrence) throw notFound();
     await assertActiveTriggerExecutionBinding(transaction, {
       environmentId: input.environmentId,
       executionGeneration: input.executionGeneration,

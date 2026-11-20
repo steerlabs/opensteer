@@ -12,7 +12,8 @@ export type DesktopRunnerReady = z.infer<typeof DesktopRunnerReadySchema>;
 
 export async function startDesktopRunnerControl(idle: () => boolean, earlierBootsContained = true) {
   const token = randomUUID();
-  const holdMs = 15_000;
+  // Covers the desktop’s final activity read and its 30-second shutdown deadline.
+  const holdMs = 40_000;
   let until = 0;
   const held = () => performance.now() < until;
   const server = createServer((request, response) => {

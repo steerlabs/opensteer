@@ -1,5 +1,6 @@
 import { hostsDeployment, isServiceMachine } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
+import { useWorkPolicy } from "@opensteer/client/react";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Linking, Platform } from "react-native";
@@ -20,6 +21,7 @@ import {
 import { SetupStep } from "./setup-form.js";
 import { dismissPhoneSetup } from "./use-phone-setup.js";
 import {
+  joinWorkLine,
   readyBody,
   readyRows,
   readyTitle,
@@ -41,6 +43,8 @@ export function SetUpPhoneScreen({ route }: SetupProps): ReactNode {
 
 function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient: HostClient }) {
   const navigation = useNavigation();
+  // A work Home says whose it is before this phone joins, or that its organization keeps it out.
+  const workPolicy = useWorkPolicy(props.hostClient);
   const controller = useIphoneApps();
   const { registration } = useMobileNotifications();
   const { rows } = useMobileState();
@@ -118,6 +122,7 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
         busy,
         continueLabel: failed ? "Try again" : "Continue",
         disclosure: setupDisclosure(opensteer, companies, thisPhoneNoun),
+        ...joinWorkLine(workPolicy),
         failure: setupFailureText(state, opensteer, thisPhoneNoun),
         name: draft.name,
         notifications: switches.notifications,

@@ -72,6 +72,8 @@ export const connectedAgentsCopy = {
     "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere and use sites that Chrome is signed in to.",
   "consent.chromeTabs.repair": "To share tabs with a connected agent, pair Chrome again.",
   "consent.chromeTabs.repairOn": "To share tabs from Chrome on {device}, pair it again.",
+  "consent.chromeTabs.repairOnMultiple":
+    "To share tabs from Chrome on {devices}, pair Chrome again on each device.",
   "agents.row.chromeTabs": "Shared Chrome tabs",
   "consent.apps.title": "Apps and phone screens",
   "consent.apps.none": "None",
@@ -145,6 +147,7 @@ export const connectedAgentsCopy = {
   "common.save": "Save",
   "common.saving": "Saving…",
 
+  "agent.status.working": "Working now",
   "agent.status.idle": "Not doing anything",
   "agent.status.idleDetail": "Last used {time}.",
   "agent.status.unused": "Not used yet.",

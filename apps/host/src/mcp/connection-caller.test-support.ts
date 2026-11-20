@@ -232,14 +232,16 @@ export async function serveMcp(
       tabs: options.tabHandlers ?? ({} as never),
       ...(options.browser ? { browser: options.browser } : {}),
       ...(options.sessionPerson ? { sessionPerson: options.sessionPerson } : {}),
-      administration: options.administration ?? new Proxy(
-        {},
-        {
-          get: () => {
-            throw new Error("Unexpected administration tool");
+      administration:
+        options.administration ??
+        (new Proxy(
+          {},
+          {
+            get: () => {
+              throw new Error("Unexpected administration tool");
+            },
           },
-        },
-      ) as never,
+        ) as never),
       product,
       devices,
       triggers: new TriggerToolHandlers(

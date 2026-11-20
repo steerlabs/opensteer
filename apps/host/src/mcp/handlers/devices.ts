@@ -3,15 +3,23 @@ import type { z } from "zod";
 import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
-import { refused, requestTextMaxLength, type Request, type DeviceId } from "@opensteer/core";
+import {
+  refused,
+  requestOperationCallsMaxLength,
+  ThreadIdSchema,
+  type Request,
+  type DeviceId,
+} from "@opensteer/core";
 import {
   OperationOutcomeUnknown,
   type AgentSessionService,
   type DirectOperationResult,
+  type DirectOperationContext,
 } from "../../agent-sessions/agent-session-service.js";
 import type { ConnectionCaller } from "../agent-caller.js";
 import { directResult, requireDirectWork } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
+import type { ComputerInventoryAuthority } from "../../computer-use/computer-use-service.js";
 import type { DeviceService } from "../../devices/device-service.js";
 import type {
   AccessAsker,
@@ -40,6 +48,7 @@ type DeviceToolDevices = Pick<
   | "runComputerCode"
   | "runSessionComputerCode"
   | "sessionComputerTarget"
+  | "runSessionInventory"
   | "store"
 >;
 
@@ -88,10 +97,10 @@ export class DeviceToolHandlers {
         "bad_request",
         "Name the app or phone screen shared with you: computerId, and app for a Mac app, from computer_apps.",
       );
-    if (code.length > requestTextMaxLength)
+    if (code.length > requestOperationCallsMaxLength)
       throw refused(
         "bad_request",
-        "Use at most 20,000 characters per connected computer operation.",
+        `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected computer operation.`,
       );
     const named = await this.#devices.sessionComputerTarget(
       { ownerUserId: caller.userId, connectionId: caller.connectionId },
@@ -108,7 +117,7 @@ export class DeviceToolHandlers {
         reason,
         operationKey: call.operationKey,
         tool: "computer_use",
-        input: { code, computerId, ...(app === undefined ? {} : { app }), readOnly },
+        input: call.input,
         target: named.target,
         targetGeneration: named.generation,
         effect: readOnly ? "read" : "write",
@@ -122,6 +131,8 @@ export class DeviceToolHandlers {
               taskId: context.taskId,
               bindingId: context.bindingId,
               target: named.connectionId,
+              deviceId: named.deviceId,
+              ...(named.driver ? { driver: named.driver } : {}),
               generation: named.generation,
               readOnly,
               recheck: context.recheck,
@@ -156,7 +167,7 @@ export class DeviceToolHandlers {
     const { computerId, query, limit } = call.input;
     const offset = call.input.cursor ?? 0;
     return computerId
-      ? this.#installedApps(requester, run, computerId, query, limit, offset)
+      ? this.#installedApps(requester, run, computerId, query, limit, offset, call)
       : this.#overview(requester, run);
   }
 
@@ -327,6 +338,7 @@ export class DeviceToolHandlers {
     query: string,
     limit: number,
     offset: number,
+    call: ToolCall<"computer_apps">,
   ) {
     const approvals = this.#devices.computerAppApprovals;
     const access = await this.#devices.computerAccess(requester, run ?? undefined);
@@ -334,22 +346,26 @@ export class DeviceToolHandlers {
       offset + count < total ? String(offset + limit) : null;
     const phone = access.phones.find((candidate) => candidate.deviceId === deviceId);
     if (phone && isPhoneDisplayDefinitionId(phone.definitionId)) {
-      const installed = await approvals.installedComputerApps(
-        {
-          actorUserId: requester.ownerUserId,
-          deviceId,
-          query,
-          limit,
-          offset,
-          definitionId: phone.definitionId,
-        },
-        access.phones,
-      );
-      return {
-        apps: installed.apps,
-        total: installed.total,
-        nextCursor: nextCursor(installed.total, installed.apps.length),
-      };
+      const definitionId = phone.definitionId;
+      return this.#liveInventory(call, deviceId, phone.name, true, async (authority) => {
+        const installed = await approvals.installedComputerApps(
+          {
+            actorUserId: requester.ownerUserId,
+            deviceId,
+            query,
+            limit,
+            offset,
+            definitionId,
+          },
+          access.phones,
+          authority,
+        );
+        return {
+          apps: installed.apps,
+          total: installed.total,
+          nextCursor: nextCursor(installed.total, installed.apps.length),
+        };
+      });
     }
     const machine = access.machines.find((candidate) => candidate.deviceId === deviceId);
     if (!machine)
@@ -378,22 +394,83 @@ export class DeviceToolHandlers {
         nextCursor: nextCursor(granted.length, apps.length),
       };
     }
-    const installed = await approvals.installedComputerApps(
-      { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
-      access.machines,
-    );
-    const apps = installed.apps.map(({ identity }) => ({
-      name: identity.displayName,
-      bundleId: identity.bundleId,
-      ...access.app(machine, identity),
-    }));
-    return {
-      computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
-      total: installed.total,
-      nextCursor: nextCursor(installed.total, apps.length),
-    };
+    return this.#liveInventory(call, deviceId, machine.name, false, async (authority) => {
+      const installed = await approvals.installedComputerApps(
+        { actorUserId: requester.ownerUserId, deviceId, query, limit, offset, icons: false },
+        access.machines,
+        authority,
+      );
+      const apps = installed.apps.map(({ identity }) => ({
+        name: identity.displayName,
+        bundleId: identity.bundleId,
+        ...access.app(machine, identity),
+      }));
+      return {
+        computer: { computerId: deviceId, name: machine.name, ...access.machine(machine), apps },
+        total: installed.total,
+        nextCursor: nextCursor(installed.total, apps.length),
+      };
+    });
   }
 
+  async #liveInventory<Result extends { readonly total: number }>(
+    call: ToolCall<"computer_apps">,
+    deviceId: DeviceId,
+    name: string,
+    phone: boolean,
+    read: (authority?: ComputerInventoryAuthority) => Promise<Result>,
+  ) {
+    const caller = call.caller;
+    if (caller.kind !== "connection") return read();
+    const named = phone
+      ? await this.#devices.sessionComputerTarget(
+          { ownerUserId: caller.userId, connectionId: caller.connectionId },
+          deviceId,
+          undefined,
+        )
+      : null;
+    return directResult(
+      await requireDirectWork(this.#sessions).run({
+        ownerUserId: caller.userId,
+        agentConnectionId: caller.connectionId,
+        taskId: ThreadIdSchema.optional().parse(
+          "taskId" in call.input ? call.input.taskId : undefined,
+        ),
+        operationKey: call.operationKey,
+        tool: "computer_apps",
+        input: call.input,
+        target: named?.target ?? null,
+        targetName: name,
+        targetGeneration: named?.generation ?? null,
+        effect: "read",
+        calls: "List installed apps",
+        execute: async (context: DirectOperationContext) => {
+          await context.recheck();
+          const result = await this.#devices.runSessionInventory(
+            deviceId,
+            context,
+            context.signal,
+            named
+              ? {
+                  ...context,
+                  target: named.connectionId,
+                  deviceId,
+                  generation: named.generation,
+                  readOnly: true,
+                  ...(named.driver ? { driver: named.driver } : {}),
+                }
+              : undefined,
+            read,
+          );
+          context.signal.throwIfAborted();
+          return result;
+        },
+        summarize: ({ total }) => ({ count: total }),
+      }),
+    );
+  }
+
+  // Cached discovery only; no device receives a lookup.
   async #overview(requester: IntegrationRequester, run: RunToolScope | null) {
     const access = await this.#devices.computerAccess(requester, run ?? undefined);
     return {

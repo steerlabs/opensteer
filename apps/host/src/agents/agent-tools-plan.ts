@@ -84,8 +84,15 @@ export function advertisedToolInputSchema(tool: {
   readonly input: Parameters<typeof toJsonSchemaCompat>[0];
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
 }): Record<string, unknown> {
-  return advertisedJsonSchema(
-    tool.advertisedInputSchema ??
-      toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
+  if (tool.advertisedInputSchema) return advertisedJsonSchema(tool.advertisedInputSchema);
+  const schema = advertisedJsonSchema(
+    toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
   );
+  const properties = schema.properties;
+  // A receipt ID continues a connection's own work, outside the Run and program contract.
+  if (properties && typeof properties === "object" && "operationId" in properties) {
+    const { operationId: _operationId, ...remaining } = properties;
+    return { ...schema, properties: remaining };
+  }
+  return schema;
 }

@@ -9,6 +9,7 @@ import {
   agentGrantAccess,
   type AgentGrantPluginTarget,
   type UserId,
+  type ThreadAccessMode,
   threadAccessModeAtMost,
 } from "@opensteer/core";
 import {
@@ -60,6 +61,7 @@ const execution = new Set([
   "cancel",
   "executions",
   "resumeInvocation",
+  "resultAccess",
   "authorizeElicitation",
   "account-request",
   "subscribeEvent",
@@ -142,9 +144,6 @@ export class PluginAuthority {
   }
   admit(caller: AgentCaller) {
     return this.#scope.getStore()?.context ?? pluginCaller(caller);
-  }
-  submittedExecution() {
-    return this.#scope.getStore()?.execution;
   }
   execution(id: string, key: string, live: boolean) {
     const scope = this.#callers.get(key);
@@ -318,6 +317,7 @@ export class PluginAuthority {
         (input.version && input.version !== session.version))
     )
       return { allowed: false };
+    if (input.operation === "resourcesUpdate" && callerLineage(caller)) return { allowed: false };
     const ceiling = await this.#grantCeiling(store, caller, session);
     if (ceiling === undefined) return { allowed: false };
     if (ceiling) {
@@ -388,7 +388,8 @@ export class PluginAuthority {
         .where("tokenHash", "is not", null)
         .where("expiresAt", ">", new Date())
         .executeTakeFirst();
-      if (!live || !discovery.has(input.operation)) return { allowed: false };
+      if (!live || (!discovery.has(input.operation) && input.operation !== "resultAccess"))
+        return { allowed: false };
     }
     if (
       input.plugin &&
@@ -402,12 +403,30 @@ export class PluginAuthority {
     return {
       allowed: true,
       grants,
+      ...(caller.kind === "connection" ? { connected: true } : {}),
       ...(session
         ? { visible: [session.plugin], pinnedVersion: session.version }
         : ceiling
           ? { visible: ceiling.visible }
           : {}),
     };
+  }
+  async canReadResult(context: PluginCaller, mode: ThreadAccessMode) {
+    const caller = this.caller(context.caller);
+    if (!caller || !(await this.authorize({ ...context, operation: "resultAccess" })).allowed)
+      return false;
+    const current =
+      caller.kind === "connection"
+        ? ((
+            await this.options.store
+              .admitExecution({
+                ownerUserId: caller.userId,
+                subject: { kind: "connection", agentConnectionId: caller.connectionId },
+              })
+              .catch(() => null)
+          )?.mode ?? null)
+        : await this.#mode(this.options.store, caller).catch(() => null);
+    return current !== null && threadAccessModeAtMost(mode, current);
   }
   async assert(context: PluginCaller, operation: string, plugin?: string, execution?: string) {
     if (

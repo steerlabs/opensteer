@@ -77,7 +77,7 @@ function scope(actor: TabActor) {
     ? { agentBindingId: `run:${actor.claims.runId}` }
     : actor.kind === "connection"
       ? { agentConnectionId: actor.caller.connectionId }
-      : {};
+      : { kind: "person" as const };
 }
 function deny(): never {
   throw new OpensteerError({ code: "not_found", message: "Tab not found." });
@@ -200,8 +200,13 @@ export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
       if (!(await allowed)) return false;
     }
     if (actor.kind === "person") return true;
-    if (actor.kind === "browser-binding" && "id" in target &&
-      target.openedBy !== "person" && target.openedBy?.taskId !== actor.threadId) return false;
+    if (
+      actor.kind === "browser-binding" &&
+      "id" in target &&
+      target.openedBy !== "person" &&
+      target.openedBy?.taskId !== actor.threadId
+    )
+      return false;
     if (selected) {
       if (!("openedBy" in target) || target.openedBy === "person") {
         if ("id" in target) return false;

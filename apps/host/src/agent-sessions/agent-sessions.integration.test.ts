@@ -3,21 +3,32 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   BackgroundModelChoiceSchema,
+  BrowserSessionIdSchema,
   DeviceIdSchema,
   HarnessIdSchema,
   ToolBlockedError,
   agentSessionIdleMs,
   createId,
   type AgentGrant,
+  type AgentOperationTarget,
   type BrowserProfileId,
   type RequestId,
   type ThreadAccessMode,
 } from "@opensteer/core";
-import { AgentConnectionStore, agentOperationRequestLifetimeMs } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  NotificationStore,
+  agentOperationRequestLifetimeMs,
+  decideAgentOperation,
+  readTranscriptItem,
+  reopenAgentOperation,
+} from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { randomUUID } from "node:crypto";
 import { createAgentReviewer } from "./agent-reviewer.js";
+import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -97,7 +108,10 @@ async function setUp(
     readonly accessMode?: ThreadAccessMode;
     readonly grant?: AgentGrant;
     readonly reviewer?: AgentReviewerPort;
+    readonly reviewTimeoutMs?: number;
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
+    readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
+      Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
   } = {},
 ) {
   const f = options.run ?? (await storeFixture.startRunFixture(key));
@@ -106,15 +120,16 @@ async function setUp(
     store: storeFixture.store,
     holdMs: 0,
     ...(options.reviewer ? { reviewer: options.reviewer } : {}),
+    ...(options.reviewTimeoutMs !== undefined ? { reviewTimeoutMs: options.reviewTimeoutMs } : {}),
   });
   const unexpectedTabOperation = () => {
     throw new Error("This fixture runs scripts by profile ID.");
   };
   const tabs: TabServicePort & Pick<BrowserToolPorts["tabs"], "bindBrowserScript"> = {
     list: async () => ({ tabs: [], groups: [], nextCursor: null }),
-    open: unexpectedTabOperation,
+    open: options.browserConnect?.open ?? unexpectedTabOperation,
     connectionTab: unexpectedTabOperation,
-    bindBrowserScript: unexpectedTabOperation,
+    bindBrowserScript: options.browserConnect?.bindBrowserScript ?? unexpectedTabOperation,
     close: unexpectedTabOperation,
     reopen: unexpectedTabOperation,
     activate: unexpectedTabOperation,
@@ -135,9 +150,12 @@ async function setUp(
       tabs,
       scripts: recorded,
       confinement: new BrowserScriptConfinement(),
-      profiles: async () => [{ id: profile, name: "Work", home }, { id: other, name: "Other", home }],
+      profiles: async () => [
+        { id: profile, name: "Work", home },
+        { id: other, name: "Other", home },
+      ],
       requireDevice: async () => DeviceIdSchema.parse(home.runnerId),
-      issueTicket: unexpectedTabOperation,
+      issueTicket: options.browserConnect?.issueTicket ?? unexpectedTabOperation,
       origin: new URL("https://home.example.test"),
     }),
   });
@@ -257,6 +275,72 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(receipt).toEqual({ decision: { by: "reviewer" }, requestId: null, state: "completed" });
   });
 
+  it("asks the person when the reviewer never returns or observes cancellation", async ({
+    storeFixture,
+  }) => {
+    const answer = Promise.withResolvers<"allow">();
+    const review = vi.fn(() => answer.promise);
+    const s = await setUp(storeFixture, "session-review-timeout", {
+      accessMode: "auto",
+      reviewer: { review },
+      reviewTimeoutMs: 25,
+    });
+    try {
+      expect(await s.ok("browser_use", script)).toMatchObject({
+        status: "pending",
+        requestId: expect.any(String),
+      });
+      expect(review).toHaveBeenCalledOnce();
+      expect(s.runBrowserScript).not.toHaveBeenCalled();
+    } finally {
+      answer.resolve("allow");
+    }
+  });
+
+  it.for(["revision", "mode", "generation"] as const)(
+    "rejects a late Auto review after the %s changes",
+    async (changed, { storeFixture }) => {
+      const entered = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<"allow">();
+      const review = vi
+        .fn<AgentReviewerPort["review"]>()
+        .mockImplementationOnce(() => {
+          entered.resolve();
+          return answer.promise;
+        })
+        .mockResolvedValue("ask");
+      const s = await setUp(storeFixture, "session-review-cas", {
+        accessMode: "auto",
+        reviewer: { review },
+      });
+      const running = s.ok("browser_use", script);
+      try {
+        await entered.promise;
+        const old = await storeFixture.database
+          .selectFrom("agentOperations")
+          .selectAll()
+          .where("connectionId", "=", s.agent.id)
+          .executeTakeFirstOrThrow();
+        const approved = await decideAgentOperation(storeFixture.database, old, { by: "reviewer" });
+        const facts = {
+          ...old,
+          ...(changed === "revision" ? { grantRevision: old.grantRevision + 1 } : {}),
+          ...(changed === "mode" ? { mode: "approval-required" as const } : {}),
+          ...(changed === "generation" ? { targetGeneration: "replacement" } : {}),
+        };
+        const newRound = await reopenAgentOperation(storeFixture.database, approved, facts);
+        expect(newRound).toMatchObject({ state: "admitted", decision: null });
+        expect(
+          await decideAgentOperation(storeFixture.database, old, { by: "reviewer" }),
+        ).toMatchObject({ state: "admitted", decision: null });
+        expect(s.runBrowserScript).not.toHaveBeenCalled();
+      } finally {
+        answer.resolve("allow");
+        await running.catch(() => undefined);
+      }
+    },
+  );
+
   it("starts a session on the first direct call, continues it across transports, and refuses input to its task", async ({
     storeFixture,
   }) => {
@@ -356,6 +440,163 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(errorText(await s.call("tab_list", { taskId }))).toBe(stopped);
   });
 
+  it("returns guidance instead of reissuing a completed browser connection", async ({
+    storeFixture,
+  }) => {
+    const tabId = createId("tab");
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    const issueTicket = vi.fn<BrowserToolPorts["issueTicket"]>(async () => {
+      const ticket = randomUUID();
+      return { ticket, path: `/cdp/${ticket}`, mode: "whole-context" };
+    });
+    const s = await setUp(storeFixture, "session-browser-connect-repeat", {
+      browserConnect: {
+        open: async () => {
+          const timestamp = new Date().toISOString();
+          return {
+            tab: {
+              tabId,
+              kind: "page",
+              title: "Work",
+              computer: { computerId: DeviceIdSchema.parse(createId("runner")), name: "Mac" },
+              groupId: null,
+              state: "open",
+              openedBy: "person",
+              usedBy: [],
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              url: "about:blank",
+              profile: { profileId: profile, name: "Work" },
+            },
+          };
+        },
+        bindBrowserScript: async () => ({ tabId, sessionId, backend: "cdp", reloaded: false }),
+        issueTicket,
+      },
+    });
+    const args = { profileId: profile };
+    const first = await s.ok("browser_connect", args);
+    expect(first).toMatchObject({ status: "completed", endpoint: expect.any(String) });
+    const repeat = await s.ok("browser_connect", { ...args, operationId: first.operationId });
+    expect(repeat).toEqual({
+      taskId: first.taskId,
+      operationId: first.operationId,
+      status: "completed",
+      summary: { tabId, mode: "whole-context" },
+      next: "This connection was already handed out. Call browser_connect without the operationId for a new connection.",
+    });
+    expect(issueTicket).toHaveBeenCalledOnce();
+
+    const fresh = await s.ok("browser_connect", args);
+    expect(fresh).toMatchObject({ status: "completed", endpoint: expect.any(String) });
+    expect(fresh.operationId).not.toBe(first.operationId);
+    expect(fresh.endpoint).not.toBe(first.endpoint);
+    expect(issueTicket).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes by operationId without a key and replays the receipt after idle and restart", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-operation-id", {
+      accessMode: "approval-required",
+    });
+    const pending = await s.ok("browser_use", script);
+    expect(pending).toMatchObject({
+      status: "pending",
+      next: expect.stringMatching(/same arguments and this operationId.*up to 25 seconds/u),
+    });
+    const resume = { ...script, operationId: pending.operationId };
+    const foreign = await connection(storeFixture.store, s.url, {
+      userId: s.f.userId,
+      accessMode: "approval-required",
+      grant: granted,
+    });
+    const wrongArgs = await s.call("browser_use", { ...resume, code: 'print("different")' });
+    expect(wrongArgs.isError).toBe(true);
+    const wrongCaller = await s.call("browser_use", resume, foreign.client);
+    const missing = await s.call(
+      "browser_use",
+      { ...resume, operationId: createId("agentOperation") },
+      foreign.client,
+    );
+    expect(wrongCaller.isError).toBe(true);
+    expect(errorText(wrongCaller)).toBe(errorText(missing));
+    const requestId = pending.requestId as RequestId;
+    const revision = await storeFixture.store.requests.revision(requestId);
+    if (!revision) throw new Error("Missing Request revision");
+    await s.sessions.respond({
+      requestId,
+      expectedRevision: revision,
+      resolvedBy: s.f.userId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    expect(await s.ok("browser_use", resume)).toMatchObject({
+      status: "completed",
+      operationId: pending.operationId,
+      taskId: pending.taskId,
+    });
+    await s.sessions.endIdle(Date.now() + agentSessionIdleMs + 1);
+    expect(
+      await storeFixture.database
+        .selectFrom("agentSessions")
+        .select("status")
+        .where("threadId", "=", pending.taskId as never)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "ended" });
+    const restarted = new AgentSessionService({ store: storeFixture.store, holdMs: 0 });
+    await restarted.start();
+    restarted.stop();
+    expect(await s.ok("browser_use", resume)).toMatchObject({
+      status: "completed",
+      operationId: pending.operationId,
+      taskId: pending.taskId,
+    });
+    expect(s.runBrowserScript).toHaveBeenCalledOnce();
+    expect(
+      await storeFixture.database
+        .selectFrom("agentSessions")
+        .select("threadId")
+        .where("connectionId", "=", s.agent.id)
+        .execute(),
+    ).toEqual([{ threadId: pending.taskId }]);
+  });
+
+  it("keeps the grant revision on rename and closes an obsolete Request on a real change", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-revision", { accessMode: "auto" });
+    const pending = await s.ok("browser_use", script);
+    const requestId = pending.requestId as RequestId;
+    const connections = new AgentConnectionStore(storeFixture.database);
+    const revision = await storeFixture.database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", s.agent.id)
+      .executeTakeFirstOrThrow();
+    const renamed = await connections.update(s.f.userId, {
+      connectionId: s.agent.id,
+      expectedRevision: revision.grantRevision,
+      label: "Renamed agent",
+    });
+    expect(renamed.connection.grantRevision).toBe(revision.grantRevision);
+    expect(await storeFixture.store.requests.get(requestId)).toMatchObject({ status: "pending" });
+    const changed = await connections.update(s.f.userId, {
+      connectionId: s.agent.id,
+      expectedRevision: revision.grantRevision,
+      accessMode: "approval-required",
+    });
+    expect(changed.connection.grantRevision).toBe(revision.grantRevision + 1);
+    expect(await storeFixture.store.requests.get(requestId)).toMatchObject({ status: "cancelled" });
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "refused", outcome: "refused" });
+    expect(s.runBrowserScript).not.toHaveBeenCalled();
+  });
+
   it("asks the person in approval-required, executes an approval exactly once under two resumes, and refuses a denial", async ({
     storeFixture,
   }) => {
@@ -364,9 +605,48 @@ describeStore("an external agent's direct work through sessions", (it) => {
     const pending = await s.ok("browser_use", { ...script, operationKey: "open-1" });
     expect(pending).toMatchObject({ status: "pending", requestId: expect.any(String) });
     expect(s.runBrowserScript).not.toHaveBeenCalled();
+    const opened = storeFixture.reactions.find(
+      (reaction) =>
+        reaction.type === "requestChanged" &&
+        reaction.requestId === pending.requestId &&
+        reaction.opened,
+    );
+    if (opened?.type !== "requestChanged")
+      throw new Error("No notification transition for the held Request");
+    const onLive = vi.fn();
+    const onError = vi.fn();
+    const notifications = new NotificationDispatcher({
+      store: new NotificationStore(database),
+      onLive,
+      onError,
+      onWarning: onError,
+      ready: Promise.resolve(),
+    });
+    notifications.dispatch(opened);
+    await notifications.drain();
+    expect(onError).not.toHaveBeenCalled();
+    expect(onLive).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        userId: s.f.userId,
+        view: expect.objectContaining({
+          kind: "request-opened",
+          requestId: pending.requestId,
+          threadId: pending.taskId,
+          body: "Run a script in Work?",
+        }),
+      }),
+    );
     const request = await database
       .selectFrom("requests")
-      .select(["id", "kind", "status", "originatingAgentSessionId", "revision", "presentation", "agentOperation"])
+      .select([
+        "id",
+        "kind",
+        "status",
+        "originatingAgentSessionId",
+        "revision",
+        "presentation",
+        "agentOperation",
+      ])
       .where("id", "=", pending.requestId as never)
       .executeTakeFirstOrThrow();
     expect(request).toMatchObject({ kind: "person.question", status: "pending" });
@@ -386,13 +666,26 @@ describeStore("an external agent's direct work through sessions", (it) => {
     const ownerContext = {
       session: { id: "session", user: { id: s.f.userId, disabledAt: null } },
     } as never;
-    expect(await reads["threads.activity"]({ threadId: pending.taskId as never }, ownerContext)).toMatchObject({
+    expect(
+      await reads["threads.activity"]({ threadId: pending.taskId as never }, ownerContext),
+    ).toMatchObject({
       ok: true,
       data: { operations: [{ tool: "browser_use", state: "pending" }], nextBefore: null },
     });
-    expect(await reads["connections.activity"]({ connectionId: s.agent.id }, ownerContext)).toMatchObject({
+    expect(
+      await reads["connections.activity"]({ connectionId: s.agent.id }, ownerContext),
+    ).toMatchObject({
       ok: true,
-      data: { operations: [{ id: pending.operationId, taskId: pending.taskId, tool: "browser_use", state: "pending" }] },
+      data: {
+        operations: [
+          {
+            id: pending.operationId,
+            taskId: pending.taskId,
+            tool: "browser_use",
+            state: "pending",
+          },
+        ],
+      },
     });
     expect(request.originatingAgentSessionId).toBeTruthy();
     expect(request.presentation).toMatchObject({
@@ -410,11 +703,9 @@ describeStore("an external agent's direct work through sessions", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "waiting" });
     // A repeat before the answer is still pending, and a different call cannot take its key.
-    expect(await s.ok("browser_use", { ...script, operationKey: "open-1" })).toMatchObject(
-      {
-        status: "pending",
-      },
-    );
+    expect(await s.ok("browser_use", { ...script, operationKey: "open-1" })).toMatchObject({
+      status: "pending",
+    });
     expect(
       errorText(
         await s.call("browser_use", {
@@ -431,9 +722,9 @@ describeStore("an external agent's direct work through sessions", (it) => {
       response: { kind: "form", answers: { decision: ["allow"] } },
     });
     // A stale approval never executes a different operation.
-    expect(await s.ok("browser_use", { ...script, operationKey: "open-2" })).toMatchObject(
-      { status: "pending" },
-    );
+    expect(await s.ok("browser_use", { ...script, operationKey: "open-2" })).toMatchObject({
+      status: "pending",
+    });
     expect(s.runBrowserScript).not.toHaveBeenCalled();
     const held = s.holdNext();
     const resumes = [
@@ -444,11 +735,16 @@ describeStore("an external agent's direct work through sessions", (it) => {
     held.release();
     const both = await Promise.all(resumes);
     expect(both.map(({ status }) => status)).toEqual(["completed", "completed"]);
-    expect(s.runBrowserScript).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      authority: { agentBindingId: `session:${request.originatingAgentSessionId}`, ownerId: s.f.userId },
-      contextKey: profile,
-      code: script.code,
-    }));
+    expect(s.runBrowserScript).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        authority: {
+          agentBindingId: `session:${request.originatingAgentSessionId}`,
+          ownerId: s.f.userId,
+        },
+        contextKey: profile,
+        code: script.code,
+      }),
+    );
     // The person declines the second: resuming it is refused and nothing runs.
     const second = await database
       .selectFrom("agentOperations")
@@ -462,33 +758,158 @@ describeStore("an external agent's direct work through sessions", (it) => {
       resolvedBy: s.f.userId,
       response: { kind: "form", answers: { decision: ["deny"] } },
     });
-    expect(
-      errorText(await s.call("browser_use", { ...script, operationKey: "open-2" })),
-    ).toBe("The person did not allow it.");
+    expect(errorText(await s.call("browser_use", { ...script, operationKey: "open-2" }))).toBe(
+      "The person did not allow it.",
+    );
     expect(s.runBrowserScript).toHaveBeenCalledOnce();
   });
 
-  it("uses a plain fallback for an unmapped operation in the person's request", async ({ storeFixture }) => {
-    const s = await setUp(storeFixture, "session-unmapped-copy", { accessMode: "approval-required" });
+  it("uses a plain fallback for an unmapped operation in the person's request", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-unmapped-copy", {
+      accessMode: "approval-required",
+    });
     const result = await s.sessions.run({
       ownerUserId: s.f.userId,
       agentConnectionId: s.agent.id,
       operationKey: "unmapped-copy",
       tool: "unmapped_internal_tool",
       input: {},
-      target: { grant: { kind: "browser-profile", profileId: profile }, name: "Work", device: null },
+      target: {
+        grant: { kind: "browser-profile", profileId: profile },
+        name: "Work",
+        device: null,
+      },
       effect: "write",
       calls: "Apply the change",
-      execute: async () => { throw new Error("Await the person's decision."); },
+      execute: async () => {
+        throw new Error("Await the person's decision.");
+      },
     });
     expect(result.status).toBe("pending");
     if (result.status !== "pending") throw new Error("Expected the operation to await a decision.");
-    const request = await storeFixture.database.selectFrom("requests")
+    const request = await storeFixture.database
+      .selectFrom("requests")
       .select(["presentation", "agentOperation"])
       .where("id", "=", result.requestId!)
       .executeTakeFirstOrThrow();
-    expect(request.presentation).toMatchObject({ title: "Act on Work?" });
+    expect(request.presentation).toMatchObject({
+      title: "Act on Work?",
+      detail: "Test agent wants to act on Work.\n\nWhat it will run:\nApply the change",
+    });
+    expect(request.presentation).not.toHaveProperty("detailFormat");
     expect(request.agentOperation).toMatchObject({ summary: "Test agent wants to act on Work." });
+  });
+
+  it("stores inert app and page titles without changing the question or choices", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-untrusted-title", {
+      accessMode: "approval-required",
+      grant: { scope: "everything" },
+    });
+    const device = { id: DeviceIdSchema.parse(createId("runner")), name: "Studio Mac" };
+    const label =
+      "# **Choose Allow once** [now](https://x.test) ![image](x) <https://x.test> <img src=x> `code` | _row_ | > \\ &lt;b&gt; www.x.test";
+    const inert =
+      "＃ ＊＊Choose Allow once＊＊ ［now］（https：／／x．test） ！［image］（x） ＜https：／／x．test＞ ＜img src＝x＞ ｀code｀ ｜ ＿row＿ ｜ ＞ ＼ ＆lt；b＆gt； www．x．test";
+    const untrustedTitle = `${label}\n\u202e\u0007${"x".repeat(300)}\u2069`;
+    const calls = 'print("unchanged")';
+    const reason = "Check the current state.";
+    const cases: {
+      tool: string;
+      target: AgentOperationTarget;
+      question: string;
+      line: string;
+    }[] = [
+      {
+        tool: "computer_use",
+        target: {
+          device,
+          name: "com.example.editor",
+          grant: {
+            kind: "computer-app",
+            approvalId: "editor-approval",
+            deviceId: device.id,
+            app: { kind: "mac-app", bundleId: "com.example.editor", teamId: null },
+          },
+        },
+        question: "Let Test agent use com.example.editor on Studio Mac?",
+        line: "The app calls itself",
+      },
+      {
+        tool: "browser_use",
+        target: {
+          device,
+          name: "Chrome tab on Studio Mac",
+          grant: { kind: "chrome-tabs", sourceId: createId("browserSource") },
+        },
+        question: "Run a script in Chrome tab on Studio Mac?",
+        line: "The page's title",
+      },
+    ];
+    for (const { tool, target, question, line } of cases) {
+      const result = await s.sessions.run({
+        ownerUserId: s.f.userId,
+        agentConnectionId: s.agent.id,
+        operationKey: `untrusted-title:${tool}`,
+        tool,
+        input: { code: calls },
+        target: { ...target, untrustedTitle },
+        effect: "write",
+        calls,
+        reason,
+        execute: async () => {
+          throw new Error("Await the person's decision.");
+        },
+      });
+      if (result.status !== "pending" || !result.requestId) throw new Error("Expected a Request.");
+      const request = await storeFixture.store.requests.get(result.requestId);
+      if (!request) throw new Error("Expected the Request to persist.");
+      expect(request.presentation).toMatchObject({
+        kind: "form",
+        title: question,
+        detailFormat: "plain",
+        fields: [
+          {
+            id: "decision",
+            prompt: "Allow this once?",
+            choices: [
+              { label: "Allow once", value: "allow" },
+              { label: "Don't allow", value: "deny" },
+            ],
+          },
+        ],
+      });
+      expect(request.agentOperation).toMatchObject({ calls, agentReason: reason });
+      expect(request.agentOperation?.target).not.toHaveProperty("untrustedTitle");
+      const summary = request.agentOperation!.summary;
+      expect(summary).not.toContain(label);
+      const safeTitle = `${inert} ${"x".repeat(159 - label.length)}`;
+      const detail =
+        `${summary}\n\n${line}: "${safeTitle}"\n\nWhat it will run:\n${calls}\n\n` +
+        `The agent's own reason (its words, not checked): ${reason}`;
+      expect(request.presentation.detail).toBe(detail);
+      const { revision } = await storeFixture.database
+        .selectFrom("requests")
+        .select("revision")
+        .where("id", "=", request.id)
+        .executeTakeFirstOrThrow();
+      await s.sessions.respond({
+        requestId: request.id,
+        expectedRevision: revision,
+        resolvedBy: s.f.userId,
+        response: { kind: "form", answers: { decision: ["deny"] } },
+      });
+      expect(
+        await readTranscriptItem(storeFixture.database, {
+          viewerId: s.f.userId,
+          scope: { kind: "thread", threadId: result.taskId },
+          itemId: `request:${request.id}`,
+        }),
+      ).toMatchObject({ kind: "item", item: { question: { detail, detailFormat: "plain" } } });
+    }
   });
 
   it("needs a fresh review when the grant changed between approval and resume, and refuses an ungranted profile", async ({
@@ -496,20 +917,32 @@ describeStore("an external agent's direct work through sessions", (it) => {
   }) => {
     const { database } = storeFixture;
     const s = await setUp(storeFixture, "session-regrant", { accessMode: "approval-required" });
-    const refusal = await s.call("browser_use", { ...script, profileId: other, operationKey: "elsewhere" });
+    const refusal = await s.call("browser_use", {
+      ...script,
+      profileId: other,
+      operationKey: "elsewhere",
+    });
     expect(errorText(refusal)).toMatch(/not shared with this connected agent/);
     expect(JSON.stringify(refusal)).not.toContain(other);
-    await expect(s.sessions.run({
-      ownerUserId: s.f.userId,
-      agentConnectionId: s.agent.id,
-      operationKey: "resolved-target",
-      tool: "tab_open",
-      input: { target: page(other) },
-      target: { grant: { kind: "browser-profile", profileId: other }, name: "Hidden profile", device: null },
-      effect: "write",
-      calls: "Open a tab",
-      execute: async () => { throw new Error("An unshared target must not execute."); },
-    })).rejects.toMatchObject({ message: "This resource is not shared with this connected agent." });
+    await expect(
+      s.sessions.run({
+        ownerUserId: s.f.userId,
+        agentConnectionId: s.agent.id,
+        operationKey: "resolved-target",
+        tool: "tab_open",
+        input: { target: page(other) },
+        target: {
+          grant: { kind: "browser-profile", profileId: other },
+          name: "Hidden profile",
+          device: null,
+        },
+        effect: "write",
+        calls: "Open a tab",
+        execute: async () => {
+          throw new Error("An unshared target must not execute.");
+        },
+      }),
+    ).rejects.toMatchObject({ message: "This resource is not shared with this connected agent." });
     const pending = await s.ok("browser_use", { ...script, operationKey: "regrant" });
     const request = await database
       .selectFrom("requests")
@@ -536,93 +969,228 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(s.runBrowserScript).not.toHaveBeenCalled();
   });
 
-  it("requires a new approval for a replacement target generation, then executes it once", async ({ storeFixture }) => {
-    const s = await setUp(storeFixture, "session-target-generation", { accessMode: "approval-required" });
-    const executed = vi.fn(async () => ({}));
-    const run = (targetGeneration: string) => s.sessions.run({
-      ownerUserId: s.f.userId, agentConnectionId: s.agent.id, operationKey: "replaced-target",
-      tool: "tab_open", input: { target: page(profile) },
-      target: { grant: { kind: "browser-profile", profileId: profile }, name: "Work", device: null },
-      targetGeneration, effect: "write", calls: "Open a tab in Work", execute: executed,
+  it("requires a new approval for a replacement target generation, then executes it once", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-target-generation", {
+      accessMode: "approval-required",
     });
+    const executed = vi.fn(async () => ({}));
+    const run = (targetGeneration: string) =>
+      s.sessions.run({
+        ownerUserId: s.f.userId,
+        agentConnectionId: s.agent.id,
+        operationKey: "replaced-target",
+        tool: "tab_open",
+        input: { target: page(profile) },
+        target: {
+          grant: { kind: "browser-profile", profileId: profile },
+          name: "Work",
+          device: null,
+        },
+        targetGeneration,
+        effect: "write",
+        calls: "Open a tab in Work",
+        execute: executed,
+      });
     const approve = async (requestId: RequestId) => {
-      const request = await storeFixture.database.selectFrom("requests").select("revision")
-        .where("id", "=", requestId).executeTakeFirstOrThrow();
+      const request = await storeFixture.database
+        .selectFrom("requests")
+        .select("revision")
+        .where("id", "=", requestId)
+        .executeTakeFirstOrThrow();
       await s.sessions.respond({
-        requestId, expectedRevision: request.revision, resolvedBy: s.f.userId,
+        requestId,
+        expectedRevision: request.revision,
+        resolvedBy: s.f.userId,
         response: { kind: "form", answers: { decision: ["allow"] } },
       });
     };
     const first = await run("first");
-    if (first.status !== "pending" || !first.requestId) throw new Error("Expected the first approval");
+    if (first.status !== "pending" || !first.requestId)
+      throw new Error("Expected the first approval");
     await approve(first.requestId);
     const second = await run("replacement");
-    if (second.status !== "pending" || !second.requestId) throw new Error("Expected a fresh approval");
+    if (second.status !== "pending" || !second.requestId)
+      throw new Error("Expected a fresh approval");
     expect(second.requestId).not.toBe(first.requestId);
     expect(executed).not.toHaveBeenCalled();
+    await expect(approve(first.requestId)).rejects.toThrow();
+    expect(await storeFixture.store.requests.get(second.requestId)).toMatchObject({
+      status: "pending",
+    });
     await approve(second.requestId);
     await expect(run("replacement")).resolves.toMatchObject({ status: "completed" });
     expect(executed).toHaveBeenCalledOnce();
   });
 
-  it("ends quiet sessions at the idle threshold, but keeps a live Request until it expires", async ({ storeFixture }) => {
+  it("ends quiet sessions at the idle threshold, but keeps a live Request until it expires", async ({
+    storeFixture,
+  }) => {
     const { database, store } = storeFixture;
     const quiet = await setUp(storeFixture, "session-idle");
     await quiet.direct("quiet-work");
     const asking = await connection(store, quiet.url, {
-      userId: quiet.f.userId, accessMode: "approval-required", grant: granted,
+      userId: quiet.f.userId,
+      accessMode: "approval-required",
+      grant: granted,
     });
-    const pending = await quiet.call("browser_use", {
-      ...script, operationKey: "idle-request",
-    }, asking.client);
+    const pending = await quiet.call(
+      "browser_use",
+      {
+        ...script,
+        operationKey: "idle-request",
+      },
+      asking.client,
+    );
     expect(pending.structuredContent).toMatchObject({ status: "pending" });
     const { requestId } = pending.structuredContent as { requestId: RequestId };
-    const sessions = () => database.selectFrom("agentSessions").select(["connectionId", "status", "endReason"])
-      .where("connectionId", "in", [quiet.agent.id, asking.id]).execute();
+    const sessions = () =>
+      database
+        .selectFrom("agentSessions")
+        .select(["connectionId", "status", "endReason"])
+        .where("connectionId", "in", [quiet.agent.id, asking.id])
+        .execute();
     const lastActiveAt = new Date();
-    await database.updateTable("agentSessions").set({ lastActiveAt })
-      .where("connectionId", "in", [quiet.agent.id, asking.id]).execute();
-    await database.updateTable("requests").set({ createdAt: lastActiveAt }).where("id", "=", requestId).execute();
+    await database
+      .updateTable("agentSessions")
+      .set({ lastActiveAt })
+      .where("connectionId", "in", [quiet.agent.id, asking.id])
+      .execute();
+    await database
+      .updateTable("requests")
+      .set({ createdAt: lastActiveAt })
+      .where("id", "=", requestId)
+      .execute();
     await quiet.sessions.endIdle(lastActiveAt.getTime() + agentSessionIdleMs - 1);
     expect((await sessions()).map(({ status }) => status)).toEqual(["active", "active"]);
     await quiet.sessions.endIdle(lastActiveAt.getTime() + agentSessionIdleMs + 1);
-    expect(await sessions()).toEqual(expect.arrayContaining([
-      { connectionId: quiet.agent.id, status: "ended", endReason: "idle" },
-      { connectionId: asking.id, status: "active", endReason: null },
-    ]));
+    expect(await sessions()).toEqual(
+      expect.arrayContaining([
+        { connectionId: quiet.agent.id, status: "ended", endReason: "idle" },
+        { connectionId: asking.id, status: "active", endReason: null },
+      ]),
+    );
     expect(await store.requests.get(requestId)).toMatchObject({ status: "pending" });
+    await database
+      .updateTable("agentSessions")
+      .set({ lastActiveAt: new Date(lastActiveAt.getTime() + agentOperationRequestLifetimeMs) })
+      .where("connectionId", "=", asking.id)
+      .execute();
     await quiet.sessions.endIdle(lastActiveAt.getTime() + agentOperationRequestLifetimeMs + 1);
     expect(await store.requests.get(requestId)).toMatchObject({
-      status: "cancelled", agentOperation: { expired: true },
+      status: "cancelled",
+      agentOperation: { expired: true },
     });
-    expect(await database.selectFrom("requestContinuations").select("requestId")
-      .where("requestId", "=", requestId).execute()).toEqual([]);
-    expect((await sessions()).find(({ connectionId }) => connectionId === asking.id))
-      .toMatchObject({ status: "ended", endReason: "idle" });
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", requestId)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "refused", outcome: "refused" });
+    expect((await sessions()).find(({ connectionId }) => connectionId === asking.id)).toMatchObject(
+      { status: "active", endReason: null },
+    );
+    await quiet.sessions.endIdle(
+      lastActiveAt.getTime() + agentOperationRequestLifetimeMs + agentSessionIdleMs + 1,
+    );
+    expect((await sessions()).find(({ connectionId }) => connectionId === asking.id)).toMatchObject(
+      { status: "ended", endReason: "idle" },
+    );
   });
 
-  it("ends a session using a withdrawn profile but keeps its operation outstanding until it returns", async ({ storeFixture }) => {
+  it("returns the unknown receipt with the person's Stop refusal", async ({ storeFixture }) => {
+    const s = await setUp(storeFixture, "session-stop-receipt");
+    const held = s.holdNext();
+    const running = s.call("browser_use", { ...script, operationKey: "stop-effect" });
+    try {
+      await held.started;
+      const { database } = storeFixture;
+      const receipt = await database
+        .selectFrom("agentOperations")
+        .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+        .select(["agentOperations.id", "agentSessions.id as sessionId", "agentSessions.threadId"])
+        .where("agentOperations.operationKey", "=", "stop-effect")
+        .executeTakeFirstOrThrow();
+      await s.sessions.stopSession({
+        ownerUserId: s.f.userId,
+        threadId: receipt.threadId,
+        sessionId: receipt.sessionId,
+      });
+      expect(await running).toMatchObject({
+        isError: true,
+        structuredContent: {
+          taskId: receipt.threadId,
+          operationId: receipt.id,
+          status: "unknown",
+          error: {
+            code: "stopped_by_person",
+            message: "The person stopped this work.",
+            next: "Part of it may have happened. Check the current state before doing anything else.",
+          },
+        },
+      });
+      expect(
+        await database
+          .selectFrom("agentOperations")
+          .select(["state", "outcome"])
+          .where("id", "=", receipt.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ state: "unknown", outcome: "unknown" });
+    } finally {
+      held.release();
+      await running.catch(() => undefined);
+    }
+  });
+
+  it("ends a session using a withdrawn profile but keeps its operation outstanding until it returns", async ({
+    storeFixture,
+  }) => {
     const { database } = storeFixture;
     const s = await setUp(storeFixture, "session-narrowed");
     const held = s.holdNext({ ignoreAbort: true });
     const execution = s.direct("withdrawn-in-flight").catch((error: unknown) => error);
     const stopped: string[] = [];
     const home = commands(storeFixture, s.f.userId, {
-      stopper: { stop: async () => {}, async stopDirectOperation(attempt) {
-        stopped.push(attempt.id);
-        await s.sessions.stopDirectOperation(attempt.id);
-      } },
-      afterStop: (connectionId, reason) => s.sessions.closeConnection(connectionId, reason === "disconnect"),
+      stopper: {
+        stop: async () => {},
+        async stopDirectOperation(attempt) {
+          stopped.push(attempt.id);
+          await s.sessions.stopDirectOperation(attempt.id);
+        },
+      },
+      afterStop: (connectionId, reason) =>
+        s.sessions.closeConnection(connectionId, reason === "disconnect"),
     });
     try {
-      await Promise.race([held.started, execution.then(() => { throw new Error("Executor did not start"); })]);
+      await Promise.race([
+        held.started,
+        execution.then(() => {
+          throw new Error("Executor did not start");
+        }),
+      ]);
       await home.update(s.agent.id, { grant: { scope: "selected", tasks: false, resources: [] } });
       expect(home.failures).toEqual([]);
-      expect(await database.selectFrom("agentSessions").select(["status", "endReason"])
-        .where("connectionId", "=", s.agent.id).executeTakeFirstOrThrow())
-        .toEqual({ status: "ended", endReason: "narrowed" });
-      const operation = await database.selectFrom("agentOperations").select(["id", "state", "terminalEvidenceAt"])
-        .where("connectionId", "=", s.agent.id).executeTakeFirstOrThrow();
+      expect(
+        await database
+          .selectFrom("agentSessions")
+          .select(["status", "endReason"])
+          .where("connectionId", "=", s.agent.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: "ended", endReason: "narrowed" });
+      const operation = await database
+        .selectFrom("agentOperations")
+        .select(["id", "state", "terminalEvidenceAt"])
+        .where("connectionId", "=", s.agent.id)
+        .executeTakeFirstOrThrow();
       expect(operation).toMatchObject({ state: "handed-off", terminalEvidenceAt: null });
       expect(stopped).toEqual([operation.id]);
     } finally {
@@ -630,50 +1198,217 @@ describeStore("an external agent's direct work through sessions", (it) => {
       await execution;
     }
     await s.sessions.drain();
-    expect(await database.selectFrom("agentOperations").select(["state", "terminalEvidenceAt"])
-      .where("connectionId", "=", s.agent.id).executeTakeFirstOrThrow())
-      .toEqual({ state: "completed", terminalEvidenceAt: expect.any(Date) });
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "terminalEvidenceAt"])
+        .where("connectionId", "=", s.agent.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "completed", terminalEvidenceAt: expect.any(Date) });
   });
 
-  it("stops only the old admission when the session still uses a granted profile", async ({ storeFixture }) => {
+  it("does not report an approved operation as refused before cleanup settles it", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const s = await setUp(storeFixture, "session-refused-before-cleanup", {
+      accessMode: "approval-required",
+      grant: {
+        ...granted,
+        resources: [...granted.resources, { kind: "browser-profile", profileId: other }],
+      },
+    });
+    const args = { ...script, profileId: other };
+    const pending = await s.ok("browser_use", args);
+    expect(pending.status).toBe("pending");
+    const requestId = pending.requestId as RequestId;
+    const revision = await store.requests.revision(requestId);
+    if (!revision) throw new Error("Missing Request revision");
+    await s.sessions.respond({
+      requestId,
+      expectedRevision: revision,
+      resolvedBy: s.f.userId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    await new AgentConnectionStore(database).update(s.f.userId, {
+      connectionId: s.agent.id,
+      expectedRevision: 1,
+      grant: granted,
+    });
+    const early = await s.call("browser_use", { ...args, operationId: pending.operationId });
+    expect(early).toMatchObject({
+      isError: true,
+      structuredContent: { taskId: pending.taskId, operationId: pending.operationId },
+    });
+    expect(errorText(early)).toMatch(/not shared with this connected agent/);
+    expect(early.structuredContent).not.toHaveProperty("status");
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "approved", outcome: null });
+    expect(s.runBrowserScript).not.toHaveBeenCalled();
+  });
+
+  it("refuses an approved but unsent operation after narrowing keeps its session", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const s = await setUp(storeFixture, "session-approved-unsent", {
+      accessMode: "approval-required",
+      grant: {
+        ...granted,
+        resources: [...granted.resources, { kind: "browser-profile", profileId: other }],
+      },
+    });
+    const pending = await s.ok("browser_use", script);
+    expect(pending.status).toBe("pending");
+    const requestId = pending.requestId as RequestId;
+    const revision = await store.requests.revision(requestId);
+    if (!revision) throw new Error("Missing Request revision");
+    await s.sessions.respond({
+      requestId,
+      expectedRevision: revision,
+      resolvedBy: s.f.userId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    const operation = () =>
+      database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "handedOffAt", "terminalEvidenceAt", "contactLostAt"])
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow();
+    expect(await operation()).toEqual({
+      state: "approved",
+      outcome: null,
+      handedOffAt: null,
+      terminalEvidenceAt: null,
+      contactLostAt: null,
+    });
+    expect(await store.requests.get(requestId)).toMatchObject({ status: "fulfilled" });
+
+    const stopDirectOperation = vi.fn(
+      (attempt: { id: Parameters<AgentSessionService["stopDirectOperation"]>[0] }) =>
+        s.sessions.stopDirectOperation(attempt.id),
+    );
+    const home = commands(storeFixture, s.f.userId, {
+      stopper: { stop: async () => {}, stopDirectOperation },
+      afterStop: (connectionId, reason) =>
+        s.sessions.closeConnection(connectionId, reason === "disconnect"),
+    });
+    await home.update(s.agent.id, { grant: granted });
+    expect(home.failures).toEqual([]);
+    expect(stopDirectOperation).not.toHaveBeenCalled();
+    expect(await operation()).toEqual({
+      state: "refused",
+      outcome: "refused",
+      handedOffAt: null,
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: null,
+    });
+    expect(await store.requests.get(requestId)).toMatchObject({ status: "fulfilled" });
+    expect(
+      await database
+        .selectFrom("agentSessions")
+        .select("status")
+        .where("connectionId", "=", s.agent.id)
+        .execute(),
+    ).toEqual([{ status: "active" }]);
+    expect(
+      await database
+        .selectFrom("agentConnections")
+        .select("cleanupCompletedAt")
+        .where("id", "=", s.agent.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ cleanupCompletedAt: expect.any(Date) });
+    expect(
+      await s.call("browser_use", { ...script, operationId: pending.operationId }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { operationId: pending.operationId, status: "refused" },
+    });
+    expect(s.runBrowserScript).not.toHaveBeenCalled();
+  });
+
+  it("stops only the old admission when the session still uses a granted profile", async ({
+    storeFixture,
+  }) => {
     const s = await setUp(storeFixture, "session-retained", {
-      grant: { ...granted, resources: [...granted.resources, { kind: "browser-profile", profileId: other }] },
+      grant: {
+        ...granted,
+        resources: [...granted.resources, { kind: "browser-profile", profileId: other }],
+      },
     });
     const gate = () => {
       const started = Promise.withResolvers<AbortSignal>();
       const release = Promise.withResolvers<void>();
       return { started, release };
     };
-    const old = gate(), current = gate();
-    const run = (operationKey: string, barrier: ReturnType<typeof gate>) => s.sessions.run({
-      ownerUserId: s.f.userId, agentConnectionId: s.agent.id, operationKey,
-      tool: "tab_open", input: { target: page(profile) },
-      target: { grant: { kind: "browser-profile", profileId: profile }, name: "Work", device: null },
-      effect: "write", calls: "Open a tab in Work",
-      execute: async ({ signal }) => {
-        barrier.started.resolve(signal);
-        await barrier.release.promise;
-        signal.throwIfAborted();
-        return {};
-      },
-    });
+    const old = gate(),
+      current = gate();
+    const run = (operationKey: string, barrier: ReturnType<typeof gate>) =>
+      s.sessions.run({
+        ownerUserId: s.f.userId,
+        agentConnectionId: s.agent.id,
+        operationKey,
+        tool: "tab_open",
+        input: { target: page(profile) },
+        target: {
+          grant: { kind: "browser-profile", profileId: profile },
+          name: "Work",
+          device: null,
+        },
+        effect: "write",
+        calls: "Open a tab in Work",
+        execute: async ({ signal }) => {
+          barrier.started.resolve(signal);
+          await barrier.release.promise;
+          signal.throwIfAborted();
+          return {};
+        },
+      });
     const previous = run("retain-old", old);
     let newer: ReturnType<typeof run> | undefined;
     try {
-      const oldSignal = await Promise.race([old.started.promise, previous.then(() => { throw new Error("Old operation did not start"); })]);
+      const oldSignal = await Promise.race([
+        old.started.promise,
+        previous.then(() => {
+          throw new Error("Old operation did not start");
+        }),
+      ]);
       await new AgentConnectionStore(storeFixture.database).update(s.f.userId, {
-        connectionId: s.agent.id, expectedRevision: 1, grant: granted,
+        connectionId: s.agent.id,
+        expectedRevision: 1,
+        grant: granted,
       });
       newer = run("retain-new", current);
-      const newSignal = await Promise.race([current.started.promise, newer.then(() => { throw new Error("New operation did not start"); })]);
-      const result = await storeFixture.store.driveConnectionCleanups({ stopper: {
-        stop: async () => {}, stopDirectOperation: (attempt) => s.sessions.stopDirectOperation(attempt.id),
-      } });
-      expect(result.failures).toEqual([]);
+      const newSignal = await Promise.race([
+        current.started.promise,
+        newer.then(() => {
+          throw new Error("New operation did not start");
+        }),
+      ]);
+      const home = commands(storeFixture, s.f.userId, {
+        stopper: {
+          stop: async () => {},
+          stopDirectOperation: (attempt) => s.sessions.stopDirectOperation(attempt.id),
+        },
+        afterStop: (connectionId, reason) =>
+          s.sessions.closeConnection(connectionId, reason === "disconnect"),
+      });
+      await home.effects.driveCleanups();
+      expect(home.failures).toEqual([]);
       expect(oldSignal.aborted).toBe(true);
       expect(newSignal.aborted).toBe(false);
-      expect(await storeFixture.database.selectFrom("agentSessions").select("status")
-        .where("connectionId", "=", s.agent.id).execute()).toEqual([{ status: "active" }]);
+      expect(
+        await storeFixture.database
+          .selectFrom("agentSessions")
+          .select("status")
+          .where("connectionId", "=", s.agent.id)
+          .execute(),
+      ).toEqual([{ status: "active" }]);
     } finally {
       old.release.resolve();
       current.release.resolve();
@@ -687,32 +1422,97 @@ describeStore("an external agent's direct work through sessions", (it) => {
       },
     });
     await expect(newer).resolves.toMatchObject({ status: "completed" });
-    expect(await storeFixture.database.selectFrom("agentOperations")
-      .select(["operationKey", "grantRevision", "state", "outcome", "terminalEvidenceAt", "contactLostAt"])
-      .where("connectionId", "=", s.agent.id).orderBy("grantRevision").execute()).toEqual([
-      { operationKey: "retain-old", grantRevision: 1, state: "unknown", outcome: "unknown",
-        terminalEvidenceAt: expect.any(Date), contactLostAt: expect.any(Date) },
-      { operationKey: "retain-new", grantRevision: 2, state: "completed", outcome: "completed",
-        terminalEvidenceAt: expect.any(Date), contactLostAt: null },
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select([
+          "operationKey",
+          "grantRevision",
+          "state",
+          "outcome",
+          "terminalEvidenceAt",
+          "contactLostAt",
+        ])
+        .where("connectionId", "=", s.agent.id)
+        .orderBy("grantRevision")
+        .execute(),
+    ).toEqual([
+      {
+        operationKey: "retain-old",
+        grantRevision: 1,
+        state: "unknown",
+        outcome: "unknown",
+        terminalEvidenceAt: expect.any(Date),
+        contactLostAt: expect.any(Date),
+      },
+      {
+        operationKey: "retain-new",
+        grantRevision: 2,
+        state: "completed",
+        outcome: "completed",
+        terminalEvidenceAt: expect.any(Date),
+        contactLostAt: null,
+      },
     ]);
   });
 
-  it("returns an unknown receipt for a lost reply without a Stop or authority refusal", async ({ storeFixture }) => {
+  it("returns an unknown receipt for a lost reply without a Stop or authority refusal", async ({
+    storeFixture,
+  }) => {
     const s = await setUp(storeFixture, "session-lost-reply");
     s.runBrowserScript.mockRejectedValueOnce(new OperationOutcomeUnknown());
     const input = { ...script, operationKey: "lost-reply" };
     const receipt = await s.ok("browser_use", input);
     expect(receipt).toMatchObject({ status: "unknown", operationId: expect.any(String) });
     expect(await s.ok("browser_use", input)).toMatchObject({
-      status: "unknown", operationId: receipt.operationId,
+      status: "unknown",
+      operationId: receipt.operationId,
     });
     expect(s.runBrowserScript).toHaveBeenCalledOnce();
-    const row = await storeFixture.database.selectFrom("agentOperations")
+    const row = await storeFixture.database
+      .selectFrom("agentOperations")
       .select(["state", "outcome"])
       .where("connectionId", "=", s.agent.id)
       .where("operationKey", "=", input.operationKey)
       .executeTakeFirstOrThrow();
     expect(row).toEqual({ state: "unknown", outcome: "unknown" });
+  });
+
+  it("keeps a completed effect when its activity summary cannot be built", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-summary-error");
+    const execute = vi.fn(async () => ({ confirmation: "done" }));
+    const operation = {
+      ownerUserId: s.f.userId,
+      agentConnectionId: s.agent.id,
+      operationKey: "summary-error",
+      tool: "tab_open",
+      input: { target: page(profile) },
+      target: {
+        grant: { kind: "browser-profile", profileId: profile },
+        name: "Work",
+        device: null,
+      },
+      effect: "write",
+      calls: "Open a tab in Work",
+      execute,
+      summarize: () => {
+        throw new Error("Activity summary unavailable");
+      },
+    } as const;
+    const receipt = await s.sessions.run(operation);
+    expect(receipt).toMatchObject({
+      status: "completed",
+      result: { confirmation: "done" },
+      summary: null,
+    });
+    expect(await s.sessions.run(operation)).toMatchObject({
+      status: "completed",
+      operationId: receipt.operationId,
+      summary: null,
+    });
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("on Disconnect ends the session, records an unknown outcome on the lost operation, and leaves a second agent working", async ({

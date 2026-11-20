@@ -43,7 +43,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const calls: RecordedCall[] = [];
   const boundaryChecks: Check[] = [];
   const secret = randomUUID();
-  const scope = {
+  const scope: RunToolScope = {
+    aud: "opensteer-run-tools",
     bindingGeneration: 1,
     environmentId: createId("environment"),
     requestedBy: createId("user"),
@@ -53,10 +54,11 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     threadId: testCase.tasks.find((entry) => entry.self)?.task.id ?? createId("thread"),
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000),
-    iss: "opensteer-host" as const,
+    iss: "opensteer-host",
     jti: randomUUID(),
   };
   const agentToken = randomUUID();
+  const connectionId = randomUUID();
   const http = createServer();
   http.listen(0, "127.0.0.1");
   await once(http, "listening");
@@ -87,7 +89,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   });
   // Automation tools expand and validate in their production handler before the
   // fixture replaces the backend.
-  const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
+  const triggers = new TriggerToolHandlers(
+    { manage: async () => unavailable() },
+    { triggerOrigins: async () => new Map() },
+  );
   const handlers: AgentToolHandlers = {
     opensteer_ai_account_list: async () => unavailable(),
     opensteer_ai_account_update: async () => unavailable(),
@@ -122,6 +127,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     local_server_remove: async () => unavailable(),
     browser_profile_update: async () => unavailable(),
     browser_profile_remove: async () => unavailable(),
+    browser_use: async () => unavailable(),
+    browser_connect: async () => unavailable(),
     app_publish: async () => unavailable(),
     app_list: async () => unavailable(),
     app_start: async () => unavailable(),
@@ -183,32 +190,42 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     callers: {
       authenticate: async (token: string) => {
         if (token !== agentToken) throw refused("unauthorized", "Invalid eval credential");
-        const claims = scope as unknown as RunToolScope;
         const common = {
           userId: scope.requestedBy,
           accessMode: thread.accessMode,
         };
-        if (testCase.caller === "connection")
+        if (testCase.caller === "connection") {
+          const grant = { scope: "everything" } as const;
+          const grantRevision = 1;
           return {
             ...common,
             kind: "connection" as const,
-            key: "connection:eval",
-            connectionId: "eval",
-            grant: { scope: "everything" },
-            grantRevision: 1,
+            key: `connection:${connectionId}`,
+            connectionId,
+            grant,
+            grantRevision,
+            agentConnection: {
+              agentConnectionId: connectionId,
+              grant,
+              grantRevision,
+              consentVersion: 1,
+              accessMode: common.accessMode,
+            },
           };
+        }
         return {
           ...common,
           kind: "run" as const,
           key: `run:${scope.runId}`,
           thread,
-          claims,
+          claims: scope,
         };
       },
     },
     store: {
       requests: { get: async () => null },
       getThreadForOwner: async (id) => ({ ...thread, id }),
+      threadOrigins: async () => new Map(),
     },
   });
   const tabs = new TabFixture(testCase.browser ?? BrowserFixtureSchema.parse({}), scope.threadId);
@@ -292,6 +309,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         }) as unknown as Transport,
       );
       const { tools } = await client.listTools();
+      const offered = new Set(tools.map(({ name }) => name));
       const instructions = client.getInstructions() ?? "";
       endpoints.set(name, { client, tools, instructions });
       // MCP calls and Browser Harness opensteer.callTool both arrive here, as in production.
@@ -301,12 +319,10 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         index: number,
       ): Promise<CallToolResult> => {
         const original = await client.callTool({ name, arguments: args });
-        const definition = agentTools
-          .filter((tool) => tool.callers.some((kind) => kind === testCase.caller))
-          .find((tool) => tool.name === name);
+        const definition = agentTools.find((tool) => tool.name === name);
         const valid =
           !!definition &&
-          definition.input.safeParse(args).success &&
+          offered.has(name) &&
           (original.isError !== true ||
             (isRecord(original.structuredContent) &&
               isRecord(original.structuredContent.error) &&

@@ -52,7 +52,7 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   plugin_search: plugins,
   opensteer_plugin_catalog: settings,
   plugin_skills: plugins,
-  plugin_resources: settings,
+  plugin_resources: plugins,
   opensteer_plugin_resource_update: settings,
   plugin_describe: plugins,
   plugin_call: plugins,
@@ -160,12 +160,19 @@ function offersConnectionTool(
   name: AgentToolName,
   mode: ThreadAccessMode,
 ): boolean {
-  if (name === "tab_open" || name === "tab_close") return false;
   if (name === "opensteer_ai_account_list")
     return !grant || grant.scope === "everything" || grant.tasks;
   if (grant?.scope === "selected") {
+    if (name === "plugin_execute")
+      return grant.resources.some(
+        (resource) => resource.kind === "plugin" && resource.access === "read-write",
+      );
     const profile = grant.resources.some(({ kind }) => kind === "browser-profile");
-    if (name === "saved_login_request" || name === "card_request" || name === "browser_profile_list")
+    if (
+      name === "saved_login_request" ||
+      name === "card_request" ||
+      name === "browser_profile_list"
+    )
       return profile;
     if (name === "tab_list")
       return profile || grant.resources.some(({ kind }) => kind === "chrome-tabs");

@@ -116,7 +116,10 @@ export function applyAgentDirectoryChange(
     throw new ControlPlaneError(isConflict ? "conflict" : "bad_request", message);
   }
   if (maximumEnvelopeSize(validated.data) > maximumAgentDirectoryEnvelopeBytes) {
-    throw new ControlPlaneError("bad_request", "Signed agent directory would exceed its byte limit");
+    throw new ControlPlaneError(
+      "bad_request",
+      "Signed agent directory would exceed its byte limit",
+    );
   }
   return {
     revision: validated.data.revision,
@@ -133,11 +136,16 @@ function maximumEnvelopeSize(document: AgentDirectoryDocument): number {
     iat: Number.MAX_SAFE_INTEGER,
   };
   // Allow for a 256-character key ID with every character needing JSON escaping.
-  const headerBytes = JSON.stringify({ alg: "EdDSA", kid: "", typ: agentDirectoryJwtTyp }).length + 6 * 256;
-  const encodedLength = (bytes: number) => Math.ceil(bytes * 4 / 3);
-  return encodedLength(headerBytes) +
+  const headerBytes =
+    JSON.stringify({ alg: "EdDSA", kid: "", typ: agentDirectoryJwtTyp }).length + 6 * 256;
+  const encodedLength = (bytes: number) => Math.ceil((bytes * 4) / 3);
+  return (
+    encodedLength(headerBytes) +
     encodedLength(Buffer.byteLength(JSON.stringify(claims))) +
-    encodedLength(64) + 2 + JSON.stringify({ assertion: "" }).length;
+    encodedLength(64) +
+    2 +
+    JSON.stringify({ assertion: "" }).length
+  );
 }
 
 export class AgentDirectoryStore implements AgentDirectoryReader {
@@ -150,18 +158,23 @@ export class AgentDirectoryStore implements AgentDirectoryReader {
   }
 
   async document(): Promise<AgentDirectoryDocument> {
-    return this.#db.transaction().setIsolationLevel("repeatable read").execute(async (tx) => {
-      const snapshot = await this.#readSnapshot(tx, false);
-      return AgentDirectoryDocumentSchema.parse({
-        revision: snapshot.revision,
-        issuedAt: this.#now().toISOString(),
-        entries: snapshot.entries,
+    return this.#db
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute(async (tx) => {
+        const snapshot = await this.#readSnapshot(tx, false);
+        return AgentDirectoryDocumentSchema.parse({
+          revision: snapshot.revision,
+          issuedAt: this.#now().toISOString(),
+          entries: snapshot.entries,
+        });
       });
-    });
   }
 
   async list(): Promise<AgentDirectorySnapshot> {
-    return this.#db.transaction().setIsolationLevel("repeatable read")
+    return this.#db
+      .transaction()
+      .setIsolationLevel("repeatable read")
       .execute((tx) => this.#readSnapshot(tx, false));
   }
 

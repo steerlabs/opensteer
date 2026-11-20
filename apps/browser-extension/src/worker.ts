@@ -9,6 +9,7 @@ import {
   browserSourceWireFloor,
   browserSourceTabWire,
   browserSourceTabDetachWire,
+  browserSourceTabDetachReplayWire,
   browserSourceTabFrameBytes,
   browserSourceTabBufferedBytes,
   readHostMessage,
@@ -410,20 +411,51 @@ async function receive(
       reject(current, generation, "Wrong connection");
       return;
     }
+    const replay = liveTabs && handshake.wire >= browserSourceTabDetachReplayWire;
+    const stored = replay && (await loadConnection(connection.sourceId));
+    if (current.generation !== generation) return;
+    if (replay && (!stored || stored.token !== connection.token)) {
+      reject(current, generation, "Chrome pairing changed");
+      return;
+    }
     current.ready = true;
     current.state = "connected";
     current.backoffAttempt = 0;
-    if (liveTabs && handshake.wire >= browserSourceTabWire)
+    if (liveTabs && handshake.wire >= browserSourceTabWire) {
+      const record = async (shareId: string, detached: boolean) => {
+        await updateConnection(
+          connection.sourceId,
+          (entry) => {
+            const receipts = new Set(entry.chromeDetachReceipts);
+            if (detached) receipts.add(shareId);
+            else receipts.delete(shareId);
+            return { connection: { ...entry, chromeDetachReceipts: [...receipts] }, result: true };
+          },
+          connection.token,
+        );
+      };
       current.tabLink = liveTabs.connect(
         current.sourceId,
         (frame) => send(current, generation, frame),
         () => reject(current, generation, "Chrome tab transport overloaded"),
         handshake.wire >= browserSourceTabDetachWire,
+        stored
+          ? {
+              pending: stored.chromeDetachReceipts ?? [],
+              record: (shareId) => record(shareId, true),
+              acknowledge: (shareId) => record(shareId, false),
+            }
+          : undefined,
       );
+    }
     return;
   }
   if (!current.ready) {
     reject(current, generation, "Not ready");
+    return;
+  }
+  if (message.type === "tab.detached") {
+    await liveTabs?.acknowledgeDetach(current.sourceId, message.shareId);
     return;
   }
   if (message.type === "tab.command") {

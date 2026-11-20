@@ -65,7 +65,7 @@ export * from "./personal-desktop-update-store.js";
 export * from "./agent-thread-history.js";
 export { encodeThreadHistoryCursor, readThreadHistory } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
-export { personalDeploymentOwner } from "./machine-store.js";
+export { personalDeploymentOwner, personalShellSessionState } from "./machine-store.js";
 export * from "./team-knowledge-store.js";
 
 export {

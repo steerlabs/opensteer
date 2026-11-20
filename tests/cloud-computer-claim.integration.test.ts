@@ -86,10 +86,11 @@ import {
   cloudComputerStripeWebhookPath,
   cloudComputersDesiredPath,
   officialOpensteerAccountProviderId,
+  type CloudComputerBootResponse,
   type CloudComputerDesired,
   type ControlPlaneAccountId,
 } from "../packages/control-plane-protocol/src/index.js";
-import { createId } from "../packages/core/src/index.js";
+import { createId, type EnvironmentId } from "../packages/core/src/index.js";
 import { freePort } from "../packages/shared/src/loopbackPort.test-support.js";
 import { testRunnerDescriptor } from "../packages/database/src/runner-fixture.test-support.js";
 import {
@@ -518,33 +519,16 @@ async function report(
   expect(response.status, await response.text()).toBe(200);
 }
 
-/**
- * The provisioner's path for one paid Cloud Computer, then the claim:
- * `/boot`, a Home started from exactly what it returned, `boot-complete` with
- * the identity that Home's discovery proves, readiness, and the claimer.
- */
-async function bootAndClaim(
-  id: string,
-  snapshot?: {
-    readonly database: TestDatabase;
-    readonly directory: string;
-    readonly authSecret: string;
-    readonly environmentId: string;
-    readonly snapshotId: string;
-  },
-) {
-  const computer = await desired(id);
-  await report(computer, "provisioning", null);
-  const boot = await operator.request(
-    account(cloudComputerBootPath(computer.id)),
-    json({ hostname: computer.hostname, bootstrapToken: computer.bootstrapToken }),
-  );
-  const bootBody = await boot.text();
-  expect(boot.status, bootBody).toBe(200);
-  const booted = CloudComputerBootResponseSchema.parse(JSON.parse(bootBody));
-  expect(booted.managedHome).toBeDefined();
-  expect(booted.restoreSnapshot).toBe(snapshot?.snapshotId);
+type HomeSnapshot = {
+  readonly database: TestDatabase;
+  readonly directory: string;
+  readonly authSecret: string;
+  readonly environmentId: EnvironmentId;
+};
 
+async function startManagedHome(booted: CloudComputerBootResponse, snapshot?: HomeSnapshot) {
+  const managed = booted.managedHome;
+  if (!managed) throw new Error("Expected managed Home bootstrap data");
   const directory = await mkdtemp(join(scratch, "home-"));
   const homeDatabase = await cloneTestDatabase(
     "host",
@@ -573,11 +557,12 @@ async function bootAndClaim(
     OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: messagingToken,
     OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     OPENSTEER_SIGNUP_POLICY: "closed",
-    OPENSTEER_MANAGED_HOME_ID: booted.managedHome!.cloudComputerId,
-    OPENSTEER_MANAGED_HOME_GENERATION: String(booted.managedHome!.generation),
+    OPENSTEER_MANAGED_HOME_ID: managed.cloudComputerId,
+    OPENSTEER_MANAGED_HOME_GENERATION: String(managed.generation),
     OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: booted.accountOrigin,
-    OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: booted.managedHome!.oidc.clientId,
-    OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: booted.managedHome!.oidc.clientSecret,
+    ...(booted.work ? { OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(booted.work) } : {}),
+    OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: managed.oidc.clientId,
+    OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET: managed.oidc.clientSecret,
   });
   const { host, close } = await ownTestDatabaseProducer(homeDatabase.url, async () => {
     const runtime = await createHostRuntime(homeConfig, {
@@ -600,6 +585,38 @@ async function bootAndClaim(
   });
   await host.app.listen({ host: "127.0.0.1", port: homePort });
   homeFront.target = homePort;
+  return {
+    host,
+    homeOrigin,
+    close,
+    database: homeDatabase,
+    directory,
+    authSecret,
+    environmentId,
+    messagingToken,
+  };
+}
+
+/**
+ * The provisioner's path for one paid Cloud Computer, then the claim:
+ * `/boot`, a Home started from exactly what it returned, `boot-complete` with
+ * the identity that Home's discovery proves, readiness, and the claimer.
+ */
+async function bootAndClaim(id: string, snapshot?: HomeSnapshot & { readonly snapshotId: string }) {
+  const computer = await desired(id);
+  await report(computer, "provisioning", null);
+  const boot = await operator.request(
+    account(cloudComputerBootPath(computer.id)),
+    json({ hostname: computer.hostname, bootstrapToken: computer.bootstrapToken }),
+  );
+  const bootBody = await boot.text();
+  expect(boot.status, bootBody).toBe(200);
+  const booted = CloudComputerBootResponseSchema.parse(JSON.parse(bootBody));
+  expect(booted.managedHome).toBeDefined();
+  expect(booted.restoreSnapshot).toBe(snapshot?.snapshotId);
+
+  const home = await startManagedHome(booted, snapshot);
+  const { homeOrigin } = home;
 
   // What the VM reports: the identity the Home's own discovery proves.
   const discovery = (await (
@@ -632,18 +649,7 @@ async function bootAndClaim(
     .executeTakeFirstOrThrow();
   expect(recorded.claimError).toBeNull();
   const receipt = ManagedHomeClaimReceiptSchema.parse(recorded.bootstrapReceipt);
-  return {
-    host,
-    homeOrigin,
-    identity,
-    receipt,
-    close,
-    database: homeDatabase,
-    directory,
-    authSecret,
-    environmentId,
-    messagingToken,
-  };
+  return { ...home, booted, identity, receipt };
 }
 
 /** A bought Cloud Computer, booted and ready, that nobody has claimed yet. */
@@ -1060,15 +1066,131 @@ it.skipIf(!controlPlaneUrl || !hostUrl)(
     expect(assigned.status, await assigned.clone().text()).toBe(200);
     const assignment = WorkAssignmentViewSchema.parse(await assigned.json());
 
-    const { homeOrigin, receipt } = await bootAndClaim(assignment.computerId);
-    expect(receipt.document.account.subject).toBe(member.id);
-    expect(receipt.document.work).toEqual({
+    const source = await bootAndClaim(assignment.computerId);
+    const { homeOrigin, receipt } = source;
+    const work = {
       organizationId,
       organizationName: "Workspace",
       assignmentId: assignment.assignmentId,
-    });
+    };
+    expect(receipt.document.account.subject).toBe(member.id);
+    expect(receipt.document.work).toEqual(work);
     const session = await signInToHome(member.browser, homeOrigin);
     expect(session.status, session.trail).toBe(200);
+    const owner = await source.host.store.database
+      .selectFrom("users")
+      .select("id")
+      .executeTakeFirstOrThrow();
+    expect(await session.json()).toMatchObject({ session: { user: { id: owner.id } } });
+
+    const runnerId = createId("runner");
+    const publicKeyPem = generateKeyPairSync("ed25519")
+      .publicKey.export({ format: "pem", type: "spki" })
+      .toString();
+    await expect(
+      source.host.store.enrollRunnerConnection({
+        descriptor: {
+          ...testRunnerDescriptor({
+            runnerKind: "managed",
+            runnerId,
+            name: "Messaging service",
+            environmentId: source.environmentId,
+            modules: {},
+          }),
+          capabilities: [],
+        },
+        enrollmentTokenHash: hashRunnerEnrollmentToken(source.messagingToken),
+        publicKeyPem,
+        publicKeyFingerprint: runnerPublicKeyFingerprint(publicKeyPem),
+      }),
+    ).resolves.toMatchObject({ runnerId, allowedModules: ["integrations", "messaging"] });
+    expect(
+      await source.host.store.database
+        .selectFrom("deviceDrivers")
+        .select("deviceId")
+        .where("runnerId", "=", runnerId)
+        .executeTakeFirst(),
+    ).toBeUndefined();
+    await source.close();
+
+    const claim = { ...receipt.document.claim, generation: receipt.document.claim.generation + 1 };
+    // Stage the replacement in the fixture. The restored receipt supplies the work marker.
+    const { work: _bootMarker, ...replacementBoot } = source.booted;
+    const replacement = await startManagedHome(
+      {
+        ...replacementBoot,
+        managedHome: { ...source.booted.managedHome!, ...claim },
+        setupCodeDigest: createHash("sha256").update(randomBytes(32)).digest("hex"),
+      },
+      source,
+    );
+    const linkGeneration = randomBytes(32).toString("base64url");
+    const hostCredential = `osc_${randomBytes(32).toString("base64url")}`;
+    const setupCode = randomBytes(32).toString("base64url");
+    const replacementClaim = async (marker: typeof work | undefined) => {
+      const iat = Math.floor(Date.now() / 1000);
+      const { token: assertion } = await auth.api.signJWT({
+        body: {
+          payload: {
+            tokenUse: "opensteer-managed-home-claim",
+            iss: publicOrigin.origin,
+            aud: replacement.homeOrigin,
+            sub: member.id,
+            iat,
+            exp: iat + 120,
+            jti: `mhc_${randomUUID()}`,
+            authority: receipt.document.authority,
+            claim,
+            ...(marker ? { work: marker } : {}),
+            owner: {
+              email: `${member.id}@example.test`,
+              displayName: "Assignee",
+              emailVerified: true,
+            },
+            link: {
+              generation: linkGeneration,
+              hostCredentialSha256: createHash("sha256").update(hostCredential).digest("base64url"),
+            },
+          },
+        },
+      });
+      return operator.request(
+        `${replacement.homeOrigin}${managedHomeClaimPath}`,
+        json({
+          schemaVersion: 1,
+          setupCode,
+          assertion,
+          hostCredential,
+        }),
+      );
+    };
+    const personalOnly = await replacementClaim(undefined);
+    expect(personalOnly.status, await personalOnly.clone().text()).toBe(403);
+    expect(await personalOnly.text()).toContain("This claim is for a different work assignment");
+    const reclaimed = await replacementClaim(work);
+    expect(reclaimed.status, await reclaimed.clone().text()).toBe(200);
+    expect(ManagedHomeClaimReceiptSchema.parse(await reclaimed.json()).document).toMatchObject({
+      account: { issuer: publicOrigin.origin, subject: member.id },
+      authority: receipt.document.authority,
+      claim,
+      work,
+      linkGeneration,
+    });
+    expect(
+      await replacement.host.store.database.selectFrom("users").select("id").execute(),
+    ).toEqual([owner]);
+    expect(
+      await replacement.host.store.database
+        .selectFrom("personalRemoteAccountLink")
+        .select(["challengeId", "issuer", "subject", "linkGeneration"])
+        .where("singletonKey", "=", "opensteer-account")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      challengeId: assignment.computerId,
+      issuer: publicOrigin.origin,
+      subject: member.id,
+      linkGeneration,
+    });
   },
   240_000,
 );

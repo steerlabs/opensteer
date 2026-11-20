@@ -19,6 +19,8 @@ export function usePhoneHome(input: {
   readonly exposure: "loopback" | "networked" | undefined;
   readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
   readonly deploymentId: string | null;
+  /** The organization a work Home's own policy names; absent on a personal Home. */
+  readonly workOrganization?: string | null;
 }): { readonly kind: HomeKindFact; readonly computer: CloudComputerView | null } {
   const views = useCloudComputer(useMobileClient().cloudComputers ?? null).views;
   const { deploymentId } = input;
@@ -28,6 +30,7 @@ export function usePhoneHome(input: {
     deploymentId,
     hostedHere: false,
     account: views,
+    workOrganization: input.workOrganization ?? null,
   });
   const computer =
     deploymentId === null || views === null

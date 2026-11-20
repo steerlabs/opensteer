@@ -323,9 +323,7 @@ export class AccountDirectoryClient {
       10_000,
       signal,
     );
-    return WorkAuditAcknowledgmentSchema.parse(
-      await readBoundedJson(response, boundedJsonOptions),
-    );
+    return WorkAuditAcknowledgmentSchema.parse(await readBoundedJson(response, boundedJsonOptions));
   }
 
   async #request(

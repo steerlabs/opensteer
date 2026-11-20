@@ -2,7 +2,9 @@ import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
 import {
   mockConnectedAgents,
+  mockWorkPolicy,
   type MockConnectedAgentScene,
+  type MockWorkHomeScene,
   MockDesktopUpdates,
   MockHostClient,
   type MockPluginScenario,
@@ -30,6 +32,8 @@ export function createMockHostPort(
     readonly plugins?: MockPluginScenario | null;
     /** Connected agents in each state and a waiting consent, as the web's `?mock-agents`. */
     readonly agents?: MockConnectedAgentScene | null;
+    /** A work Home under its organization's policy, as the web's `?mock-work=`. */
+    readonly work?: MockWorkHomeScene | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
     readonly onCommand?: (command: Parameters<HostClient["dispatch"]>[0]) => void;
   } = {},
@@ -44,6 +48,7 @@ export function createMockHostPort(
       ...(options.subagents ? { subagents: options.subagents } : {}),
       ...(options.plugins ? { plugins: options.plugins } : {}),
       ...(options.agents ? mockConnectedAgents(options.agents) : {}),
+      ...(options.work ? { workPolicy: mockWorkPolicy(options.work) } : {}),
     };
     const hosts = options.hosts;
     if (hosts === undefined) return new MockHostClient(hostOptions);

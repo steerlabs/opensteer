@@ -16,8 +16,8 @@ External provider accounts involved:
 - **Stripe**: handles Checkout, the Billing Portal, recurring subscriptions, and webhooks.
 - **Hetzner Cloud**: hosts one VM per customer and the shared `opensteer-cloud-computers` firewall.
 - **Cloudflare**: hosts the DNS zone for customer Home hostnames (`OPENSTEER_CLOUD_COMPUTER_DOMAIN`).
-- **S3-compatible object storage**: stores encrypted daily restic backups, with one isolated principal and non-overlapping prefix per Cloud Computer.
-- **Static browser egress proxy provider**: supplies one HTTPS proxy endpoint and credential set per Cloud Computer.
+- **S3-compatible object storage**: stores encrypted restic snapshots. Account assigns a registered principal and non-overlapping prefix; operators enforce the principal's prefix permissions in S3. The daily timer attempts a backup and reports successful scheduled snapshots to Account. An upload can succeed even when the report fails.
+- **Static browser egress proxy provider**: provides HTTPS proxy endpoints and credentials for the pool. A Home without an assignment waits; the provider supplies the stable external IP, which the installer does not verify.
 
 ```text
 Customer (Desktop / Mobile / Web)
@@ -244,7 +244,7 @@ Put the proxy password in a root-only file (`chmod 0600`) so it stays out of she
   node dist/cloud-computer-operator-main.js egress-assign <computer-id>
   ```
 
-  Returns the assigned endpoint ID and recorded public address. Repeating it returns the same assignment. A Home with egress refresh support consumes the assignment on its next refresh.
+  Returns the assigned endpoint ID and the recorded public address, which can be null. Repeating it returns the same assignment. A Home with egress refresh support consumes the assignment on its next refresh.
 
 ### Backup targets
 
@@ -318,7 +318,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Reporting `providerServerId` starts the 20-minute bootstrap token timer in Account.
    - Customer still sees `status: "preparing"`.
 4. **Boot**:
-   - Cloud-init writes `/root/opensteer-home-boot.json` and `/run/opensteer-home-bootstrap-token`, downloads `installerUrl`, checks `installerSha256`, and runs the installer.
+   - Cloud-init writes `/root/opensteer-home-boot.json` and `/root/opensteer-home-bootstrap-token` and enables a systemd download unit. The unit fetches `installerUrl`, checks `installerSha256`, and runs the installer with those files.
    - The installer stages `/etc/opensteer-home/boot/*` and starts `opensteer-home-managed.service`, which retries until completion (stopping on exit `78` if the token is rejected).
    - `managed-boot.sh boot` calls `POST /v1/cloud-computers/:id/boot` with `{ hostname, bootstrapToken }`.
    - Account validates the token, assigns one free egress endpoint (or sets `egressUnavailable` if the pool is empty), registers an OIDC client for the Home, creates or reads its repository password in Secret Manager, and returns the pinned release images, setup code digest, OIDC client credentials, egress credentials (if assigned), and backup repository credentials.
@@ -326,8 +326,8 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
    - Customer sees `status: "preparing"` and `egress: "assigned"` (or `"unavailable"`).
 5. **Boot-complete**:
    - Once all containers are healthy, the installer reads the local Host discovery document (`/.well-known/opensteer` on loopback) and calls `POST /v1/cloud-computers/:id/boot-complete` with `{ hostname, bootstrapToken, identity: { deploymentId, hostKeyFingerprint } }`.
-   - Account pins that `deploymentId` and `hostKeyFingerprint`, marks `bootCompletedAt` and clears the bootstrap token. The subsequent accepted `ready` report marks the generation ready.
-   - The VM enables `opensteer-home.service`, the daily backup timer, and the maintenance timer, then deletes the bootstrap token and boot result files. With installer support for `releaseManifestUrl`, a configured feed also enables the hourly update timer.
+   - Account pins that `deploymentId` and `hostKeyFingerprint`, marks `bootCompletedAt`, and revokes the bootstrap token. A matching completion replay only acknowledges the same identity. The subsequent accepted `ready` report marks the generation ready.
+   - The installer removes the local token and boot result files before enabling `opensteer-home.service`, the daily backup timer, and the maintenance timer. A configured `releaseManifestUrl` also enables the hourly update timer. On terminal refusal the installer removes the files and stops a configured pod. Provider instance user data and cloud-init's cached copy can still contain the spent token; neither provides new boot authority after completion.
 6. **Ready**:
    - On its next poll, the reconciler makes a direct HTTPS request to the VM's IP using the Home hostname as SNI and `Host`, verifies the signed `/.well-known/opensteer` envelope matches the pinned `deploymentId` and `hostKeyFingerprint`, and reports `phase: "ready"` to Account.
    - Customer still sees `status: "preparing"` until Account finishes claiming the Home.
@@ -377,7 +377,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   1. Check `show <id>`, Account logs (`Cloud Computer claim failed`), and reconciler logs (`home-provisioner.pass.failed`) to see whether provisioning, boot, discovery, or claiming failed.
   2. If the VM is reachable by console/SSH, inspect `systemctl status opensteer-home-managed.service`, `journalctl -u opensteer-home-managed.service`, and `sudo opensteer-home status` / `sudo opensteer-home logs <service>`.
   3. If the Home has never been ready, run `node dist/cloud-computer-operator-main.js reissue-bootstrap <id>` to rebuild it with a fresh bootstrap token.
-  4. For a `ready` Home with a claim error, fix the underlying issue and run `claim-retry <computer-id>`. Use snapshot replacement if the previously ready personal Home cannot be recovered.
+  4. For a `ready` Home with a claim error, fix the underlying issue and run `claim-retry <computer-id>`. If a ready replacement cannot be repaired and Account has not issued its owner a sign-in, use the staged-snapshot reissue procedure below. For other previously ready personal Homes, use snapshot replacement if they cannot be recovered in place.
 
 ### Expired bootstrap token
 
@@ -391,13 +391,13 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
     ```
 
   - If no create was dispatched and no boot credential was exchanged, Account renews the token in place. Once a VM was dispatched or boot exchanged credentials, reissue bumps the generation, clears the pin, and retires the issued egress and backup credentials. An unused backup target must be available.
-  - A generation that reported ready must be replaced from a named backup snapshot.
-  - If a never-ready replacement already exchanged credentials, prepare an unused registered backup target containing the named snapshot with a new repository password. Pass a mode `0600` JSON file with `{ "targetId": "<uuid>", "password": "<new repository password>" }` as the final argument to `reissue-bootstrap`. The existing repository and its credentials are then quarantined.
+  - Reissue refuses a ready generation without a restore snapshot, or a generation for which Account has already issued owner access.
+  - If an unverified replacement already exchanged credentials, even if it reported ready, prepare an unused registered backup target containing the named snapshot with a new repository password. Pass a mode `0600` JSON file with `{ "targetId": "<uuid>", "password": "<new repository password>" }` as the final argument to `reissue-bootstrap`. The existing repository and its credentials are then quarantined.
 
 ### Replacing a broken Home from a snapshot
 
 - **How to recognise it**: A Home that was previously ready (`everReady`) is unrecoverable in place (corrupted disk, broken VM, failed host) and the customer needs a fresh VM restored from a known-good restic snapshot.
-- **What the system does**: No automatic path ever replaces a ready Home.
+- **What the system does**: No automatic path replaces a ready Home. This hosted `replace` procedure is for personal Homes only; the Account refuses it for work assignments.
 - **What the operator does**:
   1. On the source VM, run `sudo opensteer-home snapshots` to find a restic snapshot ID (8–64 lowercase hex characters). It reads the repository using the VM's root-only credential files. Account has no snapshot list. If the source VM is unavailable, use a previously recorded snapshot ID or the existing backup recovery procedure with the repository credentials.
   2. Run:
@@ -406,8 +406,8 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
      node dist/cloud-computer-operator-main.js replace <computer-id> <snapshot-id>
      ```
 
-  3. Account bumps `generation`, stores `restoreSnapshot`, issues a fresh bootstrap token, removes the old deployment entry and OIDC client, and moves the record back to `provisioning`.
-  4. The reconciler powers off the previous VM. The new VM restores the named snapshot before sending `boot-complete`. The reconciler verifies the pinned identity and Account claims the restored Home. The previous VM stays off until the owner completes a sign-in to the replacement, then the reconciler deletes it.
+  3. Account bumps `generation`, stores `restoreSnapshot`, issues a fresh bootstrap token, removes the old deployment listing, clears the stored credentials, and moves the record back to `provisioning`. Normal `replace` keeps the OIDC client record and rotates its secret at boot; reissue can delete the record.
+  4. The reconciler powers off the previous VM. The new VM restores the named snapshot before sending `boot-complete`. The reconciler verifies the pinned identity. Account claims the replacement using a signed assertion and matching link credential. First setup checks the enrollment code; a replacement carries the code field but checks the restored Account link instead. Once Account issues the owner a sign-in to the claimed replacement, the reconciler can delete the previous VM. Account does not wait for the Home callback to create a session. The source backup remains the way back.
   5. Watch progress with `node dist/cloud-computer-operator-main.js show <computer-id>` until `phase` is `"ready"` and `claim.receiptAt` is set.
 
 ### Second reconciler started by mistake
@@ -488,15 +488,15 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Managed Home installer contract
 
-- **Release feed.** The boot response has an optional `releaseManifestUrl`. The installer must validate it as a public HTTPS URL without credentials, query, or fragment, write it to the root-only `config.env` as the quoted `OPENSTEER_HOME_RELEASE_MANIFEST_URL`, and enable the managed update timer only when the URL is present. Boot still uses the six image digests in the pinned `release`. The update and rollback paths must require digests for all six services and must fail closed if a feed provides image tags. Publishing a feed or changing an Account setting does not modify an already installed VM's configuration.
-- **Late browser egress.** From the root maintenance task, when the Home still has no upstream, call `GET /v1/cloud-computers/<id>/egress` on its configured Account origin. Use HTTP Basic with `OPENSTEER_HOME_OIDC_CLIENT_ID` and `secrets/oidc_client_secret` from installation. Pass the authorization data through a root-only file or stdin, outside the process arguments and logs. A successful response contains either `{}` or `{"egress":{"url":"…","username":"…","password":"…"}}`. Throttle polling to once a minute. When credentials arrive, write the three root-only egress secret files and apply the existing egress Compose configuration, preserving the browser egress firewall boundary. Keep browsing paused after an empty response or failed refresh, and do not overwrite working credentials on errors. Account rejects a revoked or superseded credential and a suspended or deleting Home.
+- **Release feed.** The optional `releaseManifestUrl` must be HTTPS without credentials, a query, or a fragment and resolve only to public addresses. The installer saves it in root-only `config.env` as `OPENSTEER_HOME_RELEASE_MANIFEST_URL` and enables the managed update timer only when a feed is configured. The updater checks DNS again and pins the fetch to the checked addresses without a proxy or redirects. Boot uses the six digests in the pinned `release`; a managed update refuses tags. Publishing a feed or changing an Account setting does not change the configuration on an installed VM.
+- **Late browser egress.** While a managed Home has no upstream, root maintenance calls `GET /v1/cloud-computers/<id>/egress` on the configured Account origin. The timer fires 15 seconds after maintenance last became inactive. It sends HTTP Basic using `OPENSTEER_HOME_OIDC_CLIENT_ID` and `secrets/oidc_client_secret` through stdin, not process arguments. A successful response is `{}` or `{"egress":{"url":"…","username":"…","password":"…"}}`. On assignment, maintenance writes three `0444` secret files in the root-only Home directory for the egress mounts and recreates the proxy. Chromium's public page loads fail closed with no working upstream; this is a browser setting, not a firewall boundary against a task shell or an agent controlling Chromium. Account rejects a revoked or superseded credential and a suspended or deleting Home.
 
 ### Restoring a backup by hand on the VM
 
 - **How to recognise it**: You need to restore a Home directly on a VM (for example after in-place data corruption when you are keeping the same VM, or on a prepared replacement VM outside the `replace` command).
-- **What the system does**: `opensteer-home restore` refuses to run unless `--source-stopped` is passed, verifies the snapshot into new staging Docker volumes and a staging PostgreSQL instance, re-checks whether the destination is claimed (refusing to overwrite a claimed Home unless `--replace` is passed), swaps `volumes.env` atomically, and rolls back to the previous volume set if `start_pod` fails health checks.
+- **What the system does**: `opensteer-home restore` requires `--source-stopped` and verifies the snapshot in staging volumes and PostgreSQL. It checks destination claim state after stopping the gateway but while the Host still runs, and refuses a destination that reports claimed unless `--replace` is passed. The check is not an atomic fence against an in-flight claim. Restore swaps `volumes.env` atomically and rolls back if the restored pod fails health checks. If recovery cannot reconcile the journal and selector, it stops for an operator and keeps both sets.
 - **What the operator does**:
-  1. Permanently stop the source Home first so two VMs never run with the same Host identity.
+  1. Permanently stop the source Home first so two VMs never run with the same Host identity. Prevent claims on the destination during cutover, including claims already in flight.
   2. Ensure `/etc/opensteer-home/secrets/backup_{repository,password,accessKeyId,secretAccessKey}` exist (or export `RESTIC_REPOSITORY_FILE`, `RESTIC_PASSWORD_FILE`, `AWS_ACCESS_KEY_ID_FILE`, `AWS_SECRET_ACCESS_KEY_FILE`).
   3. On the target VM as root, run:
 
@@ -516,7 +516,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 ### Failed update and its rollback
 
-- **How to recognise it**: `systemctl status opensteer-home-update.service` or `journalctl -u opensteer-home-update.service` (or a manual `sudo opensteer-home update [MANIFEST.json]`) prints:
+- **How to recognise it**: `systemctl status opensteer-home-update.service` or `journalctl -u opensteer-home-update.service` (or a manual `sudo opensteer-home update`) prints:
   - `Home <new_version> did not become healthy. Restoring <old_version>.`
   - `The update was rolled back.`
   - If an update was interrupted mid-flight (for example by a reboot) and recovered on restart or maintenance: `Rolled back to the previous images. The pre-update dump is retained for manual recovery.`
@@ -537,5 +537,5 @@ The automated test suite and local Colima proof (`scripts/verify-home-deployment
 - **Live Cloudflare DNS**: creating, updating, and deleting unproxied `A` / `AAAA` records with the `Opensteer Cloud Computer` comment, and orphan DNS cleanup.
 - **Live backup erasure**: Secret Manager workload permissions and irreversible key deletion, S3-compatible version listing and deletion with prefix-scoped credentials, and principal rotation after deletion. Real restic backup and restore over the public internet remain unverified.
 - **`linux/amd64` Home images and VMs**: the local Colima proof builds and runs `linux/arm64` images only; `linux/amd64` Home container builds and runtime sandboxing (AppArmor, seccomp, bubblewrap, Chromium) have not been executed on a real amd64 Ubuntu 24.04 VM.
-- **Production systemd units and timers on a VM**: `opensteer-home-managed.service`, `opensteer-home.service`, `opensteer-home-update.timer`, `opensteer-home-backup.timer`, and `opensteer-home-maintain.timer` have not been run end-to-end on a real systemd VM (the Colima proof passes `--prepare` and invokes `opensteer-home` directly).
+- **Production systemd units and timers**: The Colima proof uses `--prepare` and invokes `opensteer-home` directly for bring-your-own installs, but waits for the managed installer and Home systemd services for managed boot and restore. It does not qualify the scheduled timers end-to-end on a production VM.
 - **Production restore from a named snapshot**: `replace <computer-id> <snapshot-id>` driving a fresh Hetzner VM through `managed-restore`, `boot-complete`, DNS cutover, identity verification, old-VM deletion, and re-claim has never been executed end-to-end against real infrastructure.

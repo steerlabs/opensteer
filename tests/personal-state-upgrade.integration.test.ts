@@ -12,7 +12,6 @@ import {
   migrateToLatest,
   migrationProvider,
 } from "../packages/database/src/index.js";
-import { requestInsert } from "../packages/database/src/request-persistence.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
 import {
   liveRequest,
@@ -148,8 +147,12 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
             'steer',2,'fingerprint',${owner.userId},'unknown',${JSON.stringify(teamSource)}::jsonb)`.execute(
         tx,
       );
-      const { originatingWatchActivationId: _watch, ...legacyRequest } = requestInsert(request);
-      await tx.insertInto("requests").values(legacyRequest).execute();
+      await sql`insert into requests(id,kind,mode,status,originating_thread_id,originating_run_id,
+        call_id,requested_by,required_actor,presentation,payload,response,resolved_at,resolved_by,created_at)
+        values(${request.id},${request.kind},${request.mode},${request.status},${threadId},${runId},
+          ${request.callId},${request.requestedBy},${request.requiredActor},${JSON.stringify(request.presentation)}::jsonb,
+          ${JSON.stringify(request.payload)}::jsonb,${JSON.stringify(request.response)}::jsonb,
+          ${request.resolvedAt},${request.resolvedBy},${request.createdAt})`.execute(tx);
       await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,
         approved_origin,authority_envelope,state)
         values(${createId("teamLink")},${teamSource.teamId},${createId("hostInstance")},'fixture',

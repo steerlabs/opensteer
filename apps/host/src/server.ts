@@ -39,6 +39,7 @@ import type { DeviceDriverManagementPort } from "./administration/device-driver-
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
+import { registerDeviceEnrollmentPreview } from "./organizations/device-enrollment-preview.js";
 import { registerWorkHomeRoutes, type WorkHomeService } from "./organizations/work-home.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
@@ -123,6 +124,7 @@ import {
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   OpensteerError,
+  threadAccessModeAtMost,
   TriggerRevisionIdSchema,
   type AuthenticatedSession,
   type EnvironmentId,
@@ -380,6 +382,10 @@ export interface HostServerDependencies {
   readonly connectionEffects?: ConnectionCommandEffects;
   /** Settles a person's answer to a Request about an external agent's direct operation. */
   readonly agentOperations?: {
+    lowerTaskMode?(
+      threadId: import("@opensteer/core").ThreadId,
+      mode: import("@opensteer/core").ThreadAccessMode,
+    ): Promise<void>;
     respond(input: {
       readonly requestId: import("@opensteer/core").RequestId;
       readonly expectedRevision: string;
@@ -467,7 +473,6 @@ export interface HostServerDependencies {
   >;
   readonly workHome?: {
     readonly service: WorkHomeService;
-    readonly read: () => Promise<import("@opensteer/control-plane-protocol").EffectiveWorkPolicy>;
   };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
@@ -1946,14 +1951,19 @@ export async function createHostServer(
             command.accessMode,
           );
         }
-        return {
-          ...(await dependencies.commands.updateThreadAccessMode({
-            accessMode: command.accessMode,
-            requestedBy: userId,
-            threadId: command.threadId,
-          })),
-          type: command.type,
-        };
+        const result = await dependencies.commands.updateThreadAccessMode({
+          accessMode: command.accessMode,
+          requestedBy: userId,
+          threadId: command.threadId,
+        });
+        if (!threadAccessModeAtMost(thread.accessMode, result.thread.accessMode)) {
+          dependencies.browser.lowerStandardCdpTaskMode(command.threadId, result.thread.accessMode);
+          await dependencies.agentOperations?.lowerTaskMode?.(
+            command.threadId,
+            result.thread.accessMode,
+          );
+        }
+        return { ...result, type: command.type };
       }
       case "node.stop": {
         const result = await dependencies.commands.stopNode({ ...command, requestedBy: userId });
@@ -2740,6 +2750,7 @@ export async function createHostServer(
     },
   );
 
+  registerDeviceEnrollmentPreview(app, dependencies.store.database);
   app.post(
     "/v1/runner/leave",
     { config: unversionedRoute, bodyLimit: 8 * 1024 },

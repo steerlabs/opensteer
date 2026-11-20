@@ -1,3 +1,4 @@
+import type { ComputerInventoryAuthority } from "../computer-use/computer-use-service.js";
 import {
   DeviceIdSchema,
   androidPhoneDefinitionId,
@@ -70,12 +71,15 @@ export interface DeviceComputerUseGateway extends Pick<
     deviceId: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams,
+    definition?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   installedApps(
     deviceId: DeviceId,
     owner: UserId,
     params: PhoneDisplayInstalledAppsParams,
     definition: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   holders(deviceId: DeviceId): Promise<ReturnType<ComputerUseService["holders"]>>;
   closeForConnection(deviceId: DeviceId, holding: ComputerUseHolding): Promise<void>;
@@ -198,18 +202,22 @@ export function deviceComputerUse(service: ComputerUseGateway): DeviceComputerUs
     id: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams,
+    definition?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   async function installedApps(
     id: DeviceId,
     owner: UserId,
     params: PhoneDisplayInstalledAppsParams,
     definition: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async function installedApps(
     id: DeviceId,
     owner: UserId,
     params: ComputerUseInstalledAppsParams | PhoneDisplayInstalledAppsParams,
     definition?: PhoneDisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
@@ -219,8 +227,15 @@ export function deviceComputerUse(service: ComputerUseGateway): DeviceComputerUs
           owner,
           PhoneDisplayInstalledAppsParamsSchema.parse(params),
           definition,
+          authority,
         )
-      : service.installedApps(id, owner, ComputerUseInstalledAppsParamsSchema.parse(params));
+      : service.installedApps(
+          id,
+          owner,
+          ComputerUseInstalledAppsParamsSchema.parse(params),
+          undefined,
+          authority,
+        );
   }
 
   return {

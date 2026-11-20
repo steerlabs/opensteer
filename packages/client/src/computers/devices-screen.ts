@@ -243,7 +243,8 @@ function homeRow(
       return {
         kind: fact.kind,
         machineId,
-        title: orgWords("org.work.title", { organization }),
+        // The organization is the mark's to say, once; the row says what it is.
+        title: deviceWords("devices.home.work"),
         detail: deviceWords("devices.home.cloud"),
         symbol: "cloud",
         badge: orgWords("org.work.badge", { organization }),

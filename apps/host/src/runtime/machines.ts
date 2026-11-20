@@ -543,7 +543,9 @@ function projectDeviceMachines(input: MachineProjectionInput): readonly MachineL
             ? { state: "disabled", reason: { kind: "access-off" } }
             : !phoneAccess
               ? available(false, "approval-required")
-              : screenStopped ? available(false, "driver-stopped") : physical,
+              : screenStopped
+                ? available(false, "driver-stopped")
+                : physical,
           view: !phoneAccess
             ? available(false, "approval-required")
             : screen && screenStatus?.ownerViewVersion !== 1 && physical.state === "ready"

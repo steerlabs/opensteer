@@ -232,7 +232,10 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       from integration_installations installation, generate_series(1, 1000)
       where installation.id = ${installationId}
     `.execute(database);
-    const inventory = await platform.listDiscoveryInventory({ ownerUserId: fixture.userId });
+    const inventory = await platform.listDiscoveryInventory({
+      ownerUserId: fixture.userId,
+      kind: "person",
+    });
     const ids = inventory.map(({ installation }) => installation.id);
     expect(ids).toHaveLength(1001);
     expect(new Set(ids).size).toBe(1001);
@@ -276,6 +279,65 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     expect(new Set(all.map(({ id }) => id)).size).toBe(1001);
     expect(all.at(-1)).toMatchObject({ id: last, title: "Zebra" });
     expect((await platform.installationsForPlugin("plg_last")).map(({ id }) => id)).toEqual([last]);
+  });
+
+  it("reserves a durable access Request's continuation before disabling its installation", async ({
+    storeFixture,
+  }) => {
+    const { store, platform, database } = storeFixture;
+    const fixture = await runningRunFixture(store, "disable-installation-request");
+    const installation = localServerInstallation(createIntegrationId("installation"));
+    const server = {
+      connectionRequirement: { kind: "none" as const },
+      id: createIntegrationId("server"),
+      name: "default",
+      status: "active" as const,
+      statusDetail: null,
+      catalog: { definitions: {}, tools: [] },
+      transport: {
+        launch: {
+          headers: {},
+          type: "streamable-http" as const,
+          url: "http://127.0.0.1:8123/mcp",
+        },
+        runnerId: null,
+        type: "runner" as const,
+      },
+    };
+    await platform.install({
+      actorUserId: fixture.userId,
+      installation,
+      requestId: "install-for-access-request",
+      servers: [server],
+    });
+    const { request } = await platform.integrationRequests.createIntegrationAccessRequest({
+      access: "read",
+      callId: "pending-access-before-disable",
+      installationId: installation.id,
+      originatingRunId: fixture.runId,
+      originatingThreadId: fixture.threadId,
+      reason: "Read records from the installation",
+      requestedBy: fixture.userId,
+      requestedServerId: server.id,
+    });
+    expect(request).toMatchObject({ mode: "durable", status: "pending" });
+    await platform.install({
+      actorUserId: fixture.userId,
+      installation: { ...installation, status: "disabled" },
+      requestId: "disable-with-pending-access",
+      servers: [server],
+    });
+    await expect(platform.requests.get(request.id)).resolves.toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+    await expect(
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", request.id)
+        .executeTakeFirst(),
+    ).resolves.toEqual({ status: "waiting" });
   });
 
   it("cancels pending access Requests and detaches resolved ones", async ({ storeFixture }) => {

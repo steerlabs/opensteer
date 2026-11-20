@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { workDeviceLimit, workEnrollNotice } from "@opensteer/client/host";
+import { workEnrollNotice, workEnrollRefusal } from "@opensteer/client/host";
 import { useWorkPolicy } from "@opensteer/client/react";
 import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
@@ -93,9 +93,11 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
   const [notifications, setNotifications] = useState(device.choice?.notifications ?? true);
   const nameId = useId();
   // A work Home says whose it is before this Mac joins, or that its organization keeps it out.
+  // Joining never waits on this: until the policy is known nothing is said, and the Home's own
+  // refusal is the backstop.
   const policy = useWorkPolicy(useOptionalShell()?.hostClient ?? null);
   const joining = workEnrollNotice(policy);
-  const limit = workDeviceLimit(policy);
+  const limit = workEnrollRefusal(policy);
   const working = device.stage !== null;
   const trimmed = name.trim();
   const failure =
@@ -111,7 +113,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
           action={
             <button
               className="btn btn--primary"
-              disabled={working || trimmed.length === 0 || policy === undefined || limit !== null}
+              disabled={working || trimmed.length === 0 || limit !== null}
               onClick={() => submit({ name: trimmed, access, notifications })}
               type="button"
             >

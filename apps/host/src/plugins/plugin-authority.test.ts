@@ -143,17 +143,23 @@ test("a plugin execution resumes only under the lineage and grant revision that 
     mode: "automatic",
     state: "completed",
     requestId: null,
-    result: { secret: "read under revision 1" },
+    result: {
+      data: { secret: "read under revision 1" },
+      targets: [{ plugin: "app_test", version: "v1", write: false }],
+    },
     reason: null,
     admittedAccessMode: "full-access",
   };
+  let allowResult = true;
   const executions = new PluginExecutions({
     records: { execution: async (id: string) => (id === row.id ? row : null) },
     authority: {
       scoped: async (_caller: unknown, work: () => Promise<unknown>) => work(),
       assert: async () => {},
       admit: pluginCaller,
+      canReadResult: async (_context: unknown, _mode: unknown) => allowResult,
     },
+    service: { request: async () => true },
   } as unknown as ConstructorParameters<typeof PluginExecutions>[0]);
   expect(await executions.resume(started, row.id)).toMatchObject({
     result: { secret: "read under revision 1" },
@@ -161,12 +167,7 @@ test("a plugin execution resumes only under the lineage and grant revision that 
   const { agentConnection: _, ...owner } = started as AgentCaller & { agentConnection: unknown };
   // A later revision, another connection, the person's own work, or the same lineage after its
   // effective mode dropped: none gets the earlier result.
-  for (const later of [
-    lineaged("mcn_first", 2),
-    lineaged("mcn_second", 1),
-    owner as AgentCaller,
-    lineaged("mcn_first", 1, "approval-required"),
-  ]) {
+  for (const later of [lineaged("mcn_first", 2), lineaged("mcn_second", 1), owner as AgentCaller]) {
     const refused = await executions.resume(later, row.id).then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -174,4 +175,8 @@ test("a plugin execution resumes only under the lineage and grant revision that 
     expect(refused).toMatchObject({ error: { code: "forbidden" } });
     expect(JSON.stringify(refused)).not.toContain("read under revision 1");
   }
+  allowResult = false;
+  const lowerMode = await executions.resume(lineaged("mcn_first", 1, "approval-required"), row.id);
+  expect(lowerMode).toMatchObject({ status: "completed" });
+  expect(lowerMode).not.toHaveProperty("result");
 });

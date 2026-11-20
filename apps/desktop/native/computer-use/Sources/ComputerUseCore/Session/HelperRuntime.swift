@@ -454,11 +454,13 @@ public final class HelperRuntime {
       try Self.requireUnlocked()
       let record = try await catalog.verifiedRecord(for: app)
       return try await Self.resolveTabWindow(record: record, budget: budget)
-    case "session.windows", "session.bind":
+    case "session.windows", "session.windowsExisting", "session.bind", "session.bindExisting":
+      let binding = method == "session.bind" || method == "session.bindExisting"
+      let noLaunch = method == "session.windowsExisting" || method == "session.bindExisting"
       let requested: SessionApp
       let sessionID: String
       let window: String?
-      if method == "session.bind" {
+      if binding {
         let params = try envelope.decodeParams(Wire.BindParams.self, method: method)
         requested = params.app
         sessionID = params.sessionId
@@ -475,7 +477,7 @@ public final class HelperRuntime {
       let cancellation = opened.cancellation
       let inventory = try await SessionWindows.windows(
         app: state, monitor: monitor, budget: budget,
-        check: { try cancellation.check() }, launching: window == nil,
+        check: { try cancellation.check() }, launching: !noLaunch && window == nil,
         processAcquired: { pid in
           try await MainActor.run {
             try Self.validateObservationCommit(
@@ -491,7 +493,7 @@ public final class HelperRuntime {
       try Self.validateObservationCommit(
         current: registry.sessions[sessionID], expected: opened, app: state,
         connectionID: connection.id)
-      if method == "session.windows" { return Wire.WindowsResult(windows: inventory) }
+      if !binding { return Wire.WindowsResult(windows: inventory) }
       let selected = try await SessionWindows.bind(app: state, window: window, monitor: monitor,
         check: { try cancellation.check(); try budget.check() })
       try await publishCurrent(of: state, in: opened, connectionID: connection.id)

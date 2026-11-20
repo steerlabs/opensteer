@@ -299,6 +299,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       rasterDemand: browser.rasterDemand === 1,
       computer: { name: stream.identity.name, runnerId: placement.runnerId },
       wholeContextCdp: browser.wholeContextCdp === 1 && browser.standardCdpLeaseRecovery === 1,
+      standardCdpLineage: browser.standardCdpLineage === 1,
       ...(browser.standardCdpLeaseRecovery === 1
         ? {
             standardCdpRecovery: {

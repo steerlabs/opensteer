@@ -3,6 +3,7 @@ import { BrowserSourcePairInputSchema } from "./v4.js";
 
 export const browserSourceTabWire = 6;
 export const browserSourceTabDetachWire = 7;
+export const browserSourceTabDetachReplayWire = 8;
 export const BrowserSourceLiveTabsCapabilitySchema = z.literal("live-tabs");
 export const BrowserSourcePairV6InputSchema = BrowserSourcePairInputSchema.extend({
   capability: BrowserSourceLiveTabsCapabilitySchema.optional(),
@@ -30,7 +31,11 @@ function frameSchema<Type extends "tab.command" | "tab.result" | "tab.event">(ty
   });
 }
 
-export const browserSourceTabHostSchemas = { "tab.command": frameSchema("tab.command") };
+const detachReceipt = z.strictObject({ type: z.literal("tab.detached"), shareId: z.uuid() });
+export const browserSourceTabHostSchemas = {
+  "tab.command": frameSchema("tab.command"),
+  "tab.detached": detachReceipt,
+};
 export const browserSourceTabClientSchemas = {
   "tab.result": frameSchema("tab.result"),
   "tab.event": frameSchema("tab.event"),
@@ -46,7 +51,7 @@ export const browserSourceTabClientSchemas = {
     title: z.string().max(1024),
     url: z.string().max(8192),
   }),
-  "tab.detached": z.strictObject({ type: z.literal("tab.detached"), shareId: z.uuid() }),
+  "tab.detached": detachReceipt,
   "tab.unshared": z.strictObject({ type: z.literal("tab.unshared"), shareId: z.uuid() }),
 };
 

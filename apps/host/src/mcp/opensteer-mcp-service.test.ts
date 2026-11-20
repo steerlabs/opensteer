@@ -18,6 +18,7 @@ import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/types.js";
 import { RequestHold } from "./request-hold.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
+import { operationArgumentDigest } from "../agent-sessions/agent-session-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 
 const servers: Server[] = [];
@@ -935,6 +936,99 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
+  it.each([
+    ["connection", "browser_use", "completed"],
+    ["connection", "computer_use", "completed"],
+    ["connection", "computer_use", "pending"],
+    ["run", "computer_use", "completed"],
+  ] as const)("delivers a text receipt for %s %s (%s)", async (caller, tool, status) => {
+    const f = await httpFixture();
+    const receipt = {
+      status,
+      taskId: f.thread.id,
+      operationId: createId("agentOperation"),
+      ...(status === "pending"
+        ? { next: "After approval, use the same arguments.\nInclude operationId." }
+        : {}),
+    };
+    const body = { type: "text" as const, text: "Original script output" };
+    f.handlers[tool] = async () => ({
+      content: [body],
+      structuredContent: { ...receipt, other: "structured only" },
+    });
+    const client = await connect(f.url, caller);
+    try {
+      const result = await client.callTool({
+        name: tool,
+        arguments: {
+          code: "print(1)",
+          ...(tool === "computer_use" && caller === "connection"
+            ? { computerId: createId("device") }
+            : {}),
+        },
+      });
+      expect(result.structuredContent).toEqual({ ...receipt, other: "structured only" });
+      expect(result.content).toEqual(
+        caller === "connection"
+          ? [body, { type: "text", text: `Receipt: ${JSON.stringify(receipt)}` }]
+          : [body],
+      );
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
+
+  it("replays a completed computer_apps listing by operation ID for its connection only", async () => {
+    const f = fixture();
+    const computerId = createId("device");
+    const operationId = createId("agentOperation");
+    const argumentDigest = operationArgumentDigest("computer_apps", {
+      computerId,
+      query: "",
+      limit: 20,
+    });
+    const query = {
+      innerJoin: vi.fn().mockReturnThis(),
+      selectAll: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      executeTakeFirst: vi.fn(async () => ({
+        id: operationId,
+        argumentDigest,
+        taskId: f.thread.id,
+        state: "completed",
+        resultSummary: { count: 3 },
+      })),
+    };
+    const service = new OpensteerMcpService({
+      ...f.options,
+      store: { ...f.options.store, database: { selectFrom: vi.fn(() => query) } as never },
+    });
+    try {
+      const args = { computerId, operationId };
+      await expect(
+        service.callTool("connection", "computer_apps", args, { operationKey: "new" }),
+      ).resolves.toEqual({
+        status: "completed",
+        operationId,
+        taskId: f.thread.id,
+        summary: { count: 3 },
+      });
+      expect(query.where).toHaveBeenCalledWith("agentOperations.id", "=", operationId);
+      expect(query.where).toHaveBeenCalledWith("agentOperations.connectionId", "=", "mcn_test");
+      expect(f.handlers.computer_apps).not.toHaveBeenCalled();
+      for (const caller of ["run", "program"])
+        await expect(
+          service.callTool(caller, "computer_apps", args, { operationKey: "new" }),
+        ).rejects.toMatchObject({ issues: [expect.objectContaining({ keys: ["operationId"] })] });
+      expect(query.executeTakeFirst).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+      await f.service.close();
+    }
+  });
+
   it("keeps safe image metadata and sends each image once", async () => {
     const f = await httpFixture();
     const image = {

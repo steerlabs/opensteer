@@ -105,6 +105,7 @@ export interface BrowserOpenTiming {
 export interface BrowserRuntimeHealth {
   wireVersion: 2;
   standardCdp: 1;
+  standardCdpLineage: 1;
   wholeContextCdp?: 1;
   standardCdpLeaseRecovery: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
@@ -354,6 +355,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return {
       wireVersion: 2,
       standardCdp: 1,
+      standardCdpLineage: 1,
       standardCdpLeaseRecovery: 1,
       ...(this.launcher.hostCost === "process" && this.localProfileStorage?.engine === "chromium"
         ? { wholeContextCdp: 1 as const }
@@ -658,7 +660,11 @@ export class BrowserRuntime implements NativePresentationSource {
           "forbidden",
           "Whole-context CDP requires an exclusive saved profile.",
         );
-      const client = active.controller.openStandardCdp(wholeContext, onOverflow);
+      const client = active.controller.openStandardCdp(
+        wholeContext,
+        onOverflow,
+        claims.standardCdpLineage,
+      );
       if (wholeContext && exclusive) {
         const entry = { generation: exclusive.generation, client };
         const lease = { generation: exclusive.generation, active: entry };
@@ -876,7 +882,8 @@ export class BrowserRuntime implements NativePresentationSource {
             beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
-            claimTarget: (targetId) => sessionRouter.claimTarget(claims.sessionId, targetId),
+            claimTarget: (targetId, openerId) =>
+              sessionRouter.claimTarget(claims.sessionId, targetId, openerId),
             releaseTarget: (targetId) => sessionRouter.releaseTarget(claims.sessionId, targetId),
             // A person who started the browser from a view gets its first page
             // at that view's size, before anything loads there.

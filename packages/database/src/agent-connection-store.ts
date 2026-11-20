@@ -19,7 +19,6 @@ import {
 import {
   AgentConnectionIdentityAtConsentSchema,
   AgentDirectoryDocumentSchema,
-  isIdentityStillVerified,
   type AgentDirectoryDocument,
   type AgentConnectionIdentityAtConsent,
 } from "@opensteer/control-plane-protocol";
@@ -27,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { sql, type Kysely, type Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
+import { isIdentityStillVerified } from "./agent-directory-verification.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
@@ -196,6 +196,24 @@ export class AgentConnectionStore {
       .execute();
   }
 
+  async nextMaintenance(retryAt: Date): Promise<Date | null> {
+    const { rows } = await sql<{ next: Date | null }>`
+      select least(
+        (select min(expires_at) from agent_connections
+          where removed_at is null and revoked_at is null
+            and (cleanup_reason is null or cleanup_reason = 'narrowed')),
+        (select ${retryAt}::timestamptz where exists (
+          select 1 from agent_connections
+          where removed_at is null and cleanup_requested_at is not null
+            and cleanup_completed_at is null
+        )),
+        (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
+          from agent_embedder_assertion_claims)
+      ) as next
+    `.execute(this.database);
+    return rows[0]?.next ?? null;
+  }
+
   async activate(id: string, tokenHash: string): Promise<boolean> {
     const result = await this.database
       .updateTable("agentConnections")
@@ -358,7 +376,8 @@ export class AgentConnectionStore {
         .where("id", "=", current.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if (changed) await closeObsoleteAgentOperationRequests(tx, current.id, row.grantRevision, this.now());
+      if (changed)
+        await closeObsoleteAgentOperationRequests(tx, current.id, row.grantRevision, this.now());
       return { connection: view(row, "active"), narrowed };
     });
   }

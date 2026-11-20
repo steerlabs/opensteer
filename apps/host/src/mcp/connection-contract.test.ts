@@ -1,5 +1,5 @@
-import { agentTools, normalizeToolError } from "@opensteer/agent-tools";
-import { AgentGrantSchema, createId, requestTextMaxLength } from "@opensteer/core";
+import { agentTools, connectionDirectTools, normalizeToolError } from "@opensteer/agent-tools";
+import { AgentGrantSchema, createId, requestOperationCallsMaxLength } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { measureMcpContext } from "../agents/agent-context-budget.test-support.js";
 import { agentToolFailure } from "./agent-tool-failure.js";
@@ -28,6 +28,7 @@ describe("the connection's actual MCP listing", () => {
     ["Chrome tabs only", selected(false, chrome)],
     ["phone only", selected(false, phone)],
     ["plugins only", selected(false, plugin)],
+    ["read-only plugin", selected(false, { ...plugin, access: "read" })],
     ["tasks only", selected(true)],
     ["empty", selected(false)],
   ] as const)("names only callable tools and supported shapes for %s", async (_name, grant) => {
@@ -44,6 +45,23 @@ describe("the connection's actual MCP listing", () => {
     expect(names.has("tab_close")).toBe(false);
     expect(tools.every((tool) => tool.outputSchema === undefined)).toBe(true);
     const input = (name: string) => tools.find((tool) => tool.name === name)?.inputSchema;
+    const toolsWithReceiptId = tools
+      .filter(({ inputSchema }) => inputSchema.properties?.operationId)
+      .map(({ name }) => name);
+    expect(toolsWithReceiptId.toSorted()).toEqual(
+      [...connectionDirectTools].filter((name) => names.has(name)).toSorted(),
+    );
+    if (grant.scope === "everything")
+      expect(toolsWithReceiptId.toSorted()).toEqual([...connectionDirectTools].toSorted());
+    for (const name of toolsWithReceiptId) {
+      expect(input(name)?.properties?.operationId, name).toEqual({ type: "string" });
+      expect(input(name)?.required ?? [], name).not.toContain("operationId");
+    }
+    const inventory = input("computer_apps");
+    if (inventory) {
+      expect(inventory.properties?.taskId).toEqual({ type: "string" });
+      expect(inventory.required ?? []).not.toContain("taskId");
+    }
     const question = input("ask_person");
     if (question) {
       expect(question.properties?.questions).toMatchObject({
@@ -60,7 +78,9 @@ describe("the connection's actual MCP listing", () => {
       if (names.has(name)) expect(input(name)?.required).toContain("tabId");
     for (const name of ["browser_use", "computer_use", "plugin_execute"])
       if (names.has(name))
-        expect(input(name)?.properties?.code).toMatchObject({ maxLength: requestTextMaxLength });
+        expect(input(name)?.properties?.code).toMatchObject({
+          maxLength: requestOperationCallsMaxLength,
+        });
     if (grant.scope === "selected" && grant.resources[0]?.kind === "chrome-tabs") {
       expect([...names].sort()).toEqual([
         "ask_person",
@@ -84,6 +104,14 @@ describe("the connection's actual MCP listing", () => {
       ]);
     if (grant.scope === "selected" && grant.resources[0]?.kind === "computer-app")
       expect(input("computer_use")?.properties).not.toHaveProperty("app");
+    if (
+      grant.scope === "selected" &&
+      grant.resources[0]?.kind === "plugin" &&
+      grant.resources[0].access === "read"
+    ) {
+      expect(names.has("plugin_call")).toBe(true);
+      expect(names.has("plugin_execute")).toBe(false);
+    }
     if (grant.scope === "selected" && !grant.tasks)
       expect(names.has("opensteer_ai_account_list")).toBe(false);
     if (grant.scope === "selected" && grant.tasks) {
@@ -95,18 +123,24 @@ describe("the connection's actual MCP listing", () => {
     if (names.has("browser_use")) expect(instructions).toContain("returned operationId");
   });
 
-  it("omits both Passwords tools and their instructions on a managed Cloud Home", async () => {
-    const { tools, instructions } = await measureMcpContext("connection", {
-      grant: full,
-      connectionPasswords: false,
-    });
-    expect(tools.map(({ name }) => name)).not.toContain("saved_login_request");
-    expect(tools.map(({ name }) => name)).not.toContain("card_request");
-    expect(instructions).not.toMatch(/saved_login_request|card_request|Opensteer fills/u);
-    expect(tools.find(({ name }) => name === "browser_connect")?.description).toContain(
-      "context.newCDPSession(page) works",
-    );
-  });
+  it.each([
+    ["a managed Cloud Home", false],
+    ["a self-hosted Linux Home with no Passwords broker", () => false],
+  ] as const)(
+    "omits both Passwords tools and their instructions on %s",
+    async (_home, available) => {
+      const { tools, instructions } = await measureMcpContext("connection", {
+        grant: full,
+        connectionPasswords: available,
+      });
+      expect(tools.map(({ name }) => name)).not.toContain("saved_login_request");
+      expect(tools.map(({ name }) => name)).not.toContain("card_request");
+      expect(instructions).not.toMatch(/saved_login_request|card_request|Opensteer fills/u);
+      expect(tools.find(({ name }) => name === "browser_connect")?.description).toContain(
+        "context.newCDPSession(page) works",
+      );
+    },
+  );
 
   it.each(["Your organization doesn't allow this", "Sign-in and new work on this Home have ended"])(
     "classifies a work Home SQLSTATE 42501 gate: %s",

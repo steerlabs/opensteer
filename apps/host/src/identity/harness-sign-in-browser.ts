@@ -49,6 +49,7 @@ export interface HarnessSignInBrowserDependencies {
 
 interface OpenSignIn {
   readonly ownerId: UserId;
+  readonly profileKey: string;
   readonly tabId: TabId;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly url: string;
@@ -64,6 +65,7 @@ interface OpenSignIn {
 export class HarnessSignInBrowser {
   readonly #dependencies: HarnessSignInBrowserDependencies;
   readonly #open = new Map<string, OpenSignIn>();
+  readonly #closing = new Map<string, Set<Promise<void>>>();
   readonly #profiles = new Map<string, Promise<BrowserProfileId>>();
 
   constructor(dependencies: HarnessSignInBrowserDependencies) {
@@ -120,7 +122,7 @@ export class HarnessSignInBrowser {
     if (!open) return;
     this.#open.delete(key);
     clearTimeout(open.timer);
-    await this.#close(open.ownerId, open.tabId);
+    await this.#close(open.ownerId, open.tabId, open.profileKey);
   }
 
   async #openTab(
@@ -130,6 +132,7 @@ export class HarnessSignInBrowser {
     url: string,
     remaining: () => number,
   ): Promise<TabId> {
+    const profileKey = `${ownerId}:${runnerId}`;
     const existing = this.#open.get(key);
     if (
       existing?.ownerId === ownerId &&
@@ -143,7 +146,7 @@ export class HarnessSignInBrowser {
     if (existing && this.#open.get(key) === existing) {
       this.#open.delete(key);
       clearTimeout(existing.timer);
-      await this.#close(existing.ownerId, existing.tabId);
+      await this.#close(existing.ownerId, existing.tabId, existing.profileKey);
     }
     if (!this.#dependencies.browserAvailable(runnerId))
       throw new OpensteerError({
@@ -153,6 +156,7 @@ export class HarnessSignInBrowser {
           "The computer this AI engine runs on has no browser to finish this sign-in in. Open the sign-in page on this device instead.",
       });
     const profileId = await this.#profile(ownerId, runnerId);
+    await this.#waitForCloses(profileKey);
     if (remaining() === 0) throw signInEnded();
     const tabId = await this.#dependencies.openTab(
       ownerId,
@@ -162,17 +166,17 @@ export class HarnessSignInBrowser {
     // The attempt ended, or another open replaced this one, while the page opened.
     const timeout = remaining();
     if (timeout === 0 || this.#open.has(key)) {
-      await this.#close(ownerId, tabId);
+      await this.#close(ownerId, tabId, profileKey);
       throw signInEnded();
     }
     const timer = setTimeout(() => {
       const open = this.#open.get(key);
       if (open?.tabId !== tabId) return;
       this.#open.delete(key);
-      void this.#close(ownerId, tabId);
+      void this.#close(ownerId, tabId, profileKey);
     }, timeout);
     timer.unref?.();
-    this.#open.set(key, { ownerId, tabId, timer, url });
+    this.#open.set(key, { ownerId, profileKey, tabId, timer, url });
     return tabId;
   }
 
@@ -206,11 +210,30 @@ export class HarnessSignInBrowser {
     return created;
   }
 
-  async #close(ownerId: UserId, tabId: TabId): Promise<void> {
-    try {
-      await this.#dependencies.closeTab(ownerId, tabId, `harness-sign-in-close:${tabId}`);
-    } catch (error) {
-      this.#dependencies.onError(error);
+  #close(ownerId: UserId, tabId: TabId, profileKey: string): Promise<void> {
+    const closing = (async () => {
+      try {
+        await this.#dependencies.closeTab(ownerId, tabId, `harness-sign-in-close:${tabId}`);
+      } catch (error) {
+        this.#dependencies.onError(error);
+      }
+    })();
+    const pending = this.#closing.get(profileKey) ?? new Set<Promise<void>>();
+    pending.add(closing);
+    this.#closing.set(profileKey, pending);
+    void closing.finally(() => {
+      pending.delete(closing);
+      if (pending.size === 0 && this.#closing.get(profileKey) === pending)
+        this.#closing.delete(profileKey);
+    });
+    return closing;
+  }
+
+  async #waitForCloses(profileKey: string): Promise<void> {
+    for (;;) {
+      const pending = this.#closing.get(profileKey);
+      if (!pending || pending.size === 0) return;
+      await Promise.all(pending);
     }
   }
 

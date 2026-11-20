@@ -507,24 +507,9 @@ export class RequestStore {
     reason: RequestCancellationReason,
   ): Promise<readonly RequestId[]> {
     if (!requestIds.length) return Promise.resolve([]);
-    return commitPersonalMutation(this.#database, async (tx) => {
-      await tx
-        .selectFrom("threads")
-        .select("id")
-        .where(
-          "id",
-          "in",
-          tx
-            .selectFrom("requests")
-            .select("originatingThreadId")
-            .where("id", "in", [...requestIds])
-            .where("status", "=", "pending"),
-        )
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      return cancelPending(tx, { requestIds, reason, resolvedAt: new Date() });
-    });
+    return commitPersonalMutation(this.#database, (tx) =>
+      cancelPending(tx, { requestIds, reason, resolvedAt: new Date() }),
+    );
   }
   async endPluginExecutionRequest(
     requestId: RequestId,

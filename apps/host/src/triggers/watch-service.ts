@@ -2,13 +2,18 @@ import {
   triggerProgramCompatibilityReason,
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
-import { OpensteerError, runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@opensteer/core";
+import {
+  OpensteerError,
+  runnerAgentToolsFailure,
+  type EnvironmentId,
+  type TriggerId,
+} from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
 import { attemptStopStateCapability } from "@opensteer/protocol";
 import {
-  TRIGGER_PROGRAM_VERSION_REFUSAL,
+  TriggerProgramSchema,
   WATCH_CAPABILITY_RENEWAL_MS,
   WATCH_START_RETRY_MS,
 } from "@opensteer/triggers";
@@ -25,7 +30,6 @@ type WatchStore = Pick<
   TriggerStore,
   | "applyWatchStatus"
   | "assertActiveWatchBinding"
-  | "recordWatchUnavailable"
   | "reconcileWatchesForRunner"
   | "watchEnvironmentForTrigger"
   | "watchEnvironments"
@@ -160,15 +164,26 @@ export class WatchService {
       stdoutTail: status.stdoutTail,
     });
     this.#onChanged();
-    if (result.autoPaused || ((status.observed === "stopped" || status.observed === "expired") &&
-      result.activation.desired === "active"))
+    if (
+      result.autoPaused ||
+      ((status.observed === "stopped" || status.observed === "expired") &&
+        result.activation.desired === "active")
+    )
       this.changed(result.activation.environmentId);
   }
   async reconcile(environmentId: EnvironmentId): Promise<void> {
     const identity = this.#runners.identityForEnvironment(environmentId);
     if (!identity) return;
     const leaseExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+    const unavailableReason =
+      runnerAgentToolsFailure(identity.capabilities) ??
+      (await triggerProgramCompatibilityReason(
+        this.#runnerStore,
+        environmentId,
+        TriggerProgramSchema.shape.toolContractVersion.value,
+      ));
     const snapshot = await this.#store.reconcileWatchesForRunner({
+      ...(unavailableReason !== null ? { unavailableReason } : {}),
       environmentId,
       leaseExpiresAt,
       runnerBootId: identity.bootId,
@@ -177,27 +192,7 @@ export class WatchService {
     });
     const desired: WatchReconcileActivation[] = [];
     const lineage: WatchCapabilityScope[] = [];
-    const unavailable: {
-      readonly activationId: (typeof snapshot.activations)[number]["activation"]["id"];
-      readonly executionGeneration: number;
-      readonly reason: string;
-    }[] = [];
     for (const context of snapshot.activations) {
-      const incompatibility =
-        runnerAgentToolsFailure(identity.capabilities) ??
-        (await triggerProgramCompatibilityReason(
-          this.#runnerStore,
-          context.activation.environmentId,
-          context.toolContractVersion,
-        ));
-      if (incompatibility || context.toolContractVersion !== 5) {
-        unavailable.push({
-          activationId: context.activation.id,
-          executionGeneration: context.activation.executionGeneration,
-          reason: incompatibility ?? TRIGGER_PROGRAM_VERSION_REFUSAL,
-        });
-        continue;
-      }
       const scope: WatchCapabilityScope = {
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
@@ -233,12 +228,13 @@ export class WatchService {
         agentHome: context.agentHome,
       });
     }
+    if (snapshot.unavailable) this.#onChanged();
     await this.#runners.reconcileWatches(
       environmentId,
       snapshot.reconcileGeneration,
       desired,
       AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(30_000)]),
-      lineage.length ? {
+      {
         connectionGeneration: identity.connectionGeneration,
         filterDesired: async () => {
           for (const scope of lineage) {
@@ -246,24 +242,17 @@ export class WatchService {
               await this.#store.assertActiveWatchBinding(scope);
             } catch (error) {
               if (!(error instanceof OpensteerError) || error.code !== "forbidden") throw error;
-              const index = desired.findIndex(({ activationId }) => activationId === scope.activationId);
+              const index = desired.findIndex(
+                ({ activationId }) => activationId === scope.activationId,
+              );
               if (index !== -1) desired.splice(index, 1);
             }
           }
           return desired;
         },
-      } : undefined,
+      },
     );
-    for (const activation of unavailable) {
-      await this.#store.recordWatchUnavailable({
-        ...activation,
-        runnerBootId: identity.bootId,
-        runnerConnectionGeneration: identity.connectionGeneration,
-        runnerId: identity.runnerId,
-      });
-      this.#onChanged();
-    }
-    this.#scheduleStartRetry(environmentId, unavailable.length > 0);
+    this.#scheduleStartRetry(environmentId, snapshot.unavailable === true);
   }
   #scheduleStartRetry(environmentId: EnvironmentId, waiting: boolean): void {
     this.#clearStartRetry(environmentId);

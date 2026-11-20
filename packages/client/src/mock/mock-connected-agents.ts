@@ -39,7 +39,7 @@ const mockUserId = UserIdSchema.parse("usr_0192f4a1-0000-4000-8000-000000000001"
 const shoppingProfile = BrowserProfileIdSchema.parse("bpr_00000000-0000-4000-8000-000000000003");
 const day = 24 * 60 * 60_000;
 
-const warning = "Only approve if you started this yourself.";
+const warning = "Only allow this if you started it yourself.";
 const recordedAt = "2026-11-03T10:00:00.000Z";
 
 /** What a Home records and says about who asked, as its consent read and list carry it. */

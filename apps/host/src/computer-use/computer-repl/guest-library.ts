@@ -117,7 +117,9 @@ export const computerGuestLibrary = String.raw`
       return new Phone({...phone,...await call("bind",phone.id)});
     };
     Object.defineProperty(globalThis, "target", { get: bindTarget });
-    delete globalThis.tab;
+    globalThis.tab = async () => {
+      throw new ComputerError("not_found", "Use target for the shared app or phone (app() or phone()). See help().");
+    };
     globalThis.help = () => print([
       "Computer script globals: await target (the app or phone named in the tool call), print(...values), sleep(ms), help(). Legacy app(query, {computer}), apps(), phone(query) and phones() reach the same target.",
       "App: id, name, computer; await windows() to list windows, await window(windowId) to bind one, or await window() for the default.",

@@ -271,6 +271,8 @@ export interface ComputerUseSessionAuthority {
   readonly threadId: ThreadId;
   /** Throws a `forbidden` refusal once the session ended or no longer reaches this target. */
   readonly assertActive: () => Promise<void>;
+  readonly assertDispatch?: () => Promise<void>;
+  readonly driver?: DeviceDriverIdentity;
 }
 
 /** The authenticated attempt, including the executing Runner distinct from the target computer. */
@@ -346,7 +348,14 @@ export interface ComputerUseStopLedger {
 }
 
 /** Admission rechecks the surface grant in the same turn as session checks and send. */
-type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Result>;
+export type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Result>;
+
+export interface ComputerInventoryAuthority {
+  readonly admit: ComputerUseAdmission;
+  readonly assertCurrent: () => Promise<void>;
+  readonly signal: AbortSignal;
+  readonly driver?: DeviceDriverIdentity;
+}
 
 export interface ComputerUseServiceOptions {
   readonly deploymentId: DeploymentId;
@@ -988,6 +997,7 @@ export class ComputerUseService {
         );
       }
       sent = await admit(async () => {
+        const connected = agentSessionAuthority(authority);
         await this.#authorizeSession(session, authority);
         checkSession();
         checkSaved();
@@ -995,6 +1005,8 @@ export class ComputerUseService {
           session.deviceId,
           target.kind === "display" ? target.definitionId : undefined,
         );
+        if (connected?.driver && !sameDriver(connected.driver, route))
+          throw sessionEndedBeforeSend(session.deviceName, target);
         if (
           session.route &&
           (!this.#hub.routeCurrent?.(session.route) || !sameDriver(session.route, route))
@@ -1039,6 +1051,8 @@ export class ComputerUseService {
             ),
           );
         }
+        if (connected?.assertDispatch) await connected.assertDispatch();
+        checkSession();
         if (target.kind === "app") addedApp = this.#rememberApp(session, target.app);
         else this.#reserveDisplay(session, target.definitionId);
         if (savedDeadline !== undefined) timeoutMs = Math.max(1, savedDeadline - this.#now());
@@ -1436,23 +1450,27 @@ export class ComputerUseService {
 
   // ---- Mac operations --------------------------------------------------
 
-  /** Owned inventory needs no screen-control grant or session, including while paused. */
+  /** Owned inventory may run while paused. Connected inventory supplies its admission and signal. */
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams,
+    definitionId?: undefined,
+    authority?: ComputerInventoryAuthority,
   ): Promise<z.infer<typeof ComputerUseInstalledAppsResultSchema>>;
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: AndroidPhoneInstalledAppsParams,
     definitionId: DisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedApps(
     deviceId: ComputerTargetId,
     actorUserId: UserId,
     params: ComputerUseInstalledAppsParams | AndroidPhoneInstalledAppsParams,
     definitionId?: DisplayDefinitionId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> | PhoneDisplayInstalledAppsResult
   > {
@@ -1470,6 +1488,7 @@ export class ComputerUseService {
         timeoutMs: machineTimeoutMs,
       },
       actorUserId,
+      authority,
     );
     if (outcome.kind === "error")
       throw new ComputerUseError(outcome.code, outcome.message, outcome.retryable);
@@ -2145,16 +2164,28 @@ export class ComputerUseService {
       readonly timeoutMs: number;
     },
     actorUserId?: UserId,
+    authority?: ComputerInventoryAuthority,
   ): Promise<ComputerUseOutcome> {
     // The frame leaves inside the computer's admission turn, the same queue a
     // disconnect and an access change are decided in, and the answer is waited
     // for outside it so a slow app never holds up the turn that is trying to
     // stop it.
-    const sent = await (
-      this.#hub.withDeviceAdmission?.bind(this.#hub) ??
-      this.#hub.withRunnerAdmission.bind(this.#hub)
-    )(input.deviceId, async () => {
+    const admit: ComputerUseAdmission =
+      authority?.admit ??
+      ((send) =>
+        (
+          this.#hub.withDeviceAdmission?.bind(this.#hub) ??
+          this.#hub.withRunnerAdmission.bind(this.#hub)
+        )(input.deviceId, send));
+    const sent = await admit(async () => {
       if (actorUserId) await this.#assertMachineOwner(input.deviceId, actorUserId);
+      const route = authority?.driver
+        ? await this.#hub.captureRoute?.(input.deviceId, input.definitionId)
+        : input.route;
+      if (authority?.driver && !sameDriver(authority.driver, route))
+        throw new ComputerUseError("offline", "The device driver changed.");
+      if (authority) await authority.assertCurrent();
+      authority?.signal.throwIfAborted();
       return this.#hub.sendComputerUse({
         access: input.access,
         app: input.app,
@@ -2166,7 +2197,8 @@ export class ComputerUseService {
         // bridge connection's bookkeeping, not as authority over an app.
         runId: input.runId ?? runlessRunId(),
         runnerId: input.deviceId,
-        route: input.route,
+        route,
+        ...(authority ? { signal: authority.signal } : {}),
         sessionId: input.sessionId ?? mintComputerUseSessionId(),
         threadTitle: null,
         timeoutMs: input.timeoutMs,
@@ -2505,10 +2537,11 @@ function normalizedMachine(machine: ComputerUseMachine): {
         deviceName: machine.runnerName,
       };
 }
-function sameDriver(left?: DeviceDriverRoute, right?: DeviceDriverRoute): boolean {
+function sameDriver(left?: DeviceDriverIdentity, right?: DeviceDriverIdentity): boolean {
   return (
     left?.deviceId === right?.deviceId &&
     left?.runnerId === right?.runnerId &&
+    left?.role === right?.role &&
     left?.generation === right?.generation
   );
 }

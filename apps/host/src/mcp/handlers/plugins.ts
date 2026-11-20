@@ -7,9 +7,11 @@ import { z } from "zod";
 import {
   agentGrantAccess,
   AgentOperationIdSchema,
+  agentOperationHoldMs,
   OpensteerError,
   type ThreadAccessMode,
-  requestTextMaxLength,
+  type ThreadId,
+  requestOperationCallsMaxLength,
   threadAccessModeAtMost,
   ToolBlockedError,
   type Blocked,
@@ -19,7 +21,7 @@ import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
-import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
+import { callerLineage, type AgentCaller, type ConnectionCaller } from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import type { PluginExecutions } from "../../plugins/plugin-executions.js";
@@ -29,10 +31,15 @@ import { keysetPage } from "../../plugins/keyset-page.js";
 import { engineInstallReceipt } from "../../plugins/engine-storage.js";
 import { localNamespace, localToolPath, pluginNamespace } from "../../plugins/provider-names.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import { delay } from "@opensteer/shared/delay";
 import { directResult, requireDirectWork } from "./direct.js";
 import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
+
+function pluginInputNext(executionId: string, taskId: ThreadId) {
+  return `Waiting for the person's input in Needs you. Call plugin_resume(${JSON.stringify({ executionId, taskId })}) to wait up to ${agentOperationHoldMs / 1_000} seconds. Avoid polling in a tight loop.`;
+}
 
 /** The catalog's feed could not be read; a later call may list it. */
 export const catalogUnavailable: Blocked = {
@@ -267,6 +274,13 @@ export class PluginToolHandlers {
     };
     let continuationWrites = false;
     let continuationMode: ThreadAccessMode | null = null;
+    let continuation:
+      | {
+          taskId: ThreadId;
+          row: Awaited<ReturnType<PluginExecutions["sessionExecution"]>>;
+          originId: z.infer<typeof AgentOperationIdSchema>;
+        }
+      | undefined;
     if ("calls" in call.input) {
       tool = "plugin_call";
       input = { calls: call.input.calls };
@@ -332,14 +346,7 @@ export class PluginToolHandlers {
         (item) => canonicalJson(pluginGrantTarget(item.id)) === originTarget,
       );
       if (provider?.version !== receipt.targetGeneration) throw unavailable();
-      if (row.state === "waiting" || row.state === "answered") {
-        const request = row.requestId ? await o.store.requests.get(row.requestId) : undefined;
-        if (request?.status !== "fulfilled" && request?.status !== "declined")
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The plugin is waiting for the person's answer in Needs you.",
-          });
-      }
+      continuation = { taskId, row, originId: origin.data };
       continuationWrites = receipt.effect === "write";
       continuationMode = row.admittedAccessMode;
       target = {
@@ -349,10 +356,10 @@ export class PluginToolHandlers {
         readOnly: true,
       };
     }
-    if (calls.length > requestTextMaxLength)
+    if (calls.length > requestOperationCallsMaxLength)
       throw new OpensteerError({
         code: "bad_request",
-        message: "Use fewer than 20,000 characters per connected plugin operation.",
+        message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
       });
     const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
     const access = agentGrantAccess(caller.grant, grant);
@@ -366,6 +373,38 @@ export class PluginToolHandlers {
       ((!target.readOnly || continuationWrites) && currentAccess === "read-only")
     )
       throw unavailable();
+    if (continuation) {
+      const { taskId, originId } = continuation;
+      let { row } = continuation;
+      const deadline = Date.now() + agentOperationHoldMs;
+      while ((row.state === "waiting" || row.state === "answered") && row.requestId) {
+        signal?.throwIfAborted();
+        const request = await o.store.requests.get(row.requestId);
+        if (request?.status !== "pending") break;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          const live = await o.store.admitExecution({
+            ownerUserId: caller.userId,
+            subject: { kind: "binding", bindingId: `session:${row.agentSessionId}` },
+          });
+          if (
+            live.agentConnection?.grantRevision !== caller.grantRevision ||
+            (continuationMode && !threadAccessModeAtMost(continuationMode, live.mode))
+          )
+            throw unavailable();
+          return {
+            status: "pending",
+            taskId,
+            operationId: originId,
+            executionId: row.id,
+            requestId: row.requestId,
+            next: pluginInputNext(row.id, taskId),
+          };
+        }
+        await delay(Math.min(remaining, 500), signal);
+        row = await o.executions.sessionExecution(caller, row.id, taskId);
+      }
+    }
     const outcome = await sessions.run({
       ownerUserId: caller.userId,
       agentConnectionId: caller.connectionId,
@@ -373,12 +412,7 @@ export class PluginToolHandlers {
       reason,
       operationKey: call.operationKey,
       tool,
-      input: {
-        ...input,
-        plugin: target.plugin,
-        version: target.version,
-        readOnly: target.readOnly,
-      },
+      input: call.input,
       target: { grant, name: target.name.slice(0, 255), device: null },
       targetGeneration: target.version,
       effect: target.readOnly ? "read" : "write",
@@ -419,13 +453,24 @@ export class PluginToolHandlers {
         const id = row.resultSummary?.executionId;
         if (typeof id !== "string" || !authority.threadId) return undefined;
         const saved = await o.executions.sessionExecution(caller, id, authority.threadId);
-        return o.executions.result(saved);
+        return o.executions.terminalResult(caller, saved, signal);
       },
     });
     const result = directResult(outcome);
-    return outcome.status === "completed" && outcome.result
-      ? { ...result, status: outcome.result.status }
-      : result;
+    if (outcome.status === "pending")
+      return {
+        ...result,
+        next: `Waiting for the person's approval in Needs you. Call ${tool} again with the same arguments and the returned operationId to wait up to ${agentOperationHoldMs / 1_000} seconds. Avoid polling in a tight loop.`,
+      };
+    if (outcome.status === "completed" && outcome.result) {
+      const { status, executionId } = outcome.result;
+      return {
+        ...result,
+        status,
+        ...(status === "pending" ? { next: pluginInputNext(executionId, outcome.taskId) } : {}),
+      };
+    }
+    return result;
   }
   async install(c: ToolCall<"opensteer_plugin_install">) {
     const context = this.options.authority.admit(c.caller);
@@ -656,6 +701,17 @@ export class PluginToolHandlers {
           c.signal,
         ),
       opensteer_plugin_resource_update: async (c) => {
+        const change = c.input.change;
+        if (
+          callerLineage(c.caller) &&
+          (change.action === "workflow.start" ||
+            change.action === "schedule.run" ||
+            (change.action === "schedule.configure" && change.enabled))
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Ask the person to start the workflow or schedule themselves.",
+          });
         await c.checkLive?.();
         const result = await o.service.resourcesUpdate(
           {

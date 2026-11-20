@@ -85,6 +85,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
           {
             store: f.store,
             runners: {
+              agentsStoppedSince: () => null,
               asleepSince: () => null,
               identityForRunner: () => undefined,
               isRunnerConnected: () => true,

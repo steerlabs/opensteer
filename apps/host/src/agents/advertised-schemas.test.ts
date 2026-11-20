@@ -1,7 +1,8 @@
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import { agentTools } from "@opensteer/agent-tools";
+import { agentTools, connectionToolSchema } from "@opensteer/agent-tools";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { expect, it } from "vitest";
+import type { z } from "zod";
 import { measureMcpContext } from "./agent-context-budget.test-support.js";
 
 it.each(["run", "program", "connection"] as const)(
@@ -15,6 +16,7 @@ it.each(["run", "program", "connection"] as const)(
     const specs = agentTools.filter(
       (t) =>
         t.callers.some((c) => c === kind) &&
+        !(kind === "connection" && (t.name === "tab_open" || t.name === "tab_close")) &&
         ![
           "opensteer_team_file_download",
           "opensteer_team_read",
@@ -25,11 +27,19 @@ it.each(["run", "program", "connection"] as const)(
     expect(listed.map((t) => t.name)).toEqual(specs.map((t) => t.name));
     for (const spec of specs) {
       const schema = listed.find((t) => t.name === spec.name)!.inputSchema;
-      expect(schema).toEqual(
-        advertisedJsonSchema(
-          toJsonSchemaCompat(spec.input, { strictUnions: true, pipeStrategy: "input" }),
-        ),
+      const input: z.ZodObject = spec.input;
+      const expected = advertisedJsonSchema(
+        kind === "connection"
+          ? connectionToolSchema(spec, { scope: "everything" })
+          : toJsonSchemaCompat(
+              "operationId" in input.shape ? input.omit({ operationId: true }) : input,
+              {
+                strictUnions: true,
+                pipeStrategy: "input",
+              },
+            ),
       );
+      expect(schema).toEqual(expected);
       expect(schema.type).toBe("object");
       expect(Object.keys(schema)).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/^(?:oneOf|anyOf|allOf)$/u)]),

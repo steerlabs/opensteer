@@ -5,11 +5,11 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import {
-  isIdentityStillVerified,
-  type AgentConnectionIdentityAtConsent,
-  type AgentDirectoryDocument,
+import type {
+  AgentConnectionIdentityAtConsent,
+  AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
+import { isIdentityStillVerified } from "@opensteer/database/agent-directory-verification";
 import {
   agentConnectionConsentRefusals,
   agentConnectionVerificationChangedMessage,
@@ -127,6 +127,7 @@ interface ConnectionOAuthOptions {
   readonly signingKey: KeyObject;
   readonly verificationKey: KeyObject;
   readonly now?: () => number;
+  readonly onMaintenanceChanged?: () => void;
   /**
    * The Account-signed directory of known agents, from the Home's own Account origin. Absent when
    * the Home has none: every client is then shown as the name it gave itself.
@@ -277,7 +278,11 @@ export class ConnectionOAuth {
         state: authorization.state,
       },
       now: () => this.#now(),
-      claim: (issuer, id, expiresAt) => this.store.claimEmbedderAssertion(issuer, id, expiresAt),
+      claim: async (issuer, id, expiresAt) => {
+        const accepted = await this.store.claimEmbedderAssertion(issuer, id, expiresAt);
+        this.#options.onMaintenanceChanged?.();
+        return accepted;
+      },
     });
     this.#sweep();
     if (this.#consents.size >= maximumPending)
@@ -398,6 +403,7 @@ export class ConnectionOAuth {
             ...(decision.grant ? { grant: decision.grant } : {}),
           });
           connectionId = connection.id;
+          this.#options.onMaintenanceChanged?.();
         }
         pending.decision = { userId, sessionId, fingerprint, connectionId };
       } finally {

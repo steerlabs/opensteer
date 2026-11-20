@@ -73,17 +73,30 @@ it("resolves a lineaged Run's full record, and refuses one whose lineage disagre
 
 it("refuses a token whose execution ended before the caller's authority was folded", async () => {
   const userId = createId("user");
-  const thread = { id: createId("thread"), environmentId: createId("environment"), accessMode: "full-access" } as Thread;
+  const thread = {
+    id: createId("thread"),
+    environmentId: createId("environment"),
+    accessMode: "full-access",
+  } as Thread;
   const runId = createId("run");
-  const admitExecution = vi.fn(async () => { throw new Error("Task authority is no longer available"); });
+  const admitExecution = vi.fn(async () => {
+    throw new Error("Task authority is no longer available");
+  });
   const callers = new AgentCallerResolver({
     store: { getThreadForOwner: async () => thread, admitExecution },
-    runs: { authenticate: async () => ({
-      runId, threadId: thread.id, environmentId: thread.environmentId, requestedBy: userId,
-    }) as never },
+    runs: {
+      authenticate: async () =>
+        ({
+          runId,
+          threadId: thread.id,
+          environmentId: thread.environmentId,
+          requestedBy: userId,
+        }) as never,
+    },
   });
   await expect(callers.authenticate("already-ended")).rejects.toMatchObject({ code: "forbidden" });
   expect(admitExecution).toHaveBeenCalledWith({
-    ownerUserId: userId, subject: { kind: "binding", bindingId: `run:${runId}` },
+    ownerUserId: userId,
+    subject: { kind: "binding", bindingId: `run:${runId}` },
   });
 });

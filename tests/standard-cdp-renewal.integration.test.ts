@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Browser } from "playwright-core";
 import { expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import type { CdpAuthority } from "../apps/host/src/browser/standard-cdp-tickets.js";
 import { NetworkPartition } from "../apps/host/src/agents/network-partition.test-support.js";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -429,10 +430,17 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL).each(["same Runtime boot", "
       .where("id", "=", threadId)
       .execute();
     const authority = { ownerId: owner.id, agentBindingId: `thread:${threadId}` };
-    const { session } = await browser.openAgentSession({ ...authority, profileId: profile.id });
+    const actor = { kind: "browser-binding", authority, threadId } as const;
+    const { tab } = await stack.host.tabs.open(
+      actor,
+      { kind: "page", profileId: profile.id, url: "about:blank" },
+      randomUUID(),
+    );
+    const seed = await stack.host.tabs.bindBrowserScript(actor, tab.tabId);
     const ticket = await browser.issueStandardCdpTicket({
       authority,
-      browserSessionId: session.id,
+      browserSessionId: seed.sessionId,
+      seedTabId: seed.tabId,
       mode: "whole-context",
     });
     expect(ticket.mode).toBe("whole-context");
@@ -450,7 +458,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL).each(["same Runtime boot", "
     const [original] = await leases();
     const oldBoot = fixture.runtime.standardCdpBootId;
     expect(original).toMatchObject({
-      sessionId: session.id,
+      sessionId: seed.sessionId,
       bootId: oldBoot,
       attemptId: expect.any(String),
     });
@@ -481,7 +489,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL).each(["same Runtime boot", "
         });
         if (acknowledged) reconciled.resolve();
       });
-    const disconnected = new Promise<void>((resolve) => client.once("disconnected", resolve));
+    const disconnected = new Promise<void>((resolve) =>
+      client.once("disconnected", () => resolve()),
+    );
     network.block();
     try {
       await milestone(disconnected, "client disconnect across the TCP partition");
@@ -560,7 +570,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       .where("id", "=", await store.requireSelfDeviceId(runnerId))
       .execute();
     const guest = await browser.start({ ownerId: owner.id, origin: "person", fresh: true });
-    const bindings = [];
+    const bindings: CdpAuthority[] = [];
     for (let index = 0; index < 5; index++) {
       const authority = {
         ownerId: owner.id,
@@ -578,7 +588,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       return attach(...args);
     });
     const sockets: WebSocket[] = [];
-    const probe = async (authority: (typeof bindings)[number]) => {
+    const probe = async (authority: CdpAuthority) => {
       const ticket = await browser.issueStandardCdpTicket({
         authority,
         browserSessionId: guest.session.id,

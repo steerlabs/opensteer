@@ -47,10 +47,12 @@ export async function integrationConnectionGrantAccess(
   if (grant.scope === "everything" || !ids.length)
     return new Map(ids.map((id) => [id, grant.scope === "everything" ? "read-write" : null]));
   const targets = await integrationConnectionGrantTargets(database, ids);
-  return new Map(ids.map((id) => {
-    const target = targets.get(id);
-    return [id, target ? agentGrantAccess(grant, target) : null];
-  }));
+  return new Map(
+    ids.map((id) => {
+      const target = targets.get(id);
+      return [id, target ? agentGrantAccess(grant, target) : null];
+    }),
+  );
 }
 
 export async function integrationConnectionGrantTargets(

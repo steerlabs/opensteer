@@ -27,7 +27,10 @@ import {
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName, applyAgentSessions } from "./agent-sessions-migration.js";
-import { agentDirectoryMigrationName, applyAgentDirectoryVerification } from "./agent-directory-migration.js";
+import {
+  agentDirectoryMigrationName,
+  applyAgentDirectoryVerification,
+} from "./agent-directory-migration.js";
 import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
 import {
   completePersonalStateConversion,

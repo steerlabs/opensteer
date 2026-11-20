@@ -778,7 +778,7 @@ export class AppService {
             ? { agentConnectionId: actor.caller.connectionId }
             : actor.kind === "program"
               ? { agentBindingId: actor.caller.key }
-              : {}),
+              : { kind: "person" }),
       });
       if (!access || (required === "read-write" && access !== "read-write"))
         throw new OpensteerError({

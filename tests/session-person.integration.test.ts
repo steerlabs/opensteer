@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sql } from "kysely";
 import { chromium } from "playwright-core";
 import {
   BrowserRuntime,
@@ -28,6 +29,9 @@ import {
   AgentOperationIdSchema,
   BrowserSurfaceIdSchema,
   createId,
+  requestOperationCallsHeading,
+  requestOperationCallsMaxLength,
+  requestTextMaxLength,
   ThreadIdSchema,
   type Request,
 } from "../packages/core/src/index.js";
@@ -178,7 +182,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             .selectFrom("requests")
             .innerJoin("agentOperations", "agentOperations.requestId", "requests.id")
             .select("requests.status")
-            .where("requests.payload", "@>", JSON.stringify({ operationId }))
+            .where(sql<boolean>`requests.payload @> ${JSON.stringify({ operationId })}::jsonb`)
             .where("agentOperations.state", "=", "handed-off")
             .executeTakeFirst();
           witnessed.push(witness?.status === "pending");
@@ -319,9 +323,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         }),
       ).not.toBe(true);
       const { taskId } = z.object({ taskId: ThreadIdSchema }).parse(opened.structuredContent);
-      const tabId = z
-        .object({ type: z.literal("text"), text: BrowserSurfaceIdSchema })
-        .parse(opened.content[0]).text;
+      const tabOutput = z
+        .tuple([z.object({ type: z.literal("text"), text: BrowserSurfaceIdSchema })])
+        .rest(z.unknown());
+      const tabId = tabOutput.parse(opened.content)[0].text;
       const owner = { headers: host.ownerHeaders };
       const pending = async (
         kind: Request["kind"],
@@ -466,10 +471,24 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const ready = z
         .object({
           status: z.literal("completed"),
+          operationId: AgentOperationIdSchema,
           loginStatus: z.literal("ready"),
           loginRef: z.string(),
         })
         .parse((await login.result).structuredContent);
+      const authorizationCommands = authority.commands.length;
+      expect(
+        (
+          await call("saved_login_request", {
+            taskId,
+            tabId,
+            site: site.origin,
+            reason: "Continue in the browser",
+            operationId: ready.operationId,
+          })
+        ).structuredContent,
+      ).toMatchObject(ready);
+      expect(authority.commands).toHaveLength(authorizationCommands);
       expect(authority.commands).toContainEqual(
         expect.objectContaining({ type: "login.authorize", alwaysAsk: true }),
       );
@@ -564,9 +583,17 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const beforeReplay = fillCommandCount();
       const expectExpired = (result: Awaited<ReturnType<typeof call>>) => {
         expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+        const receipt = z
+          .object({
+            status: z.literal("completed"),
+            taskId: ThreadIdSchema,
+            operationId: AgentOperationIdSchema,
+          })
+          .parse(result.structuredContent);
         expect(result.content).toEqual([
           { type: "text", text: "expired" },
           { type: "text", text: "expired" },
+          { type: "text", text: `Receipt: ${JSON.stringify(receipt)}` },
         ]);
       };
       expectExpired(
@@ -636,6 +663,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       );
       expect(returned.isError, JSON.stringify(returned.content)).not.toBe(true);
 
+      if (!sibling.grant) throw new Error("The sibling connection has no grant.");
       const supervised = await connection.create({
         userId: host.ownerId,
         label: "Approval fixture",
@@ -648,59 +676,114 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const reviewedToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
       expect(await connection.activate(supervised.id, credentialHash(reviewedToken))).toBe(true);
       const reviewedCall = await connectAgent(reviewedToken);
+      const openScript = `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);\n/* `;
       const reviewedOpen = {
         profileId: profile.id,
-        code: `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);`,
+        code: openScript.padEnd(requestOperationCallsMaxLength - 2, "x") + "*/",
         operationKey: "reviewed-open",
       };
-      const allowOnce = (request: { requestId: Request["id"]; expectedRevision: string }, idempotencyKey: string) =>
-        testRpcData(host.origin, "commands.dispatch", {
-          type: "request.respond", requestId: request.requestId, expectedRevision: request.expectedRevision,
-          idempotencyKey, response: { kind: "form", answers: { decision: ["allow"] } },
-        }, owner);
+      const allowOnce = (
+        request: { requestId: Request["id"]; expectedRevision: string },
+        idempotencyKey: string,
+      ) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "request.respond",
+            requestId: request.requestId,
+            expectedRevision: request.expectedRevision,
+            idempotencyKey,
+            response: { kind: "form", answers: { decision: ["allow"] } },
+          },
+          owner,
+        );
       const beforeOpen = browser.receivedCommands().length;
-      const queuedOpen = await pending("person.question", () => reviewedCall("browser_use", reviewedOpen), null);
+      const queuedOpen = await pending(
+        "person.question",
+        () => reviewedCall("browser_use", reviewedOpen),
+        null,
+      );
       expect(browser.receivedCommands()).toHaveLength(beforeOpen);
+      expect(reviewedOpen.code).toHaveLength(requestOperationCallsMaxLength);
+      const presentation = queuedOpen.row.presentation;
+      if (presentation.kind !== "form" || !presentation.detail)
+        throw new Error("The Request must have plain detail");
+      expect(presentation.detail.length).toBeLessThanOrEqual(requestTextMaxLength);
+      expect(presentation.detail.endsWith(requestOperationCallsHeading + reviewedOpen.code)).toBe(
+        true,
+      );
+      expect(queuedOpen.row.agentOperation?.calls).toBe(reviewedOpen.code);
       await allowOnce(queuedOpen, "allow-reviewed-open");
       const realOpen = await queuedOpen.result;
       expect(realOpen.structuredContent).toMatchObject({ status: "completed" });
-      const reviewedTabId = z.object({ type: z.literal("text"), text: BrowserSurfaceIdSchema }).parse(realOpen.content[0]).text;
-      const reviewedClose = (operationKey: string) => pending("person.question", () => reviewedCall("browser_use", {
-        tabId: reviewedTabId, operationKey,
-        code: `const page = await openPage(${JSON.stringify(reviewedTabId)}); await page.close();`,
-      }), null);
+      const reviewedTabId = tabOutput.parse(realOpen.content)[0].text;
+      const reviewedClose = (operationKey: string) =>
+        pending(
+          "person.question",
+          () =>
+            reviewedCall("browser_use", {
+              tabId: reviewedTabId,
+              operationKey,
+              code: `const page = await openPage(${JSON.stringify(reviewedTabId)}); await page.close();`,
+            }),
+          null,
+        );
       const queuedClose = await reviewedClose("reviewed-close");
-      const closeOperation = AgentOperationIdSchema.parse(queuedClose.row.agentOperation?.operationId);
-      const admittedClose = await host.store.database.selectFrom("agentOperations")
-        .select("targetGeneration").where("id", "=", closeOperation).executeTakeFirstOrThrow();
-      const oldTab = await host.store.database.selectFrom("personalTabs").select("generation")
-        .where("id", "=", reviewedTabId).executeTakeFirstOrThrow();
+      const closeOperation = AgentOperationIdSchema.parse(
+        queuedClose.row.agentOperation?.operationId,
+      );
+      const admittedClose = await host.store.database
+        .selectFrom("agentOperations")
+        .select("targetGeneration")
+        .where("id", "=", closeOperation)
+        .executeTakeFirstOrThrow();
+      const oldTab = await host.store.database
+        .selectFrom("personalTabs")
+        .select("generation")
+        .where("id", "=", reviewedTabId)
+        .executeTakeFirstOrThrow();
       expect(admittedClose.targetGeneration).toBe(String(oldTab.generation));
       const ownerActor = { kind: "person" as const, ownerId: host.ownerId };
       const connectionTab = host.runtime.tabs.connectionTab.bind(host.runtime.tabs);
-      const race = vi.spyOn(host.runtime.tabs, "connectionTab").mockImplementationOnce(async (...args) => {
-        expect((await host.runtime.tabs.close(ownerActor, [reviewedTabId], "person-close")).closed).toEqual([reviewedTabId]);
-        await host.runtime.tabs.reopen(ownerActor, reviewedTabId, "person-reopen");
-        return connectionTab(...args);
-      });
+      const race = vi
+        .spyOn(host.runtime.tabs, "connectionTab")
+        .mockImplementationOnce(async (...args) => {
+          expect(
+            (await host.runtime.tabs.close(ownerActor, [reviewedTabId], "person-close")).closed,
+          ).toEqual([reviewedTabId]);
+          await host.runtime.tabs.reopen(ownerActor, reviewedTabId, "person-reopen");
+          return connectionTab(...args);
+        });
       await allowOnce(queuedClose, "allow-reviewed-close");
       const closeResult = await queuedClose.result.finally(() => race.mockRestore());
       expect(closeResult.structuredContent).not.toMatchObject({ status: "completed" });
-      const settledClose = await host.store.database.selectFrom("agentOperations").select("state")
-        .where("id", "=", closeOperation).executeTakeFirstOrThrow();
+      const settledClose = await host.store.database
+        .selectFrom("agentOperations")
+        .select("state")
+        .where("id", "=", closeOperation)
+        .executeTakeFirstOrThrow();
       expect(settledClose.state).toBe("failed");
-      const replacement = await host.store.database.selectFrom("personalTabs")
-        .select(["closedAt", "generation"]).where("id", "=", reviewedTabId).executeTakeFirstOrThrow();
+      const replacement = await host.store.database
+        .selectFrom("personalTabs")
+        .select(["closedAt", "generation"])
+        .where("id", "=", reviewedTabId)
+        .executeTakeFirstOrThrow();
       expect(replacement.closedAt).toBeNull();
       expect(replacement.generation).not.toBe(oldTab.generation);
+      const beforeFreshClose = browser.receivedCommands().length;
       const freshClose = await reviewedClose("reviewed-close-new-generation");
       await allowOnce(freshClose, "allow-close-new-generation");
       const closed = await freshClose.result;
       expect(closed.structuredContent).toMatchObject({ status: "completed" });
       expect(closed.isError).not.toBe(true);
-      expect(browser.receivedCommands()).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: "Target.closeTarget" }),
-      ]));
+      expect(browser.receivedCommands().slice(beforeFreshClose)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            command: expect.objectContaining({ method: "Target.closeTarget" }),
+          }),
+        ]),
+      );
 
       const stillWaiting = await pending("person.question", () =>
         call("ask_person", {
@@ -896,7 +979,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         } else if (action === "narrow") {
           const current = (await connection.list(host.ownerId)).find(
             ({ id }) => id === agent.entry.id,
-          )!;
+          );
+          if (current?.grantRevision === undefined)
+            throw new Error("The connection has no grant revision.");
           await testRpcData(
             host.origin,
             "commands.dispatch",
@@ -954,7 +1039,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         code: `await newPage(${JSON.stringify(loseOpenReply.url)});`,
         operationKey: "lost-browser-open-reply",
       });
-      const unknown = z.object({ operationId: AgentOperationIdSchema }).passthrough().parse(lost.structuredContent);
+      const unknown = z
+        .object({ operationId: AgentOperationIdSchema })
+        .passthrough()
+        .parse(lost.structuredContent);
       expect(loseOpenReply.observed).toBe(true);
       expect(unknown).toMatchObject({
         status: "unknown",
@@ -974,22 +1062,26 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
 );
 
 async function signInFixture() {
-  const server = createServer(async (request, response) => {
-    response.setHeader("Content-Type", "text/html; charset=utf-8");
-    if (request.method === "POST") {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      const body = new URLSearchParams(Buffer.concat(chunks).toString());
-      const valid =
-        body.get("username") === passwordFixture.username &&
-        body.get("password") === passwordFixture.password;
-      response.end(valid ? "<h1>Signed in</h1>" : "<h1>Wrong login</h1>");
-      return;
-    }
-    response.end(`<h1>Sign in</h1><form method="post">
-      <label>Email <input name="username" type="email"></label>
-      <label>Password <input name="password" type="password"></label>
-      <button>Sign in</button></form>`);
+  const server = createServer((request, response) => {
+    void (async () => {
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      if (request.method === "POST") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = new URLSearchParams(Buffer.concat(chunks).toString());
+        const valid =
+          body.get("username") === passwordFixture.username &&
+          body.get("password") === passwordFixture.password;
+        response.end(valid ? "<h1>Signed in</h1>" : "<h1>Wrong login</h1>");
+        return;
+      }
+      response.end(`<h1>Sign in</h1><form method="post">
+        <label>Email <input name="username" type="email"></label>
+        <label>Password <input name="password" type="password"></label>
+        <button>Sign in</button></form>`);
+    })().catch((error: unknown) => {
+      response.destroy(error instanceof Error ? error : new Error(String(error)));
+    });
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

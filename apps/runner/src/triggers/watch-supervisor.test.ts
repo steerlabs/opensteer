@@ -239,12 +239,14 @@ describe("WatchSupervisor", () => {
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
-        .resolves.toBe("still-ending");
+      await expect(
+        fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink),
+      ).resolves.toBe("still-ending");
       expect(fixture.messages).not.toContainEqual(expect.objectContaining({ observed: "stopped" }));
       proved = true;
-      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
-        .resolves.toBe("ended");
+      await expect(
+        fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink),
+      ).resolves.toBe("ended");
       expect(fixture.messages.at(-1)).toMatchObject({ observed: "stopped" });
     } finally {
       await fixture.close();
@@ -280,12 +282,14 @@ describe("WatchSupervisor", () => {
   it("answers never seen for a stamped Watch whose reconcile did not arrive", async () => {
     const fixture = await watchHarness("export default async () => {};");
     try {
-      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
-        .resolves.toBe("never-seen");
+      await expect(
+        fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink),
+      ).resolves.toBe("never-seen");
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       expect(fixture.supervisor.activeActivationIds()).toEqual([]);
-      await expect(fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink))
-        .resolves.toBe("never-seen");
+      await expect(
+        fixture.supervisor.stopAttempt(fixture.activationId, 1, fixture.sink),
+      ).resolves.toBe("never-seen");
     } finally {
       await fixture.close();
     }

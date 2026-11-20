@@ -467,6 +467,7 @@ export async function approveComputerAppAutomaticallyInTransaction(
     app,
     now,
     ownerUserId: input.actorUserId,
+    preservePolicyRevision: true,
     runner: input.runner,
     target,
   });
@@ -496,6 +497,7 @@ export async function writeComputerConnectionInTransaction(
     readonly app: ComputerAppIdentity | null;
     readonly now: Date;
     readonly ownerUserId: UserId;
+    readonly preservePolicyRevision?: boolean;
     readonly runner: LockedComputer;
     readonly target: ComputerConnectionTarget;
   },
@@ -517,7 +519,12 @@ export async function writeComputerConnectionInTransaction(
   if (current) {
     return transaction
       .updateTable("integrationConnections")
-      .set(values)
+      .set({
+        ...values,
+        ...(input.preservePolicyRevision
+          ? {}
+          : { computerPolicyRevision: sql`coalesce(computer_policy_revision, 0) + 1` }),
+      })
       .where("id", "=", current.id)
       .where("connectionKind", "=", "computer")
       .returningAll()

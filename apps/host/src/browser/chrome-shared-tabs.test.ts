@@ -211,7 +211,9 @@ it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as
     const second = shared();
     const popup = shared(first.shareId);
     const authority = { agentBindingId: "run:fixture", ownerId };
-    const peer = chromePeer((frame) => source.receive(frame));
+    const peer = chromePeer((frame) => {
+      expect(source.receive(frame)).toBeUndefined();
+    });
     const source = service.connectSource({
       ownerId,
       sourceId,
@@ -219,13 +221,13 @@ it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as
       name: "Chrome",
       write: peer.write,
     });
-    source.receive(first);
-    source.receive(second);
+    await source.receive(first);
+    await source.receive(second);
     const ticket = await service.issueStandardCdpTicket({ authority, tabId: first.shareId });
     const claims = service.standardCdpTickets.consume(ticket.ticket)!;
     const signal = new AbortController();
     const client = await service.attachStandardCdpForAgent(claims, signal.signal);
-    source.receive(popup);
+    await source.receive(popup);
     const frame = Promise.withResolvers<Buffer>();
     client.onFrame(frame.resolve);
     await client.send(Buffer.from(JSON.stringify({ id: 1, method: "Target.getTargets" })));
@@ -242,11 +244,15 @@ it.each(["binding stop", "unshare", "source disconnect", "client disconnect"] as
       mode: "read-only",
     });
     await expect(client.reauthorize()).rejects.toThrow("access mode");
-    if (ending === "binding stop") service.closeForBinding(authority.agentBindingId, "Stopped");
-    else if (ending === "unshare") source.receive({ type: "tab.unshared", shareId: first.shareId });
+    let stopping: Promise<void> | undefined;
+    if (ending === "binding stop")
+      stopping = service.closeForBinding(authority.agentBindingId, "Stopped");
+    else if (ending === "unshare")
+      expect(source.receive({ type: "tab.unshared", shareId: first.shareId })).toBeUndefined();
     else if (ending === "source disconnect") source.close();
     else signal.abort();
     expect(client.signal.aborted).toBe(true);
+    await stopping;
     if (ending === "client disconnect")
       await expect(
         service.issueStandardCdpTicket({ authority, tabId: first.shareId }),
@@ -289,11 +295,13 @@ it("checks the current Chrome grant before each command and awaits detach eviden
   const service = new ChromeSharedTabs(
     { admitExecution },
     {
-      attempts: { open, finish, recover: async () => {} },
+      attempts: { open, finish, recordDetach: async () => {}, recover: async () => {} },
       device: async () => "Work Mac",
     },
   );
-  const peer = chromePeer((frame) => source.receive(frame));
+  const peer = chromePeer((frame) => {
+    expect(source.receive(frame)).toBeUndefined();
+  });
   const source = service.connectSource({
     ownerId,
     sourceId,
@@ -304,7 +312,7 @@ it("checks the current Chrome grant before each command and awaits detach eviden
     write: peer.write,
   });
   try {
-    source.receive(tab);
+    await source.receive(tab);
     const port = service.browserUsePort(async () => authority, tab.shareId);
     const call = {
       contextKey: "fixture",
@@ -328,12 +336,12 @@ it("checks the current Chrome grant before each command and awaits detach eviden
     expect(finish).not.toHaveBeenCalled();
     const revoked = vi.fn();
     const revoking = service.stopSource(sourceId).then(revoked);
-    source.receive(shared());
+    await source.receive(shared());
     grant = AgentGrantSchema.parse({ scope: "everything" });
     await expect(service.listForBinding(authority)).resolves.toEqual([]);
     expect(revoked).not.toHaveBeenCalled();
-    source.receive({ type: "tab.detached", shareId: tab.shareId });
-    await Promise.all([stopping, revoking]);
+    const detached = source.receive({ type: "tab.detached", shareId: tab.shareId });
+    await Promise.all([stopping, revoking, detached]);
     expect(finish).toHaveBeenCalledExactlyOnceWith(connectionId, expect.any(String), true);
   } finally {
     source.close();

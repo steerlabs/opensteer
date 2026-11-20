@@ -16,6 +16,7 @@ export function directResult<Result extends object>(outcome: DirectOperationResu
     status,
     taskId,
     operationId,
+    ...(outcome.status === "completed" ? { summary: outcome.summary } : {}),
     ...(outcome.status === "pending" ? { requestId: outcome.requestId } : {}),
     ...(outcome.status === "completed" ? {} : { next: outcome.next }),
   };

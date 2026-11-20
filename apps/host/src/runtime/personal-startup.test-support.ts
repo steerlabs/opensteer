@@ -1,8 +1,15 @@
 import { readVerticalRunTools } from "../agents/vertical-stack.test-support.js";
 import type { VerticalTurn } from "../agents/vertical-stack.test-support.js";
 import { forkRunnerChild } from "../agents/runner-child.test-support.js";
+import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { integrationBundleEntry } from "@opensteer/shared/test-support/integrationRunnerBuild";
-import { ExecutionContainment, executionScopeVariable } from "@opensteer/runner";
+import {
+  confirmRunnerShutdown,
+  ExecutionContainment,
+  executionScopeVariable,
+  RunnerShutdownProofSchema,
+  type RunnerShutdownProof,
+} from "@opensteer/runner";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -258,7 +265,8 @@ export async function startPersonalRuntime(input: {
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: enrollment,
       OPENSTEER_RUNNER_MODULES: [
         "agents",
-        ...(vertical?.integrations ? ["integrations"] : []),
+        ...(vertical?.runnerChild?.stopJourney ? ["shell"] : []),
+        ...(vertical?.integrations || vertical?.runnerChild?.stopJourney ? ["integrations"] : []),
         ...(browser ? ["browser"] : []),
       ].join(","),
       OPENSTEER_MAX_CONCURRENT_RUNS: String(
@@ -360,24 +368,48 @@ export async function startPersonalRuntime(input: {
         "recovery",
       );
       lifetime.signal.throwIfAborted();
+      const stopJourney = vertical.runnerChild.stopJourney;
+      let shutdownProof: RunnerShutdownProof | undefined;
+      const shutdownDiagnostics: string[] = [];
       const owned = forkRunnerChild(
         entry,
         {
           execArgv: [],
-          environment: { [executionScopeVariable]: containment.scope("fixture-runner") },
+          ...(stopJourney
+            ? {
+                beforeClose: () =>
+                  lifetime.signal.aborted ? Promise.resolve() : stopJourney.beforeSignal(),
+                closeMessage: "restart",
+                gracefulCloseMs: processStopTimeoutMs,
+              }
+            : {}),
+          environment: stopJourney
+            ? { SHELL: "/bin/sh" }
+            : { [executionScopeVariable]: containment.scope("fixture-runner") },
           afterStop: async () => {
-            if ((await containment.reapBoot()) !== "proven")
+            if (stopJourney) {
+              if (!(await confirmRunnerShutdown(config.dataDirectory, shutdownProof)))
+                throw new Error(
+                  `The desktop could not confirm the Runner stopped (${shutdownProof ? shutdownProof.termination : "no receipt"}): ${shutdownDiagnostics.join(" | ")}`,
+                );
+              if (!lifetime.signal.aborted) stopJourney.afterProof(owned.child.pid!);
+            } else if ((await containment.reapBoot()) !== "proven") {
               throw new Error("Runner child processes did not stop");
+            }
           },
         },
         (stop) => childStops.add(stop),
       );
       child = owned;
+      if (stopJourney)
+        owned.child.stderr?.on("data", (chunk) => shutdownDiagnostics.push(String(chunk).trim()));
       const ready = Promise.withResolvers<void>();
       owned.child.on("message", (message) => {
         if (message === "ready") ready.resolve();
         else if (message && typeof message === "object" && "error" in message)
           ready.reject(new Error(String(message.error)));
+        else if (message && typeof message === "object" && "shutdownProof" in message)
+          shutdownProof = RunnerShutdownProofSchema.parse(message.shutdownProof);
       });
       owned.child.once("error", (error) => ready.reject(error));
       const closed = owned.exited.then(() => {
@@ -389,7 +421,19 @@ export async function startPersonalRuntime(input: {
         nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs-test"),
         bootId,
         config: { ...config, hostUrl: config.hostUrl.toString() },
-        engine: vertical.runnerChild,
+        browser: browser
+          ? { ...browser, url: browser.url.toString(), signIn: false, personFill: false }
+          : undefined,
+        computerUseBridge: stopJourney
+          ? {
+              ...stopJourney.computerUseBridge,
+              url: stopJourney.computerUseBridge.url.toString(),
+            }
+          : undefined,
+        engine: {
+          fixture: vertical.runnerChild.fixture,
+          arguments: vertical.runnerChild.arguments,
+        },
         agentsStoppedSince: bootMode,
         harnessInstance: vertical.harnessInstance,
         mountedWorkspacePath: input.agentHome.path,

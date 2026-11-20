@@ -118,7 +118,7 @@ export const agentConnectionConsentRefusals = {
 } as const;
 
 export const agentConnectionVerificationChangedMessage =
-  "This agent's verification changed. Review it again.";
+  "This agent’s verification changed. Review it again.";
 
 export const AgentConnectionAuthorizationTargetSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,

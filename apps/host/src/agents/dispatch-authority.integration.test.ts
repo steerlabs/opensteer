@@ -12,6 +12,7 @@ import {
 import { CommandDispatchError, type RunnerRegistry } from "@opensteer/orchestration";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import type { RunnerCommand } from "@opensteer/protocol";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import {
   packageStillGranted,
@@ -38,7 +39,11 @@ const plugin = (pluginId: string) =>
 function dispatcher(
   storeFixture: Fixture,
   runnerId: string,
-  hooks: { readonly planning: () => Promise<void>; readonly afterFence?: () => Promise<void> },
+  hooks: {
+    readonly planning: () => Promise<void>;
+    readonly afterFence?: () => Promise<void>;
+    readonly holdAck?: (beforeAck: () => Promise<void>) => void;
+  },
   sent: RunnerCommand[],
   issued: (readonly string[])[],
 ) {
@@ -92,11 +97,15 @@ function dispatcher(
       dispatch: async (
         command: RunnerCommand,
         _signal: AbortSignal,
-        options?: { readonly beforeSend?: () => Promise<void> },
+        options?: {
+          readonly beforeAck?: () => Promise<void>;
+          readonly beforeSend?: () => Promise<void>;
+        },
       ) => {
         await options?.beforeSend?.();
         await hooks.afterFence?.();
         sent.push(command);
+        if (options?.beforeAck) hooks.holdAck?.(options.beforeAck);
         return { type: "runner.command-accepted" };
       },
     } as unknown as RunnerRegistry,
@@ -104,9 +113,17 @@ function dispatcher(
 }
 
 describeStore("a connected agent's authority at the send", (it) => {
-  for (const boundary of ["claim", "send"] as const) {
-    it(`refuses a queued steer at ${boundary} after the connection is revoked`, async ({ storeFixture }) => {
-      const f = await storeFixture.startRunFixture(`steer-after-revoke-${boundary}`);
+  const steerCases = [
+    { boundary: "claim", change: "revoked" },
+    { boundary: "send", change: "revoked" },
+    { boundary: "claim", change: "narrowed" },
+    { boundary: "send", change: "narrowed" },
+  ] as const;
+  for (const { boundary, change } of steerCases) {
+    it(`refuses a queued steer at ${boundary} after the connection is ${change}`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.startRunFixture(`steer-after-${change}-${boundary}`);
       const { database, store } = storeFixture;
       const url = await serveMcp(storeFixture);
       const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
@@ -129,53 +146,206 @@ describeStore("a connected agent's authority at the send", (it) => {
         idempotencyKey: "steer-after-revoke",
       });
       if (!steer.command) throw new Error("Expected a pending steer command");
+      const connections = new AgentConnectionStore(database);
+      const changeAuthority = async () => {
+        if (change === "revoked") {
+          await connections.revoke(f.userId, agent.id);
+          return;
+        }
+        expect(
+          await connections.update(f.userId, {
+            connectionId: agent.id,
+            expectedRevision: 1,
+            grant: { scope: "selected", tasks: true, resources: [] },
+          }),
+        ).toMatchObject({
+          narrowed: true,
+          connection: { accessMode: "full-access", grantRevision: 2 },
+        });
+        expect(
+          await database
+            .selectFrom("threads")
+            .select("originConnectionId")
+            .where("id", "=", task)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ originConnectionId: agent.id });
+        expect(
+          await database
+            .selectFrom("runs")
+            .select(["status", "admittedGrantRevision"])
+            .where("id", "=", run.id)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ status: "running", admittedGrantRevision: 1 });
+      };
       if (boundary === "send") {
-        const claimed = await store.claimCommand(steer.command.id, "steer-before-revoke");
-        if (!claimed || claimed.terminalFailure) throw new Error("Expected the steer to be claimed");
-        await new AgentConnectionStore(database).revoke(f.userId, agent.id);
+        const claimed = await store.claimCommand(steer.command.id, "steer-before-change");
+        if (!claimed || claimed.terminalFailure)
+          throw new Error("Expected the steer to be claimed");
+        await changeAuthority();
         const sent: RunnerCommand[] = [];
-        await dispatcher(storeFixture, f.runnerId, { planning: async () => {} }, sent, [])
-          .dispatch(claimed.command, new AbortController().signal);
+        await dispatcher(storeFixture, f.runnerId, { planning: async () => {} }, sent, []).dispatch(
+          claimed.command,
+          new AbortController().signal,
+        );
         expect(sent).toEqual([]);
         return;
       }
-      await new AgentConnectionStore(database).revoke(f.userId, agent.id);
-      await expect(store.claimCommand(steer.command.id, "steer-after-revoke")).resolves.toMatchObject({
+      await changeAuthority();
+      await expect(
+        store.claimCommand(steer.command.id, "steer-after-change"),
+      ).resolves.toMatchObject({
         terminalFailure: "The connected agent's access ended before this work could be delivered.",
       });
     });
   }
 
-  it("ends a connected Run locally when revoke wins before its handoff stamp", async ({ storeFixture }) => {
+  it("uses a distinct Trigger wire command per generation and only accepts the current ACK", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const f = await storeFixture.startRunFixture("trigger-retry-ack");
+    await database
+      .updateTable("runners")
+      .set({ capabilities: sql`'["trigger-program-v5"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId,
+      accessMode: "full-access",
+    });
+    const task = await createTask(agent, f, "trigger-retry-ack");
+    const triggers = new TriggerStore(database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: agent.id,
+      anchorThreadId: task,
+      createdBy: f.userId,
+      idempotencyKey: "trigger-retry-ack",
+      name: "Retry ACK",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: trigger.id,
+    });
+    const sent: RunnerCommand[] = [];
+    const acks: (() => Promise<void>)[] = [];
+    const queue = dispatcher(
+      storeFixture,
+      f.runnerId,
+      {
+        planning: async () => {},
+        holdAck: (ack) => acks.push(ack),
+      },
+      sent,
+      [],
+    );
+    const dispatch = async () => {
+      const claimed = await store.claimCommand(occurrence.commandId, "trigger-retry-ack");
+      if (!claimed) throw new Error("Expected the Trigger command");
+      await queue.dispatch(claimed.command, new AbortController().signal);
+    };
+    await dispatch();
+    await store.retryCommand(occurrence.commandId, new Error("Retried before ACK"));
+    await dispatch();
+    const [first, current] = sent;
+    if (first?.type !== "trigger.execute" || current?.type !== "trigger.execute")
+      throw new Error("Expected both Trigger generations on the wire");
+    expect(current.context.executionGeneration).toBe(first.context.executionGeneration + 1);
+    expect(current.commandId).not.toBe(first.commandId);
+    const status = async () =>
+      (
+        await database
+          .selectFrom("commands")
+          .select("status")
+          .where("id", "=", occurrence.commandId)
+          .executeTakeFirstOrThrow()
+      ).status;
+    expect(acks).toHaveLength(2);
+    await acks[0]!();
+    expect(await status()).toBe("dispatched");
+    await acks[1]!();
+    expect(await status()).toBe("succeeded");
+    expect(
+      await database
+        .selectFrom("triggerOccurrences")
+        .select("status")
+        .where("id", "=", occurrence.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "running" });
+  });
+
+  it("ends a connected Run locally when revoke wins before its handoff stamp", async ({
+    storeFixture,
+  }) => {
     const f = await storeFixture.startRunFixture("revoke-before-handoff");
     const { database, store } = storeFixture;
     const url = await serveMcp(storeFixture);
     const agent = await connection(store, url, { userId: f.userId, accessMode: "full-access" });
     const task = await createTask(agent, f, "revoke-before-handoff");
     const run = await queuedRun(storeFixture, task);
-    const command = await database.selectFrom("commands").select("id")
-      .where("runId", "=", run.id).where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", run.id)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
     const claimed = await store.claimCommand(command.id, "revoke-before-handoff");
     if (!claimed) throw new Error("Expected the Run's command");
 
     const entered = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
     const sent: RunnerCommand[] = [];
-    const dispatch = dispatcher(storeFixture, f.runnerId, { planning: async () => {
-      entered.resolve();
-      await resume.promise;
-    } }, sent, []).dispatch(claimed.command, new AbortController().signal);
-    const result = dispatch.then(() => null, (error: unknown) => error);
+    const dispatch = dispatcher(
+      storeFixture,
+      f.runnerId,
+      {
+        planning: async () => {
+          entered.resolve();
+          await resume.promise;
+        },
+      },
+      sent,
+      [],
+    ).dispatch(claimed.command, new AbortController().signal);
+    const result = dispatch.then(
+      () => null,
+      (error: unknown) => error,
+    );
     try {
-      await Promise.race([entered.promise, result.then(() => { throw new Error("Run did not reach planning"); })]);
-      expect(await database.selectFrom("runs").select("bindingGeneration").where("id", "=", run.id)
-        .executeTakeFirstOrThrow()).toMatchObject({ bindingGeneration: expect.any(Number) });
+      await Promise.race([
+        entered.promise,
+        result.then(() => {
+          throw new Error("Run did not reach planning");
+        }),
+      ]);
+      expect(
+        await database
+          .selectFrom("runs")
+          .select("bindingGeneration")
+          .where("id", "=", run.id)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ bindingGeneration: expect.any(Number) });
       const home = commands(storeFixture, f.userId);
       await home.revoke(agent.id);
       expect(home.failures).toEqual([]);
       expect((await home.list()).find(({ id }) => id === agent.id)?.state).toBe("stopped");
-      expect(await database.selectFrom("runs").select("status").where("id", "=", run.id)
-        .executeTakeFirstOrThrow()).toEqual({ status: "interrupted" });
+      expect(
+        await database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", run.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: "interrupted" });
     } finally {
       resume.resolve();
       await result;
@@ -183,40 +353,78 @@ describeStore("a connected agent's authority at the send", (it) => {
     expect(sent).toEqual([]);
   });
 
-  it("keeps the exact Run in Stopping when its handoff wins before revoke", async ({ storeFixture }) => {
+  it("keeps the exact Run in Stopping when its handoff wins before revoke", async ({
+    storeFixture,
+  }) => {
     const f = await storeFixture.startRunFixture("handoff-before-revoke");
     const { database, store } = storeFixture;
-    const agent = await connection(store, await serveMcp(storeFixture), { userId: f.userId, accessMode: "full-access" });
+    const agent = await connection(store, await serveMcp(storeFixture), {
+      userId: f.userId,
+      accessMode: "full-access",
+    });
     const task = await createTask(agent, f, "handoff-before-revoke");
     const run = await queuedRun(storeFixture, task);
-    const command = await database.selectFrom("commands").select("id")
-      .where("runId", "=", run.id).where("type", "=", "run.execute").executeTakeFirstOrThrow();
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", run.id)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
     const claimed = await store.claimCommand(command.id, "handoff-before-revoke");
     if (!claimed) throw new Error("Expected the Run's command");
     const stamped = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const sent: RunnerCommand[] = [];
-    const dispatch = dispatcher(storeFixture, f.runnerId, {
-      planning: async () => {},
-      afterFence: async () => { stamped.resolve(); await release.promise; },
-    }, sent, []).dispatch(claimed.command, new AbortController().signal);
+    const dispatch = dispatcher(
+      storeFixture,
+      f.runnerId,
+      {
+        planning: async () => {},
+        afterFence: async () => {
+          stamped.resolve();
+          await release.promise;
+        },
+      },
+      sent,
+      [],
+    ).dispatch(claimed.command, new AbortController().signal);
     const stopped: unknown[] = [];
-    const home = commands(storeFixture, f.userId, { stopper: { async stop(attempt) {
-      stopped.push(attempt);
-    } } });
+    const home = commands(storeFixture, f.userId, {
+      stopper: {
+        async stop(attempt) {
+          stopped.push(attempt);
+        },
+      },
+    });
     try {
-      await Promise.race([stamped.promise, dispatch.then(() => { throw new Error("Run did not reach handoff"); })]);
+      await Promise.race([
+        stamped.promise,
+        dispatch.then(() => {
+          throw new Error("Run did not reach handoff");
+        }),
+      ]);
       expect(sent).toEqual([]);
       await home.revoke(agent.id);
       expect(home.failures).toEqual([]);
-      expect(stopped).toEqual([expect.objectContaining({ kind: "run-attempt", runId: run.id, generation: expect.any(Number) })]);
+      expect(stopped).toEqual([
+        expect.objectContaining({
+          kind: "run-attempt",
+          runId: run.id,
+          generation: expect.any(Number),
+        }),
+      ]);
       expect((await home.list()).find(({ id }) => id === agent.id)?.state).toBe("stopping");
       await expect(home.remove(agent.id)).rejects.toMatchObject({ reason: "cleanup-outstanding" });
     } finally {
       release.resolve();
       await dispatch;
     }
-    expect(sent).toEqual([expect.objectContaining({ type: "run.execute", context: expect.objectContaining({ runId: run.id }) })]);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "run.execute",
+        context: expect.objectContaining({ runId: run.id }),
+      }),
+    ]);
   });
 
   const cases: readonly {

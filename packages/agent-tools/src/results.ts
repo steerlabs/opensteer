@@ -18,7 +18,7 @@ export {
   type ToolError,
   type ToolFailure,
 } from "@opensteer/core";
-import type { ToolError } from "@opensteer/core";
+import type { ToolError, ToolFailureReceipt } from "@opensteer/core";
 import { agentTools } from "./tools/index.js";
 const legacyErrorCodes = new Map<string, string>([
   ["bad_request", "invalid_input"],
@@ -71,9 +71,13 @@ export function normalizeToolError(
     legacyErrorCodes.get(failure.code) ??
     failure.code;
   let next = connection && code === "not_found" ? null : (failure.next ?? null);
-  if (connection && next?.match(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/gu)?.some(
-    (name) => toolNames.has(name) && !connection.tools.has(name),
-  )) next = null;
+  if (
+    connection &&
+    next
+      ?.match(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/gu)
+      ?.some((name) => toolNames.has(name) && !connection.tools.has(name))
+  )
+    next = null;
   if (failure.computerId && failure.capability && !next?.includes(failure.computerId)) {
     const target = `computerId=${failure.computerId}, access=${failure.capability}.`;
     next = `${target} ${
@@ -81,19 +85,20 @@ export function normalizeToolError(
       (connection
         ? "Check the device's current state or tell the person what is unavailable."
         : failure.reason === "device-stopped"
-        ? "Check computer_list; wait until the person resumes agents there and do not request access."
-        : failure.reason === "device-asleep"
-          ? "Check computer_list; wait until it wakes and do not request access."
-          : failure.reason === "device-offline"
-            ? "Check computer_list; do not request access while it is offline."
-            : "Use computer_access_request if needed.")
+          ? "Check computer_list; wait until the person resumes agents there and do not request access."
+          : failure.reason === "device-asleep"
+            ? "Check computer_list; wait until it wakes and do not request access."
+            : failure.reason === "device-offline"
+              ? "Check computer_list; do not request access while it is offline."
+              : "Use computer_access_request if needed.")
     }`;
   }
   return {
     code: code.slice(0, 100) || "internal_error",
-    message: connection && code === "not_found"
-      ? (connection.notFoundMessage ?? "That item is unavailable.")
-      : failure.message.slice(0, 2000) || "Tool call failed.",
+    message:
+      connection && code === "not_found"
+        ? (connection.notFoundMessage ?? "That item is unavailable.")
+        : failure.message.slice(0, 2000) || "Tool call failed.",
     next: next?.slice(0, 2000) ?? null,
     ...(failure.device && (code === "computer_asleep" || code === "computer_stopped")
       ? { device: { id: failure.device.id, name: failure.device.name.slice(0, 200) } }
@@ -101,8 +106,12 @@ export function normalizeToolError(
   };
 }
 /** Both MCP result channels carry exactly the same failure. */
-export function agentToolFailureResult(failure: AgentToolFailure, connection?: ConnectionFailureContext) {
-  const result = { error: normalizeToolError(failure, connection) };
+export function agentToolFailureResult(
+  failure: AgentToolFailure,
+  connection?: ConnectionFailureContext,
+  receipt?: ToolFailureReceipt,
+) {
+  const result = { error: normalizeToolError(failure, connection), ...receipt };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(result) }],
     structuredContent: result,

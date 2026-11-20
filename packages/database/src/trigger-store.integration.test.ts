@@ -26,7 +26,13 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
-import { OpensteerStore, TriggerStore, admitWatchControlRequest, createDatabase } from "./index.js";
+import {
+  AgentConnectionStore,
+  OpensteerStore,
+  TriggerStore,
+  admitWatchControlRequest,
+  createDatabase,
+} from "./index.js";
 import "./connection.js";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue } from "./store-primitives.js";
@@ -610,6 +616,112 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "succeeded",
     });
   });
+  it("does not treat an earlier Trigger generation's proof as proof for a retry", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("occurrence-retry-proof");
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: fixture.userId,
+      label: "Connected agent",
+      clientName: "Connected agent",
+      accessMode: "full-access",
+      resource: "https://home.example.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: connection.id,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "occurrence-retry-proof",
+      name: "Retry proof",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: trigger.id,
+    });
+    const read = () =>
+      database
+        .selectFrom("triggerOccurrences")
+        .selectAll()
+        .where("id", "=", occurrence.id)
+        .executeTakeFirstOrThrow();
+    const runnerBootId = "same-boot";
+    const runnerId = fixture.runnerId;
+    const dispatch = { commandId: occurrence.commandId, runnerBootId, runnerId };
+    expect(await store.claimCommand(occurrence.commandId, "first-dispatch")).not.toBeNull();
+    const first = await triggers.startExecution(dispatch);
+    await triggers.recordOccurrenceNotAdmitted(occurrence.id, first.executionGeneration);
+    expect(await read()).toMatchObject({
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: null,
+    });
+    await store.retryCommand(occurrence.commandId, new Error("Not sent"));
+    expect(
+      await database
+        .selectFrom("triggerOccurrenceAttempts")
+        .select("occurrenceId")
+        .where("occurrenceId", "=", occurrence.id)
+        .execute(),
+    ).toEqual([]);
+    expect(await store.claimCommand(occurrence.commandId, "retry-dispatch")).not.toBeNull();
+    const second = await triggers.startExecution(dispatch);
+    expect(second.executionGeneration).toBe(first.executionGeneration + 1);
+    const running = {
+      status: "running",
+      executionGeneration: second.executionGeneration,
+      terminalEvidenceAt: null,
+      contactLostAt: null,
+    };
+    expect(await read()).toMatchObject(running);
+    const output = {
+      occurrenceId: occurrence.id,
+      completedAt: new Date().toISOString(),
+      status: "succeeded" as const,
+      result: null,
+      error: null,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+    await expect(
+      triggers.completeExecution({
+        executionGeneration: first.executionGeneration,
+        runnerBootId,
+        runnerId,
+        verifiedContainment: true,
+        output,
+      }),
+    ).rejects.toThrow("Trigger result binding is stale");
+    await triggers.recordOccurrenceNotAdmitted(occurrence.id, first.executionGeneration);
+    expect(await read()).toMatchObject(running);
+    await triggers.completeExecution({
+      executionGeneration: second.executionGeneration,
+      runnerBootId,
+      runnerId,
+      verifiedContainment: true,
+      output,
+    });
+    expect(await read()).toMatchObject({
+      ...running,
+      status: "succeeded",
+      terminalEvidenceAt: expect.any(Date),
+    });
+  });
+
   it("fences the target Run before an Occurrence input source", async ({ storeFixture }) => {
     const {
       createFixture,
@@ -1819,20 +1931,22 @@ integration.sequential("Trigger failure auto-pause", () => {
     ).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(triggers.applyWatchStatus({
-      activationId: reconnected.activations[0]!.activation.id,
-      executionGeneration: 1,
-      runnerBootId: bootOne,
-      runnerConnectionGeneration: 3,
-      runnerId: fixture.runnerId,
-      observed: "stopped",
-      healthySince: null,
-      lastError: null,
-      lastExitCode: null,
-      restartCount: 0,
-      stderrTail: "",
-      stdoutTail: "",
-    })).resolves.toMatchObject({ activation: { desired: "active", observed: "stopped" } });
+    await expect(
+      triggers.applyWatchStatus({
+        activationId: reconnected.activations[0]!.activation.id,
+        executionGeneration: 1,
+        runnerBootId: bootOne,
+        runnerConnectionGeneration: 3,
+        runnerId: fixture.runnerId,
+        observed: "stopped",
+        healthySince: null,
+        lastError: null,
+        lastExitCode: null,
+        restartCount: 0,
+        stderrTail: "",
+        stdoutTail: "",
+      }),
+    ).resolves.toMatchObject({ activation: { desired: "active", observed: "stopped" } });
     const restarted = await triggers.reconcileWatchesForRunner({
       environmentId: fixture.environmentId,
       leaseExpiresAt: new Date(Date.now() + 120_000),
@@ -1920,44 +2034,37 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation?.desired).toBe("stopped");
   });
-  it("records an Agent home failure on the fenced watch activation", async ({ storeFixture }) => {
+  it("records an incompatible renewal without moving an already sent Watch's witness", async ({
+    storeFixture,
+  }) => {
     const { createFixture, createWatchTrigger, triggers, detail } = storeFixture;
-    const fixture = await createFixture("watch-folder-unavailable");
-    const created = await createWatchTrigger(fixture, "watch-folder-unavailable");
-    const bootId = `watch-boot-${randomUUID()}`;
-    const snapshot = await triggers.reconcileWatchesForRunner({
+    const fixture = await createFixture("watch-renewal-unavailable");
+    const created = await createWatchTrigger(fixture, "watch-renewal-unavailable");
+    const binding = {
       environmentId: fixture.environmentId,
       leaseExpiresAt: new Date(Date.now() + 60_000),
-      runnerBootId: bootId,
+      runnerBootId: `watch-boot-${randomUUID()}`,
       runnerConnectionGeneration: 1,
       runnerId: fixture.runnerId,
-    });
+    };
+    const snapshot = await triggers.reconcileWatchesForRunner(binding);
     const activation = snapshot.activations[0]!.activation;
-    await triggers.recordWatchUnavailable({
-      activationId: activation.id,
-      executionGeneration: activation.executionGeneration,
-      reason: "Agent home is unavailable",
-      runnerBootId: bootId,
-      runnerConnectionGeneration: 1,
-      runnerId: fixture.runnerId,
+    const renewal = await triggers.reconcileWatchesForRunner({
+      ...binding,
+      runnerConnectionGeneration: 2,
+      unavailableReason: "The Runner cannot renew the Watch",
     });
+    expect(renewal).toMatchObject({ activations: [], unavailable: true });
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
+      id: activation.id,
+      executionGeneration: activation.executionGeneration,
+      runnerId: binding.runnerId,
+      runnerBootId: binding.runnerBootId,
+      runnerConnectionGeneration: binding.runnerConnectionGeneration,
       healthySince: null,
-      lastError: "Agent home is unavailable",
+      lastError: "The Runner cannot renew the Watch",
       leaseExpiresAt: null,
       observed: "backoff",
-    });
-    await expect(
-      triggers.recordWatchUnavailable({
-        activationId: activation.id,
-        executionGeneration: activation.executionGeneration,
-        reason: "stale failure",
-        runnerBootId: bootId,
-        runnerConnectionGeneration: 2,
-        runnerId: fixture.runnerId,
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
     });
   });
   it("resets a healthy watch failure window and auto-pauses the next crash loop", async ({

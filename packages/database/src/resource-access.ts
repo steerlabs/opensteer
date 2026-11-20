@@ -82,7 +82,16 @@ export async function readLiveAgentConnectionRow(
 ) {
   const query = database
     .selectFrom("agentConnections")
-    .select(["id", "label", "grant", "grantRevision", "consentVersion", "accessMode", "cleanupMinimumGrantRevision", "cleanupMaximumMode"])
+    .select([
+      "id",
+      "label",
+      "grant",
+      "grantRevision",
+      "consentVersion",
+      "accessMode",
+      "cleanupMinimumGrantRevision",
+      "cleanupMaximumMode",
+    ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
     .where("revokedAt", "is", null)
@@ -96,7 +105,10 @@ export async function readLiveAgentConnectionRow(
     .executeTakeFirst();
   if (!row) return undefined;
   const { policy, state, ...connection } = row;
-  return { ...connection, accessMode: applyConnectionPolicy({ policy, state }, row.grant, row.accessMode) };
+  return {
+    ...connection,
+    accessMode: applyConnectionPolicy({ policy, state }, row.grant, row.accessMode),
+  };
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -104,10 +116,12 @@ export async function liveAgentConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
-): Promise<AgentConnectionAuthority & {
-  readonly cleanupMinimumGrantRevision: number | null;
-  readonly cleanupMaximumMode: ThreadAccessMode | null;
-}> {
+): Promise<
+  AgentConnectionAuthority & {
+    readonly cleanupMinimumGrantRevision: number | null;
+    readonly cleanupMaximumMode: ThreadAccessMode | null;
+  }
+> {
   const row = await readLiveAgentConnectionRow(database, ownerUserId, agentConnectionId);
   if (!row) throw forbidden(lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
@@ -139,9 +153,14 @@ export function meetsConnectionFloor(
   mode: ThreadAccessMode | null,
 ): boolean {
   const floor = connection.cleanupMinimumGrantRevision;
-  return floor === null || (revision !== null && (revision > floor ||
-    (revision === floor && (connection.cleanupMaximumMode === null ||
-      (mode !== null && threadAccessModeAtMost(mode, connection.cleanupMaximumMode))))));
+  return (
+    floor === null ||
+    (revision !== null &&
+      (revision > floor ||
+        (revision === floor &&
+          (connection.cleanupMaximumMode === null ||
+            (mode !== null && threadAccessModeAtMost(mode, connection.cleanupMaximumMode))))))
+  );
 }
 
 /**
@@ -180,8 +199,10 @@ export async function assertSendEligible(
 export async function bindingAgentConnectionId(
   database: Kysely<DatabaseSchema>,
   bindingId: string,
+  onMissing?: () => OpensteerError,
 ): Promise<string | null> {
   const facts = await bindingFacts(database, bindingId);
+  if (!facts && onMissing) throw onMissing();
   if (!facts || facts.inconsistent) throw forbidden("Task authority is no longer available");
   return facts.agentConnectionId;
 }
@@ -467,29 +488,40 @@ export function selectedGrantOf(
   return grant?.scope === "selected" ? grant : null;
 }
 
-export interface ResourceAccessInput {
+type AuthorityScope =
+  | {
+      readonly kind: "person";
+      readonly agentConnectionId?: never;
+      readonly agentBindingId?: never;
+      readonly threadId?: never;
+    }
+  | ({ readonly kind?: never; readonly threadId?: ThreadId | undefined } & (
+      | { readonly agentBindingId: string; readonly agentConnectionId?: never }
+      | { readonly agentConnectionId: string; readonly agentBindingId?: never }
+      | {
+          readonly threadId: ThreadId;
+          readonly agentBindingId?: never;
+          readonly agentConnectionId?: never;
+        }
+    ));
+
+export type ResourceAccessInput = AuthorityScope & {
   readonly ownerUserId: UserId;
-  readonly agentConnectionId?: string;
   /** Never an integration connection: an external agent is named `agentConnectionId`. */
   readonly connectionId?: never;
-  readonly threadId?: ThreadId | undefined;
-  readonly agentBindingId?: string;
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
   /** The concrete thing the effect touches. Without one, a `selected` grant is refused. */
   readonly grantTarget?: AgentGrantTarget;
-}
+};
 
-export function authoritySubject(input: {
-  readonly agentConnectionId?: string | undefined;
-  readonly threadId?: ThreadId | undefined;
-  readonly agentBindingId?: string | undefined;
-}): AuthoritySubject {
+export function authoritySubject(input: AuthorityScope): AuthoritySubject {
   if (input.agentBindingId) return { kind: "binding", bindingId: input.agentBindingId };
   if (input.agentConnectionId)
     return { kind: "connection", agentConnectionId: input.agentConnectionId };
   if (input.threadId) return { kind: "binding", bindingId: `thread:${input.threadId}` };
-  return { kind: "person" };
+  if (input.kind === "person") return { kind: "person" };
+  throw forbidden("Task authority is no longer available");
 }
 
 /** Both questions at once, for a caller with one concrete target in hand. */

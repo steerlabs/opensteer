@@ -1,20 +1,26 @@
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
-import { PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
+import { HostClientRequestError, PlaceActivityStore, RunPlaceStore } from "@opensteer/client/host";
 import { mockDeviceMachine } from "@opensteer/client/mock";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary, TabViewer } from "@opensteer/protocol";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { createId, TabIdSchema, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
-import { useRunPlacePicture } from "@opensteer/client/react";
-import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
+import { useHostSelector, useRunPlacePicture } from "@opensteer/client/react";
+import type {
+  ComputerViewRemovedListener,
+  HostClient,
+  HostSnapshot,
+  WebSocketClient,
+} from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
+import { useTabViewer } from "../tabs/use-tab-viewer.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const state = vi.hoisted(() => ({
   closed: vi.fn(),
@@ -282,7 +288,7 @@ async function setup(
   os = "android",
   owner = false,
   interactive = true,
-  screen: "display" | "task" | "owner" | "live" = "display",
+  screen: "display" | "task" | "owner" | "live" | "reconnect" = "display",
 ) {
   state.os = os;
   socket = new Socket();
@@ -292,7 +298,7 @@ async function setup(
   const runId = createId("run"),
     threadId = createId("thread");
   const liveMachine = DeviceIdSchema.parse(createId("runner"));
-  const machineId = screen === "live" ? liveMachine : "machine";
+  const machineId = screen === "live" || screen === "reconnect" ? liveMachine : "machine";
   const runPlaces = new RunPlaceStore();
   // The phone's tab, which a live Run's place names.
   const phoneTab = tabFixture({
@@ -361,6 +367,8 @@ async function setup(
   };
   const connect = vi.fn((_source: unknown, _options?: unknown) => socket);
   const listeners = new Set<() => void>();
+  const removals = new Set<ComputerViewRemovedListener>();
+  const ownedView = snapshot.machines[0]!.computerUse!.ownerViews?.[0];
   const move = (patch: Partial<HostSnapshot>) => {
     snapshot = { ...snapshot, ...patch } as typeof snapshot;
     listeners.forEach((listener) => listener());
@@ -395,6 +403,10 @@ async function setup(
       return () => listeners.delete(listener);
     },
     subscribeLifecycle: () => () => undefined,
+    subscribeComputerViewRemoved: (listener: ComputerViewRemovedListener) => {
+      removals.add(listener);
+      return () => removals.delete(listener);
+    },
     connectComputerDisplay: connect,
     retainComputerView: () => ({ release: () => undefined }),
     listApprovedComputerApps: vi.fn(async () => [
@@ -408,9 +420,31 @@ async function setup(
             },
       },
     ]),
-    activateTab: vi.fn(async () => {
-      throw new Error("Only the tab's screen opens its view again.");
-    }),
+    activateTab: vi.fn(
+      async (_tabId: unknown, options?: { readonly signal?: AbortSignal }): Promise<TabViewer> => {
+        if (screen !== "reconnect" || !ownedView)
+          throw new Error("Only the tab's screen opens its view again.");
+        if (!options?.signal) return { kind: "window", view: ownedView };
+        if (snapshot.machines[0]?.status === "offline")
+          throw new HostClientRequestError({
+            code: "conflict",
+            reason: "computer-view-unavailable",
+            status: 409,
+            message: "This computer is offline.",
+          });
+        const view = { ...ownedView, generation: 2 };
+        socket = new Socket();
+        move({
+          machines: [
+            {
+              ...snapshot.machines[0]!,
+              computerUse: { ...machine.computerUse!, ownerViews: [view] },
+            },
+          ],
+        });
+        return { kind: "window", view };
+      },
+    ),
   } as unknown as HostClient;
   const pool = sharedDisplayStreams(client);
   const retain = pool.retain.bind(pool);
@@ -448,6 +482,34 @@ async function setup(
       editingVersion: 1,
     });
   };
+  function ReopeningWindow({ active }: { active: boolean }) {
+    const intent = useRef(phoneTab.tabId as typeof phoneTab.tabId | null);
+    const available = useHostSelector(
+      client,
+      (snapshot) => snapshot.machines[0]?.status === "online",
+    );
+    const {
+      state: answer,
+      reconnect,
+      retry,
+    } = useTabViewer(client, phoneTab.tabId, active, intent, available);
+    if (answer.status !== "ready" || answer.viewer.kind !== "window") return null;
+    const { view } = answer.viewer;
+    return (
+      <ComputerOwnerView
+        active={active}
+        hostClient={client}
+        appKey="com.apple.notes"
+        machineId={machineId}
+        key={view.generation}
+        viewId={view.viewId}
+        generation={view.generation}
+        onTyping={noop}
+        onReopen={retry}
+        reconnect={reconnect}
+      />
+    );
+  }
   const render = async (active = true) =>
     act(async () =>
       root!.render(
@@ -463,6 +525,8 @@ async function setup(
               threadId={threadId}
             />
           </>
+        ) : screen === "reconnect" ? (
+          <ReopeningWindow active={active} />
         ) : screen === "task" ? (
           <ComputerTaskView
             active={active}
@@ -517,45 +581,72 @@ async function setup(
       },
       client,
     };
-  await act(async () => {
-    socket.readyState = 1;
-    socket.emit("open", {});
-    socket.json({
-      type: "display.state",
-      state: "live",
-      generation: 1,
-      width: 200,
-      height: 400,
-      editingVersion: 1,
-      ...(owner ? {} : { sharedInput: 1 }),
+  const paint = async () => {
+    await act(async () => {
+      socket.readyState = 1;
+      socket.emit("open", {});
+      socket.json({
+        type: "display.state",
+        state: "live",
+        generation: 1,
+        width: 200,
+        height: 400,
+        editingVersion: 1,
+        ...(owner ? {} : { sharedInput: 1 }),
+      });
+      socket.emit("message", {
+        data: encodeDisplayViewerFrame(
+          {
+            generation: 1,
+            sequence: 1,
+            ptsUs: 1000,
+            width: 200,
+            height: 400,
+            key: true,
+            codec: "avc1.42C01F",
+          },
+          new Uint8Array([0, 0, 1, 0x65]),
+        ).slice().buffer,
+      });
     });
-    socket.emit("message", {
-      data: encodeDisplayViewerFrame(
-        {
-          generation: 1,
-          sequence: 1,
-          ptsUs: 1000,
-          width: 200,
-          height: 400,
-          key: true,
-          codec: "avc1.42C01F",
-        },
-        new Uint8Array([0, 0, 1, 0x65]),
-      ).slice().buffer,
-    });
-  });
-  if (state.decoded.length) {
-    state.pixels = true;
-    await act(async () =>
-      state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
-    );
-  }
+    if (state.decoded.length) {
+      state.pixels = true;
+      await act(async () =>
+        state.ready?.({ nativeEvent: { epoch: state.epoch, width: 200, height: 400 } }),
+      );
+    }
+  };
+  await paint();
   return {
     connect,
     render,
     power,
     setDisplay,
     move,
+    paint,
+    restartOwner: () => {
+      if (!ownedView) throw new Error("No owner view");
+      for (const listener of removals)
+        listener({
+          type: "host.computer-view.removed",
+          generation: ownedView.generation,
+          viewId: ownedView.viewId,
+          machineId: liveMachine,
+          reason: "disconnected",
+          displayReason: "device-restarting",
+        });
+    },
+    ownerOffline: (offline: boolean) =>
+      move({
+        machines: [
+          {
+            ...machine,
+            status: offline ? "offline" : "online",
+            agentsStoppedSince: "2026-11-02T12:00:00.000Z",
+            computerUse: { ...machine.computerUse!, ownerViews: [] },
+          },
+        ],
+      }),
     endOwner: () => {
       snapshot.machines[0]!.computerUse!.ownerViews![0]!.state = "closed";
     },
@@ -572,6 +663,46 @@ async function press(label: string) {
 function input() {
   return socket.sent.filter((m) => m.type === "display.input");
 }
+it("reconnects a Mac window through the phone viewer while agent work stays stopped", async () => {
+  vi.useFakeTimers();
+  try {
+    const view = await setup(false, "android", true, true, "reconnect");
+    expect(state.pixels).toBe(true);
+    const original = view.connect.mock.calls[0]![0];
+    await act(async () => view.ownerOffline!(true));
+    expect(container.textContent).not.toContain("Reconnecting…");
+    await act(async () => view.restartOwner!()); // The owner removal can arrive before the display state.
+    expect(container.textContent).toContain("Reconnecting…");
+    expect(state.pixels).toBe(false);
+    expect(view.client.getSnapshot().machines[0]?.status).toBe("offline");
+    expect(view.client.activateTab).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(view.client.activateTab).toHaveBeenCalledTimes(2);
+    expect(view.connect).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Reconnecting…");
+    await act(async () => view.ownerOffline!(false));
+    expect(view.client.getSnapshot().machines[0]?.agentsStoppedSince).toBe(
+      "2026-11-02T12:00:00.000Z",
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(view.client.activateTab).toHaveBeenCalledTimes(3);
+    expect(view.client.activateTab).toHaveBeenLastCalledWith("tab_phone", {
+      signal: expect.any(AbortSignal),
+    });
+    expect(view.connect.mock.calls[1]![0]).toEqual({ ...(original as object), generation: 2 });
+    expect(container.textContent).toContain("Reconnecting…");
+    await view.paint!();
+
+    expect(view.client.getSnapshot().machines[0]?.agentsStoppedSince).toBe(
+      "2026-11-02T12:00:00.000Z",
+    );
+    expect(state.pixels).toBe(true);
+    expect(container.textContent).not.toContain("Reconnecting…");
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("accepts input without a button, maps touch, edits, reports receipts, copies and releases on hide through the real display transport", async () => {
   const { connect, render } = await setup();
   expect(connect.mock.calls[0]?.[1]).toEqual({ editing: 1 });

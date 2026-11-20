@@ -1092,12 +1092,18 @@ describe("networked Personal Home", () => {
       organizationName: "Workshop",
       assignmentId: "was_0192f4a1-1111-4000-8000-000000000001",
     };
-    expect(parseHostConfig({
-      ...managed, OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
-    }).managedHome?.work).toEqual(work);
-    expect(() => parseHostConfig({
-      ...home, OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
-    })).toThrow(/must be configured together/u);
+    expect(
+      parseHostConfig({
+        ...managed,
+        OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
+      }).managedHome?.work,
+    ).toEqual(work);
+    expect(() =>
+      parseHostConfig({
+        ...home,
+        OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
+      }),
+    ).toThrow(/must be configured together/u);
     // It links to the Account that booted it, for push and the hosted OAuth broker.
     expect(config.personalAccountIssuer).toEqual(new URL("https://accounts.example.com"));
     const directory = mkdtempSync(join(tmpdir(), "opensteer-config-managed-"));

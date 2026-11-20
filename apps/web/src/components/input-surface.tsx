@@ -688,7 +688,13 @@ function RequestPanel({
         {detail && !ownHead ? (
           <RequestPanelDetail
             key={request.id}
-            markdown={request.kind === "person.question"}
+            markdown={
+              request.kind === "person.question" &&
+              !(
+                request.presentation.kind === "form" &&
+                request.presentation.detailFormat === "plain"
+              )
+            }
             mono={request.kind === "harness.approval"}
             text={detail}
           />

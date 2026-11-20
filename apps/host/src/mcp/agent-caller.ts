@@ -60,10 +60,7 @@ export interface ConnectionAuthenticator {
 
 export class AgentCallerResolver {
   readonly options: {
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "admitExecution"
-    >;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "admitExecution">;
     readonly runs: Pick<RunToolTokenService, "authenticate"> &
       Partial<Pick<RunToolTokenService, "authenticateExecution">>;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
@@ -71,10 +68,7 @@ export class AgentCallerResolver {
     readonly connections?: ConnectionAuthenticator;
   };
   constructor(options: {
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "admitExecution"
-    >;
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "admitExecution">;
     readonly runs: Pick<RunToolTokenService, "authenticate"> &
       Partial<Pick<RunToolTokenService, "authenticateExecution">>;
     readonly triggers?: Pick<TriggerControlTokenService, "authenticate">;
@@ -190,7 +184,10 @@ export class AgentCallerResolver {
       .catch(() => {
         throw unavailable();
       });
-    if (lineage?.agentConnectionId && authority.agentConnection?.agentConnectionId !== lineage.agentConnectionId)
+    if (
+      lineage?.agentConnectionId &&
+      authority.agentConnection?.agentConnectionId !== lineage.agentConnectionId
+    )
       throw unavailable();
     return authority.agentConnection
       ? { accessMode: authority.mode, agentConnection: authority.agentConnection }

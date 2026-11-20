@@ -10,6 +10,11 @@ import {
   type ControlPlaneAccountId,
   type OrganizationId,
 } from "@opensteer/control-plane-protocol";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  type TestDatabase,
+} from "@opensteer/database/test-support/database";
 import { escapeHtml } from "@opensteer/shared/browserPage";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
@@ -72,7 +77,7 @@ type Person = {
 };
 
 integration("Organization website pages", () => {
-  const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 4 });
+  const organizationsUrl = new URL("/organizations", portalOrigin);
   const subscriptions = new Map<string, StripeSubscription>();
   const stripe = {
     checkout: vi.fn<StripeBilling["checkout"]>(async (input) => ({
@@ -117,44 +122,55 @@ integration("Organization website pages", () => {
     }),
   } satisfies StripeBilling &
     Pick<CloudComputerStripe, "updateSeatQuantity" | "invoice" | "voidInvoice">;
-  const auth = createControlPlaneAuth(database, {
-    publicOrigin,
-    authSecret,
-    googleClientId: "test-client",
-    googleClientSecret: "test-secret",
-  });
-  const organizationsUrl = new URL("/organizations", portalOrigin);
-  const organizations = new OrganizationStore(database, {
-    stripe,
-    offer: {
-      priceId: "price_seat",
-      portalConfigurationId: "bpc_org",
-      name: "Work seat",
-      currency: "usd",
-      amountMinor: 4900,
-      interval: "month",
-    },
-    returnUrl: organizationsUrl,
-  });
-  const cloud = new CloudComputerStore(database, {
-    backupKeyVault: testBackupVault(),
-    purgeBackupStep: async () => true,
-    organizations,
-    config,
-    accountOrigin: publicOrigin,
-    cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
-    stripe,
-    returnUrl: new URL("/cloud-computer", portalOrigin),
-  });
-  const portalSessions = new PortalSessionStore(database);
   const workHomeFetch = vi.fn<typeof globalThis.fetch>(async () => {
     throw new Error("No Home is reachable in this test");
   });
+  let clone: TestDatabase | undefined;
+  let database: ReturnType<typeof createControlPlaneDatabase>;
+  let auth: ReturnType<typeof createControlPlaneAuth>;
+  let organizations: OrganizationStore;
+  let cloud: CloudComputerStore;
+  let portalSessions: PortalSessionStore;
   let app: Awaited<ReturnType<typeof createControlPlaneServer>>;
   let listener: URL;
 
   beforeAll(async () => {
+    clone = await cloneTestDatabase("controlPlane");
+    const connectionString = clone.url;
+    ({ database } = await ownTestDatabaseProducer(connectionString, async () => {
+      const database = createControlPlaneDatabase({ connectionString, maxConnections: 4 });
+      return { database, close: () => database.destroy() };
+    }));
     await migrateControlPlaneToLatest(database);
+    auth = createControlPlaneAuth(database, {
+      publicOrigin,
+      authSecret,
+      googleClientId: "test-client",
+      googleClientSecret: "test-secret",
+    });
+    organizations = new OrganizationStore(database, {
+      stripe,
+      offer: {
+        priceId: "price_seat",
+        portalConfigurationId: "bpc_org",
+        name: "Work seat",
+        currency: "usd",
+        amountMinor: 4900,
+        interval: "month",
+      },
+      returnUrl: organizationsUrl,
+    });
+    cloud = new CloudComputerStore(database, {
+      backupKeyVault: testBackupVault(),
+      purgeBackupStep: async () => true,
+      organizations,
+      config,
+      accountOrigin: publicOrigin,
+      cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
+      stripe,
+      returnUrl: new URL("/cloud-computer", portalOrigin),
+    });
+    portalSessions = new PortalSessionStore(database);
     const unused = async () => {
       throw new Error("Not used");
     };
@@ -204,8 +220,11 @@ integration("Organization website pages", () => {
   });
 
   afterAll(async () => {
-    await app?.close();
-    await database.destroy();
+    try {
+      await app?.close();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("creates an organization by checkout and returns to its pages", async () => {

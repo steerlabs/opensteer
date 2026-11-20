@@ -6,7 +6,11 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import { currentRunAttempt, recordAttemptDispatch, supersedeCurrentAttempt } from "./run-attempts.js";
+import {
+  currentRunAttempt,
+  recordAttemptDispatch,
+  supersedeCurrentAttempt,
+} from "./run-attempts.js";
 import type { DatabaseSchema, GrantTable } from "./schema.js";
 
 /**
@@ -41,10 +45,12 @@ export async function issueRunGrant(
   },
 ): Promise<{ readonly grantId: GrantId; readonly revokedGrants: readonly RevokedRunGrant[] }> {
   const current = await currentRunAttempt(transaction, input.runId);
-  const attemptId = input.connectionId && current.bindingGeneration !== null &&
+  const attemptId =
+    input.connectionId &&
+    current.bindingGeneration !== null &&
     current.bindingGeneration !== input.bindingGeneration
-    ? (await supersedeCurrentAttempt(transaction, input.runId, "recovery")).successor.id
-    : current.id;
+      ? (await supersedeCurrentAttempt(transaction, input.runId, "recovery")).successor.id
+      : current.id;
   await recordAttemptDispatch(transaction, { ...input, attemptId });
   const revokedGrants = await revokeRunGrants(transaction, [input.runId], "binding-replaced");
   const grant = await transaction
@@ -128,8 +134,10 @@ export async function runWasStopped(
       .select("commands.id")
       .where("commands.runId", "=", runId)
       .where("commands.type", "=", "run.interrupt")
-      .where(sql<boolean>`commands.payload->'stop' is null or
-        commands.payload->>'expectedBindingGeneration' = runs.binding_generation::text`)
+      .where(
+        sql<boolean>`commands.payload->'stop' is null or
+        commands.payload->>'expectedBindingGeneration' = runs.binding_generation::text`,
+      )
       .limit(1)
       .executeTakeFirst()) !== undefined
   );

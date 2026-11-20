@@ -26,7 +26,18 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@opensteer/core";
-import { AccountDirectoryStore, OpensteerStore, createDatabase } from "@opensteer/database";
+import {
+  AccountDirectoryStore,
+  AgentConnectionStore,
+  OpensteerStore,
+  TriggerStore,
+  createDatabase,
+} from "@opensteer/database";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import {
+  testModelSelection as fixtureModel,
+  testReadyHarnessCatalog,
+} from "@opensteer/database/test-support/store";
 import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HarnessInstanceCatalogSchema,
@@ -478,6 +489,195 @@ integration("Host vertical slice", () => {
     expect((await testResourceData(origin, "environment", noHome)).environments).toEqual([]);
     expect((await testResourceData(origin, "settings", noHome)).settings).toBeNull();
     expect(bootstrap.session.can).toMatchObject({ createTasks: false, useVoice: false });
+  });
+
+  it("settles already-revoked Run and retired Trigger attempts with contact loss on a different Runner boot", async () => {
+    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-disconnect-boot-"));
+    const port = await freePort();
+    const config = testHostConfig(port, dataDirectory, new URL("http://127.0.0.1:9"));
+    runtime = await createHostRuntime(config);
+    await runtime.listen();
+    const origin = config.runtimeOrigin.origin;
+    await initializeOwnerSession(origin);
+    const descriptor = agentsRunnerDescriptor({
+      bootId: `rbt_${randomUUID()}`,
+      environmentIds: [hostingEnvironmentId],
+      harnessDrivers: [],
+      name: "Disconnect fixture Runner",
+      runnerId: createId("runner"),
+      runnerKind: "main",
+      runtimeVersion: "integration",
+    });
+    const initial = await connectPrimary(port, descriptor, { token: runnerToken });
+    runnerSocket = initial.socket;
+    const closed = waitForClose(initial.socket);
+    initial.socket.close();
+    await closed;
+    runnerSocket = undefined;
+    await runtime.close();
+    runtime = undefined;
+
+    const seedDatabase = createDatabase({ connectionString: config.databaseUrl });
+    const seedStore = new OpensteerStore(seedDatabase);
+    const connections = new AgentConnectionStore(seedDatabase);
+    const triggers = new TriggerStore(seedDatabase);
+    let ownerId: import("@opensteer/core").UserId;
+    let witness: {
+      connectionId: string;
+      runId: import("@opensteer/core").RunId;
+      bindingGeneration: number;
+      occurrenceId: import("@opensteer/core").TriggerOccurrenceId;
+      executionGeneration: number;
+      bootId: string;
+    };
+    try {
+      const personal = await initializePersonalState(seedDatabase, {
+        environmentId: hostingEnvironmentId,
+        agentHome: config.personal!.agentHome,
+      });
+      if (!personal) throw new Error("Expected a configured Main Runner and owner");
+      ({ ownerId } = await personalSettings(seedDatabase));
+      const agent = await connections.create({
+        userId: ownerId,
+        label: "Agent",
+        clientName: "Agent",
+        accessMode: "full-access",
+        resource: `${origin}/mcp`,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(agent.id, randomUUID())).toBe(true);
+      const harness = await seedStore.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId: hostingEnvironmentId,
+        name: "Offline fixture",
+        stateKind: "isolated",
+      });
+      await seedStore.recordHarnessCatalogs({
+        environmentId: hostingEnvironmentId,
+        catalogs: [testReadyHarnessCatalog(harness.id)],
+        expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+      });
+      const { thread } = await seedStore.createThread({
+        createdBy: ownerId,
+        environmentId: hostingEnvironmentId,
+        harnessInstanceId: harness.id,
+        modelSelection: fixtureModel,
+        idempotencyKey: "disconnect-boot-task",
+        title: "Old work",
+      });
+      const turn = await seedStore.enqueueThreadInput({
+        threadId: thread.id,
+        requestedBy: ownerId,
+        idempotencyKey: "disconnect-boot-run",
+        content: [{ type: "text", text: "Old work" }],
+        policy: "queue",
+        source: { kind: "connection", connectionId: agent.id },
+        authority: {
+          kind: "connection",
+          userId: ownerId,
+          accessMode: "full-access",
+          connectionId: agent.id,
+        },
+      });
+      if (!turn.run) throw new Error("Expected a queued Run");
+      const old = await startPersonalQueuedRunFixture(seedStore, turn.run.id, initial.bootId);
+      const { trigger } = await triggers.create({
+        actorThreadId: null,
+        actorConnectionId: agent.id,
+        anchorThreadId: thread.id,
+        createdBy: ownerId,
+        idempotencyKey: "disconnect-boot-trigger",
+        name: "Old automation",
+        program: {
+          language: "javascript",
+          source: "export default async () => null",
+          toolContractVersion: 5,
+        },
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      });
+      const occurrence = await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId,
+        triggerId: trigger.id,
+      });
+      expect(
+        await seedStore.claimCommand(occurrence.commandId, "disconnect-boot-trigger"),
+      ).not.toBeNull();
+      const attempt = await triggers.startExecution({
+        commandId: occurrence.commandId,
+        runnerBootId: old.runnerBootId,
+        runnerId: descriptor.runnerId,
+      });
+      await seedStore.retryCommand(
+        occurrence.commandId,
+        new Error("Retried without an end report"),
+      );
+      await connections.revoke(ownerId, agent.id);
+      expect(await seedStore.driveConnectionCleanups()).toEqual({ failures: [], settled: [] });
+      expect(await connections.list(ownerId, { includeRevoked: true })).toMatchObject([
+        { id: agent.id, state: "stopping", lastActionUncertain: false },
+      ]);
+      witness = {
+        connectionId: agent.id,
+        runId: old.runId,
+        bindingGeneration: old.bindingGeneration,
+        occurrenceId: occurrence.id,
+        executionGeneration: attempt.executionGeneration,
+        bootId: old.runnerBootId,
+      };
+    } finally {
+      await seedDatabase.destroy();
+    }
+
+    runtime = await createHostRuntime(withoutInitialOwner(config));
+    await runtime.listen();
+    const current = await connectPrimary(
+      port,
+      { ...descriptor, bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`) },
+      { privateKey: initial.privateKey },
+    );
+    runnerSocket = current.socket;
+    expect(current.bootId).not.toBe(witness.bootId);
+    const receipt = await testRpcData(
+      origin,
+      "commands.dispatch",
+      {
+        type: "connection.revoke",
+        connectionId: witness.connectionId,
+        idempotencyKey: "resume-disconnect-boot",
+      },
+      { headers: authorization(accessToken) },
+    );
+    expect(receipt).toMatchObject({ type: "connection.revoke" });
+    const liveDatabase = runtime.store.database;
+    const evidence = {
+      runnerBootId: witness.bootId,
+      terminalEvidenceAt: expect.any(Date),
+      contactLostAt: expect.any(Date),
+    };
+    expect(
+      await liveDatabase
+        .selectFrom("runAttempts")
+        .select(["runnerBootId", "terminalEvidenceAt", "contactLostAt"])
+        .where("runId", "=", witness.runId)
+        .where("bindingGeneration", "=", witness.bindingGeneration)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(evidence);
+    expect(
+      await liveDatabase
+        .selectFrom("triggerOccurrenceAttempts")
+        .select(["runnerBootId", "terminalEvidenceAt", "contactLostAt"])
+        .where("occurrenceId", "=", witness.occurrenceId)
+        .where("executionGeneration", "=", witness.executionGeneration)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(evidence);
+    expect(
+      await new AgentConnectionStore(liveDatabase).list(ownerId, { includeRevoked: true }),
+    ).toMatchObject([{ id: witness.connectionId, state: "stopped", lastActionUncertain: true }]);
   });
 
   it("restarts Host and local Runner identity without the enrollment token", async () => {

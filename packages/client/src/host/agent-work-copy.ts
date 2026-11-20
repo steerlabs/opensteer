@@ -87,7 +87,7 @@ export const agentWorkCopy = {
   "who.verifiedAs": "Verified: {name}",
   "who.verified": "Verified",
   "who.local": "an app on this computer",
-  "who.consentWarning": "Only approve if you started this yourself.",
+  "who.consentWarning": "Only allow this if you started it yourself.",
   "who.withdrawn": "No longer verified since {date}.",
   "who.withdrawnDetail": "Check its last action or disconnect it.",
   "who.disconnect": "Disconnect",

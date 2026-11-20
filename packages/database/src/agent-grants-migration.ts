@@ -7,8 +7,8 @@ export const agentGrantsMigrationName = "0042_agent_grants";
  * Connections carry one grant; everything that can execute later carries its connection. Existing
  * connections keep exactly what they could already do (`everything` at consent version 1). Lineage
  * applies to work created from now on: existing tasks, Runs and automations stay the person's. The
- * only backfill is a queued input whose own immutable source names a connection, and a Run still
- * queued from such an input, which takes its seed's connection.
+ * backfill uses immutable input lineage: a queued input, a Run still queued from such an input,
+ * and existing plugin executions whose Run or seed names a connection.
  */
 export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
   await sql`
@@ -55,6 +55,19 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       add column admitted_access_mode text,
       add column terminal_evidence_at timestamptz,
       add column contact_lost_at timestamptz;
+    create table trigger_occurrence_attempts (
+      occurrence_id text not null references trigger_occurrences(id),
+      execution_generation integer not null,
+      connection_id text not null,
+      runner_id text not null,
+      runner_boot_id text not null,
+      admitted_grant_revision integer,
+      admitted_access_mode text,
+      terminal_evidence_at timestamptz,
+      contact_lost_at timestamptz,
+      primary key (occurrence_id, execution_generation)
+    );
+    create index trigger_occurrence_attempts_connection on trigger_occurrence_attempts(connection_id);
     alter table trigger_watch_activations
       add column connection_id text,
       add column admitted_grant_revision integer,
@@ -66,7 +79,8 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       add column admitted_grant_revision integer,
       add column admitted_access_mode text,
       add column terminal_evidence_at timestamptz,
-      add column contact_lost_at timestamptz;
+      add column contact_lost_at timestamptz,
+      add column engine_process jsonb;
     create index plugin_executions_connection on plugin_executions(connection_id)
       where connection_id is not null;
     alter table browser_sessions add column standard_cdp_attempts jsonb not null default '{}';
@@ -98,5 +112,15 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       where runs.status = 'queued' and runs.connection_id is null
         and thread_inputs.message_id = runs.seed_input_id
         and thread_inputs.connection_id is not null;
+    update plugin_executions p set connection_id = c.id,
+      admitted_grant_revision = r.admitted_grant_revision,
+      admitted_access_mode = coalesce(r.admitted_access_mode, r.access_mode)
+      from runs r
+      left join thread_inputs i on i.message_id = r.seed_input_id
+      join agent_connections c on c.user_id = r.requested_by and c.id = coalesce(
+        r.connection_id,
+        case when r.authority_source->>'kind' = 'connection' then r.authority_source->>'connectionId' end,
+        case when i.authority_source->>'kind' = 'connection' then i.authority_source->>'connectionId' end)
+      where p.run_id = r.id and p.owner_user_id = c.user_id and p.connection_id is null;
   `.execute(database);
 }

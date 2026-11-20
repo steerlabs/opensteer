@@ -6,7 +6,7 @@ import { deploymentPolicy } from "@opensteer/core";
 import { assertRequestRevision } from "./request-persistence.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { withDatabaseTransaction } from "./connection.js";
-import { type CommandRow, type DatabaseSchema } from "./schema.js";
+import { type CommandRow, type DatabaseSchema, type DeploymentRow } from "./schema.js";
 import {
   idempotencyConflict,
   principalIdForUser,
@@ -978,11 +978,8 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
 }
 
 /** A Personal Deployment has exactly one established owner. */
-export async function personalDeploymentOwner(
-  database: Kysely<DatabaseSchema>,
-): Promise<UserId | null> {
-  // One read: the Deployment's shape and its first user.
-  const row = await database
+function personalDeploymentOwnerQuery(database: Kysely<DatabaseSchema>) {
+  return database
     .selectFrom("deployments")
     .leftJoinLateral(
       (eb) =>
@@ -1001,8 +998,48 @@ export async function personalDeploymentOwner(
       "owner.id as ownerId",
       "owner.disabledAt as ownerDisabledAt",
     ])
-    .where("deployments.singletonKey", "=", "primary")
-    .executeTakeFirst();
+    .where("deployments.singletonKey", "=", "primary");
+}
+
+function activePersonalDeploymentOwner(
+  row:
+    | (Pick<DeploymentRow, "deploymentShape"> & {
+        ownerId: UserId | null;
+        ownerDisabledAt: Date | null;
+      })
+    | undefined,
+): UserId | null {
   if (!row || !deploymentPolicy(row.deploymentShape).services.personal) return null;
   return row.ownerId && row.ownerDisabledAt === null ? row.ownerId : null;
+}
+
+export async function personalDeploymentOwner(
+  database: Kysely<DatabaseSchema>,
+): Promise<UserId | null> {
+  return activePersonalDeploymentOwner(
+    await personalDeploymentOwnerQuery(database).executeTakeFirst(),
+  );
+}
+
+export async function personalShellSessionState(
+  database: Kysely<DatabaseSchema>,
+  viewerId: UserId,
+) {
+  const row = await personalDeploymentOwnerQuery(database)
+    .select((eb) =>
+      eb
+        .exists(
+          eb
+            .selectFrom("personalSettings")
+            .select("singletonKey")
+            .where("singletonKey", "=", "personal"),
+        )
+        .as("opened"),
+    )
+    .executeTakeFirst();
+  return {
+    opened: Boolean(row?.opened),
+    role:
+      activePersonalDeploymentOwner(row) === viewerId ? ("owner" as const) : ("member" as const),
+  };
 }

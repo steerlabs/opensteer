@@ -1,3 +1,4 @@
+import { AgentConnectionStore } from "@opensteer/database";
 import pg from "pg";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -87,4 +88,52 @@ integration("An idle personal Host", () => {
     for (let elapsed = 0; elapsed < 5 * 60_000; elapsed += 15_000) await heartbeat();
     expect(statements).toEqual([]);
   }, 180_000);
+
+  it("still expires a connected agent after its narrowing cleanup finishes", async () => {
+    vi.useFakeTimers({
+      shouldAdvanceTime: true,
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+    });
+    database = await createMachineAccessDatabase(baseDatabaseUrl!);
+    const personal = (host = await startMachineAccessWireHost(database.url, {
+      manualRunner: true,
+    }));
+    const { database: db } = personal.store;
+    const connections = new AgentConnectionStore(db);
+    const expiresAt = new Date(Date.now() + 120_000);
+    const agent = await connections.create({
+      userId: personal.ownerId,
+      label: "Test agent",
+      clientName: "Test client",
+      accessMode: "full-access",
+      resource: new URL("/mcp", personal.origin).href,
+      expiresAt,
+    });
+    await connections.activate(agent.id, "fixture-credential-hash");
+    const readCleanup = () =>
+      db
+        .selectFrom("agentConnections")
+        .select(["cleanupReason", "cleanupCompletedAt"])
+        .where("id", "=", agent.id)
+        .executeTakeFirstOrThrow();
+    const narrowed = await personal.api["commands.dispatch"]({
+      type: "connection.update",
+      connectionId: agent.id,
+      expectedRevision: 1,
+      idempotencyKey: "narrow-before-expiry",
+      accessMode: "approval-required",
+    });
+    expect(narrowed).toMatchObject({ ok: true });
+    expect(await readCleanup()).toMatchObject({
+      cleanupReason: "narrowed",
+      cleanupCompletedAt: expect.any(Date),
+    });
+    await vi.advanceTimersByTimeAsync(expiresAt.getTime() - Date.now() + 1);
+    await vi.waitFor(async () =>
+      expect(await readCleanup()).toMatchObject({
+        cleanupReason: "expired",
+        cleanupCompletedAt: expect.any(Date),
+      }),
+    );
+  });
 });

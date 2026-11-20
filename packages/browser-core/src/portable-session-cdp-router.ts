@@ -73,6 +73,7 @@ export interface SessionCdpRouterLimits {
 
 export interface StandardCdpAttachmentOptions {
   readonly wholeContext: boolean;
+  readonly lineage?: { readonly attachmentId: string; readonly seedTargetId: string };
   readonly adoptTarget?: (targetId: string) => Promise<boolean>;
   readonly recoverUnadoptedTarget?: (targetId: string) => Promise<void>;
   readonly onOverflow?: () => void;
@@ -121,6 +122,7 @@ interface TargetClaim {
   readonly sessionId: string;
   parentId?: string;
   scriptParentId?: string;
+  creatorAttachmentId?: string;
   exclusiveOwner?: ConnectionState;
   channelReferences?: number;
 }
@@ -167,6 +169,7 @@ function targetRoot(discoverTargets: boolean, aliasId?: string): TargetRoot {
 interface ConnectionState extends TargetRoot {
   readonly session: BrowserSessionState;
   readonly standard?: StandardCdpAttachmentOptions;
+  readonly lineagePages?: Set<string>;
   readonly script?: {
     id: string;
     root: string;
@@ -394,6 +397,7 @@ export class SessionCdpRouter {
         "forbidden",
         "Whole-context CDP requires an exclusive saved profile.",
       );
+    if (options.lineage) this.#assertOwnedTarget(session, options.lineage.seedTargetId);
     const state = this.#openConnection(session.session, options);
     if (options.wholeContext) this.#exclusive = state;
     return {
@@ -418,6 +422,7 @@ export class SessionCdpRouter {
     const state: ConnectionState = {
       session,
       ...(standard ? { standard } : {}),
+      ...(standard?.lineage ? { lineagePages: new Set([standard.lineage.seedTargetId]) } : {}),
       ...(script ? { script } : {}),
       physicalWork: new Set(),
       settlement: { promise, resolve },
@@ -450,7 +455,7 @@ export class SessionCdpRouter {
     state.eventListeners.clear();
     for (const aliasId of state.aliases.keys()) this.#detachRootAlias(state, aliasId);
     state.retiredTargets.clear();
-    for (const attached of state.channels.values()) this.#endChannel(state, attached);
+    for (const attached of state.channels.values()) void this.#endChannel(state, attached);
     if (this.#exclusive === state) {
       for (const targetId of state.session.exclusiveWorkers) this.#releaseTarget(targetId);
     }
@@ -488,11 +493,11 @@ export class SessionCdpRouter {
     if (this.#ownerByTargetId.get(targetId)?.sessionId === sessionId) this.#releaseTarget(targetId);
   }
 
-  claimTarget(sessionId: string, targetId: string): void {
+  claimTarget(sessionId: string, targetId: string, openerId?: string): string | undefined {
     this.#assertOpen();
     assertIdentifier(targetId, "CDP target ID");
     const state = this.#requireSession(sessionId);
-    this.#claimTarget(state, targetId);
+    return this.#claimTarget(state, targetId, undefined, true, openerId).creatorAttachmentId;
   }
 
   /**
@@ -989,6 +994,7 @@ export class SessionCdpRouter {
       }
       case "Target.attachToTarget": {
         const targetId = requiredTargetId(parameters);
+        if (state.lineagePages) this.#assertOwnedTarget(state, targetId);
         const existing = [...state.channels.values()].find(
           (channel) =>
             channel.physicalTargetId === targetId &&
@@ -1036,7 +1042,7 @@ export class SessionCdpRouter {
           if (state.retiredTargets.delete(virtualSessionId)) return {};
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
         }
-        this.#endChannel(state, attached);
+        void this.#endChannel(state, attached);
         return {};
       }
       case "Target.setAutoAttach": {
@@ -1074,7 +1080,7 @@ export class SessionCdpRouter {
           root.autoReady = undefined;
           for (const attached of state.channels.values()) {
             if (attached.rootAttached && attached.rootAlias === (root.aliasId ? root : undefined))
-              this.#endChannel(state, attached);
+              void this.#endChannel(state, attached);
           }
         }
         return {};
@@ -1220,7 +1226,7 @@ export class SessionCdpRouter {
     const pending = root.autoAttached;
     if (!pending || state.session.adopting.has(targetId)) return;
     const claim = this.#ownerByTargetId.get(targetId);
-    if (!claim || claim.sessionId !== state.session.sessionId) return;
+    if (!claim || !this.#canReach(state, targetId)) return;
     const existing = pending.get(targetId);
     if (existing) return existing;
     const explicit = [...state.channels.values()].find(
@@ -1278,7 +1284,7 @@ export class SessionCdpRouter {
     root.autoReady = undefined;
     root.discoveryReplay = undefined;
     for (const channel of state.channels.values())
-      if (channel.rootAlias === root) this.#endChannel(state, channel);
+      if (channel.rootAlias === root) void this.#endChannel(state, channel);
     this.#appendEvent(state, "Target.detachedFromTarget", { sessionId: aliasId });
   }
 
@@ -1430,7 +1436,7 @@ export class SessionCdpRouter {
         { ...parameters, sessionId: child.virtualSessionId },
         attached.virtualSessionId,
       );
-      this.#endChannel(state, child);
+      void this.#endChannel(state, child);
       return;
     }
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
@@ -1556,7 +1562,7 @@ export class SessionCdpRouter {
         );
         return {};
       }
-      this.#endChannel(state, child);
+      void this.#endChannel(state, child);
       return {};
     }
 
@@ -1635,7 +1641,8 @@ export class SessionCdpRouter {
         : undefined;
       if (owner && targetId)
         for (const state of owner.session.connections) {
-          this.#appendEvent(state, method, parameters);
+          if (!state.lineagePages || this.#canReach(state, targetId))
+            this.#appendEvent(state, method, parameters);
           if (this.#canReach(state, targetId))
             for (const aliasId of state.aliases.keys())
               this.#appendEvent(state, method, parameters, aliasId);
@@ -1667,7 +1674,13 @@ export class SessionCdpRouter {
         const existing = this.#ownerByTargetId.get(targetId);
         if (existing?.sessionId === owner.session.sessionId) existing.scriptParentId ??= parentId;
         if (!existing && !this.#workByTarget.has(targetId))
-          this.#claimTarget(owner, targetId, parentId, info.type === "page");
+          this.#claimTarget(
+            owner,
+            targetId,
+            parentId,
+            info.type === "page",
+            info.type === "page" ? parentId : undefined,
+          );
       }
     }
 
@@ -1777,6 +1790,7 @@ export class SessionCdpRouter {
     targetId: string,
     parentId?: string,
     attachPage = true,
+    openerId?: string,
   ): TargetClaim {
     const existing = this.#ownerByTargetId.get(targetId);
     if (!existing) this.#assertTargetAvailable(targetId);
@@ -1786,8 +1800,20 @@ export class SessionCdpRouter {
       sessionId: state.session.sessionId,
       ...(parentId ? { parentId, scriptParentId: parentId } : {}),
     };
-    if (!parentId) delete claim.parentId;
-    else claim.scriptParentId ??= parentId;
+    if (!parentId && state.lineagePages && state.standard?.lineage) {
+      state.lineagePages.add(targetId);
+      claim.creatorAttachmentId ??= state.standard.lineage.attachmentId;
+    }
+    if (openerId) {
+      for (const connection of state.session.connections) {
+        const lineage = connection.standard?.lineage;
+        if (!lineage || !connection.lineagePages || !this.#canReach(connection, openerId)) continue;
+        connection.lineagePages.add(targetId);
+        claim.creatorAttachmentId ??= lineage.attachmentId;
+      }
+    }
+    if (parentId) claim.scriptParentId ??= parentId;
+    if (!parentId || (openerId && claim.creatorAttachmentId)) delete claim.parentId;
     this.#ownerByTargetId.set(targetId, claim);
     state.session.ownedTargetIds.add(targetId);
     const announced = this.#unclaimedPages.get(targetId);
@@ -1829,9 +1855,10 @@ export class SessionCdpRouter {
             const oldest = retired.keys().next().value;
             if (oldest !== undefined) retired.delete(oldest);
           }
-          this.#endChannel(connection, attached);
+          void this.#endChannel(connection, attached);
         }
       }
+      connection.lineagePages?.delete(targetId);
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)
@@ -1872,7 +1899,10 @@ export class SessionCdpRouter {
     );
     rejectPending(attached.pending, ended);
     attached.ended.abort(ended);
-    const close = () => attached.channel.close().catch(() => undefined);
+    const close = () =>
+      attached.channel
+        .close()
+        .catch((error: unknown) => console.error("CDP channel cleanup failed", error));
     const work = this.#workByTarget.get(attached.physicalTargetId);
     const closure = this.#trackPhysicalWork(state, () =>
       (state.standard || state.script) && (work?.size || descendants.length)
@@ -2008,6 +2038,11 @@ export class SessionCdpRouter {
         (claim.exclusiveOwner && claim.exclusiveOwner !== state)
       )
         return false;
+      if (state.lineagePages) {
+        if (state.lineagePages.has(id)) return true;
+        id = claim.parentId;
+        continue;
+      }
       if (!state.script || id === state.script.root) return true;
       id = claim.scriptParentId;
     }

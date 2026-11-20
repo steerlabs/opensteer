@@ -125,7 +125,7 @@ const maxRestartAttempts = 5;
 const notEnrolledDetail = "This Mac is not in this Deployment.";
 const neverEnrolledDetail = "This Mac isn’t connected to this Opensteer yet.";
 const revokedDetail = "This Mac was removed from this Deployment.";
-const stoppedDetail = "The Runner is stopped on this Mac.";
+const stoppedDetail = "This device connection is stopped on this Mac.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
 const stillRunningMessage =
   "The Runner on this Mac is still running, so nothing was deleted. Try again in a moment.";
@@ -2075,6 +2075,7 @@ export class LocalRunnerService {
       } catch {
         // The port closed while the worker was leaving. Its exit still has to be observed.
       }
+      const graceful = gone;
       if (!gone) {
         child.kill();
         gone = await exitedWithin(exited, this.#stopTimeouts.forcedMs);
@@ -2085,12 +2086,12 @@ export class LocalRunnerService {
       slot.shutdownConfirmed =
         gone &&
         (!this.#agentsStoppedSince ||
-          (!!slot.shutdownProof &&
-            !!target &&
+          (!!target &&
             (await confirmRunnerShutdown(
               this.#deploymentDataDirectory(target.deploymentId),
               slot.shutdownProof,
             ).catch(() => false))));
+      if (!graceful && this.#agentsStoppedSince) slot.shutdownConfirmed = false;
       if (bridgeDrained && !(await bridgeDrained)) slot.shutdownConfirmed = false;
       if (gone) this.#dropChild(slot, child);
       if (!keep) {
@@ -2582,12 +2583,12 @@ export class LocalRunnerService {
       throw new Error("This Mac's leave obligation has inconsistent identity.");
     const authority = verifyHostDiscoveryEnvelope(row.hostAuthority);
     if (authority.deploymentId !== deploymentId)
-      throw new Error("The leave proof belongs to another Host.");
+      throw new Error("Opensteer needs to verify this device's Home before removing it.");
     const route = row.lastVerifiedRoute;
     // A Home on its own server is reached at its signed canonical origin, with no route to verify.
     if (!route.accessRoute) {
       if (!isNetworkedHome(authority) || authority.canonicalOrigin !== route.origin)
-        throw new Error("Device leave requires a verified Personal Host route.");
+        throw new Error("Opensteer needs to verify this device's Home before removing it.");
     } else {
       verifyPersonalHostAccessRouteEnvelope(route.accessRoute);
       if (

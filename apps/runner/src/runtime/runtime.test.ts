@@ -75,11 +75,7 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import {
-  RunnerRuntime,
-  harnessProcessEnvironment,
-  type RunnerMessageSink,
-} from "./runtime.js";
+import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from "./runtime.js";
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
@@ -296,15 +292,25 @@ describe("RunnerRuntime", () => {
       });
       const request = { ...stop, stop: { id: commandId, bootId: "boot-control-test" } };
       const calls = terminate.mock.calls.length;
-      await expect(runtime.handleCommand({ ...request, stop: { id: commandId, bootId: "old-boot" } }, sink))
-        .resolves.toEqual({ status: "accepted", stopState: "never-seen" });
+      await expect(
+        runtime.handleCommand({ ...request, stop: { id: commandId, bootId: "old-boot" } }, sink),
+      ).resolves.toEqual({ status: "accepted", stopState: "never-seen" });
       expect(terminate).toHaveBeenCalledTimes(calls);
-      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "still-ending" });
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({
+        status: "accepted",
+        stopState: "still-ending",
+      });
       terminate.mockResolvedValue("proven");
-      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "ended" });
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({
+        status: "accepted",
+        stopState: "ended",
+      });
       await confirmed.promise;
       const endedCalls = terminate.mock.calls.length;
-      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({ status: "accepted", stopState: "ended" });
+      await expect(runtime.handleCommand(request, sink)).resolves.toEqual({
+        status: "accepted",
+        stopState: "ended",
+      });
       expect(terminate).toHaveBeenCalledTimes(endedCalls);
     } finally {
       await runtime.close();
@@ -3524,6 +3530,13 @@ describe("RunnerRuntime", () => {
     const environmentId = createId("environment");
     const seedCommand = triggerCommand(environmentId);
     const observedSignals: AbortSignal[] = [];
+    const launchScopes: (string | undefined)[] = [];
+    const containment = new ExecutionContainment({
+      bootId: "boot-trigger-revocation-test",
+      dataDirectory: testPrivateStateRoot,
+      listProcesses: async () => [],
+    });
+    const terminate = vi.spyOn(containment, "terminate");
     const runtime = runtimeWithLeaseGrants({
       agentSkills: testAgentSkills,
       bootId: "boot-trigger-revocation-test",
@@ -3536,8 +3549,22 @@ describe("RunnerRuntime", () => {
       maxConcurrentRuns: 1,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
+      containment,
       programExecutor: {
-        execute: async ({ context, signal }) => {
+        execute: async ({ context, planLaunch, signal, workspace }) => {
+          const plan = await planLaunch({
+            environment: {},
+            privateDirectory: testPrivateStateRoot,
+            workspacePath: workspace.path,
+          });
+          launchScopes.push(
+            plan({
+              executable: process.execPath,
+              args: [],
+              cwd: workspace.path,
+              environment: {},
+            }).environment[executionScopeVariable],
+          );
           observedSignals.push(signal);
           await new Promise<void>((resolvePromise) =>
             signal.addEventListener("abort", () => resolvePromise(), { once: true }),
@@ -3573,7 +3600,10 @@ describe("RunnerRuntime", () => {
             ? seedCommand
             : {
                 ...seedCommand,
-                context: { ...seedCommand.context, executionGeneration: seedCommand.context.executionGeneration + index },
+                context: {
+                  ...seedCommand.context,
+                  executionGeneration: seedCommand.context.executionGeneration + index,
+                },
                 commandId,
                 correlationId: CorrelationIdSchema.parse(commandId),
               };
@@ -3619,17 +3649,24 @@ describe("RunnerRuntime", () => {
         { send: async (report) => void replayed.push(report) },
       );
       expect(replayed.filter((message) => message.type === "runner.trigger-result")).toEqual(
-        [0, 1, 2].map((index) => expect.objectContaining({
-          executionGeneration: seedCommand.context.executionGeneration + index,
-          output: expect.objectContaining({
-            occurrenceId: seedCommand.context.occurrenceId,
-            status: "canceled",
+        [0, 1, 2].map((index) =>
+          expect.objectContaining({
+            executionGeneration: seedCommand.context.executionGeneration + index,
+            output: expect.objectContaining({
+              occurrenceId: seedCommand.context.occurrenceId,
+              status: "canceled",
+            }),
           }),
-        })),
+        ),
       );
       expect(messages.filter((message) => message.type === "runner.trigger-result")).toHaveLength(
         3,
       );
+      const attemptIds = [1, 2, 3].map(
+        (generation) => `${seedCommand.context.occurrenceId}:${generation}`,
+      );
+      expect(launchScopes).toEqual(attemptIds.map((id) => containment.scope(id)));
+      expect(terminate.mock.calls.map(([id]) => id)).toEqual(attemptIds);
       expect(messages).toContainEqual(
         expect.objectContaining({
           output: expect.objectContaining({ status: "canceled" }),
@@ -6764,6 +6801,4 @@ describe("this computer's own view and Stop of its Runs", () => {
       await runtime.close();
     }
   });
-
-
 });

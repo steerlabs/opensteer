@@ -34,7 +34,12 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 export type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
-export type BrowserBindingTabActor = { kind: "browser-binding"; authority: CdpAuthority; threadId: ThreadId; signal?: AbortSignal };
+export type BrowserBindingTabActor = {
+  kind: "browser-binding";
+  authority: CdpAuthority;
+  threadId: ThreadId;
+  signal?: AbortSignal;
+};
 export type TabActor =
   | BrowserBindingTabActor
   | { kind: "person"; ownerId: UserId }

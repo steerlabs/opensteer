@@ -10,6 +10,11 @@ import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { engineActiveVersions, engineDemand } from "./engine-storage.js";
 import {
+  engineProcessGroupGone,
+  engineProcessNamespace,
+  type EngineProcess,
+} from "./engine-process.js";
+import {
   EngineMessageSchema,
   HostMessageSchema,
   operations,
@@ -112,6 +117,8 @@ const liveExecution = new Set(["running", "waiting", "answered"]);
 // instead of V8's machine-sized default; the supervisor then restarts the lost process.
 const engineFlags = ["--max-old-space-size=1024", "--max-semi-space-size=16"];
 
+type BeforeSend = (engine: EngineProcess | null) => Promise<void>;
+
 interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -127,6 +134,9 @@ export class PluginService {
   readonly #callbacks = new Map<string, AbortController>();
   readonly #executionCallbacks = new Map<string, Set<Promise<void>>>();
   readonly #executionChildren = new Map<string, number>();
+  readonly #engineCallbacks = new Map<string, Map<Promise<void>, string | undefined>>();
+  #namespace: Promise<string | null> | undefined;
+  #engine: EngineProcess | null = null;
   readonly #drainedExecutions = new EventEmitter();
   readonly #elicits = new Map<
     string,
@@ -363,6 +373,7 @@ export class PluginService {
   }
   async #launch() {
     await this.#cleaning;
+    const namespace = await (this.#namespace ??= engineProcessNamespace());
     if (this.#closed) return;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     const generation = this.#state.generation + 1;
@@ -375,6 +386,9 @@ export class PluginService {
       serialization: "json",
     });
     this.#child = child;
+    const launchId = randomUUID();
+    this.#engine = namespace && child.pid ? { namespace, pid: child.pid, launchId } : null;
+    const callbacks = new Map<Promise<void>, string | undefined>();
     let ready = false;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
@@ -383,6 +397,7 @@ export class PluginService {
       rejectReady = reject;
     });
     child.on("message", (raw: unknown) => {
+      if (this.#child !== child) return;
       const parsed = EngineMessageSchema.safeParse(raw);
       if (!parsed.success) {
         child.kill("SIGTERM");
@@ -415,17 +430,28 @@ export class PluginService {
           void this.#drainCallbacks(execution.id).then(() => this.#report(execution));
         } else this.#report(execution);
       } else if (message.type === "callback") {
-        const execution = z.object({ execution: z.string() }).safeParse(message.input).data?.execution;
+        const execution = z.object({ execution: z.string() }).safeParse(message.input)
+          .data?.execution;
         const pending = this.#callback(child, message);
+        this.#engineCallbacks.set(launchId, callbacks);
+        callbacks.set(pending, execution);
+        void pending
+          .finally(() => {
+            callbacks.delete(pending);
+            if (!callbacks.size) this.#engineCallbacks.delete(launchId);
+          })
+          .catch(() => {});
         if (execution) {
           const callbacks = this.#executionCallbacks.get(execution) ?? new Set<Promise<void>>();
           this.#executionCallbacks.set(execution, callbacks);
           callbacks.add(pending);
-          void pending.finally(() => {
-            callbacks.delete(pending);
-            if (callbacks.size === 0) this.#executionCallbacks.delete(execution);
-          }).catch(() => {});
-        } else void pending.catch(() => {});
+          void pending
+            .finally(() => {
+              callbacks.delete(pending);
+              if (callbacks.size === 0) this.#executionCallbacks.delete(execution);
+            })
+            .catch(() => {});
+        }
       } else if (message.type === "callbackCancel") {
         this.#callbacks.get(message.id)?.abort();
       } else if (message.type === "elicitResult" || message.type === "elicitError") {
@@ -453,6 +479,7 @@ export class PluginService {
       );
       rejectReady(error);
       this.#child = undefined;
+      this.#engine = null;
       for (const pending of this.#pending.values()) {
         pending.cleanup();
         pending.reject(error);
@@ -537,6 +564,16 @@ export class PluginService {
   async #drainCallbacks(id: string): Promise<void> {
     await Promise.allSettled(this.#executionCallbacks.get(id) ?? []);
   }
+  async executionContactLost(id: string, engine: EngineProcess): Promise<boolean> {
+    if (engine.launchId === this.#engine?.launchId) return false;
+    const namespace = await (this.#namespace ??= engineProcessNamespace());
+    if (!engineProcessGroupGone(engine, namespace)) return false;
+    // Unscoped callbacks from this engine can also be in the middle of work for this call.
+    const callbacks = this.#engineCallbacks.get(engine.launchId);
+    return (
+      !callbacks || ![...callbacks.values()].some((execution) => !execution || execution === id)
+    );
+  }
   async stopExecution(
     id: string,
     context: PluginCaller,
@@ -548,10 +585,11 @@ export class PluginService {
         return { id, caller: context.caller, state: "cancelled", interaction: null, drained: true };
       return;
     }
-    if (this.#state.status !== "ready" || generation !== this.#state.generation) return;
+    const child = this.#child;
+    if (!child || this.#state.status !== "ready" || generation !== this.#state.generation) return;
     const receipt = Promise.withResolvers<PluginExecution>();
     const confirmed = (result: PluginExecution) =>
-      generation === this.#state.generation &&
+      child === this.#child &&
       result.id === id &&
       result.caller === context.caller &&
       result.drained &&
@@ -567,8 +605,18 @@ export class PluginService {
         { execution: id },
         context,
         AbortSignal.any([timeout, finished.signal]),
+        async () => {
+          if (child !== this.#child)
+            throw new PluginServiceError(
+              "interrupted",
+              "Plugin engine stopped before it could confirm the stop",
+            );
+        },
       ).catch((error: unknown) => {
-        if (timeout.aborted && error instanceof PluginServiceError && error.code === "cancelled")
+        if (
+          error instanceof PluginServiceError &&
+          (error.code === "interrupted" || (timeout.aborted && error.code === "cancelled"))
+        )
           return undefined;
         throw error;
       });
@@ -705,7 +753,7 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
-    beforeSend?: () => Promise<void>,
+    beforeSend?: BeforeSend,
   ): Promise<PluginOutput<K>> {
     const result = await this.#request(operation, input, context, signal, beforeSend);
     // A change of which version is active, an install replayed from its receipt included, is
@@ -783,15 +831,18 @@ export class PluginService {
     input: PluginInput<K>,
     context: PluginCaller,
     signal?: AbortSignal,
-    beforeSend?: () => Promise<void>,
+    beforeSend?: BeforeSend,
   ): Promise<PluginOutput<K>> {
     signal?.throwIfAborted();
     this.#touch();
     const child = await this.#ready(signal);
-    if (beforeSend) await beforeSend();
+    if (beforeSend) await beforeSend(this.#engine);
     signal?.throwIfAborted();
     if (!child.connected || this.#child !== child)
-      throw new PluginServiceError("unavailable", "Plugin engine changed before the request was sent");
+      throw new PluginServiceError(
+        "unavailable",
+        "Plugin engine changed before the request was sent",
+      );
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const abort = () => {
@@ -813,8 +864,11 @@ export class PluginService {
       try {
         const parsed = operations[operation].input.parse(input);
         if (operation === "call" || operation === "execute") {
-          const executionId = z.object({ executionId: z.string().optional() }).parse(parsed).executionId;
-          if (executionId && child.connected) this.#executionChildren.set(executionId, this.#state.generation);
+          const executionId = z
+            .object({ executionId: z.string().optional() })
+            .parse(parsed).executionId;
+          if (executionId && child.connected)
+            this.#executionChildren.set(executionId, this.#state.generation);
         }
         this.#send(child, {
           type: "request",
@@ -890,7 +944,7 @@ export class PluginService {
       input: PluginInput<K>,
       context: PluginCaller,
       signal?: AbortSignal,
-      beforeSend?: () => Promise<void>,
+      beforeSend?: BeforeSend,
     ): Promise<PluginOutput<K>> => this.request(operation, input, context, signal, beforeSend);
   }
   executionWasSent(id: string): boolean {
@@ -954,6 +1008,9 @@ export class PluginService {
     if (child) await this.#stopChild(child);
     await this.#stopping;
     await this.#cleaning;
+    await Promise.allSettled(
+      [...this.#engineCallbacks.values()].flatMap((pending) => [...pending.keys()]),
+    );
     this.#config.secret = "0".repeat(64);
     this.#set({ status: "stopped", generation: this.#state.generation });
   }

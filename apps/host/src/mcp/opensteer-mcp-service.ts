@@ -17,6 +17,8 @@ import {
   toolsFor,
   agentToolAnnotations,
   connectionInstructionsFor,
+  connectionDirectTools,
+  computerAppsConnectionInput,
   connectionTaskKind,
   connectionToolDescription,
   connectionToolSchema,
@@ -27,18 +29,28 @@ import {
 } from "@opensteer/agent-tools";
 import {
   OpensteerError,
+  ToolBlockedError,
   ThreadIdSchema,
   type Thread,
   requestHoldLimitMs,
   shortRequestHoldMs,
 } from "@opensteer/core";
-import type { OpensteerStore } from "@opensteer/database";
+import { findAgentOperation, type OpensteerStore } from "@opensteer/database";
+import {
+  AgentOperationFailure,
+  agentOperationRefusal,
+  assertOperationArguments,
+  operationArgumentDigest,
+  unknownNext,
+  withAgentOperationReceipt,
+} from "../agent-sessions/agent-session-service.js";
 import { advertisedToolInputSchema } from "../agents/agent-tools-plan.js";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { RequestHold } from "./request-hold.js";
+import type { SavedLoginService } from "../browser/saved-logins.js";
 import type { PluginExecutions } from "../plugins/plugin-executions.js";
 import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
@@ -52,10 +64,17 @@ import {
 } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
+import { browserConnectCompletedNext } from "./handlers/browser.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 
 const requestTools = new Set<string>(requestToolNames);
+function parseToolInput(tool: AgentTool, caller: AgentCaller, value: unknown) {
+  return tool.name === "computer_apps" && caller.kind === "connection"
+    ? computerAppsConnectionInput.parse(value)
+    : tool.input.parse(value);
+}
+
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 const maximumTimerMs = 2_147_483_647;
@@ -84,7 +103,8 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
-    readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
+    readonly pluginExecutions?: Pick<PluginExecutions, "hold"> &
+      Partial<Pick<PluginExecutions, "replayOperation">>;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
@@ -92,7 +112,8 @@ export class OpensteerMcpService {
       readonly database?: OpensteerStore["database"];
     };
     readonly publicUrl: URL;
-    readonly connectionPasswords?: boolean;
+    readonly connectionPasswords?: boolean | (() => boolean);
+    readonly savedLogins?: Pick<SavedLoginService, "replaySessionCredential">;
     readonly teamsAvailable?: () => Promise<boolean>;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
@@ -101,7 +122,8 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: Partial<AgentToolHandlers>;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
-    readonly pluginExecutions?: Pick<PluginExecutions, "hold">;
+    readonly pluginExecutions?: Pick<PluginExecutions, "hold"> &
+      Partial<Pick<PluginExecutions, "replayOperation">>;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
@@ -109,7 +131,8 @@ export class OpensteerMcpService {
       readonly database?: OpensteerStore["database"];
     };
     readonly publicUrl: URL;
-    readonly connectionPasswords?: boolean;
+    readonly connectionPasswords?: boolean | (() => boolean);
+    readonly savedLogins?: Pick<SavedLoginService, "replaySessionCredential">;
     readonly teamsAvailable?: () => Promise<boolean>;
     readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
@@ -418,9 +441,10 @@ export class OpensteerMcpService {
       const annotations = agentToolAnnotations(tool);
       const registration = {
         annotations,
-        description: caller.kind === "connection"
-          ? connectionToolDescription(tool, caller.grant)
-          : tool.description,
+        description:
+          caller.kind === "connection"
+            ? connectionToolDescription(tool, caller.grant)
+            : tool.description,
         title: tool.title,
         // callTool validates every call against the tool's own schema, so a
         // refusal names its field; the SDK only hands the arguments through.
@@ -532,7 +556,30 @@ export class OpensteerMcpService {
       // written, a provider's content (text, images, its error) as it came,
       // and a record as JSON with its structured copy.
       if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
-      if (tool?.output === ComputerUseOutputSchema) return ComputerUseOutputSchema.parse(result);
+      if (tool?.output === ComputerUseOutputSchema) {
+        const script = ComputerUseOutputSchema.parse(result);
+        const { status, taskId, operationId, next } = script.structuredContent ?? {};
+        if (
+          currentCaller.kind !== "connection" ||
+          typeof status !== "string" ||
+          typeof taskId !== "string" ||
+          typeof operationId !== "string"
+        )
+          return script;
+        const receipt = {
+          status,
+          taskId,
+          operationId,
+          ...(typeof next === "string" ? { next } : {}),
+        };
+        return {
+          ...script,
+          content: [
+            ...script.content,
+            { type: "text" as const, text: `Receipt: ${JSON.stringify(receipt)}` },
+          ],
+        };
+      }
       if (pluginHold && result.status === "pending" && typeof result.executionId === "string") {
         const held = await pluginHold.service.hold({
           caller: pluginHold.caller,
@@ -570,22 +617,27 @@ export class OpensteerMcpService {
           ? "read"
           : (tool?.access ?? "write");
       const failure = agentToolFailure(
-        error,
+        error instanceof AgentOperationFailure ? error.cause : error,
         access,
         failureCaller ? deviceVisibleTo(callerLineage(failureCaller)?.grant) : () => false,
         failureCaller?.kind === "connection",
       );
       if (failure.code === internalToolFailureCode && !signal.aborted)
         this.options.onToolError?.(error, name);
-      const connection = failureCaller?.kind === "connection"
-        ? {
-            tools: new Set((await this.#toolsFor(failureCaller)).map(({ name }) => name)),
-            ...(/^opensteer_(task|subagent|delegation)_/u.test(name)
-              ? { notFoundMessage: "Task is unavailable" }
-              : {}),
-          }
-        : undefined;
-      return agentToolFailureResult(failure, connection);
+      const connection =
+        failureCaller?.kind === "connection"
+          ? {
+              tools: new Set((await this.#toolsFor(failureCaller)).map(({ name }) => name)),
+              notFoundMessage: connectionNotFoundMessage(name, failure.message),
+            }
+          : undefined;
+      return agentToolFailureResult(
+        failure,
+        connection,
+        error instanceof AgentOperationFailure || error instanceof ToolBlockedError
+          ? error.receipt
+          : undefined,
+      );
     }
   }
 
@@ -602,14 +654,107 @@ export class OpensteerMcpService {
     const found = agentTools.find((spec) => spec.name === name);
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
-    const input = tool.input.parse(value);
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    const input = parseToolInput(tool, caller, value);
     if (!this.options.handlers[tool.name])
       throw new OpensteerError({
         code: "not_found",
         message: "This tool is unavailable on this Host",
       });
-    const key = toolOperationKey(caller, input, identity.operationKey);
+    let key = toolOperationKey(caller, input, identity.operationKey);
+    const database = this.options.store.database;
+    let resume: Awaited<ReturnType<typeof findAgentOperation>>;
+    const operationId = "operationId" in input ? input.operationId : undefined;
+    identity.signal?.throwIfAborted();
+    if (operationId && caller.kind !== "connection")
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "operationId is for connected agents only.",
+      });
+    if (operationId && (!connectionDirectTools.has(name) || !database))
+      throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+    if (caller.kind === "connection" && connectionDirectTools.has(name) && database) {
+      const row = await findAgentOperation(database, {
+        userId: caller.userId,
+        agentConnectionId: caller.connectionId,
+        identity: operationId ? { id: operationId } : { key },
+      });
+      if (operationId && !row)
+        throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+      if (row) {
+        const taskId =
+          "taskId" in input ? ThreadIdSchema.optional().parse(input.taskId) : undefined;
+        assertOperationArguments(row, operationArgumentDigest(name, input), taskId);
+        key = row.operationKey;
+        resume = row;
+        const base = { taskId: row.taskId, operationId: row.id };
+        if (row.state === "refused")
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
+            ...base,
+            status: "refused",
+          });
+        if (row.state === "unknown" || row.state === "failed" || row.state === "completed") {
+          const connection = caller;
+          await withAgentOperationReceipt(database, row, row.taskId, () =>
+            this.assertToolOffered(connection, name),
+          );
+          const status = row.state;
+          const request =
+            status === "completed" && name === "ask_person" && row.requestId
+              ? await this.options.store.requests.get(row.requestId)
+              : null;
+          const answer =
+            request?.status === "fulfilled" && request.response?.kind === "form"
+              ? request.response.answers.question_1?.[0]
+              : undefined;
+          const plugin =
+            status === "completed" &&
+            (name === "plugin_call" || name === "plugin_execute" || name === "plugin_resume")
+              ? await withAgentOperationReceipt(database, row, row.taskId, async () =>
+                  this.options.pluginExecutions?.replayOperation?.(
+                    connection,
+                    row,
+                    identity.signal,
+                  ),
+                )
+              : undefined;
+          const credential =
+            status === "completed" &&
+            (name === "saved_login_request" || name === "card_request") &&
+            row.sessionStatus === "active"
+              ? await withAgentOperationReceipt(database, row, row.taskId, async () =>
+                  this.options.savedLogins?.replaySessionCredential(row.id),
+                )
+              : undefined;
+          const receipt = {
+            ...plugin,
+            ...credential,
+            ...base,
+            status: plugin?.status ?? status,
+            ...(answer !== undefined ? { answer } : {}),
+            ...(status === "completed"
+              ? {
+                  summary: row.resultSummary,
+                  ...(name === "browser_connect" ? { next: browserConnectCompletedNext } : {}),
+                }
+              : {
+                  next: status === "unknown" ? unknownNext : "It failed. Check the current state.",
+                }),
+          };
+          if (tool.output === ComputerUseOutputSchema)
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "next" in receipt ? receipt.next : "This script already ran.",
+                },
+              ],
+              structuredContent: receipt,
+            };
+          return receipt;
+        }
+      }
+    }
     const check = async () => {
       identity.signal?.throwIfAborted();
       if (caller.kind === "connection") {
@@ -618,11 +763,16 @@ export class OpensteerMcpService {
       }
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
       const targets = await this.#targets(caller, tool, input);
-      const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
-        "delivery" in input && input.delivery === "queue";
+      const queue =
+        caller.kind === "connection" &&
+        tool.name === "opensteer_task_send" &&
+        "delivery" in input &&
+        input.delivery === "queue";
       toolAccess[queue ? "read" : access](caller, targets);
-      if (caller.kind !== "connection" &&
-        !(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
+      if (
+        caller.kind !== "connection" &&
+        !(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name)
+      )
         throw unavailableTool(caller, tool.name);
       const authorize = this.options.handlers[tool.name]?.authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
@@ -669,8 +819,13 @@ export class OpensteerMcpService {
         );
       return output.data as Record<string, unknown> | string;
     };
-    await check();
-    return invoke();
+    const perform = async () => {
+      await check();
+      return invoke();
+    };
+    return resume && database
+      ? withAgentOperationReceipt(database, resume, resume.taskId, perform)
+      : perform();
   }
 
   /** Refuses a tool this caller's current authority does not offer. */
@@ -683,15 +838,18 @@ export class OpensteerMcpService {
     const found = agentTools.find((spec) => spec.name === name);
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
-    const input = tool.input.parse(value);
+    const input = parseToolInput(tool, caller, value);
     if (caller.kind === "connection") {
       await this.assertToolOffered(caller, name);
       await this.#assertConnectionTaskKind(caller, name, input);
     }
     const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
     const targets = await this.#targets(caller, tool, input);
-    const queue = caller.kind === "connection" && tool.name === "opensteer_task_send" &&
-      "delivery" in input && input.delivery === "queue";
+    const queue =
+      caller.kind === "connection" &&
+      tool.name === "opensteer_task_send" &&
+      "delivery" in input &&
+      input.delivery === "queue";
     toolAccess[queue ? "read" : access](caller, targets);
     if (caller.kind !== "connection") await this.assertToolOffered(caller, name);
     const authorize = this.options.handlers[tool.name]?.authorize as
@@ -717,7 +875,9 @@ export class OpensteerMcpService {
       // Its handlers recheck personal context and a live team link on every call.
       knowledge: caller.kind === "run",
     });
-    return caller.kind === "connection" && this.options.connectionPasswords === false
+    const passwords = this.options.connectionPasswords;
+    return caller.kind === "connection" &&
+      (typeof passwords === "function" ? !passwords() : passwords === false)
       ? offered.filter(({ name }) => name !== "saved_login_request" && name !== "card_request")
       : offered;
   }
@@ -730,7 +890,8 @@ export class OpensteerMcpService {
     const database = this.options.store.database;
     if (!database || !kind || !("taskId" in input) || typeof input.taskId !== "string") return;
     const id = ThreadIdSchema.parse(input.taskId);
-    const task = await database.selectFrom("threads")
+    const task = await database
+      .selectFrom("threads")
       .select(["worker", "originConnectionId"])
       .where("id", "=", id)
       .where("createdBy", "=", caller.userId)
@@ -739,17 +900,23 @@ export class OpensteerMcpService {
         query.where("originConnectionId", "=", caller.connectionId),
       )
       .executeTakeFirst();
-    if (kind === "direct" && task?.originConnectionId === caller.connectionId && task.worker !== "external")
+    if (
+      kind === "direct" &&
+      task?.originConnectionId === caller.connectionId &&
+      task.worker !== "external"
+    )
       throw new OpensteerError({
         code: "conflict",
-        message: "That taskId belongs to a task run by one of the person's agents. Pass a direct-work taskId returned by a direct tool, or omit taskId to start or continue direct work.",
+        message:
+          "That taskId belongs to a task run by one of the person's agents. Pass a direct-work taskId returned by a direct tool, or omit taskId to start or continue direct work.",
       });
     if (kind === "person-agent" && task?.worker === "external") {
       if (task.originConnectionId !== caller.connectionId)
         throw new OpensteerError({ code: "not_found", message: "Task is unavailable" });
       throw new OpensteerError({
         code: "conflict",
-        message: "That taskId is for work you do directly. Pass a taskId for work run by one of the person's agents, such as one returned by opensteer_task_create.",
+        message:
+          "That taskId is for work you do directly. Pass a taskId for work run by one of the person's agents, such as one returned by opensteer_task_create.",
       });
     }
   }
@@ -847,6 +1014,15 @@ export class OpensteerMcpService {
     }
     await Promise.allSettled(expired.map(([, session]) => session.server.close()));
   }
+}
+
+function connectionNotFoundMessage(tool: string, message: string): string {
+  if (message === "Operation is unavailable.") return message;
+  if (tool.startsWith("opensteer_automation_")) return "Automation not found";
+  if (/^opensteer_(task|subagent|delegation)_/u.test(tool)) return "Task is unavailable";
+  if (tool === "browser_use" || tool === "browser_connect")
+    return "This browser target is unavailable or not shared with this connected agent.";
+  return "That item is unavailable.";
 }
 
 /**

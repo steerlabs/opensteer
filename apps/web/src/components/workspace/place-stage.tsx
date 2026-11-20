@@ -6,7 +6,13 @@ import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type TabId } from "@opensteer/core";
-import { useHostSelector, usePlace, usePlaceActivity, usePlaceList } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useOwnerViewReconnect,
+  usePlace,
+  usePlaceActivity,
+  usePlaceList,
+} from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import {
   BrowserOpening,
@@ -178,6 +184,14 @@ function SelectedPlace({
   if (open.current.tabId !== placeKey) open.current = { tabId: placeKey, wake: true };
   const tabState = live?.tab.state;
   const kind = live?.kind;
+  const reconnect = useOwnerViewReconnect(
+    hostClient,
+    pageVisible &&
+      (kind === "window" || kind === "phone") &&
+      (tabState !== "unavailable" || live?.tab.unavailableCode === "computer-offline")
+      ? placeKey
+      : null,
+  );
   // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
   const viewerReady =
     viewer !== null &&
@@ -193,7 +207,7 @@ function SelectedPlace({
     readonly done: Promise<unknown>;
   } | null>(null);
   useLayoutEffect(() => {
-    if (!needsActivation || placeKey === null) return;
+    if (!needsActivation || placeKey === null || reconnect.getSnapshot() !== "idle") return;
     let cancelled = false;
     setActivation({ tabId: placeKey, state: "activating" });
     let pending = pendingActivation.current;
@@ -219,14 +233,15 @@ function SelectedPlace({
     return () => {
       cancelled = true;
     };
-  }, [hostClient, needsActivation, placeKey, retry]);
+  }, [hostClient, needsActivation, placeKey, reconnect.getSnapshot, retry]);
   const activationError =
     activation?.tabId === placeKey && activation.state === "failed"
       ? (activation.message ?? null)
       : null;
   const reopenView = useCallback(async () => {
+    reconnect.reset();
     if (placeKey !== null) await hostClient.activateTab(placeKey, { wake: true });
-  }, [hostClient, placeKey]);
+  }, [hostClient, placeKey, reconnect.reset]);
   if (live && placeKey) known.current.set(placeKey, live);
   // A tab just closed keeps its chrome until its successor takes the middle.
   const place = live ?? (placeKey ? (known.current.get(placeKey) ?? null) : null);
@@ -329,6 +344,7 @@ function SelectedPlace({
           opening={activation?.tabId === placeKey && activation.state === "activating"}
           phone={place.kind === "phone"}
           place={place}
+          reconnect={reconnect}
           source={
             (viewer?.kind === "window" || viewer?.kind === "phone") && viewer.view
               ? {

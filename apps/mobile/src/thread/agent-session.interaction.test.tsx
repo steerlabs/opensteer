@@ -146,7 +146,7 @@ describe("a connected agent's own task on the phone", () => {
     const threadId = idOf(client, "Buy the phone case");
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(client, threadId);
-    await vi.waitFor(() => expect(page.textContent).toContain("Run a browser script in Shopping?"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Run a script in Shopping?"));
     expect(page.textContent).toContain("Shopping · Studio Mac");
     expect(page.textContent).toContain("Grok says:");
     expect(page.textContent).toContain("Buy the $12 phone case you asked for.");

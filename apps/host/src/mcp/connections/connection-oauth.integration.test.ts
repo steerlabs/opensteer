@@ -434,7 +434,7 @@ integration("external MCP OAuth over HTTP", () => {
     expect(renamed.statusCode, renamed.body).toBe(200);
     expect(renamed.json().data.connection).toMatchObject({
       label: "Renamed agent",
-      grantRevision: 2,
+      grantRevision: 1,
     });
     expect(listed.body).not.toMatch(/tokenHash|token_hash|ost_mcp_|code_verifier/);
     const deniedHost = await injectRpcRequest(
@@ -838,7 +838,7 @@ integration("external MCP OAuth over HTTP", () => {
           { role: "embedder", origin: "https://errand.example" },
           { role: "platform", origin: "https://agentpay.example" },
         ],
-        warning: "Only approve if you started this yourself.",
+        warning: "Only allow this if you started it yourself.",
       },
     });
     expect((await read((await f.begin({ redirect: platform })).requestId)).identity).toMatchObject({

@@ -1,5 +1,9 @@
 import type { AgentGrant } from "@opensteer/core";
-import { connectionComputerKinds, connectionDirectTools, connectionHasChromeTabs } from "./connection-tools.js";
+import {
+  connectionComputerKinds,
+  connectionDirectTools,
+  connectionHasChromeTabs,
+} from "./connection-tools.js";
 import { toolsFor } from "./tools-for.js";
 import type { RunToolCapabilities } from "./registry.js";
 import type { TaskPurpose } from "@opensteer/core";
@@ -133,12 +137,14 @@ export function connectionInstructionsFor(
     names.has("browser_profile_list") && "browser profiles (browser_profile_list)",
     names.has("tab_list") && connectionHasChromeTabs(grant) && "shared Chrome tabs (tab_list)",
     names.has("computer_apps") &&
-      (apps && phones ? "apps and phone screens" : apps ? "apps" : "phone screens") + " (computer_apps)",
+      (apps && phones ? "apps and phone screens" : apps ? "apps" : "phone screens") +
+        " (computer_apps)",
     names.has("plugin_search") && "plugins (plugin_search)",
     names.has("opensteer_task_create") && "the person's agents (opensteer_task_create)",
   ].filter(Boolean);
   const direct = [
-    names.has("browser_use") && "browser_use for one script or browser_connect for a CDP endpoint (Playwright or Puppeteer)",
+    names.has("browser_use") &&
+      "browser_use for one script or browser_connect for a CDP endpoint (Playwright or Puppeteer)",
     names.has("computer_use") && "computer_use for a device script",
     names.has("plugin_call") && "plugin_call for a plugin",
   ].filter(Boolean);
@@ -147,15 +153,25 @@ export function connectionInstructionsFor(
     "Opensteer gives you access to what the person shares on their own devices. Only what they shared is available.",
     ...(kinds.length ? [`Shared with you: ${kinds.join(", ")}.`] : []),
     ...(direct.length ? [`Do the work yourself: ${direct.join("; ")}.`] : []),
-    ...(hasDirectWork ? [
-      "The person can watch your direct-work task. Omit taskId to start or continue it, or pass the returned taskId to keep working there.",
-      "Pending means the person was asked. Read taskId, operationId and status in structuredContent. After the person has time to answer, call the same tool with identical arguments and the returned operationId. Do not poll in a loop.",
-      "Unknown means it may have happened. Check the current state before acting again.",
-      "stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.",
-    ] : []),
-    ...(hasDirectWork && names.has("opensteer_task_create") ? ["The person's agents use a different taskId. Use each ID only with its own kind of tool."] : []),
-    ...(names.has("saved_login_request") ? ["For a page, use saved_login_request or card_request. Opensteer fills secrets into the page without returning them."] : []),
-    ...(names.has("ask_person") ? ["Use ask_person for help or a decision. Never ask for secrets in chat."] : []),
+    ...(hasDirectWork
+      ? [
+          "The person can watch your direct-work task. Omit taskId to start or continue it, or pass the returned taskId to keep working there.",
+          "Pending means the person was asked. Read taskId, operationId and status in structuredContent. After the person has time to answer, call the same tool with identical arguments and the returned operationId. Do not poll in a loop.",
+          "Unknown means it may have happened. Check the current state before acting again.",
+          "stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.",
+        ]
+      : []),
+    ...(hasDirectWork && names.has("opensteer_task_create")
+      ? ["The person's agents use a different taskId. Use each ID only with its own kind of tool."]
+      : []),
+    ...(names.has("saved_login_request")
+      ? [
+          "For a page, use saved_login_request or card_request. Opensteer fills secrets into the page without returning them.",
+        ]
+      : []),
+    ...(names.has("ask_person")
+      ? ["Use ask_person for help or a decision. Never ask for secrets in chat."]
+      : []),
   ].join("\n");
 }
 

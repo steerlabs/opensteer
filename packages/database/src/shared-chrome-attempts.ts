@@ -1,4 +1,10 @@
-import { OpensteerError, type ThreadId, type ThreadAccessMode, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type BrowserSourceId,
+  type ThreadId,
+  type ThreadAccessMode,
+  type UserId,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -8,6 +14,8 @@ export function sharedChromeAttempts(database: Kysely<DatabaseSchema>) {
       id: string;
       connectionId: string;
       ownerId: UserId;
+      sourceId: BrowserSourceId;
+      shareId: string;
       grantRevision: number;
       mode: ThreadAccessMode;
       threadId: ThreadId | null;
@@ -47,6 +55,24 @@ export function sharedChromeAttempts(database: Kysely<DatabaseSchema>) {
           query.where(sql<boolean>`not (shared_chrome_attempts -> ${id}::text ? 'contactLostAt')`),
         )
         .execute();
+    },
+    async recordDetach(input: {
+      ownerId: UserId;
+      sourceId: BrowserSourceId;
+      shareId: string;
+    }): Promise<void> {
+      const matches = sql`witness->>'sourceId' = ${input.sourceId}
+        and witness->>'shareId' = ${input.shareId} and not (witness ? 'terminalEvidenceAt')`;
+      await sql`update agent_connections
+        set shared_chrome_attempts = coalesce((
+          select jsonb_object_agg(id, case when ${matches}
+            then witness || jsonb_build_object('terminalEvidenceAt', now()) else witness end)
+          from jsonb_each(shared_chrome_attempts) a(id, witness)
+          where not ((${matches}) is true and not (witness ? 'contactLostAt'))
+        ), '{}')
+        where user_id = ${input.ownerId} and exists (
+          select 1 from jsonb_each(shared_chrome_attempts) a(id, witness) where ${matches}
+        )`.execute(database);
     },
     async recover(): Promise<void> {
       await sql`update agent_connections

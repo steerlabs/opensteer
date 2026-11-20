@@ -63,7 +63,11 @@ export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRun
   };
 }
 
-export async function startPersonalQueuedRunFixture(store: OpensteerStore, runId: RunId) {
+export async function startPersonalQueuedRunFixture(
+  store: OpensteerStore,
+  runId: RunId,
+  runnerBootId = "fixture-boot",
+) {
   const queued = await store.database
     .selectFrom("runs")
     .selectAll()
@@ -80,7 +84,6 @@ export async function startPersonalQueuedRunFixture(store: OpensteerStore, runId
     .where("type", "=", "run.execute")
     .executeTakeFirstOrThrow();
   await store.claimCommand(command.id, `fixture-dispatch:${runId}`);
-  const runnerBootId = "fixture-boot";
   const binding = await store.acquireExecutionBinding({
     bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
     continuationIdentity: testContinuationIdentity,

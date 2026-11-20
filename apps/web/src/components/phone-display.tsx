@@ -28,7 +28,7 @@ import {
   type DisplaySnapshot,
   type PhoneNavigationTo,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, type useOwnerViewReconnect } from "@opensteer/client/react";
 import {
   RemoteEditingProxy,
   type RemoteEditingProxyHandle,
@@ -118,8 +118,10 @@ export function useComputerDisplay({
   streamable,
   macWindow,
   machineId,
+  ownerReconnect,
 }: {
   readonly machineId?: string | null;
+  readonly ownerReconnect?: ReturnType<typeof useOwnerViewReconnect>;
   readonly enabled: boolean;
   readonly disabledReason?: DisplayClientDiagnostic["reason"] | undefined;
   readonly hostClient: HostClient;
@@ -158,12 +160,14 @@ export function useComputerDisplay({
     readonly lease: DisplayLease;
     readonly media: PhoneDisplayPicture;
     readonly editing: DisplayEditingSession;
+    readonly sourceKey: string | null;
   } | null>(null);
   const [input, setInput] = useState<PhoneDisplayInput | null>(null);
   // Bumped when the Host invalidates this scope, so a scope that comes back
   // unchanged in the same batch still gets a fresh socket.
   const [generation, setGeneration] = useState(0);
   const sourceKey = source ? JSON.stringify(source) : null;
+  const { observe, picture: recovered } = ownerReconnect ?? {};
   const pictureOwner = useRef<{
     hostClient: HostClient;
     scope: string | null;
@@ -274,7 +278,12 @@ export function useComputerDisplay({
       ...displayDiagnosticSource(source),
     });
     const editing = new DisplayEditingSession(current);
-    setHeld({ lease: current, media: shared.picture, editing });
+    setHeld({ lease: current, media: shared.picture, editing, sourceKey });
+    const observeDisplay = () => {
+      if (source.kind === "owner-view") observe?.(source, current.getSnapshot());
+    };
+    const unobserve = observe ? current.subscribe(observeDisplay) : undefined;
+    observeDisplay();
     let invalidated = false;
     // The old login's socket closes with the Host's change, not React's next effect.
     const unsubscribe = hostClient.subscribe(() => {
@@ -304,6 +313,7 @@ export function useComputerDisplay({
         ...displayDiagnosticSource(source),
       });
       unsubscribe();
+      unobserve?.();
       editing.dispose();
       current.resetInput();
       current.release();
@@ -315,6 +325,7 @@ export function useComputerDisplay({
     enabled,
     generation,
     hostClient,
+    observe,
     scope,
     source?.kind,
     source?.kind === "task-session" ? source.sessionId : source?.viewId,
@@ -354,6 +365,10 @@ export function useComputerDisplay({
       ? shown.generation
       : null;
   useLayoutEffect(() => editing?.setGeometry(geometry), [editing, geometry]);
+  useLayoutEffect(() => {
+    if (geometry !== null && held?.sourceKey === sourceKey && source?.kind === "owner-view")
+      recovered?.(source);
+  }, [geometry, held, recovered, sourceKey]);
   return {
     ...status,
     viewportEnabled: macWindow,

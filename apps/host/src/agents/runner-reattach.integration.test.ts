@@ -13,7 +13,7 @@ import {
   executionDisconnected,
   executionLeaseExpiresAt,
 } from "./execution-clock.test-support.js";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -21,7 +21,25 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
+import {
+  ComputerViewIdSchema,
+  createId,
+  ModelSelectionSchema,
+  type RunId,
+  type ThreadId,
+} from "@opensteer/core";
+import { HostToRunnerMessageSchema, RunnerAuxiliaryWelcomeSchema } from "@opensteer/protocol";
+import {
+  BrowserCapabilityLeaseSchema,
+  type BrowserCapabilityReference,
+} from "@opensteer/protocol/browser-relay";
+import {
+  attachTicket,
+  fixtureOwnerView,
+  startStopBrowser,
+  stopShellData,
+} from "./mac-stop.test-support.js";
+import type { VerticalStackOptions } from "./vertical-stack.test-support.js";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -163,6 +181,12 @@ integration("Runs that outlive their connection", () => {
     readonly gatePreparation?: true;
     readonly agentsStoppedSince?: string | null;
     readonly realRunner?: boolean;
+    readonly runnerChild?: Pick<
+      NonNullable<VerticalStackOptions["runnerChild"]>,
+      "fixture" | "stopJourney"
+    >;
+    readonly runnerWire?: VerticalStackOptions["runnerWire"];
+    readonly browser?: VerticalStackOptions["browser"];
   }): Promise<{
     readonly captured: () => Promise<z.infer<typeof captureSchema>[]>;
     readonly releasePreparation: () => Promise<void>;
@@ -216,9 +240,8 @@ integration("Runs that outlive their connection", () => {
             executionClock: input.executionClock,
           }
         : {}),
-      runnerWire: {
-        contained: () => true,
-      },
+      runnerWire: input.runnerWire ?? { contained: () => true },
+      ...(input.browser ? { browser: input.browser } : {}),
       catalogTimeoutMs: 30_000,
       databaseUrl: databaseUrl!,
       ...(input.executionLeaseMs
@@ -237,6 +260,7 @@ integration("Runs that outlive their connection", () => {
         ? {
             runnerChild: {
               fixture: fakeCodexAppServer,
+              ...input.runnerChild,
               arguments: [
                 "--scenario=long-stream-held",
                 "--unique-threads",
@@ -1223,77 +1247,449 @@ integration("Runs that outlive their connection", () => {
       "stop delivered",
     );
   }, 120_000);
-  it("ends an active Run with a real Runner restart and starts its queued successor on Resume", async () => {
-    const { stack: active, turnPids } = await start({
-      executionLeaseMs: 60_000,
-      realRunner: true,
-      agentsStoppedSince: null,
-    });
-    const manuallyPaused = await thread(active, "Manually paused");
-    const pausedRun = (
-      await active.queueMessage({ text: "Write at length.", threadId: manuallyPaused })
-    ).runId!;
-    await waitFor(
-      async () => (await liveAssistant(active, manuallyPaused)) === heldText,
-      30_000,
-      "working",
+  it("confirms a real Mac Stop with a live engine, SSH shell and owner view", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "mac-stop-"));
+    temporary.push(scratch);
+    const worker = join(scratch, "engine.mjs");
+    const detachedPidFile = join(scratch, "engine-child-pid");
+    const termFile = join(scratch, "engine-sigterm");
+    await writeFile(
+      worker,
+      `import { spawn } from "node:child_process";
+if (process.argv.includes("app-server")) {
+  const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+    `const fs = require("node:fs");
+process.on("SIGTERM", () => fs.writeFileSync(${JSON.stringify(termFile)}, String(process.pid)));
+fs.writeFileSync(${JSON.stringify(detachedPidFile)} + "." + process.ppid, String(process.pid));
+setInterval(() => {}, 60_000);`,
+  )}], { detached: true, stdio: "ignore" });
+  child.unref();
+}
+process.argv[1] = ${JSON.stringify(fakeCodexAppServer)};
+await import(${JSON.stringify(fakeCodexAppServer)});`,
     );
-    await active.queueMessage({ text: "Keep this one paused.", threadId: manuallyPaused });
-    await active.interruptRun(manuallyPaused, pausedRun);
-    await waitFor(
-      async () => (await run(active, pausedRun)).status === "interrupted",
-      30_000,
-      "manual Stop",
-    );
+    type SavedChoice = { readonly stopped: boolean; readonly at: string | null };
+    interface StopFile {
+      load(): Promise<SavedChoice>;
+      save(state: SavedChoice): Promise<void>;
+    }
+    const { DesktopLocalStop, localStopFileStore } = await vi.importActual<{
+      localStopFileStore(path: string): StopFile;
+      DesktopLocalStop: new (options: {
+        store: StopFile;
+        restart: () => Promise<void>;
+        log: () => void;
+      }) => {
+        readonly agentsStoppedSince: string | null;
+        readonly phase: string;
+        readonly problem: string | null;
+        readonly stoppedAt: string | null;
+        restore(): Promise<void>;
+        stop(): Promise<void>;
+        resume(): Promise<void>;
+        subscribe(listener: () => void): () => void;
+      };
+    }>("../../../desktop/src/app/local-stop.js");
+    const file = localStopFileStore(join(scratch, "choice.json"));
+    const browser = await startStopBrowser();
+    const shellData = stopShellData();
+    const syntheticCommands = new Set<string>();
+    const syntheticShells = new Set<string>();
+    const syntheticBrowser = new Set<string>();
+    const syntheticRequests = new Set<string>();
+    const steps: string[] = [];
+    const livePids: number[] = [];
+    let mode: string | null = null;
+    let stop!: InstanceType<typeof DesktopLocalStop>;
+    const viewers: ReturnType<typeof fixtureOwnerView>[] = [];
+    const restoreViews: (() => void)[] = [];
+    try {
+      const { stack: active, turnPids } = await start({
+        executionLeaseMs: 60_000,
+        realRunner: true,
+        agentsStoppedSince: null,
+        browser: browser.config,
+        runnerWire: {
+          observeAuxiliary: true,
+          shellData: shellData.accept,
+          filter: (direction, frame) =>
+            direction !== "runner" ||
+            !(
+              syntheticCommands.has(String(frame.commandId)) ||
+              syntheticShells.has(String(frame.sessionId)) ||
+              syntheticBrowser.has(String(frame.channelId)) ||
+              syntheticRequests.has(String(frame.requestId))
+            ),
+        },
+        runnerChild: {
+          fixture: worker,
+          stopJourney: {
+            computerUseBridge: { token: browser.config.bridgeToken, url: browser.computerUseUrl },
+            beforeSignal: async () => {
+              expect(await file.load()).toEqual({ stopped: mode !== null, at: mode });
+              expect(stop.phase).toBe("stopping");
+              expect(stop.stoppedAt).toBeNull();
+              steps.push("saved before signal");
+            },
+            afterProof: (oldPid) => {
+              expect(stop.phase).toBe("stopping");
+              expect(stop.stoppedAt).toBeNull();
+              for (const pid of [oldPid, ...livePids])
+                expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
+              steps.push("exit independently confirmed");
+            },
+          },
+        },
+      });
+      stop = new DesktopLocalStop({
+        store: file,
+        restart: async () => {
+          mode = stop.agentsStoppedSince;
+          await active.restartRunner(mode);
+        },
+        log: () => undefined,
+      });
+      await stop.restore();
+      stop.subscribe(() => {
+        if (stop.stoppedAt) steps.push("reported stopped");
+      });
+      const wire = active.wire!;
+      const lastFrame = (type: string) =>
+        wire.frames.findLast(({ frame }) => frame.type === type)?.frame;
+      const waitFrame = (type: string, predicate: (frame: Record<string, unknown>) => boolean) =>
+        waitForValue(
+          10_000,
+          async () =>
+            wire.frames.findLast(({ frame }) => frame.type === type && predicate(frame))?.frame,
+        ).catch((error: unknown) => {
+          throw new Error(
+            `Waiting for ${type}. Recent traffic: ${wire.frames
+              .slice(-20)
+              .map(({ frame }) => `${frame.type}:${frame.module ?? ""}`)
+              .join(", ")}`,
+            { cause: error },
+          );
+        });
+      const auxiliary = async (module: string, bootId?: unknown) => {
+        const response = await waitFrame(
+          "host.auxiliary.welcome",
+          (frame) => frame.module === module && (!bootId || frame.bootId === bootId),
+        );
+        const {
+          bootId: boot,
+          connectionGeneration,
+          connectionId,
+          connectionLeaseId,
+          runnerId,
+          auxiliaryStreamId,
+        } = RunnerAuxiliaryWelcomeSchema.parse(response);
+        return {
+          bootId: boot,
+          connectionGeneration,
+          connectionId,
+          connectionLeaseId,
+          runnerId,
+          auxiliaryStreamId,
+          module,
+        };
+      };
+      const shell = async (
+        sessionId: string,
+        runId: RunId,
+        threadId: ThreadId,
+        bootId?: unknown,
+      ) => {
+        const fence = await auxiliary("shell", bootId);
+        syntheticShells.add(sessionId);
+        wire.sendHost("shell", {
+          ...fence,
+          type: "host.shell.session.open",
+          sessionId,
+          authority: {
+            callerMachineName: "Fixture caller",
+            policyRevision: 1,
+            requestedBy: createId("user"),
+            runId,
+            sessionId,
+            startedAt: new Date().toISOString(),
+            threadId,
+            threadTitle: "Stop journey",
+          },
+          dataTicket: shellData.ticket,
+          machineName: "Fixture Mac",
+          policy: { reach: "owner", commands: true, forwarding: false, shares: [] },
+        });
+      };
+      const capabilities = new Map<unknown, BrowserCapabilityReference>();
+      const browserChannel = async (actor: "agent" | "person", bootId?: unknown) => {
+        const fence = await auxiliary("browser", bootId);
+        let capability = capabilities.get(fence.bootId);
+        if (!capability) {
+          const lease = BrowserCapabilityLeaseSchema.parse({
+            capabilityGeneration: 1,
+            capabilityLeaseId: `bcl_${randomUUID()}`,
+            runtimeId: browser.config.runtimeId,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          });
+          const requestId = randomUUID();
+          syntheticRequests.add(requestId);
+          wire.sendHost("browser", { ...fence, type: "capability.grant", requestId, lease });
+          await waitFrame("capability.accepted", (frame) => frame.requestId === requestId);
+          const { capabilityGeneration, capabilityLeaseId, runtimeId } = lease;
+          capability = { capabilityGeneration, capabilityLeaseId, runtimeId };
+          capabilities.set(fence.bootId, capability);
+        }
+        const channelId = `bch_${randomUUID()}`;
+        syntheticBrowser.add(channelId);
+        wire.sendHost("browser", {
+          ...fence,
+          requestId: randomUUID(),
+          type: "browser.attach",
+          capability,
+          channelId,
+          attachTicket: attachTicket(capability.runtimeId, actor),
+        });
+        return { channelId, capability, fence };
+      };
+      const manuallyPaused = await thread(active, "Manually paused");
+      const pausedRun = (
+        await active.queueMessage({ text: "Write at length.", threadId: manuallyPaused })
+      ).runId!;
+      await waitFor(
+        async () => (await liveAssistant(active, manuallyPaused)) === heldText,
+        30_000,
+        "working",
+      );
+      await active.queueMessage({ text: "Keep this one paused.", threadId: manuallyPaused });
+      await active.interruptRun(manuallyPaused, pausedRun);
+      await waitFor(
+        async () => (await run(active, pausedRun)).status === "interrupted",
+        30_000,
+        "manual Stop",
+      );
 
-    const threadId = await thread(active, "Held while stopped");
-    const first = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
-    await waitFor(
-      async () => (await liveAssistant(active, threadId)) === heldText,
-      30_000,
-      "working",
-    );
-    const pids = await turnPids();
-    expect(pids.length).toBeGreaterThan(0);
-    await active.queueMessage({ text: "Resume working after Stop.", threadId });
+      const threadId = await thread(active, "Held while stopped");
+      const first = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+      await waitFor(
+        async () => (await liveAssistant(active, threadId)) === heldText,
+        30_000,
+        "working",
+      );
+      const enginePid = (await turnPids()).at(-1);
+      expect(enginePid).toBeDefined();
+      await active.queueMessage({ text: "Resume working after Stop.", threadId });
 
-    const started = performance.now();
-    await active.restartRunner(new Date().toISOString());
-    console.info(`Runner Stop restart (fixture): ${Math.round(performance.now() - started)} ms`);
-    expect(await run(active, first)).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "computer_stopped",
-        message: expect.stringMatching(/^Stopped on .+\.$/u),
-      },
-    });
-    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
-    const machines = await active.api["machines.list"]({});
-    if (!machines.ok) throw new Error(machines.error.message);
-    expect(machines.data.machines.some((machine) => machine.agentsStoppedSince)).toBe(true);
-    const newThread = await thread(active, "Sent while stopped");
-    const newRun = (await active.queueMessage({ text: "Wait for this Mac.", threadId: newThread }))
-      .runId!;
-    expect((await run(active, newRun)).status).toBe("queued");
+      const stubbornPid = await waitForValue(5_000, async () =>
+        readFile(`${detachedPidFile}.${enginePid}`, "utf8")
+          .then(Number)
+          .catch(() => undefined),
+      );
+      const sessionId = `shs_${randomUUID()}`;
+      await shell(sessionId, first, threadId);
+      const ssh = await shellData.start();
+      livePids.push(enginePid!, stubbornPid, ssh.pid);
+      const owner = await browserChannel("person");
+      await waitFrame("browser.attached", (frame) => frame.channelId === owner.channelId);
+      const viewId = ComputerViewIdSchema.parse(`cvw_${randomUUID()}`);
+      // Only the native view's approval is seeded. The real Home serves and ends the viewer socket.
+      const deviceId = await active.host.store.requireSelfDeviceId(active.agentHome.computerId);
+      const displayStream = () => active.host.computerApps.displayStream(deviceId);
+      const authorization = vi
+        .spyOn(active.host.computerViews, "authorizeDisplay")
+        .mockImplementation(async () => {
+          const stream = displayStream();
+          if (!stream || stream === "unsupported") throw new Error("No fixture display stream");
+          return { deviceId, route: stream.route };
+        });
+      const sourceLive = vi.spyOn(active.host.computerViews, "isDisplayLive").mockReturnValue(true);
+      restoreViews.push(
+        authorization.mockRestore.bind(authorization),
+        sourceLive.mockRestore.bind(sourceLive),
+      );
+      const displayReady = async () => {
+        await waitFor(
+          () => typeof displayStream() === "object" && displayStream() !== null,
+          5_000,
+          "owner display capability reported",
+        );
+      };
+      await auxiliary("integrations");
+      await displayReady();
+      const openView = () => {
+        const viewer = fixtureOwnerView(active.hostOrigin, active.sessionCookie, viewId);
+        viewers.push(viewer);
+        return viewer;
+      };
+      const view = openView();
+      await vi.waitFor(
+        () => {
+          expect(
+            browser.displayStarts,
+            JSON.stringify({
+              viewer: view.frames,
+              native: browser.nativeRequests,
+            }),
+          ).toHaveLength(1);
+        },
+        { timeout: 5_000 },
+      );
+      for (const pid of livePids) expect(() => process.kill(pid, 0)).not.toThrow();
+      const runningCommand = HostToRunnerMessageSchema.parse(lastFrame("host.command"));
+      if (runningCommand.type !== "host.command") throw new Error("Missing Run dispatch");
 
-    const successor = await active.host.store.database
-      .selectFrom("runs")
-      .select("id")
-      .where("threadId", "=", threadId)
-      .where("status", "=", "queued")
-      .executeTakeFirstOrThrow();
-    await active.restartRunner(null);
-    await waitFor(
-      async () => (await run(active, successor.id)).status === "running",
-      5_000,
-      "held Run on Resume",
-    );
-    const pause = await active.host.store.database
-      .selectFrom("threads")
-      .select("inputQueuePaused")
-      .where("id", "=", manuallyPaused)
-      .executeTakeFirstOrThrow();
-    expect(pause.inputQueuePaused).toBe(true);
+      await stop.stop();
+      expect(stop.problem).toBeNull();
+      expect(steps).toEqual([
+        "saved before signal",
+        "exit independently confirmed",
+        "reported stopped",
+      ]);
+      await view.closed;
+      expect(view.frames).toContainEqual(
+        expect.objectContaining({
+          type: "display.state",
+          state: "stopped",
+          reason: "device-restarting",
+        }),
+      );
+      expect(await readFile(termFile, "utf8")).toBe(String(stubbornPid));
+      for (const group of [stubbornPid, ssh.pid])
+        expect(() => process.kill(-group, 0)).toThrow(/ESRCH/);
+      await ssh.ended;
+      livePids.length = 0;
+      const welcome = lastFrame("host.welcome")!;
+      const bootId = welcome.bootId;
+      expect(bootId).not.toBe(runningCommand.bootId);
+      expect(lastFrame("runner.authenticate")?.descriptor).toMatchObject({
+        bootId,
+        agentsStoppedSince: stop.stoppedAt,
+      });
+      const commandId = createId("command");
+      syntheticCommands.add(commandId);
+      const {
+        bootId: boot,
+        connectionGeneration,
+        connectionId,
+        connectionLeaseId,
+        runnerId,
+      } = welcome;
+      wire.sendHost("primary", {
+        bootId: boot,
+        connectionGeneration,
+        connectionId,
+        connectionLeaseId,
+        runnerId,
+        type: "host.command",
+        command: { ...runningCommand.command, commandId },
+      });
+      expect(
+        await waitFrame("runner.command-rejected", (frame) => frame.commandId === commandId),
+      ).toMatchObject({ error: { reason: "computer_stopped", retryable: true } });
+      const refusedShell = `shs_${randomUUID()}`;
+      await shell(refusedShell, first, threadId, bootId);
+      expect(
+        await waitFrame(
+          "runner.shell.session.rejected",
+          (frame) => frame.sessionId === refusedShell,
+        ),
+      ).toMatchObject({ error: { code: "computer_stopped" } });
+      const refusedBrowser = await browserChannel("agent", bootId);
+      expect(
+        await waitFrame(
+          "browser.command-error",
+          (frame) => frame.channelId === refusedBrowser.channelId,
+        ),
+      ).toMatchObject({ error: { reason: "device-stopped" } });
+      const ownerWhileStopped = await browserChannel("person", bootId);
+      await waitFrame(
+        "browser.attached",
+        (frame) => frame.channelId === ownerWhileStopped.channelId,
+      );
+      const agentCommand = randomUUID();
+      wire.sendHost("browser", {
+        ...ownerWhileStopped.fence,
+        channelId: ownerWhileStopped.channelId,
+        capability: ownerWhileStopped.capability,
+        type: "browser.client-message",
+        message: {
+          type: "cdp.command",
+          requestId: agentCommand,
+          command: { method: "Runtime.evaluate", parameters: { expression: "1" } },
+        },
+      });
+      expect(
+        await waitFrame(
+          "browser.server-message",
+          (frame) =>
+            z.object({ requestId: z.literal(agentCommand) }).safeParse(frame.message).success,
+        ),
+      ).toMatchObject({ message: { type: "cdp.error", error: { reason: "device-stopped" } } });
+      wire.sendHost("browser", {
+        ...ownerWhileStopped.fence,
+        channelId: ownerWhileStopped.channelId,
+        capability: ownerWhileStopped.capability,
+        type: "browser.client-message",
+        message: { type: "tabs.resync" },
+      });
+      await waitFor(
+        async () => browser.frames.some((frame) => JSON.parse(frame).type === "tabs.resync"),
+        5_000,
+        "owner browser input while stopped",
+      );
+
+      await auxiliary("integrations", bootId);
+      await displayReady();
+      const reopened = openView();
+      await waitFor(
+        async () => browser.displayStarts.length === 2,
+        5_000,
+        "owner display reopened while stopped",
+      );
+      reopened.socket.terminate();
+
+      expect(await run(active, first)).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "computer_stopped",
+          message: expect.stringMatching(/^Stopped on .+\.$/u),
+        },
+      });
+      expect(() => process.kill(enginePid!, 0)).toThrow(/ESRCH/);
+      const machines = await active.api["machines.list"]({});
+      if (!machines.ok) throw new Error(machines.error.message);
+      expect(machines.data.machines.some((machine) => machine.agentsStoppedSince)).toBe(true);
+      const newThread = await thread(active, "Sent while stopped");
+      const newRun = (
+        await active.queueMessage({ text: "Wait for this Mac.", threadId: newThread })
+      ).runId!;
+      expect((await run(active, newRun)).status).toBe("queued");
+
+      const successor = await active.host.store.database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", threadId)
+        .where("status", "=", "queued")
+        .executeTakeFirstOrThrow();
+      await stop.resume();
+      expect(stop.phase).toBe("running");
+      expect(stop.problem).toBeNull();
+      await waitFor(
+        async () => (await run(active, successor.id)).status === "running",
+        5_000,
+        "held Run on Resume",
+      );
+      const pause = await active.host.store.database
+        .selectFrom("threads")
+        .select("inputQueuePaused")
+        .where("id", "=", manuallyPaused)
+        .executeTakeFirstOrThrow();
+      expect(pause.inputQueuePaused).toBe(true);
+    } finally {
+      for (const viewer of viewers) viewer.socket.terminate();
+      for (const restore of restoreViews) restore();
+      shellData.close();
+      await browser.close();
+    }
   }, 120_000);
   it("records a Run its computer stopped as interrupted, at once while the Home is reachable", async () => {
     const { stack: active } = await start({ executionLeaseMs: 60_000 });

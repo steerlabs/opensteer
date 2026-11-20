@@ -19,7 +19,7 @@ import {
   type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, type useOwnerViewReconnect } from "@opensteer/client/react";
 import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
@@ -98,10 +98,12 @@ export function ComputerDisplay({
   runPlace,
   interactive = false,
   onReopen,
+  ownerReconnect,
   preserveLastFrame = false,
 }: {
   readonly bar?: ComputerBar | undefined;
   readonly onReopen?: (() => void) | undefined;
+  readonly ownerReconnect?: ReturnType<typeof useOwnerViewReconnect> | undefined;
   readonly active: boolean;
   readonly interactive?: boolean;
   readonly preserveLastFrame?: boolean;
@@ -148,6 +150,9 @@ export function ComputerDisplay({
         : { kind, viewId, generation },
     [kind, sessionId, appKey, viewId, generation],
   );
+  const { observe, picture: recovered } = ownerReconnect ?? {};
+  const restarting = ownerReconnect?.state === "reconnecting";
+  const timedOut = ownerReconnect?.state === "timed-out";
   const controls = useRef<DisplayControlsHandle>(null);
   const [canType, setCanType] = useState(false);
   const [displayState, setDisplayState] = useState<DisplaySnapshot | null>(null);
@@ -328,6 +333,7 @@ export function ComputerDisplay({
     };
     const changed = () => {
       const snapshot = lease.getSnapshot();
+      if (source.kind === "owner-view") observe?.(source, snapshot);
       setDisplayState(snapshot);
       const status = computerDisplayStatus(snapshot, phone);
       setWords(
@@ -473,6 +479,7 @@ export function ComputerDisplay({
     attached,
     foreground,
     hostClient,
+    observe,
     resetDecoder,
     scope,
     source,
@@ -492,6 +499,8 @@ export function ComputerDisplay({
     phone &&
     inputLease !== null &&
     shown &&
+    !restarting &&
+    !timedOut &&
     !stale &&
     displayState?.input === "available";
   const go = (to: PhoneNavigationTo) => {
@@ -516,7 +525,7 @@ export function ComputerDisplay({
       <Animated.View style={[StyleSheet.absoluteFill, lift]}>
         <NativeDisplay
           ref={decoder}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, (restarting || timedOut) && { opacity: 0 }]}
           onNeedsKeyframe={({ nativeEvent }) => {
             if (nativeEvent.epoch !== String(epoch.current)) return;
             if (nativeEvent.pictureGone) {
@@ -532,6 +541,7 @@ export function ComputerDisplay({
               return;
             setShown(true);
             setPicture(decodingPicture.current);
+            if (decodingPicture.current && source.kind === "owner-view") recovered?.(source);
             onPageSize?.({ width: nativeEvent.width, height: nativeEvent.height });
             report.current?.({
               kind: "drawn",
@@ -549,7 +559,7 @@ export function ComputerDisplay({
             {...(bar === undefined ? {} : { onTyping: bar.onTyping })}
             picture={picture}
             phone={phone}
-            visible={active && foreground && shown && !words && !stale}
+            visible={active && foreground && shown && !words && !stale && !restarting && !timedOut}
           />
         ) : null}
         {stale ? (
@@ -565,8 +575,15 @@ export function ComputerDisplay({
             </AppText>
           </GlassSurface>
         ) : null}
-        {runPlace === undefined &&
-        (unavailable || !shown || (!preserve && (words || updateName !== null))) ? (
+        {restarting || timedOut ? (
+          <View style={styles.status}>
+            <AppText role="secondary" style={styles.statusText} tone="soft">
+              {restarting ? "Reconnecting…" : "This view has ended"}
+            </AppText>
+            {timedOut && onReopen ? <SecondaryButton label="Reopen" onPress={onReopen} /> : null}
+          </View>
+        ) : runPlace === undefined &&
+          (unavailable || !shown || (!preserve && (words || updateName !== null))) ? (
           <View style={styles.status}>
             {!unavailable && !words && updateName === null ? (
               <ActivityIndicator color={color.muted} />
@@ -831,6 +848,7 @@ export function ComputerOwnerView(props: {
   readonly menu?: NativeMenuSection;
   /** Opens the tab again, as the person's own Open, once this view has ended. */
   readonly onReopen: () => void;
+  readonly reconnect?: ReturnType<typeof useOwnerViewReconnect> | undefined;
   readonly viewId: string;
 }) {
   const { active, generation, hostClient, viewId } = props;
@@ -852,13 +870,15 @@ export function ComputerOwnerView(props: {
       <View style={styles.stage}>
         <View style={styles.status}>
           <AppText role="bodyMedium" style={styles.statusText}>
-            This view has ended
+            {props.reconnect?.state === "reconnecting" ? "Reconnecting…" : "This view has ended"}
           </AppText>
-          <SecondaryButton
-            accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
-            label="Reopen"
-            onPress={props.onReopen}
-          />
+          {props.reconnect?.state !== "reconnecting" ? (
+            <SecondaryButton
+              accessibilityLabel={phone ? "Reopen phone" : `Reopen ${label}`}
+              label="Reopen"
+              onPress={props.onReopen}
+            />
+          ) : null}
         </View>
       </View>
     );
@@ -872,12 +892,13 @@ export function ComputerOwnerView(props: {
         title: label,
       }}
       interactive
-      active={active}
+      active={active && props.reconnect?.state !== "timed-out"}
       hostClient={hostClient}
       label={label}
       machineId={props.machineId}
       phone={phone}
-      onReopen={phone ? props.onReopen : undefined}
+      onReopen={phone || props.reconnect?.state === "timed-out" ? props.onReopen : undefined}
+      ownerReconnect={props.reconnect}
       source={{ generation, kind: "owner-view", viewId }}
     />
   );

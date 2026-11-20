@@ -38,9 +38,16 @@ export type RunnerShutdownProof = z.infer<typeof RunnerShutdownProofSchema>;
 
 export async function confirmRunnerShutdown(
   dataDirectory: string,
-  proof: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
+  proof?: Pick<RunnerShutdownProof, "bootId" | "processIdentities">,
 ): Promise<boolean> {
-  const containment = new ExecutionContainment({ bootId: proof.bootId, dataDirectory });
+  const containment = new ExecutionContainment({
+    bootId: proof?.bootId ?? "desktop",
+    dataDirectory,
+  });
+  if (!proof) {
+    await containment.reapEarlierBoots();
+    return false;
+  }
   return (await containment.reapBoot(proof.processIdentities)) === "proven";
 }
 

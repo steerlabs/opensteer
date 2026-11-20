@@ -6,15 +6,27 @@ const workMac = BrowserSourceIdSchema.parse("bsr_00000000-0000-4000-8000-0000000
 const homeMac = BrowserSourceIdSchema.parse("bsr_00000000-0000-4000-8000-000000000002");
 
 describe("Chrome tab sharing at consent", () => {
-  it("offers one row per paired Chrome and no hint", () => {
+  it("offers paired Chrome and names the devices that need to pair again in one hint", () => {
     const chrome = chromeTabGrantOptions({
-      chromeTabs: [{ sourceId: workMac, computerName: "Work Mac", paired: true }],
+      chromeTabs: [
+        { sourceId: workMac, computerName: "Work Mac", paired: true },
+        { sourceId: homeMac, computerName: "Home Mac", paired: false },
+      ],
       chromeTabsNeedPairing: true,
+      chromeTabsRepairNames: ["Studio Mac"],
     });
     expect(chrome.options.map(({ name }) => name)).toEqual([
       "Tabs you share from Chrome on Work Mac",
     ]);
-    expect(chrome.repair).toBeNull();
+    expect(chrome.repair).toBe(
+      "To share tabs from Chrome on Studio Mac and Home Mac, pair Chrome again on each device.",
+    );
+    expect(
+      chromeTabGrantOptions({
+        chromeTabs: [{ sourceId: workMac, computerName: "Work Mac", paired: true }],
+        chromeTabsNeedPairing: true,
+      }).repair,
+    ).toBe("To share tabs with a connected agent, pair Chrome again.");
   });
 
   it("names the Chrome that must be paired again, or says it plainly when the Home doesn't", () => {

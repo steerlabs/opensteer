@@ -383,9 +383,16 @@ describe("verifyEmbedderAssertion", () => {
     const otherKey = await makeEd25519Key("other-ed-1");
     const { directory, platformEntry } = buildDirectory(errandKey.jwk, otherKey.jwk);
     const token = await signAssertion({ ...errandKey, kid: "" });
-    expect(await verifyEmbedderAssertion({
-      directory, platformEntry, assertion: token, request: baseRequest, now: nowMs, claim: claimOnce(),
-    })).toMatchObject({ ok: false, reason: "unknown-key" });
+    expect(
+      await verifyEmbedderAssertion({
+        directory,
+        platformEntry,
+        assertion: token,
+        request: baseRequest,
+        now: nowMs,
+        claim: claimOnce(),
+      }),
+    ).toMatchObject({ ok: false, reason: "unknown-key" });
   });
 
   it("uses an exclusive expiry deadline and downgrades when the claim cannot be stored", async () => {
@@ -395,16 +402,30 @@ describe("verifyEmbedderAssertion", () => {
     const assertion = await signAssertion(errandKey, { exp: nowSec + 1 });
     const deadline = nowMs + 11_000;
     const input = { directory, platformEntry, assertion, request: baseRequest };
-    expect(await verifyEmbedderAssertion({
-      ...input, now: deadline - 1, claim: claimOnce(),
-    })).toMatchObject({ ok: true });
-    expect(await verifyEmbedderAssertion({
-      ...input, now: deadline, claim: claimOnce(),
-    })).toMatchObject({ ok: false, reason: "expired" });
-    expect(await resolveConsentIdentity({
-      ...input, clientName: "Claimed name", now: nowMs,
-      claim: async () => { throw new Error("database unavailable"); },
-    })).toMatchObject({ kind: "unverified" });
+    expect(
+      await verifyEmbedderAssertion({
+        ...input,
+        now: deadline - 1,
+        claim: claimOnce(),
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await verifyEmbedderAssertion({
+        ...input,
+        now: deadline,
+        claim: claimOnce(),
+      }),
+    ).toMatchObject({ ok: false, reason: "expired" });
+    expect(
+      await resolveConsentIdentity({
+        ...input,
+        clientName: "Claimed name",
+        now: nowMs,
+        claim: async () => {
+          throw new Error("database unavailable");
+        },
+      }),
+    ).toMatchObject({ kind: "unverified" });
   });
 
   it("refuses an embedder not paired with this platform in embedsVia", async () => {
@@ -526,7 +547,7 @@ describe("describeIdentity", () => {
         { role: "embedder", label: "Errand", origin: "https://errand.example" },
         { role: "platform", label: "AgentPay", origin: "https://agentpay.example" },
       ],
-      warning: consentSelfStartWarning,
+      warning: "Only allow this if you started it yourself.",
     });
 
     const platformOnly: AgentConnectionIdentityAtConsent = {

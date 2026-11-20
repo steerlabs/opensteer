@@ -97,7 +97,7 @@ describe("a direct operation's Request on the phone", () => {
     );
     expect(item?.view).toMatchObject({
       state: "pending",
-      question: "Run a browser script in Shopping?",
+      question: "Run a script in Shopping?",
       agentWords: { text: "Buy the $12 phone case you asked for." },
       answers: { allow: { label: "Allow once" }, deny: { label: "Don’t allow" } },
     });
@@ -110,7 +110,7 @@ describe("a direct operation's Request on the phone", () => {
     expect(
       needsYouOperation(snapshot, { request, threadId: mockAgentWorkThreads.waiting }),
     ).toMatchObject({
-      listTitle: "Grok: Run a browser script in Shopping?",
+      listTitle: "Grok: Run a script in Shopping?",
       agent: { name: "Grok" },
     });
     expect(
@@ -181,7 +181,7 @@ describe("who the agent is, on the phone", () => {
     expect(whoLines(who("Errand"), { consent: true })).toMatchObject({
       heading: "Errand via AgentPay",
       verified: true,
-      warning: "Only approve if you started this yourself.",
+      warning: "Only allow this if you started it yourself.",
     });
     expect(whoLines(who("Claude"), { consent: false })).toMatchObject({
       heading: "Claude",

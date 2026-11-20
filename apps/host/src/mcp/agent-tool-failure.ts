@@ -15,6 +15,7 @@ const hiddenTargetRefusals = new Set([
   "Parent task is unavailable",
   "Plugin tool is unavailable to this caller.",
   "This tab is unavailable to this connected agent.",
+  "This resource is not shared with this connected agent.",
   "That browser profile is not shared with this connected agent.",
   "A connected agent works only in a browser profile shared with it, never in a Guest tab.",
 ]);
@@ -31,9 +32,14 @@ export function agentToolFailure(
   mayKnowDevice?: (deviceId: string) => boolean,
   connection = false,
 ): AgentToolFailure {
-  if (connection && error instanceof Error && "code" in error && error.code === "42501" &&
+  if (
+    connection &&
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "42501" &&
     (error.message === "Your organization doesn't allow this" ||
-      error.message === "Sign-in and new work on this Home have ended"))
+      error.message === "Sign-in and new work on this Home have ended")
+  )
     return { code: "forbidden", reason: "work-policy", message: error.message, retryable: false };
   if (error instanceof OperationOutcomeUnknown)
     return {
@@ -47,7 +53,9 @@ export function agentToolFailure(
     return {
       code:
         error.code === "forbidden"
-          ? connection ? "not_found" : "access_denied"
+          ? connection
+            ? "not_found"
+            : "access_denied"
           : error.code === "interrupted"
             ? "outcome_unknown"
             : "plugin_unavailable",
@@ -99,9 +107,10 @@ export function agentToolFailure(
       code: error.code,
       message: error.message,
       next: error.next,
-      reason: connection && error.code === "forbidden" && hiddenTargetRefusals.has(error.message)
-        ? "target-unavailable"
-        : error.reason,
+      reason:
+        connection && error.code === "forbidden" && hiddenTargetRefusals.has(error.message)
+          ? "target-unavailable"
+          : error.reason,
       retryable: error.retryable,
     };
   }

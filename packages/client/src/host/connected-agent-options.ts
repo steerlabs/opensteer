@@ -29,7 +29,7 @@ export interface ProfileOption {
 
 export type ChromeTabGrantCatalog = Pick<
   AgentConnectionConsent,
-  "chromeTabs" | "chromeTabsNeedPairing"
+  "chromeTabs" | "chromeTabsNeedPairing" | "chromeTabsRepairNames"
 >;
 
 export function chromeTabGrantOptions(catalog?: ChromeTabGrantCatalog) {
@@ -43,21 +43,25 @@ export function chromeTabGrantOptions(catalog?: ChromeTabGrantCatalog) {
         ]
       : [],
   );
-  const needsPairing =
-    options.length === 0 &&
-    (catalog?.chromeTabsNeedPairing === true ||
-      catalog?.chromeTabs?.some(({ paired }) => !paired) === true);
-  const unpaired = catalog?.chromeTabs?.find(({ paired }) => !paired);
-  return {
-    options,
-    needsPairing,
-    /** The one quiet line when a Chrome must be paired again, naming it when the Home says. */
-    repair: needsPairing
-      ? unpaired
-        ? agentWords("consent.chromeTabs.repairOn", { device: unpaired.computerName })
-        : agentWords("consent.chromeTabs.repair")
-      : null,
-  };
+  const names = [
+    ...new Set([
+      ...(catalog?.chromeTabsRepairNames ?? []),
+      ...(catalog?.chromeTabs ?? []).flatMap(({ computerName, paired }) =>
+        paired ? [] : [computerName],
+      ),
+    ]),
+  ];
+  const repair =
+    names.length > 1
+      ? agentWords("consent.chromeTabs.repairOnMultiple", {
+          devices: `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`,
+        })
+      : names[0]
+        ? agentWords("consent.chromeTabs.repairOn", { device: names[0] })
+        : catalog?.chromeTabsNeedPairing
+          ? agentWords("consent.chromeTabs.repair")
+          : null;
+  return { options, repair };
 }
 
 /**

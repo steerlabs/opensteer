@@ -10,11 +10,20 @@ import {
   type BrowserSourceTabPart,
   type BrowserSourceTabShared,
 } from "@opensteer/browser-source-wire/frames";
+import { maxChromeDetachReceipts } from "./storage.js";
 
 type TabFrame = Extract<BrowserSourceClientFrame, { type: `tab.${string}` }>;
 type Attachment = { id: string; ready: Promise<void> };
+type ShareGroup = { readonly detaching: Set<Promise<void>>; detachFailed: boolean };
+type DetachJournal = {
+  readonly pending: readonly string[];
+  readonly record: (shareId: string) => Promise<void>;
+  readonly acknowledge: (shareId: string) => Promise<void>;
+};
 type Share = {
   readonly tabId: number;
+  readonly sourceId: string;
+  readonly group: ShareGroup;
   readonly link: ChromeTabLink;
   info: BrowserSourceTabShared;
   attachment?: Attachment;
@@ -129,6 +138,8 @@ export class ChromeTabDebugger {
   readonly #detaching = new Map<number, Promise<void>>();
   readonly #links = new Map<string, ChromeTabLink>();
   readonly #detachReceipts = new WeakSet<ChromeTabLink>();
+  readonly #journals = new WeakMap<ChromeTabLink, DetachJournal & { receipts: Set<string> }>();
+  readonly #stoppingRoots = new Map<string, string>();
   readonly #popups = new Map<number, { parent: Share; attachment: Attachment }>();
 
   constructor(
@@ -156,7 +167,7 @@ export class ChromeTabDebugger {
       const share = source.tabId === undefined ? undefined : this.#byTab.get(source.tabId);
       if (share?.attachment && !this.#detaching.has(share.tabId)) {
         delete share.attachment;
-        this.#unshare(share);
+        void this.#unshare(share);
       }
     });
     navigation?.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
@@ -178,7 +189,7 @@ export class ChromeTabDebugger {
       if (!share || (changes.url === undefined && changes.title === undefined)) return;
       const url = tab.url ?? share.info.url;
       if (!canDebug(url)) {
-        this.#unshare(share);
+        void this.#unshare(share);
         return;
       }
       share.info = {
@@ -191,7 +202,7 @@ export class ChromeTabDebugger {
     const remove = (tabId: number) => {
       this.#popups.delete(tabId);
       const share = this.#byTab.get(tabId);
-      if (share) this.#unshare(share);
+      if (share) void this.#unshare(share);
     };
     tabs.onRemoved.addListener(remove);
     tabs.onReplaced.addListener((_added, removed) => remove(removed));
@@ -202,11 +213,17 @@ export class ChromeTabDebugger {
     send: (frame: TabFrame) => boolean,
     stop: () => void,
     detachReceipts = false,
+    journal?: DetachJournal,
   ): ChromeTabLink {
     this.disconnect(sourceId);
     const link = new ChromeTabLink(send, stop, (command) => this.#execute(link, command));
     this.#links.set(sourceId, link);
     if (detachReceipts) this.#detachReceipts.add(link);
+    if (journal) {
+      const receipts = new Set(journal.pending);
+      this.#journals.set(link, { ...journal, receipts });
+      for (const shareId of receipts) if (!link.announce({ type: "tab.detached", shareId })) break;
+    }
     return link;
   }
 
@@ -215,7 +232,15 @@ export class ChromeTabDebugger {
     if (!link) return;
     this.#links.delete(sourceId);
     link.close();
-    for (const share of this.#shares.values()) if (share.link === link) this.#unshare(share);
+    for (const share of this.#shares.values()) if (share.link === link) void this.#unshare(share);
+  }
+
+  async acknowledgeDetach(sourceId: string, shareId: string): Promise<void> {
+    const link = this.#links.get(sourceId);
+    const journal = link && this.#journals.get(link);
+    if (!journal?.receipts.has(shareId)) return;
+    await journal.acknowledge(shareId);
+    journal.receipts.delete(shareId);
   }
 
   list(sourceId: string): readonly TabView[] {
@@ -238,18 +263,31 @@ export class ChromeTabDebugger {
     if (!link || tab.id === undefined || !canDebug(tab.url ?? tab.pendingUrl ?? ""))
       throw new Error("This tab cannot be shared with that Home.");
     if (this.#byTab.has(tab.id)) throw new Error("This tab is already shared.");
-    if (this.#shares.size >= maxShares) throw new Error("Too many tabs are shared.");
+    if (this.#atCapacity(sourceId)) throw new Error("Too many tabs are shared.");
     const targetId = await this.#targetId(tab.id);
     if (this.#links.get(sourceId) !== link || !targetId)
       throw new Error("This Chrome tab can’t be shared.");
-    if (this.#byTab.has(tab.id) || this.#shares.size >= maxShares)
+    if (this.#byTab.has(tab.id) || this.#atCapacity(sourceId))
       throw new Error("This tab is already shared or there are too many shared tabs.");
-    this.#share(link, tab.id, tab, targetId);
+    this.#share(sourceId, link, tab.id, tab, targetId);
   }
 
   stop(sourceId: string, shareId: string): void {
     const share = this.#shares.get(shareId);
-    if (share && share.link === this.#links.get(sourceId)) this.#unshare(share);
+    if (share && share.link === this.#links.get(sourceId)) void this.#unshare(share);
+  }
+
+  #atCapacity(sourceId: string): boolean {
+    if (this.#shares.size >= maxShares) return true;
+    const link = this.#links.get(sourceId);
+    const journal = link && this.#journals.get(link);
+    const live = [...this.#shares.values()].filter(
+      (share) => share.sourceId === sourceId && !share.info.openerShareId,
+    ).length;
+    const stopping = [...this.#stoppingRoots.values()].filter(
+      (source) => source === sourceId,
+    ).length;
+    return !!journal && live + stopping + journal.receipts.size >= maxChromeDetachReceipts;
   }
 
   async #targetId(tabId: number): Promise<string | undefined> {
@@ -271,15 +309,16 @@ export class ChromeTabDebugger {
     )
       return;
     if (!canDebug(tab.url || tab.pendingUrl || "about:blank")) return;
-    this.#share(parent.link, tabId, tab, targetId, parent.info.shareId);
+    this.#share(parent.sourceId, parent.link, tabId, tab, targetId, parent);
   }
 
   #share(
+    sourceId: string,
     link: ChromeTabLink,
     tabId: number,
     tab: ChromeTab,
     targetId: string,
-    openerShareId?: string,
+    opener?: Share,
   ): void {
     const info: BrowserSourceTabShared = {
       type: "tab.shared",
@@ -288,9 +327,10 @@ export class ChromeTabDebugger {
       ...(browserVersion ? { browserVersion } : {}),
       url: (tab.url || "about:blank").slice(0, 8192),
       title: (tab.title ?? "").slice(0, 1024),
-      ...(openerShareId ? { openerShareId } : {}),
+      ...(opener ? { openerShareId: opener.info.shareId } : {}),
     };
-    const share: Share = { info, link, tabId };
+    const group = opener?.group ?? { detaching: new Set(), detachFailed: false };
+    const share: Share = { info, link, tabId, sourceId, group };
     this.#shares.set(info.shareId, share);
     this.#byTab.set(tabId, share);
     link.announce(info);
@@ -305,14 +345,36 @@ export class ChromeTabDebugger {
     const children = [...this.#shares.values()].filter(
       (child) => child.info.openerShareId === share.info.shareId,
     );
-    const detached = Promise.all([
-      this.#detach(share),
-      ...children.map((child) => this.#unshare(child)),
-    ]).then(() => {
-      if (this.#detachReceipts.has(share.link))
-        share.link.announce({ type: "tab.detached", shareId: share.info.shareId });
-    });
-    void detached.catch(() => undefined);
+    const {
+      group,
+      sourceId,
+      link,
+      info: { shareId, openerShareId },
+    } = share;
+    const root = !openerShareId;
+    if (root) this.#stoppingRoots.set(shareId, sourceId);
+    const physical = this.#detach(share);
+    group.detaching.add(physical);
+    const descendants = children.map((child) => this.#unshare(child));
+    const detached = Promise.all([physical, ...descendants, ...(root ? group.detaching : [])])
+      .then(async () => {
+        if (!this.#detachReceipts.has(link) || (root && group.detachFailed)) return;
+        const journal = root && this.#journals.get(link);
+        if (journal) {
+          await journal.record(shareId);
+          const current = this.#links.get(sourceId);
+          const active = current && this.#journals.get(current);
+          if (active) {
+            active.receipts.add(shareId);
+            current.announce({ type: "tab.detached", shareId });
+          }
+        } else link.announce({ type: "tab.detached", shareId });
+      })
+      .finally(() => {
+        group.detaching.delete(physical);
+        if (root) this.#stoppingRoots.delete(shareId);
+      });
+    void detached.catch((error: unknown) => console.error("Chrome tab cleanup failed", error));
     return detached;
   }
 
@@ -340,6 +402,7 @@ export class ChromeTabDebugger {
       )
       .catch((error: unknown) => {
         share.detachFailed = true;
+        share.group.detachFailed = true;
         throw error;
       })
       .finally(() => {

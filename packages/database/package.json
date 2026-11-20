@@ -30,6 +30,7 @@
     "./team-requests": "./src/team-requests-store.ts",
     "./test-support/team-knowledge": "./src/team-knowledge.test-support.ts",
     "./connection": "./src/connection.ts",
+    "./agent-directory-verification": "./src/agent-directory-verification.ts",
     "./personal-team-run-store": "./src/personal-team-run-store.ts",
     "./attachment-store": "./src/attachment-store.ts",
     "./task-admission-store": "./src/task-admission-store.ts",

@@ -153,8 +153,8 @@ export async function syncTranscriptMessage(
         })
         .where("id", "=", message.threadId)
         .where(
-          sql<boolean>`last_reply_message_id is null or last_reply_message_id = ${messageId}
-          or not exists (select 1 from messages where id = last_reply_message_id and sequence > ${message.sequence}::bigint)`,
+          sql<boolean>`(last_reply_message_id is null or last_reply_message_id = ${messageId}
+          or not exists (select 1 from messages where id = last_reply_message_id and sequence > ${message.sequence}::bigint))`,
         )
         .executeTakeFirst();
       if (updated.numUpdatedRows) await publishThreadSummary(tx, message.threadId);

@@ -208,23 +208,6 @@ export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
 }
 
 /**
- * A connected agent's title in the list and on its page. Verified: the Home's verified
- * name. Not verified: the name the person gave it, if they changed the one it came with;
- * otherwise where it returns to, never the client's own name.
- */
-export function agentListHeading(
-  who: AgentWho,
-  connection: { readonly label: string; readonly clientName: string },
-): string {
-  if (who.verified || who.withdrawnSince) return who.heading;
-  const label = connection.label.trim();
-  if (label && label !== connection.clientName.trim()) return agentClaim(label);
-  const redirect = who.origins.find((origin) => origin.role === "redirect");
-  const host = redirect ? hostOf(redirect.origin) : null;
-  return host ? workWords("who.appAt", { host }) : workWords("who.localApp");
-}
-
-/**
  * The agent's name as every surface says it: "Verified: Claude", "Says it is Grok", or the
  * plain name of an app on this computer or one whose verification was withdrawn.
  */

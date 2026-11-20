@@ -168,7 +168,10 @@ export class WatchSupervisor {
         return "still-ending" as const;
       }
     });
-    this.#reconcileTail = stopped.then(() => undefined, () => undefined);
+    this.#reconcileTail = stopped.then(
+      () => undefined,
+      () => undefined,
+    );
     return stopped;
   }
 
@@ -206,8 +209,11 @@ export class WatchSupervisor {
       if (this.#stopped.has(`${item.activationId}:${item.executionGeneration}`)) continue;
       const existing = this.#watches.get(item.activationId);
       if (existing) {
-        if (existing.abort.signal.aborted ||
-          existing.desired.executionGeneration !== item.executionGeneration) continue;
+        if (
+          existing.abort.signal.aborted ||
+          existing.desired.executionGeneration !== item.executionGeneration
+        )
+          continue;
         existing.desired = item;
         existing.sink = sink;
         await this.#writeCapabilities(existing);

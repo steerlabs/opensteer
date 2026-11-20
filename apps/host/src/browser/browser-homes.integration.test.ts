@@ -242,7 +242,13 @@ describeStore("Host browser homes", (it) => {
   it("lists offline eligible homes, excludes an unenrolled computer, and follows removal", async ({
     storeFixture: fixture,
   }) => {
-    const run = await setup(fixture);
+    const run = await fixture.startRunFixture("host-homes");
+    await fixture.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser","messaging"]'::jsonb` })
+      .where("id", "=", run.runnerId)
+      .execute();
+    await fixture.enablePersonalRemoteAccess();
 
     const { browser, placements } = service(fixture);
     try {
@@ -300,7 +306,7 @@ describeStore("Host browser homes", (it) => {
       });
       await expect(
         browser.openAgentSession({
-          agentBindingId: `run:${createId("run")}`,
+          agentBindingId: `run:${run.runId}`,
           ownerId: run.userId,
 
           fresh: true,

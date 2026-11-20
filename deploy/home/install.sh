@@ -97,7 +97,7 @@ fi
 
 if [[ -n $managed && $prepare == false ]]; then
   missing=false
-  for program in docker curl jq openssl flock nsenter iptables-restore ip6tables-restore; do
+  for program in docker curl jq openssl flock nsenter iptables-restore ip6tables-restore python3; do
     command -v "$program" >/dev/null || missing=true
   done
   docker compose version >/dev/null 2>&1 || missing=true
@@ -111,7 +111,7 @@ if [[ -n $managed && $prepare == false ]]; then
       fail "Managed package provisioning requires Ubuntu 24.04 LTS, or an image with Docker Compose and the installer tools preinstalled."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    packages=(apparmor ca-certificates curl jq openssl util-linux iptables)
+    packages=(apparmor ca-certificates curl jq openssl util-linux iptables python3)
     if ! docker compose version >/dev/null 2>&1; then packages+=(docker.io docker-compose-v2); fi
     apt-get install -y --no-install-recommends "${packages[@]}"
   fi
@@ -163,6 +163,11 @@ if [[ -n $managed ]]; then
       if $resume_managed && [[ $status == 78 ]]; then finish_managed_boot refused; fi
       exit "$status"
     fi
+  fi
+  OPENSTEER_HOME_RELEASE_MANIFEST_URL=$(jq -r '.releaseManifestUrl // empty' "$result")
+  if [[ ! -f "$home_dir/config.env" && -n $OPENSTEER_HOME_RELEASE_MANIFEST_URL ]]; then
+    managed_feed_resolution "$OPENSTEER_HOME_RELEASE_MANIFEST_URL" >/dev/null ||
+      fail 'The Account update feed must resolve only to public HTTPS addresses.'
   fi
 fi
 
@@ -218,7 +223,6 @@ else
     if jq -e '.work != null' "$result" >/dev/null; then
       jq -ce .work "$result" | save_secret "$home_dir/managed-work.json"
     fi
-    OPENSTEER_HOME_RELEASE_MANIFEST_URL=$(jq -r '.releaseManifestUrl // empty' "$result")
     if valid_managed_egress "$result"; then
       save_managed_egress "$result"
     fi

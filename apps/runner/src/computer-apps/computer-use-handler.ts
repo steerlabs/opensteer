@@ -527,7 +527,11 @@ export class ComputerUseHandler {
         const app = this.#target(frame);
         const session = await this.#ensureOpen(frame, deadline);
         return await this.#onSession(frame.sessionId, session, () =>
-          this.#request("session.windows", { app, sessionId: frame.sessionId }, options()),
+          this.#request(
+            params.data.noLaunch ? "session.windowsExisting" : "session.windows",
+            { app, sessionId: frame.sessionId },
+            options(),
+          ),
         );
       }
       case "bind": {
@@ -538,7 +542,7 @@ export class ComputerUseHandler {
         const session = await this.#ensureOpen(frame, deadline);
         return await this.#onSession(frame.sessionId, session, () =>
           this.#request(
-            "session.bind",
+            params.data.noLaunch ? "session.bindExisting" : "session.bind",
             { app, windowId: params.data.windowId, sessionId: frame.sessionId },
             options(),
           ),

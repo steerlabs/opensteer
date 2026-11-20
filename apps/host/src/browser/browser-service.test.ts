@@ -60,6 +60,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { installWebSocketLiveness } from "../server/websocket-liveness.js";
 import {
   BrowserLocalProfiles,
@@ -8452,6 +8453,82 @@ describe("a connected agent's selected grant admits the exact profile before any
     return { ownerId, kept, withdrawn, service, runtime, create, nothingStarted, repository };
   }
   const refusal = { code: "forbidden", message: expect.stringContaining("connected agent") };
+
+  it("refuses direct browser connections to a runtime without page lineage", async () => {
+    const { ownerId, kept, service } = await setup();
+    const authority = { ownerId, agentBindingId: "session:selected", threadId: createId("thread") };
+    const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+    await expect(
+      service.issueStandardCdpTicket({
+        authority,
+        browserSessionId: opened.session.id,
+        mode: "whole-context",
+      }),
+    ).rejects.toThrow(
+      "This device needs a newer version of Opensteer for a direct browser connection. You can still use browser_use.",
+    );
+  });
+
+  it("answers like a missing target when the direct browser admission loses its profile", async () => {
+    const { ownerId, kept, withdrawn, service, repository } = await setup();
+    const threadId = createId("thread");
+    const authority = { ownerId, agentBindingId: "session:selected", threadId };
+    const opened = await service.openAgentSession({ ...authority, profileId: kept.id });
+    repository.granted = [withdrawn.id];
+    const missingSession = createBrowserSessionId();
+    const mcp = new OpensteerMcpService({
+      publicUrl: new URL("http://localhost"),
+      callers: {
+        authenticate: async () => ({
+          kind: "connection",
+          key: "connection:selected",
+          userId: ownerId,
+          connectionId: "selected",
+          accessMode: "full-access",
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources: [{ kind: "browser-profile", profileId: kept.id, access: "read-write" }],
+          },
+          grantRevision: 1,
+        }),
+      },
+      store: {
+        getThreadForOwner: async () => null,
+        threadOrigins: async () => new Map(),
+        requests: { get: async () => null },
+      },
+      handlers: {
+        browser_connect: ({ input, operationKey }) =>
+          service.openTab(
+            ownerId,
+            {
+              type: "browser.tab.open",
+              sessionId: input.profileId === kept.id ? opened.session.id : missingSession,
+              idempotencyKey: operationKey,
+            },
+            authority,
+          ),
+      },
+    });
+    try {
+      const call = (profileId: BrowserProfileId) =>
+        mcp.callToolResult(
+          "selected",
+          "browser_connect",
+          { profileId },
+          { operationKey: profileId },
+        );
+      const missing = await call(createId("browserProfile"));
+      expect(missing).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      expect(await call(kept.id)).toEqual(missing);
+    } finally {
+      await mcp.close();
+    }
+  });
 
   it.each([
     ["the withdrawn profile", "withdrawn"],

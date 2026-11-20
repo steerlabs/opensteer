@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  AgentGrantSchema,
   CommandIdSchema,
   ThreadAccessModeSchema,
+  agentGrantAccess,
   type AgentOperationId,
+  type AgentOperationTarget,
   type AgentSessionId,
   type BrowserSessionId,
   type CommandId,
@@ -21,7 +24,6 @@ import {
 import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { sessionsUsingWithdrawn } from "./agent-session-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export interface ConnectionCleanup {
@@ -59,7 +61,10 @@ export type LineageAttempt =
   | ConnectionAttempt<"plugin" | "standard-cdp" | "shared-chrome">;
 
 export interface ConnectionAttemptStopper {
-  stop(attempt: LineageAttempt, cleanup: ConnectionCleanup): Promise<void | "ended" | "contact-lost">;
+  stop(
+    attempt: LineageAttempt,
+    cleanup: ConnectionCleanup,
+  ): Promise<void | "ended" | "contact-lost">;
   stopDirectOperation?(
     attempt: ConnectionAttempt<"operation", AgentOperationId>,
     cleanup: ConnectionCleanup,
@@ -67,8 +72,12 @@ export interface ConnectionAttemptStopper {
 }
 
 export function connectionStopId(attempt: LineageAttempt): CommandId {
-  const hash = createHash("sha256").update(JSON.stringify([attempt.kind, attempt.id, attempt.generation])).digest("hex");
-  return CommandIdSchema.parse(`cmd_${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`);
+  const hash = createHash("sha256")
+    .update(JSON.stringify([attempt.kind, attempt.id, attempt.generation]))
+    .digest("hex");
+  return CommandIdSchema.parse(
+    `cmd_${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`,
+  );
 }
 
 /** The same set drives the worker, the connection's state and Remove. */
@@ -85,7 +94,15 @@ export async function connectionAttempts(
       or (${typeof revision === "string" ? sql.ref(revision) : revision} = f.cleanup_minimum_grant_revision
         and array_position(${modes}, ${typeof mode === "string" ? sql.ref(mode) : mode}) > array_position(${modes}, f.cleanup_maximum_mode)))`;
   };
-  const { rows } = await sql<LineageAttempt & { readonly disconnected: boolean; readonly userId: UserId }>`
+  const runHandoff = sql`(a.admitted_grant_revision is not null or a.first_event_at is not null)`;
+  const { rows } = await sql<
+    LineageAttempt & {
+      readonly disconnected: boolean;
+      readonly grant: unknown;
+      readonly sessionTargets:
+        readonly { grant: AgentOperationTarget["grant"]; effect: string }[] | null;
+    }
+  >`
     with floor as (
       select *, revoked_at is not null or expires_at <= now() as disconnected
       from agent_connections where id = ${connectionId}
@@ -105,7 +122,7 @@ export async function connectionAttempts(
     held_attempts as (
       select a.*, r.thread_id, r.environment_id
       from run_attempts a join lineage_runs r on r.id = a.run_id cross join floor f
-      where (a.admitted_grant_revision is not null or a.first_event_at is not null)
+      where ${runHandoff}
         and ${belowFloor("a.admitted_grant_revision", "a.admitted_access_mode")}
         and (a.terminal_evidence_at is null or a.contact_lost_at is not null)
     ),
@@ -128,7 +145,7 @@ export async function connectionAttempts(
       from lineage_runs r cross join floor f
       where r.status in ('queued','starting','running','waiting')
         and not exists (select 1 from run_attempts a where a.run_id = r.id
-          and a.binding_generation = r.binding_generation and a.admitted_grant_revision is not null)
+          and a.binding_generation = r.binding_generation and ${runHandoff})
         and (f.disconnected or r.thread_id not in (select id from eligible_threads))
       union all
       select 'occurrence', o.id, o.execution_generation,
@@ -139,6 +156,14 @@ export async function connectionAttempts(
         (o.runner_id is not null and (o.terminal_evidence_at is null or o.contact_lost_at is not null)))
         and (${belowFloor("o.admitted_grant_revision", "o.admitted_access_mode")}
           or (o.status = 'pending' and o.anchor_thread_id not in (select id from eligible_threads)))
+      union all
+      select 'occurrence', a.occurrence_id, a.execution_generation,
+        t.anchor_thread_id, o.environment_id, a.runner_id, a.runner_boot_id, true,
+        a.terminal_evidence_at, a.contact_lost_at, null
+      from trigger_occurrence_attempts a join floor f on f.id = a.connection_id
+      join trigger_occurrences o on o.id = a.occurrence_id join triggers t on t.id = o.trigger_id
+      where ${belowFloor("a.admitted_grant_revision", "a.admitted_access_mode")}
+        and (a.terminal_evidence_at is null or a.contact_lost_at is not null)
       union all
       select 'watch', w.id, w.execution_generation::double precision,
         w.anchor_thread_id, w.environment_id, w.runner_id, w.runner_boot_id, w.runner_id is not null,
@@ -196,9 +221,9 @@ export async function connectionAttempts(
       cross join floor f
       where (p.terminal_evidence_at is null or p.contact_lost_at is not null)
         and (p.connection_id = f.id or (p.connection_id is null
-          and p.state in ('running','waiting','answered')
           and (r.id is not null or o.id is not null or w.id is not null or s.connection_id = f.id)))
         and (${belowFloor("p.admitted_grant_revision", "p.admitted_access_mode")} or
+          (p.admitted_grant_revision is null and f.cleanup_minimum_grant_revision is not null) or
           (p.connection_id is null and
             coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision)
               < f.cleanup_minimum_grant_revision))
@@ -231,15 +256,25 @@ export async function connectionAttempts(
       where (o.terminal_evidence_at is null or o.contact_lost_at is not null)
         and ${belowFloor("o.grant_revision", "o.mode")}
     )
-    select attempts.*, floor.disconnected, floor.user_id from attempts cross join floor
+    select attempts.*, floor.disconnected,
+      case when kind = 'session' and not floor.disconnected then floor.grant end as grant,
+      case when kind = 'session' and not floor.disconnected then (
+        select jsonb_agg(distinct jsonb_build_object('grant', o.target->'grant', 'effect', o.effect))
+        from agent_operations o where o.session_id = attempts.id and o.state <> 'refused'
+      ) end as session_targets
+    from attempts cross join floor
     order by case when kind = 'session' then 0 else 1 end, kind, id
   `.execute(database);
-  const first = rows[0];
-  if (!first || first.disconnected) return rows;
-  const sessions = rows.flatMap((row) => row.kind === "session" ? [row.id] : []);
-  if (!sessions.length) return rows;
-  const withdrawn = new Set(await sessionsUsingWithdrawn(database, first.userId, connectionId, sessions));
-  return rows.filter((row) => row.kind !== "session" || withdrawn.has(row.id));
+  return rows.flatMap(({ disconnected, grant, sessionTargets, ...attempt }) => {
+    if (attempt.kind !== "session" || disconnected) return [attempt];
+    const currentGrant = AgentGrantSchema.parse(grant);
+    const withdrawn = sessionTargets?.some(({ grant: target, effect }) => {
+      if (target.kind === "device") return false;
+      const access = agentGrantAccess(currentGrant, target);
+      return !access || (effect === "write" && access !== "read-write");
+    });
+    return withdrawn ? [attempt] : [];
+  });
 }
 
 export function outstandingAttempts(attempts: readonly LineageAttempt[]) {
@@ -362,29 +397,68 @@ export async function recordConnectionStop(
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
     if (!(await renewConnectionCleanupClaim(tx, claim))) return;
-    const current = outstandingAttempts(await connectionAttempts(tx, claim.connectionId)).some((row) =>
-      row.kind === attempt.kind && row.id === attempt.id && row.generation === attempt.generation &&
-      row.runnerId === attempt.runnerId && row.runnerBootId === attempt.runnerBootId);
+    const current = outstandingAttempts(await connectionAttempts(tx, claim.connectionId)).some(
+      (row) =>
+        row.kind === attempt.kind &&
+        row.id === attempt.id &&
+        row.generation === attempt.generation &&
+        row.runnerId === attempt.runnerId &&
+        row.runnerBootId === attempt.runnerBootId,
+    );
     if (!current) return;
     const now = new Date();
-    const evidence = { terminalEvidenceAt: now, contactLostAt: result === "contact-lost" ? now : null };
+    const evidence = {
+      terminalEvidenceAt: now,
+      contactLostAt: result === "contact-lost" ? now : null,
+    };
     if (attempt.kind === "plugin") {
-      await tx.updateTable("pluginExecutions").set({ ...evidence, state: "cancelled" })
+      await tx
+        .updateTable("pluginExecutions")
+        .set({
+          ...evidence,
+          state: sql`case when state in ('running','waiting','answered')
+          then ${result === "contact-lost" ? "interrupted" : "cancelled"} else state end`,
+        })
         .where("id", "=", attempt.id)
-        .where("terminalEvidenceAt", "is", null).execute();
+        .where("terminalEvidenceAt", "is", null)
+        .execute();
     } else if (attempt.kind === "run-attempt") {
-      await tx.updateTable("runAttempts").set(evidence)
+      await tx
+        .updateTable("runAttempts")
+        .set(evidence)
         .where("id", "=", attempt.id as import("@opensteer/core").RunAttemptId)
         .where("bindingGeneration", "=", attempt.generation)
-        .where("terminalEvidenceAt", "is", null).execute();
+        .where("terminalEvidenceAt", "is", null)
+        .execute();
     } else if (attempt.kind === "occurrence") {
-      await tx.updateTable("triggerOccurrences").set(evidence)
-        .where("id", "=", attempt.id).where("executionGeneration", "=", attempt.generation)
-        .where("terminalEvidenceAt", "is", null).execute();
+      const settled = await tx
+        .updateTable("triggerOccurrences")
+        .set(evidence)
+        .where("id", "=", attempt.id)
+        .where("executionGeneration", "=", attempt.generation)
+        .where("runnerId", "=", attempt.runnerId)
+        .where("runnerBootId", "=", attempt.runnerBootId)
+        .where("terminalEvidenceAt", "is", null)
+        .executeTakeFirst();
+      if (settled.numUpdatedRows === 0n) {
+        await tx
+          .updateTable("triggerOccurrenceAttempts")
+          .set(evidence)
+          .where("occurrenceId", "=", attempt.id)
+          .where("executionGeneration", "=", attempt.generation)
+          .where("runnerId", "=", attempt.runnerId)
+          .where("runnerBootId", "=", attempt.runnerBootId)
+          .where("terminalEvidenceAt", "is", null)
+          .execute();
+      }
     } else if (attempt.kind === "watch") {
-      await tx.updateTable("triggerWatchActivations").set({ ...evidence, observed: "stopped", updatedAt: now })
-        .where("id", "=", attempt.id).where("executionGeneration", "=", String(attempt.generation))
-        .where("terminalEvidenceAt", "is", null).execute();
+      await tx
+        .updateTable("triggerWatchActivations")
+        .set({ ...evidence, observed: "stopped", updatedAt: now })
+        .where("id", "=", attempt.id)
+        .where("executionGeneration", "=", String(attempt.generation))
+        .where("terminalEvidenceAt", "is", null)
+        .execute();
     }
   });
 }
@@ -456,7 +530,10 @@ export async function completeCleanupIfSettled(
 
 export async function latestConnectionUncertainty(
   database: Kysely<DatabaseSchema>,
-  connection: { readonly acknowledgedUncertaintyAt: Date | null; readonly lastActionUncertainAt: Date | null },
+  connection: {
+    readonly acknowledgedUncertaintyAt: Date | null;
+    readonly lastActionUncertainAt: Date | null;
+  },
   attempts: readonly LineageAttempt[],
 ) {
   const latest = attempts.reduce<LineageAttempt | undefined>(
@@ -467,9 +544,13 @@ export async function latestConnectionUncertainty(
     undefined,
   );
   const at = latest?.contactLostAt;
-  if (!latest || !at ||
+  if (
+    !latest ||
+    !at ||
     (connection.acknowledgedUncertaintyAt && at <= connection.acknowledgedUncertaintyAt) ||
-    (connection.lastActionUncertainAt && at <= connection.lastActionUncertainAt)) return;
+    (connection.lastActionUncertainAt && at <= connection.lastActionUncertainAt)
+  )
+    return;
   return {
     lastActionUncertainAt: at,
     lastActionUncertain: {
@@ -477,13 +558,28 @@ export async function latestConnectionUncertainty(
       generation: latest.generation,
       taskId: latest.threadId,
       reason: "Contact was lost before this attempt confirmed it ended.",
-      ...(latest.runnerId ? { device: (await database.selectFrom("runners").select("name")
-        .where("id", "=", latest.runnerId).executeTakeFirst())?.name ?? null } : {}),
+      ...(latest.runnerId
+        ? {
+            device:
+              (
+                await database
+                  .selectFrom("runners")
+                  .select("name")
+                  .where("id", "=", latest.runnerId)
+                  .executeTakeFirst()
+              )?.name ?? null,
+          }
+        : {}),
       ...(latest.kind === "operation"
-        ? await database.selectFrom("agentOperations")
-            .select(["tool", sql<string>`target->>'name'`.as("target"),
-              sql<string | null>`target->'device'->>'name'`.as("device")])
-            .where("id", "=", latest.id as AgentOperationId).executeTakeFirst()
+        ? await database
+            .selectFrom("agentOperations")
+            .select([
+              "tool",
+              sql<string>`target->>'name'`.as("target"),
+              sql<string | null>`target->'device'->>'name'`.as("device"),
+            ])
+            .where("id", "=", latest.id as AgentOperationId)
+            .executeTakeFirst()
         : {}),
     },
   };
@@ -605,17 +701,57 @@ export async function markConnectionAttemptsContactLost(
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
     const now = new Date();
-    for (const table of ["triggerOccurrences", "triggerWatchActivations", "runAttempts"] as const) {
-      await tx
-        .updateTable(table)
-        .set({ contactLostAt: now })
+    for (const table of ["triggerOccurrences", "triggerWatchActivations"] as const) {
+      const affected = await tx
+        .selectFrom(table)
+        .select("id")
         .where("connectionId", "is not", null)
         .where("runnerId", "=", input.runnerId)
         .where("runnerBootId", "=", input.runnerBootId)
         .where("terminalEvidenceAt", "is", null)
         .where("contactLostAt", "is", null)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      if (affected.length === 0) continue;
+      await tx
+        .updateTable(table)
+        .set({ contactLostAt: now })
+        .where(
+          "id",
+          "in",
+          affected.map(({ id }) => id),
+        )
         .execute();
     }
+    const retired = await tx
+      .selectFrom("triggerOccurrenceAttempts")
+      .select(["occurrenceId", "executionGeneration"])
+      .where("runnerId", "=", input.runnerId)
+      .where("runnerBootId", "=", input.runnerBootId)
+      .where("terminalEvidenceAt", "is", null)
+      .where("contactLostAt", "is", null)
+      .orderBy("occurrenceId")
+      .orderBy("executionGeneration")
+      .forNoKeyUpdate()
+      .execute();
+    for (const { occurrenceId, executionGeneration } of retired) {
+      await tx
+        .updateTable("triggerOccurrenceAttempts")
+        .set({ contactLostAt: now })
+        .where("occurrenceId", "=", occurrenceId)
+        .where("executionGeneration", "=", executionGeneration)
+        .execute();
+    }
+    await tx
+      .updateTable("runAttempts")
+      .set({ contactLostAt: now })
+      .where("connectionId", "is not", null)
+      .where("runnerId", "=", input.runnerId)
+      .where("runnerBootId", "=", input.runnerBootId)
+      .where("terminalEvidenceAt", "is", null)
+      .where("contactLostAt", "is", null)
+      .execute();
   });
 }
 

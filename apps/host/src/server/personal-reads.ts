@@ -3,8 +3,7 @@ import type { AuthSessionId, MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
   decorateQueueEntries,
-  findPersonalSettings,
-  personalDeploymentOwner,
+  personalShellSessionState,
   isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
   readPersonalShellSnapshot,
@@ -146,10 +145,7 @@ export function createPersonalReads(
         ...(selectedThreadId ? { selectedThreadId } : {}),
       });
       if (cut.kind !== "snapshot") return cut;
-      const opened = (await findPersonalSettings(tx)) !== null;
-      // A personal Home has one owner: anyone else signed in here is not them.
-      const role: "owner" | "member" =
-        (await personalDeploymentOwner(tx)) === session.user.id ? "owner" : "member";
+      const { opened, role } = await personalShellSessionState(tx, session.user.id);
       return {
         ...cut,
         snapshot: withSession(cut.snapshot, session, surface, opened, role),
@@ -415,14 +411,7 @@ export function createPersonalReads(
       );
       return rpcSuccess(
         hostApi["personal.shell.get"].success.parse(
-          cut.kind === "snapshot"
-            ? {
-                ...cut.snapshot,
-                ...(dependencies.workHome
-                  ? { effectiveWorkPolicy: await dependencies.workHome.read() }
-                  : {}),
-              }
-            : unavailable(),
+          cut.kind === "snapshot" ? cut.snapshot : unavailable(),
         ),
       );
     },

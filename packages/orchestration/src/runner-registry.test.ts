@@ -10,6 +10,7 @@ import {
   CorrelationIdSchema,
   HarnessInstanceCatalogSchema,
   RunnerCommandSchema,
+  runnerPowerStateCapability,
   type HarnessSourceDescriptor,
   type HostToRunnerMessage,
   type RunnerAuxiliaryTicketClaims,
@@ -30,6 +31,34 @@ import {
 const commitThrough: RunnerRegistryHooks["onEvent"] = async (_identity, event) => event.ordinal;
 
 describe("Runner connection registry", () => {
+  it("announces sleep to connected work before the live socket leaves", async () => {
+    const sleep = vi.fn();
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: commitThrough, onSleepAnnounced: sleep },
+    });
+    const runnerId = createId("runner");
+    const peer = new MemoryRunnerPeer("sleeping");
+    try {
+      await registerAttached(
+        registry,
+        {
+          ...hello(runnerId, createId("environment"), "boot-1"),
+          capabilities: [runnerPowerStateCapability],
+        },
+        peer,
+      );
+      expect(registry.isRunnerSleeping(runnerId)).toBe(false);
+      for (let i = 0; i < 2; i++)
+        await registry.handle(peer, { ...fenceOf(peer), type: "runner.power.sleeping" });
+      expect(registry.isRunnerConnected(runnerId)).toBe(true);
+      expect(registry.isRunnerSleeping(runnerId)).toBe(true);
+      expect(registry.isRunnerAsleep(runnerId)).toBe(false);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runnerId }));
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
     const registry = new RunnerRegistry({
       hooks: {
@@ -592,18 +621,32 @@ describe("Runner connection registry", () => {
     const onWatchStatus = vi.fn(async () => {
       throw new OpensteerError({ code: "forbidden", message: "Watch status binding is stale" });
     });
-    const registry = new RunnerRegistry({ hooks: {
-      authorize: async () => undefined, onEvent: commitThrough, onWatchStatus,
-    } });
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: async () => undefined,
+        onEvent: commitThrough,
+        onWatchStatus,
+      },
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("watch-replay");
     try {
       await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
-      await expect(registry.handle(peer, {
-        ...fenceOf(peer), type: "runner.watch-status", activationId: createId("triggerWatchActivation"),
-        executionGeneration: 1, observed: "expired", restartCount: 0, healthySince: null,
-        lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
-      })).resolves.toBeUndefined();
+      await expect(
+        registry.handle(peer, {
+          ...fenceOf(peer),
+          type: "runner.watch-status",
+          activationId: createId("triggerWatchActivation"),
+          executionGeneration: 1,
+          observed: "expired",
+          restartCount: 0,
+          healthySince: null,
+          lastError: null,
+          lastExitCode: null,
+          stderrTail: "",
+          stdoutTail: "",
+        }),
+      ).resolves.toBeUndefined();
       expect(onWatchStatus).toHaveBeenCalledOnce();
     } finally {
       await registry.close();
@@ -1045,6 +1088,56 @@ describe("Runner connection registry", () => {
     await dispatched;
     expect(hooks.onTriggerResult).toHaveBeenCalledTimes(1);
     expect(finished).toBe(true);
+  });
+  it("commits a retired Trigger result without completing the retry", async () => {
+    const onTriggerResult = vi.fn<NonNullable<RunnerRegistryHooks["onTriggerResult"]>>(
+      async (_identity, result) => (result.executionGeneration === 1 ? "retired" : undefined),
+    );
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: commitThrough, onTriggerResult },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("runner");
+    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+    const first = triggerCommand(environmentId);
+    const commandId = createId("command");
+    const retry = {
+      ...first,
+      commandId,
+      correlationId: CorrelationIdSchema.parse(commandId),
+      context: { ...first.context, executionGeneration: 2 },
+    };
+    const finished = vi.fn();
+    const dispatched = registry.dispatch(retry, new AbortController().signal).then(finished);
+    await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      commandId,
+      correlationId: retry.correlationId,
+      type: "runner.command-accepted",
+    });
+    const result = {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 1,
+      type: "runner.trigger-result" as const,
+      output: {
+        occurrenceId: first.context.occurrenceId,
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        result: null,
+        status: "succeeded" as const,
+        stderr: "",
+        stdout: "",
+      },
+    };
+    await registry.handle(peer, result);
+    expect(onTriggerResult).toHaveBeenCalledWith(expect.anything(), result);
+    expect(finished).not.toHaveBeenCalled();
+    await registry.handle(peer, { ...result, executionGeneration: 2 });
+    await dispatched;
+    expect(finished).toHaveBeenCalledOnce();
   });
   it("fails closed without sending when the Runner cannot run the command harness", async () => {
     const hooks = {

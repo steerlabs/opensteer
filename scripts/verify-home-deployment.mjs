@@ -1028,6 +1028,13 @@ async function managedProof(directory, bootPackage) {
   const setupCodeDigest = createHash("sha256").update(setupToken).digest("hex");
   const cloudComputerId = `cc_${randomUUID()}`;
   const backupPassword = randomBytes(32).toString("hex");
+  const feedAddress = `11.${Number.parseInt(suffix.slice(0, 2), 16)}.${Number.parseInt(suffix.slice(2, 4), 16)}.${Number.parseInt(suffix.slice(4, 6), 16)}`;
+  const feedDirectory = `${vmDirectory}/update-feed`;
+  const feedServer = `opensteer-home-feed-${suffix}`;
+  const feedPort = bind + 2;
+  const feedUrl = `https://${feedAddress}:${feedPort}/manifest.json`;
+  let feedAddressAdded = false;
+  let feedServerAttempted = false;
   const work = {
     organizationId: `org_${randomUUID()}`,
     organizationName: "Fixture's Work Home",
@@ -1065,7 +1072,7 @@ async function managedProof(directory, bootPackage) {
           ...(replacing ? { restoreSnapshot: snapshotId } : {}),
           ipv6Enabled: false,
           release,
-          releaseManifestUrl: `${accountOrigin}/feed.json`,
+          releaseManifestUrl: feedUrl,
           work,
           backup: {
             endpoint: backupFixture.endpoint,
@@ -1112,7 +1119,6 @@ async function managedProof(directory, bootPackage) {
     },
     stripeWebhookSecret: "fixture",
   });
-  app.get("/feed.json", () => manifest);
   await app.listen({ host: "0.0.0.0", port: 0 });
   const accountOrigin = `https://host.lima.internal:${app.server.address().port}`;
   const spec = {
@@ -1125,6 +1131,8 @@ async function managedProof(directory, bootPackage) {
   const specPath = `${vmDirectory}/boot.json`;
   const tokenPath = `${vmDirectory}/bootstrap-token`;
   try {
+    vm(`ip address add ${feedAddress}/32 dev lo`);
+    feedAddressAdded = true;
     vm(
       `
       install -d -m 0700 ${quote(vmDirectory)}
@@ -1198,8 +1206,27 @@ async function managedProof(directory, bootPackage) {
     );
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /only from the Account feed/u);
-    const refusedFeed = await vmAsync(`CURL_CA_BUNDLE=${quote(certificate)} operator update`, {
+    const feedCertificate = `${feedDirectory}/certificate.pem`;
+    feedServerAttempted = true;
+    vm(
+      `
+      install -d -m 0700 ${quote(feedDirectory)}
+      cd ${quote(feedDirectory)}
+      openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout key.pem -out certificate.pem \
+        -subj /CN=${feedAddress} -addext subjectAltName=IP:${feedAddress} 2>/dev/null
+      printf 'HTTP/1.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n%s' ${quote(JSON.stringify(manifest))} > manifest.json
+      systemd-run --quiet --unit=${feedServer} --working-directory=${quote(feedDirectory)} \
+        openssl s_server -quiet -accept ${feedAddress}:${feedPort} -cert certificate.pem -key key.pem -HTTP
+      for attempt in {1..50}; do
+        if ss -Hltn 'sport = :${feedPort}' | grep -Fq ${feedAddress}; then exit 0; fi
+        sleep 0.1
+      done
+      exit 1`,
+      { managed: true },
+    );
+    const refusedFeed = vm(`CURL_CA_BUNDLE=${quote(feedCertificate)} operator update`, {
       managed: true,
+      allowFailure: true,
     });
     assert.notEqual(refusedFeed.status, 0);
     assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);
@@ -1297,7 +1324,17 @@ async function managedProof(directory, bootPackage) {
       profileId: profile.id,
     });
   } finally {
-    await bounded(app.close(), "managed Account shutdown");
+    try {
+      if (feedServerAttempted || feedAddressAdded) {
+        vm(`
+          if ${feedServerAttempted} && systemctl show ${feedServer}.service -p LoadState --value | grep -qx loaded; then
+            systemctl stop ${feedServer}.service
+          fi
+          if ${feedAddressAdded}; then ip address del ${feedAddress}/32 dev lo; fi`);
+      }
+    } finally {
+      await bounded(app.close(), "managed Account shutdown");
+    }
   }
 }
 
@@ -2108,6 +2145,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
       journal="$home_dir/update.pending"
       mkdir "$journal"
       cp "$home_dir/images.env" "$journal/previous.env"
+      cp "$home_dir/images.env" "$journal/original.env"
       sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$journal/previous.env" > "$journal/candidate.env"
       postgres_tool pg_dump --format=custom > "$home_dir/update-database.dump"
       compose down

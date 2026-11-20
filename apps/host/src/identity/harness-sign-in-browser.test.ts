@@ -269,6 +269,86 @@ describe("HarnessSignInBrowser", () => {
     expect(signIn.tabs.size).toBe(0);
   });
 
+  it("waits for a settled tab's close to finish before opening the replacement tab", async () => {
+    const closeGate = Promise.withResolvers<void>();
+    let holdClose = false;
+    const events: string[] = [];
+    let state: HarnessAuthenticationState = loopback;
+    const coordinator = new HarnessAuthenticationCoordinator({
+      harnesses: { getHarnessInstance: async () => ({ ...target.harness, enabled: true }) },
+      runners: {
+        isAvailable: () => true,
+        manageHarnessAuthentication: async (_environmentId, request) =>
+          request.action === "cancel" ? { status: "not-started" } : state,
+      },
+    });
+    const profileId = createId("browserProfile") as BrowserProfileId;
+    const tabs = new Map<TabId, { profileId: BrowserProfileId; url: string }>();
+    const browser = new HarnessSignInBrowser({
+      browserAvailable: () => true,
+      closeTab: async (_ownerId, tabId) => {
+        events.push(`close:start:${tabId}`);
+        if (holdClose) await closeGate.promise;
+        tabs.delete(tabId);
+        events.push(`close:end:${tabId}`);
+      },
+      createProfile: async () => ({ id: profileId }),
+      hasTab: async (_ownerId, tabId) => tabs.has(tabId),
+      listProfiles: async () => [
+        {
+          home: { runnerId: homeRunner },
+          id: profileId,
+          name: harnessSignInProfileName,
+          purpose: "engine-sign-in",
+        },
+      ],
+      onError: (error) => {
+        throw error;
+      },
+      openTab: async (_ownerId, page) => {
+        const tabId = createId("tab") as TabId;
+        events.push(`open:${tabId}`);
+        tabs.set(tabId, { profileId: page.profileId, url: page.url });
+        return tabId;
+      },
+    });
+    browser.follow(coordinator);
+
+    await coordinator.ensure(target, signal, selection);
+    const first = await browser.browse({
+      coordinator,
+      ownerId,
+      runnerId: homeRunner,
+      signal,
+      target,
+    });
+    holdClose = true;
+    state = browserCode("http://127.0.0.1:51122/oauth-callback", "replacement");
+    await coordinator.ensure(target, signal, { methodId: "replacement-oauth" });
+    const replacement = browser.browse({
+      coordinator,
+      ownerId,
+      runnerId: homeRunner,
+      signal,
+      target,
+    });
+    await vi.waitFor(() => expect(events).toEqual([`open:${first}`, `close:start:${first}`]));
+    // Give microtasks a turn; the replacement open must stay behind the in-flight close.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual([`open:${first}`, `close:start:${first}`]);
+
+    closeGate.resolve();
+    const second = await replacement;
+    expect(second).not.toBe(first);
+    expect(events).toEqual([
+      `open:${first}`,
+      `close:start:${first}`,
+      `close:end:${first}`,
+      `open:${second}`,
+    ]);
+  });
+
   it("refuses once the sign-in has ended", async () => {
     const signIn = fixture();
     await expect(signIn.browse()).rejects.toMatchObject({

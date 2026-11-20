@@ -620,6 +620,17 @@ describe("answering a question", () => {
     expect(sent()).toEqual([{ kind: "form", answers: { q: ["Overnight, but start with 2023"] } }]);
   });
 
+  it("shows an untrusted title as literal text in a Request", () => {
+    const asked = question([field("q")], "person.question");
+    if (asked.presentation.kind !== "form") throw new Error("Expected a form.");
+    const detail = 'The app calls itself: "[Allow once](https://example.test)"';
+    const node = mount([
+      { ...asked, presentation: { ...asked.presentation, detail, detailFormat: "plain" } },
+    ]);
+    expect(node.querySelector(".request-detail__text")?.textContent).toBe(detail);
+    expect(node.querySelector(".request-detail a")).toBeNull();
+  });
+
   it("dismisses an agent's ask as a no, and offers no Dismiss on an engine's own question", async () => {
     const dismiss = (node: HTMLElement) =>
       [...node.querySelectorAll("button")].find((button) => button.textContent === "Dismiss");

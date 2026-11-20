@@ -141,7 +141,7 @@ export interface TriggerDispatchContext {
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
   readonly connectionId?: string;
-  readonly toolContractVersion: number;
+  readonly toolContractVersion: typeof currentProgramVersion;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 export interface ActiveWatchBindingInput {
@@ -171,7 +171,13 @@ export async function assertActiveTriggerExecutionBinding(
   const row = await database
     .selectFrom("triggerOccurrences")
     .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-    .select(["triggers.anchorThreadId", "triggers.createdBy", "triggers.originConnectionId", "triggerOccurrences.admittedGrantRevision", "triggerOccurrences.admittedAccessMode"])
+    .select([
+      "triggers.anchorThreadId",
+      "triggers.createdBy",
+      "triggers.originConnectionId",
+      "triggerOccurrences.admittedGrantRevision",
+      "triggerOccurrences.admittedAccessMode",
+    ])
     .where("triggerOccurrences.id", "=", input.occurrenceId)
     .where("triggerOccurrences.environmentId", "=", input.environmentId)
     .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
@@ -181,11 +187,16 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
     .executeTakeFirst();
-  if (!row || !(await triggerExecutionAuthorityAvailable(database, row)) ||
-    (row.originConnectionId && !meetsConnectionFloor(
-      await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-      row.admittedGrantRevision, row.admittedAccessMode,
-    ))) {
+  if (
+    !row ||
+    !(await triggerExecutionAuthorityAvailable(database, row)) ||
+    (row.originConnectionId &&
+      !meetsConnectionFloor(
+        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
+        row.admittedGrantRevision,
+        row.admittedAccessMode,
+      ))
+  ) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Automation execution is no longer active",
@@ -234,10 +245,12 @@ export async function assertActiveWatchBinding(
     row.environmentId !== input.environmentId ||
     !admission ||
     admission.environmentId !== input.environmentId ||
-    (row.originConnectionId !== null && !meetsConnectionFloor(
-      await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-      row.admittedGrantRevision, row.admittedAccessMode,
-    ))
+    (row.originConnectionId !== null &&
+      !meetsConnectionFloor(
+        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
+        row.admittedGrantRevision,
+        row.admittedAccessMode,
+      ))
   ) {
     throw new OpensteerError({
       code: "forbidden",
@@ -273,8 +286,11 @@ export async function createTriggerInTransaction(
   input = admitted.input;
   const assertAnchorScope = async (anchorThreadId: ThreadId) => {
     if (!admitted.connection) return;
-    const anchor = await transaction.selectFrom("threads").select("originConnectionId")
-      .where("id", "=", anchorThreadId).executeTakeFirstOrThrow();
+    const anchor = await transaction
+      .selectFrom("threads")
+      .select("originConnectionId")
+      .where("id", "=", anchorThreadId)
+      .executeTakeFirstOrThrow();
     if (!sendEligible(admitted.connection, anchor.originConnectionId))
       throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
   };
@@ -922,6 +938,7 @@ export class TriggerStore {
   }
   async reconcileWatchesForRunner(input: {
     readonly environmentId: EnvironmentId;
+    readonly unavailableReason?: string;
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerConnectionGeneration: number;
@@ -929,6 +946,7 @@ export class TriggerStore {
   }): Promise<{
     readonly activations: readonly WatchActivationContext[];
     readonly reconcileGeneration: number;
+    readonly unavailable?: true;
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const rows = await transaction
@@ -944,6 +962,7 @@ export class TriggerStore {
         .forNoKeyUpdate("triggerWatchActivations")
         .execute();
       const activations: WatchActivationContext[] = [];
+      let unavailable = false;
       for (const row of rows) {
         const trigger = await transaction
           .selectFrom("triggers")
@@ -974,9 +993,28 @@ export class TriggerStore {
             .execute();
           continue;
         }
+        if (input.unavailableReason !== undefined) {
+          await transaction
+            .updateTable("triggerWatchActivations")
+            .set({
+              healthySince: null,
+              lastError: input.unavailableReason.slice(0, 20_000),
+              lastExitCode: null,
+              leaseExpiresAt: null,
+              observed: "backoff",
+              updatedAt: new Date(),
+            })
+            .where("id", "=", row.id)
+            .execute();
+          unavailable = true;
+          continue;
+        }
         const witness = await automationHandoffWitness(transaction, trigger);
-        const sameExecution = row.runnerBootId === input.runnerBootId && !row.terminalEvidenceAt &&
-          row.observed !== "stopped" && row.observed !== "expired";
+        const sameExecution =
+          row.runnerBootId === input.runnerBootId &&
+          !row.terminalEvidenceAt &&
+          row.observed !== "stopped" &&
+          row.observed !== "expired";
         const nextExecutionGeneration = sameExecution
           ? Number(row.executionGeneration)
           : Number(row.executionGeneration) + 1;
@@ -990,7 +1028,9 @@ export class TriggerStore {
           ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null, contactLostAt: null }),
           executionGeneration: nextExecutionGeneration,
           leaseExpiresAt: input.leaseExpiresAt,
-          ...(sameExecution ? {} : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
+          ...(sameExecution
+            ? {}
+            : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
           runnerBootId: input.runnerBootId,
           runnerConnectionGeneration: input.runnerConnectionGeneration,
           runnerId: input.runnerId,
@@ -998,23 +1038,47 @@ export class TriggerStore {
         };
         const preserve = row.connectionId !== null && !sameExecution;
         if (preserve) {
-          if (row.runnerId !== input.runnerId ||
-            Number(row.runnerConnectionGeneration) > input.runnerConnectionGeneration) continue;
+          if (
+            row.runnerId !== input.runnerId ||
+            Number(row.runnerConnectionGeneration) > input.runnerConnectionGeneration
+          )
+            continue;
           const now = new Date();
-          await transaction.updateTable("triggerWatchActivations").set({
-            desired: "stopped", observed: "stopped", leaseExpiresAt: null, updatedAt: now,
-            terminalEvidenceAt: row.terminalEvidenceAt ?? now,
-            contactLostAt: row.terminalEvidenceAt ? row.contactLostAt : now,
-          }).where("id", "=", row.id).execute();
+          await transaction
+            .updateTable("triggerWatchActivations")
+            .set({
+              desired: "stopped",
+              observed: "stopped",
+              leaseExpiresAt: null,
+              updatedAt: now,
+              terminalEvidenceAt: row.terminalEvidenceAt ?? now,
+              contactLostAt: row.terminalEvidenceAt ? row.contactLostAt : now,
+            })
+            .where("id", "=", row.id)
+            .execute();
         }
         const { executable: _executable, ...prior } = row;
         const updated = preserve
-          ? await transaction.insertInto("triggerWatchActivations").values({
-              ...prior, ...binding, id: createId("triggerWatchActivation"), createdAt: new Date(),
-              lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
-            }).returningAll().executeTakeFirstOrThrow()
-          : await transaction.updateTable("triggerWatchActivations").set(binding)
-              .where("id", "=", row.id).returningAll().executeTakeFirstOrThrow();
+          ? await transaction
+              .insertInto("triggerWatchActivations")
+              .values({
+                ...prior,
+                ...binding,
+                id: createId("triggerWatchActivation"),
+                createdAt: new Date(),
+                lastError: null,
+                lastExitCode: null,
+                stderrTail: "",
+                stdoutTail: "",
+              })
+              .returningAll()
+              .executeTakeFirstOrThrow()
+          : await transaction
+              .updateTable("triggerWatchActivations")
+              .set(binding)
+              .where("id", "=", row.id)
+              .returningAll()
+              .executeTakeFirstOrThrow();
         activations.push({
           activation: watchActivationFromRow(updated),
           ...(updated.connectionId ? { connectionId: updated.connectionId } : {}),
@@ -1037,6 +1101,7 @@ export class TriggerStore {
       return {
         activations,
         reconcileGeneration,
+        ...(unavailable ? { unavailable: true } : {}),
       };
     });
   }
@@ -1111,10 +1176,7 @@ export class TriggerStore {
         activation.runnerId !== input.runnerId ||
         activation.runnerBootId !== input.runnerBootId ||
         (admittedConnectionGeneration !== input.runnerConnectionGeneration &&
-          !(
-            terminal &&
-            input.runnerConnectionGeneration > admittedConnectionGeneration
-          )) ||
+          !(terminal && input.runnerConnectionGeneration > admittedConnectionGeneration)) ||
         Number(activation.executionGeneration) !== input.executionGeneration
       ) {
         throw new OpensteerError({
@@ -1171,8 +1233,14 @@ export class TriggerStore {
           lastExitCode: input.lastExitCode,
           observed: input.observed,
           ...(terminal && activation.connectionId
-            ? { terminalEvidenceAt: activation.terminalEvidenceAt ?? now,
-                contactLostAt: activation.terminalEvidenceAt ? activation.contactLostAt : input.verifiedContainment ? null : now }
+            ? {
+                terminalEvidenceAt: activation.terminalEvidenceAt ?? now,
+                contactLostAt: activation.terminalEvidenceAt
+                  ? activation.contactLostAt
+                  : input.verifiedContainment
+                    ? null
+                    : now,
+              }
             : {}),
           restartCount: input.restartCount,
           stderrTail: input.stderrTail,
@@ -1187,40 +1255,6 @@ export class TriggerStore {
         autoPaused,
       };
     });
-  }
-  async recordWatchUnavailable(input: {
-    readonly activationId: TriggerWatchActivationId;
-    readonly executionGeneration: number;
-    readonly reason: string;
-    readonly runnerBootId: string;
-    readonly runnerConnectionGeneration: number;
-    readonly runnerId: RunnerId;
-  }): Promise<TriggerWatchActivation> {
-    const updated = await this.#database
-      .updateTable("triggerWatchActivations")
-      .set({
-        healthySince: null,
-        lastError: input.reason.slice(0, 20_000),
-        lastExitCode: null,
-        leaseExpiresAt: null,
-        observed: "backoff",
-        updatedAt: new Date(),
-      })
-      .where("id", "=", input.activationId)
-      .where("desired", "=", "active")
-      .where("executionGeneration", "=", String(input.executionGeneration))
-      .where("runnerId", "=", input.runnerId)
-      .where("runnerBootId", "=", input.runnerBootId)
-      .where("runnerConnectionGeneration", "=", String(input.runnerConnectionGeneration))
-      .returningAll()
-      .executeTakeFirst();
-    if (!updated) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Watch unavailability binding is stale",
-      });
-    }
-    return watchActivationFromRow(updated);
   }
   async getForOwner(
     triggerId: TriggerId,
@@ -1785,20 +1819,55 @@ export class TriggerStore {
     });
   }
   async recordOccurrenceNotAdmitted(id: TriggerOccurrenceId, generation: number): Promise<void> {
-    await this.#database
-      .updateTable("triggerOccurrences")
-      .set({
-        terminalEvidenceAt: new Date(),
-        contactLostAt: null,
-      })
-      .where("id", "=", id)
-      .where("executionGeneration", "=", generation)
-      .where("connectionId", "is not", null)
-      .where("terminalEvidenceAt", "is", null)
-      .execute();
+    await commitPersonalMutation(this.#database, async (transaction) => {
+      const updated = await transaction
+        .updateTable("triggerOccurrences")
+        .set({ terminalEvidenceAt: new Date(), contactLostAt: null })
+        .where("id", "=", id)
+        .where("executionGeneration", "=", generation)
+        .where("runnerId", "is not", null)
+        .where("connectionId", "is not", null)
+        .where("terminalEvidenceAt", "is", null)
+        .executeTakeFirst();
+      if (updated.numUpdatedRows === 0n) {
+        await transaction
+          .deleteFrom("triggerOccurrenceAttempts")
+          .where("occurrenceId", "=", id)
+          .where("executionGeneration", "=", generation)
+          .where("terminalEvidenceAt", "is", null)
+          .execute();
+      }
+    });
   }
   async assertActiveExecutionBinding(input: ActiveTriggerExecutionBindingInput): Promise<void> {
     await assertActiveTriggerExecutionBinding(this.#database, input);
+  }
+  async acceptExecution(input: {
+    readonly commandId: CommandId;
+    readonly executionGeneration: number;
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+  }): Promise<void> {
+    await commitPersonalMutation(this.#database, async (transaction) => {
+      const occurrence = await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("commandId", "=", input.commandId)
+        .where("executionGeneration", "=", input.executionGeneration)
+        .where("runnerBootId", "=", input.runnerBootId)
+        .where("runnerId", "=", input.runnerId)
+        .where("status", "=", "running")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!occurrence) return;
+      await transaction
+        .updateTable("commands")
+        .set({ lastError: null, status: "succeeded", updatedAt: new Date() })
+        .where("id", "=", input.commandId)
+        .where("type", "=", "trigger.execute")
+        .where("status", "in", ["dispatched", "unknown"])
+        .execute();
+    });
   }
   async completeExecution(input: {
     readonly verifiedContainment?: boolean;
@@ -1806,7 +1875,7 @@ export class TriggerStore {
     readonly output: TriggerExecutionOutput;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<TriggerOccurrence> {
+  }): Promise<TriggerOccurrence | null> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
@@ -1815,17 +1884,25 @@ export class TriggerStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!occurrence) throw notFound("Automation occurrence not found");
-      const trigger = await transaction
-        .selectFrom("triggers")
-        .selectAll()
-        .where("id", "=", occurrence.triggerId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
+      const now = new Date();
       if (
         occurrence.executionGeneration !== input.executionGeneration ||
         occurrence.runnerId !== input.runnerId ||
         occurrence.runnerBootId !== input.runnerBootId
       ) {
+        const retired = await transaction
+          .updateTable("triggerOccurrenceAttempts")
+          .set({
+            terminalEvidenceAt: sql`coalesce(terminal_evidence_at, ${now})`,
+            contactLostAt: sql`case when terminal_evidence_at is not null then contact_lost_at
+              else ${input.verifiedContainment ? null : now}::timestamptz end`,
+          })
+          .where("occurrenceId", "=", occurrence.id)
+          .where("executionGeneration", "=", input.executionGeneration)
+          .where("runnerId", "=", input.runnerId)
+          .where("runnerBootId", "=", input.runnerBootId)
+          .executeTakeFirst();
+        if (retired.numUpdatedRows === 1n) return null;
         throw new OpensteerError({
           code: "forbidden",
           message: "Trigger result binding is stale",
@@ -1833,16 +1910,24 @@ export class TriggerStore {
       }
       if (occurrence.status !== "running" && !occurrence.connectionId)
         return occurrenceFromRow(occurrence);
-      if (occurrence.terminalEvidenceAt && occurrence.status !== "running") return occurrenceFromRow(occurrence);
-      const now = new Date();
+      if (occurrence.terminalEvidenceAt && occurrence.status !== "running")
+        return occurrenceFromRow(occurrence);
+      const trigger = await transaction
+        .selectFrom("triggers")
+        .selectAll()
+        .where("id", "=", occurrence.triggerId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
       const updated = await transaction
         .updateTable("triggerOccurrences")
         .set({
           completedAt: new Date(input.output.completedAt),
-          ...(occurrence.connectionId && !occurrence.terminalEvidenceAt ? {
-            terminalEvidenceAt: now,
-            contactLostAt: input.verifiedContainment ? null : now,
-          } : {}),
+          ...(occurrence.connectionId && !occurrence.terminalEvidenceAt
+            ? {
+                terminalEvidenceAt: now,
+                contactLostAt: input.verifiedContainment ? null : now,
+              }
+            : {}),
           error: input.output.error
             ? jsonValue({
                 message: input.output.error,

@@ -27,6 +27,7 @@ export * from "./local-bootstrap.js";
 export * from "./machines.js";
 export * from "./personal-remote-access.js";
 export * from "./runner.js";
+export * from "./device-enrollment.js";
 export * from "./runner-identity.js";
 export * from "./runner-auxiliary.js";
 export * from "./rpc.js";

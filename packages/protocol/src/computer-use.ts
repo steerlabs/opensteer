@@ -436,9 +436,12 @@ export const ComputerUseOperationSchema = z.enum([
 ]);
 export type ComputerUseOperation = z.infer<typeof ComputerUseOperationSchema>;
 
-export const ComputerUseWindowsParamsSchema = z.strictObject({});
+export const ComputerUseWindowsParamsSchema = z.strictObject({
+  noLaunch: z.literal(true).optional(),
+});
 export type ComputerUseWindowsParams = z.infer<typeof ComputerUseWindowsParamsSchema>;
 export const ComputerUseBindParamsSchema = z.strictObject({
+  noLaunch: z.literal(true).optional(),
   windowId: WindowIdSchema.nullable(),
 });
 export type ComputerUseBindParams = z.infer<typeof ComputerUseBindParamsSchema>;
@@ -614,7 +617,9 @@ export const ComputerUseHelperMethodSchema = z.enum([
   "session.open",
   "session.close",
   "session.windows",
+  "session.windowsExisting",
   "session.bind",
+  "session.bindExisting",
   "session.observe",
   "session.act",
   "data.status",
@@ -896,11 +901,15 @@ export const ComputerUseSessionParamsSchema = z.strictObject({
   sessionId: ComputerUseSessionIdSchema,
 });
 
-export const ComputerUseSessionWindowsParamsSchema = ComputerUseWindowsParamsSchema.extend({
+export const ComputerUseSessionWindowsParamsSchema = ComputerUseWindowsParamsSchema.omit({
+  noLaunch: true,
+}).extend({
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
-export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.extend({
+export const ComputerUseSessionBindParamsSchema = ComputerUseBindParamsSchema.omit({
+  noLaunch: true,
+}).extend({
   app: ComputerUseSessionAppSchema,
   sessionId: ComputerUseSessionIdSchema,
 });
@@ -1052,7 +1061,19 @@ export const ComputerUseHelperRequestSchema = z.discriminatedUnion("method", [
   z.strictObject({
     id: helperRequestIdSchema,
     timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("session.windowsExisting"),
+    params: ComputerUseSessionWindowsParamsSchema,
+  }),
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
     method: z.literal("session.bind"),
+    params: ComputerUseSessionBindParamsSchema,
+  }),
+  z.strictObject({
+    id: helperRequestIdSchema,
+    timeoutMs: ComputerUseTimeoutMsSchema.optional(),
+    method: z.literal("session.bindExisting"),
     params: ComputerUseSessionBindParamsSchema,
   }),
   z.strictObject({
@@ -1140,7 +1161,9 @@ export const computerUseHelperResults = {
   "session.act": ComputerUseActResultSchema,
   "session.close": EmptyParamsSchema,
   "session.windows": ComputerUseWindowsResultSchema,
+  "session.windowsExisting": ComputerUseWindowsResultSchema,
   "session.bind": ComputerUseBindResultSchema,
+  "session.bindExisting": ComputerUseBindResultSchema,
   "session.observe": ComputerUseObservationResultSchema,
   "session.open": ComputerUseSessionOpenResultSchema,
 } satisfies Readonly<Record<ComputerUseHelperMethod, z.ZodType>>;

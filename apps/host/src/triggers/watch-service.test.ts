@@ -33,21 +33,17 @@ describe("WatchService", () => {
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
       );
-      const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
-        async () => context.activation,
-      );
+      const reconcileWatchesForRunner = vi.fn<
+        WatchServiceOptions["store"]["reconcileWatchesForRunner"]
+      >(async () => ({ activations: [], reconcileGeneration: 1, unavailable: true }));
       const service = new WatchService({
         ...options(fixture, {
           reconcileWatches,
-          recordWatchUnavailable,
           identityForEnvironment: () => ({
             ...fixture.identity,
             capabilities: [...capabilities],
           }),
-          reconcileWatchesForRunner: async () => ({
-            activations: [context],
-            reconcileGeneration: 1,
-          }),
+          reconcileWatchesForRunner,
         }),
         runnerStore: {
           getEnvironment: async () => ({
@@ -59,10 +55,10 @@ describe("WatchService", () => {
       try {
         await service.reconcile(context.activation.environmentId);
         expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
-        expect(recordWatchUnavailable).toHaveBeenCalledWith(
+        expect(reconcileWatchesForRunner).toHaveBeenCalledWith(
           expect.objectContaining({
-            activationId: context.activation.id,
-            reason,
+            environmentId: context.activation.environmentId,
+            unavailableReason: reason,
           }),
         );
       } finally {
@@ -133,18 +129,30 @@ describe("WatchService", () => {
   });
   it("reconciles a desired Watch after a stopped report is replayed", async () => {
     const fixture = watchFixture();
-    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(async () => undefined);
-    const service = new WatchService(options(fixture, {
-      reconcileWatches,
-      applyWatchStatus: async () => ({
-        activation: { ...fixture.context.activation, desired: "active" }, autoPaused: false,
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+      async () => undefined,
+    );
+    const service = new WatchService(
+      options(fixture, {
+        reconcileWatches,
+        applyWatchStatus: async () => ({
+          activation: { ...fixture.context.activation, desired: "active" },
+          autoPaused: false,
+        }),
       }),
-    }));
+    );
     try {
       await service.applyStatus(fixture.identity, {
-        type: "runner.watch-status", activationId: fixture.context.activation.id,
-        executionGeneration: 3, observed: "stopped", restartCount: 0, healthySince: null,
-        lastError: null, lastExitCode: null, stderrTail: "", stdoutTail: "",
+        type: "runner.watch-status",
+        activationId: fixture.context.activation.id,
+        executionGeneration: 3,
+        observed: "stopped",
+        restartCount: 0,
+        healthySince: null,
+        lastError: null,
+        lastExitCode: null,
+        stderrTail: "",
+        stdoutTail: "",
       });
       await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
     } finally {
@@ -243,7 +251,6 @@ function options(
     readonly onError?: WatchServiceOptions["onError"];
     readonly reconcileWatches?: WatchServiceOptions["runners"]["reconcileWatches"];
     readonly reconcileWatchesForRunner?: WatchServiceOptions["store"]["reconcileWatchesForRunner"];
-    readonly recordWatchUnavailable?: WatchServiceOptions["store"]["recordWatchUnavailable"];
   } = {},
 ): WatchServiceOptions {
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
@@ -282,13 +289,6 @@ function options(
         (async () => ({
           activations: [fixture.context],
           reconcileGeneration: 1,
-        })),
-      recordWatchUnavailable:
-        overrides.recordWatchUnavailable ??
-        (async () => ({
-          ...fixture.context.activation,
-          lastError: "The Watch is unavailable",
-          observed: "backoff",
         })),
       watchEnvironmentForTrigger: async () => fixture.context.activation.environmentId,
       watchEnvironments: async () => [fixture.context.activation.environmentId],

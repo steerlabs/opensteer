@@ -203,6 +203,7 @@ export interface RunnerRegistryHooks {
    * resumed them (null). Held work may be dispatched again on resume.
    */
   onAgentWork?(identity: RunnerIdentity, stoppedSince: Date | null): void;
+  onSleepAnnounced?(identity: RunnerIdentity): void;
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
   onCommandAccepted?(identity: RunnerIdentity, receipt: RunnerCommandAccepted): Promise<void>;
@@ -285,7 +286,10 @@ export interface RunnerRegistryHooks {
     installation: RunnerHarnessInstallation,
   ): Promise<void>;
   onSessionBound?(identity: RunnerIdentity, binding: RunnerSessionBound): Promise<void>;
-  onTriggerResult?(identity: RunnerIdentity, result: RunnerTriggerResult): Promise<void>;
+  onTriggerResult?(
+    identity: RunnerIdentity,
+    result: RunnerTriggerResult,
+  ): Promise<void | "retired">;
   onWatchStatus?(identity: RunnerIdentity, status: RunnerWatchStatus): Promise<void>;
   onDisconnect?(identity: RunnerIdentity, scope: RunnerDisconnectScope): Promise<void>;
   /** Full Disk Access is the descriptor fact a person can change during a live connection. */
@@ -345,6 +349,7 @@ interface PendingAck {
   readonly resolve: (result: RunnerCommandAccepted) => void;
 }
 interface PendingTriggerProgram {
+  readonly executionGeneration: number;
   readonly reject: (error: unknown) => void;
   readonly resolve: () => void;
 }
@@ -896,6 +901,12 @@ export class RunnerRegistry {
       ? new Date(sleep.since)
       : null;
   }
+  isRunnerSleeping(runnerId: RunnerId): boolean {
+    return (
+      this.#byRunner.get(runnerId)?.sleepAnnouncedAtMs !== undefined ||
+      this.isRunnerAsleep(runnerId)
+    );
+  }
   isRunnerAsleep(runnerId: RunnerId): boolean {
     return this.asleepSince(runnerId) !== null;
   }
@@ -1094,7 +1105,10 @@ export class RunnerRegistry {
     stream.leaseTimer = this.#auxiliaryLeaseTimer(stream);
     return auxiliarySnapshot(stream);
   }
-  detachAuxiliary(peer: RunnerAuxiliaryPeer, reason: RunnerStreamLossReason = "transport-disconnected"): void {
+  detachAuxiliary(
+    peer: RunnerAuxiliaryPeer,
+    reason: RunnerStreamLossReason = "transport-disconnected",
+  ): void {
     const stream = this.#auxiliaryByPeer.get(peer.id);
     if (!stream || stream.peer !== peer) return;
     this.#removeAuxiliary(stream, reason);
@@ -2127,10 +2141,19 @@ export class RunnerRegistry {
     const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend, onNotAdmitted } =
       options;
     RunnerCommandSchema.parse(command);
-    const startsWork = command.type === "run.execute" || command.type === "trigger.execute" || command.type === "watch.reconcile";
-    const refuseStopped = () => new CommandDispatchError("Agents are stopped on this computer.", "retry", {
-      cause: { code: "conflict", reason: "computer_stopped", retryable: true, message: "Agents are stopped on this computer." },
-    });
+    const startsWork =
+      command.type === "run.execute" ||
+      command.type === "trigger.execute" ||
+      command.type === "watch.reconcile";
+    const refuseStopped = () =>
+      new CommandDispatchError("Agents are stopped on this computer.", "retry", {
+        cause: {
+          code: "conflict",
+          reason: "computer_stopped",
+          retryable: true,
+          message: "Agents are stopped on this computer.",
+        },
+      });
     if (
       command.type === "request.resolve" &&
       (!fenceRequestSend || connectionGeneration === undefined)
@@ -2143,7 +2166,10 @@ export class RunnerRegistry {
         current.identity.connectionGeneration === connectionGeneration)
         ? current
         : undefined;
-    if (startsWork && connection?.agentsStoppedAtMs !== undefined) throw refuseStopped();
+    if (startsWork && connection?.agentsStoppedAtMs !== undefined) {
+      await onNotAdmitted?.();
+      throw refuseStopped();
+    }
     if (connection?.pendingAcks.has(command.commandId))
       throw new CommandDispatchError("Runner command is already in flight", "retry");
     let runCancellation:
@@ -2175,7 +2201,11 @@ export class RunnerRegistry {
         (connection.ownedRunIds.has(command.runId) || connection.observedRunIds.has(command.runId)),
       );
       this.#canceledRuns.set(command.runId, runCancellation);
-    } else if (command.type === "trigger.interrupt" && !command.stop) {
+    } else if (
+      command.type === "trigger.interrupt" &&
+      command.executionGeneration === undefined &&
+      !command.stop
+    ) {
       triggerCancellation = this.#canceledTriggerOccurrences.get(command.occurrenceId) ?? {
         active: false,
         pendingInterrupts: 0,
@@ -2262,7 +2292,10 @@ export class RunnerRegistry {
     // A Trigger program's dispatch lasts until its result. A Run's ends when the
     // Runner accepts it: its outcome arrives as events, and a Run that waits on
     // a person must not hold a Host dispatch slot while it does.
-    const completion = occurrenceId ? deferred<void>() : undefined;
+    const completion =
+      command.type === "trigger.execute"
+        ? { ...deferred<void>(), executionGeneration: command.context.executionGeneration }
+        : undefined;
     // A disconnect can reject both lifecycle stages while dispatch is still
     // awaiting acknowledgement. Observe the later completion rejection now;
     // awaiting the original Promise below still receives the same error.
@@ -2342,7 +2375,12 @@ export class RunnerRegistry {
       if (completion) await withAbort(completion.promise, signal);
       return accepted;
     } catch (error) {
-      if (completion && occurrenceId) connection.pendingTriggerPrograms.delete(occurrenceId);
+      if (
+        completion &&
+        occurrenceId &&
+        connection.pendingTriggerPrograms.get(occurrenceId) === completion
+      )
+        connection.pendingTriggerPrograms.delete(occurrenceId);
       // A Run never sent was never this Runner's; a Run that may have arrived
       // stays held until the next attach says whether the Runner has it.
       if (runBinding && !sent) this.#forgetUnadmittedRun(connection, runBinding);
@@ -2398,7 +2436,10 @@ export class RunnerRegistry {
     reconcileGeneration: number,
     desired: readonly WatchReconcileActivation[],
     signal: AbortSignal,
-    options?: { readonly filterDesired: () => Promise<readonly WatchReconcileActivation[]>; readonly connectionGeneration: number },
+    options?: {
+      readonly filterDesired: () => Promise<readonly WatchReconcileActivation[]>;
+      readonly connectionGeneration: number;
+    },
   ): Promise<void> {
     const activations = [...desired];
     await this.dispatch(
@@ -2413,12 +2454,14 @@ export class RunnerRegistry {
       signal,
       {
         beforeAck: async () => undefined,
-        ...(options ? {
-          connectionGeneration: options.connectionGeneration,
-          beforeSend: async () => {
-            activations.splice(0, activations.length, ...await options.filterDesired());
-          },
-        } : {}),
+        ...(options
+          ? {
+              connectionGeneration: options.connectionGeneration,
+              beforeSend: async () => {
+                activations.splice(0, activations.length, ...(await options.filterDesired()));
+              },
+            }
+          : {}),
       },
     );
   }
@@ -2576,7 +2619,9 @@ export class RunnerRegistry {
       }
       case "runner.power.sleeping":
         if (connection.identity.capabilities.includes(runnerPowerStateCapability)) {
+          const firstAnnouncement = connection.sleepAnnouncedAtMs === undefined;
           connection.sleepAnnouncedAtMs = this.#now();
+          if (firstAnnouncement) this.#hooks.onSleepAnnounced?.(connection.identity);
         }
         break;
       case "runner.agents.stopped":
@@ -2759,7 +2804,7 @@ export class RunnerRegistry {
         }
         break;
       }
-      case "runner.trigger-result":
+      case "runner.trigger-result": {
         if (!connection.identity.environmentIds.includes(message.environmentId)) {
           throw new OpensteerError({
             code: "forbidden",
@@ -2768,7 +2813,10 @@ export class RunnerRegistry {
         }
         if (this.#hooks.onTriggerResult) {
           try {
-            await this.#runHook(() => this.#hooks.onTriggerResult?.(connection.identity, message));
+            const settled = await this.#runHook(() =>
+              this.#hooks.onTriggerResult?.(connection.identity, message),
+            );
+            if (settled === "retired") break;
           } catch (error) {
             if (
               !(error instanceof OpensteerError) ||
@@ -2778,12 +2826,15 @@ export class RunnerRegistry {
             break;
           }
         }
-        connection.pendingTriggerPrograms.get(message.output.occurrenceId)?.resolve();
+        const pending = connection.pendingTriggerPrograms.get(message.output.occurrenceId);
+        if (pending && pending.executionGeneration !== message.executionGeneration) break;
+        pending?.resolve();
         connection.pendingTriggerPrograms.delete(message.output.occurrenceId);
         connection.ownedTriggerOccurrenceIds.delete(message.output.occurrenceId);
         connection.observedTriggerOccurrenceIds.delete(message.output.occurrenceId);
         this.#canceledTriggerOccurrences.delete(message.output.occurrenceId);
         break;
+      }
       case "runner.watch-status":
         if (this.#hooks.onWatchStatus) {
           try {
@@ -3144,11 +3195,12 @@ export class RunnerRegistry {
   }
   disconnect(peer: RunnerPeer, restarting = false): void {
     const connection = this.#byPeer.get(peer.id);
-    if (connection) void this.#disconnect(
-      connection,
-      new Error(restarting ? "The device is restarting." : "Runner disconnected"),
-      restarting ? runnerRestartingCloseCode : 1001,
-    );
+    if (connection)
+      void this.#disconnect(
+        connection,
+        new Error(restarting ? "The device is restarting." : "Runner disconnected"),
+        restarting ? runnerRestartingCloseCode : 1001,
+      );
   }
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { readTaskActivity } from "../host/agent-work.js";
 import type { AgentOperationView } from "@opensteer/core";
-import type { HostClient } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
+import { connectedAgentLive, connectedAgentWorkingTasks } from "../host/connected-agent-view.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
+import { useHostSelector } from "./use-host-snapshot.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
 import {
   readChromeTabGrantCatalog,
@@ -98,6 +101,45 @@ export function useAgentPluginOptions(
 export function useChromeTabGrantCatalog(client: HostClient | null, wanted: boolean) {
   const result = useLazyRead(client, wanted, readChromeTabGrantCatalog);
   return result.status === "ready" ? result.data : undefined;
+}
+
+const selectActiveTasks = (snapshot: HostSnapshot) => snapshot.activeTasks;
+
+export function useConnectedAgentLive(client: HostClient, connectionId: string) {
+  const tasks = useHostSelector(client, selectActiveTasks);
+  const working = connectedAgentWorkingTasks(connectionId, tasks);
+  const sessions = working.length
+    ? working
+        .map(({ thread }) => thread.externalWork?.sessionId)
+        .sort()
+        .join(",")
+    : null;
+  const [result, setResult] = useState<{
+    client: HostClient;
+    connectionId: string;
+    sessions: string;
+    operations: readonly AgentOperationView[];
+  }>();
+  useEffect(() => {
+    if (sessions === null) return;
+    const controller = new AbortController();
+    void client.rpc["connections.activity"]({ connectionId }, { signal: controller.signal })
+      .then(unwrapRpcResult)
+      .then(({ operations }) => {
+        if (!controller.signal.aborted) setResult({ client, connectionId, sessions, operations });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [client, connectionId, sessions]);
+  return connectedAgentLive(
+    working,
+    sessions !== null &&
+      result?.client === client &&
+      result.connectionId === connectionId &&
+      result.sessions === sessions
+      ? result.operations
+      : undefined,
+  );
 }
 
 export function useTaskActivity(

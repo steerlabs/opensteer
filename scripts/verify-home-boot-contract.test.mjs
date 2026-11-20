@@ -42,7 +42,7 @@ function write(path, data, mode = 0o600) {
   writeFileSync(path, data, { mode });
 }
 
-test("managed exchange uses the real Account routes, validates HTTPS, and replays completion", async (t) => {
+await test("managed exchange uses the real Account routes, validates HTTPS, and replays completion", async (t) => {
   const temp = mkdtempSync(resolve(tmpdir(), "home-boot-contract-"));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const cert = resolve(temp, "cert.pem");

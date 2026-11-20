@@ -130,9 +130,7 @@ describe("Needs you on the phone", () => {
         >[0])}
       />,
     );
-    await vi.waitFor(() =>
-      expect(page.textContent).toContain("Grok: Run a browser script in Shopping?"),
-    );
+    await vi.waitFor(() => expect(page.textContent).toContain("Grok: Run a script in Shopping?"));
     expect(page.querySelector('[data-mark="G"]')).not.toBeNull();
     // Every other Request keeps its own title.
     expect(page.textContent).toContain("Book a table for Friday");

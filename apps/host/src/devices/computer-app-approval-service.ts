@@ -1,3 +1,4 @@
+import type { ComputerInventoryAuthority } from "../computer-use/computer-use-service.js";
 import type { RemovedComputerApp as RemovedDeviceComputerApp } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import {
@@ -853,6 +854,7 @@ export class ComputerAppApprovalService {
       readonly runnerId?: RunnerId;
     } & Partial<ComputerUseInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
       readonly unavailableReason?: "offline" | "not-ready";
@@ -866,6 +868,7 @@ export class ComputerAppApprovalService {
       readonly definitionId: PhoneDisplayDefinitionId;
     } & Partial<PhoneDisplayInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<PhoneDisplayInstalledAppsResult>;
   async installedComputerApps(
     inputRaw: {
@@ -875,6 +878,7 @@ export class ComputerAppApprovalService {
       readonly definitionId?: PhoneDisplayDefinitionId;
     } & Partial<ComputerUseInstalledAppsParams>,
     machines?: readonly DeviceComputerOption[],
+    authority?: ComputerInventoryAuthority,
   ): Promise<
     | (z.infer<typeof ComputerUseInstalledAppsResultSchema> & {
         readonly unavailableReason?: "offline" | "not-ready";
@@ -916,11 +920,14 @@ export class ComputerAppApprovalService {
             actorUserId,
             PhoneDisplayInstalledAppsParamsSchema.parse(params),
             definitionId,
+            authority,
           )
         : await computerUse.installedApps(
             deviceId,
             actorUserId,
             ComputerUseInstalledAppsParamsSchema.parse(params),
+            undefined,
+            authority,
           );
     } catch (error) {
       if (!(error instanceof ComputerUseError)) throw error;

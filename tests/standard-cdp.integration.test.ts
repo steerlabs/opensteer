@@ -19,6 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createId } from "../packages/core/src/index.js";
+import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
+import { beginAgentSession } from "../packages/database/src/agent-session-store.js";
+import { TabStore } from "../packages/database/src/tab-store.js";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -134,7 +137,10 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       send: (message: unknown) => runner.handleFrame(Buffer.from(JSON.stringify(message)), false),
     };
     hub.attach(peer, stream);
+    const tabs = new TabStore(database);
     const browser = new BrowserService({
+      tabs,
+      tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
       deploymentId: first.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
@@ -318,5 +324,60 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     right.once("disconnected", () => sessionEnded.resolve());
     await browser.stop(b.ownerId, two);
     await sessionEnded.promise;
+
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: first.userId,
+      label: "CDP mode fixture",
+      clientName: "CDP mode fixture",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      resource: "https://home.example.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomBytes(32).toString("hex"))).toBe(true);
+    const { session } = await beginAgentSession(database, {
+      userId: first.userId,
+      agentConnectionId: connection.id,
+    });
+    const authority = { agentBindingId: `session:${session.id}`, ownerId: first.userId };
+    const modeProfile = await browser.createProfile({
+      homeRunnerId: first.runnerId,
+      ownerId: first.userId,
+      name: "CDP mode change",
+      idempotencyKey: "standard-cdp-mode-profile",
+    });
+    const actor = { kind: "browser-binding", authority, threadId: session.threadId } as const;
+    const write = await browser.pageTabs.open(
+      actor,
+      { kind: "page", profileId: modeProfile.id, url: "about:blank" },
+      "standard-cdp-mode-tab",
+    );
+    await tabs.open(write, "standard-cdp-mode-tab");
+    await browser.pageTabs.admitted!(write);
+    const row = await tabs.get(first.userId, write.id);
+    if (!row) throw new Error("The CDP mode fixture has no task tab.");
+    const seed = await browser.pageTabs.bindBrowserScript!(actor, row);
+    const connect = async () => {
+      const ticket = await browser.issueStandardCdpTicket({
+        authority,
+        browserSessionId: seed.sessionId,
+        seedTabId: seed.tabId,
+        mode: "session",
+      });
+      const client = await chromium.connectOverCDP(homeUrl + ticket.path, { noDefaults: true });
+      clients.push(client);
+      return client.contexts()[0]!.pages()[0]!;
+    };
+    const before = await connect();
+    await before.goto(origin);
+    expect(await before.title()).toBe("Home CDP fixture");
+    await store.updateThreadAccessMode({
+      threadId: session.threadId,
+      requestedBy: first.userId,
+      accessMode: "approval-required",
+    });
+    await expect(before.evaluate(() => document.title)).rejects.toThrow();
+    expect(await (await connect()).title()).toBe("Home CDP fixture");
   },
 );

@@ -1,13 +1,40 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154
 
+valid_image_selector() {
+  local file=$1 service key
+  [[ -f $file && ! -L $file ]] || return 1
+  [[ $(wc -l < "$file") -eq $((${#services[@]} + 1)) ]] || return 1
+  grep -qxE 'OPENSTEER_HOME_VERSION=(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' "$file" || return
+  for service in "${services[@]}"; do
+    key="OPENSTEER_HOME_$(printf %s "$service" | tr 'a-z-' 'A-Z_')_IMAGE"
+    grep -qxE "$key=[a-zA-Z0-9./:_-]+(@sha256:[a-fA-F0-9]{64})?" "$file" || return
+  done
+}
+
 update_recovery() {
   local journal="$home_dir/update.pending" active="$home_dir/images.env"
-  [[ -d $journal ]] || return 0
+  clean_retired_journal "$journal" || return
+  [[ -e $journal || -L $journal ]] || return 0
+  if [[ ! -d $journal || -L $journal || -L "$journal/committed" || -L $active ]] ||
+     ! valid_image_selector "$journal/candidate.env" || ! valid_image_selector "$journal/previous.env" ||
+     ! valid_image_selector "$journal/original.env"; then
+    recovery_needs_operator "$journal"
+    return
+  fi
+  if [[ -e "$journal/committed" && ( ! -f "$journal/committed" || -s "$journal/committed" ) ]]; then
+    recovery_needs_operator "$journal"
+    return
+  fi
   if [[ -f "$journal/committed" ]]; then
-    cmp -s "$journal/candidate.env" "$active" || return 1
+    cmp -s "$journal/candidate.env" "$active" || { recovery_needs_operator "$journal"; return 1; }
     sync "$active" "$home_dir" "$journal/committed" "$journal" || return
-    rm -rf -- "$journal"
+    retire_journal "$journal"
+    return
+  fi
+  if ! cmp -s "$journal/candidate.env" "$active" && ! cmp -s "$journal/original.env" "$active" &&
+    ! cmp -s "$journal/previous.env" "$active"; then
+    recovery_needs_operator "$journal"
     return
   fi
   release_env="$journal/candidate.env" compose down || return
@@ -15,7 +42,7 @@ update_recovery() {
   publish_file "$active.new" "$active" || return
   install_sandbox_policies && start_pod || return
   echo 'Rolled back to the previous images. The pre-update dump is retained for manual recovery.'
-  rm -rf -- "$journal"
+  retire_journal "$journal"
 }
 
 update_home() (
@@ -44,11 +71,12 @@ update_home() (
       [[ $1 == scheduled-update ]] && return 0
       fail "Set OPENSTEER_HOME_RELEASE_MANIFEST_URL in config.env or supply a release manifest."
     fi
-    fetch_manifest "$feed" "$current_dir/release.json"
+    fetch_manifest "$feed" "$current_dir/release.json" "$pinned"
     release_to_env "$current_dir/release.json" "$candidate" "$pinned"
   fi
   cmp -s "$active" "$candidate" && return 0
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
+  cp "$active" "$current_dir/original.env"
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
   if [[ $1 == scheduled-update && $(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -1) != "$new_version" ]]; then
     fail "The update feed is older than the running Home."
@@ -76,7 +104,6 @@ update_home() (
   source "$home_dir/backup.sh"
   postgres_tool pg_dump --format=custom > "$current_dir/database.dump"
   publish_file "$current_dir/database.dump" "$dump"
-  printf 'starting-candidate\n' > "$current_dir/phase"
   rm -f -- "$current_dir/release.json"
   sync -f "$home_dir"
   mv -- "$current_dir" "$journal"
@@ -86,7 +113,7 @@ update_home() (
     cp "$journal/candidate.env" "$active.new"
     publish_file "$active.new" "$active"
     durable_marker "$journal/committed"
-    rm -rf -- "$journal"
+    retire_journal "$journal"
     echo "Updated Home to $new_version."
     return
   fi

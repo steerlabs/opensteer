@@ -27,7 +27,7 @@ export class DeviceAccessRefusal extends OpensteerError {
           : reason === "device-asleep"
             ? "This device is asleep. Wait until it wakes before using it."
             : reason === "device-offline"
-              ? "This device is offline. Continue other work until it returns."
+              ? "Device is offline. Do not request access."
               : `${capability} is off. Use computer_access_request if needed.`,
       details: { machineId, capability, ...(machineName ? { machineName } : {}) },
     });

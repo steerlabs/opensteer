@@ -155,6 +155,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS,
     EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS,
+    EXPO_PUBLIC_OPENSTEER_MOCK_WORK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_WORK,
     EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
@@ -368,6 +369,7 @@ function mobileClient(): MobileRoot {
           subagents: configuration.mockSubagents,
           plugins: configuration.mockPlugins,
           agents: configuration.mockAgents,
+          work: configuration.mockWork,
         })
       : createNetworkHostPort({
           browserPreferencesStorage: createBrowsingChoiceStorage(

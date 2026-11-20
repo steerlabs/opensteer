@@ -1104,7 +1104,11 @@ export async function rememberExecutionChoice(
   return commitPersonalMutation(database, async (transaction, mutation) => {
     await requirePersonalOwner(transaction, userId);
     if (administration)
-      await lockCommandIdempotency(transaction, administration.requestedBy, administration.idempotencyKey);
+      await lockCommandIdempotency(
+        transaction,
+        administration.requestedBy,
+        administration.idempotencyKey,
+      );
     const existing = await transaction
       .selectFrom("personalSettings")
       .select("executionPreferences")

@@ -1,7 +1,7 @@
 import {
   createId,
   OpensteerError,
-  requestTextMaxLength,
+  requestOperationCallsMaxLength,
   type AgentGrant,
   type BrowserProfileId,
   type DeviceId,
@@ -176,7 +176,7 @@ describe("browser_use and browser_connect targets", () => {
     const { handlers, operations, ports } = fixture();
     const caller = connection(selected(mine));
     const tail = "print('last line')";
-    const code = " ".repeat(requestTextMaxLength - tail.length) + tail;
+    const code = " ".repeat(requestOperationCallsMaxLength - tail.length) + tail;
     await expect(
       handlers.browser_use(call(caller, { code: code + "!", tabId: myTab })),
     ).rejects.toMatchObject({
@@ -307,7 +307,7 @@ describe("browser_connect", () => {
     const before = Date.now();
     const result = await handlers.browser_connect(call(connection(selected(mine)), {}) as never);
     expect(operations[0]?.calls).toBe(
-      'Full control of the browser profile "Shopping" on Studio Mac for up to 10 minutes, through a raw browser connection (CDP): every page, cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.',
+      'Control of the agent\'s own pages in the browser profile "Shopping" on Studio Mac for up to 10 minutes, through a raw browser connection (CDP), with access to every cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.',
     );
     expect(ports.tabs.open).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "browser-binding", threadId: task }),
@@ -318,6 +318,7 @@ describe("browser_connect", () => {
     expect(issued).toMatchObject({
       authority: { agentBindingId: "session:ags_test", ownerId: owner },
       browserSessionId: "bss_1",
+      seedTabId: myTab,
       mode: "whole-context",
     });
     expect(issued.authority.expiresAt).toBeGreaterThanOrEqual(before + browserConnectIntervalMs);
@@ -332,6 +333,21 @@ describe("browser_connect", () => {
       tabId: myTab,
       mode: "whole-context",
     });
+  });
+
+  it("refuses a person's page before binding it as the seed", async () => {
+    const { handlers, ports } = fixture();
+    vi.mocked(ports.tabs.connectionTab).mockResolvedValue({
+      generation: 4,
+      kind: "page",
+      profileId: mine,
+      openedBy: "person",
+    });
+    const connect = (tabId: TabId) =>
+      refusal(handlers.browser_connect(call(connection(selected(mine)), { tabId }) as never));
+    expect(await connect(myTab)).toEqual(await connect(createId("tab")));
+    expect(ports.tabs.bindBrowserScript).not.toHaveBeenCalled();
+    expect(ports.issueTicket).not.toHaveBeenCalled();
   });
 
   it("uses ws:// only for a Home served over plain http, and refuses plainly where the browser cannot confine a raw client", async () => {

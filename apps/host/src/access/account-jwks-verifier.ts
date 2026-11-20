@@ -56,10 +56,7 @@ export class AccountJwksVerifier {
   #lastForcedRefreshAt = 0;
   #refresh: Promise<CachedJwks> | undefined;
 
-  constructor(options: {
-    readonly fetch?: typeof globalThis.fetch;
-    readonly issuer: URL;
-  }) {
+  constructor(options: { readonly fetch?: typeof globalThis.fetch; readonly issuer: URL }) {
     this.#issuer = publicHttpsOrigin(options.issuer).origin;
     this.#jwksUrl = new URL("/api/auth/jwks", this.#issuer);
     this.#fetch =
@@ -154,9 +151,11 @@ export class RemoteAccountJwksVerifier {
   readonly #verifier: AccountJwksVerifier;
   readonly #audience: string;
 
-  constructor(options: ConstructorParameters<typeof AccountJwksVerifier>[0] & {
-    readonly audience: string;
-  }) {
+  constructor(
+    options: ConstructorParameters<typeof AccountJwksVerifier>[0] & {
+      readonly audience: string;
+    },
+  ) {
     this.#verifier = new AccountJwksVerifier(options);
     this.#audience = options.audience;
   }

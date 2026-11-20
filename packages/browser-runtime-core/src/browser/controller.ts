@@ -589,10 +589,19 @@ export class BrowserController {
     await this.publishSnapshot();
   }
 
-  openStandardCdp(wholeContext: boolean, onOverflow: () => void): StandardCdpAttachment {
+  openStandardCdp(
+    wholeContext: boolean,
+    onOverflow: () => void,
+    scope?: BrowserAttachTicketClaims["standardCdpLineage"],
+  ): StandardCdpAttachment {
+    const seed = scope ? this.ledger.binding(scope.seedSurfaceId) : undefined;
+    if (scope && !seed) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const client = this.cdpRouter.openStandardClient(this.claims.sessionId, {
       wholeContext,
-      adoptTarget: (id) => this.ledger.adoptTarget(id),
+      ...(scope && seed
+        ? { lineage: { attachmentId: scope.attachmentId, seedTargetId: seed.targetId } }
+        : {}),
+      adoptTarget: (id) => this.ledger.adoptTarget(id, scope?.attachmentId),
       recoverUnadoptedTarget: (id) => this.ledger.retireUnadoptedTarget(id),
       captureScreenshot: (id, parameters, signal) => {
         const surfaceId = this.ledger.surfaceIdForTarget(id);

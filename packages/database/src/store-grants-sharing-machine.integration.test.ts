@@ -24,6 +24,7 @@ describeStore("PostgreSQL store", (it) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("person-message");
+    const other = await createRunFixture("unrelated-to-person-message");
     const source = await enqueueHumanTrigger({
       content: [
         {
@@ -80,6 +81,13 @@ describeStore("PostgreSQL store", (it) => {
         .where("messageId", "=", results[0]!.message.id)
         .execute(),
     ).toEqual([{ id: results[0]!.message.id, visible: true }]);
+    await expect(
+      database
+        .selectFrom("threads")
+        .select("lastReplyMessageId")
+        .where("id", "=", other.thread.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ lastReplyMessageId: null });
     const row = await database
       .selectFrom("messages")
       .selectAll()
@@ -600,7 +608,10 @@ describeStore("PostgreSQL store", (it) => {
           status: "active",
         },
       ]);
-      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
+      await expect(store.assertActiveGrant(capability(started))).resolves.toEqual({
+        agentConnectionId: null,
+        taskOriginConnectionId: null,
+      });
     });
     it("cuts tool authority on Stop while the Runner can still report the Run's end", async ({
       storeFixture,
@@ -683,7 +694,10 @@ describeStore("PostgreSQL store", (it) => {
       await expect(
         store.revokeRunner(started.runnerId, started.userId, { allowDeployment: true }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
+      await expect(store.assertActiveGrant(capability(started))).resolves.toEqual({
+        agentConnectionId: null,
+        taskOriginConnectionId: null,
+      });
     });
     it("revokes a worker's grant when its Assignment is cancelled", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;

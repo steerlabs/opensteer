@@ -37,6 +37,7 @@ import { z } from "zod";
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
   standardCdp: z.literal(1).optional(),
+  standardCdpLineage: z.literal(1).optional(),
   wholeContextCdp: z.literal(1).optional(),
   standardCdpLeaseRecovery: z.literal(1).optional(),
   runtimeId: z.string().min(1).max(255),
@@ -209,6 +210,7 @@ export class LocalBrowserRuntimeBridge {
     return {
       wireVersion: health.wireVersion,
       ...(health.standardCdp === 1 ? { standardCdp: 1 as const } : {}),
+      ...(health.standardCdpLineage === 1 ? { standardCdpLineage: 1 as const } : {}),
       ...(health.wholeContextCdp === 1 ? { wholeContextCdp: 1 as const } : {}),
       ...(health.standardCdpLeaseRecovery === 1 ? { standardCdpLeaseRecovery: 1 as const } : {}),
       ...(health.localProfileStorage

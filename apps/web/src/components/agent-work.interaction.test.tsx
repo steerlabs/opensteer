@@ -124,7 +124,7 @@ describe("a direct operation that needs the person", () => {
     await vi.waitFor(() => expect(document.querySelector(".operation-request")).not.toBeNull());
     const card = document.querySelector(".operation-request")!;
     expect(card.querySelector(".action-panel__title")?.textContent).toBe(
-      "Run a browser script in Shopping?",
+      "Run a script in Shopping?",
     );
     expect(card.querySelector(".operation-request__summary")?.textContent).toBe(
       "Shopping · Studio Mac",
@@ -154,15 +154,15 @@ describe("a direct operation that needs the person", () => {
     );
     const taskRow = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.waiting}"]`)!;
     expect(taskRow.querySelector(".agent-mark")).not.toBeNull();
-    expect(taskRow.textContent).toContain("Run a browser script in Shopping?");
+    expect(taskRow.textContent).toContain("Run a script in Shopping?");
     await act(async () =>
       (document.querySelector('[title="Open Needs you"]') as HTMLButtonElement).click(),
     );
     await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("Grok: Run a browser script in Shopping?"),
+      expect(document.body.textContent).toContain("Grok: Run a script in Shopping?"),
     );
     const row = [...document.querySelectorAll(".side-task--needs-you")].find((entry) =>
-      entry.textContent?.includes("Grok: Run a browser script"),
+      entry.textContent?.includes("Grok: Run a script"),
     )!;
     expect(row.querySelector(".agent-mark")).not.toBeNull();
   });

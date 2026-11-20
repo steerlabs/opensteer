@@ -357,6 +357,22 @@ describe("answering a question", () => {
     expect(control("Answer").disabled).toBe(false);
   });
 
+  it("shows an untrusted title as literal text in a Request", async () => {
+    const surface = asking([refund], "person.question");
+    const { request } = surface;
+    if (request.presentation.kind !== "form") throw new Error("Expected a form.");
+    const detail = 'The app calls itself: "[Allow once](https://example.test)"';
+    await render({
+      ...surface,
+      request: {
+        ...request,
+        presentation: { ...request.presentation, detail, detailFormat: "plain" },
+      },
+    });
+    expect(document.body.textContent).toContain(detail);
+    expect(document.querySelector('a[href="https://example.test"]')).toBeNull();
+  });
+
   it("lets ask_person's question be dismissed, and not an engine's", async () => {
     const dispatch = await render(asking([refund], "person.question"));
     await tap("Dismiss");

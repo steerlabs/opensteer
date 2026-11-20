@@ -99,6 +99,22 @@ export const RequestOptionHintSchema = z.enum([
 export const requestTitleMaxLength = 240;
 /** The longest a Request's detail or a form field's prompt may be, in UTF-16 units. */
 export const requestTextMaxLength = 20_000;
+export const requestOperationContextMaxLength = 1_024;
+export const requestOperationCallsHeading = "\n\nWhat it will run:\n";
+export const requestOperationCallsMaxLength =
+  requestTextMaxLength - requestOperationContextMaxLength - requestOperationCallsHeading.length;
+
+export function formatRequestOperationDetail(input: {
+  readonly summary: string;
+  readonly titleLine: string;
+  readonly calls: string;
+  readonly reason: string;
+}): string {
+  const summary = input.summary.slice(0, requestOperationContextMaxLength - input.titleLine.length);
+  const detail = `${summary}${input.titleLine}${requestOperationCallsHeading}${input.calls}`;
+  return detail + input.reason.slice(0, Math.max(0, requestTextMaxLength - detail.length));
+}
+
 /** The longest an option's or a form field's label may be, in UTF-16 units. */
 export const requestLabelMaxLength = 160;
 /** The longest an option's description, or a form choice's text, may be, in UTF-16 units. */
@@ -262,6 +278,7 @@ const requestPresentationVariants = [
     agentProposed: RequestAgentProposedSchema,
     plugin: pluginContext.optional(),
     detail: z.string().max(requestTextMaxLength).optional(),
+    detailFormat: z.enum(["plain"]).optional(),
     fields: z.array(RequestFormFieldSchema).min(1).max(16),
     kind: z.literal("form"),
     title: z.string().trim().min(1).max(requestTitleMaxLength),

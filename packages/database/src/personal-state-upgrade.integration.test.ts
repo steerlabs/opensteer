@@ -14,6 +14,10 @@ import {
   dropDeviceAccessCountMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
+import { agentGrantsMigrationName } from "./agent-grants-migration.js";
+import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
+import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
+import { workHomeMigrationName } from "./work-home-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -83,6 +87,12 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         taskApprovalReceiptsMigrationName,
         answeredQuestionRecordsMigrationName,
         dropDeviceAccessCountMigrationName,
+        agentGrantsMigrationName,
+        agentSessionsMigrationName,
+        "0044_chrome_live_tabs_source",
+        agentDirectoryMigrationName,
+        "0046_shared_chrome_grants",
+        workHomeMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

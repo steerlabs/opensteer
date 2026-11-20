@@ -48,7 +48,7 @@ import type { BlobStorage } from "./blobs.ts";
 import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
 import { RepositoryHost, type RepositoryBackend, type SourceFiles } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
-import type { CatalogReadOptions } from "./declarations.ts";
+import type { SkillReadOptions } from "./skills.ts";
 
 /**
  * The subject whose access an operation is checked against. Products provide it around the
@@ -417,8 +417,8 @@ type FlatPluginEngine = {
           ? WithListOptions<Method<E>, ToolListOptions>
           : Method<E>
       : HttpApiGroup.Identifier<G> extends "skills"
-        ? HttpApiEndpoint.Identifier<E> extends "list"
-          ? WithListOptions<Method<E>, CatalogReadOptions>
+        ? HttpApiEndpoint.Identifier<E> extends "list" | "read"
+          ? WithListOptions<Method<E>, SkillReadOptions>
           : Method<E>
         : Method<E>;
   };

@@ -49,8 +49,8 @@ interface Exchange {
 async function withServer(exchanges: readonly Exchange[], run: (origin: URL) => Promise<void>) {
   let index = 0;
   let serverError: unknown;
-  const server = createServer(async (req, res) => {
-    try {
+  const server = createServer((req, res) => {
+    void (async () => {
       const exchange = exchanges[index++];
       expect(exchange).toBeDefined();
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -67,10 +67,10 @@ async function withServer(exchanges: readonly Exchange[], run: (origin: URL) => 
           ...exchange?.headers,
         })
         .end(JSON.stringify(exchange?.response));
-    } catch (error) {
+    })().catch((error: unknown) => {
       serverError = error;
       res.writeHead(500).end();
-    }
+    });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject).listen(0, "127.0.0.1", resolve);

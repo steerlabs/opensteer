@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   AgentSessionIdSchema,
+  agentGrantAccess,
   OpensteerError,
   type ThreadId,
   threadAccessModeAtMost,
@@ -14,6 +15,7 @@ import {
 } from "@opensteer/core";
 import {
   PluginAgentStore,
+  type AgentOperationRow,
   type OpensteerStore,
   type PluginExecutionRecord,
 } from "@opensteer/database";
@@ -21,14 +23,22 @@ import {
   commitPersonalMutation,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { callerLineage, type AgentCaller, type ConnectionCaller, type RunCaller } from "../mcp/agent-caller.js";
+import {
+  callerLineage,
+  type AgentCaller,
+  type ConnectionCaller,
+  type RunCaller,
+} from "../mcp/agent-caller.js";
 import { pluginCaller, type PluginAuthority } from "./plugin-authority.js";
 import {
-  JsonSchema,
   pluginCallerSubject,
   type PluginCaller,
   type PluginExecution,
+  PluginServiceError,
+  operations,
 } from "./engine-protocol.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
+import type { EngineProcess } from "./engine-process.js";
 import type { PluginService } from "./plugin-service.js";
 
 export const pluginInterruptedReason =
@@ -68,41 +78,8 @@ export class PluginExecutions {
     return this.#reports;
   }
   async #record(execution: PluginExecution) {
-    let row = await this.options.records.execution(execution.id);
-    if (!row) {
-      const caller = this.options.authority.caller(execution.caller);
-      const session = this.options.authority.session(execution.caller);
-      if (!caller || callerLineage(caller) || (caller.kind === "connection" && !session)) return;
-      const threadId = caller.kind === "run" ? caller.thread.id
-        : caller.kind === "program" ? caller.anchor.id : session!.operation.taskId;
-      const context = pluginCaller(caller);
-      await this.options.records.insert({
-        id: execution.id,
-        ownerUserId: caller.userId,
-        threadId,
-        ...(session ? { agentSessionId: session.operation.sessionId } : {}),
-        runId: caller.kind === "run" ? caller.claims.runId : null,
-        occurrenceId:
-          caller.kind === "program" && caller.program.kind === "trigger"
-            ? caller.program.occurrenceId
-            : null,
-        watchActivationId:
-          caller.kind === "program" && caller.program.kind === "watch"
-            ? caller.program.activationId
-            : null,
-        caller: execution.caller,
-        mode: session ? "automatic" : context.mode,
-        state: "running",
-        requestId: null,
-        interactionId: null,
-        handoff: false,
-        result: null,
-        reason: null,
-      });
-      row = await this.options.records.execution(execution.id);
-    }
-    if (!row) return;
-    if (row.caller !== execution.caller) return;
+    const row = await this.options.records.execution(execution.id);
+    if (!row || row.caller !== execution.caller) return;
     if (row.connectionId && execution.drained && !row.terminalEvidenceAt) {
       await this.options.store.database
         .updateTable("pluginExecutions")
@@ -113,7 +90,12 @@ export class PluginExecutions {
     }
     if (terminal.has(row.state)) return;
     const result =
-      execution.state === "completed" && execution.result ? object.parse(execution.result) : null;
+      execution.state === "completed" && execution.result
+        ? object.parse({
+            data: execution.result,
+            ...(execution.targets ? { targets: execution.targets } : {}),
+          })
+        : null;
     const updated = await this.options.records.updateLive(execution.id, {
       state: execution.state,
       result,
@@ -145,7 +127,7 @@ export class PluginExecutions {
       .where("contactLostAt", "is", null)
       .execute();
     for (const row of await this.options.records.unfinished()) {
-      if (row.connectionId && !row.terminalEvidenceAt) continue;
+      if (this.#submissions.has(row.id)) continue;
       const updated = await this.options.records.updateLive(row.id, {
         state: "interrupted",
         reason: pluginInterruptedReason,
@@ -168,74 +150,154 @@ export class PluginExecutions {
   ) {
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, operation);
-    const call = operation === "call" ? z.object({ calls: z.union([
-      z.object({ path: z.string(), input: JsonSchema }),
-      z.array(z.object({ path: z.string(), input: JsonSchema })).min(1),
-    ]) }).parse(input) : undefined;
-    const program = operation === "execute" ? z.object({ code: z.string().max(65536) }).parse(input) : undefined;
-    const invoke = (executionId?: string, lifetime = signal, beforeSend?: () => Promise<void>) => this.#invoke(caller, () => call
-      ? this.options.service.call({ ...call, ...(executionId ? { executionId } : {}) }, context, lifetime, beforeSend)
-      : this.options.service.execute({ ...program!, ...(executionId ? { executionId } : {}) }, context, lifetime, beforeSend), executionId);
-    const lineage = callerLineage(caller);
-    if (!lineage) return invoke();
     const id = randomUUID();
+    const args = z
+      .object({ calls: z.unknown().optional(), code: z.unknown().optional() })
+      .parse(input);
+    const call =
+      operation === "call"
+        ? operations.call.input.parse({ calls: args.calls, executionId: id })
+        : undefined;
+    const program =
+      operation === "execute"
+        ? operations.execute.input.parse({ code: args.code, executionId: id })
+        : undefined;
+    const lineage = callerLineage(caller);
+    const session = this.options.authority.session(context.caller);
+    if (caller.kind === "connection" && !session)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Plugin authority ended before execution.",
+      });
+    const mode = session?.operation.mode ?? caller.accessMode;
+    const assertConnection = async (database: OpensteerStore["database"], lock: boolean) => {
+      if (!lineage) return;
+      const connection = await database
+        .selectFrom("agentConnections")
+        .select(["grantRevision", "accessMode"])
+        .where("id", "=", lineage.agentConnectionId)
+        .where("userId", "=", caller.userId)
+        .where("revokedAt", "is", null)
+        .where("tokenHash", "is not", null)
+        .where("expiresAt", ">", new Date())
+        .$if(lock, (query) => query.forShare())
+        .executeTakeFirst();
+      if (
+        !connection ||
+        connection.grantRevision !== lineage.revision ||
+        !threadAccessModeAtMost(mode, connection.accessMode)
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Plugin authority ended before execution.",
+        });
+    };
     const submission = new AbortController();
     this.#submissions.set(id, submission);
     try {
-      const session = this.options.authority.session(context.caller);
-      const mode = session?.operation.mode ?? caller.accessMode;
-      const assertConnection = async (database: OpensteerStore["database"], lock: boolean) => {
-        const connection = await database.selectFrom("agentConnections")
-          .select(["grantRevision", "accessMode"])
-          .where("id", "=", lineage.agentConnectionId)
-          .where("userId", "=", caller.userId)
-          .where("revokedAt", "is", null)
-          .where("tokenHash", "is not", null)
-          .where("expiresAt", ">", new Date())
-          .$if(lock, (query) => query.forShare()).executeTakeFirst();
-        if (!connection || connection.grantRevision !== lineage.revision ||
-          !threadAccessModeAtMost(mode, connection.accessMode) || (caller.kind === "connection" && !session))
-          throw new OpensteerError({ code: "forbidden", message: "Plugin authority ended before execution." });
-      };
       await commitPersonalMutation(this.options.store.database, async (tx) => {
         await assertConnection(tx, true);
         await new PluginAgentStore(tx).insert({
-          id, ownerUserId: caller.userId,
-          threadId: caller.kind === "run" ? caller.thread.id : caller.kind === "program" ? caller.anchor.id : session!.operation.taskId,
+          id,
+          ownerUserId: caller.userId,
+          threadId:
+            caller.kind === "run"
+              ? caller.thread.id
+              : caller.kind === "program"
+                ? caller.anchor.id
+                : session!.operation.taskId,
           agentSessionId: session?.operation.sessionId ?? null,
           runId: caller.kind === "run" ? caller.claims.runId : null,
-          occurrenceId: caller.kind === "program" && caller.program.kind === "trigger" ? caller.program.occurrenceId : null,
-          watchActivationId: caller.kind === "program" && caller.program.kind === "watch" ? caller.program.activationId : null,
-          connectionId: lineage.agentConnectionId,
-          admittedGrantRevision: lineage.revision,
+          occurrenceId:
+            caller.kind === "program" && caller.program.kind === "trigger"
+              ? caller.program.occurrenceId
+              : null,
+          watchActivationId:
+            caller.kind === "program" && caller.program.kind === "watch"
+              ? caller.program.activationId
+              : null,
+          connectionId: lineage?.agentConnectionId ?? null,
+          admittedGrantRevision: lineage?.revision ?? null,
           admittedAccessMode: mode,
-          caller: context.caller, mode: context.mode, state: "running", requestId: null,
-          interactionId: null, handoff: false, result: null, reason: null,
+          caller: context.caller,
+          mode: context.mode,
+          state: "running",
+          requestId: null,
+          interactionId: null,
+          handoff: false,
+          result: null,
+          reason: null,
         });
       });
+      const lifetime = signal ? AbortSignal.any([submission.signal, signal]) : submission.signal;
+      const beforeSend = async (engineProcess: EngineProcess | null) => {
+        const database = this.options.store.database;
+        if (engineProcess) {
+          const reserved = await database
+            .updateTable("pluginExecutions")
+            .set({ engineProcess })
+            .where("id", "=", id)
+            .where("state", "=", "running")
+            .where("terminalEvidenceAt", "is", null)
+            .executeTakeFirst();
+          if (reserved.numUpdatedRows !== 1n)
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Plugin authority ended before execution.",
+            });
+        }
+        await assertConnection(database, false);
+      };
       try {
-        return await invoke(id, AbortSignal.any([submission.signal, ...(signal ? [signal] : [])]),
-          () => assertConnection(this.options.store.database, false));
+        return await this.#invoke(caller, id, () =>
+          call
+            ? this.options.service.call(call, context, lifetime, beforeSend)
+            : this.options.service.execute(program!, context, lifetime, beforeSend),
+        );
       } catch (error) {
         if (!this.options.service.executionWasSent(id))
-          await this.#record({ id, caller: context.caller, state: "cancelled", interaction: null, drained: true });
+          await this.#record({
+            id,
+            caller: context.caller,
+            state: "cancelled",
+            interaction: null,
+            drained: true,
+          });
         throw error;
       }
     } finally {
       this.#submissions.delete(id);
     }
   }
-  async #invoke(caller: AgentCaller, work: () => Promise<PluginExecution>, executionId?: string) {
+  async #invoke(caller: AgentCaller, id: string, work: () => Promise<PluginExecution>) {
+    let execution: PluginExecution;
     try {
-      const execution = await work();
-      await this.#reports;
-      return await this.#consume(caller, execution);
+      execution = await work();
     } catch (error) {
-      const id = executionId ?? this.options.authority.submittedExecution();
-      const row = id ? await this.options.records.execution(id) : undefined;
-      if (row?.state === "interrupted") return this.result(row);
+      await this.#reports;
+      const row = await this.options.records.execution(id);
+      const lost = error instanceof PluginServiceError && error.code === "interrupted";
+      if (
+        row &&
+        (row.state === "interrupted" || (lost && this.options.service.executionWasSent(id)))
+      ) {
+        await this.#record({
+          id,
+          caller: row.caller,
+          state: "interrupted",
+          interaction: null,
+          reason: pluginInterruptedReason,
+        });
+        if (caller.kind === "connection") throw new OperationOutcomeUnknown();
+        return this.result((await this.options.records.execution(id))!);
+      }
       throw error;
     }
+    await this.#reports;
+    const result = await this.#consume(caller, execution);
+    if (caller.kind === "connection" && result.status === "interrupted")
+      throw new OperationOutcomeUnknown();
+    return result;
   }
   async #consume(caller: AgentCaller, execution: PluginExecution) {
     await this.#record(execution);
@@ -251,13 +313,18 @@ export class PluginExecutions {
       const tool = z.string().parse(invocation.tool);
       // A local provider (device app or local server) is not an engine plugin; the Host names it.
       const local = await this.options.localName?.(this.#context(row), pluginId);
-      const detail =
-        local === undefined
-          ? await this.options.service.detail(
-              { plugin: pluginId },
-              { caller: "personal", mode: "automatic" },
-            )
-          : { plugin: { name: local } };
+      const name =
+        local ??
+        (
+          await this.options.service.list(
+            {},
+            {
+              caller: "personal",
+              mode: "automatic",
+            },
+          )
+        ).find(({ id }) => id === pluginId)?.name ??
+        "Plugin";
       const version = String(invocation.version);
       const [settings, authors] = await Promise.all([
         this.options.records.settings(caller.userId),
@@ -265,7 +332,7 @@ export class PluginExecutions {
       ]);
       const plugin = {
         id: pluginId,
-        name: detail.plugin.name.slice(0, 240),
+        name: name.slice(0, 240),
         author:
           authors.get(`${pluginId}\u0000${version}`) ??
           settings.find((s) => s.pluginId === pluginId)?.author ??
@@ -298,10 +365,7 @@ export class PluginExecutions {
       }
       const presentation: RequestPresentation = {
         kind: kind === "plugin.approval" ? "choice" : "external",
-        title: (row.agentSessionId
-          ? `${detail.plugin.name} needs your input`
-          : `${detail.plugin.name}: ${tool}`
-        ).slice(0, 240),
+        title: (row.agentSessionId ? `${name} needs your input` : `${name}: ${tool}`).slice(0, 240),
         detail:
           kind === "plugin.approval"
             ? "Review the exact arguments below. Earlier code in this tool or program may already have run."
@@ -334,10 +398,10 @@ export class PluginExecutions {
               ...(previous.agentSessionId
                 ? { originatingAgentSessionId: previous.agentSessionId }
                 : previous.runId
-                ? { originatingRunId: previous.runId }
-                : previous.occurrenceId
-                  ? { originatingOccurrenceId: previous.occurrenceId }
-                  : { originatingWatchActivationId: previous.watchActivationId! }),
+                  ? { originatingRunId: previous.runId }
+                  : previous.occurrenceId
+                    ? { originatingOccurrenceId: previous.occurrenceId }
+                    : { originatingWatchActivationId: previous.watchActivationId! }),
               payload: { kind, executionId: execution.id, interactionId: interaction.requestId },
               presentation,
             },
@@ -357,7 +421,7 @@ export class PluginExecutions {
         row = await this.#owned(caller, execution.id);
       }
     }
-    return this.result(row);
+    return this.result(row, true);
   }
   #context(row: PluginExecutionRecord): PluginCaller {
     return { caller: row.caller, mode: row.mode };
@@ -399,7 +463,9 @@ export class PluginExecutions {
       });
     return row;
   }
-  result(row: PluginExecutionRecord) {
+  result(row: PluginExecutionRecord, includeData = false) {
+    const data = includeData && row.state === "completed" ? row.result?.data : undefined;
+
     return {
       executionId: row.id,
       status:
@@ -407,30 +473,92 @@ export class PluginExecutions {
           ? "pending"
           : row.state,
       ...(row.requestId ? { requestId: row.requestId } : {}),
-      ...(row.result && row.state === "completed" ? { result: row.result } : {}),
+      ...(data === undefined ? {} : { result: data }),
       ...(row.reason ? { reason: row.reason } : {}),
       next:
         row.state === "completed"
-          ? "Read the result before continuing."
+          ? data === undefined
+            ? "The result is unavailable. Check the current state before continuing."
+            : "Read the result before continuing."
           : terminal.has(row.state)
             ? (row.reason ?? "Plugin execution ended.") +
               " Earlier calls may have taken effect. Check current state before starting new work; never rerun blindly."
             : `Waiting on the person in Needs you. Do not repeat or poll. After the person answers, call plugin_resume({executionId:${JSON.stringify(row.id)}}).`,
     };
   }
+  #savedResult(row: PluginExecutionRecord) {
+    return row.state === "completed"
+      ? z
+          .object({ data: object, targets: operations.resultAccess.input.shape.targets })
+          .safeParse(row.result).data
+      : undefined;
+  }
+  async terminalResult(caller: AgentCaller, row: PluginExecutionRecord, signal?: AbortSignal) {
+    const saved = this.#savedResult(row);
+    const mode = row.admittedAccessMode;
+    if (!saved || !mode) return this.result(row);
+    const includeData = await this.options.authority.scoped(caller, async () => {
+      const context = { ...this.options.authority.admit(caller), mode: "ask" as const };
+      if (!(await this.options.authority.canReadResult(context, mode))) return false;
+      const allowed = await this.options.service
+        .request("resultAccess", { targets: saved.targets }, context, signal)
+        .catch((error: unknown) => {
+          signal?.throwIfAborted();
+          if (error instanceof PluginServiceError) return false;
+          throw error;
+        });
+      return allowed && this.options.authority.canReadResult(context, mode);
+    });
+    return this.result(row, includeData);
+  }
+  async replayOperation(
+    caller: ConnectionCaller,
+    operation: AgentOperationRow & { taskId: ThreadId; sessionStatus: string },
+    signal?: AbortSignal,
+  ) {
+    const executionId = operation.resultSummary?.executionId;
+    if (
+      typeof executionId !== "string" ||
+      operation.sessionStatus === "ended" ||
+      operation.grantRevision !== caller.grantRevision ||
+      operation.target.grant.kind !== "plugin"
+    )
+      return;
+    const live = await this.options.store
+      .admitExecution({
+        ownerUserId: caller.userId,
+        subject: { kind: "binding", bindingId: `session:${operation.sessionId}` },
+      })
+      .catch(() => null);
+    const grant = live?.agentConnection?.grant;
+    if (
+      !live ||
+      !grant ||
+      live.agentConnection?.grantRevision !== operation.grantRevision ||
+      !threadAccessModeAtMost(operation.mode, live.mode) ||
+      !agentGrantAccess(grant, operation.target.grant)
+    )
+      return;
+    const row = await this.sessionExecution(caller, executionId, operation.taskId);
+    if (row.agentSessionId !== operation.sessionId) return;
+    return this.terminalResult(caller, row, signal);
+  }
   async sessionExecution(caller: ConnectionCaller, id: string, taskId: ThreadId) {
     const row = await this.#owned(caller, id);
     const agentSessionId = row.agentSessionId;
     if (!agentSessionId || row.threadId !== taskId || row.connectionId !== caller.connectionId)
-      throw new OpensteerError({ code: "forbidden", message: "Plugin execution is unavailable to this caller." });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Plugin execution is unavailable to this caller.",
+      });
     return { ...row, agentSessionId };
   }
   async resumeSession(caller: ConnectionCaller, id: string, taskId: ThreadId, signal: AbortSignal) {
     return this.#drive(id, async () => {
       const row = await this.sessionExecution(caller, id, taskId);
-      if (terminal.has(row.state)) return this.result(row);
+      if (terminal.has(row.state)) return this.terminalResult(caller, row, signal);
       const session = this.options.authority.session(row.caller);
-      if (!session) throw new OpensteerError({ code: "conflict", message: pluginInterruptedReason });
+      if (!session) throw new OperationOutcomeUnknown();
       session.signal = signal;
       try {
         return await this.#resume(caller, row, signal);
@@ -448,47 +576,24 @@ export class PluginExecutions {
       .where("agentSessionId", "=", session.data)
       .where("terminalEvidenceAt", "is", null)
       .execute();
-    await Promise.all(rows.map(async (row) => {
-      const result = await this.#stopExecution(row);
-      if (result) await this.#record(result);
-    }));
+    await Promise.all(
+      rows.map(async (row) => {
+        const result = await this.#stopExecution(row);
+        if (result) await this.#record(result);
+      }),
+    );
   }
   async resume(caller: AgentCaller, id: string, signal?: AbortSignal) {
     return this.#drive(id, async () => {
       let row = await this.#owned(caller, id);
       if (terminal.has(row.state)) {
-        if (row.state !== "completed") {
-          // The task can learn that its work ended without replaying plugin data or invoking the engine.
-          await this.options.authority.scoped(caller, () =>
-            this.options.authority.assert(
-              { ...this.options.authority.admit(caller), mode: "ask" },
-              "resume",
-            ),
-          );
-          return this.result(row);
-        }
-        // An earlier result is returned only under the authority it was produced under: the
-        // plugin it asked about is still reachable, and the effective mode has not dropped.
-        const request = row.requestId ? await this.options.store.requests.get(row.requestId) : null;
         await this.options.authority.scoped(caller, () =>
           this.options.authority.assert(
             { ...this.options.authority.admit(caller), mode: "ask" },
             "resume",
-            request?.presentation.plugin?.plugin.id,
-            row.id,
           ),
         );
-        if (
-          row.admittedAccessMode &&
-          !threadAccessModeAtMost(row.admittedAccessMode, caller.accessMode)
-        )
-          throw new OpensteerError({
-            code: "forbidden",
-            message:
-              "This agent's access changed after the plugin call ran, so its result is not returned.",
-            next: "Check the current state before continuing.",
-          });
-        return this.result(row);
+        return this.terminalResult(caller, row, signal);
       }
       if (!(await this.#authorizeExecution(row, "resume")))
         return this.result((await this.options.records.execution(id))!);
@@ -503,14 +608,12 @@ export class PluginExecutions {
     });
   }
   async #resume(caller: AgentCaller, row: PluginExecutionRecord, signal?: AbortSignal) {
-    if (terminal.has(row.state)) return this.result(row);
+    if (terminal.has(row.state)) return this.terminalResult(caller, row, signal);
     if (!(await this.#authorizeExecution(row, "resume")))
       return this.result((await this.options.records.execution(row.id))!);
     if (!(await this.#answerReady(row))) return this.result(row);
-    return this.#invoke(
-      caller,
-      () => this.options.service.resume({ execution: row.id }, this.#context(row), signal),
-      row.id,
+    return this.#invoke(caller, row.id, () =>
+      this.options.service.resume({ execution: row.id }, this.#context(row), signal),
     );
   }
   async #answerReady(row: PluginExecutionRecord) {
@@ -659,7 +762,7 @@ export class PluginExecutions {
         const timer = setTimeout(wake, Math.max(0, deadline - Date.now()));
         try {
           let row = await this.#owned(input.caller, id);
-          if (terminal.has(row.state)) return this.result(row);
+          if (terminal.has(row.state)) return this.terminalResult(input.caller, row, input.signal);
           if (await this.#answerReady(row)) {
             if (row.requestId) {
               const delivered = await this.options.store.requests.markToolDelivered(
@@ -771,7 +874,10 @@ export class PluginExecutions {
             `Plugin authority changed. ${pluginInterruptedReason}`,
           );
   }
-  async stopConnectionExecution(id: string, connectionId: string): Promise<void | "ended"> {
+  async stopConnectionExecution(
+    id: string,
+    connectionId: string,
+  ): Promise<void | "ended" | "contact-lost"> {
     const row = await this.options.records.execution(id);
     if (
       !row ||
@@ -780,6 +886,11 @@ export class PluginExecutions {
     )
       return;
     if (await this.#stopExecution(row)) return "ended";
+    if (
+      row.engineProcess &&
+      (await this.options.service.executionContactLost(row.id, row.engineProcess))
+    )
+      return "contact-lost";
   }
   #stopExecution(row: PluginExecutionRecord) {
     const submission = this.#submissions.get(row.id);
@@ -804,9 +915,9 @@ export class PluginExecutions {
       cause === "run-ended" ? row.runId : undefined,
     );
     if (!ended) return;
-    void this.options.service
-      .cancel({ execution: row.id }, this.#context(row))
-      .catch(() => undefined);
+    void this.#stopExecution(row)
+      .then((proof) => proof && this.#record(proof))
+      .catch(this.options.onError);
     if (ended.requestId)
       await this.options.store.requests.endPluginExecutionRequest(ended.requestId, cause);
     this.#changes.emit(row.id);

@@ -16,6 +16,7 @@ import {
   AgentConnectionStore,
   beginAgentSession,
   createDatabase,
+  liveAgentConnection,
   OpensteerStore,
   WorkHomeStore,
 } from "@opensteer/database";
@@ -135,6 +136,14 @@ describeStore("work Home", (it) => {
   it("policy revision never goes back", async () => {
     const f = await fixture();
     const a = await f.account();
+    const shellResets = () =>
+      f.database
+        .selectFrom("clientChanges")
+        .select("sequence")
+        .where("scopeKey", "=", "shell")
+        .where("operation", "=", "reset")
+        .execute();
+    const before = await shellResets();
     a.serve(f.document(3, defaultWorkPolicy));
     await a.service.refresh();
     a.serve(f.document(2, permissive));
@@ -142,6 +151,7 @@ describeStore("work Home", (it) => {
     a.serve(f.document(3, permissive));
     await a.service.refresh();
     expect(a.errors).toEqual([]);
+    expect(await shellResets()).toHaveLength(before.length + 1);
     expect(await f.home.applied()).toMatchObject({ ...defaultWorkPolicy, appliedRevision: 3 });
     expect(a.reportWorkPolicy.mock.calls).toEqual([
       [marker.assignmentId, 3, expect.any(AbortSignal)],
@@ -161,6 +171,43 @@ describeStore("work Home", (it) => {
     expect(await f.home.applied()).toMatchObject({ ...permissive, appliedRevision: 1 });
     expect(await f.connect({ scope: "everything" })).toMatchObject({ accessMode: "full-access" });
     a.service.close();
+  });
+
+  it("reads one snapshot when a Work policy narrows immediately after the authority SELECT", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect(selected);
+    const statements: string[] = [];
+    let armed = false;
+    let narrowed = false;
+    const observed = f.database.withPlugin({
+      transformQuery({ node }) {
+        if (armed) statements.push(JSON.stringify(node));
+        return node;
+      },
+      async transformResult({ result }) {
+        if (armed && !narrowed && statements.at(-1)?.includes("agent_connections")) {
+          narrowed = true;
+          await f.home.apply(
+            f.document(2, { ...permissive, externalMaxMode: "approval-required" }),
+          );
+        }
+        return result;
+      },
+    });
+    await new WorkHomeStore(observed).initialize(marker, f.task.deploymentId);
+    armed = true;
+    expect(await liveAgentConnection(observed, f.task.userId, connection.id)).toMatchObject({
+      grantRevision: 1,
+      accessMode: "full-access",
+    });
+    expect(narrowed).toBe(true);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain("work_home_policy");
+    expect(await liveAgentConnection(observed, f.task.userId, connection.id)).toMatchObject({
+      grantRevision: 2,
+      accessMode: "approval-required",
+    });
   });
 
   it("externalMaxMode caps a connection's Run and its direct operation but not the person's own agent", async () => {

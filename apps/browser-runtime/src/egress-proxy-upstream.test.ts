@@ -142,16 +142,20 @@ describe("managed browser egress", () => {
   it("forwards an HTTP body and derives Host from the validated authority", async () => {
     const received: unknown[] = [];
     const origin = await listen(
-      createServer(async (request, response) => {
-        received.push({
-          host: request.headers.host,
-          authorization: request.headers["proxy-authorization"],
-          nominated: request.headers["x-hop"],
-          body: await readBody(request),
-          method: request.method,
-          path: request.url,
+      createServer((request, response) => {
+        void (async () => {
+          received.push({
+            host: request.headers.host,
+            authorization: request.headers["proxy-authorization"],
+            nominated: request.headers["x-hop"],
+            body: await readBody(request),
+            method: request.method,
+            path: request.url,
+          });
+          response.end("response body");
+        })().catch((error: unknown) => {
+          response.destroy(error instanceof Error ? error : new Error(String(error)));
         });
-        response.end("response body");
       }),
     );
     const isp = await fakeUpstream(tunnelTo(origin.port));

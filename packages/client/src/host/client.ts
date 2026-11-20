@@ -810,6 +810,13 @@ export type HostConnectionState = "connected" | "connecting" | "offline";
 type HostSessionState = "authenticated" | "authentication-required" | "checking";
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
+export type ComputerViewRemovedListener = (
+  view: Extract<
+    import("@opensteer/protocol").HostToClientMessage,
+    { type: "host.computer-view.removed" }
+  >,
+) => void;
+
 export interface HostSnapshot {
   /** The person's tab catalog and layout, shared by every surface; patched row by row. */
   readonly tabs: import("./tab-store.js").TabStore;
@@ -879,6 +886,8 @@ export interface HostSnapshot {
     readonly manageComputers: boolean;
     readonly managePrivateResources: boolean;
   } | null;
+  /** Undefined before the shell arrives and null when it reports a personal Home. */
+  effectiveWorkPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   needsYou: import("@opensteer/protocol").NeedsYouPage | null;
   attentionSummaries?: readonly import("zod").infer<
     typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema
@@ -1138,6 +1147,7 @@ export interface HostClient extends TabsClient {
   ) => () => void;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
+  readonly subscribeComputerViewRemoved?: (listener: ComputerViewRemovedListener) => () => void;
   retainComputerView(
     viewId: string,
     generation: number,

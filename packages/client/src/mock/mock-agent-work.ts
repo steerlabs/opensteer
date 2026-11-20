@@ -286,7 +286,7 @@ export function mockAgentWork(input: {
     agentOperation: {
       operationId: "aop_00000000-0000-4000-8000-000000000107",
       connectionId: grok.id,
-      summary: `A connected agent wants to run a browser script in ${shopping} on Studio Mac.`,
+      summary: `${shopping} · Studio Mac\nGrok wants to run a script in ${shopping}.`,
       calls,
       agentReason: input.long ? null : "Buy the $12 phone case you asked for.",
       target: profile(shopping),
@@ -305,8 +305,8 @@ export function mockAgentWork(input: {
     payload: { kind: "person.question" },
     presentation: {
       kind: "form",
-      title: `Run a browser script in ${shopping}?`,
-      detail: `A connected agent wants to run a browser script in ${shopping} on Studio Mac.\n\nWhat it will run:\n${calls}${input.long ? "" : "\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for."}`,
+      title: `Run a script in ${shopping}?`,
+      detail: `${shopping} · Studio Mac\nGrok wants to run a script in ${shopping}.\n\nWhat it will run:\n${calls}${input.long ? "" : "\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for."}`,
       fields: [
         {
           id: "operation-decision",

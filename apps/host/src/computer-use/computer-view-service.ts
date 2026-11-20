@@ -576,10 +576,13 @@ export class ComputerViewService {
     );
   }
 
-  forgetRunner(runnerId: import("@opensteer/core").RunnerId): void {
+  forgetRunner(
+    runnerId: import("@opensteer/core").RunnerId,
+    displayReason?: "device-restarting",
+  ): void {
     for (const held of this.#views.values())
       if (held.route?.runnerId === runnerId || (!held.route && held.deviceId === runnerId))
-        this.#end(held, "disconnected");
+        this.#end(held, "disconnected", displayReason);
   }
   forgetDriver(binding: DeviceDriverIdentity): void {
     for (const held of this.#views.values())
@@ -692,6 +695,7 @@ export class ComputerViewService {
   #end(
     view: HeldView,
     reason: "closed" | "expired" | "revoked" | "disconnected" | "host-restarted",
+    displayReason?: "device-restarting",
   ): void {
     if (view.record.state === "closed" || view.record.state === "expired") return;
     if (view.timer) clearTimeout(view.timer);
@@ -715,6 +719,7 @@ export class ComputerViewService {
       generation: view.record.generation,
       machineId: DeviceIdSchema.parse(view.deviceId),
       reason,
+      ...(displayReason === undefined ? {} : { displayReason }),
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
     // Closed generations are needed only for bounded command replay and stale-generation checks.

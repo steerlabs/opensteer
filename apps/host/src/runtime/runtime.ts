@@ -1,5 +1,9 @@
 import { SessionPersonTools } from "../mcp/handlers/session-person.js";
-import { attemptStopStateCapability, CorrelationIdSchema, triggerStopGenerationCapability } from "@opensteer/protocol";
+import {
+  attemptStopStateCapability,
+  CorrelationIdSchema,
+  triggerStopGenerationCapability,
+} from "@opensteer/protocol";
 import {
   closeLegacyCdpForConnection,
   drainLegacyRunCdp,
@@ -558,6 +562,7 @@ export async function createHostRuntime(
   let deadlines: RequestDeadlines | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
+  let connectionMaintenance: DeadlineDrain | undefined;
   let assignmentReturns: DeadlineDrain | undefined;
   let reconcileMemoryPasses: (() => void) | undefined;
   let wakeTriggerSchedules: (() => void) | undefined;
@@ -794,6 +799,7 @@ export async function createHostRuntime(
       store: connectionStore,
       signingKey: keys.privateKey,
       verificationKey: keys.publicKey,
+      onMaintenanceChanged: () => connectionMaintenance?.wake(),
       ...(directory ? { directory } : {}),
     });
     const triggerStore = new TriggerStore(database);
@@ -1039,7 +1045,7 @@ export async function createHostRuntime(
         computerUse?.handleHelperEvent(deviceId, event, route),
       onRunnerDetached: (runnerId, reason) => {
         if (reason === "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
-        computerViews?.forgetRunner(runnerId);
+        computerViews?.forgetRunner(runnerId, reason === "device-restarting" ? reason : undefined);
         if (reason !== "device-restarting") displayStreams?.forgetRunner(runnerId, reason);
         computerUse?.forgetRunner(runnerId);
       },
@@ -1128,28 +1134,32 @@ export async function createHostRuntime(
                           }
                         : screenGeneration !== undefined &&
                             runnerRegistry?.agentsStoppedSince(screen.runnerId, screenGeneration)
-                          ? { state: "unavailable" as const, reason: { kind: "driver-stopped" as const } }
+                          ? {
+                              state: "unavailable" as const,
+                              reason: { kind: "driver-stopped" as const },
+                            }
                           : screenGeneration === undefined ||
                               runnerRegistry?.identityForRunner(screen.runnerId)
                                 ?.connectionGeneration !== screenGeneration
                             ? {
                                 state: "unavailable" as const,
                                 reason: {
-                                  kind: screenGeneration !== undefined &&
-                                      runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
+                                  kind:
+                                    screenGeneration !== undefined &&
+                                    runnerRegistry?.asleepSince(screen.runnerId, screenGeneration)
                                       ? ("driver-asleep" as const)
                                       : ("driver-offline" as const),
                                 },
                               }
-                          : !device.accessPolicy.apps
-                            ? {
-                                state: "disabled" as const,
-                                reason: { kind: "access-off" as const },
-                              }
-                            : (computerApps.deviceStatus(device.id)?.availability ?? {
-                                state: "unavailable" as const,
-                                reason: { kind: "unreported" as const },
-                              }),
+                            : !device.accessPolicy.apps
+                              ? {
+                                  state: "disabled" as const,
+                                  reason: { kind: "access-off" as const },
+                                }
+                              : (computerApps.deviceStatus(device.id)?.availability ?? {
+                                  state: "unavailable" as const,
+                                  reason: { kind: "unreported" as const },
+                                }),
                       setup: {
                         location: "driver-mac" as const,
                         driverRunnerId: screen.runnerId,
@@ -1856,7 +1866,9 @@ export async function createHostRuntime(
       computerUse?.endGrantSessions(grants);
       for (const grant of grants) {
         devices.endComputerGeneration(grant.runId, grant.bindingGeneration);
-        void drainLegacyRunCdp(browser, grant.runId, grant.bindingGeneration).catch(reportMutationFailure);
+        void drainLegacyRunCdp(browser, grant.runId, grant.bindingGeneration).catch(
+          reportMutationFailure,
+        );
       }
       void shellHub?.endGrantSessions(grants, "run-ended").catch(reportMutationFailure);
     };
@@ -2050,6 +2062,8 @@ export async function createHostRuntime(
     });
     const devices = new DeviceService({
       listConnections,
+      computerDriver: (id, definitionId) => deviceDrivers.resolve(id, definitionId),
+      runnerSleeping: (id) => runnerRegistry?.isRunnerSleeping(id) ?? false,
       onDeviceTargetAcquired: (target) => tabs!.acquired(target),
       onDeviceInputAccessWithdrawn: (id) => displayStreams?.withdrawOwnerInput(id),
       computerApps,
@@ -2314,6 +2328,7 @@ export async function createHostRuntime(
           auxiliaryModuleOwners[stream.fence.module](stream.identity.runnerId, reason);
         },
         onModuleReadiness: async () => runnerChanged(true),
+        onSleepAnnounced: ({ runnerId }) => devices.runnerSleeping(runnerId),
         // The person stopped or resumed agents on that computer: its Device
         // and tasks say so at once, and on resume what it held starts now.
         onAgentWork: (identity, stoppedSince) => {
@@ -2568,9 +2583,7 @@ export async function createHostRuntime(
           const attached = await store.attachRunnerExecutions({
             dispatchingRunIds: dispatchingRunIds(),
             executions,
-            ...(identity.agentsStoppedSince
-              ? { stoppedComputerName: identity.name }
-              : {}),
+            ...(identity.agentsStoppedSince ? { stoppedComputerName: identity.name } : {}),
             leaseExpiresAt: new Date(executionNow() + config.executionLeaseMs),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
@@ -2711,14 +2724,16 @@ export async function createHostRuntime(
           });
         },
         onTriggerResult: async (identity, result) => {
-          await triggerStore.completeExecution({
+          const occurrence = await triggerStore.completeExecution({
             executionGeneration: result.executionGeneration,
             output: result.output,
             verifiedContainment: identity.capabilities.includes(attemptStopStateCapability),
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
+          if (occurrence === null) return "retired";
           realtime.publishTriggersChanged();
+          return undefined;
         },
         onWatchStatus: async (identity, status) => {
           await watchService?.applyStatus(identity, status);
@@ -3296,7 +3311,15 @@ export async function createHostRuntime(
     });
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const agentTools = new OpensteerMcpService({
-      connectionPasswords: config.managedHome === undefined,
+      connectionPasswords: () => {
+        const hosting = initializedPersonal?.options.hostingComputerId;
+        return (
+          !config.managedHome &&
+          hosting !== undefined &&
+          computerApps.passwordSignInSupported(hosting)
+        );
+      },
+      savedLogins,
       pluginExecutions,
       teamsAvailable: async () =>
         (await database
@@ -3329,25 +3352,7 @@ export async function createHostRuntime(
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
-        tabs: new TabToolHandlers(
-          tabs,
-          agentSessions,
-          async (caller, profileId) => {
-            const profile = (await browser.listProfiles(caller.userId)).find(
-              ({ id }) => id === profileId,
-            );
-            if (!profile) return null;
-            return {
-              name: profile.name,
-              device: profile.home
-                ? {
-                    id: await store.requireSelfDeviceId(profile.home.runnerId),
-                    name: profile.home.name,
-                  }
-                : null,
-            };
-          },
-        ),
+        tabs: new TabToolHandlers(tabs, agentSessions),
         browser: new BrowserToolHandlers({
           sessions: agentSessions,
           tabs,
@@ -3555,7 +3560,12 @@ export async function createHostRuntime(
           if (attempt.kind === "plugin") {
             return pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
           }
-          if (attempt.kind !== "occurrence" && attempt.kind !== "run-attempt" && attempt.kind !== "watch") return;
+          if (
+            attempt.kind !== "occurrence" &&
+            attempt.kind !== "run-attempt" &&
+            attempt.kind !== "watch"
+          )
+            return;
           if (!attempt.environmentId || attempt.generation === null) return;
           if (attempt.kind === "run-attempt")
             await drainLegacyRunCdp(browser, attempt.runId, attempt.generation);
@@ -3580,29 +3590,37 @@ export async function createHostRuntime(
             environmentId: attempt.environmentId,
           };
           const receipt = await runners.dispatch(
-            attempt.kind === "occurrence" ? {
-                ...base,
-                type: "trigger.interrupt",
-                occurrenceId: attempt.id,
-                executionGeneration: attempt.generation,
-                ...(supportsStop ? { stop } : {}),
-              } : attempt.kind === "watch" ? {
-                ...base,
-                type: "watch.reconcile",
-                desired: [],
-                reconcileGeneration: 1,
-                stop: { ...stop, activationId: attempt.id, executionGeneration: attempt.generation },
-              } : {
-                ...base,
-                type: "run.interrupt",
-                runId: attempt.runId,
-                threadId: attempt.threadId!,
-                bindingGeneration: attempt.generation,
-                ...(supportsStop ? { stop } : {}),
-              },
-              AbortSignal.timeout(3_000),
-              { connectionGeneration: identity.connectionGeneration },
-            );
+            attempt.kind === "occurrence"
+              ? {
+                  ...base,
+                  type: "trigger.interrupt",
+                  occurrenceId: attempt.id,
+                  executionGeneration: attempt.generation,
+                  ...(supportsStop ? { stop } : {}),
+                }
+              : attempt.kind === "watch"
+                ? {
+                    ...base,
+                    type: "watch.reconcile",
+                    desired: [],
+                    reconcileGeneration: 1,
+                    stop: {
+                      ...stop,
+                      activationId: attempt.id,
+                      executionGeneration: attempt.generation,
+                    },
+                  }
+                : {
+                    ...base,
+                    type: "run.interrupt",
+                    runId: attempt.runId,
+                    threadId: attempt.threadId!,
+                    bindingGeneration: attempt.generation,
+                    ...(supportsStop ? { stop } : {}),
+                  },
+            AbortSignal.timeout(3_000),
+            { connectionGeneration: identity.connectionGeneration },
+          );
           if (supportsStop && (receipt.stopState === "ended" || receipt.stopState === "never-seen"))
             return "ended";
           return undefined;
@@ -3613,7 +3631,8 @@ export async function createHostRuntime(
       afterStop: (connectionId, reason) =>
         agentSessions.closeConnection(connectionId, reason === "disconnect"),
     });
-    const driveConnectionCleanups = connectionEffects.driveCleanups;
+    const driveConnectionCleanups = () =>
+      connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());
     if (config.managedHome && workMarker && workStore) {
       const issuer = config.managedHome.accountOrigin;
       workHome = new WorkHomeService({
@@ -3648,7 +3667,7 @@ export async function createHostRuntime(
     const app = await createHostServer(
       {
         connections,
-        connectionEffects,
+        connectionEffects: { stopLineage: driveConnectionCleanups },
         agentOperations: agentSessions,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
@@ -3725,9 +3744,7 @@ export async function createHostRuntime(
           : {}),
         ...(personalAccount ? { personalAccountLink: { service: personalAccount } } : {}),
         ...(managedHomeClaim ? { managedHomeClaim } : {}),
-        ...(workHome && workStore
-          ? { workHome: { service: workHome, read: () => workStore.applied() } }
-          : {}),
+        ...(workHome && workStore ? { workHome: { service: workHome } } : {}),
         ownerProfile,
         realtime,
         runnerAuthenticator,
@@ -3767,21 +3784,31 @@ export async function createHostRuntime(
       workHome.start();
       app.addHook("onClose", async () => workHome?.close());
     }
-    const connectionCleanupTimer = setInterval(() => {
-      if (workHome) {
-        workHome.wake();
-        void workHome.flush(AbortSignal.timeout(10_000)).catch(reportMutationFailure);
-      }
-      void directory?.refresh();
-      void connectionStore.pruneEmbedderAssertionClaims().catch((error: unknown) =>
-        app.log.warn({ err: error }, "Embedder assertion cleanup failed"),
-      );
-      void driveConnectionCleanups().catch((error: unknown) =>
-        app.log.warn({ err: error }, "Connected agent cleanup failed"),
-      );
-    }, 30_000);
-    connectionCleanupTimer.unref();
-    app.addHook("onClose", async () => clearInterval(connectionCleanupTimer));
+    if (workHome || directory) {
+      const policyRefreshTimer = setInterval(() => {
+        if (workHome) {
+          workHome.wake();
+          void workHome.flush(AbortSignal.timeout(10_000)).catch(reportMutationFailure);
+        }
+        void directory?.refresh();
+      }, 30_000);
+      policyRefreshTimer.unref();
+      app.addHook("onClose", async () => clearInterval(policyRefreshTimer));
+    }
+    let recoveredAgentSessions = false;
+    connectionMaintenance = new DeadlineDrain({
+      onError: (error) => app.log.warn({ err: error }, "Connected agent cleanup failed"),
+      drain: async () => {
+        if (!recoveredAgentSessions) {
+          await agentSessions.start();
+          recoveredAgentSessions = true;
+        }
+        await connectionEffects.driveCleanups();
+        await connectionStore.pruneEmbedderAssertionClaims();
+        return connectionStore.nextMaintenance(new Date(Date.now() + 30_000));
+      },
+    });
+    app.addHook("onClose", async () => connectionMaintenance?.close());
     reportAgentSessionError = (error) =>
       app.log.warn({ err: error }, "A connected agent's direct work failed to settle");
     app.addHook("onClose", async () => {
@@ -3791,10 +3818,7 @@ export async function createHostRuntime(
     });
     // Work handed off before this process can no longer report: its outcome is unknown. Then a
     // cleanup interrupted by the last shutdown finishes, recording it as uncertain.
-    void agentSessions
-      .start()
-      .then(() => driveConnectionCleanups())
-      .catch((error: unknown) => app.log.warn({ err: error }, "Connected agent cleanup failed"));
+    connectionMaintenance.start();
     reportDispatchError = (error, commandId) =>
       app.log.warn({ err: error, commandId }, "Runner command dispatch failed");
     reportContinuationError = (error) => app.log.error({ err: error }, "Continuation failed");
@@ -4092,6 +4116,7 @@ export async function createHostRuntime(
     await executionLeaseLoop?.close();
     await finishLoop?.close();
     await assignmentReturns?.close();
+    await connectionMaintenance?.close();
     await catalogConvergence?.close();
     await deadlines?.close();
     removeMutationHooks?.();

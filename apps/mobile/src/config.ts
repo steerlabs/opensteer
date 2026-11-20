@@ -1,10 +1,12 @@
 import {
   mockCloudComputerScenes,
   mockConnectedAgentScenes,
+  mockWorkHomeScenes,
   mockPluginScenarios,
   mockSubagentScenes,
   type MockCloudComputerScene,
   type MockConnectedAgentScene,
+  type MockWorkHomeScene,
   type MockPluginScenario,
   type MockSubagentScene,
 } from "@opensteer/client/mock";
@@ -38,6 +40,7 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: z.enum(mockPluginScenarios).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: z.enum(mockConnectedAgentScenes).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_WORK: z.enum(mockWorkHomeScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD: z.enum(mockCloudComputerScenes).optional(),
 });
 
@@ -64,6 +67,8 @@ export interface MobileConfiguration {
   readonly mockPlugins: MockPluginScenario | null;
   /** Connected agents in each state and a waiting consent, as the web's `?mock-agents`. */
   readonly mockAgents: MockConnectedAgentScene | null;
+  /** A work Home under its organization's policy, as the web's `?mock-work=`; personal by default. */
+  readonly mockWork: MockWorkHomeScene | null;
   /** The mock Account's Cloud Computer, as the web's `?mock-cloud=`; none by default. */
   readonly mockCloud: MockCloudComputerScene | null;
   /**
@@ -130,6 +135,7 @@ export function readMobileConfiguration(
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
     mockPlugins: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS ?? null) : null,
     mockAgents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS ?? null) : null,
+    mockWork: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_WORK ?? null) : null,
     mockCloud: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_CLOUD ?? null) : null,
     refusal:
       mockRequested && !mockAllowed

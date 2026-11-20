@@ -542,6 +542,23 @@
       },
       "timeoutMs" : 30000
     },
+    "session.bindExisting" : {
+      "id" : 31,
+      "method" : "session.bindExisting",
+      "params" : {
+        "app" : {
+          "access" : "read",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74",
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
+      },
+      "timeoutMs" : 30000
+    },
     "session.observe" : {
       "id" : 7,
       "method" : "session.observe",
@@ -571,6 +588,22 @@
     "session.windows" : {
       "id" : 20,
       "method" : "session.windows",
+      "params" : {
+        "app" : {
+          "access" : "read",
+          "identity" : {
+            "bundleId" : "com.apple.Notes",
+            "displayName" : "Notes",
+            "teamId" : null
+          }
+        },
+        "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
+      },
+      "timeoutMs" : 30000
+    },
+    "session.windowsExisting" : {
+      "id" : 30,
+      "method" : "session.windowsExisting",
       "params" : {
         "app" : {
           "access" : "read",
@@ -831,6 +864,25 @@
         "windowId" : "win_00000000-0000-4000-8000-000000000042"
       }
     },
+    "session.bindExisting" : {
+      "window" : {
+        "current" : true,
+        "focused" : true,
+        "frame" : {
+          "height" : 620,
+          "width" : 900,
+          "x" : 240,
+          "y" : 118
+        },
+        "main" : true,
+        "minimized" : false,
+        "modal" : false,
+        "onScreen" : true,
+        "ref" : "window-1",
+        "title" : "Shopping list",
+        "windowId" : "win_00000000-0000-4000-8000-000000000042"
+      }
+    },
     "session.close" : {
 
     },
@@ -898,6 +950,27 @@
       "sessionId" : "cus_4a7c2f18-9b3e-4d61-8a02-5f6c1d9e0b74"
     },
     "session.windows" : {
+      "windows" : [
+        {
+          "current" : true,
+          "focused" : true,
+          "frame" : {
+            "height" : 620,
+            "width" : 900,
+            "x" : 240,
+            "y" : 118
+          },
+          "main" : true,
+          "minimized" : false,
+          "modal" : false,
+          "onScreen" : true,
+          "ref" : "window-1",
+          "title" : "Shopping list",
+          "windowId" : "win_00000000-0000-4000-8000-000000000042"
+        }
+      ]
+    },
+    "session.windowsExisting" : {
       "windows" : [
         {
           "current" : true,

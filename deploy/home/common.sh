@@ -49,6 +49,23 @@ durable_marker() {
   touch "$1" && sync "$1" && sync "${1%/*}"
 }
 
+recovery_needs_operator() {
+  printf '%s recovery evidence is inconsistent. Leaving both sets in place; operator intervention is required.\n' "$1" >&2
+  return 1
+}
+
+clean_retired_journal() {
+  local journal=$1 retired="$1.retired"
+  [[ -e $retired || -L $retired ]] || return 0
+  [[ ! -e $journal && ! -L $journal && -d $retired && ! -L $retired ]] ||
+    { recovery_needs_operator "$journal"; return 1; }
+  sync "${journal%/*}" && rm -rf -- "$retired"
+}
+
+retire_journal() {
+  mv -- "$1" "$1.retired" && clean_retired_journal "$1"
+}
+
 random_secret() { openssl rand -hex 32; }
 
 save_secret() {
@@ -94,9 +111,50 @@ valid_hostname() {
   [[ ${labels[-1]} =~ ^[a-z] ]]
 }
 
+managed_feed_resolution() {
+  timeout 10s python3 -I - "$1" <<'PY'
+import ipaddress
+import re
+import socket
+import sys
+from urllib.parse import urlsplit
+
+try:
+    url = sys.argv[1]
+    if not re.fullmatch(r"https://[a-zA-Z0-9.:/_=%+-]{1,2040}", url):
+        raise ValueError()
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    port = parsed.port if parsed.port is not None else 443
+    if not host or not re.fullmatch(r"[a-z0-9.-]+", host) or port == 0:
+        raise ValueError()
+    if host.rstrip('.').endswith('.localhost') or host.rstrip('.') == 'localhost':
+        raise ValueError()
+    addresses = dict.fromkeys(ipaddress.ip_address(item[4][0]) for item in
+                             socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+    if not addresses:
+        raise ValueError()
+    for address in addresses:
+        if address.version == 6 and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if (not address.is_global or address.is_multicast or address.is_reserved or
+                (address.version == 6 and (address.sixtofour or address.teredo or
+                                           address.is_site_local))):
+            raise ValueError()
+    print(f"{host}:{port}:" + ",".join(f"[{ip}]" if ip.version == 6 else str(ip) for ip in addresses))
+except (OSError, ValueError):
+    sys.exit(1)
+PY
+}
+
 fetch_manifest() {
+  local resolution args=()
+  if [[ ${3:-false} == true ]]; then
+    resolution=$(managed_feed_resolution "$1") || fail 'The Account update feed must resolve only to public HTTPS addresses.'
+    args=(--noproxy '*' --resolve "$resolution")
+  fi
   curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 \
-    --connect-timeout 10 --max-time 30 --max-filesize 131072 --output "$2" -- "$1"
+    "${args[@]}" --connect-timeout 10 --max-time 30 --max-filesize 131072 --output "$2" -- "$1"
 }
 
 release_to_env() {

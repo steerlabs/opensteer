@@ -25,6 +25,12 @@ export interface StandardCdpFacts {
   readonly placementKey: string;
   readonly grantRevision: number | null;
   readonly agentConnectionId: string | null;
+  readonly seed?: {
+    readonly surfaceId: import("@opensteer/core").BrowserSurfaceId;
+    readonly generation: number;
+  };
+  readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
+  readonly threadId?: import("@opensteer/core").ThreadId | null;
 }
 
 export interface StandardCdpTicketClaims {

@@ -495,6 +495,11 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentId,
       browser,
       canonicalOrigin: sourceOrigin,
+      computerName: async (ownerId, deviceId) =>
+        ownerId === personal.userId &&
+        deviceId === (await store.requireSelfDeviceId(personal.runnerId))
+          ? "Work Mac"
+          : null,
       currentRoute: async () => {
         if (routeFault) throw routeFault;
         return currentRoute;
@@ -1033,6 +1038,38 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         .execute()
     ).length;
   }
+
+  it("offers a verified Chrome and names the one that needs pairing again", async () => {
+    const deviceId = await store.requireSelfDeviceId(personal.runnerId);
+    const pair = async (name: string, verified: boolean) => {
+      const codeHash = randomUUID();
+      await sourceStore.createPairing({
+        ownerId: personal.userId,
+        codeHash,
+        expiresAt: new Date(Date.now() + 60_000),
+        canonicalOrigin: sourceOrigin,
+        ...(verified ? { deviceId } : {}),
+        remoteOrigin: null,
+        remoteGeneration: null,
+      });
+      return sourceStore.consumePairing({
+        codeHash,
+        name,
+        tokenHash: randomUUID(),
+        origin: sourceOrigin,
+        routeGeneration: null,
+        liveTabsOnly: true,
+        replaces: null,
+      });
+    };
+    const verified = await pair("Work Chrome", true);
+    await pair("Home Mac", false);
+    expect(await service.chromeTabGrantCatalog(personal.userId)).toEqual({
+      chromeTabs: [{ sourceId: verified.id, computerName: "Work Mac", paired: true }],
+      chromeTabsNeedPairing: true,
+      chromeTabsRepairNames: ["Home Mac"],
+    });
+  });
 
   it("returns and replays autonomous joins without a Request or continuation", async () => {
     const ready = await passwordScene();

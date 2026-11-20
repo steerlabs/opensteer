@@ -296,11 +296,11 @@ export const makeExecutions = (
       runs.delete(run);
       return true;
     };
-    const close = (run: Run) => Scope.close(run.scope, Exit.void).pipe(
-      Effect.tap(() => Effect.sync(() => run.onDrained?.())),
-    );
-    const stop = (run: Run) =>
-      Effect.suspend(() => (detach(run) ? close(run) : Effect.void));
+    const close = (run: Run) =>
+      Scope.close(run.scope, Exit.void).pipe(
+        Effect.tap(() => Effect.sync(() => run.onDrained?.())),
+      );
+    const stop = (run: Run) => Effect.suspend(() => (detach(run) ? close(run) : Effect.void));
     // Closing a run interrupts its unfinished tools and waits for their cancellation. A result
     // or a caller's cancellation never waits for that: the host scope owns it, shutting the host
     // down still waits for it, and closing runs count toward the execution limit until done.
@@ -310,9 +310,7 @@ export const makeExecutions = (
         closing.add(run);
         return Effect.forkIn(
           Effect.uninterruptible(
-            close(run).pipe(
-              Effect.ensuring(Effect.sync(() => closing.delete(run))),
-            ),
+            close(run).pipe(Effect.ensuring(Effect.sync(() => closing.delete(run)))),
           ),
           hostScope,
         ).pipe(Effect.asVoid);
@@ -773,7 +771,11 @@ export const makeExecutions = (
         work: Program,
         transport: PendingTransport,
         approval: ApprovalMode = "ask",
-        witness?: { readonly id: string; readonly onAdmitted: () => void; readonly onDrained: () => void },
+        witness?: {
+          readonly id: string;
+          readonly onAdmitted: () => void;
+          readonly onDrained: () => void;
+        },
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
           const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;

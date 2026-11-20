@@ -61,7 +61,7 @@ export async function applyAgentSessions(database: Kysely<DatabaseSchema>) {
       result_summary jsonb,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
-      unique (session_id, operation_key),
+      unique (connection_id, operation_key),
       check ((outcome is null) = (completed_at is null))
     );
     create index agent_operations_connection on agent_operations(connection_id, created_at desc, id desc);

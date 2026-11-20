@@ -20,7 +20,10 @@ function listen<T extends (...args: never[]) => void>() {
   };
 }
 
-async function fixture(detachReceipts = false) {
+async function fixture(
+  detachReceipts = false,
+  journal?: Parameters<ChromeTabDebugger["connect"]>[4],
+) {
   const onCreated =
     listen<(details: { sourceTabId: number; tabId: number; url: string }) => void>();
   const onRemoved = listen<(tabId: number) => void>();
@@ -84,6 +87,7 @@ async function fixture(detachReceipts = false) {
     },
     () => {},
     detachReceipts,
+    journal,
   );
   const send = (command: BrowserSourceTabCommand) => {
     const done = Promise.withResolvers<ReturnType<typeof BrowserSourceTabResultSchema.parse>>();
@@ -226,4 +230,88 @@ it("revokes a share before an in-progress debugger detachment is acknowledged", 
   detach.resolve();
   await expect(stopped).resolves.toMatchObject({ ok: true });
   expect(f.received).toContainEqual({ type: "tab.detached", shareId: f.shareId });
+});
+
+it("replays a confirmed detach only for the same pairing until the Home acknowledges it", async () => {
+  const stored = new Set<string>();
+  const journal = {
+    pending: [],
+    record: async (id: string) => {
+      stored.add(id);
+    },
+    acknowledge: async (id: string) => {
+      stored.delete(id);
+    },
+  };
+  const f = await fixture(true, journal);
+  await f.evaluate();
+  const detach = Promise.withResolvers<void>();
+  f.detach.mockReturnValueOnce(detach.promise);
+  const stopping = f.send({
+    action: "unshare",
+    requestId: crypto.randomUUID(),
+    shareId: f.shareId,
+    attachmentId: f.attachmentId,
+  });
+  const receipt = { type: "tab.detached", shareId: f.shareId };
+  expect(f.received).not.toContainEqual(receipt);
+  expect(stored.size).toBe(0);
+  detach.resolve();
+  await expect(stopping).resolves.toMatchObject({ ok: true });
+  expect(stored).toEqual(new Set([f.shareId]));
+  expect(f.received).toContainEqual(receipt);
+
+  f.debuggerRelay.disconnect(f.sourceId);
+  const other = vi.fn((_frame: BrowserSourceClientFrame) => true);
+  const reconnected = vi.fn((_frame: BrowserSourceClientFrame) => true);
+  f.debuggerRelay.connect("another-home", other, () => {}, true, journal);
+  f.debuggerRelay.connect(f.sourceId, reconnected, () => {}, true, {
+    ...journal,
+    pending: [...stored],
+  });
+  expect(other).not.toHaveBeenCalled();
+  expect(reconnected).toHaveBeenCalledExactlyOnceWith(receipt);
+  await f.debuggerRelay.acknowledgeDetach(f.sourceId, f.shareId);
+  expect(stored.size).toBe(0);
+  reconnected.mockClear();
+  f.debuggerRelay.connect(f.sourceId, reconnected, () => {}, true, journal);
+  expect(reconnected).not.toHaveBeenCalled();
+});
+
+it("waits for a previously unshared popup to detach before sending the root receipt", async () => {
+  const f = await fixture(true);
+  await f.evaluate();
+  const popupShared = Promise.withResolvers<string>();
+  const send = f.received.push.bind(f.received);
+  vi.spyOn(f.received, "push").mockImplementation((frame) => {
+    if (frame.type === "tab.shared" && frame.openerShareId === f.shareId)
+      popupShared.resolve(frame.shareId);
+    return send(frame);
+  });
+  f.onCreated.emit({ tabId: 6, sourceTabId: 5, url: "https://fixture.test/" });
+  const popup = await popupShared.promise;
+  await f.send({
+    action: "cdp",
+    requestId: crypto.randomUUID(),
+    shareId: popup,
+    attachmentId: crypto.randomUUID(),
+    method: "Runtime.evaluate",
+  });
+  const detach = Promise.withResolvers<void>();
+  f.detach.mockReturnValueOnce(detach.promise);
+  f.debuggerRelay.stop(f.sourceId, popup);
+  const rootStopped = f.send({
+    action: "unshare",
+    requestId: crypto.randomUUID(),
+    shareId: f.shareId,
+    attachmentId: f.attachmentId,
+  });
+  await expect(f.evaluate()).resolves.toMatchObject({ ok: false });
+  expect(f.received).not.toContainEqual({ type: "tab.detached", shareId: f.shareId });
+  detach.resolve();
+  await expect(rootStopped).resolves.toMatchObject({ ok: true });
+  expect(f.received.filter(({ type }) => type === "tab.detached")).toEqual([
+    { type: "tab.detached", shareId: popup },
+    { type: "tab.detached", shareId: f.shareId },
+  ]);
 });

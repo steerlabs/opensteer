@@ -148,6 +148,7 @@ export function AgentGrantEditor({
                 </span>
               </label>
             ))}
+            {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
             <DisclosureRow
               disabled={disabled}
               icon="app"
@@ -259,7 +260,6 @@ export function AgentGrantEditor({
               </span>
             </div>
           </div>
-          {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
           {draft.tasks ? (
             <p className="settings-footnote agent-grant__warning" role="note">
               {agentWords("consent.tasks.warning", { home })}

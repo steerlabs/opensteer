@@ -132,12 +132,14 @@ describe("stateless MCP registration", () => {
   const challenge = createHash("sha256").update("x".repeat(64)).digest("base64url");
   it("sanitizes the client name in an older signed registration", async () => {
     const redirectUri = "https://client.example/cb";
-    const body = Buffer.from(JSON.stringify({
-      v: 1,
-      issuer: origin + "/oauth/mcp",
-      name: "  Legacy   \u202Eclient\u2028",
-      redirects: [redirectUri],
-    })).toString("base64url");
+    const body = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        issuer: origin + "/oauth/mcp",
+        name: "  Legacy   \u202Eclient\u2028",
+        redirects: [redirectUri],
+      }),
+    ).toString("base64url");
     const signature = sign(null, Buffer.from(`opensteer-mcp-client-v1.${body}`), pair.privateKey);
     const request = oauth();
     const path = await request.authorize(origin, {

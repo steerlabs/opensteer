@@ -26,7 +26,6 @@ const adapters = vi.hoisted(() => ({
     throw new Error("This personal task fixture has no private-resource adapter");
   },
 }));
-vi.mock("./resource-access.js", () => ({ assertLineageCompatibleReuse: adapters.unexpected }));
 vi.mock("./computer-app-approvals.js", () => ({
   askForComputerAppApprovalInTransaction: adapters.unexpected,
   computerUsePolicyInTransaction: adapters.unexpected,
@@ -851,6 +850,60 @@ it("joins an explicit private steer to the active team Run without assigning a r
       .where("id", "=", first.receipt.runId!)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: first.requestId });
+});
+
+it("preserves a reply reported by the live attempt while its steer restart is pending", async () => {
+  const f = await fixture();
+  const task = await f.task("Waiting for the original reply");
+  const descriptor = testRunnerDescriptor({
+    runnerId: f.runnerId,
+    environmentId: f.environmentId,
+    name: "Fixture",
+    runnerKind: "main",
+  });
+  if (!descriptor.modules.agents) throw new Error("Missing fixture agents");
+  await f.database
+    .updateTable("runners")
+    .set({
+      capabilities: jsonValue([...descriptor.capabilities, "attempts-v1"]),
+      moduleDescriptors: {
+        agents: {
+          ...descriptor.modules.agents,
+          harnessDrivers: descriptor.modules.agents.harnessDrivers.map((driver) => ({
+            ...driver,
+            driverKind: HarnessIdSchema.parse("codex"),
+            steering: false,
+          })),
+        },
+      },
+    })
+    .where("id", "=", f.runnerId)
+    .execute();
+  const send = (policy: "queue" | "steer") =>
+    enqueueThreadInput(f.database, {
+      threadId: task.id,
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      policy,
+      content: [
+        { type: "text", text: policy === "queue" ? "Draft the plan" : "Use the blue palette" },
+      ],
+      idempotencyKey: `pending-restart:${policy}`,
+    });
+  const initial = await send("queue");
+  const { run, bindingGeneration } = await f.start(initial.run!.id);
+  const steer = await send("steer");
+  expect(steer.command?.type).toBe("run.restart");
+  await f.emit(run.id, bindingGeneration, "Original answer");
+  await f.finish(run.id, bindingGeneration);
+  expect(
+    await f.database
+      .selectFrom("messages")
+      .select("content")
+      .where("runId", "=", run.id)
+      .where("kind", "=", "assistant")
+      .execute(),
+  ).toEqual([{ content: [{ type: "text", text: "Original answer" }] }]);
 });
 
 it("keeps external-agent and Trigger turns on a bound task free of team request authority", async () => {

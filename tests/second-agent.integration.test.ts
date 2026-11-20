@@ -20,7 +20,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
+import { HttpHostClient, type WebSocketClient } from "../packages/client/src/host/index.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   Client,
@@ -43,15 +45,22 @@ import {
 } from "../packages/browser-runtime-core/src/index.js";
 import {
   createId,
+  TabIdSchema,
   ThreadIdSchema,
   type AgentGrant,
   type BrowserProfileId,
+  type TabId,
   type ThreadAccessMode,
 } from "../packages/core/src/index.js";
+import { TabStore } from "../packages/database/src/tab-store.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 import {
   AgentConnectionIdSchema,
   agentConnectionMcpPath,
@@ -240,7 +249,7 @@ function within(ms: number) {
 
 /** What a Request asks: a script, or direct control through a raw connection. */
 const direct = (_title: string, detail: string) =>
-  detail.includes("Full control of the browser profile");
+  detail.includes("through a raw browser connection (CDP)");
 const script = (title: string, detail: string) => !direct(title, detail);
 /** The words the person reads before the exact script or calls the Request also shows. */
 function personWords(presentation: {
@@ -274,6 +283,11 @@ integration("a second agent on the person's computer", () => {
   let profileB: { readonly id: BrowserProfileId; readonly name: string };
   let a: Agent;
   let b: Agent;
+  let signInTargetB: string;
+  const engines = new Map<
+    BrowserProfileId,
+    Awaited<ReturnType<PlaywrightChromiumLauncher["launch"]>>
+  >();
   const answered = new Set<string>();
   /** What each agent's work produced, in the Home's records. */
   const work = {
@@ -293,12 +307,19 @@ integration("a second agent on the person's computer", () => {
     const runtimeId = "second-agent-browser";
     const bridgeToken = randomBytes(32).toString("base64url");
     let keys: readonly { keyId: string; publicKeyPem: string }[] = [];
+    const launcher = new PlaywrightChromiumLauncher({
+      headless: true,
+      chromiumSandbox: false,
+      executablePath: chromium.executablePath(),
+    });
+    const launch = launcher.launch.bind(launcher);
+    vi.spyOn(launcher, "launch").mockImplementation(async (request, signal) => {
+      const engine = await launch(request, signal);
+      if (request.storage.kind === "local") engines.set(request.storage.binding.profileId, engine);
+      return engine;
+    });
     const runtime = new BrowserRuntime({
-      launcher: new PlaywrightChromiumLauncher({
-        headless: true,
-        chromiumSandbox: false,
-        executablePath: chromium.executablePath(),
-      }),
+      launcher,
       localProfiles: { root: join(scratch, "profiles") },
       runtimeId,
       sessionFilesRoot: join(scratch, "files"),
@@ -371,6 +392,7 @@ integration("a second agent on the person's computer", () => {
         tabIds: [opened.tab.tabId],
       }),
     );
+    return opened.tab.tabId;
   }
 
   /** The person approves the agent's connection on the Home's consent screen. */
@@ -548,6 +570,18 @@ integration("a second agent on the person's computer", () => {
     deviceName = homeOfProfile.name;
     await signIn(profileA.id, alice);
     await signIn(profileB.id, bob);
+    const engine = engines.get(profileB.id)!;
+    signInTargetB = await home.observe(
+      async () => {
+        const { targetInfos } = (await engine.cdp.send("Target.getTargets")) as {
+          targetInfos: { targetId: string; url: string }[];
+        };
+        return targetInfos.find(({ url }) => url === new URL("/account", siteOrigin).href)
+          ?.targetId;
+      },
+      within(10_000),
+      "The person's closed sign-in page was not retained in Chromium",
+    );
     a = await connectAgent("Agent A", "Research Agent", "approval-required", profileA.id);
     b = await connectAgent("Agent B", "Shopping Agent", "full-access", profileB.id);
   }, 240_000);
@@ -587,7 +621,9 @@ integration("a second agent on the person's computer", () => {
       browserBDisconnected = true;
     });
     const context = browserB.contexts()[0]!;
-    pageB = context.pages()[0] ?? (await context.newPage());
+    expect(context.pages()).toHaveLength(1);
+    pageB = context.pages()[0]!;
+    expect(pageB.url()).toBe("about:blank");
     await pageB.goto(new URL("/account?agent=b", siteOrigin).href);
     const headingB = await pageB.locator("h1").innerText();
     const orderB = await pageB.locator("#order").innerText();
@@ -721,9 +757,23 @@ integration("a second agent on the person's computer", () => {
     expect(browserB!.contexts()).toHaveLength(1);
     const session = await context.newCDPSession(pageB!);
     const { targetInfos } = (await session.send("Target.getTargets")) as {
-      targetInfos: { url: string; type: string }[];
+      targetInfos: { targetId: string; url: string; type: string }[];
     };
     await session.detach();
+    expect(targetInfos.map(({ targetId }) => targetId)).not.toContain(signInTargetB);
+    const rootAlias = await browserB!.newBrowserCDPSession();
+    try {
+      const attach = (targetId: string) =>
+        rootAlias.send("Target.attachToTarget", { targetId, flatten: true }).then(
+          () => "attached",
+          (error: Error) => error.message,
+        );
+      const missing = await attach(randomUUID());
+      expect(missing).not.toBe("attached");
+      expect(await attach(signInTargetB)).toBe(missing);
+    } finally {
+      await rootAlias.detach();
+    }
     const urls = targetInfos.map(({ url }) => url);
     readByB.push(...urls);
     expect(urls.some((url) => url.endsWith("agent=b"))).toBe(true);
@@ -770,28 +820,267 @@ integration("a second agent on the person's computer", () => {
     expect(site.hits.some(({ path }) => path === refusedProbe)).toBe(false);
   }, 180_000);
 
-  it(
-    "asks in the fixed words, naming the agent",
-    async () => {
-      const call = a.call("browser_use", { code: `print("named")` });
-      const waiting = await decide(script, "allow");
-      await call;
-      const form = waiting.request.presentation;
-      if (form.kind !== "form") throw new Error("Not a form Request");
-      expect(form.title).toBe(`Run a script in ${profileA.name}?`);
-      expect(form.fields[0]?.choices?.map(({ label }) => label)).toEqual([
-        "Allow once",
-        "Don't allow",
-      ]);
-      const connecting = a.call("browser_connect", {});
-      const connect = await decide(direct, "refuse");
-      await connecting;
-      expect(connect.request.presentation.title).toBe(
-        `Let Agent A take direct control of ${profileA.name}?`,
+  it("asks in the fixed words, naming the agent", async () => {
+    const call = a.call("browser_use", { code: `print("named")` });
+    const waiting = await decide(script, "allow");
+    await call;
+    const form = waiting.request.presentation;
+    if (form.kind !== "form") throw new Error("Not a form Request");
+    expect(form.title).toBe(`Run a script in ${profileA.name}?`);
+    expect(form.fields[0]?.choices?.map(({ label }) => label)).toEqual([
+      "Allow once",
+      "Don't allow",
+    ]);
+    const connecting = a.call("browser_connect", {});
+    const connect = await decide(direct, "refuse");
+    await connecting;
+    expect(connect.request.presentation.title).toBe(
+      `Let Agent A take direct control of ${profileA.name}?`,
+    );
+    expect(personWords(connect.request.presentation)).toContain(
+      "It can control its own pages and access every cookie and signed-in site in this profile.",
+    );
+    expect(connect.request.presentation.detail).toContain(
+      `Control of the agent's own pages in the browser profile "${profileA.name}" on ${deviceName} for up to 10 minutes, through a raw browser connection (CDP), with access to every cookie and signed-in site in that profile.`,
+    );
+  }, 120_000);
+
+  it("lets the person watch both agents' exact pages without interrupting either agent", async () => {
+    const tabA = TabIdSchema.parse([...work.a.tabs][0]);
+    const urlB = new URL("/account?agent=b", siteOrigin).href;
+    const headers = {
+      origin: home.hostOrigin.origin,
+      [hostApiVersionHeader]: String(hostApiVersion),
+    };
+    const sockets: WebSocket[] = [];
+    const viewerEvents: string[] = [];
+    const person = new HttpHostClient({
+      baseUrl: home.hostOrigin,
+      fetch: (input, init) => {
+        const requestHeaders = new Headers(init?.headers);
+        requestHeaders.set("cookie", home.sessionCookie);
+        requestHeaders.set("origin", home.hostOrigin.origin);
+        return fetch(input, { ...init, headers: requestHeaders });
+      },
+      webSocketFactory: (url) => {
+        const socket = new WebSocket(url, { headers: { ...headers, cookie: home.sessionCookie } });
+        if (new URL(url).pathname.startsWith("/v1/browser-sessions/")) {
+          sockets.push(socket);
+          socket.on("close", (code, reason) => viewerEvents.push(`close ${code} ${reason}`));
+          socket.on("error", (error) => viewerEvents.push(error.message));
+        }
+        return socket as unknown as WebSocketClient;
+      },
+    });
+    const unwatchTabs = person.watchPersonalResource("tab", () => undefined);
+    try {
+      await person.load();
+      await vi.waitFor(() => expect(person.getSnapshot().tabs.get(tabA)?.kind).toBe("page"), {
+        timeout: 10_000,
+      });
+
+      async function viewPage(tabId: typeof tabA, label: "a" | "b") {
+        const viewer = await person.activateTab(tabId);
+        if (viewer.kind !== "page") throw new Error("A browser tab must open a page viewer");
+        const { sessionId, surfaceId } = viewer;
+        expect(surfaceId).toBe(tabId);
+        const firstSocket = sockets.length;
+        viewerEvents.length = 0;
+        const release = person.retainBrowserViewer(sessionId, surfaceId, {
+          picture: true,
+          captureRegion: true,
+          frameWindow: true,
+          rasterDemand: true,
+        });
+        try {
+          await vi.waitFor(
+            () => {
+              expect(
+                person.browserViewerState(sessionId, surfaceId),
+                `Agent ${label}: ${viewerEvents.join("; ")}`,
+              ).toMatchObject({
+                admitted: true,
+                status: "live",
+              });
+              expect(person.browserViewerSurface(sessionId, surfaceId)).toMatchObject({
+                id: tabId,
+                url: new URL(`/account?agent=${label}`, siteOrigin).href,
+                title: "Account",
+              });
+              const frame = person.browserFrames.get(sessionId, surfaceId);
+              expect(frame?.header.surfaceId).toBe(tabId);
+              expect(frame?.data.byteLength ?? 0).toBeGreaterThan(0);
+            },
+            { timeout: 10_000 },
+          );
+        } finally {
+          const socket = sockets.length > firstSocket ? sockets.at(-1) : undefined;
+          const closed =
+            socket && socket.readyState !== WebSocket.CLOSED
+              ? once(socket, "close", { signal: within(5_000) })
+              : undefined;
+          release();
+          await closed;
+        }
+        return sessionId;
+      }
+
+      const sessionA = await viewPage(tabA, "a");
+      const afterWatch = await allowedScript(
+        `
+        const page = await openPage(${JSON.stringify(tabA)});
+        print({ tabId: page.tabId, heading: await page.locator("h1").innerText() });
+      `,
+        { tabId: tabA, taskId: [...work.a.tasks][0] },
       );
-    },
-    120_000,
-  );
+      expect(structured(afterWatch)).toMatchObject({ status: "completed" });
+      expect(JSON.parse(text(afterWatch).split("\n")[0]!)).toEqual({
+        tabId: tabA,
+        heading: "Signed in as Alice",
+      });
+
+      const tabB = TabIdSchema.parse([...work.b.tabs][0]);
+      expect(
+        ok(await home.api["tabs.state"]({})).tabs.find(({ tabId }) => tabId === tabB),
+      ).toMatchObject({ openedBy: { taskId: [...work.b.tasks][0] }, state: "open" });
+      const sessionB = await viewPage(tabB, "b");
+      expect(browserBDisconnected).toBe(false);
+      expect(browserB?.isConnected()).toBe(true);
+      expect(await pageB!.locator("h1").innerText()).toBe("Signed in as Bob");
+      expect(pageB!.url()).toBe(urlB);
+
+      async function refusedViewer(agent: Agent, sessionId: string) {
+        const socket = new WebSocket(
+          `ws://${home.hostOrigin.host}/v1/browser-sessions/${sessionId}/connect`,
+          {
+            headers: { ...headers, authorization: `Bearer ${agent.bearer}` },
+            handshakeTimeout: 5_000,
+          },
+        );
+        try {
+          return await new Promise<{ status: number | undefined; body: string }>(
+            (resolve, reject) => {
+              socket.once("open", () =>
+                reject(new Error(`${agent.label} opened a person's viewer`)),
+              );
+              socket.once("error", reject);
+              socket.once("unexpected-response", (_request, response) => {
+                let body = "";
+                response.setEncoding("utf8");
+                response.on("data", (chunk: string) => {
+                  body += chunk;
+                });
+                response.once("error", reject);
+                response.once("end", () => resolve({ status: response.statusCode, body }));
+              });
+            },
+          );
+        } finally {
+          socket.terminate();
+        }
+      }
+
+      async function refusedTab(agent: Agent, tabId: string) {
+        const response = await fetch(new URL("/v1/rpc/commands.dispatch", home.hostOrigin), {
+          method: "POST",
+          headers: {
+            ...headers,
+            "content-type": "application/json",
+            authorization: `Bearer ${agent.bearer}`,
+          },
+          body: JSON.stringify({ type: "tab.activate", idempotencyKey: randomUUID(), tabId }),
+          signal: within(5_000),
+        });
+        return { status: response.status, body: await response.text() };
+      }
+
+      for (const [agent, otherSession, otherTab] of [
+        [a, sessionB, tabB],
+        [b, sessionA, tabA],
+      ] as const) {
+        const otherActivation = await refusedTab(agent, otherTab);
+        expect(otherActivation.status).toBe(401);
+        expect(otherActivation).toEqual(await refusedTab(agent, createId("tab")));
+        const other = await refusedViewer(agent, otherSession);
+        const absent = await refusedViewer(agent, `bsn_${randomUUID()}`);
+        expect(other.status).toBe(401);
+        expect(other).toEqual(absent);
+      }
+
+      const context = browserB!.contexts()[0]!;
+      const created = await context.newPage();
+      const createdUrl = new URL("/account?raw=created", siteOrigin).href;
+      const popupUrl = new URL("/account?raw=popup", siteOrigin).href;
+      await created.goto(createdUrl);
+      const popupReady = created.waitForEvent("popup");
+      await created.evaluate((url) => window.open(url), popupUrl);
+      const popup = await popupReady;
+      await popup.waitForLoadState();
+      const catalogTab = (url: string) =>
+        home.observe(
+          async () => {
+            const { tabs } = ok(await home.api["tabs.state"]({}));
+            return tabs.find((tab) => tab.kind === "page" && tab.url === url);
+          },
+          within(10_000),
+          "The agent's page was not recorded in Tabs",
+        );
+      const [createdTab, popupTab] = await Promise.all([
+        catalogTab(createdUrl),
+        catalogTab(popupUrl),
+      ]);
+      for (const tab of [createdTab, popupTab])
+        expect(tab).toMatchObject({ openedBy: { taskId: [...work.b.tasks][0] }, state: "open" });
+      const ended = created.waitForEvent("close");
+      expect(await person.closeTabs([createdTab.tabId])).toMatchObject({
+        closed: [createdTab.tabId],
+      });
+      await ended;
+      await expect(created.evaluate(() => document.title)).rejects.toThrow(/closed/i);
+      expect(context.pages()).not.toContain(created);
+      const physical = (await engines.get(profileB.id)!.cdp.send("Target.getTargets")) as {
+        targetInfos: { url: string }[];
+      };
+      expect(physical.targetInfos.map(({ url }) => url)).not.toContain(createdUrl);
+      expect(await popup.locator("h1").innerText()).toBe("Signed in as Bob");
+
+      const catalogReached = Promise.withResolvers<TabId>();
+      const refuseWrite = Promise.withResolvers<void>();
+      const open = TabStore.prototype.open;
+      const refuseCatalog = vi.spyOn(TabStore.prototype, "open").mockImplementation(function (
+        this: TabStore,
+        write,
+        key,
+        ...rest
+      ) {
+        if (key.startsWith("connected-page:") && write.pageBinding?.sessionId === sessionB) {
+          catalogReached.resolve(write.id);
+          return refuseWrite.promise.then(() => {
+            throw new Error("Fixture refuses the connected page catalog write.");
+          });
+        }
+        return open.call(this, write, key, ...rest);
+      });
+      try {
+        const unrecorded = await context.newPage();
+        const unrecordedId = await catalogReached.promise;
+        const gone = unrecorded.waitForEvent("close");
+        refuseWrite.resolve();
+        await gone;
+        await expect(unrecorded.evaluate(() => document.title)).rejects.toThrow(/closed/i);
+        expect(ok(await home.api["tabs.state"]({})).tabs.map(({ tabId }) => tabId)).not.toContain(
+          unrecordedId,
+        );
+        expect(await pageB!.locator("h1").innerText()).toBe("Signed in as Bob");
+      } finally {
+        refuseCatalog.mockRestore();
+        refuseWrite.resolve();
+      }
+    } finally {
+      unwatchTabs();
+      person.dispose();
+    }
+  }, 180_000);
 
   it("on Stop, ends A's work in flight and tells A the person stopped it, while B carries on", async () => {
     const [taskA] = work.a.tasks;
