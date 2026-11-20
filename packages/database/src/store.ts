@@ -1100,7 +1100,6 @@ export class OpensteerStore {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
-    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;

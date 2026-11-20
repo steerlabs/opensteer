@@ -1962,11 +1962,9 @@ function mockNeedsYou(
   >,
   before?: string,
   limit = 50,
-  deviceAccessRequests: "include" | "omit" = "include",
   teamAsks: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [],
 ) {
   const requestRows = snapshot.waitingRequests.flatMap(({ request }) => {
-    if (request.kind === "device.access" && deviceAccessRequests !== "include") return [];
     const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
     return thread
       ? [
@@ -1999,18 +1997,6 @@ function mockNeedsYou(
       totalItems: rows.length,
     },
   };
-}
-
-function mockReaderThread<Thread extends { readonly id: string; readonly pendingRequests: number }>(
-  snapshot: Pick<PublicHostSnapshot, "requests">,
-  thread: Thread,
-  deviceAccessRequests?: "include" | "omit",
-): Thread {
-  if (deviceAccessRequests === "include") return thread;
-  const hidden = (snapshot.requests[thread.id] ?? []).filter(
-    (request) => request.kind === "device.access",
-  ).length;
-  return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
 }
 
 function rpcNotFound(message: string) {
@@ -2124,17 +2110,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         assets: assets.map(() => ({ status: "unavailable" as const, reason: "missing" as const })),
       },
     }),
-    "attention.get": async (input) => {
+    "attention.get": async () => {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
         homeName: snapshot.machines.find(hostsDeployment)?.name ?? null,
-        needsYou: mockNeedsYou(
-          snapshot,
-          undefined,
-          50,
-          input.deviceAccessRequests ?? "omit",
-          client.teamAsks,
-        ).count,
+        needsYou: mockNeedsYou(snapshot, undefined, 50, client.teamAsks).count,
         unread: snapshot.threads.some(
           (thread) =>
             thread.listed &&
@@ -2145,15 +2125,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       });
     },
     "needsYou.get": async (input) =>
-      rpcSuccess(
-        mockNeedsYou(
-          client.getSnapshot(),
-          input.before,
-          input.limit,
-          input.deviceAccessRequests ?? "omit",
-          client.teamAsks,
-        ),
-      ),
+      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit, client.teamAsks)),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
     "teams.replyTask.get": async () => rpcSuccess({ taskId: null, completedAt: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
@@ -2684,9 +2656,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
           tasks: page.map((entry) => ({
             ...entry,
-            thread: mockThread(
-              mockReaderThread(snapshot, entry.thread, input.deviceAccessRequests),
-            ),
+            thread: mockThread(entry.thread),
           })),
           window: {
             byteCount: 2,
@@ -2699,17 +2669,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         }),
       );
     },
-    "requests.list": async (input) => {
-      const all = client.getSnapshot().waitingRequests;
-      const waitingRequests = all.filter(
-        ({ request }) =>
-          input.deviceAccessRequests === "include" || request.kind !== "device.access",
-      );
+    "requests.list": async () => {
+      const waitingRequests = client.getSnapshot().waitingRequests;
       return rpcSuccess(
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
           window: mockWindow(waitingRequests.length),
-          pendingRequestsRevision: mockPendingRequestsRevision(all),
+          pendingRequestsRevision: mockPendingRequestsRevision(waitingRequests),
         }),
       );
     },
@@ -2786,18 +2752,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(error);
       }
     },
-    "thread.assignments.list": async ({ open, threadId, deviceAccessRequests }) => {
+    "thread.assignments.list": async ({ open, threadId }) => {
       const assignments = client
         .listThreadAssignments(threadId)
-        .filter(({ status }) => !open || status === "open")
-        .map((assignment) => ({
-          ...assignment,
-          workerThread: mockReaderThread(
-            client.getSnapshot(),
-            assignment.workerThread,
-            deviceAccessRequests,
-          ),
-        }));
+        .filter(({ status }) => !open || status === "open");
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({
           assignments,
@@ -2927,11 +2885,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
               ({ id, revision: expected }) =>
                 id === request.id && expected === mockRequestRevision(request, revision),
             )) &&
-          (input.requestId !== undefined || request.status === "pending") &&
-          (input.review !== undefined ||
-            input.requestId !== undefined ||
-            input.deviceAccessRequests === "include" ||
-            request.kind !== "device.access"),
+          (input.requestId !== undefined || request.status === "pending"),
       );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
@@ -3949,16 +3903,13 @@ export class MockHostClient implements HostClient {
     attempt.admit?.(lease);
     return lease;
   }
-  deploymentSnapshot(
-    sequence = String(this.getSnapshot().revision),
-    deviceAccessRequests: "include" | "omit" = "include",
-  ) {
+  deploymentSnapshot(sequence = String(this.getSnapshot().revision)) {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
         asOfSequence: SequenceSchema.parse(sequence),
         tasks: entries.slice(0, 100).map((entry) => ({
           ...entry,
-          thread: mockThread(mockReaderThread(snapshot, entry.thread, deviceAccessRequests)),
+          thread: mockThread(entry.thread),
         })),
         window: {
           ...mockWindow(Math.min(100, entries.length)),
@@ -3972,35 +3923,20 @@ export class MockHostClient implements HostClient {
       deploymentId: snapshot.deploymentId,
       sequence,
       serializedBytes: 1,
-      threads: snapshot.threads
-        .slice(0, 100)
-        .map((thread) => mockThread(mockReaderThread(snapshot, thread, deviceAccessRequests))),
+      threads: snapshot.threads.slice(0, 100).map((thread) => mockThread(thread)),
       threadWindow: mockWindow(Math.min(100, snapshot.threads.length)),
       messages: [],
       messageWindows: [],
       messagesOmitted: true,
-      pendingRequests: snapshot.waitingRequests
-        .map(({ request }) => request)
-        .filter((request) => deviceAccessRequests === "include" || request.kind !== "device.access")
-        .slice(0, 32),
-      pendingRequestWindow: mockWindow(
-        snapshot.waitingRequests.filter(
-          ({ request }) => deviceAccessRequests === "include" || request.kind !== "device.access",
-        ).length,
-      ),
+      pendingRequests: snapshot.waitingRequests.map(({ request }) => request).slice(0, 32),
+      pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
       runQueue: [],
       tasks: {
         recent: page(recent),
         active: page(snapshot.activeTasks),
         done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
       },
-      needsYou: mockNeedsYou(
-        snapshot,
-        undefined,
-        undefined,
-        deviceAccessRequests,
-        this.#state.teamAsks,
-      ),
+      needsYou: mockNeedsYou(snapshot, undefined, undefined, this.#state.teamAsks),
       resources: (({ tabs, browser }) => ({ tabs, browser }))(this.#state.bootstrap()),
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
@@ -5181,7 +5117,6 @@ export class MockHostClient implements HostClient {
   async readRequest(threadId: string, requestId: string): Promise<Request | null> {
     const { requests, reviewedRevisions } = unwrapRpcResult(
       await this.rpc["thread.requests.list"]({
-        deviceAccessRequests: "include",
         requestId: RequestIdSchema.parse(requestId),
         threadId: ThreadIdSchema.parse(threadId),
       }),
@@ -7019,13 +6954,7 @@ class MockHostState {
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(
-        this.snapshot,
-        undefined,
-        this.needsYouLimit,
-        "include",
-        this.teamAsks,
-      ),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
     };
     if (!firstRun && options.iphoneScreen !== "absent")
       this.setIphoneScreenState(
@@ -13094,13 +13023,7 @@ class MockHostState {
     }
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(
-        this.snapshot,
-        undefined,
-        this.needsYouLimit,
-        "include",
-        this.teamAsks,
-      ),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
     };
     this.runPlaces.flush();
     this.emit();
@@ -13124,13 +13047,7 @@ class MockHostState {
     this.needsYouLimit += 50;
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(
-        this.snapshot,
-        undefined,
-        this.needsYouLimit,
-        "include",
-        this.teamAsks,
-      ),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
     };
     this.emit();
   }

@@ -81,7 +81,6 @@ export interface ClientSyncStateTable {
   lastCommitAt: Timestamp;
   resourceRevisions: Generated<DurablePersonalResourceRevisions>;
   pendingRequestCount: Generated<number>;
-  pendingDeviceAccessRequestCount: Generated<number>;
   needsYouCount: Generated<number>;
   unreadTaskCount: Generated<number>;
   /** The commit that last changed the pending Requests or what their list shows. */
@@ -650,6 +649,17 @@ export const answeredQuestionRecordsMigrationName = "0040_answered_question_reco
  */
 export async function applyAnsweredQuestionRecords(database: Kysely<DatabaseSchema>) {
   await sql`update client_sync_state set epoch = gen_random_uuid()`.execute(database);
+}
+
+export const dropDeviceAccessCountMigrationName = "0041_drop_device_access_count_contract";
+/**
+ * Every Request kind is listed on every read, so nothing subtracts `device.access` Requests. Only a
+ * personal Host writes this column, and it stops before its successor migrates.
+ */
+export async function applyDropDeviceAccessCount(database: Kysely<DatabaseSchema>) {
+  await sql`alter table client_sync_state drop column pending_device_access_request_count`.execute(
+    database,
+  );
 }
 
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {

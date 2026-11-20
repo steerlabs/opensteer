@@ -384,7 +384,7 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
   expect(change("1", "2")).toBe(true);
   expect(readRequests).toHaveBeenNthCalledWith(
     1,
-    { threadId, review: [{ id: requestId, revision: "2" }] },
+    { threadId, review: [{ id: requestId, revision: "2" }], deviceAccessRequests: "include" },
     expect.anything(),
   );
   earlier.resolve(result("first", "2"));
@@ -394,7 +394,7 @@ test("reviews the exact pending Request revision and drops the reviewed card whe
   expect(reader.getSnapshot().requests).toEqual([]);
   expect(readRequests).toHaveBeenNthCalledWith(
     2,
-    { threadId, review: [{ id: requestId, revision: "3" }] },
+    { threadId, review: [{ id: requestId, revision: "3" }], deviceAccessRequests: "include" },
     expect.anything(),
   );
   later.resolve(result("updated", "3"));

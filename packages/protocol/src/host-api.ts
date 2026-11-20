@@ -342,6 +342,14 @@ const durablePageInputSchema = z.strictObject({
   limit: z.number().int().positive().max(100).optional(),
 });
 
+/**
+ * Hosts list every Request kind and ignore this. Older version-64 Hosts hide `device.access`
+ * Requests from a read without it, so apps send it on every Request read until
+ * `minimumHostApiVersion` passes 64.
+ */
+export const includeDeviceAccessRequests = { deviceAccessRequests: "include" } as const;
+const deviceAccessRequestsInput = { deviceAccessRequests: z.literal("include").optional() };
+
 const AuthSessionSummaryViewSchema = z.object(AuthSessionSummarySchema.shape);
 
 const harnessRecordSchema = z.object({
@@ -1439,7 +1447,7 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
 const hostApiGroup1 = defineRpc({
   "attention.get": declaration(
     "POST",
-    z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
+    z.strictObject(deviceAccessRequestsInput),
     z.object({
       /** The Mac a personal Opensteer lives on, for a chooser naming it; older Hosts omit it. */
       homeName: z.string().trim().min(1).max(120).nullable().optional(),
@@ -1450,7 +1458,7 @@ const hostApiGroup1 = defineRpc({
   "needsYou.get": declaration(
     "POST",
     z.strictObject({
-      deviceAccessRequests: z.literal("include").optional(),
+      ...deviceAccessRequestsInput,
       before: z.string().min(1).max(4096).optional(),
       limit: z.number().int().min(1).max(50).optional(),
     }),
@@ -2042,7 +2050,7 @@ const hostApiGroup4 = defineRpc({
   ),
   "requests.list": declaration(
     "GET",
-    durablePageInputSchema.extend({ deviceAccessRequests: z.literal("include").optional() }),
+    durablePageInputSchema.extend(deviceAccessRequestsInput),
     z.object({
       requests: readableRequestList(WaitingRequestViewSchema, 100),
       window: DurableWindowSchema,
@@ -2056,7 +2064,7 @@ const hostApiGroup4 = defineRpc({
       .strictObject({
         active: z.boolean().optional(),
         done: z.boolean().optional(),
-        deviceAccessRequests: z.literal("include").optional(),
+        ...deviceAccessRequestsInput,
       })
       .extend(durablePageInputSchema.shape)
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
@@ -2108,7 +2116,7 @@ const hostApiGroup4 = defineRpc({
       .strictObject({
         /** Only work still under way, however far back it was handed out. Needs `task-family-v1`. */
         open: z.boolean().optional(),
-        deviceAccessRequests: z.literal("include").optional(),
+        ...deviceAccessRequestsInput,
         threadId: ThreadIdSchema,
       })
       .extend(durablePageInputSchema.shape),
@@ -2187,7 +2195,7 @@ const hostApiGroup4 = defineRpc({
           .max(20)
           .refine((requests) => new Set(requests.map(({ id }) => id)).size === requests.length)
           .optional(),
-        deviceAccessRequests: z.literal("include").optional(),
+        ...deviceAccessRequestsInput,
       })
       .extend(durablePageInputSchema.shape)
       .refine(

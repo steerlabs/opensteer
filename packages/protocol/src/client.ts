@@ -15,8 +15,6 @@ import { PluginChangeSchema, PluginEngineStateViewSchema } from "./plugins.js";
 import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
 
 import {
-  type AgentEventView,
-  type AssignmentSummary,
   LiveRunProgressViewSchema,
   MessageViewSchema,
   NotificationViewSchema,
@@ -110,8 +108,6 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
-    /** Requires `devices-v1`; legacy subscribers cannot parse these Requests. */
-    deviceAccessRequests: z.literal("include").optional(),
     placeEvents: z.literal("include").optional(),
     toolOutputs: z.literal("preview").optional(),
     /** Requires `person-show-v1`; old subscribers receive no navigation requests. */
@@ -469,74 +465,6 @@ export function isRealtimeFrameMetadata(
         path.split(".").every((part) => part === "[]" || part === "*" || isRealtimeWireField(part)),
     )
   );
-}
-
-export function isDeviceAccessRequestEvent(event: AgentEventView): boolean {
-  return (
-    (event.type === "request.opened" ||
-      event.type === "request.updated" ||
-      event.type === "request.resolved") &&
-    event.data.request.kind === "device.access"
-  );
-}
-
-export function projectDeviceAccessRequestEvent<Event extends AgentEventView>(
-  event: Event,
-  include: boolean,
-): Event {
-  if (include) return event;
-  if (event.type === "assignment.created" || event.type === "assignment.updated")
-    return {
-      ...event,
-      data: {
-        ...event.data,
-        assignment: projectDeviceAccessAssignment(event.data.assignment, false),
-      },
-    };
-  if (event.type === "thread.state-changed")
-    return {
-      ...event,
-      data: {
-        ...event.data,
-        pendingRequests: Math.max(
-          0,
-          event.data.pendingRequests - (event.data.pendingDeviceAccessRequests ?? 0),
-        ),
-      },
-    };
-  if (event.type === "thread.listed")
-    return {
-      ...event,
-      data: {
-        ...event.data,
-        thread: {
-          ...event.data.thread,
-          pendingRequests: Math.max(
-            0,
-            event.data.thread.pendingRequests - (event.data.pendingDeviceAccessRequests ?? 0),
-          ),
-        },
-      },
-    };
-  return event;
-}
-
-export function projectDeviceAccessAssignment(
-  assignment: AssignmentSummary,
-  include: boolean,
-): AssignmentSummary {
-  if (include) return assignment;
-  return {
-    ...assignment,
-    workerThread: {
-      ...assignment.workerThread,
-      pendingRequests: Math.max(
-        0,
-        assignment.workerThread.pendingRequests -
-          (assignment.workerThread.pendingDeviceAccessRequests ?? 0),
-      ),
-    },
-  };
 }
 
 export const realtimeEnvelopeTypes: ReadonlySet<string> = new Set(

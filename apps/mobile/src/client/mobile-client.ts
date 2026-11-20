@@ -12,7 +12,11 @@ import {
   type ConnectionController,
   type ClientScope,
 } from "@opensteer/client/connections";
-import type { HostApiCommandInput, HostApiCommandOutput } from "@opensteer/protocol";
+import {
+  includeDeviceAccessRequests,
+  type HostApiCommandInput,
+  type HostApiCommandOutput,
+} from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
@@ -2568,9 +2572,13 @@ export class MobileClient {
       const resolved = resolveConnection(connection, null, { authorization });
       const verified = await this.#host.verifyEpoch(resolved, connection);
       if (typeof verified === "string") return null;
-      const result = await withTimeout(client.rpc["attention.get"]({}), deadlineMs, {
-        timeoutError: () => new Error("The computer did not answer in time."),
-      });
+      const result = await withTimeout(
+        client.rpc["attention.get"](includeDeviceAccessRequests),
+        deadlineMs,
+        {
+          timeoutError: () => new Error("The computer did not answer in time."),
+        },
+      );
       return result.ok ? result.data : null;
     } catch {
       return null;

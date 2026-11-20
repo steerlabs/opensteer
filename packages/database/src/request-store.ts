@@ -677,7 +677,6 @@ export class RequestStore {
 
   async originatingPendingPage(input: {
     readonly before?: string;
-    readonly deviceAccessRequests?: "include";
     readonly limit: number;
     readonly threadId: ThreadId;
   }): Promise<{
@@ -692,9 +691,6 @@ export class RequestStore {
       .selectAll()
       .where("originatingThreadId", "=", input.threadId)
       .where("status", "=", "pending")
-      .$if(input.deviceAccessRequests !== "include", (query) =>
-        query.where("kind", "!=", "device.access"),
-      )
       .orderBy("createdAt", "desc")
       .orderBy("id", "desc")
       .limit(limit + 1);
@@ -716,9 +712,6 @@ export class RequestStore {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("originatingThreadId", "=", input.threadId)
         .where("status", "=", "pending")
-        .$if(input.deviceAccessRequests !== "include", (query) =>
-          query.where("kind", "!=", "device.access"),
-        )
         .executeTakeFirstOrThrow(),
     ]);
     return requestPage(rows, Number(count.count), limit, scope);
@@ -726,7 +719,6 @@ export class RequestStore {
 
   async waitingOnUserPage(input: {
     readonly before?: string;
-    readonly deviceAccessRequests?: "include";
     readonly limit: number;
     readonly userId: UserId;
   }): Promise<{
@@ -746,12 +738,7 @@ export class RequestStore {
           .selectFrom("clientSyncState")
           .select("pendingRequestsRevision")
           .executeTakeFirstOrThrow();
-        const addressed = transaction
-          .selectFrom("requests")
-          .where("status", "=", "pending")
-          .$if(input.deviceAccessRequests !== "include", (query) =>
-            query.where("kind", "!=", "device.access"),
-          );
+        const addressed = transaction.selectFrom("requests").where("status", "=", "pending");
         let page = addressed
           .selectAll()
           .orderBy("createdAt", "desc")

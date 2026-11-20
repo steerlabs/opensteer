@@ -56,7 +56,6 @@ export interface NotificationPublication {
 
 /** A notification as it was decided, for the recipient's connected clients. */
 export interface DecidedNotification {
-  readonly deviceAccessRequests?: "include";
   readonly userId: UserId;
   readonly view: NotificationView;
 }
@@ -191,9 +190,6 @@ export class NotificationStore {
             `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
           );
           return {
-            ...(change.type === "requestChanged" && change.kind === "device.access"
-              ? { deviceAccessRequests: "include" as const }
-              : {}),
             userId: candidate.userId,
             sequence: candidate.sequence,
             view: NotificationViewSchema.parse({

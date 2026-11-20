@@ -26,19 +26,10 @@ export class NotificationStateStore {
   constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
   }
-  attention(
-    userId: UserId,
-    input: { readonly deviceAccessRequests?: "include" } = {},
-  ): Promise<{ needsYou: number; unread: boolean }> {
+  attention(userId: UserId): Promise<{ needsYou: number; unread: boolean }> {
     return withPersonalSyncRead(this.#database, async (transaction) => {
-      const { pendingRequestCount, pendingDeviceAccessRequestCount, unreadTaskCount } =
-        await authorizedSyncState(transaction, userId);
-      return {
-        needsYou:
-          pendingRequestCount -
-          (input.deviceAccessRequests === "include" ? 0 : pendingDeviceAccessRequestCount),
-        unread: unreadTaskCount > 0,
-      };
+      const { needsYouCount, unreadTaskCount } = await authorizedSyncState(transaction, userId);
+      return { needsYou: needsYouCount, unread: unreadTaskCount > 0 };
     });
   }
   async visitPage(input: {

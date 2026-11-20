@@ -2,6 +2,7 @@ import { requestDecisionRevision } from "@opensteer/client/host";
 import { computerTargetId } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { isPhoneDisplayDefinitionId, RunnerIdSchema, type Request } from "@opensteer/core";
+import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -319,6 +320,7 @@ export function IntegrationConnectCard(props: {
       do {
         const page = unwrapRpcResult(
           await props.hostClient.rpc["thread.requests.list"]({
+            ...includeDeviceAccessRequests,
             threadId: props.request.originatingThreadId,
             limit: 100,
             ...(before ? { before } : {}),

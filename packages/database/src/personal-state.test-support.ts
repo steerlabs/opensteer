@@ -69,7 +69,6 @@ export async function preparePersonalConversion(
         retainedChangeCount: 0,
         resourceRevisions: emptyPersonalResourceRevisions,
         pendingRequestCount: 0,
-        pendingDeviceAccessRequestCount: 0,
         needsYouCount: 0,
         unreadTaskCount: 0,
       })

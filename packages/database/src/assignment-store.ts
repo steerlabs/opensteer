@@ -45,11 +45,6 @@ export async function assignmentSummaryInTransaction(
   const worker = await transaction
     .selectFrom("threads")
     .select(["environmentId", "id", "title", "icon", "color", "status", "pendingRequestCount"])
-    .select(
-      sql<number>`(select count(*)::integer from requests where originating_thread_id = threads.id and status = 'pending' and kind = 'device.access')`.as(
-        "pendingDeviceAccessRequests",
-      ),
-    )
     .where("id", "=", row.childThreadId)
     .executeTakeFirstOrThrow();
   const [currentRun, parentRun] = await Promise.all([
@@ -97,9 +92,6 @@ export async function assignmentSummaryInTransaction(
       environmentId: worker.environmentId,
       id: worker.id,
       pendingRequests: worker.pendingRequestCount,
-      ...(worker.pendingDeviceAccessRequests
-        ? { pendingDeviceAccessRequests: worker.pendingDeviceAccessRequests }
-        : {}),
       status: worker.status,
       title: worker.title,
       icon: worker.icon,

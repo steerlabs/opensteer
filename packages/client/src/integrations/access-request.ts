@@ -1,3 +1,4 @@
+import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import { computerTargetId } from "../host/device-projection.js";
 import type { ClientIntegrationDashboard as IntegrationDashboard } from "../host/device-projection.js";
 import {
@@ -45,6 +46,7 @@ export async function integrationRequestStillPending(
   do {
     const page = unwrapRpcResult(
       await hostClient.rpc["thread.requests.list"]({
+        ...includeDeviceAccessRequests,
         ...(before === undefined ? {} : { before }),
         limit: 100,
         threadId,

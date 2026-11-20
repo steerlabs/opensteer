@@ -2,6 +2,7 @@ import { requestDecisionRevision } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IntegrationAccess } from "@opensteer/integration-core";
 import type { Request } from "@opensteer/core";
+import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import {
   accessPlan,
@@ -201,6 +202,7 @@ export function ThreadIntegrationAction({
       do {
         const page = unwrapRpcResult(
           await hostClient.rpc["thread.requests.list"]({
+            ...includeDeviceAccessRequests,
             threadId: request.originatingThreadId,
             limit: 100,
             ...(before ? { before } : {}),
