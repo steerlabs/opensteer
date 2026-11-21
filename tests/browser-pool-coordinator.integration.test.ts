@@ -129,16 +129,20 @@ async function poolFixture(
   let tabLoss: BrowserSessionId | undefined;
   let stalled: Promise<void> | undefined;
   let afterReattach: ((sessions: readonly BrowserSessionId[]) => Promise<void>) | undefined;
+  let scanning: (() => Promise<void>) | undefined;
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
     // As the Home's: the ready sessions of the runtime with no channel here.
     pagesOf: async (id) => (id === sessionId ? [...surfaces] : []),
-    withoutChannel: async (runtimeId) =>
-      (await listBrowserPoolReadySessions(database, task.runnerId, runtimeId)).filter(
+    withoutChannel: async (runtimeId) => {
+      const found = (await listBrowserPoolReadySessions(database, task.runnerId, runtimeId)).filter(
         (id) => !sinks.has(id),
-      ),
+      );
+      await scanning?.();
+      return found;
+    },
     // As the Home's before a restart: every channel of the runtime is closed, its row kept.
     quiesce: async () => {
       for (const attachment of sinks.values()) await attachment.close().catch(() => undefined);
@@ -306,6 +310,10 @@ async function poolFixture(
     },
     reportTabLoss: (value: BrowserSessionId | undefined) => {
       tabLoss = value;
+    },
+    /** Runs inside the loop's read of sessions without a channel, before it returns. */
+    onScan: (hook: typeof scanning) => {
+      scanning = hook;
     },
     /** Runs once a reattach has attached its sessions, before it returns. */
     onReattached: (hook: typeof afterReattach) => {
@@ -569,6 +577,37 @@ it("stops a guest the controller reports for a removed device that never had a s
     expect((await f.controller.status("slot-removed-no-slot", 1)).phase).toBe("stopped");
     expect(await f.slot()).toBeUndefined();
     expect(home.gate.phase).toBe("released");
+  } finally {
+    await f.close();
+  }
+});
+
+it("chooses a restart asked while the loop reads the sessions without a channel before their reconnect", async () => {
+  const f = await poolFixture("restart-during-scan");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 20_000 });
+    await home.recover();
+    await f.openSession(home);
+    let firstAttach: string[] | undefined;
+    f.onReattached(async () => {
+      firstAttach ??= [...f.controller.effects];
+    });
+    const reading = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<void>();
+    f.onScan(async () => {
+      f.onScan(undefined);
+      reading.resolve();
+      await read.promise;
+    });
+    await f.loseChannel();
+    home.channelLost(f.sessionId);
+    await reading.promise;
+    const restarting = home.restart({ key: "during-scan" });
+    read.resolve();
+    await restarting;
+    // The restart went first: nothing was reattached to the guest it replaced.
+    expect(firstAttach).toBeUndefined();
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
   } finally {
     await f.close();
   }

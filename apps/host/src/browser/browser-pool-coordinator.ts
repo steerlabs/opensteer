@@ -408,6 +408,8 @@ export class BrowserPoolCoordinator {
         ...(slot ? { discards: true } : {}),
       };
     const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
+    // A removal or a restart asked during that read is chosen first: selection runs again.
+    if (this.#released || this.#restartWanted) return this.#next();
     if (withoutChannel.length)
       return {
         name: "reconnect",
