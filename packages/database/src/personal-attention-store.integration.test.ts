@@ -175,14 +175,14 @@ test("a Run its owner stopped is never news; one the Host ended is", async () =>
         updatedAt: new Date(),
       })
       .execute();
-    const stoppedBy = async (kind: string) => {
+    const stoppedBy = async (kind: string, key = `stop:${kind}`) => {
       await sql`delete from commands where run_id=${run.runId} and type='run.interrupt'`.execute(
         database,
       );
       await sql`insert into commands(id,environment_id,thread_id,run_id,requested_by,actor_principal_id,
           authority_source,idempotency_key,type,payload,status)
         select ${createId("command")},environment_id,thread_id,run_id,requested_by,actor_principal_id,
-          jsonb_build_object('kind',${kind}::text),${`stop:${kind}`},'run.interrupt',
+          jsonb_build_object('kind',${kind}::text),${key},'run.interrupt',
           jsonb_build_object('type','run.interrupt','runId',run_id,'threadId',thread_id),'succeeded'
         from commands where run_id=${run.runId} and type='run.execute' limit 1`.execute(database);
       await commitPersonalMutation(database, async (tx, mutation) =>
@@ -247,37 +247,74 @@ test("a Run its owner stopped is never news; one the Host ended is", async () =>
       .execute();
     expect(await stoppedBy("request-hold")).toEqual({ news: ended, unread: 1 });
 
-    // A Host from before this rule stored the Stop as news; migrating corrects it.
+    // A Host from before this rule labelled every Stop the person's own and stored each as news.
+    // Migrating restores who stopped it from the key its writer gave, then recomputes.
     await database
       .updateTable("runs")
       .set({ status: "interrupted" })
       .where("id", "=", run.runId)
       .execute();
-    await stoppedBy("user-session");
-    await database
-      .updateTable("threads")
-      .set({ latestRunCompletedAt: ended })
-      .where("id", "=", run.threadId)
-      .execute();
-    await database.updateTable("clientSyncState").set({ unreadTaskCount: 1 }).execute();
-    const before = await database
-      .selectFrom("clientSyncState")
-      .select("epoch")
-      .executeTakeFirstOrThrow();
-    await applyStoppedRunsNotNews(database);
-    expect(
+    const migrated = async (key: string) => {
+      await stoppedBy("user-session", key);
       await database
-        .selectFrom("threads")
-        .select("latestRunCompletedAt")
+        .updateTable("threads")
+        .set({ latestRunCompletedAt: ended })
         .where("id", "=", run.threadId)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ latestRunCompletedAt: null });
-    const after = await database
-      .selectFrom("clientSyncState")
-      .select(["epoch", "unreadTaskCount"])
-      .executeTakeFirstOrThrow();
-    expect(after.unreadTaskCount).toBe(0);
-    expect(after.epoch).not.toBe(before.epoch);
+        .execute();
+      await database.updateTable("clientSyncState").set({ unreadTaskCount: 1 }).execute();
+      const before = await database
+        .selectFrom("clientSyncState")
+        .select("epoch")
+        .executeTakeFirstOrThrow();
+      await applyStoppedRunsNotNews(database);
+      const after = await database
+        .selectFrom("clientSyncState")
+        .select(["epoch", "unreadTaskCount"])
+        .executeTakeFirstOrThrow();
+      expect(after.epoch).not.toBe(before.epoch);
+      return {
+        stoppedBy: (
+          await database
+            .selectFrom("commands")
+            .select("authoritySource")
+            .where("runId", "=", run.runId)
+            .where("type", "=", "run.interrupt")
+            .executeTakeFirstOrThrow()
+        ).authoritySource,
+        news: (
+          await database
+            .selectFrom("threads")
+            .select("latestRunCompletedAt")
+            .where("id", "=", run.threadId)
+            .executeTakeFirstOrThrow()
+        ).latestRunCompletedAt,
+        unread: after.unreadTaskCount,
+      };
+    };
+    const userId = run.userId;
+    // The person's own Stop, from any client: no longer news.
+    expect(await migrated("interrupt:7d0f1c2a")).toEqual({
+      stoppedBy: { kind: "user-session" },
+      news: null,
+      unread: 0,
+    });
+    // A teammate withdrew their ask: still news.
+    expect(await migrated("team-cancel:dep_team:req_ask")).toEqual({
+      stoppedBy: { kind: "team-cancel", teamId: "dep_team", requestId: "req_ask" },
+      news: ended,
+      unread: 1,
+    });
+    // An agent stopped it, or a connection marked it Done: still news.
+    expect(await migrated("run:run_agent:op_1:interrupt")).toEqual({
+      stoppedBy: { kind: "thread-agent", runId: "run_agent", userId },
+      news: ended,
+      unread: 1,
+    });
+    expect(await migrated(`task-done:connection:con_1:op_2:thread.write:${run.runId}`)).toEqual({
+      stoppedBy: { kind: "connection", connectionId: "con_1", userId },
+      news: ended,
+      unread: 1,
+    });
   } finally {
     await fixture.close();
   }
