@@ -6,17 +6,18 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$source_dir/common.sh"
 
 usage() {
-  printf '%s\n' "Usage: install.sh [--local] [--prepare] [--manifest FILE] HOSTNAME" \
+  printf '%s\n' "Usage: install.sh [--local] [--local-images] [--prepare] [--manifest FILE] HOSTNAME" \
     "       install.sh [--local] [--prepare] --boot-spec BOOT_SPEC.json --bootstrap-token-file FILE"
   exit 2
 }
 
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail "Run the Home installer as root on a Linux Docker host."
-local_tls=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
+local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
 while (($#)); do
   case "$1" in
     --resume-managed) resume_managed=true; shift ;;
     --local) local_tls=true; shift ;;
+    --local-images) local_images=true; shift ;;
     --prepare) prepare=true; shift ;;
     --managed|--boot-spec) (($# >= 2)) || usage; managed=$2; shift 2 ;;
     --bootstrap-token-file) (($# >= 2)) || usage; token_path=$2; shift 2 ;;
@@ -43,7 +44,7 @@ if $resume_managed; then
   if [[ ${OPENSTEER_HOME_LOCAL_TLS:-false} == true ]]; then local_tls=true; fi
 fi
 if [[ -n $managed ]]; then
-  [[ -z $hostname && -z $manifest && -n $token_path ]] || usage
+  [[ -z $hostname && -z $manifest && -n $token_path ]] && ! $local_images || usage
   [[ $token_path == /* ]] || token_path="$PWD/$token_path"
   if ! $resume_managed && ! $prepare; then
     lock_home
@@ -128,10 +129,27 @@ if ! $prepare; then
   command -v systemctl >/dev/null || fail "systemd is required for scheduled Home operation."
 fi
 
+if [[ -z $managed && -f "$home_dir/config.env" ]]; then
+  # An installed Home run again by hand: decided and checked in full before anything changes.
+  lock_home
+  staging=$(mktemp -d "$home_dir/install.XXXXXX")
+  trap 'rm -rf -- "$staging"' EXIT
+  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir" "$staging"
+  exit 0
+fi
+
 install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
+# The recipe and its command are in place before the configuration is written, so an install
+# that fails from here on is removed with `opensteer-home uninstall --purge`.
+install_recipe "$source_dir" "$home_dir"
+# The units this Home is installed under, so its own command finds them to remove them.
+printf '%s\n' "$unit_prefix" > "$home_dir/unit-prefix"
+if ! $prepare && owns_operator_command; then
+  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
+fi
 setup_code=''
 finish_managed_boot() {
   local outcome=$1 original
@@ -273,12 +291,6 @@ else
   if $local_tls; then printf 'tls internal\n'; else printf '# Automatic public TLS\n'; fi > "$home_dir/tls.caddy"
 fi
 
-for name in compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
-  if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
-    install -m 0600 "$source_dir/$name" "$home_dir/$name"
-  fi
-done
-chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
 # Compose mounts it on every Home; a bring-your-own Home's stays empty.
 [[ -e "$home_dir/secrets/oidc_client_secret" ]] || : | save_secret "$home_dir/secrets/oidc_client_secret"
 chmod 0444 "$home_dir/tls.caddy"
@@ -289,7 +301,8 @@ fi
 if $prepare; then
   install_sandbox_policies
 else
-  compose pull --quiet
+  fetch_release_images "$home_dir/images.env" "$local_images"
+  if $local_images; then touch "$home_dir/local-images"; fi
   if $resume_managed; then check_release_stamps "$home_dir/images.env"; fi
   install_sandbox_policies
   if $resume_managed; then

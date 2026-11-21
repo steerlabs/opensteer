@@ -3,7 +3,8 @@ set -euo pipefail
 home_dir=$1
 unit_dir=/etc/systemd/system
 unit=${2:-opensteer-home}
-if [[ $unit == opensteer-home ]]; then
+# Only the Home in the default directory owns the command on the path.
+if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
   install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi
 unit_env=''

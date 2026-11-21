@@ -98,7 +98,7 @@ update_home() (
     printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$previous"
   done
 
-  release_env="$candidate" compose pull --quiet
+  fetch_release_images "$candidate" "$(uses_local_images)"
   if $pinned; then check_release_stamps "$candidate"; fi
   # shellcheck source=deploy/home/backup.sh
   source "$home_dir/backup.sh"
