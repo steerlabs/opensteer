@@ -278,9 +278,7 @@ server.on("upgrade", (request, socket, head) => {
     requestedVersion =
       new URL(request.url!, "http://fixture").searchParams.get("editing") === "2" ? 2 : 1;
     viewerVersion = browserViewerEditingVersion(runtimeSnapshot, requestedVersion);
-    ws.send(
-      JSON.stringify(browserViewerMessage({ ...runtimeSnapshot, surfaces: [] }, viewerVersion)),
-    );
+    ws.send(JSON.stringify(project(runtimeSnapshot)!));
     ws.on("message", (data) => {
       const message = BrowserClientMessageSchema.parse(JSON.parse(data.toString()));
       if (message.type === "stream.subscribe") {
