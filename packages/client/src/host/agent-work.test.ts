@@ -435,10 +435,12 @@ describe("what a connected agent asks the person itself", () => {
     expect(question.agentOperation).toBeUndefined();
     expect(operationRequestView({ request: question })).toBeNull();
     expect(sessionQuestions([operation, question])).toEqual([question]);
-    expect(
-      sessionQuestions([question])[0]!.presentation.kind === "form" &&
-        sessionQuestions([question])[0]!.presentation.fields[0]!.choices?.map(({ label }) => label),
-    ).toEqual(["Done", "Unable to do it"]);
+    const asked = sessionQuestions([question])[0]!.presentation;
+    if (asked.kind !== "form") throw new Error("not a form");
+    expect(asked.fields[0]!.choices?.map(({ label }) => label)).toEqual([
+      "Done",
+      "Unable to do it",
+    ]);
   });
 
   it("leaves an answered question and any other task's Request alone", () => {
