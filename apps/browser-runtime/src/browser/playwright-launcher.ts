@@ -1239,6 +1239,11 @@ class PlaywrightContextHandle implements BrowserContext {
   >();
   private readonly pendingSleepingRemovals = new Map<string, { attempts: number }>();
   private pendingRemovalTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly pendingRestoredRemovals = new Map<
+    number,
+    { targetId: string | null; attempts: number }
+  >();
+  private pendingRestoredRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly claimedWakePages = new WeakSet<Page>();
   private readonly hiddenRestoredPages = new WeakSet<Page>();
   private readonly unclaimedRestoredTabs = new Map<number, ChromiumTabEntry>();
@@ -1324,7 +1329,12 @@ class PlaywrightContextHandle implements BrowserContext {
         clearTimeout(this.pendingRemovalTimer);
         this.pendingRemovalTimer = undefined;
       }
+      if (this.pendingRestoredRemovalTimer) {
+        clearTimeout(this.pendingRestoredRemovalTimer);
+        this.pendingRestoredRemovalTimer = undefined;
+      }
       this.pendingSleepingRemovals.clear();
+      this.pendingRestoredRemovals.clear();
       this.sleepingTabs.clear();
       this.unclaimedRestoredTabs.clear();
       this.unclaimedRestoredTargetIds.clear();
@@ -1704,8 +1714,21 @@ class PlaywrightContextHandle implements BrowserContext {
         ) {
           current = options.initialCurrent;
         } else {
-          const inv = await this.lifecycle.inventory().catch(() => null);
-          current = inv?.find((tab) => tab.tabId === entry.tab.tabId);
+          const inv = await this.readInventoryWithRetry(surfaceId, 3);
+          if (
+            this.closed ||
+            !this.lifecycle ||
+            this.claimingSurfaceIds.has(surfaceId) ||
+            !this.restoredBySurfaceId.has(surfaceId)
+          ) {
+            return 0;
+          }
+          if (inv === null) {
+            // Unreadable inventory is "unknown", never "absent": close any live Playwright page
+            // directly, keep the target in neverHandOffTargetIds, and retry removal in background.
+            return await this.evictUnparkableRestoredTab(surfaceId, entry, { page });
+          }
+          current = inv.find((tab) => tab.tabId === entry.tab.tabId);
         }
         if (!current) {
           if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
@@ -1731,6 +1754,7 @@ class PlaywrightContextHandle implements BrowserContext {
         }
         return await this.discardParkedRestoredTab(surfaceId, entry, current, {
           skipLoadWait: Boolean(options?.waitForLoad),
+          ...(page ? { page } : {}),
         });
       });
     const tail = run.then(
@@ -1746,11 +1770,140 @@ class PlaywrightContextHandle implements BrowserContext {
     return run;
   }
 
+  private async readInventoryWithRetry(
+    surfaceId: BrowserSurfaceId,
+    attempts = 3,
+  ): Promise<readonly ChromiumTabEntry[] | null> {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (
+        this.closed ||
+        !this.lifecycle ||
+        this.claimingSurfaceIds.has(surfaceId) ||
+        !this.restoredBySurfaceId.has(surfaceId)
+      ) {
+        return null;
+      }
+      const inv = await this.lifecycle.inventory().catch(() => null);
+      if (inv !== null) return inv;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
+    return null;
+  }
+
+  private findLivePageForRestoredTab(
+    tabId: number,
+    targetId: string | null,
+    preferred?: Page,
+  ): Page | undefined {
+    if (preferred && !preferred.isClosed()) return preferred;
+    const cached = this.restoredPagesByTabId.get(tabId);
+    if (cached && !cached.isClosed()) return cached;
+    if (targetId) {
+      for (const candidate of this.context.pages()) {
+        if (candidate === this.privatePage || candidate.isClosed()) continue;
+        if (syncTargetIdOfPage(candidate) === targetId) return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  private enqueuePendingRestoredRemoval(tabId: number, targetId: string | null): void {
+    if (this.closed) return;
+    if (targetId) this.neverHandOffTargetIds.add(targetId);
+    if (!this.pendingRestoredRemovals.has(tabId)) {
+      this.pendingRestoredRemovals.set(tabId, { targetId, attempts: 0 });
+    }
+    this.schedulePendingRestoredRemovalRetry();
+  }
+
+  private schedulePendingRestoredRemovalRetry(): void {
+    if (
+      this.closed ||
+      this.pendingRestoredRemovalTimer ||
+      this.pendingRestoredRemovals.size === 0
+    ) {
+      return;
+    }
+    let maxAttempts = 0;
+    for (const item of this.pendingRestoredRemovals.values()) {
+      maxAttempts = Math.max(maxAttempts, item.attempts);
+    }
+    const delayMs = Math.min(2_000, 100 * 2 ** Math.min(maxAttempts, 4));
+    this.pendingRestoredRemovalTimer = setTimeout(() => {
+      this.pendingRestoredRemovalTimer = undefined;
+      void this.drainPendingRestoredRemovals().catch(() => undefined);
+    }, delayMs);
+    this.pendingRestoredRemovalTimer.unref?.();
+  }
+
+  private async drainPendingRestoredRemovals(): Promise<void> {
+    if (this.closed || !this.lifecycle) return;
+    for (const [tabId, tracker] of Array.from(this.pendingRestoredRemovals)) {
+      if (this.closed) return;
+      tracker.attempts++;
+      const livePage = this.findLivePageForRestoredTab(tabId, tracker.targetId);
+      if (livePage) {
+        await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
+      }
+      const confirmed = await this.removeTabWithEvidence(tabId, tracker.targetId, 1);
+      if (confirmed) {
+        if (tracker.targetId) this.neverHandOffTargetIds.delete(tracker.targetId);
+        this.pendingRestoredRemovals.delete(tabId);
+      }
+    }
+    if (this.pendingRestoredRemovals.size > 0 && !this.closed) {
+      this.schedulePendingRestoredRemovalRetry();
+    }
+  }
+
+  private async evictUnparkableRestoredTab(
+    surfaceId: BrowserSurfaceId,
+    entry: MatchedRestoredTab,
+    options?: {
+      readonly page?: Page;
+      readonly latestTabId?: number;
+      readonly latestTargetId?: string | null;
+    },
+  ): Promise<number> {
+    const tabId = options?.latestTabId ?? entry.tab.tabId;
+    const targetId = options?.latestTargetId ?? entry.tab.targetId;
+    if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
+    if (targetId) this.neverHandOffTargetIds.add(targetId);
+
+    const livePage =
+      this.findLivePageForRestoredTab(tabId, targetId, options?.page) ??
+      this.findLivePageForRestoredTab(entry.tab.tabId, entry.tab.targetId, options?.page);
+
+    this.restoredBySurfaceId.delete(surfaceId);
+    this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+    this.unclaimedRestoredTabs.delete(tabId);
+    if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+    if (targetId) this.unclaimedRestoredTargetIds.delete(targetId);
+    this.restoredPagesByTabId.delete(entry.tab.tabId);
+    this.restoredPagesByTabId.delete(tabId);
+
+    if (livePage && !livePage.isClosed()) {
+      await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
+    }
+
+    const confirmed = await this.removeTabWithEvidence(tabId, targetId);
+    if (confirmed) {
+      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+      if (targetId) this.neverHandOffTargetIds.delete(targetId);
+      this.scheduleSidecarWrite();
+      return 0;
+    }
+    this.enqueuePendingRestoredRemoval(tabId, targetId);
+    return 1;
+  }
+
   private async discardParkedRestoredTab(
     surfaceId: BrowserSurfaceId,
     entry: MatchedRestoredTab,
     current: ChromiumTabEntry,
-    options?: { readonly skipLoadWait?: boolean },
+    options?: { readonly skipLoadWait?: boolean; readonly page?: Page },
   ): Promise<number> {
     if (!this.lifecycle || this.closed) return 0;
     if (this.claimingSurfaceIds.has(surfaceId) || !this.restoredBySurfaceId.has(surfaceId)) {
@@ -1814,8 +1967,22 @@ class PlaywrightContextHandle implements BrowserContext {
       this.scheduleSidecarWrite();
       return 0;
     }
-    const recheck = await this.lifecycle.inventory().catch(() => null);
-    const after = recheck?.find((tab) => tab.tabId === current.tabId);
+    const recheck = await this.readInventoryWithRetry(surfaceId, 3);
+    if (
+      this.closed ||
+      this.claimingSurfaceIds.has(surfaceId) ||
+      !this.restoredBySurfaceId.has(surfaceId)
+    ) {
+      return 0;
+    }
+    if (recheck === null) {
+      return await this.evictUnparkableRestoredTab(surfaceId, entry, {
+        ...(options?.page ? { page: options.page } : {}),
+        latestTabId: current.tabId,
+        latestTargetId: current.targetId,
+      });
+    }
+    const after = recheck.find((tab) => tab.tabId === current.tabId);
     if (!after) {
       if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
         this.restoredBySurfaceId.delete(surfaceId);
@@ -1840,21 +2007,11 @@ class PlaywrightContextHandle implements BrowserContext {
       return 0;
     }
     // Still live and could not be discarded: close so it opens by address when claimed.
-    this.restoredBySurfaceId.delete(surfaceId);
-    this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-    if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-    if (after.targetId) {
-      this.unclaimedRestoredTargetIds.delete(after.targetId);
-      this.neverHandOffTargetIds.add(after.targetId);
-    }
-    this.restoredPagesByTabId.delete(entry.tab.tabId);
-    const confirmed = await this.removeTabWithEvidence(after.tabId, after.targetId);
-    if (confirmed) {
-      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      if (after.targetId) this.neverHandOffTargetIds.delete(after.targetId);
-      return 0;
-    }
-    return 1;
+    return await this.evictUnparkableRestoredTab(surfaceId, entry, {
+      ...(options?.page ? { page: options.page } : {}),
+      latestTabId: after.tabId,
+      latestTargetId: after.targetId,
+    });
   }
 
   /**
@@ -1953,12 +2110,7 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!entry) return null;
       this.restoredBySurfaceId.delete(surfaceId);
       if (url !== undefined && entry.tab.url !== url) {
-        this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-        this.restoredPagesByTabId.delete(entry.tab.tabId);
-        const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
-        if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        this.scheduleSidecarWrite();
+        await this.evictUnparkableRestoredTab(surfaceId, entry);
         return null;
       }
       try {
@@ -1970,9 +2122,7 @@ class PlaywrightContextHandle implements BrowserContext {
         own?.(handle);
         return handle;
       } catch {
-        const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
-        if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        this.scheduleSidecarWrite();
+        await this.evictUnparkableRestoredTab(surfaceId, entry);
         return null;
       }
     } finally {

@@ -2022,7 +2022,6 @@ describe("native Chromium profiles", () => {
         surfUnloaded,
         "https://unloaded.test/",
         undefined,
-        "lin-1",
       );
       expect(claimed?.url()).toBe("https://unloaded.test/");
       expect(actSpy).toHaveBeenCalledWith(211);
@@ -2031,6 +2030,181 @@ describe("native Chromium profiles", () => {
       invSpy.mockRestore();
       discSpy.mockRestore();
       actSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("treats unreadable inventory on parked-tab arrival as unknown, retries within a bound, then closes the live page while keeping it out of handOff (B2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const { writeTabRestoreSidecar } = await import("./native-profile-storage.js");
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const makePage = (id: string, url: string) => {
+      let closed = false;
+      const close = vi.fn(async () => {
+        closed = true;
+      });
+      return {
+        close,
+        isClosed: () => closed,
+        page: {
+          url: () => url,
+          isClosed: () => closed,
+          close,
+          waitForLoadState: vi.fn(async () => undefined),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _connection: {
+            toImpl: () => ({ delegate: { _targetId: id } }),
+          },
+        } as unknown as Page,
+      };
+    };
+    const helper = makePage("target-helper", "about:blank");
+    const tabTransient = makePage("target-b2-transient", "https://b2-transient.test/");
+    const tabPersistent = makePage("target-b2-persistent", "https://b2-persistent.test/");
+
+    const surfTransient = "srf_00000000-0000-4000-8000-00000000b201" as BrowserSurfaceId;
+    const surfPersistent = "srf_00000000-0000-4000-8000-00000000b202" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfTransient, url: "https://b2-transient.test/" },
+      { index: 1, surfaceId: surfPersistent, url: "https://b2-persistent.test/" },
+    ]);
+
+    let tabs = [
+      {
+        tabId: 1,
+        windowId: 1,
+        index: 0,
+        url: "about:blank",
+        title: "",
+        active: true,
+        discarded: false,
+        status: "complete",
+        targetId: "target-helper",
+      },
+      {
+        tabId: 21,
+        windowId: 1,
+        index: 1,
+        url: "https://b2-transient.test/",
+        title: "Transient",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-b2-transient",
+      },
+      {
+        tabId: 22,
+        windowId: 1,
+        index: 2,
+        url: "https://b2-persistent.test/",
+        title: "Persistent",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-b2-persistent",
+      },
+    ];
+
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [helper.page],
+      newPage: vi.fn(async () => helper.page),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async () => ({})),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+
+    let failInventoryCount = 0;
+    let failInventoryAlways = false;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => {
+        if (failInventoryAlways) throw new Error("helper down");
+        if (failInventoryCount > 0) {
+          failInventoryCount--;
+          throw new Error("transient helper failure");
+        }
+        return tabs;
+      });
+    const discardedIds: number[] = [];
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .mockImplementation(async (tabId) => {
+        discardedIds.push(tabId);
+        const newTabId = tabId + 100;
+        const newTargetId = `target-discarded-${newTabId}`;
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? {
+                ...t,
+                tabId: newTabId,
+                discarded: true,
+                status: "unloaded",
+                targetId: newTargetId,
+              }
+            : t,
+        );
+        return { newTabId, newTargetId };
+      });
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockResolvedValue(false);
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") throw new Error("closeTarget failed");
+      return {};
+    });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+
+      await launched.context.sessionRestore!.reconcile(new Set([surfTransient, surfPersistent]));
+      expect(discardedIds).toEqual([]);
+
+      // Case 1: inventory fails ONCE right when tab 21 arrives -> must retry and discard, NOT forget!
+      failInventoryCount = 1;
+      tabs = tabs.map((t) => (t.tabId === 21 ? { ...t, status: "complete" } : t));
+      for (const handler of pageHandlers) handler(tabTransient.page);
+      await vi.waitFor(() => expect(discardedIds).toEqual([21]), { timeout: 3_000, interval: 25 });
+      expect(handedOff).toEqual([]);
+
+      // Case 2: inventory fails persistently when tab 22 arrives -> after bounded retries,
+      // launcher MUST close the live Playwright page directly AND keep target-b2-persistent in neverHandOff!
+      failInventoryAlways = true;
+      tabs = tabs.map((t) => (t.tabId === 22 ? { ...t, status: "complete" } : t));
+      for (const handler of pageHandlers) handler(tabPersistent.page);
+      await vi.waitFor(() => expect(tabPersistent.close).toHaveBeenCalled(), {
+        timeout: 4_000,
+        interval: 25,
+      });
+      expect(handedOff).toEqual([]);
+
+      // Even if another Playwright page arrives later for target-b2-persistent, it must STILL be closed & never handed off!
+      const lateAgain = makePage("target-b2-persistent", "https://b2-persistent.test/");
+      for (const handler of pageHandlers) handler(lateAgain.page);
+      await vi.waitFor(() => expect(lateAgain.close).toHaveBeenCalled(), {
+        timeout: 2_000,
+        interval: 25,
+      });
+      expect(handedOff).toEqual([]);
+    } finally {
+      failInventoryAlways = false;
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
       f.exit();
       await launched?.close();
       await rm(f.directory, { recursive: true, force: true });

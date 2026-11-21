@@ -159,6 +159,7 @@ export class ChromiumTabLifecycleBridge {
   private readonly browserCdp: PlaywrightCdpSession;
   private readonly privatePage: Page | undefined;
   private serviceWorkerUrl: string | undefined;
+  private wakeInFlight: Promise<void> | null = null;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -192,6 +193,21 @@ export class ChromiumTabLifecycleBridge {
   }
 
   private async wakeServiceWorker(remainingMs: number): Promise<void> {
+    if (!this.privatePage || this.privatePage.isClosed() || remainingMs <= 0) return;
+    if (this.wakeInFlight) {
+      await withTimeout(this.wakeInFlight, Math.max(100, remainingMs), {
+        timeoutError: () => new Error("Helper wake wait timed out."),
+      }).catch(() => undefined);
+      return;
+    }
+    const run = this.wakeServiceWorkerOnce(remainingMs).finally(() => {
+      if (this.wakeInFlight === run) this.wakeInFlight = null;
+    });
+    this.wakeInFlight = run;
+    await run;
+  }
+
+  private async wakeServiceWorkerOnce(remainingMs: number): Promise<void> {
     if (!this.privatePage || this.privatePage.isClosed() || remainingMs <= 0) return;
     const stepMs = Math.max(100, Math.min(cdpStepMs, remainingMs));
     const origin =
