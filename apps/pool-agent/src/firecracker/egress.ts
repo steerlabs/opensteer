@@ -90,6 +90,11 @@ export async function defineEgress(
     `--socket-property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
     "--socket-property=FreeBind=yes",
     "--socket-property=Backlog=256",
+    // Round 4, item 2: the socket holds every connection until the proxy is up, however often
+    // the proxy is started and stopped (every wake and kill): neither the service's start limit
+    // nor the socket's trigger limit may ever take the socket down.
+    "--socket-property=TriggerLimitIntervalSec=0",
+    "--property=StartLimitIntervalSec=0",
     `--uid=${uid}`,
     `--gid=${uid}`,
     `--property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
