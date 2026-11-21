@@ -10,7 +10,7 @@ import {
   type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 import {
-  type BrowserAttachTicketClaims,
+  type RuntimeBrowserAttachTicketClaims as BrowserAttachTicketClaims,
   type BrowserEngine,
   type BrowserSessionId,
   type BrowserSurfaceId,

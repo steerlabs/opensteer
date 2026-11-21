@@ -11,6 +11,11 @@ import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-s
 import { hostApi } from "./host-api.js";
 import { TeamCommandSchema } from "./team-api.js";
 import {
+  BrowserAttachTicketClaimsSchema,
+  BrowserBridgeAttachedSchema,
+  PooledBrowserAttachTicketClaimsSchema,
+} from "./browser.js";
+import {
   json,
   wireUnionMembers,
   same,
@@ -130,6 +135,22 @@ function windowBreaks(baseline: PersonalWire, current: PersonalWire): string[] {
 }
 
 describe("personal wire compatibility", () => {
+  it("keeps ordinary browser ticket and relay readiness bytes while fencing pooled tickets", () => {
+    const fixture =
+      '{"access":"read-write","audience":"opensteer-browser-runtime","creationOrigin":"person","wireVersion":2,"operationExpiresAt":"2026-08-09T18:00:18.000Z","remainingBudgetMs":18000,"expiresAt":"2026-08-09T18:01:00.000Z","identity":{"kind":"fresh"},"issuedAt":"2026-08-09T18:00:00.000Z","nonce":"nonce_0123456789abcdef","runtimeId":"runtime_local","sessionId":"bsn_00000000-0000-4000-8000-000000000002","subject":"usr_owner"}';
+    const ordinary: unknown = JSON.parse(fixture);
+    expect(JSON.stringify(BrowserAttachTicketClaimsSchema.parse(ordinary))).toBe(fixture);
+    const attached = '{"type":"browser.attached"}';
+    expect(JSON.stringify(BrowserBridgeAttachedSchema.parse(JSON.parse(attached)))).toBe(attached);
+    const pooled = {
+      ...BrowserAttachTicketClaimsSchema.parse(ordinary),
+      pool: { term: 1, instance: "00000000-0000-4000-8000-000000000003", epoch: 2, attachment: 3 },
+    };
+    expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
+    expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);
+    expect(PooledBrowserAttachTicketClaimsSchema.parse(pooled)).toEqual(pooled);
+  });
+
   it("keeps serving every app inside the window", () => {
     expect(minimumHostApiVersion).toBeLessThanOrEqual(hostApiVersion);
     const current = personalWire();

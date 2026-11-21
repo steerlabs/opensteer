@@ -205,15 +205,6 @@ export const BrowserAttachTicketClaimsSchema = z
     initialNavigation: InitialNavigationSchema.optional(),
     /** May reconnect to the existing session, never create it. */
     reattach: z.literal(true).optional(),
-    /** Present only for a pooled runtime. */
-    pool: z
-      .strictObject({
-        term: z.number().int().positive(),
-        instance: z.uuid(),
-        epoch: z.number().int().positive(),
-        attachment: z.number().int().positive().optional(),
-      })
-      .optional(),
     /** Host opt-in to navigation IDs and committed-document reports. */
     navigationAttributionVersion: z.literal(1).optional(),
     /**
@@ -268,6 +259,18 @@ export const BrowserAttachTicketClaimsSchema = z
     },
   );
 export type BrowserAttachTicketClaims = z.infer<typeof BrowserAttachTicketClaimsSchema>;
+
+export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSchema.safeExtend({
+  pool: z.strictObject({
+    term: z.number().int().positive(),
+    instance: z.uuid(),
+    epoch: z.number().int().positive(),
+    attachment: z.number().int().positive().optional(),
+  }),
+});
+type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;
+export type RuntimeBrowserAttachTicketClaims = BrowserAttachTicketClaims &
+  Partial<Pick<PooledBrowserAttachTicketClaims, "pool">>;
 
 export const BrowserSurfaceSchema = z.strictObject({
   state: z.enum(["live", "suspended"]).optional(),
