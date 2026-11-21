@@ -1210,66 +1210,8 @@ async function run(): Promise<void> {
   removeAgentFrameListener();
   await agentCdp.close();
 
-  const snapshot = await first.exportSnapshot();
-  progress("snapshot-exported");
-  if (!snapshot.cookies.some((cookie) => cookie.name === "session")) {
-    throw new Error("Electron profile did not export cookies.");
-  }
-  if (!snapshot.origins.some((state) => state.origin === origin && state.indexedDB?.length)) {
-    throw new Error("Electron profile did not export origin storage.");
-  }
-  await ledger.close();
-  await first.close();
-
-  first = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
-  progress("second-launched");
-  ledger = new SurfaceLedger(first.context, {
-    initialViewport: request.initialViewport,
-  });
-  await ledger.start();
-  const restoredPage = first.context.pages()[0];
-  if (!restoredPage) throw new Error("Restored Electron profile did not start.");
-  const restoredCdp = await restoredPage.cdp();
-  await restoredCdp.send("Page.navigate", { url: origin });
-  await waitFor(() => restoredPage.url() === `${origin}/`);
-  progress("second-navigated");
-  const restored = asEvaluationValue(
-    await restoredCdp.send("Runtime.evaluate", {
-      awaitPromise: true,
-      expression: `new Promise((resolve, reject) => {
-        const opening = indexedDB.open("opensteer-electron");
-        opening.onerror = () => reject(opening.error);
-        opening.onsuccess = () => {
-          const database = opening.result;
-          const reading = database.transaction("tokens").objectStore("tokens").get("access");
-          reading.onerror = () => reject(reading.error);
-          reading.onsuccess = () => {
-            resolve({
-              cookie: document.cookie,
-              indexedDB: { ...reading.result, count: String(reading.result.count) },
-              localStorage: localStorage.getItem("account"),
-            });
-            database.close();
-          };
-        };
-      })`,
-      returnByValue: true,
-    }),
-  );
-  const restoredRecord = restored as {
-    cookie?: unknown;
-    indexedDB?: { count?: unknown; token?: unknown };
-    localStorage?: unknown;
-  };
-  if (
-    restoredRecord.cookie !== "session=electron-cookie" ||
-    restoredRecord.indexedDB?.count !== "2" ||
-    restoredRecord.indexedDB.token !== "portable" ||
-    restoredRecord.localStorage !== "desktop"
-  ) {
-    throw new Error(`Electron profile restore mismatch: ${JSON.stringify(restored)}`);
-  }
-
+  // Portable legacy profile snapshots (`exportSnapshot` / `storage.kind: "legacy"`)
+  // were removed in 2fa8004e2; native profile persistence is covered by profile-restore.
   await ledger.close();
   await first.close();
   await transportAgentSizePhase(origin);
