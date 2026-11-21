@@ -924,3 +924,112 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   const invAfter2 = await lifecycle.inventory();
   expect(invAfter2.some((tab) => tab.url === url2)).toBe(false);
 });
+
+it("wakes a stopped helper worker via ServiceWorker.startWorker without creating any visible page target", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-f9-sw-wake-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    browserCdp: {
+      send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+      on(event: string, listener: (p: unknown) => void): void;
+      off(event: string, listener: (p: unknown) => void): void;
+    };
+    playwrightContext: { newCDPSession(page: unknown): Promise<{ send(m: string, p?: unknown): Promise<unknown>; detach(): Promise<void> }> };
+    persistencePage: { goto(url: string): Promise<unknown>; close(): Promise<void> };
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  const url = `${server.originForSite(1)}/article`;
+  const surface = await ledger.openSurface();
+  const live = ledger.binding(surface.id)!;
+  await live.cdp.send("Page.navigate", { url });
+  await waitLoaded(live.cdp, "/article");
+
+  // Confirm helper SW is running, then stop it via CDP ServiceWorker.stopWorker.
+  const targetsBefore = (await internal.browserCdp.send("Target.getTargets")) as {
+    targetInfos: readonly { targetId: string; type: string; url: string }[];
+  };
+  const swBefore = targetsBefore.targetInfos.find(
+    (t) => t.type === "service_worker" && t.url.endsWith("/sw.js"),
+  );
+  expect(swBefore).toBeDefined();
+  const extOrigin = /^(chrome-extension:\/\/[^/]+)/u.exec(swBefore!.url)?.[1];
+  expect(extOrigin).toBeTruthy();
+
+  await internal.persistencePage.goto(`${extOrigin}/manifest.json`);
+  const stopSession = await internal.playwrightContext.newCDPSession(internal.persistencePage);
+  try {
+    let versionId: string | undefined;
+    (
+      stopSession as unknown as {
+        on(e: string, fn: (p: { versions?: { versionId: string; status: string }[] }) => void): void;
+      }
+    ).on("ServiceWorker.workerVersionUpdated", (params) => {
+      const running = params.versions?.find((v) => v.status === "activated");
+      if (running) versionId = running.versionId;
+    });
+    await stopSession.send("ServiceWorker.enable");
+    await vi.waitFor(() => expect(versionId).toBeTruthy(), { timeout: 3_000, interval: 25 });
+    await stopSession.send("ServiceWorker.stopWorker", { versionId });
+  } finally {
+    await stopSession.detach().catch(() => undefined);
+  }
+
+  await vi.waitFor(
+    async () => {
+      const t = (await internal.browserCdp.send("Target.getTargets")) as {
+        targetInfos: readonly { type: string; url: string }[];
+      };
+      expect(t.targetInfos.some((x) => x.type === "service_worker" && x.url.endsWith("/sw.js"))).toBe(
+        false,
+      );
+    },
+    { timeout: 5_000, interval: 50 },
+  );
+
+  // Watch for any created page target during wake -> must be ZERO!
+  const createdPages: unknown[] = [];
+  const onCreated = (params: unknown) => {
+    const info = (params as { targetInfo?: { type?: string } })?.targetInfo;
+    if (info?.type === "page") createdPages.push(info);
+  };
+  internal.browserCdp.on("Target.targetCreated", onCreated);
+  const handedOff: unknown[] = [];
+  const unsub = launched.context.handOff((p) => {
+    if (p !== live.page) handedOff.push(p);
+  });
+  cleanup.push(async () => {
+    internal.browserCdp.off("Target.targetCreated", onCreated);
+    unsub();
+  });
+
+  // Calling inventory() must wake the stopped worker and return our live tab with zero created pages!
+  const inv = await lifecycle.inventory();
+  expect(inv.some((t) => t.url === url)).toBe(true);
+  expect(createdPages).toEqual([]);
+  expect(handedOff).toEqual([]);
+
+  // Also prove wakeServiceWorker never falls back to Target.createTarget even if privatePage is closed!
+  await internal.persistencePage.close();
+  const createSpy = vi.spyOn(internal.browserCdp, "send");
+  const wakeMethod = (lifecycle as unknown as { wakeServiceWorker(): Promise<void> }).wakeServiceWorker.bind(lifecycle);
+  await wakeMethod();
+  expect(
+    createSpy.mock.calls.some(([method]) => method === "Target.createTarget"),
+  ).toBe(false);
+  createSpy.mockRestore();
+});

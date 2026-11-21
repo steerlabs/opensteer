@@ -115,6 +115,12 @@ export function isInternalExtensionUrl(url: string | undefined): boolean {
   return typeof url === "string" && url.startsWith("chrome-extension://");
 }
 
+function extensionOriginFromUrl(url: string | undefined): string | null {
+  if (typeof url !== "string") return null;
+  const match = /^(chrome-extension:\/\/[^/]+)/u.exec(url);
+  return match?.[1] ?? null;
+}
+
 /** Materializes the bundled MV3 lifecycle helper inside a native profile directory. */
 export async function ensureTabLifecycleExtension(profileDirectory: string): Promise<string> {
   if (!path.isAbsolute(profileDirectory)) {
@@ -173,18 +179,32 @@ export class ChromiumTabLifecycleBridge {
   }
 
   private async wakeServiceWorker(): Promise<void> {
-    if (this.privatePage && !this.privatePage.isClosed()) {
+    if (!this.privatePage || this.privatePage.isClosed()) return;
+    const origin =
+      extensionOriginFromUrl(this.serviceWorkerUrl) ??
+      extensionOriginFromUrl(
+        this.context
+          .serviceWorkers()
+          .find((candidate) => candidate.url().endsWith("/sw.js"))
+          ?.url(),
+      );
+    if (!origin) {
       await this.privatePage.goto("about:blank").catch(() => undefined);
       return;
     }
-    // Fallback when no private page is alive: create and immediately close a blank target.
-    const created = (await this.browserCdp
-      .send("Target.createTarget", { url: "about:blank" })
-      .catch(() => null)) as { targetId?: string } | null;
-    if (created?.targetId) {
-      await this.browserCdp
-        .send("Target.closeTarget", { targetId: created.targetId })
-        .catch(() => undefined);
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      await this.privatePage.goto(`${origin}/manifest.json`).catch(() => undefined);
+      session = await this.context.newCDPSession(this.privatePage);
+      await session.send("ServiceWorker.enable");
+      await session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` });
+    } catch {
+      // Best effort: ensureWorker continues polling until deadline.
+    } finally {
+      await session?.detach().catch(() => undefined);
+      if (!this.privatePage.isClosed()) {
+        await this.privatePage.goto("about:blank").catch(() => undefined);
+      }
     }
   }
 

@@ -13,7 +13,7 @@ import {
   TestChromiumLauncher as PlaywrightChromiumLauncher,
 } from "./browser-test-lifecycle.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
-import type { ChromiumTabLifecycleBridge } from "./tab-lifecycle-extension.js";
+import { ChromiumTabLifecycleBridge } from "./tab-lifecycle-extension.js";
 
 const executablePath = findChromium();
 
@@ -538,4 +538,62 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
     async () => expect(await evalValue<number>(bRestored.cdp, "window.scrollY")).toBe(2900),
     { timeout: 3_000, interval: 50 },
   );
+});
+
+it("fails closed on launch inventory failure by closing every restored non-helper page target", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-f9-fail-closed-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const savedUrl = `${server.originForSite(1)}/article`;
+
+  const browser1 = await launcher.launch(request);
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-f9" });
+  await ledger1.start();
+  await ledger1.openSurface({ surfaceId: surfDupA });
+  const live1 = ledger1.binding(surfDupA)!;
+  await live1.cdp.send("Page.navigate", { url: savedUrl });
+  await waitLoaded(live1.cdp, "/article");
+  await browser1.context.sessionRestore!.flush!();
+  await vi.waitFor(
+    async () => {
+      const files = await readdir(path.join(directory, "Default", "Sessions")).catch(() => []);
+      const sf = files.filter((n) => n.startsWith("Session_"));
+      expect(sf.length).toBeGreaterThan(0);
+      const sizes = await Promise.all(
+        sf.map((n) => stat(path.join(directory, "Default", "Sessions", n)).then((s) => s.size)),
+      );
+      expect(Math.max(...sizes)).toBeGreaterThan(0);
+    },
+    { timeout: 10_000, interval: 100 },
+  );
+  await ledger1.close();
+  await browser1.close();
+
+  // Fail launch-time inventory once -> launcher must fail closed, close every restored page target, and leave zero unowned pages!
+  const invSpy = vi
+    .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+    .mockRejectedValueOnce(new Error("Helper worker failed at launch"));
+  const browser2 = await launcher.launch(request);
+  invSpy.mockRestore();
+  cleanup.push(() => browser2.close());
+
+  expect(browser2.context.pages()).toHaveLength(0);
+  expect(browser2.context.sessionRestore).toBeUndefined();
+  const internal2 = browser2 as unknown as {
+    browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
+  };
+  const targets = (await internal2.browserCdp.send("Target.getTargets")) as {
+    targetInfos: readonly { type: string; url: string }[];
+  };
+  const pageTargets = targets.targetInfos.filter((t) => t.type === "page");
+  // Only the private blank anchor page should remain; the restored /article page must be closed!
+  expect(pageTargets.some((t) => t.url.includes("/article"))).toBe(false);
+  expect(pageTargets.length).toBeLessThanOrEqual(1);
 });

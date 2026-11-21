@@ -829,22 +829,24 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
           : undefined;
       let lifecycle: ChromiumTabLifecycleBridge | undefined;
+      let helperTargetId: string | null = syncTargetIdOfPage(helper);
       const matchedRestored = new Map<BrowserSurfaceId, MatchedRestoredTab>();
       if (candidateLifecycle) {
-        let helperTargetId: string | null = null;
-        try {
-          const helperCdp = await context.newCDPSession(helper);
+        if (!helperTargetId) {
           try {
-            const info = (await helperCdp.send("Target.getTargetInfo")) as {
-              targetInfo?: { targetId?: unknown };
-            };
-            helperTargetId =
-              typeof info.targetInfo?.targetId === "string" ? info.targetInfo.targetId : null;
-          } finally {
-            await helperCdp.detach().catch(() => undefined);
+            const helperCdp = await context.newCDPSession(helper);
+            try {
+              const info = (await helperCdp.send("Target.getTargetInfo")) as {
+                targetInfo?: { targetId?: unknown };
+              };
+              helperTargetId =
+                typeof info.targetInfo?.targetId === "string" ? info.targetInfo.targetId : null;
+            } finally {
+              await helperCdp.detach().catch(() => undefined);
+            }
+          } catch {
+            helperTargetId = null;
           }
-        } catch {
-          helperTargetId = null;
         }
         const initialInventory = await candidateLifecycle.inventory().catch(() => null);
         if (initialInventory !== null) {
@@ -874,6 +876,31 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
               matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
             }
           }
+        } else {
+          // Fail closed when launch inventory fails: never leave unowned restored tabs alive.
+          process.stderr.write(
+            '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
+          );
+          for (const page of context.pages()) {
+            if (page === helper || page.isClosed()) continue;
+            await page.close({ runBeforeUnload: false }).catch(() => undefined);
+          }
+          const targets = (await browserCdp
+            .send("Target.getTargets")
+            .catch(() => ({ targetInfos: [] }))) as {
+            targetInfos?: readonly { targetId?: unknown; type?: unknown }[];
+          };
+          for (const info of targets.targetInfos ?? []) {
+            if (
+              info.type === "page" &&
+              typeof info.targetId === "string" &&
+              info.targetId !== helperTargetId
+            ) {
+              await browserCdp
+                .send("Target.closeTarget", { targetId: info.targetId })
+                .catch(() => undefined);
+            }
+          }
         }
       }
       // Snapshot every non-helper page present after inventory (including any restored
@@ -893,6 +920,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         directory,
         matchedRestored,
         preHelperPages,
+        helperTargetId ?? undefined,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
@@ -936,6 +964,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     profileDirectory?: string,
     matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
     preHelperPages: ReadonlySet<Page> = new Set(),
+    privatePageTargetId?: string,
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -982,6 +1011,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       this.contextHandle,
       browserContextId,
       dedicatedContext,
+      privatePageTargetId,
     );
   }
 
@@ -1170,6 +1200,7 @@ class PlaywrightContextHandle implements BrowserContext {
     profileDirectory?: string,
     matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
     preHelperPages: ReadonlySet<Page> = new Set(),
+    privatePageTargetId?: string,
   ) {
     this.privatePage = privatePage;
     this.lifecycle = lifecycle;
@@ -2451,10 +2482,12 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     context: PlaywrightContextHandle,
     browserContextId: string | undefined,
     dedicatedContext: boolean,
+    privatePageTargetId?: string,
   ) {
     this.dedicatedContext = dedicatedContext;
     this.browserContextId = browserContextId;
     this.context = context;
+    if (privatePageTargetId) this.hiddenTargetIds.add(privatePageTargetId);
     this.handle = new PlaywrightCdpHandle(session);
     this.handle.eventRelay.observeDomain("Target.getTargets");
   }
