@@ -324,11 +324,16 @@ export class TabSleeper {
       }
     return linked;
   }
+  /**
+   * Why a page may not sleep now, or null. With `young`, the quiet period is not asked: under
+   * memory pressure it is a preference, while every other blocker (the page being in use) stays.
+   */
   blocked(
     id: string,
     record: TabRecord,
     now: number,
     links?: ReadonlySet<BrowserSurfaceId>,
+    young = false,
   ): SleepBlocker | null {
     const session = this.sessions.get(id);
     const state = session?.hostState;
@@ -341,7 +346,7 @@ export class TabSleeper {
     if (record.lease.busy || !["live", "sleeping"].includes(record.lease.state)) return "operation";
     if (state.runs > 0 && record.agentActed) return "agent-input";
     if (record.typed) return "typed";
-    if (now - record.usedAt < quietMs) return "quiet";
+    if (!young && now - record.usedAt < quietMs) return "quiet";
     const live = record.live;
     if (!live) return "suspended";
     if (live.dialog) return "dialog";
@@ -395,11 +400,18 @@ export class TabSleeper {
             : null,
         );
         if (reason && reason !== "quiet") continue;
+        // Under pressure a tab only quiet-blocked is a candidate now: the quiet period is a
+        // preference there, not a protection.
+        const young =
+          reason === "quiet" &&
+          budget &&
+          pressureDriven &&
+          this.blocked(id, record, now, links, true) === null;
         earliest = Math.min(
           earliest,
           Math.max(
             budget ? now : this.deadline(session, record, cutoff),
-            record.usedAt + quietMs,
+            young ? now : record.usedAt + quietMs,
             this.nextProbe.get(record) ?? 0,
           ),
         );
@@ -469,7 +481,7 @@ export class TabSleeper {
       const links = this.openerLinks(session);
       for (const record of session.ledger.policyRecords()) {
         if (!record.live || (this.nextProbe.get(record) ?? 0) > now) continue;
-        if (this.blocked(id, record, now, links) === null) return true;
+        if (this.blocked(id, record, now, links, true) === null) return true;
       }
     }
     return false;
@@ -735,6 +747,41 @@ export class TabSleeper {
         attempted++;
       }
       await Promise.all(pending);
+      // Over the start threshold with no tab past its quiet period able to sleep, the least
+      // recently used tab that is not in use sleeps, whatever its age: a renderer the kernel
+      // kills loses more than a tab put to sleep. One per pass; the next sample decides again.
+      if (
+        !this.closed &&
+        attempted === 0 &&
+        this.usesLinuxMemoryPressure() &&
+        this.memoryPressureState.known &&
+        this.releasing &&
+        Date.now() >= Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
+      ) {
+        const now = Date.now();
+        const youngest = candidates
+          .filter(
+            ({ id, session, record }) =>
+              this.sessions.get(id) === session &&
+              (this.nextProbe.get(record) ?? 0) <= now &&
+              this.blocked(id, record, now) === "quiet" &&
+              this.blocked(id, record, now, undefined, true) === null,
+          )
+          .sort((a, b) => a.record.usedAt - b.record.usedAt)[0];
+        if (youngest) {
+          const { id, session, record } = youngest;
+          attempted++;
+          const committed = await session.ledger.sleep(record.id, (next) =>
+            this.blocked(id, next, Date.now(), undefined, true),
+          );
+          if (committed) slept++;
+          else {
+            this.declined.add(record);
+            this.nextProbe.set(record, Date.now() + quietMs);
+          }
+          this.trimRestore();
+        }
+      }
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
           if (this.closed || this.estimate() <= this.budget()) break;

@@ -595,6 +595,47 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("under pressure sleeps the least recently used tab not in use, whatever its age, and never one in use", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // Every tab is younger than the quiet period: a burst of opens.
+      const viewedTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const pinnedTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const freeTab = (await f.ledger.openSurface()).id;
+      await vi.advanceTimersByTimeAsync(100);
+      const newestTab = (await f.ledger.openSurface()).id;
+      const ids = [f.record.id, viewedTab, pinnedTab, freeTab, newestTab];
+      for (const id of ids) f.ledger.touch(id, true);
+      const state = (pinned: string[], viewed: string[]) =>
+        f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed, pinned });
+      // The oldest tab and the two in use (viewed, pinned) are out; the free tab is the least
+      // recently used one that is not in use.
+      state([pinnedTab, f.record.id], [viewedTab]);
+      let opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(opened).toBe(true);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended");
+      expect(suspended()).toEqual([freeTab]);
+
+      // With every tab in use, none sleeps and the open is not held.
+      state([...ids], []);
+      const before = suspended();
+      opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(suspended()).toEqual(before);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("uses Linux memoryPressure with 70%/60% hysteresis, falls back to page estimate on null, and respects memoryBudgetBytes override", async () => {
     const limit = 2 * 1024 ** 3; // 2 GiB
     let pressure: { usedBytes: number; limitBytes: number } | null = {
