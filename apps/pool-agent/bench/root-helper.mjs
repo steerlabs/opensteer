@@ -2,7 +2,15 @@
 // One JSON command per connection. Test infrastructure only; never installed on a real host.
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 
@@ -358,8 +366,11 @@ exec /usr/bin/systemctl "$@"
         return { used: existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : null };
       }
       mkdirSync("/run/opensteer-pool-bench", { recursive: true, mode: 0o700 });
-      for (const [name, text] of Object.entries(wrappers))
-        writeFileSync(`/usr/local/sbin/${name}`, text, { mode: 0o755 });
+      // The helper's umask would leave them unexecutable, and the tool path would skip them.
+      for (const [name, text] of Object.entries(wrappers)) {
+        writeFileSync(`/usr/local/sbin/${name}`, text);
+        chmodSync(`/usr/local/sbin/${name}`, 0o755);
+      }
       if (command.tool === "systemd-run")
         writeFileSync("/run/opensteer-pool-bench/slow-systemd-run", `${command.seconds}\n`);
       if (command.tool === "systemctl-stop")
