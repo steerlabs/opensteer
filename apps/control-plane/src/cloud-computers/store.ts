@@ -1,5 +1,9 @@
 import { cancelAndRefundCheckout } from "./checkout-compensation.js";
-import { CloudComputerDeletionUnsettled, type CloudComputerDeletionStep } from "./billing-error.js";
+import {
+  CloudComputerCancelledLate,
+  CloudComputerDeletionUnsettled,
+  type CloudComputerDeletionStep,
+} from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
@@ -845,7 +849,12 @@ export class CloudComputerStore {
       .executeTakeFirst();
   }
 
-  async #refreshSubscription(tx: TransactionDb, id: string) {
+  /**
+   * Brings a personal Cloud Computer's billing up to date with Stripe. A row whose deletion is
+   * requested has its subscription cancelled whatever else is open: a checkout keeps its own
+   * path. Returns how long after the request the cancellation was confirmed, when it was.
+   */
+  async #refreshSubscription(tx: TransactionDb, id: string): Promise<number | undefined> {
     const row = await tx
       .selectFrom("cloudComputers")
       .selectAll()
@@ -853,25 +862,13 @@ export class CloudComputerStore {
       .where("workAssignmentId", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!row || row.tombstonedAt) return;
+    if (!row || row.tombstonedAt) return undefined;
     const subscription = await this.#options.stripe.subscription(id);
     if (subscription.id !== id || subscription.customer !== row.stripeCustomerId) {
       throw new ControlPlaneError("unavailable", "Stripe returned a different subscription");
     }
     const billing = billingStatus(subscription);
     if (row.deletionRequestedAt) {
-      const payable = await tx
-        .selectFrom("cloudComputerCheckouts")
-        .select("requestId")
-        .where("status", "=", "open")
-        .where((eb) =>
-          eb.or([
-            eb("targetComputerId", "=", CloudComputerIdSchema.parse(row.id)),
-            ...(row.accountId ? [eb("accountId", "=", row.accountId)] : []),
-          ]),
-        )
-        .executeTakeFirst();
-      if (payable) return;
       if (billing !== "canceled") await this.#options.stripe.cancel(id);
       const now = this.#now();
       await tx
@@ -888,14 +885,15 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
-      return;
+      return now.getTime() - row.deletionRequestedAt.getTime();
     }
     const status =
       billing === "active" && !matchesPrice(subscription, row.stripePriceId, row.billingCurrency)
         ? "inactive"
         : billing;
     const renewsAt = subscriptionRenewal(subscription, status);
-    if (status === row.billingStatus && renewsAt?.getTime() === row.renewsAt?.getTime()) return;
+    if (status === row.billingStatus && renewsAt?.getTime() === row.renewsAt?.getTime())
+      return undefined;
     await tx
       .updateTable("cloudComputers")
       .where("id", "=", row.id)
@@ -906,6 +904,7 @@ export class CloudComputerStore {
         updatedAt: this.#now(),
       })
       .executeTakeFirst();
+    return undefined;
   }
 
   async reconcileBilling(onError: (error: unknown) => void) {
@@ -959,6 +958,7 @@ export class CloudComputerStore {
       .where("tombstonedAt", "is", null)
       .where("workAssignmentId", "is", null)
       .where("state", "!=", "deleted")
+      .where("deletionRequestedAt", "is", null)
       .execute();
     for (const row of rows)
       await run(() =>
@@ -966,6 +966,7 @@ export class CloudComputerStore {
           .transaction()
           .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId)),
       );
+    // Deleted, not yet settled with Stripe. A work Home's billing is its organization's.
     const deleted = await this.#db
       .selectFrom("cloudComputers")
       .select("id")
@@ -981,124 +982,85 @@ export class CloudComputerStore {
 
   /**
    * Settles with Stripe a Cloud Computer whose deletion was requested, however it was asked
-   * (deleting it, or deleting the Account): from the request on, nothing more is kept. Every
-   * step rests on what Stripe says now and is retried each pass; the row is marked settled only
-   * once all of them hold, and one unsettled an hour after its request is reported with its step.
+   * (deleting it, or deleting the Account): its subscription cancelled, then the Stripe customer
+   * it belongs to deleted with its saved payment details unless another subscription there is
+   * not cancelled. A fixed few Stripe calls, retried each pass. A cancellation confirmed later
+   * than the first attempt is reported with how long it took, so a person can look for a renewal
+   * charged in that time; a row unsettled an hour after its request is reported with the step.
    */
   async #settleDeletion(id: CloudComputerId, onError: (error: unknown) => void) {
-    const row = await this.#db
-      .selectFrom("cloudComputers")
-      .select([
-        "id",
-        "accountId",
-        "state",
-        "deletionRequestedAt",
-        "billingSettledAt",
-        "stripeCheckoutId",
-        "stripeSubscriptionId",
-      ])
-      .where("id", "=", id)
-      .executeTakeFirst();
+    const read = () =>
+      this.#db
+        .selectFrom("cloudComputers")
+        .select([
+          "state",
+          "deletionRequestedAt",
+          "deletedAt",
+          "billingSettledAt",
+          "cancelFailedAt",
+          "stripeSubscriptionId",
+        ])
+        .where("id", "=", id)
+        .executeTakeFirst();
+    const row = await read();
     if (!row?.deletionRequestedAt || row.billingSettledAt) return;
     const since = row.deletionRequestedAt;
     let step: CloudComputerDeletionStep = "cancel";
     let failure: unknown;
     try {
-      const settled = await this.#settledWithStripe({ ...row, since }, (next) => {
-        step = next;
-      });
-      if (settled) {
+      if (row.state !== "deleted") {
         await this.#db
-          .updateTable("cloudComputers")
-          .where("id", "=", id)
-          .where("billingSettledAt", "is", null)
-          .set({ billingSettledAt: this.#now() })
-          .executeTakeFirst();
-        return;
+          .transaction()
+          .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId))
+          .catch(async (error: unknown) => {
+            await this.#cancelFailed(id);
+            throw error;
+          });
+        if ((await read())?.state !== "deleted")
+          throw new ControlPlaneError("unavailable", "The subscription is not cancelled yet");
       }
+      const { stripe } = this.#options;
+      const subscription = await stripe.subscription(row.stripeSubscriptionId);
+      if (subscription.id !== row.stripeSubscriptionId)
+        throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+      if (billingStatus(subscription) !== "canceled") await stripe.cancel(subscription.id);
+      step = "customer";
+      await stripe.deleteIdleCustomer(subscription.customer);
+      step = "record";
+      const settled = await this.#db
+        .updateTable("cloudComputers")
+        .where("id", "=", id)
+        .where("billingSettledAt", "is", null)
+        .set({ billingSettledAt: this.#now() })
+        .returning(["deletedAt", "cancelFailedAt"])
+        .executeTakeFirst();
+      // Not cancelled at the first attempt: a renewal may have been charged meanwhile.
+      if (settled?.cancelFailedAt)
+        onError(
+          new CloudComputerCancelledLate(
+            id,
+            (settled.deletedAt ?? this.#now()).getTime() - since.getTime(),
+          ),
+        );
+      return;
     } catch (error) {
       failure = error;
     }
     if (this.#now().getTime() - since.getTime() >= unsettledDeletionMs)
       onError(new CloudComputerDeletionUnsettled(id, step, { cause: failure }));
-    else if (failure) throw failure;
+    else throw failure;
   }
 
-  async #settledWithStripe(
-    row: {
-      readonly id: string;
-      readonly accountId: ControlPlaneAccountId | null;
-      readonly state: string;
-      readonly since: Date;
-      readonly stripeCheckoutId: string;
-      readonly stripeSubscriptionId: string;
-    },
-    at: (step: CloudComputerDeletionStep) => void,
-  ): Promise<boolean> {
-    const { stripe } = this.#options;
-    // The subscription cancelled: `#refreshSubscription` cancels it, then marks the row deleted.
-    at("cancel");
-    if (row.state !== "deleted") return false;
-    const subscription = await stripe.subscription(row.stripeSubscriptionId);
-    if (subscription.id !== row.stripeSubscriptionId)
-      throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
-    if (billingStatus(subscription) !== "canceled") await stripe.cancel(subscription.id);
-    // Every payment for it at or after the request, refunded in full.
-    at("refund");
-    if (!(await stripe.refundSubscriptionPaymentsSince(subscription.id, row.since))) return false;
-    // The person's checkouts from before the request: none still open, none paid unrefunded. The
-    // pass expires an open one, and refunds one paid, before this runs (`#recoverCheckout`).
-    at("checkout");
-    const customers = new Set([subscription.customer]);
-    const owner =
-      row.accountId ??
-      (
-        await this.#db
-          .selectFrom("cloudComputerCheckouts")
-          .select("accountId")
-          .where("stripeSessionId", "=", row.stripeCheckoutId)
-          .executeTakeFirst()
-      )?.accountId;
-    if (owner) {
-      const attempts = await this.#db
-        .selectFrom("cloudComputerCheckouts")
-        .selectAll()
-        .where((eb) =>
-          eb.or([
-            eb("accountId", "=", owner),
-            eb("targetComputerId", "=", CloudComputerIdSchema.parse(row.id)),
-          ]),
-        )
-        .where("createdAt", "<=", row.since)
-        .orderBy("createdAt")
-        .execute();
-      const deferred = await this.#db
-        .selectFrom("cloudComputerStripeEvents")
-        .select("id")
-        .where("deferredCheckout", "is not", null)
-        .where(sql<boolean>`deferred_checkout->>'client_reference_id' = ${owner}`)
-        .executeTakeFirst();
-      if (deferred || attempts.some((attempt) => attempt.status === "open")) return false;
-      for (const attempt of attempts) {
-        if (attempt.status !== "completed" && attempt.status !== "refunded") continue;
-        if (!attempt.stripeSessionId) continue;
-        const session = await stripe.findCheckout({
-          accountId: attempt.accountId,
-          requestId: attempt.requestId,
-          sessionId: attempt.stripeSessionId,
-          createdAt: attempt.createdAt,
-          expiresAt: attempt.expiresAt,
-        });
-        if (!session?.payment) continue;
-        if (attempt.status === "refunded" && !(await stripe.refundCheckout(session.payment)))
-          return false;
-        customers.add(session.payment.customer);
-      }
-    }
-    // Then the customers, with the cards saved on them, unless another subscription lives there.
-    at("customer");
-    for (const customer of customers) await stripe.deleteIdleCustomer(customer);
-    return true;
+  /** Remembers that cancelling a deleted Cloud Computer's subscription failed at least once. */
+  async #cancelFailed(id: CloudComputerId) {
+    await this.#db
+      .updateTable("cloudComputers")
+      .where("id", "=", id)
+      .where("cancelFailedAt", "is", null)
+      .where("deletionRequestedAt", "is not", null)
+      .set({ cancelFailedAt: this.#now() })
+      .executeTakeFirst()
+      .catch(() => undefined);
   }
 
   #deferredCheckouts() {
@@ -2670,9 +2632,13 @@ export class CloudComputerStore {
             ]),
           )
           .execute();
+        // Cancelled first, whatever happens to a checkout: each keeps its own path.
+        await this.#db
+          .transaction()
+          .execute((tx) => this.#refreshSubscription(tx, subscription))
+          .catch(() => this.#cancelFailed(id));
         for (const attempt of attempts)
           await this.#recoverCheckout(attempt.accountId, attempt.requestId);
-        await this.#db.transaction().execute((tx) => this.#refreshSubscription(tx, subscription));
       } catch {
         // Keep the durable request for the next billing pass.
       }

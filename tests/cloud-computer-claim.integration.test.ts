@@ -295,7 +295,6 @@ const stripe = {
     payment: undefined,
   }),
   refundCheckout: async () => true,
-  refundSubscriptionPaymentsSince: async () => true,
   deleteIdleCustomer: async () => {},
   findCheckout: async () => undefined,
   cancel: async () => {

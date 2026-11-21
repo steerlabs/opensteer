@@ -78,9 +78,6 @@ integration("Cloud Computer website pages", () => {
       payment: undefined,
     })),
     refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
-    refundSubscriptionPaymentsSince: vi.fn<StripeBilling["refundSubscriptionPaymentsSince"]>(
-      async () => true,
-    ),
     deleteIdleCustomer: vi.fn<StripeBilling["deleteIdleCustomer"]>(async () => {}),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async () => {}),

@@ -75,6 +75,8 @@ export interface CloudComputerTable {
   deletionRequestedAt: NullableTimestamp;
   /** Set once the billing pass settled this computer's deletion with Stripe; see `reconcileBilling`. */
   billingSettledAt: Generated<Date | null>;
+  /** Set when cancelling this deleted computer's subscription first failed; see `#settleDeletion`. */
+  cancelFailedAt: Generated<Date | null>;
   vmDestroyedAt: Generated<Date | null>;
   backupsUnreadableAt: Generated<Date | null>;
   backupObjectsRemovedAt: Generated<Date | null>;

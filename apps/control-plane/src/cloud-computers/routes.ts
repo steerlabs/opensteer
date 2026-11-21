@@ -42,6 +42,8 @@ export interface CloudComputerRouteOptions {
   readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
   readonly stripeWebhookSecret: string;
   readonly kickBootstrap?: () => void;
+  /** Asks the billing pass to run now rather than at its next turn, best effort. */
+  readonly kickBilling?: () => void;
   /** The Opensteer website, the one origin allowed to read the public offer from a page. */
   readonly websiteOrigin?: URL;
 }

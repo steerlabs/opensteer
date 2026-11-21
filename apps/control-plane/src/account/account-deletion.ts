@@ -8,22 +8,14 @@ import type { ControlPlaneAuth } from "../auth/auth.js";
 import { appleClientSecret, appleOrigin, type AppleSignInConfig } from "../auth/apple-sign-in.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { ControlPlaneError } from "../server/errors.js";
-import type { CloudComputerStore } from "../cloud-computers/store.js";
 import type { ConnectLifecycleService } from "./connect-lifecycle.js";
 
 type OAuthTokenContext = Parameters<typeof decryptOAuthToken>[1];
-
-type CloudComputersForDeletion = Pick<CloudComputerStore, "listForAccount" | "mutate">;
 
 /**
  * Deletes an Account from wherever a person asks, including when a computer it
  * owns is lost or off, so nothing here depends on a Host answering. Each attempt
  * is complete on its own: a refusal leaves the Account intact to retry.
- *
- * Just before the Account goes, each of the person's own Cloud Computers is asked to delete
- * itself through the Delete it already has, and the Account goes whether or not Stripe answered:
- * the computer's row outlives the Account with its deletion request, and the billing pass settles
- * it (`CloudComputerStore.reconcileBilling`).
  */
 export class AccountDeletionService {
   readonly #apple: AppleSignInConfig | undefined;
@@ -32,12 +24,17 @@ export class AccountDeletionService {
   readonly #fetch: typeof fetch;
   readonly #store: ControlPlaneStore;
   readonly #resolveOrganizationCheckouts?: (account: ControlPlaneAccountId) => Promise<void>;
-  readonly #cloudComputers: CloudComputersForDeletion | undefined;
+  readonly #afterDelete: (() => void) | undefined;
 
   constructor(dependencies: {
+    /**
+     * Told once an Account's deletion committed. Its Cloud Computers' deletion requests commit
+     * with it (the database records one when the Account's row goes), and the billing pass
+     * cancels their subscriptions; this asks the pass to look now, best effort.
+     */
+    readonly afterDelete?: () => void;
     readonly appleSignIn?: AppleSignInConfig;
     readonly auth: ControlPlaneAuth;
-    readonly cloudComputers?: CloudComputersForDeletion;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
     readonly store: ControlPlaneStore;
@@ -48,7 +45,7 @@ export class AccountDeletionService {
     this.#connectLifecycle = dependencies.connectLifecycle;
     this.#fetch = dependencies.fetch ?? fetch;
     this.#store = dependencies.store;
-    this.#cloudComputers = dependencies.cloudComputers;
+    this.#afterDelete = dependencies.afterDelete;
     if (dependencies.resolveOrganizationCheckouts)
       this.#resolveOrganizationCheckouts = dependencies.resolveOrganizationCheckouts;
   }
@@ -88,29 +85,18 @@ export class AccountDeletionService {
         ? await this.#store.oauthRefreshToken(accountId, "apple")
         : null;
       await this.#store.renewAccountDeletion(accountId, attemptId);
-      // Last, after every refusal that can keep the Account.
-      await this.#deleteCloudComputers(accountId);
       await this.#store.deleteAccount(accountId, attemptId);
     } catch (error) {
       await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
       if (isNotFound(error)) return;
       throw error;
     }
-    if (this.#apple && appleRefreshToken) await this.#revokeApple(this.#apple, appleRefreshToken);
-  }
-
-  /**
-   * Asks each of the person's own Cloud Computers to delete itself, so its subscription is
-   * cancelled now when Stripe answers. A failure here never keeps the Account: the request is
-   * recorded before Stripe is contacted, or the Account's deletion records it.
-   */
-  async #deleteCloudComputers(accountId: ControlPlaneAccountId): Promise<void> {
-    const cloud = this.#cloudComputers;
-    if (!cloud) return;
-    for (const computer of await cloud.listForAccount(accountId)) {
-      if (computer.work || computer.status === "deleted") continue;
-      await cloud.mutate(computer.id, "delete", accountId).catch(() => undefined);
+    try {
+      this.#afterDelete?.();
+    } catch {
+      // The pass runs every minute anyway.
     }
+    if (this.#apple && appleRefreshToken) await this.#revokeApple(this.#apple, appleRefreshToken);
   }
 
   /** Apple documents a manual fallback, so a failure here never undoes a deletion. */

@@ -242,7 +242,7 @@ export function deleteAccountBody(input: {
       <a class="btn btn--block" href="/">Back</a>`,
     });
   const cloud = input.cloudComputer
-    ? `<p class="lead">Your Cloud Computer is deleted with it. ${escapeHtml(cloudWords("cloud.delete.billing"))} Your account goes at once; then Opensteer destroys the computer and its disk, including its browser profiles and tasks, makes its backups unreadable and removes them, and deletes the card saved with Stripe.</p>`
+    ? `<p class="lead">Your Cloud Computer is deleted with it. ${escapeHtml(cloudWords("cloud.delete.billing"))} Opensteer destroys the computer and its disk, including its browser profiles and tasks, deletes its backups, and deletes the payment details kept with Stripe for its subscription; Stripe keeps its own records of past payments. Your account itself is deleted at once.</p>`
     : "";
   const computers = input.computers.length
     ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
@@ -277,7 +277,7 @@ export function accountDeletedBody(
 ): string {
   return statusPageBody({
     detail: input.cloudComputer
-      ? `Opensteer is finishing your Cloud Computer’s deletion: cancelling its subscription with Stripe, destroying the computer and its disk, removing its backups and deleting the card saved with Stripe. ${cloudWords("cloud.delete.billing")} You can close this window.`
+      ? `Opensteer is finishing your Cloud Computer’s deletion. ${cloudWords("cloud.delete.billing")} The computer, its disk, its backups and the payment details kept with Stripe for its subscription are deleted. You can close this window.`
       : "You can close this window.",
     mark: "check",
     title: "Your Opensteer account is deleted",

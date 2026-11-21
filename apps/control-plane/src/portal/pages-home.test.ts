@@ -49,14 +49,18 @@ describe("the page that deletes an Account", () => {
       "Your Cloud Computer is deleted with it.",
       // The same promise as deleting only the Cloud Computer.
       cloudWords("cloud.delete.billing"),
-      "Your account goes at once; then Opensteer destroys the computer and its disk",
-      "makes its backups unreadable and removes them, and deletes the card saved with Stripe",
+      "Opensteer destroys the computer and its disk",
+      "deletes the payment details kept with Stripe for its subscription",
+      "Stripe keeps its own records of past payments.",
+      "Your account itself is deleted at once.",
     ])
       expect(body).toContain(escapeHtml(words));
     expect(cloudWords("cloud.delete.body")).toContain(cloudWords("cloud.delete.billing"));
     expect(body).toContain('<form method="post"');
-    // Never the promise the code can't keep when Stripe charges during an outage.
+    // Never a promise the code doesn't keep: no automatic refund, no order it doesn't enforce.
     expect(body).not.toContain("nothing more is charged");
+    expect(body).not.toContain("refunds it in full");
+    expect(body).not.toContain("then Opensteer");
   });
 
   it("keeps an Account whose work Home its organization hasn't offboarded, with no Delete", () => {
@@ -71,12 +75,11 @@ describe("the page that deletes an Account", () => {
   it("says once the Account is deleted that its Cloud Computer's deletion is being finished", () => {
     const body = accountDeletedBody({ cloudComputer: true });
     expect(body).toContain("Your Opensteer account is deleted");
+    expect(body).toContain(escapeHtml("Opensteer is finishing your Cloud Computer’s deletion."));
+    expect(body).toContain(escapeHtml(cloudWords("cloud.delete.billing")));
     expect(body).toContain(
-      escapeHtml(
-        "Opensteer is finishing your Cloud Computer’s deletion: cancelling its subscription",
-      ),
+      escapeHtml("payment details kept with Stripe for its subscription are deleted"),
     );
-    expect(body).toContain(escapeHtml("If Stripe takes a payment after you ask"));
     // Without a Cloud Computer the pages say nothing about one.
     expect(accountDeletedBody()).not.toContain("Cloud Computer");
     expect(deleteAccountBody(base)).not.toContain("Cloud Computer");
