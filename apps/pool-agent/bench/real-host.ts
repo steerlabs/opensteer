@@ -925,17 +925,18 @@ async function slowRevive() {
  * in when a guest leaves. The kernel kills nothing in the guests' group or the proxies' slice.
  */
 async function capacity(others: Slot[]) {
-  const since = new Date(Date.now() - 6 * 3_600_000).toISOString().replace("T", " ").slice(0, 19);
-  const logged = (await agentLines(since)).filter((line) => line.event === "capacity").at(-1);
+  for (const slot of others) await slot.ensureStopped();
+  // Parked guests stay in memory until the run says otherwise. The agent restarts with it and
+  // logs the capacity it admits guests by.
+  const restarted = sinceNow();
+  await helper({ cmd: "configure", saveAfterSeconds: null });
+  await waitForAgent(others[0]!);
+  const logged = (await agentLines(restarted)).filter((line) => line.event === "capacity").at(-1);
   if (!logged) throw new Error("The agent logged no capacity.");
   const guestBytes = logged.guestBytes as number;
   // The largest guest of which four fit and five do not, in 256 MiB steps.
   const memoryMib = Math.floor((guestBytes / 4 / mib - 512) / 256) * 256;
   const holds = Math.floor(guestBytes / ((memoryMib + 512) * mib));
-  for (const slot of others) await slot.ensureStopped();
-  // Parked guests stay in memory until the run says otherwise.
-  await helper({ cmd: "configure", saveAfterSeconds: null });
-  await waitForAgent(others[0]!);
   const names = ["a", "b", "c", "d", "e", "f", "g", "h"];
   for (const name of names) await helper({ cmd: "make-profile", name: `bench-cap-${name}` });
   const slots = Object.fromEntries(

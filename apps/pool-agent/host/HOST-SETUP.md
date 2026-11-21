@@ -119,7 +119,8 @@ Bounds (round D, D1):
   later"), which a Home's journal sends again later. No guest or proxy is ever let in that the
   kernel would have to kill another for.
 - The slice as a whole has `CPUQuota` = a quarter of the host's cores, at least one core
-  (`setup-host.sh`: 200 % on an 8-core n2-standard-8). However many proxies are busy, the
+  (`setup-host.sh`: 100 % on the run hosts, an n2-standard-8 with one thread per core, which has 4
+  cores). However many proxies are busy, the
   guests, the agent and the relay keep three quarters of the host.
 - systemd's crash protection stays on: five starts in 120 s, with a restart delay that backs
   off from 1 s to 30 s (with a 30 s window that backoff never tripped the limit, run 5). The agent's own stops reset the counter, so only the proxy's own failures

@@ -2,7 +2,7 @@
 // One JSON command per connection. Test infrastructure only; never installed on a real host.
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 
@@ -267,8 +267,12 @@ async function run(command) {
       };
     }
     case "make-profile": {
+      // As the bench's own guests have theirs (run-gcp.sh): a formatted 1 GiB ext4.
       const file = `/var/lib/opensteer-pool/profiles/${command.name}.ext4`;
-      if (!existsSync(file)) execFileSync("truncate", ["-s", "256M", file]);
+      if (!existsSync(file)) {
+        execFileSync("truncate", ["-s", "1G", file]);
+        execFileSync("mkfs.ext4", ["-q", "-F", "-m", "0", file]);
+      }
       return { ok: true };
     }
     case "slot-number": {
@@ -338,6 +342,7 @@ exec /usr/bin/systemctl "$@"
         const file = `/run/opensteer-pool-bench/${command.used}.used`;
         return { used: existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : null };
       }
+      mkdirSync("/run/opensteer-pool-bench", { recursive: true, mode: 0o700 });
       for (const [name, text] of Object.entries(wrappers))
         writeFileSync(`/usr/local/sbin/${name}`, text, { mode: 0o755 });
       if (command.tool === "systemd-run")

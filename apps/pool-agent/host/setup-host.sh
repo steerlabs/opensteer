@@ -198,7 +198,7 @@ EOF
     # Round D, D1: every slot proxy runs in this slice. Its ceiling is counted inside the host's
     # budget for guests (the agent's driver.egressSliceMib, 1536 by default), and each proxy has
     # its own (128 MiB, one core) on top. Round E, E4: the slice as a whole gets a quarter of the
-    # host's cores, at least one (2 of 8 on an n2-standard-8): however many proxies are busy at
+    # host's cores, at least one (1 of the 4 on a run host): however many proxies are busy at
     # once, the guests, the agent and the relay keep the other three quarters.
     local cores; cores=$(nproc)
     local egress_cpu=$(( cores * 25 ))
