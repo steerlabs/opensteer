@@ -24,7 +24,6 @@ import {
 } from "../packages/protocol/src/browser.js";
 import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
-import pg from "pg";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
@@ -39,6 +38,10 @@ import { createRequire } from "node:module";
 /** Packages the Host depends on, resolved as the Host resolves them. */
 const requireFromHost = createRequire(new URL("../apps/host/package.json", import.meta.url));
 const { WebSocket } = requireFromHost("ws") as typeof import("ws");
+/** The database driver's client, as the Host loads it; only its query method is used here. */
+const pg = requireFromHost("pg") as {
+  readonly Client: { readonly prototype: { query(...args: unknown[]): unknown } };
+};
 type FastifyLike = {
   register(plugin: unknown): Promise<unknown>;
   listen(options: { host: string; port: number }): Promise<string>;
@@ -396,11 +399,11 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
     let stopping: Promise<void> | undefined;
     // Any read of the session's lineage made after the ticket left waits until Stop committed:
     // the widest a Stop between the ticket and the broker's registration can be.
-    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+    const prototype = pg.Client.prototype;
     const query = prototype.query;
     let afterTicket = false;
     const held = vi.spyOn(prototype, "query").mockImplementation(function (
-      this: pg.Client,
+      this: unknown,
       ...args: unknown[]
     ) {
       const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string })?.text;
