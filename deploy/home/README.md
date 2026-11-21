@@ -57,6 +57,16 @@ Runtime's defaults are two CPUs and 4 GiB. Set
 Host and PostgreSQL are each capped at two CPUs and 2 GiB. Caddy, the browser
 egress proxy, and Channel Runtime are each capped at one CPU and 512 MiB.
 
+On a 4 GB Compute Engine `e2-medium`, plan the memory budget after Chromium
+moves off the VM. The current Compose limits allow simultaneous allocations
+well above 4 GB even without Chromium. A starting budget to qualify is 512 MiB
+for PostgreSQL, 768 MiB for Host, 1 GiB for Runner, 128 MiB each for Caddy and
+browser egress, and 256 MiB for Channel Runtime. That leaves about 1 GiB for
+Linux, Docker and filesystem cache. Set the Runner cap with
+`OPENSTEER_HOME_RUNNER_MEMORY`. Set the other service limits and their
+`memswap_limit` values in the deployment's Compose recipe. Measure an agent
+run and a backup together before using this budget for customers.
+
 For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE` during install. The egress
