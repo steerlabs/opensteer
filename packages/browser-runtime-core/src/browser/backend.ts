@@ -285,7 +285,7 @@ export interface BrowserRendererUsage {
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
   /** Deduplicated renderer census for this runtime, including its subframes. */
-  rendererUsage?(): BrowserRendererUsage;
+  rendererUsage?(): BrowserRendererUsage | Promise<BrowserRendererUsage>;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

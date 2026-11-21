@@ -221,7 +221,7 @@ export async function probePasskeySecurityState(
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
   readonly hostCost = "process" as const;
-  readonly rendererUsage?: () => BrowserRendererUsage;
+  readonly rendererUsage?: () => BrowserRendererUsage | Promise<BrowserRendererUsage>;
   private preparation: Promise<void> | undefined;
   private readonly ownedBrowserPids = new Set<number>();
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();

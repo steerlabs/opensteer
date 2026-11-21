@@ -1,16 +1,17 @@
 import type { BrowserRendererUsage } from "@opensteer/browser-runtime-core";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 
 export interface LinuxProcFs {
-  listPids(): readonly number[];
-  readText(path: string): string | null;
+  listPids(): Promise<readonly number[]> | readonly number[];
+  readText(path: string): Promise<string | null> | string | null;
 }
 
 const defaultLinuxProcFs: LinuxProcFs = {
-  listPids(): readonly number[] {
+  async listPids(): Promise<readonly number[]> {
     try {
+      const entries = await readdir("/proc");
       const pids: number[] = [];
-      for (const entry of readdirSync("/proc")) {
+      for (const entry of entries) {
         if (/^\d+$/u.test(entry)) {
           const pid = Number(entry);
           if (Number.isSafeInteger(pid) && pid > 0) pids.push(pid);
@@ -21,11 +22,11 @@ const defaultLinuxProcFs: LinuxProcFs = {
       return [];
     }
   },
-  readText(filePath: string): string | null {
+  async readText(filePath: string): Promise<string | null> {
     try {
-      return readFileSync(filePath, "utf8");
+      return await readFile(filePath, "utf8");
     } catch {
-      // Processes may exit between directory listing and file read.
+      // Processes may exit or deny smaps_rollup between directory listing and file read.
       return null;
     }
   },
@@ -46,21 +47,37 @@ export function parseProcStatPpid(statContent: string): number | null {
   return Number.isSafeInteger(ppid) && ppid >= 0 ? ppid : null;
 }
 
+function hasCmdlineFlag(cmdlineContent: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const pattern = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, "u");
+  return cmdlineContent.split("\0").some((part) => part === flag || pattern.test(part));
+}
+
 /**
- * Identifies Chromium renderer processes from Linux `/proc/<pid>/cmdline`.
+ * Identifies Chromium page renderer processes from Linux `/proc/<pid>/cmdline`.
  * Direct launches delimit argv with NUL bytes, whereas Linux zygote-forked
  * sandboxed renderers rewrite argv[0] with spaces via SetProcessTitleFromCommandLine.
+ * Excludes `--extension-process` renderers so the lifecycle helper is not counted as page RAM.
  */
 export function isChromiumRendererCmdline(cmdlineContent: string): boolean {
   if (!cmdlineContent) return false;
-  return cmdlineContent
-    .split("\0")
-    .some((part) => part === "--type=renderer" || /(?:^|\s)--type=renderer(?:\s|$)/u.test(part));
+  if (!hasCmdlineFlag(cmdlineContent, "--type=renderer")) return false;
+  if (hasCmdlineFlag(cmdlineContent, "--extension-process")) return false;
+  return true;
 }
 
-/** Parses resident memory (`VmRSS`) in bytes from Linux `/proc/<pid>/status`. */
-export function parseProcStatusVmRssBytes(statusContent: string): number | null {
-  const match = /^VmRSS:\s+(\d+)\s*(?:kB)?\b/mu.exec(statusContent);
+/** Parses proportional set size (`Pss`) in bytes from Linux `/proc/<pid>/smaps_rollup`. */
+export function parseProcSmapsRollupPssBytes(smapsRollupContent: string): number | null {
+  const match = /^Pss:\s+(\d+)\s*(?:kB)?\b/mu.exec(smapsRollupContent);
+  if (!match?.[1]) return null;
+  const kilobytes = Number(match[1]);
+  if (!Number.isSafeInteger(kilobytes) || kilobytes <= 0) return null;
+  return kilobytes * 1024;
+}
+
+/** Parses anonymous resident memory (`RssAnon`) in bytes from Linux `/proc/<pid>/status`. */
+export function parseProcStatusRssAnonBytes(statusContent: string): number | null {
+  const match = /^RssAnon:\s+(\d+)\s*(?:kB)?\b/mu.exec(statusContent);
   if (!match?.[1]) return null;
   const kilobytes = Number(match[1]);
   if (!Number.isSafeInteger(kilobytes) || kilobytes <= 0) return null;
@@ -68,35 +85,41 @@ export function parseProcStatusVmRssBytes(statusContent: string): number | null 
 }
 
 /**
- * Counts and sums resident memory (`VmRSS`) of Chromium renderer descendants of
- * the given browser root PIDs using Linux `/proc`. Returns `bytes: null` when a
- * live renderer's status could not be parsed so callers fall back safely.
+ * Asynchronously counts and sums proportional memory (`Pss` from `smaps_rollup`,
+ * falling back to `RssAnon` from `status`, never `VmRSS`) of Chromium page
+ * renderer descendants of the given browser root PIDs using Linux `/proc`.
+ * Returns `bytes: null` when a live renderer's memory could not be parsed so
+ * callers fall back safely.
  */
-export function collectLinuxRendererUsage(
+export async function collectLinuxRendererUsage(
   rootPids: Iterable<number>,
   proc: LinuxProcFs = defaultLinuxProcFs,
-): BrowserRendererUsage {
+): Promise<BrowserRendererUsage> {
   const roots = new Set<number>();
   for (const pid of rootPids) {
     if (Number.isSafeInteger(pid) && pid > 0) roots.add(pid);
   }
   if (roots.size === 0) return { processes: 0, bytes: 0 };
 
-  const allPids = proc.listPids();
+  const allPids = await proc.listPids();
   if (allPids.length === 0) return { processes: 0, bytes: null };
 
+  const statEntries = await Promise.all(
+    allPids.map(async (pid) => {
+      const stat = await proc.readText(`/proc/${pid}/stat`);
+      return stat === null ? null : { pid, ppid: parseProcStatPpid(stat) };
+    }),
+  );
+
   const childrenByPpid = new Map<number, number[]>();
-  for (const pid of allPids) {
-    const stat = proc.readText(`/proc/${pid}/stat`);
-    if (stat === null) continue;
-    const ppid = parseProcStatPpid(stat);
-    if (ppid === null) continue;
-    let children = childrenByPpid.get(ppid);
+  for (const entry of statEntries) {
+    if (!entry || entry.ppid === null) continue;
+    let children = childrenByPpid.get(entry.ppid);
     if (!children) {
       children = [];
-      childrenByPpid.set(ppid, children);
+      childrenByPpid.set(entry.ppid, children);
     }
-    children.push(pid);
+    children.push(entry.pid);
   }
 
   const visited = new Set<number>(roots);
@@ -112,24 +135,35 @@ export function collectLinuxRendererUsage(
     }
   }
 
+  const measurements = await Promise.all(
+    descendants.map(async (pid): Promise<number | null | "skip"> => {
+      const cmdline = await proc.readText(`/proc/${pid}/cmdline`);
+      if (cmdline === null || !isChromiumRendererCmdline(cmdline)) return "skip";
+      const rollup = await proc.readText(`/proc/${pid}/smaps_rollup`);
+      if (rollup !== null) {
+        const pssBytes = parseProcSmapsRollupPssBytes(rollup);
+        if (pssBytes !== null) return pssBytes;
+      }
+      const status = await proc.readText(`/proc/${pid}/status`);
+      if (status === null && rollup === null) {
+        // Renderer exited between cmdline and memory reads.
+        return "skip";
+      }
+      return status === null ? null : parseProcStatusRssAnonBytes(status);
+    }),
+  );
+
   let processes = 0;
   let totalBytes = 0;
   let allMeasured = true;
 
-  for (const pid of descendants) {
-    const cmdline = proc.readText(`/proc/${pid}/cmdline`);
-    if (cmdline === null || !isChromiumRendererCmdline(cmdline)) continue;
-    const status = proc.readText(`/proc/${pid}/status`);
-    if (status === null) {
-      // Renderer exited between cmdline and status reads.
-      continue;
-    }
+  for (const measurement of measurements) {
+    if (measurement === "skip") continue;
     processes++;
-    const rssBytes = parseProcStatusVmRssBytes(status);
-    if (rssBytes === null) {
+    if (measurement === null) {
       allMeasured = false;
     } else {
-      totalBytes += rssBytes;
+      totalBytes += measurement;
     }
   }
 

@@ -211,6 +211,45 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("samples rendererUsage at most once per rendererSampleMs and handles async sampling off the pass", async () => {
+    const budget = 100 * 1024 ** 2;
+    let calls = 0;
+    const pending = Promise.withResolvers<{ processes: number; bytes: number }>();
+    const f = await fixture({
+      memoryBudgetBytes: budget,
+      rendererUsage: () => {
+        calls++;
+        if (calls === 1) return pending.promise;
+        return Promise.resolve({ processes: 1, bytes: budget / 2 });
+      },
+    });
+    try {
+      const person = await f.ledger.openSurface();
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [person.id],
+        viewed: [],
+        pinned: [],
+      });
+      // First pass kicks off the async sample without blocking.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      // Opening/poking again before rendererSampleMs must not trigger another sample.
+      await f.ledger.openSurface();
+      f.sleeper.poke();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(calls).toBe(1);
+
+      // Resolving the async sample over budget triggers shedding without re-sampling early.
+      pending.resolve({ processes: 6, bytes: budget * 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      expect(f.record.live).toBeNull();
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([
     "unknown",
     "keepAwake",

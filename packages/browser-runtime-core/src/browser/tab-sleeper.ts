@@ -51,7 +51,7 @@ interface TabSleeperOptions {
   readonly hostCost?: "process" | "partition" | undefined;
   readonly hosts?: () => readonly SleepHost[];
   readonly retireHost?: (key: string) => Promise<void>;
-  readonly rendererUsage?: (() => BrowserRendererUsage) | undefined;
+  readonly rendererUsage?: (() => BrowserRendererUsage | Promise<BrowserRendererUsage>) | undefined;
   readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
   readonly pageCounts?: (() => PageCounts) | undefined;
   /** Native pages with no live tab across the runtime, those of ended sessions included. */
@@ -78,6 +78,8 @@ export class TabSleeper {
   private closed = false;
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
+  private samplingRenderers = false;
+  private pendingAsyncPressurePass = false;
   private declined = new WeakSet<TabRecord>();
   private reclaimFrom: {
     usage: BrowserRendererUsage;
@@ -313,7 +315,11 @@ export class TabSleeper {
       this.reclaimFrom.settledAt = Math.min(this.reclaimFrom.settledAt, now);
       this.nextRendererSample = Math.min(this.nextRendererSample, now);
     }
-    const budget = !this.options.rendererUsage && this.overBudget();
+    const budget =
+      (!this.options.rendererUsage && this.overBudget()) ||
+      (this.pendingAsyncPressurePass &&
+        this.releasing &&
+        now >= Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0));
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
@@ -360,10 +366,31 @@ export class TabSleeper {
   }
   private sampleRenderers(): void {
     const measure = this.options.rendererUsage;
-    if (!measure) return;
+    if (!measure || this.samplingRenderers) return;
     const now = Date.now();
+    if (now < this.nextRendererSample) return;
     this.nextRendererSample = now + rendererSampleMs;
-    const usage = measure();
+    const result = measure();
+    if (result && typeof (result as PromiseLike<BrowserRendererUsage>).then === "function") {
+      this.samplingRenderers = true;
+      void Promise.resolve(result).then(
+        (usage) => {
+          this.samplingRenderers = false;
+          if (this.closed) return;
+          this.applyRendererSample(usage, Date.now());
+          if (this.releasing) this.pendingAsyncPressurePass = true;
+          this.poke();
+        },
+        () => {
+          this.samplingRenderers = false;
+        },
+      );
+      return;
+    }
+    this.applyRendererSample(result as BrowserRendererUsage, now);
+  }
+
+  private applyRendererSample(usage: BrowserRendererUsage, now: number): void {
     this.rendererUsage = usage;
     if (!this.overBudget()) {
       this.reclaimFrom = null;
@@ -453,6 +480,7 @@ export class TabSleeper {
     let livePages = 0;
     const pending = new Set<Promise<void>>();
     try {
+      this.pendingAsyncPressurePass = false;
       this.sampleRenderers();
       const candidates = [...this.sessions].flatMap(([id, session]) =>
         [...session.ledger.policyRecords()]
