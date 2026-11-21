@@ -288,12 +288,13 @@ it("lets a tab-targeted call made while the Runner's channel reconnects wait for
     await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("reconnecting"));
     // The broker is gone with its channel: the page's document stands from when it was lost.
     expect(w.home.service.pageInventory(w.session.id)).toBeUndefined();
-    const call = w.work.useTab(w.read, w.tab.id);
-    const early = await Promise.race([
-      call.then(() => "settled"),
-      new Promise((resolve) => setTimeout(() => resolve("waiting"), 1_000)),
-    ]);
-    expect(early).toBe("waiting");
+    let settled = false;
+    const call = w.work.useTab(w.read, w.tab.id).finally(() => {
+      settled = true;
+    });
+    // The call passed its witness and waits on admission for the browser to come back.
+    await vi.waitFor(() => expect(w.home.coordinator.gate.demand).toBe(true));
+    expect(settled).toBe(false);
     expect(w.home.coordinator.gate.phase).toBe("reconnecting");
     w.j.runnerUp();
     const result = await call;

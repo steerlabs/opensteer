@@ -234,29 +234,31 @@ it("prunes a pooled browser's notes after seven days, seen or not, and keeps a n
       epoch: 1,
     };
     const slot = await installBrowserPoolSlot(fixture.database, target);
-    const note = (surfaceId: string, days: number, seen: boolean) => {
-      const at = new Date(Date.now() - days * 24 * 60 * 60_000);
-      return {
-        intentId: randomUUID(),
-        runnerId: task.runnerId,
-        ownerId: task.userId,
-        sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
-        surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
-        documentId: null,
-        reason: "person",
-        lostAt: at,
-        noticedAt: seen ? at : null,
-      };
+    const note = async (surfaceId: string, days: number, seen: boolean) => {
+      await fixture.database
+        .insertInto("browserPoolDocumentLosses")
+        .values({
+          intentId: randomUUID(),
+          runnerId: task.runnerId,
+          ownerId: task.userId,
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+          documentId: null,
+          reason: "person",
+        })
+        .execute();
+      // Lost, and seen if it was, this many days ago.
+      await sql`
+        update browser_pool_document_losses
+        set lost_at = now() - make_interval(days => ${days}),
+            noticed_at = case when ${seen}::boolean then now() - make_interval(days => ${days}) end
+        where surface_id = ${surfaceId}
+      `.execute(fixture.database);
     };
-    await fixture.database
-      .insertInto("browserPoolDocumentLosses")
-      .values([
-        note("srf_unseen_old", 8, false),
-        note("srf_seen_old", 8, true),
-        note("srf_unseen_new", 1, false),
-        note("srf_seen_new", 1, true),
-      ])
-      .execute();
+    await note("srf_unseen_old", 8, false);
+    await note("srf_seen_old", 8, true);
+    await note("srf_unseen_new", 1, false);
+    await note("srf_seen_new", 1, true);
     await pruneBrowserPoolBookkeeping(fixture.database, slot);
     const kept = await fixture.database
       .selectFrom("browserPoolDocumentLosses")

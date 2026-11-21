@@ -772,7 +772,7 @@ export async function pruneBrowserPoolBookkeeping(
     .where((eb) =>
       eb.or([
         eb("noticedAt", "<", before),
-        eb.and([eb("noticedAt", "is", null), eb("lostAt", "<", before)]),
+        eb.and([eb("noticedAt", "is", null), eb(sql<Date>`lost_at`, "<", before)]),
       ]),
     )
     .execute();
