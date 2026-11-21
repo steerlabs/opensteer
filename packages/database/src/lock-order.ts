@@ -12,6 +12,7 @@
 export const databaseLockOrder = [
   "client_sync_state",
   "browser_pool_slots",
+  "browser_pool_controller_calls",
   "browser_pool_document_losses",
   "browser_pool_relays",
   "browser_tab_opens",
@@ -112,7 +113,6 @@ export const databaseLockOrder = [
   // A session and its operations are admitted under their connection, before any Run.
   "agent_sessions",
   "agent_operations",
-  "browser_pool_agent_operations",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",

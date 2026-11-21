@@ -19,8 +19,7 @@ import {
 import {
   AgentConnectionStore,
   NotificationStore,
-  advanceBrowserPoolSlot,
-  beginBrowserPoolPark,
+  installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
   decideAgentOperation,
   listAgentOperations,
@@ -224,22 +223,22 @@ describeStore("an external agent's direct work through sessions", (it) => {
       const waking = Promise.withResolvers<void>();
       const reserveCancelled = Promise.withResolvers<void>();
       const read = () => readBrowserPoolSlot(database, identity.runnerId);
-      const gate = new BrowserPoolGate({
-        read,
-        begin: (id, demanded) => beginBrowserPoolPark(database, identity, id, demanded),
-        park: (slot) => advanceBrowserPoolSlot(database, slot, { ...slot, phase: "parked" }),
-        abortPark: (slot) => advanceBrowserPoolSlot(database, slot, { ...slot, phase: "running" }),
-        wake: async (slot) => {
+      await installBrowserPoolSlot(database, identity);
+      // The driver parks without touching the slot row, so only the gate holds work back.
+      const gate = new BrowserPoolGate();
+      gate.attach({
+        park: async () => "parked",
+        wake: async () => {
           wakeStarted.resolve();
           try {
             await releaseWake.promise;
-            return await advanceBrowserPoolSlot(database, slot, { ...slot, phase: "running" });
+            gate.settle("open");
           } finally {
             waking.resolve();
           }
         },
       });
-      gate.recovered(undefined);
+      gate.settle("open");
       expect(await gate.tryPark()).toBe("parked");
       const s = await setUp(storeFixture, `approved-pool-${cut}`, {
         run: f,
@@ -283,10 +282,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
           .selectAll()
           .where("requestId", "=", requestId)
           .executeTakeFirstOrThrow();
-      const association = () =>
-        database.selectFrom("browserPoolAgentOperations").selectAll().executeTakeFirst();
       expect(await operation()).toMatchObject({ state: "approved", handedOffAt: null });
-      expect(await association()).toBeUndefined();
       const resumed = s.call("browser_use", { ...script, operationId: pending.operationId }).then(
         (result) => result,
         () => null,
@@ -294,7 +290,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
       try {
         await wakeStarted.promise;
         expect(s.runBrowserScript).not.toHaveBeenCalled();
-        expect(await read()).toMatchObject({ phase: "parked" });
+        expect(gate.phase).toBe("waking");
+        expect(await read()).toMatchObject({ phase: "running" });
         expect(await operation()).toMatchObject({ state: "approved", handedOffAt: null });
         const current = await operation();
         const threadId = ThreadIdSchema.parse(pending.taskId);
@@ -326,11 +323,6 @@ describeStore("an external agent's direct work through sessions", (it) => {
           case "no cut":
             releaseWake.resolve();
             expect(await resumed).toMatchObject({ structuredContent: { status: "completed" } });
-            expect(await association()).toMatchObject({
-              operationId: current.id,
-              ...identity,
-              armedAt: expect.any(Date),
-            });
             expect(await operation()).toMatchObject({
               state: "completed",
               terminalEvidenceAt: expect.any(Date),
@@ -341,7 +333,6 @@ describeStore("an external agent's direct work through sessions", (it) => {
         if (cut !== "no cut") {
           await reserveCancelled.promise;
           await s.sessions.drain();
-          expect(await association()).toBeUndefined();
           expect(await operation()).toMatchObject({ state: "refused", handedOffAt: null });
           expect(s.runBrowserScript).not.toHaveBeenCalled();
         }

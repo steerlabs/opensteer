@@ -1431,6 +1431,11 @@ export class SurfaceLedger {
     } else await ended.catch(() => undefined);
   }
 
+  /** A pooled park keeps every page; a page this session opens meanwhile is ended. */
+  suspendForPool(): void {
+    this.tearingDown = true;
+  }
+
   async suspendForRelayRestart(): Promise<void> {
     this.tearingDown = true;
     const keep = new Set(

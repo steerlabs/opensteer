@@ -1,6 +1,11 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
-import { browserPoolControlBytes, type BrowserPoolControl } from "./browser-pool.js";
+import {
+  browserPoolControlBytes,
+  type BrowserPoolControl,
+  type BrowserPoolRuntimeFence,
+} from "./browser-pool.js";
 import { BrowserRuntime } from "./runtime.js";
 import {
   FakeContext,
@@ -13,10 +18,14 @@ import {
   testSessionFilesRoot,
 } from "./test-support/fakes.js";
 
-function fixture(
-  probePage: NonNullable<
-    ConstructorParameters<typeof BrowserRuntime>[0]["pool"]
-  >["probePage"] = async () => [],
+type PoolOptions = NonNullable<ConstructorParameters<typeof BrowserRuntime>[0]["pool"]>;
+
+async function fixture(
+  options: {
+    probePage?: PoolOptions["probePage"];
+    adoptionWindowMs?: number;
+    actor?: "person" | "agent";
+  } = {},
 ) {
   const keys = generateKeyPairSync("ed25519");
   const page = new FakePage();
@@ -26,41 +35,104 @@ function fixture(
     runtimeId: "runtime_test",
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: verifier,
-    pool: { term: 1, controllerKey: keys.publicKey, probePage },
+    pool: {
+      controllerKey: keys.publicKey,
+      probePage: options.probePage ?? (async () => []),
+      ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
+    },
   });
-  const fence = runtime.poolState()!.fence;
-  const claims = freshClaims({ actor: "person", tabRestoreVersion: 1 });
-  verifier.setClaims("open", { ...claims, pool: { ...fence, attachment: 1 } });
-  const controls = (kind: BrowserPoolControl["kind"], sequence = 1) => {
-    const control = { kind, fence, intent: { id: `intent-${sequence}`, sequence } };
-    return runtime.controlPool(
-      control,
-      sign(null, browserPoolControlBytes(control), keys.privateKey),
-    );
+  const signed = (control: BrowserPoolControl) =>
+    runtime.controlPool(control, sign(null, browserPoolControlBytes(control), keys.privateKey));
+  let fence: BrowserPoolRuntimeFence = {
+    slot: "slot",
+    term: 1,
+    instance: randomUUID(),
+    epoch: 1,
   };
+  const actor = options.actor ?? "person";
+  const claims = freshClaims({
+    actor,
+    creationOrigin: actor,
+    ...(actor === "person" ? { tabRestoreVersion: 1 } : {}),
+  });
+  const ticket = (name: string, attachment: number, reattach = false) =>
+    verifier.setClaims(name, {
+      ...claims,
+      ...(reattach ? { reattach: true, initialNavigation: undefined } : {}),
+      pool: { ...fence, attachment },
+    });
+  const controls = (kind: BrowserPoolControl["kind"], sequence = 1, attempt?: number) =>
+    signed({
+      kind,
+      fence,
+      intent: { id: `intent-${sequence}`, sequence },
+      ...(attempt ? { attempt } : {}),
+    });
+  const install = (next = fence) => {
+    fence = next;
+    return signed({ kind: "install", fence });
+  };
+  const resume = (sequence = 1) => {
+    fence = { ...fence, epoch: fence.epoch + 1 };
+    return signed({ kind: "adopt", fence, intent: { id: `intent-${sequence}`, sequence } });
+  };
+  const state = () =>
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] });
   const open = async (sink = new FakeSink()) => {
+    ticket("open", 1);
     const attachment = await runtime.attach("open", sink);
-    await attachment.handle(
-      JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
-    );
+    await attachment.handle(state());
     return attachment;
   };
-  return { runtime, controls, page, verifier, claims, fence, open };
+  const reattach = async (attachment: number, sink = new FakeSink()) => {
+    ticket(`reattach-${attachment}`, attachment, true);
+    return runtime.attach(`reattach-${attachment}`, sink);
+  };
+  return {
+    runtime,
+    controls,
+    install,
+    resume,
+    page,
+    verifier,
+    claims,
+    open,
+    reattach,
+    signed,
+    keys,
+    fence: () => fence,
+  };
 }
 
-it("records cancellation before retire arrives and rejects unsigned and superseded controls", async () => {
-  const f = fixture();
+it("refuses every send until the controller installs a fence, and refuses a fence that moves back", async () => {
+  const f = await fixture();
   try {
+    expect(f.runtime.poolState()).toMatchObject({ phase: "uninstalled", fence: null });
+    await expect(f.open()).rejects.toThrow("parked");
+    const install = { kind: "install", fence: f.fence() } as const;
+    await expect(f.runtime.controlPool(install, Buffer.alloc(64))).rejects.toThrow(
+      "not authorized",
+    );
+    await f.install();
+    await expect(f.install()).resolves.toMatchObject({ phase: "running" });
     await f.open();
-    const retire = {
-      kind: "retire",
-      fence: f.fence,
-      intent: { id: "intent-1", sequence: 1 },
-    } as const;
-    await expect(f.runtime.controlPool(retire, Buffer.alloc(64))).rejects.toThrow("not authorized");
+    await expect(f.install({ ...f.fence(), term: 0, instance: randomUUID() })).rejects.toThrow(
+      "moved backwards",
+    );
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("records cancellation before retire arrives and rejects superseded controls", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    await f.open();
     const released = await f.controls("release");
     expect(released).toMatchObject({ phase: "running", cancelled: true });
-    await expect(f.controls("release")).resolves.toEqual(released);
+    await expect(f.controls("release")).resolves.toMatchObject({ phase: "running" });
     await expect(f.controls("retire")).rejects.toThrow("cancelled");
     await f.controls("release", 2);
     await expect(f.controls("retire")).rejects.toThrow("superseded");
@@ -72,65 +144,167 @@ it("records cancellation before retire arrives and rejects unsigned and supersed
   }
 });
 
-it("reports the same retired document on replay and detaches its old control handle", async () => {
-  const f = fixture();
-  const closeForPool = () => {
-    closed++;
-  };
-  let closed = 0;
-  const sink = Object.assign(new FakeSink(), { closeForPool });
+it("keeps an agent's page through retire and release, and adopts it under a newer attachment", async () => {
+  const f = await fixture({ actor: "agent" });
   try {
+    await f.install();
+    const sink = new FakeSink();
     const handle = await f.open(sink);
     const tab = [...sink.tabs.rows.values()][0]!;
     const retired = await f.controls("retire");
     expect(retired).toMatchObject({
       phase: "retired",
-      result: {
-        retained: [
-          {
-            sessionId: f.claims.sessionId,
-            surfaceId: tab.id,
-            documentId: expect.any(String),
-            typed: false,
-          },
-        ],
-        dropped: [],
+      retired: {
+        documents: [{ sessionId: f.claims.sessionId, surfaceId: tab.id }],
+        sessions: [f.claims.sessionId],
       },
     });
     expect(await f.controls("retire")).toEqual(retired);
-    expect(closed).toBe(1);
+    await expect(handle.handle("{}")).rejects.toThrow("parked");
     await handle.close();
     expect(f.page.isClosed()).toBe(false);
-    await expect(handle.handle("{}")).rejects.toThrow("parked");
     const released = await f.controls("release");
-    expect(await f.controls("release")).toEqual(released);
-    expect(released).toMatchObject({ phase: "running", fence: { epoch: 2 } });
-    await expect(f.runtime.attach("open", new FakeSink())).rejects.toThrow("authority has changed");
-    f.verifier.setClaims("reattach", {
-      ...f.claims,
-      reattach: true,
-      pool: { ...released.fence, attachment: 2 },
+    expect(released).toMatchObject({
+      phase: "adopting",
+      cancelled: true,
+      adoption: { cause: "release", sessions: [f.claims.sessionId] },
     });
+    await expect(f.controls("seal")).rejects.toThrow("unresolved");
     const fresh = new FakeSink();
-    await f.runtime.attach("reattach", fresh);
+    await f.reattach(2, fresh);
     expect([...fresh.tabs.rows.values()].map((row) => row.id)).toEqual([tab.id]);
+    await expect(f.reattach(2)).rejects.toThrow("attachment is stale");
+    const completed = await f.controls("complete", 1, 2);
+    expect(completed).toMatchObject({
+      phase: "running",
+      adoption: { outcome: { adopted: [f.claims.sessionId], lost: [] } },
+    });
+    expect(await f.controls("complete", 1, 2)).toEqual(completed);
+    expect(f.page.isClosed()).toBe(false);
     expect(
       f.page.cdpSession.sent.filter(({ method }) => method === "Page.setWebLifecycleState"),
     ).toEqual([
       { method: "Page.setWebLifecycleState", parameters: { state: "frozen" } },
       { method: "Page.setWebLifecycleState", parameters: { state: "active" } },
     ]);
-    await expect(f.runtime.attach("reattach", new FakeSink())).rejects.toThrow(
-      "attachment is stale",
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("recovers a retire that threw after detaching by release and adoption", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sink = Object.assign(new FakeSink(), {
+      closeForPool: () => {
+        throw new Error("The channel close failed");
+      },
+    });
+    await f.open(sink);
+    const failed = await f.controls("retire");
+    expect(failed).toMatchObject({ phase: "retiring", blockers: ["retire-failed"] });
+    await expect(f.controls("seal")).rejects.toThrow("not retired");
+    const released = await f.controls("release");
+    expect(released).toMatchObject({
+      phase: "adopting",
+      adoption: { sessions: [f.claims.sessionId] },
+    });
+    await f.reattach(2);
+    await expect(f.controls("complete", 1, 2)).resolves.toMatchObject({
+      phase: "running",
+      adoption: { outcome: { adopted: [f.claims.sessionId], lost: [] } },
+    });
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("ends the adoption by itself at its window and loses only what was not reattached", async () => {
+  const f = await fixture({ adoptionWindowMs: 40 });
+  try {
+    await f.install();
+    await f.open();
+    await f.controls("retire");
+    await f.controls("seal");
+    const adopting = await f.resume();
+    expect(adopting).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
+    await delay(120);
+    expect(f.runtime.poolState()).toMatchObject({
+      phase: "running",
+      adoption: {
+        outcome: {
+          adopted: [],
+          lost: [{ sessionId: f.claims.sessionId, reason: "adoption-window-expired" }],
+        },
+      },
+    });
+    expect(f.page.isClosed()).toBe(true);
+    await expect(f.controls("complete", 1, 2)).resolves.toMatchObject({
+      adoption: { outcome: { adopted: [] } },
+    });
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("keeps a session whose channel closed during adoption and refuses an older attempt's completion", async () => {
+  const g = await fixture();
+  try {
+    await g.install();
+    await g.open();
+    await g.controls("retire");
+    await g.controls("seal");
+    await expect(g.controls("release")).rejects.toThrow("committed");
+    const stale = g.fence();
+    await g.resume();
+    g.verifier.setClaims("stale", {
+      ...g.claims,
+      reattach: true,
+      initialNavigation: undefined,
+      pool: { ...stale, attachment: 5 },
+    });
+    await expect(g.runtime.attach("stale", new FakeSink())).rejects.toThrow(
+      "authority has changed",
     );
+    const first = await g.reattach(2);
+    await first.close();
+    expect(g.page.isClosed()).toBe(false);
+    expect(g.runtime.poolState()).toMatchObject({ phase: "adopting" });
+    await g.reattach(3);
+    await expect(g.controls("complete", 1, 2)).rejects.toThrow("newer adoption attempt");
+    await expect(g.controls("complete", 1, 3)).resolves.toMatchObject({
+      adoption: { outcome: { adopted: [g.claims.sessionId], lost: [] } },
+    });
+    expect(g.page.isClosed()).toBe(false);
+  } finally {
+    await g.runtime.shutdown();
+  }
+});
+
+it("discards every page of the previous instance when a fresh one is installed", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    await f.open();
+    await f.controls("retire");
+    await f.controls("seal");
+    await expect(
+      f.install({ ...f.fence(), instance: randomUUID(), epoch: 1 }),
+    ).resolves.toMatchObject({ phase: "running", intent: null, retired: null });
+    expect(f.page.isClosed()).toBe(true);
   } finally {
     await f.runtime.shutdown();
   }
 });
 
 it("thaws without detaching when the frozen probe finds blockers", async () => {
-  const f = fixture(async (_page, phase) => (phase === "frozen" ? ["upload", "download"] : []));
+  const f = await fixture({
+    probePage: async (_page, phase) => (phase === "frozen" ? ["upload", "download"] : []),
+  });
   try {
+    await f.install();
     const handle = await f.open();
     expect(await f.controls("retire")).toMatchObject({
       phase: "running",

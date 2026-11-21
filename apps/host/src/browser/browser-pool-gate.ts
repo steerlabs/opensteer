@@ -1,144 +1,130 @@
-import { BrowserPoolAdmissionClosed, type BrowserPoolSlot } from "@opensteer/database";
-import { randomUUID } from "node:crypto";
+import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
-interface BrowserPoolGateOptions {
-  readonly read: () => Promise<BrowserPoolSlot | undefined>;
-  readonly begin: (
-    intentId: string,
-    demanded: () => boolean,
-  ) => Promise<BrowserPoolSlot | undefined>;
-  readonly park: (slot: BrowserPoolSlot) => Promise<BrowserPoolSlot>;
-  readonly abortPark: (slot: BrowserPoolSlot) => Promise<BrowserPoolSlot>;
-  readonly wake: (slot: BrowserPoolSlot) => Promise<BrowserPoolSlot>;
+export interface BrowserPoolGateDriver {
+  /** Writes D and parks, or vetoes. `demanded` is read inside D and again after it. */
+  park(demanded: () => boolean): Promise<"parked" | "vetoed">;
+  /** Brings a parked browser back. It ends in an open gate: adopted, or discarded and fresh. */
+  wake(): Promise<void>;
 }
 
-type GatePhase = "recovering" | "open" | "preparing" | "parking" | "parked" | "waking" | "closed";
+type GatePhase = "recovering" | "open" | "preparing" | "parking" | "parked" | "waking";
 
 export interface BrowserPoolReservation {
   release(): void;
 }
 
-/** One instance per opted-in runtime, shared by every send on that runtime. */
+/**
+ * One instance per pooled runtime, shared by every send on it. A send before the park intent
+ * vetoes the park; a send after it waits. No phase is terminal: the driver ends every one.
+ */
 export class BrowserPoolGate {
-  private readonly options: BrowserPoolGateOptions;
-  private phase: GatePhase = "recovering";
-  private slot: BrowserPoolSlot | undefined;
-  private changed = new AbortController();
-  private active = 0;
-  private demanded = false;
-  private failure?: unknown;
+  #driver: BrowserPoolGateDriver | undefined;
+  #phase: GatePhase = "recovering";
+  #changed = new AbortController();
+  #active = 0;
+  #demanded = false;
+  #waking: Promise<void> | undefined;
 
-  constructor(options: BrowserPoolGateOptions) {
-    this.options = options;
+  attach(driver: BrowserPoolGateDriver): void {
+    this.#driver = driver;
   }
 
-  /** Call only after the test target's current controller and runtime have been reconciled. */
-  recovered(slot: BrowserPoolSlot | undefined): void {
-    if (this.phase !== "recovering")
-      throw new Error("The browser pool gate has already recovered.");
-    this.install(slot);
+  get phase(): GatePhase {
+    return this.#phase;
   }
 
+  /** Every send that arrives after D waits; the retained documents stand for live ones. */
   get retiringOrAdopting(): boolean {
-    return this.phase === "parking" || this.phase === "parked" || this.phase === "waking";
+    return this.#phase === "parking" || this.#phase === "parked" || this.#phase === "waking";
   }
 
-  /** Maintenance can use the running browser, without creating wake demand. */
-  holdOpen(): BrowserPoolReservation {
-    if (this.phase !== "open") throw new BrowserPoolAdmissionClosed();
-    this.active++;
+  /** The driver reports where the browser is now. */
+  settle(phase: "open" | "parked"): void {
+    this.#setPhase(phase);
+  }
+
+  /** The driver is bringing the browser back by itself, as after a restart mid-wake. */
+  recovering(): void {
+    this.#setPhase("recovering");
+  }
+
+  /** Demand: wakes a parked browser and waits for it. */
+  reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
+    return this.#wait(signal, true);
+  }
+
+  /**
+   * Taken when a send without a consumer is queued, so a park cannot start under it. Before D it
+   * vetoes the park; undefined means the caller waits with `background`.
+   */
+  backgroundNow(): BrowserPoolReservation | undefined {
+    if (this.#phase === "open") return this.#hold();
+    if (this.#phase === "preparing") this.#demanded = true;
+    return undefined;
+  }
+
+  /** Traffic with no consumer: vetoes a park before D, waits after it, and never wakes. */
+  background(signal: AbortSignal): Promise<BrowserPoolReservation> {
+    return this.#wait(signal, false);
+  }
+
+  async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
+    for (;;) {
+      if (signal.aborted)
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new BrowserPoolAdmissionClosed("The browser request was cancelled.");
+      const phase = this.#phase;
+      if (phase === "open") return this.#hold();
+      if (phase === "preparing") this.#demanded = true;
+      if (phase === "parked" && demand) this.#wake();
+      await waitForChange(this.#changed.signal, signal);
+    }
+  }
+
+  #hold(): BrowserPoolReservation {
+    this.#active++;
     let released = false;
     return {
       release: () => {
         if (released) return;
         released = true;
-        this.active--;
+        this.#active--;
       },
     };
   }
 
-  reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
-    return this.wait(signal, true);
-  }
-
-  /** Maintenance before D vetoes it. Maintenance after D waits for ordinary demand to wake. */
-  maintenance(signal: AbortSignal): Promise<BrowserPoolReservation> {
-    return this.wait(signal, false);
-  }
-
-  private async wait(signal: AbortSignal, wake: boolean): Promise<BrowserPoolReservation> {
-    for (;;) {
-      signal.throwIfAborted();
-      const phase = this.phase;
-      if (phase === "closed") throw new BrowserPoolAdmissionClosed(this.failure);
-      if (phase === "open") return this.holdOpen();
-      if (phase === "preparing") this.demanded = true;
-      if (phase === "parked" && wake) this.wake();
-      await waitForChange(this.changed.signal, signal);
-    }
-  }
-
   async tryPark(): Promise<"parked" | "vetoed"> {
-    if (this.phase !== "open" || this.active) return "vetoed";
-    this.demanded = false;
-    this.setPhase("preparing");
-    const id = randomUUID();
+    if (this.#phase !== "open" || this.#active || !this.#driver) return "vetoed";
+    this.#demanded = false;
+    this.#setPhase("preparing");
+    let outcome: "parked" | "vetoed" = "vetoed";
     try {
-      let intent: BrowserPoolSlot | undefined;
-      try {
-        intent = await this.options.begin(id, () => this.demanded);
-      } catch (error) {
-        // A failed response to COMMIT does not say whether D exists.
-        const current = await this.options.read();
-        if (current?.intentId !== id || current.phase !== "preparing") throw error;
-        intent = current;
-      }
-      if (!intent) {
-        this.setPhase("open");
-        return "vetoed";
-      }
-      const abort = this.demanded;
-      this.setPhase("parking");
-      // A demand during COMMIT can still veto physical pause. Cancel the recorded
-      // intent before reopening, even if a retire has never reached the runtime.
-      const settled = await (abort ? this.options.abortPark(intent) : this.options.park(intent));
-      this.install(settled);
-      return settled.phase === "parked" ? "parked" : "vetoed";
-    } catch (error) {
-      this.failure = error;
-      this.setPhase("closed");
-      throw error;
+      outcome = await this.#driver.park(() => {
+        if (this.#demanded) return true;
+        // From here on a send waits instead of vetoing.
+        this.#setPhase("parking");
+        return false;
+      });
+    } finally {
+      this.#setPhase(outcome === "parked" ? "parked" : "open");
     }
+    return outcome;
   }
 
-  private wake(): void {
-    const slot = this.slot!;
-    this.setPhase("waking");
-    void this.options.wake(slot).then(
-      (settled) => this.install(settled),
-      (error: unknown) => {
-        this.failure = error;
-        this.setPhase("closed");
-      },
-    );
+  #wake(): void {
+    if (this.#waking || !this.#driver) return;
+    this.#setPhase("waking");
+    this.#waking = this.#driver.wake().finally(() => {
+      this.#waking = undefined;
+    });
+    void this.#waking.catch(() => undefined);
   }
 
-  private install(slot: BrowserPoolSlot | undefined): void {
-    this.slot = slot;
-    const phase = slot?.phase;
-    this.setPhase(
-      !phase || phase === "running"
-        ? "open"
-        : phase === "parked" || phase === "waking"
-          ? "parked"
-          : "closed",
-    );
-  }
-
-  private setPhase(phase: GatePhase): void {
-    this.phase = phase;
-    const previous = this.changed;
-    this.changed = new AbortController();
+  #setPhase(phase: GatePhase): void {
+    this.#phase = phase;
+    const previous = this.#changed;
+    this.#changed = new AbortController();
     previous.abort();
   }
 }

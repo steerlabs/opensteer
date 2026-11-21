@@ -144,7 +144,13 @@ describe("personal wire compatibility", () => {
     expect(JSON.stringify(BrowserBridgeAttachedSchema.parse(JSON.parse(attached)))).toBe(attached);
     const pooled = {
       ...BrowserAttachTicketClaimsSchema.parse(ordinary),
-      pool: { term: 1, instance: "00000000-0000-4000-8000-000000000003", epoch: 2, attachment: 3 },
+      pool: {
+        slot: "slot",
+        term: 1,
+        instance: "00000000-0000-4000-8000-000000000003",
+        epoch: 2,
+        attachment: 3,
+      },
     };
     expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);

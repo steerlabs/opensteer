@@ -1,0 +1,679 @@
+import type {
+  BrowserPoolControl,
+  BrowserPoolDocument,
+  BrowserPoolRuntimeFence,
+  BrowserPoolRuntimeState,
+} from "@opensteer/browser-runtime-core";
+import type { BrowserSessionId, RunnerId } from "@opensteer/core";
+import {
+  advanceBrowserPoolSlot,
+  beginBrowserPoolPark,
+  BrowserPoolAdmissionClosed,
+  browserPoolSlotIdentity,
+  installBrowserPoolSlot,
+  listBrowserPoolRuntimeSessions,
+  readAppliedBrowserPoolControllerCall,
+  readBrowserPoolSlot,
+  type BrowserPoolSessionLoss,
+  type BrowserPoolSlot,
+  type BrowserPoolTargetIdentity,
+  type DatabaseSchema,
+} from "@opensteer/database";
+import type { Kysely } from "kysely";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  BrowserPoolControllerJournal,
+  expectationOf,
+  type BrowserPoolControllerResult,
+  type BrowserPoolPhysicalController,
+  type BrowserPoolPhysicalStatus,
+} from "./browser-pool-controller.js";
+import { BrowserPoolGate } from "./browser-pool-gate.js";
+
+/** The runtime's signed control channel; in-process for the loopback target. */
+export interface BrowserPoolRuntimeChannel {
+  poolState(): BrowserPoolRuntimeState | undefined;
+  controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+}
+
+/** What the Home does per session; one session's failure is that session's alone. */
+export interface BrowserPoolAdopter {
+  /** Live pages the Home believes the runtime has, before a retire. */
+  inventory(): readonly { readonly sessionId: BrowserSessionId; readonly surfaceId: string }[];
+  /** Reattach each session under fresh authority; returns tabs lost inside adopted sessions. */
+  reattach(input: {
+    readonly sessions: readonly BrowserSessionId[];
+    readonly documents: readonly BrowserPoolDocument[];
+    readonly fence: BrowserPoolRuntimeFence;
+    readonly attempt: number;
+  }): Promise<readonly BrowserPoolSessionLoss[]>;
+  /** Sessions of this runtime that are not terminal and have no live channel here, with tabs. */
+  orphans(): Promise<readonly Omit<BrowserPoolSessionLoss, "reason">[]>;
+}
+
+export type BrowserPoolRuntimeFault = "request" | "reply";
+
+export interface BrowserPoolCoordinatorOptions {
+  readonly database: Kysely<DatabaseSchema>;
+  readonly runnerId: RunnerId;
+  readonly runtimeId: string;
+  readonly slotId: string;
+  readonly term: number;
+  readonly runtime: BrowserPoolRuntimeChannel;
+  readonly controller: BrowserPoolPhysicalController;
+  readonly retryMs?: number;
+  readonly onError?: (error: unknown) => void;
+  /** Tests lose a runtime control's request or its reply. */
+  readonly runtimeFault?: (kind: BrowserPoolControl["kind"]) => BrowserPoolRuntimeFault | undefined;
+}
+
+interface Retained {
+  readonly documents: readonly BrowserPoolDocument[];
+  readonly sessions: readonly BrowserSessionId[];
+}
+
+/**
+ * The Home's half of the pool for one target: the owner of intent. It drives every state,
+ * including one found after a restart, to an open or parked gate. The ladder ends in a discard
+ * of live state and an open gate, never in a closed one.
+ */
+export class BrowserPoolCoordinator {
+  readonly gate = new BrowserPoolGate();
+  readonly #options: BrowserPoolCoordinatorOptions;
+  readonly #journal: BrowserPoolControllerJournal;
+  #slot: BrowserPoolSlot | undefined;
+  #adopter: BrowserPoolAdopter | undefined;
+  #closed = false;
+  #lane: Promise<unknown> = Promise.resolve();
+
+  constructor(options: BrowserPoolCoordinatorOptions) {
+    this.#options = options;
+    this.#journal = new BrowserPoolControllerJournal(
+      options.database,
+      options.controller,
+      options.runnerId,
+    );
+    this.gate.attach({
+      park: (demanded) => this.#serial(() => this.#park(demanded)),
+      wake: () =>
+        this.#serial(() =>
+          this.#retry(
+            () => this.#wake(),
+            () => this.#discardNow(),
+          ),
+        ),
+    });
+  }
+
+  setAdopter(adopter: BrowserPoolAdopter): void {
+    this.#adopter = adopter;
+  }
+
+  close(): void {
+    this.#closed = true;
+  }
+
+  get runnerId(): RunnerId {
+    return this.#options.runnerId;
+  }
+
+  identity(): BrowserPoolTargetIdentity {
+    if (!this.#slot) throw new BrowserPoolAdmissionClosed();
+    return browserPoolSlotIdentity(this.#slot);
+  }
+
+  /** The claim every ticket for this runtime carries. */
+  fence(): BrowserPoolRuntimeFence & { readonly attachment: number } {
+    const slot = this.#slot;
+    if (!slot) throw new BrowserPoolAdmissionClosed();
+    return {
+      slot: slot.slotId,
+      term: slot.term,
+      instance: slot.instanceId,
+      epoch: slot.epoch,
+      attachment: slot.attachmentGeneration,
+    };
+  }
+
+  /** While parked or waking, the retained document stands for the live one. */
+  retainedDocument(sessionId: string, surfaceId: string): string | undefined {
+    return retainedOf(this.#slot)?.documents.find(
+      (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
+    )?.documentId;
+  }
+
+  /** Call once the Home's startup sweep has run; the gate stays closed until this settles. */
+  recover(): Promise<void> {
+    return this.#serial(() => this.#retry(() => this.#recover()));
+  }
+
+  tryPark(): Promise<"parked" | "vetoed"> {
+    return this.gate.tryPark();
+  }
+
+  #serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.#lane.then(work, work);
+    this.#lane = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Retries a step until it settles. After a few failures the live state is given up for: the
+   * ladder ends in a discard and an open gate, never in a state only a restart could leave.
+   */
+  async #retry<T>(work: () => Promise<T>, exhausted?: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      if (this.#closed) throw new BrowserPoolAdmissionClosed("The Home is stopping.");
+      try {
+        return await (exhausted && attempt >= discardAfterAttempts ? exhausted() : work());
+      } catch (error) {
+        this.#options.onError?.(error);
+        await delay(Math.min(this.#options.retryMs ?? 100 * 2 ** attempt, 5_000));
+      }
+    }
+  }
+
+  async #discardNow(): Promise<void> {
+    const slot = await this.#read();
+    if (!slot) throw new BrowserPoolAdmissionClosed();
+    if (slot.phase !== "running") await this.#discard(slot, "unrecoverable");
+    else this.gate.settle("open");
+  }
+
+  async #read(): Promise<BrowserPoolSlot | undefined> {
+    this.#slot = await readBrowserPoolSlot(this.#options.database, this.#options.runnerId);
+    return this.#slot;
+  }
+
+  async #advance(
+    slot: BrowserPoolSlot,
+    next: Parameters<typeof advanceBrowserPoolSlot>[2],
+    losses?: readonly BrowserPoolSessionLoss[],
+  ): Promise<BrowserPoolSlot> {
+    this.#slot = await advanceBrowserPoolSlot(this.#options.database, slot, next, losses);
+    return this.#slot;
+  }
+
+  #state(): BrowserPoolRuntimeState {
+    const state = this.#options.runtime.poolState();
+    if (!state) throw new Error("The pooled runtime has no pool control.");
+    return state;
+  }
+
+  #status(): Promise<BrowserPoolPhysicalStatus> {
+    return this.#journal.status(this.#options.slotId, this.#options.term);
+  }
+
+  async #call(
+    slot: BrowserPoolSlot | undefined,
+    kind: "start" | "pause" | "resume" | "stop",
+    status: BrowserPoolPhysicalStatus,
+  ): Promise<BrowserPoolControllerResult> {
+    return this.#journal.call(
+      {
+        slotId: this.#options.slotId,
+        term: this.#options.term,
+        kind,
+        expect: expectationOf(status),
+        ...(kind === "resume" && slot?.intentId
+          ? { intent: { id: slot.intentId, sequence: slot.intentSequence } }
+          : {}),
+      },
+      slot?.intentId ?? null,
+    );
+  }
+
+  /** A runtime control the controller signed. A lost reply is read back from the runtime. */
+  async #control(
+    slot: BrowserPoolSlot,
+    kind: "retire" | "release" | "seal" | "complete",
+    fence: BrowserPoolRuntimeFence,
+    attempt?: number,
+  ): Promise<BrowserPoolRuntimeState> {
+    const control: BrowserPoolControl = {
+      kind,
+      fence,
+      intent: { id: slot.intentId!, sequence: slot.intentSequence },
+      ...(attempt ? { attempt } : {}),
+    };
+    const signed = await this.#journal.call(
+      {
+        slotId: this.#options.slotId,
+        term: this.#options.term,
+        kind: "sign",
+        expect: expectationOf(await this.#status()),
+        control,
+      },
+      slot.intentId,
+    );
+    if (!signed.applied || !signed.signature)
+      throw new Error(`The controller did not sign ${kind}: ${signed.reason ?? "refused"}.`);
+    return this.#deliver(control, signed.signature);
+  }
+
+  async #deliver(control: BrowserPoolControl, signature: string): Promise<BrowserPoolRuntimeState> {
+    const fault = this.#options.runtimeFault?.(control.kind);
+    if (fault === "request") return this.#state();
+    try {
+      const state = await this.#options.runtime.controlPool(
+        control,
+        Buffer.from(signature, "base64"),
+      );
+      return fault === "reply" ? this.#state() : state;
+    } catch {
+      // A refusal and a lost reply look alike here: the current state decides.
+      return this.#state();
+    }
+  }
+
+  // ---- Park -------------------------------------------------------------------------------
+
+  async #park(demanded: () => boolean): Promise<"parked" | "vetoed"> {
+    const slot = await this.#read();
+    if (!slot || slot.phase !== "running") return "vetoed";
+    const intentId = randomUUID();
+    let intent: BrowserPoolSlot | undefined;
+    try {
+      intent = await beginBrowserPoolPark(
+        this.#options.database,
+        browserPoolSlotIdentity(slot),
+        intentId,
+        demanded,
+      );
+    } catch (error) {
+      // A failed reply to COMMIT does not say whether D exists: read it.
+      const current = await this.#read();
+      if (current?.intentId !== intentId) {
+        if (error instanceof BrowserPoolAdmissionClosed) return "vetoed";
+        throw error;
+      }
+      intent = current;
+    }
+    if (!intent) {
+      await this.#read();
+      return "vetoed";
+    }
+    this.#slot = intent;
+    const expected = this.#adopter?.inventory() ?? [];
+    let retireSent = false;
+    // After D the park only ends parked or released: every attempt re-reads where it stands.
+    return this.#retry<"parked" | "vetoed">(
+      async () => {
+        const slot = await this.#read();
+        if (!slot || slot.intentId !== intentId || slot.phase === "running") return "vetoed";
+        if (slot.phase === "parked") return "parked";
+        let state = this.#state();
+        if (!retireSent) {
+          retireSent = true;
+          state = await this.#control(slot, "retire", fenceOf(slot));
+        }
+        return this.#afterRetire(slot, state, expected);
+      },
+      async () => {
+        await this.#discardNow();
+        return "vetoed";
+      },
+    );
+  }
+
+  async #afterRetire(
+    slot: BrowserPoolSlot,
+    state: BrowserPoolRuntimeState,
+    expected: readonly { readonly sessionId: BrowserSessionId; readonly surfaceId: string }[],
+  ): Promise<"parked" | "vetoed"> {
+    const same = sameIntent(state, slot);
+    if (same && state.phase === "retired" && !state.cancelled && state.retired) {
+      const kept = new Set(
+        state.retired.documents.map(({ sessionId, surfaceId }) => `${sessionId}\n${surfaceId}`),
+      );
+      // A page the Home knows that the retire did not keep is an unexpected drop: abort.
+      if (expected.every(({ sessionId, surfaceId }) => kept.has(`${sessionId}\n${surfaceId}`))) {
+        const recorded = await this.#advance(slot, {
+          phase: "preparing",
+          retained: { ...state.retired },
+        });
+        return this.#sealAndPause(recorded);
+      }
+    }
+    if (same && state.phase === "sealed") return this.#sealAndPause(slot);
+    return this.#abort(slot);
+  }
+
+  /** Release, then reattach so every retained page is reachable, then open. */
+  async #abort(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
+    let state = this.#state();
+    const pending =
+      !sameIntent(state, slot) ||
+      (!state.cancelled && (state.phase === "running" || state.phase === "retiring")) ||
+      state.phase === "retired";
+    if (pending && state.phase !== "uninstalled")
+      state = await this.#control(slot, "release", fenceOf(slot));
+    if (state.phase === "uninstalled" || state.fence?.instance !== slot.instanceId) {
+      await this.#discard(slot, "guest-restarted");
+      return "vetoed";
+    }
+    if (!sameIntent(state, slot)) throw new Error("The runtime did not record the release.");
+    // The park committed: it can only go forward.
+    if (state.phase === "sealed") return this.#sealAndPause(slot);
+    if (state.phase === "adopting" || state.adoption?.outcome) {
+      await this.#readopt(slot, state);
+      return "vetoed";
+    }
+    if (state.phase === "running" && state.cancelled) {
+      await this.#finishRunning(slot, []);
+      return "vetoed";
+    }
+    throw new Error(`The runtime is still ${state.phase}.`);
+  }
+
+  async #sealAndPause(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
+    let state = this.#state();
+    // A lost seal request is sent again once; a refusal leaves it released.
+    for (
+      let tries = 0;
+      tries < 2 && !(sameIntent(state, slot) && state.phase === "sealed");
+      tries++
+    )
+      state = await this.#control(slot, "seal", fenceOf(slot));
+    if (!(sameIntent(state, slot) && state.phase === "sealed")) return this.#abort(slot);
+    if (!slot.retained && state.retired)
+      slot = await this.#advance(slot, { phase: "preparing", retained: { ...state.retired } });
+    return this.#pause(slot);
+  }
+
+  async #pause(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
+    const applied = await readAppliedBrowserPoolControllerCall(
+      this.#options.database,
+      this.#options.runnerId,
+      slot.intentId!,
+      "pause",
+    );
+    let savedState = (applied?.result as BrowserPoolControllerResult | null)?.savedState;
+    if (!savedState) {
+      const status = await this.#status();
+      const result = await this.#call(slot, "pause", status);
+      if (!result.applied) {
+        // The guest cannot be paused: its live state cannot be kept.
+        await this.#discard(slot, "pause-refused");
+        return "vetoed";
+      }
+      savedState = result.savedState;
+    }
+    await this.#advance(slot, {
+      phase: "parked",
+      savedState: savedState as unknown as Record<string, unknown>,
+    });
+    return "parked";
+  }
+
+  // ---- Wake -------------------------------------------------------------------------------
+
+  async #wake(): Promise<void> {
+    let slot = await this.#read();
+    if (!slot) throw new BrowserPoolAdmissionClosed();
+    if (slot.phase === "running") return this.gate.settle("open");
+    if (slot.phase === "parked") slot = await this.#advance(slot, { phase: "waking" });
+    if (slot.phase !== "waking") throw new Error(`Cannot wake from ${slot.phase}.`);
+    return this.#continueWake(slot);
+  }
+
+  async #continueWake(slot: BrowserPoolSlot): Promise<void> {
+    const saved = slot.savedState as { id?: string } | null;
+    let status = await this.#status();
+    let resumed = await this.#appliedResume(slot);
+    if (!resumed) {
+      if (
+        status.phase !== "paused" ||
+        status.instance !== slot.instanceId ||
+        status.epoch !== slot.epoch ||
+        !saved?.id ||
+        status.savedState?.id !== saved.id
+      )
+        return this.#discard(slot, "live-state-unavailable");
+      const result = await this.#call(slot, "resume", status);
+      if (!result.applied) return this.#discard(slot, result.reason ?? "resume-refused");
+      resumed = result;
+      status = result.status;
+    }
+    const adopt = resumed.control!;
+    if (
+      status.instance !== slot.instanceId ||
+      adopt.fence.instance !== slot.instanceId ||
+      (status.epoch !== adopt.fence.epoch && status.phase === "running")
+    )
+      return this.#discard(slot, "guest-changed");
+    if (slot.epoch !== adopt.fence.epoch)
+      slot = await this.#advance(slot, {
+        phase: "waking",
+        fence: { instanceId: adopt.fence.instance, epoch: adopt.fence.epoch },
+      });
+    let state = this.#state();
+    if (state.phase === "sealed") state = await this.#deliver(adopt, resumed.signature!);
+    if (state.fence?.instance !== slot.instanceId) return this.#discard(slot, "guest-changed");
+    if (sameIntent(state, slot) && (state.phase === "adopting" || state.adoption?.outcome))
+      return this.#readopt(slot, state);
+    throw new Error(`The runtime did not adopt: ${state.phase}.`);
+  }
+
+  async #appliedResume(slot: BrowserPoolSlot): Promise<BrowserPoolControllerResult | undefined> {
+    if (!slot.intentId) return undefined;
+    const row = await readAppliedBrowserPoolControllerCall(
+      this.#options.database,
+      this.#options.runnerId,
+      slot.intentId,
+      "resume",
+    );
+    return (row?.result as BrowserPoolControllerResult | null) ?? undefined;
+  }
+
+  /** Adoption per session: the runtime decides who was reattached; the rest are lost. */
+  async #readopt(slot: BrowserPoolSlot, state: BrowserPoolRuntimeState): Promise<void> {
+    const retained = retainedOf(slot) ?? {
+      documents: state.retired?.documents ?? [],
+      sessions: state.adoption?.sessions ?? [],
+    };
+    let tabLosses: readonly BrowserPoolSessionLoss[] = [];
+    if (state.phase === "adopting" && state.adoption && !state.adoption.outcome) {
+      slot = await this.#advance(slot, {
+        phase: slot.phase,
+        attachmentGeneration: slot.attachmentGeneration + 1,
+      });
+      const attempt = slot.attachmentGeneration;
+      if (this.#adopter)
+        tabLosses = await this.#adopter.reattach({
+          sessions: state.adoption.sessions,
+          documents: retained.documents,
+          fence: state.fence!,
+          attempt,
+        });
+      state = await this.#control(slot, "complete", state.fence!, attempt);
+    }
+    const outcome = state.adoption?.outcome;
+    if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
+      throw new Error("The browser adoption has no outcome yet.");
+    const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
+    const losses: BrowserPoolSessionLoss[] = [
+      ...outcome.lost.map(({ sessionId, reason }) => ({
+        sessionId,
+        reason: reason ?? "not-adopted",
+        surfaces: surfacesOf(retained, sessionId),
+      })),
+      ...tabLosses.filter(({ sessionId }) => !lostIds.has(sessionId)),
+    ];
+    await this.#finishRunning(slot, losses, {
+      adopted: outcome.adopted,
+      lost: outcome.lost,
+    });
+  }
+
+  /** The ladder's last rung: the live state is discarded and a fresh guest is started. */
+  async #discard(slot: BrowserPoolSlot, reason: string): Promise<void> {
+    let status = await this.#status();
+    if (status.phase !== "stopped") {
+      const stopped = await this.#call(slot, "stop", status);
+      if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
+      status = stopped.status;
+    }
+    const started = await this.#call(slot, "start", status);
+    if (!started.applied || !started.control || !started.signature)
+      throw new Error(`The guest did not start: ${started.reason}.`);
+    const state = await this.#deliver(started.control, started.signature);
+    if (state.phase !== "running" || state.fence?.instance !== started.control.fence.instance)
+      throw new Error("The fresh guest was not installed.");
+    const retained = retainedOf(slot);
+    const sessions = await listBrowserPoolRuntimeSessions(
+      this.#options.database,
+      slot.runnerId,
+      slot.runtimeId,
+    );
+    const losses = sessions.map((sessionId) => ({
+      sessionId,
+      reason,
+      surfaces: retained ? surfacesOf(retained, sessionId) : [],
+    }));
+    this.#slot = await advanceBrowserPoolSlot(
+      this.#options.database,
+      slot,
+      {
+        phase: "running",
+        fence: { instanceId: started.control.fence.instance, epoch: started.control.fence.epoch },
+        savedState: null,
+        outcome: { adopted: [], lost: losses.map(({ sessionId }) => ({ sessionId, reason })) },
+      },
+      losses,
+    );
+    this.gate.settle("open");
+  }
+
+  async #finishRunning(
+    slot: BrowserPoolSlot,
+    losses: readonly BrowserPoolSessionLoss[],
+    outcome?: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const named = new Set(losses.map(({ sessionId }) => sessionId));
+    // A session the Home kept with no browser behind it ends now, with its note.
+    const orphans = (await this.#adopter?.orphans()) ?? [];
+    const retained = retainedOf(slot);
+    const all = [
+      ...losses,
+      ...orphans
+        .filter(({ sessionId }) => !named.has(sessionId))
+        .map(({ sessionId, surfaces }) => ({
+          sessionId,
+          reason: "not-adopted",
+          surfaces: retained?.sessions.includes(sessionId)
+            ? surfacesOf(retained, sessionId)
+            : surfaces,
+        })),
+    ];
+    await this.#advance(
+      slot,
+      { phase: "running", savedState: null, ...(outcome ? { outcome } : {}) },
+      all,
+    );
+    this.gate.settle("open");
+  }
+
+  // ---- Recovery ---------------------------------------------------------------------------
+
+  async #recover(): Promise<void> {
+    await this.#journal.settleOpen();
+    const slot = await this.#read();
+    const status = await this.#status();
+    const state = this.#state();
+    if (!slot) return this.#install(status, state);
+    if (status.instance !== slot.instanceId || state.fence?.instance !== slot.instanceId)
+      return this.#discard(slot, "guest-restarted");
+    switch (slot.phase) {
+      case "running":
+        if (state.phase === "running") return this.#finishRunning(slot, []);
+        return this.#settleAfter(await this.#abort(slot));
+      case "preparing":
+        // A retiring or retired runtime is recovered as not parked; a sealed one goes forward.
+        return this.#settleAfter(
+          sameIntent(state, slot) && state.phase === "sealed"
+            ? await this.#sealAndPause(slot)
+            : await this.#abort(slot),
+        );
+      case "parked": {
+        const saved = slot.savedState as { id?: string } | null;
+        if (
+          status.phase === "paused" &&
+          status.savedState?.id === saved?.id &&
+          state.phase === "sealed" &&
+          sameIntent(state, slot)
+        )
+          return this.gate.settle("parked");
+        return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
+      }
+      case "waking":
+        return this.#continueWake(slot);
+    }
+  }
+
+  #settleAfter(outcome: "parked" | "vetoed"): void {
+    this.gate.settle(outcome === "parked" ? "parked" : "open");
+  }
+
+  async #install(status: BrowserPoolPhysicalStatus, state: BrowserPoolRuntimeState) {
+    if (
+      state.fence &&
+      state.phase === "running" &&
+      status.phase === "running" &&
+      status.instance === state.fence.instance &&
+      status.epoch === state.fence.epoch
+    ) {
+      this.#slot = await installBrowserPoolSlot(this.#options.database, this.#target(state.fence));
+      return this.gate.settle("open");
+    }
+    if (status.phase !== "stopped") {
+      const stopped = await this.#call(undefined, "stop", status);
+      if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
+      status = stopped.status;
+    }
+    const started = await this.#call(undefined, "start", status);
+    if (!started.applied || !started.control || !started.signature)
+      throw new Error(`The guest did not start: ${started.reason}.`);
+    const installed = await this.#deliver(started.control, started.signature);
+    if (installed.phase !== "running" || !installed.fence)
+      throw new Error("The guest was not installed.");
+    this.#slot = await installBrowserPoolSlot(
+      this.#options.database,
+      this.#target(installed.fence),
+    );
+    this.gate.settle("open");
+  }
+
+  #target(fence: BrowserPoolRuntimeFence): BrowserPoolTargetIdentity {
+    return {
+      runnerId: this.#options.runnerId,
+      runtimeId: this.#options.runtimeId,
+      slotId: fence.slot,
+      term: fence.term,
+      instanceId: fence.instance,
+      epoch: fence.epoch,
+    };
+  }
+}
+
+const discardAfterAttempts = 6;
+
+function fenceOf(slot: BrowserPoolSlot): BrowserPoolRuntimeFence {
+  return { slot: slot.slotId, term: slot.term, instance: slot.instanceId, epoch: slot.epoch };
+}
+
+function sameIntent(state: BrowserPoolRuntimeState, slot: BrowserPoolSlot): boolean {
+  return state.intent?.id === slot.intentId && state.intent?.sequence === slot.intentSequence;
+}
+
+function retainedOf(slot: BrowserPoolSlot | undefined): Retained | undefined {
+  const retained = slot?.retained as Retained | null | undefined;
+  return retained ?? undefined;
+}
+
+function surfacesOf(retained: Retained, sessionId: BrowserSessionId) {
+  return retained.documents
+    .filter((document) => document.sessionId === sessionId)
+    .map(({ surfaceId, documentId }) => ({ surfaceId, documentId }));
+}

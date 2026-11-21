@@ -49,9 +49,10 @@ import {
 } from "./browser/page-ownership.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import {
-  BrowserPoolRetirement,
+  BrowserPoolRuntimeControl,
   type BrowserPoolControl,
   type BrowserPoolDocument,
+  type BrowserPoolRuntimeHooks,
   type BrowserPoolRuntimeOptions,
 } from "./browser-pool.js";
 import type { TabRecord } from "./browser/surface-ledger.js";
@@ -281,7 +282,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly loginAuthority: BrowserLoginAuthority | undefined;
   private state: BrowserRuntimeState = "idle";
   private readonly ticketVerifier: AttachTicketVerifier;
-  private readonly pool: BrowserPoolRetirement | undefined;
+  private readonly pool: BrowserPoolRuntimeControl | undefined;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
 
@@ -303,13 +304,10 @@ export class BrowserRuntime implements NativePresentationSource {
     this.launcher = options.launcher;
     const pool = options.pool;
     if (pool) {
-      this.pool = new BrowserPoolRetirement(
+      this.pool = new BrowserPoolRuntimeControl(
         pool.controllerKey,
-        pool.term,
-        this.standardCdpBootId,
-        () => this.retireForPool(pool),
-        () => this.thawPoolPages(),
-        (documents) => this.completePoolAdoption(documents),
+        this.poolHooks(pool),
+        pool.adoptionWindowMs,
       );
     }
     this.pages = new PageOwnership({ onDiagnostic: options.onPageDiagnostic });
@@ -431,12 +429,7 @@ export class BrowserRuntime implements NativePresentationSource {
     if (this.pool) {
       if (
         !this.pool.acceptsTraffic &&
-        !(
-          adoptionAttach &&
-          claims?.reattach &&
-          claims.actor === "person" &&
-          this.pool.canAdopt(claims.sessionId)
-        )
+        !(adoptionAttach && claims?.reattach && this.pool.canAdopt(claims.sessionId))
       )
         throw new BrowserRuntimeError("conflict", "The browser is parked.");
       if (claims) this.pool.checkFence(claims.pool);
@@ -448,9 +441,24 @@ export class BrowserRuntime implements NativePresentationSource {
   private poolTrafficFor(session: ActiveSession, generation: number): (() => boolean) | undefined {
     if (!this.pool) return undefined;
     return () =>
-      this.pool!.acceptsTraffic &&
+      (this.pool!.acceptsTraffic || this.pool!.canAdopt(session.sessionId as BrowserSessionId)) &&
       !session.poolDetached &&
       this.sessions.get(session.sessionId)?.generation === generation;
+  }
+
+  private poolHooks(options: BrowserPoolRuntimeOptions): BrowserPoolRuntimeHooks {
+    return {
+      retire: () => this.retireForPool(options),
+      finishAdoption: (sessions, attempt, reason) =>
+        this.finishPoolAdoption(sessions, attempt, reason),
+      discard: () => this.discardForPool(),
+      highestAttempt: (sessions) =>
+        Math.max(0, ...sessions.map((id) => this.sessions.get(id)?.poolAttachment ?? 0)),
+      detached: () =>
+        [...this.sessions.values()]
+          .filter((session) => session.poolDetached)
+          .map((session) => session.sessionId as BrowserSessionId),
+    };
   }
 
   private async retireForPool(options: BrowserPoolRuntimeOptions) {
@@ -481,6 +489,7 @@ export class BrowserRuntime implements NativePresentationSource {
       const blockers = new Set<string>();
       if (this.pooledCdp.size) blockers.add("standard-cdp");
       if (this.nativePresentations.size) blockers.add("presentation");
+      if (this.pendingSessions.size) blockers.add("session-changing");
       const { provisional, closing } = this.pages.counts().states;
       if (provisional || closing) blockers.add("page-ownership");
       for (const host of this.hosts.values()) {
@@ -494,6 +503,7 @@ export class BrowserRuntime implements NativePresentationSource {
           blockers.add("page-ownership");
       }
       for (const session of sessions) {
+        // Missing protection data is unknown, never quiet.
         const state = this.sleeper.poolState(session.sessionId);
         if (!state || state.runs || state.keepAwake) blockers.add("session-protection-unknown");
         if (state?.viewed.length || state?.pinned.length) blockers.add("viewed-or-pinned");
@@ -515,12 +525,6 @@ export class BrowserRuntime implements NativePresentationSource {
           if (live.dialog) blockers.add("dialog");
           if (live.loading || live.pendingNavigations.size) blockers.add("navigation");
           if (live.page.isClosed()) blockers.add("page-closed");
-          const personPage = session.claims.actor === "person" && record.origin === "person";
-          if (
-            !personPage &&
-            (record.personUsed || record.typed || record.unrestorable || record.openerId)
-          )
-            blockers.add("protected-agent-page");
           for (const reason of await options.probePage(live.page, phase)) blockers.add(reason);
         }),
       );
@@ -532,43 +536,42 @@ export class BrowserRuntime implements NativePresentationSource {
       }).catch(() => ["page-quiescence-unknown"]);
     const before = await boundedProbe("active");
     if (before.length) return before;
-    for (const { record, live } of pages) {
-      if (!live) continue;
-      this.frozenPages.set(record.id, live);
-      await this.setPoolLifecycle(live, "frozen");
+    try {
+      for (const { record, live } of pages) {
+        if (!live) continue;
+        this.frozenPages.set(record.id, live);
+        await this.setPoolLifecycle(live, "frozen");
+      }
+    } catch {
+      await this.thawPoolPages().catch(() => undefined);
+      return ["page-lifecycle-unknown"];
     }
     const after = await boundedProbe("frozen");
     if (after.length) {
       await this.thawPoolPages();
       return after;
     }
-
-    const retained: BrowserPoolDocument[] = [];
-    const dropped: BrowserPoolDocument[] = [];
-    for (const { session, record, live, documentId } of pages) {
-      const keep = session.claims.actor === "person" && record.origin === "person";
-      if (keep && !live) continue;
-      (keep ? retained : dropped).push({
-        sessionId: session.claims.sessionId,
-        surfaceId: record.id,
-        documentId,
-        pageRevision: live?.commitSequence ?? 0,
-        typed: record.typed,
-      });
-    }
+    // Every live page of every session is kept; nothing a person could lose is ended.
+    const documents: BrowserPoolDocument[] = pages.flatMap(
+      ({ session, record, live, documentId }) =>
+        live
+          ? [
+              {
+                sessionId: session.claims.sessionId,
+                surfaceId: record.id,
+                documentId,
+                pageRevision: live.commitSequence,
+              },
+            ]
+          : [],
+    );
     for (const session of sessions) {
       session.poolDetached = true;
+      session.ledger.suspendForPool();
+      await session.host.router.unregisterSession(session.sessionId, true);
       await session.controller.detachForPool();
-      if (session.claims.actor === "person") {
-        await session.host.router.unregisterSession(session.sessionId, true);
-        await session.ledger.suspendForRelayRestart();
-        this.sleeper.resetSessionState(session.sessionId);
-      } else {
-        await this.detach(session.sessionId, session.generation, true, false, true);
-      }
     }
-    for (const { surfaceId } of dropped) this.frozenPages.delete(surfaceId);
-    return { retained, dropped };
+    return { documents, sessions: sessions.map(({ claims }) => claims.sessionId) };
   }
 
   private setPoolLifecycle(page: NonNullable<TabRecord["live"]>, state: "active" | "frozen") {
@@ -584,58 +587,46 @@ export class BrowserRuntime implements NativePresentationSource {
     }
   }
 
-  private async completePoolAdoption(documents: readonly BrowserPoolDocument[]) {
+  /** A retained session is adopted only if its current channel is the given attempt's. */
+  private async finishPoolAdoption(
+    sessions: readonly BrowserSessionId[],
+    attempt: number | null,
+    reason: string,
+  ) {
     await this.lanes.drain();
-    const retained = this.pool?.state().adoption?.retained;
-    if (!retained) throw new BrowserRuntimeError("conflict", "Browser adoption is not active.");
-    const adopted: BrowserPoolDocument[] = [];
-    const lost: BrowserPoolDocument[] = [];
-    const sessionIds = new Set(retained.map((document) => document.sessionId));
-    for (const sessionId of sessionIds) {
+    const adopted: BrowserSessionId[] = [];
+    const lost: { sessionId: BrowserSessionId; reason: string }[] = [];
+    for (const sessionId of sessions) {
       const session = this.sessions.get(sessionId);
-      const expected = retained.filter((document) => document.sessionId === sessionId);
-      const allowed = new Set(
-        documents
-          .filter((document) => document.sessionId === sessionId)
-          .map((document) => document.surfaceId),
-      );
-      const records = new Map(
-        [...(session?.ledger.policyRecords() ?? [])]
-          .filter((record) => record.live && !record.live.page.isClosed())
-          .map((record) => [record.id, record]),
-      );
-      const known = new Set(expected.map(({ surfaceId }) => surfaceId));
-      const accepted =
-        session && !session.poolDetached && [...records.keys()].every((id) => known.has(id))
-          ? expected.filter((document) => {
-              const record = records.get(document.surfaceId);
-              return (
-                allowed.has(document.surfaceId) &&
-                record?.documentId === document.documentId &&
-                record.live?.commitSequence === document.pageRevision
-              );
-            })
-          : [];
-      if (session && accepted.length) {
-        const surviving = new Set(accepted.map(({ surfaceId }) => surfaceId));
-        for (const document of expected) {
-          if (surviving.has(document.surfaceId)) continue;
-          if (records.has(document.surfaceId))
-            await session.ledger.closeSurface(document.surfaceId);
-          lost.push(document);
-        }
-        adopted.push(...accepted);
-      } else {
-        if (session) {
-          session.poolDetached = true;
-          await session.controller.detachForPool();
-          await this.detach(sessionId, session.generation, true, false, true);
-        }
-        lost.push(...expected);
+      if (
+        session &&
+        !session.poolDetached &&
+        (attempt === null || session.poolAttachment === attempt)
+      ) {
+        adopted.push(sessionId);
+        continue;
       }
+      lost.push({ sessionId, reason });
+      if (session) await this.endPooledSession(session);
     }
     await this.thawPoolPages();
     return { adopted, lost };
+  }
+
+  private async endPooledSession(session: ActiveSession): Promise<void> {
+    session.poolDetached = true;
+    for (const record of session.ledger.policyRecords()) this.frozenPages.delete(record.id);
+    await this.detach(session.sessionId, session.generation, true, false, true);
+  }
+
+  /** The loopback stand-in for a newly started guest: no page of the previous one survives. */
+  private async discardForPool(): Promise<void> {
+    this.frozenPages.clear();
+    for (const session of [...this.sessions.values()]) {
+      session.poolDetached = true;
+      await session.controller.detachForPool().catch(() => undefined);
+      await this.detach(session.sessionId, session.generation, false, false, true);
+    }
   }
 
   prepare(): Promise<void> {
@@ -1103,9 +1094,9 @@ export class BrowserRuntime implements NativePresentationSource {
         const held = this.sessions.get(claims.sessionId);
         if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
           throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
-        if (held && (held.poolDetached || this.pool.canAdopt(claims.sessionId)))
+        if (held && this.pool.canAdopt(claims.sessionId))
           return wait(this.reattachAfterPool(held, claims, sink, attachment));
-        if (!this.pool.acceptsTraffic)
+        if (!this.pool.acceptsTraffic || held?.poolDetached)
           throw new BrowserRuntimeError("not_found", "The retained Browser Session has ended.");
         if (held) held.poolAttachment = attachment;
       }
@@ -1360,7 +1351,8 @@ export class BrowserRuntime implements NativePresentationSource {
     if (
       !claims.reattach ||
       claims.initialNavigation ||
-      claims.actor !== "person" ||
+      claims.actor !== session.claims.actor ||
+      claims.creationOrigin !== session.claims.creationOrigin ||
       claims.subject !== session.claims.subject ||
       browserHostKey(claims) !== session.host.identity.key ||
       (claims.identity.kind === "profile-local" &&
@@ -1372,8 +1364,8 @@ export class BrowserRuntime implements NativePresentationSource {
     session.poolAttachment = attachment;
     if (!session.poolDetached) {
       session.poolDetached = true;
-      await session.controller.detachForPool();
       await session.host.router.unregisterSession(session.sessionId, true);
+      await session.controller.detachForPool().catch(() => undefined);
     }
     const [root, ...others] = session.ledger.resumeAfterRelayRestart();
     if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
@@ -1712,6 +1704,7 @@ export class BrowserRuntime implements NativePresentationSource {
 
   shutdown(): Promise<void> {
     this.sleeper.close();
+    this.pool?.close();
     if (this.shutdownResult) return this.shutdownResult;
     this.shuttingDown = true;
     for (const attempt of this.attempts) attempt.abort();
@@ -1768,6 +1761,16 @@ export class BrowserRuntime implements NativePresentationSource {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
       if (active.poolDetached && !forcePoolDetach) return;
+      if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
+        // A channel lost during adoption keeps the session for the next attempt or the window.
+        active.poolDetached = true;
+        active.ledger.suspendForPool();
+        await settleCleanup([
+          () => active.controller.detachForPool(),
+          () => active.host.router.unregisterSession(sessionId, true),
+        ]);
+        return;
+      }
       if (restarting && active.claims.actor === "person") {
         active.controller.browserDisconnected();
         const router = active.host.router.unregisterSession(sessionId, true);

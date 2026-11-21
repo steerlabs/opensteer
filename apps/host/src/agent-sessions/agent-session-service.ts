@@ -24,7 +24,6 @@ import {
 import {
   admitAgentOperation,
   admitExecution,
-  armPooledAgentOperation,
   askForAgentOperation,
   beginAgentSession,
   decideAgentOperation,
@@ -795,7 +794,8 @@ export class AgentSessionService {
         pool,
       });
     } catch (error) {
-      if (!handed && (signal.aborted || error instanceof OpensteerError))
+      // Nothing was handed off, so nothing reached the browser: a definite refusal.
+      if (!handed)
         await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
       throw error;
     } finally {
@@ -894,7 +894,6 @@ export class AgentSessionService {
                 browserSend: {
                   target: pooled.identity,
                   recheck: async () => {
-                    await armPooledAgentOperation(this.#store.database, row.id);
                     await recheck();
                     await pooled.pool.recheckTarget();
                     if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
@@ -920,13 +919,7 @@ export class AgentSessionService {
           error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
             ? "unknown"
             : "failed";
-        const settled = await settleAgentOperation(
-          this.#store.database,
-          row.id,
-          outcome,
-          null,
-          outstanding === 0,
-        );
+        const settled = await settleAgentOperation(this.#store.database, row.id, outcome, null);
         // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
         // it had already done is uncertain; the record says so and the next step repeats it.
         if (ended)
@@ -955,7 +948,8 @@ export class AgentSessionService {
       }
       const scriptError = operation.scriptFailure?.(result);
       if (outstanding > 0) {
-        await settleAgentOperation(this.#store.database, row.id, "unknown", null, false);
+        // A command was submitted and never answered: its effect is unknown.
+        await settleAgentOperation(this.#store.database, row.id, "unknown", null);
         return { status: "unknown", ...base, next: unknownNext };
       }
       const settled = await settleAgentOperation(

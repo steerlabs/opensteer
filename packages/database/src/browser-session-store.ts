@@ -1725,7 +1725,7 @@ export async function failActiveBrowserSessions(
 }> {
   const now = new Date();
   if (placementKey === undefined) {
-    await interruptPendingBrowserTabOpens(database, pooledRunner);
+    await interruptPendingBrowserTabOpens(database);
   }
   let sessionIds: BrowserSessionId[] = [];
   return commitPersonalMutation(database, async (transaction, mutation) => {
@@ -1738,15 +1738,17 @@ export async function failActiveBrowserSessions(
         .$if(pooledRunner !== undefined, (query) =>
           query.where(sql<boolean>`
           not exists (
+            -- A session a parked or parking browser retained is recovered by the pool.
             select 1 from browser_pool_slots slot
             where slot.runner_id = ${pooledRunner!}
               and slot.runner_id = browser_sessions.runner_id
               and slot.runtime_id = browser_sessions.runtime_id
               and slot.phase <> 'running'
-              and browser_sessions.origin = 'person' and browser_sessions.state = 'ready'
+              and browser_sessions.origin in ('person', 'agent')
+              and browser_sessions.state = 'ready'
               and (
                 slot.retained is null or exists (
-                  select 1 from jsonb_array_elements(slot.retained->'retained') document
+                  select 1 from jsonb_array_elements(slot.retained->'documents') document
                   where document->>'sessionId' = browser_sessions.id
                 )
               )
@@ -2013,12 +2015,10 @@ export async function browserSessionOpenerForBinding(
 /** Fence pending attempts before accepting Runtime streams after Host restart. */
 export async function interruptPendingBrowserTabOpens(
   database: Kysely<DatabaseSchema>,
-  pooledRunner?: RunnerId,
 ): Promise<void> {
-  const interrupt = sql`update browser_tab_opens
+  await sql`update browser_tab_opens
     set binding = jsonb_set(binding, '{outcome}', '{"kind":"failed","reason":"interrupted"}'::jsonb)
-    where binding -> 'outcome' ->> 'kind' = 'pending'`;
-  await (pooledRunner ? sql`${interrupt} and runner_id <> ${pooledRunner}` : interrupt).execute(
+    where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(
     database,
     databaseOperationOptions(),
   );

@@ -262,6 +262,7 @@ export type BrowserAttachTicketClaims = z.infer<typeof BrowserAttachTicketClaims
 
 export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSchema.safeExtend({
   pool: z.strictObject({
+    slot: z.string().min(1).max(200),
     term: z.number().int().positive(),
     instance: z.uuid(),
     epoch: z.number().int().positive(),

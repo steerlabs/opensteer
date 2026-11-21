@@ -2394,20 +2394,24 @@ export interface DatabaseSchema {
     instanceId: string;
     epoch: number;
     intentSequence: number;
-    intentId: string;
+    intentId: string | null;
     attachmentGeneration: number;
     phase: "running" | "preparing" | "parked" | "waking";
     retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    savedState: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    outcome: JsonColumn<Readonly<Record<string, unknown>> | null>;
   };
-  browserPoolAgentOperations: {
-    operationId: AgentOperationId;
+  browserPoolControllerCalls: {
+    id: string;
     runnerId: RunnerId;
-    runtimeId: string;
     slotId: string;
     term: number;
-    instanceId: string;
-    epoch: number;
-    armedAt: Timestamp | null;
+    intentId: string | null;
+    kind: string;
+    request: JsonColumn<Readonly<Record<string, unknown>>>;
+    result: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    createdAt: Generated<Timestamp>;
+    settledAt: Timestamp | null;
   };
   browserPoolDocumentLosses: {
     intentId: string;
@@ -2415,8 +2419,10 @@ export interface DatabaseSchema {
     ownerId: UserId;
     sessionId: BrowserSessionId;
     surfaceId: BrowserSurfaceId;
-    documentId: string;
+    documentId: string | null;
+    reason: string;
     lostAt: Generated<Timestamp>;
+    noticedAt: Timestamp | null;
   };
   browserPoolRelays: {
     id: string;
