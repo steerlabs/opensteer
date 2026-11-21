@@ -2697,10 +2697,56 @@ async function longStreamTurn(held, input) {
       });
       if (held && message === 0 && index === 199) {
         if (agentTabUrl) {
+          const harnessLogPath = process.env.FAKE_CODEX_HARNESS_LOG;
+          const recordHarness = (entry) => {
+            capture(entry);
+            if (harnessLogPath) {
+              try {
+                appendFileSync(
+                  harnessLogPath,
+                  `${JSON.stringify({ ...entry, time: Date.now() })}\n`,
+                );
+              } catch {
+                // Best-effort diagnostic file beside capture records.
+              }
+            }
+          };
+          const resolvedEnv = threadEnvironment();
+          recordHarness({
+            fakeAgentTabStart: {
+              agentTabUrl,
+              processHarness: process.env.OPENSTEER_BROWSER_HARNESS ?? null,
+              threadHarness: resolvedEnv.OPENSTEER_BROWSER_HARNESS ?? null,
+              processCdpWs: Boolean(process.env.OPENSTEER_BROWSER_CDP_WS),
+              threadCdpWs: Boolean(resolvedEnv.OPENSTEER_BROWSER_CDP_WS),
+            },
+          });
           void browserJourneyHarness(
             undefined,
             `await newTab(${JSON.stringify(agentTabUrl)}, { guest: true }); await new Promise(() => {});`,
-          ).catch(() => undefined);
+          ).then(
+            (result) => {
+              recordHarness({
+                fakeAgentTabResult: {
+                  agentTabUrl,
+                  code: result.code,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                },
+              });
+              if (result.code !== 0) {
+                process.stderr.write(
+                  `fake-codex browser-harness exited ${result.code}: ${result.stderr || result.stdout}\n`,
+                );
+              }
+            },
+            (error) => {
+              const message =
+                error instanceof Error ? (error.stack ?? error.message) : String(error);
+              recordHarness({ fakeAgentTabError: { agentTabUrl, error: message } });
+              process.stderr.write(`fake-codex browser-harness failed: ${message}\n`);
+            },
+          );
         }
         await waitForRelease();
       }

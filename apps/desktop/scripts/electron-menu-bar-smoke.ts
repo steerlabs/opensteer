@@ -365,6 +365,8 @@ async function startHome(input: {
   const engineFixture = path.join(resources, "codex-fixture", "fake-codex-app-server.mjs");
   const engineWrapper = path.join(root, "codex-fixture");
   const engineRelease = path.join(root, "release-fixture-turn");
+  const engineCapture = path.join(root, "logs", "codex-capture");
+  const engineHarnessLog = path.join(root, "logs", "codex-browser-harness.jsonl");
   const shellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const supervisor = new PersonalDeploymentSupervisor({
     agentsStoppedSince: input.agentsStoppedSince,
@@ -430,7 +432,8 @@ async function startHome(input: {
         writeFileSync(
           engineWrapper,
           `#!/bin/sh
-exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} "$@"
+export FAKE_CODEX_HARNESS_LOG=${shellArgument(engineHarnessLog)}
+exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} ${shellArgument(`--capture=${engineCapture}`)} "$@"
 `,
           { mode: 0o700 },
         );
@@ -804,7 +807,17 @@ async function homeStop(): Promise<void> {
     "the task running before Stop",
     async () => (await taskState())?.status === "running",
   );
-  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000);
+  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000).catch(
+    (error: unknown) => {
+      const harnessLogPath = path.join(root, "logs", "codex-browser-harness.jsonl");
+      if (existsSync(harnessLogPath)) {
+        log("test.agent-tab-diagnostic", {
+          harnessLog: readFileSync(harnessLogPath, "utf8").trim(),
+        });
+      }
+      throw error;
+    },
+  );
   await sendTo(task.id, "Continue once this Mac resumes");
   held("task-and-agent-browser-tab-in-use-before-stop", { agentTabs: gate.agentTabs });
 
