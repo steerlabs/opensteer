@@ -4,19 +4,20 @@ import { runStateImportScenario } from "@opensteer/browser-runtime-core/test-sup
 import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/protocol";
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { acquireElectronLocalProfile } from "../src/browser/electron-local-profile.js";
 import { assertCookies } from "./test-support/native-profile-smoke.js";
 import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
-const root = await mkdtemp(path.join(tmpdir(), "native-cookie-proof-"));
+const root = realpathSync(mkdtempSync(path.join(tmpdir(), "native-cookie-proof-")));
 const userData = path.join(root, "user-data");
-await mkdir(userData);
-app.setPath("userData", userData);
-app.setPath("sessionData", userData);
+mkdirSync(path.join(userData, "session"), { recursive: true });
+configureDesktopApplicationPaths(app, userData);
 app.commandLine.appendSwitch("headless");
 app.commandLine.appendSwitch(
   "host-resolver-rules",
