@@ -21,60 +21,43 @@ import type { BrowserPoolPhysicalStatus } from "./browser-pool-controller.js";
 
 type Transport = ReturnType<typeof poolRelayTransport>;
 
-/** A runtime no guest holds: nothing installed. */
-const emptyRuntime: BrowserPoolRuntimeState = {
-  fence: null,
-  revision: 0,
-  phase: "uninstalled",
-  intent: null,
-  cancelled: false,
-  retired: null,
-  blockers: [],
-  adoption: null,
-};
+/** What the agent's signed status says of the slot's guest, read now. */
+type GuestStatus = (signal?: AbortSignal) => Promise<BrowserPoolPhysicalStatus>;
 
 /**
- * The runtime's pool control in the guest, reached through the relay. The coordinator reads its
- * state synchronously, so this keeps the last state the runtime itself answered; a control whose
- * answer was lost makes it unknown (undefined) until the runtime is read again, and it is read
- * again at once, so a stale state is never acted on.
+ * The runtime's pool control in the guest, reached through the relay. Its state is read when
+ * asked, never kept: the coordinator asks again on a later turn whenever it is not known.
  */
 export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel {
   readonly #transport: Transport;
-  #state: BrowserPoolRuntimeState | undefined;
+  readonly #guest: GuestStatus | undefined;
 
-  constructor(transport: Transport) {
+  /** `guest`: the agent's signed status, which says whether there is a runtime to ask. */
+  constructor(transport: Transport, guest?: GuestStatus) {
     this.#transport = transport;
-  }
-
-  poolState(): BrowserPoolRuntimeState | undefined {
-    return this.#state;
+    this.#guest = guest;
   }
 
   /**
-   * What the agent's signed status says of the guest, before anything is read from the runtime:
-   * a stopped guest has no runtime and so no fence (the next one starts empty); a running one is
-   * read through the relay; any other is unknown until the runtime answers.
+   * The runtime's state, read through the relay now. `null` when there is no runtime to ask:
+   * the relay says the guest is not running and the agent's signed status says it is stopped
+   * or paused. Anything else that does not answer (the relay, a running guest with a step
+   * still open, a lost reply, the caller's signal) throws: not known yet, asked again later.
    */
-  async observeGuest(status: BrowserPoolPhysicalStatus): Promise<void> {
-    if (status.phase === "stopped") {
-      this.#state = emptyRuntime;
-      return;
-    }
-    if (status.phase === "running") await this.refresh(AbortSignal.timeout(60_000));
-  }
-
-  /** Reads the runtime's state now. */
-  async refresh(signal?: AbortSignal): Promise<BrowserPoolRuntimeState | undefined> {
+  async poolState(signal?: AbortSignal): Promise<BrowserPoolRuntimeState | null> {
     try {
       const answer = await this.#send("GET", "/v1/pool/state", undefined, signal);
       if (answer.status !== 200) throw new Error(`The runtime answered ${answer.status}.`);
-      this.#state = (JSON.parse(answer.text) as { state?: BrowserPoolRuntimeState }).state;
+      const state = (JSON.parse(answer.text) as { state?: BrowserPoolRuntimeState }).state;
+      if (!state) throw new Error("The runtime answered without its state.");
+      return state;
     } catch (error) {
-      this.#state = undefined;
+      if (!(error instanceof PoolRelayRefused) || error.code !== "parked" || !this.#guest)
+        throw error;
+      const status = await this.#guest(signal);
+      if (status.phase === "stopped" || status.phase === "paused") return null;
       throw error;
     }
-    return this.#state;
   }
 
   async controlPool(
@@ -89,9 +72,7 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
         JSON.stringify({ control, signature: Buffer.from(signature).toString("base64") }),
       );
     } catch (error) {
-      // The control may or may not have applied: the state is unknown until read.
-      this.#state = undefined;
-      await this.refresh(AbortSignal.timeout(5_000)).catch(() => undefined);
+      // The control may or may not have applied: its outcome is read with the state later.
       throw error;
     }
     const body = JSON.parse(answer.text || "{}") as {
@@ -99,7 +80,6 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
       code?: string;
       message?: string;
     };
-    this.#state = body.state;
     if (answer.status !== 200 || !body.state)
       throw new Error(body.message ?? `The runtime refused the ${control.kind} control.`);
     return body.state;
@@ -201,10 +181,33 @@ export function managedBrowserPool(
     term: target.term,
   };
   const transport = poolRelayTransport(endpoint);
+  const controller = managedBrowserPoolController(target, keys.homeKey);
   return {
-    controller: managedBrowserPoolController(target, keys.homeKey),
-    runtime: new RelayBrowserPoolRuntimeChannel(transport),
+    controller,
+    runtime: new RelayBrowserPoolRuntimeChannel(transport, (signal) =>
+      abortable(controller.status(target.slotId, target.term), signal),
+    ),
     /** For the Runner's `LocalBrowserRuntimeBridge` (`transport`). */
     transport,
   };
+}
+
+/** Stops waiting for `work` when `signal` aborts (the work itself has its own deadline). */
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }

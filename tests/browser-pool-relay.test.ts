@@ -185,7 +185,7 @@ describe("the relay", () => {
     expect((await bridge.health()).state).not.toBe("unavailable");
   });
 
-  it("carries the Home's signed controls to the runtime and keeps the state it answered", async () => {
+  it("carries the Home's signed controls to the runtime and reads the state it holds", async () => {
     const f = await relayFixture();
     const started = await f.call("start");
     const channel = new RelayBrowserPoolRuntimeChannel(poolRelayTransport(f.endpoint()));
@@ -194,11 +194,38 @@ describe("the relay", () => {
       Buffer.from(started.signature!, "base64"),
     );
     expect(state).toMatchObject({ phase: "running", fence: started.control!.fence });
-    expect(channel.poolState()).toEqual(state);
+    expect(await channel.poolState()).toEqual(state);
     // The same install again is a repeat; a forged signature is refused, and the state stays.
     const forged = Buffer.alloc(64);
     await expect(channel.controlPool(started.control!, forged)).rejects.toThrow();
-    expect(channel.poolState()?.fence).toEqual(started.control!.fence);
+    expect((await channel.poolState())?.fence).toEqual(started.control!.fence);
+  });
+
+  // The Home side's channel interface (round 10): null means there is no runtime to ask, as a
+  // value; a guest whose state cannot be read yet is a throw, never null.
+  it("answers null for a stopped or paused guest, and its state for a running one", async () => {
+    const f = await relayFixture();
+    const guest = () => f.agent.agent.status("slot-relay", 1);
+    const channel = new RelayBrowserPoolRuntimeChannel(poolRelayTransport(f.endpoint()), guest);
+    expect(await channel.poolState()).toBeNull();
+    await f.call("start");
+    expect(await channel.poolState()).toMatchObject({ phase: "uninstalled" });
+    await f.call("pause");
+    expect(await channel.poolState()).toBeNull();
+    // Without the agent's status a parked relay is not knowing, never "no runtime".
+    const blind = new RelayBrowserPoolRuntimeChannel(poolRelayTransport(f.endpoint()));
+    await expect(blind.poolState()).rejects.toThrow();
+  });
+
+  it("gives up waiting when the coordinator's step signal aborts", async () => {
+    const f = await relayFixture();
+    const channel = new RelayBrowserPoolRuntimeChannel(poolRelayTransport(f.endpoint()), () =>
+      f.agent.agent.status("slot-relay", 1),
+    );
+    await f.call("start");
+    const step = new AbortController();
+    step.abort(new Error("the step ended"));
+    await expect(channel.poolState(step.signal)).rejects.toThrow();
   });
 
   it("refuses a connection for a parked or stopped guest: the relay never wakes one", async () => {

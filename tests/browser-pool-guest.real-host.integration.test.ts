@@ -249,17 +249,15 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     });
     // The guest starts (our runtime and Chromium boot) and the Home installs its fence.
     let mark = performance.now();
-    // The coordinator reads the runtime's state at once; the agent's status says what it is.
-    await parts.runtime.observeGuest(await parts.controller.status(slotId, term));
     process.stderr.write("POOLPROOF recover\n");
     await coordinator.recover();
     process.stderr.write("POOLPROOF recovered\n");
     emit({
       kind: "proof-start",
       ms: Math.round(performance.now() - mark),
-      state: parts.runtime.poolState()?.phase,
+      state: (await parts.runtime.poolState())?.phase,
     });
-    expect(parts.runtime.poolState()).toMatchObject({ phase: "running" });
+    expect(await parts.runtime.poolState()).toMatchObject({ phase: "running" });
     // Round D, D3: two keys. The relay presents its own key, not the host's signing key, so a
     // Home that pinned the host key in its place refuses the relay before sending anything.
     expect(hostKey.equals(relayHostKey)).toBe(false);
@@ -667,9 +665,10 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         () => "applied",
         (error: unknown) => (error instanceof Error ? error.message : String(error)),
       );
-    emit({ kind: "proof-replay", replay, state: channel.poolState()?.phase ?? null });
+    const after = await channel.poolState();
+    emit({ kind: "proof-replay", replay, state: after?.phase ?? null });
     expect(replay).toMatch(/superseded/u);
-    expect(channel.poolState()?.phase).toBe("uninstalled");
+    expect(after?.phase).toBe("uninstalled");
     emit({ kind: "proof-errors", errors: [...new Set(errors)].slice(0, 20) });
     // Round D, D3: the Home saw no coordinator error.
     expect(errors).toEqual([]);
