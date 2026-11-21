@@ -234,6 +234,54 @@ async function run(command) {
         uptime_s: Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]),
       };
     }
+    case "proxy-usage": {
+      // Round D, D1: what one slot's proxy holds now: established connections and memory.
+      const established = spawnSync(
+        "ip",
+        ["netns", "exec", `osp${command.index}`, "ss", "-Htn", "state", "established", "( sport = :3128 )"],
+        { encoding: "utf8" },
+      ).stdout.trim();
+      const memory = spawnSync(
+        "systemctl",
+        ["show", "-p", "MemoryCurrent", "--value", `opensteer-pool-egress-${command.index}.service`],
+        { encoding: "utf8" },
+      ).stdout.trim();
+      return {
+        connections: established ? established.split("\n").length : 0,
+        memory: /^\d+$/u.test(memory) ? Number(memory) : null,
+      };
+    }
+    case "proxy-crash-loop": {
+      // Round D, D1: the slot's proxy is killed whenever it runs, for command.seconds; systemd's
+      // start limit must stop restarting it. PID 1's CPU time across the loop is reported.
+      const unit = `opensteer-pool-egress-${command.index}.service`;
+      const show = (property, name = unit) =>
+        spawnSync("systemctl", ["show", "-p", property, "--value", name], { encoding: "utf8" }).stdout.trim();
+      const pid1 = () => {
+        const fields = readFileSync("/proc/1/stat", "utf8").split(") ")[1].split(" ");
+        return (Number(fields[11]) + Number(fields[12])) * 10;
+      };
+      const cpuBefore = pid1();
+      const started = performance.now();
+      let kills = 0;
+      spawnSync("systemctl", ["start", unit]);
+      while (performance.now() - started < command.seconds * 1000) {
+        const pid = Number(show("MainPID"));
+        if (pid > 0) {
+          spawnSync("kill", ["-9", String(pid)]);
+          kills += 1;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return {
+        kills,
+        service: show("ActiveState"),
+        result: show("Result"),
+        socket: show("ActiveState", `opensteer-pool-egress-${command.index}.socket`),
+        pid1_cpu_ms: pid1() - cpuBefore,
+        seconds: command.seconds,
+      };
+    }
     case "facts": {
       const route = execFileSync("ip", ["-4", "route", "get", "1.1.1.1"], { encoding: "utf8" });
       return { hostAddress: route.match(/ src ([0-9.]+)/u)?.[1] };

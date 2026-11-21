@@ -673,7 +673,79 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     emit({ kind: "proof-errors", errors: [...new Set(errors)].slice(0, 20) });
     // Round D, D3: the Home saw no coordinator error.
     expect(errors).toEqual([]);
-    await admin({ op: "delete", slotId, term });
+    // Round D, D2: a new Home for the slot. Its three keys replace the old set in one write.
+    const nextHome = generateKeyPairSync("ed25519");
+    const nextTickets = generateKeyPairSync("ed25519");
+    const nextRelay = relayIdentity(directory, "next-home-relay");
+    const nextKeys = {
+      homeKey: nextHome.privateKey,
+      relayKey: nextRelay.key,
+      relayCertificate: nextRelay.certificate,
+      ticketKey: { keyId: "host-v1", key: nextTickets.privateKey },
+    };
+    const nextTerm = term + 1;
+    const replaced = await admin({
+      op: "replace-key",
+      slotId,
+      term: nextTerm,
+      ...managedBrowserPoolRegistration(nextKeys),
+    });
+    expect(replaced.op).toBe("replace-key");
+    // Straight after it: the old relay key and the old slot key are refused, at either term.
+    const oldRelay = [
+      await refusal(openPoolRelay(endpoint())),
+      await refusal(openPoolRelay(endpoint({ term: nextTerm }))),
+    ];
+    const oldKey = await parts.controller.status(slotId, nextTerm).then(
+      () => "answered",
+      (error: unknown) => (error instanceof Error ? error.name : String(error)),
+    );
+    const next = managedBrowserPool(
+      {
+        kind: "managed-pool",
+        agentUrl: r.agentUrl,
+        slotId,
+        term: nextTerm,
+        agentKey: created.slot.controlKey,
+        hostKey: spkiOf(hostKey),
+        relay: { ...r.relay, relayHostKey: spkiOf(relayHostKey) },
+      },
+      nextKeys,
+    );
+    // The guest did not survive the replacement.
+    const afterReplace = await next.controller.status(slotId, nextTerm);
+    // The new Home's cold start, installed through the relay with its own keys.
+    mark = performance.now();
+    const coldStart = await next.controller.apply({
+      id: randomUUID(),
+      slotId,
+      term: nextTerm,
+      kind: "start",
+      expect: {
+        instance: afterReplace.instance,
+        epoch: afterReplace.epoch,
+        phase: afterReplace.phase,
+        savedStateId: null,
+      },
+    });
+    const installed = await next.runtime.controlPool(
+      coldStart.control!,
+      Buffer.from(coldStart.signature!, "base64"),
+    );
+    emit({
+      kind: "proof-replace-key",
+      old_relay: oldRelay,
+      old_slot_key: oldKey,
+      after_replace: afterReplace.phase,
+      cold_start_ms: Math.round(performance.now() - mark),
+      installed: installed.phase,
+    });
+    expect(oldRelay).toEqual(["refused", "refused"]);
+    expect(oldKey).not.toBe("answered");
+    expect(afterReplace).toMatchObject({ phase: "stopped", savedState: null });
+    expect(coldStart.applied).toBe(true);
+    expect(installed).toMatchObject({ phase: "running", fence: coldStart.control!.fence });
+    await admin({ op: "delete", slotId, term: nextTerm });
     await fixture.close();
   }, 900_000);
 });

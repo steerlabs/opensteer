@@ -65,7 +65,11 @@ function parseArguments(argv: string[]) {
   };
 }
 
+/** Every row, for the run's own assertions at the end (round D, D3). */
+const emitted: Record<string, unknown>[] = [];
+
 function emit(row: Record<string, unknown>): void {
+  emitted.push(row);
   appendFileSync(options.out, `${JSON.stringify({ at: new Date().toISOString(), ...row })}\n`);
   const { after: _after, before: _before, ...short } = row;
   process.stdout.write(`${JSON.stringify(short)}\n`);
@@ -548,6 +552,7 @@ async function wakes(
   tier: "memory" | "disk-warm" | "disk-cold",
   samples: number,
   idleMs = 0,
+  extra: Record<string, unknown> = {},
 ) {
   for (let sample = 1; sample <= samples; sample += 1) {
     await rebase(live.cdp, live.workload);
@@ -569,10 +574,160 @@ async function wakes(
       pause_call_ms: paused.ms,
       resume_call_ms: resumed.ms,
       ...(writeMs === undefined ? {} : { save_ms: writeMs }),
+      ...extra,
     });
     emit(row);
     live.cdp = cdp;
   }
+}
+
+/**
+ * Round D, D1 on a host: a slot proxy made to crash in a loop stops being restarted (systemd's
+ * start limit), PID 1 is not kept busy, the slot's status says its proxy is down, the guest has
+ * no network meanwhile, and the slot's next start brings the proxy back.
+ */
+async function crashLoop(slot: Slot) {
+  await slot.ensureStopped();
+  await slot.call("start");
+  let { cdp } = await firstReply(slot, now());
+  let workload = await setup(cdp);
+  const https = async () => {
+    const session = await cdp.attach(workload.targets.at(-1)!);
+    return httpsProbe(cdp, session);
+  };
+  const before = await https();
+  const loop = await helper({ cmd: "proxy-crash-loop", index: slot.index, seconds: 45 });
+  let down: string | undefined;
+  for (let waited = 0; waited < 30_000 && down !== "down"; waited += 1_000) {
+    down = (await slot.status()).proxy;
+    if (down !== "down") await sleep(1_000);
+  }
+  const whileDown = await https();
+  cdp.close();
+  await slot.call("stop");
+  await slot.call("start");
+  ({ cdp } = await firstReply(slot, now()));
+  workload = await setup(cdp);
+  const after = await https();
+  const statusAfter = (await slot.status()).proxy ?? null;
+  cdp.close();
+  emit({
+    kind: "crash-loop",
+    https_before: before,
+    loop,
+    status_proxy: down ?? null,
+    https_while_down: whileDown,
+    https_after_restart: after,
+    status_after_restart: statusAfter,
+    ok:
+      before === "opaque" &&
+      loop.service !== "active" &&
+      down === "down" &&
+      whileDown !== "opaque" &&
+      after === "opaque" &&
+      statusAfter === null &&
+      (loop.pid1_cpu_ms as number) < 5_000,
+  });
+}
+
+/**
+ * Round D, D1 on a host: while one guest floods its own proxy (connections opened and dropped in
+ * a tight loop, and refused requests), another slot's wake from disk and its HTTPS check are
+ * the same as without the flood.
+ */
+async function floodNeighbour(victim: Slot, flooder: Slot, samples: number) {
+  for (const slot of [victim, flooder]) await slot.ensureStopped();
+  await victim.call("start");
+  const victimCdp = await firstReply(victim, now());
+  const live = { cdp: victimCdp.cdp, workload: await setup(victimCdp.cdp) };
+  await flooder.call("start");
+  const flooderCdp = (await firstReply(flooder, now())).cdp;
+  const flooderWork = await setup(flooderCdp);
+  await wakes(victim, live, "disk-warm", samples, 0, { kind: "flood-wake", flood: false });
+  const session = await flooderCdp.attach(flooderWork.targets.at(-1)!);
+  await flooderCdp.evaluate(
+    session,
+    `(() => {
+      window.floodOn = true;
+      window.floodCount = 0;
+      const once = () => {
+        const stop = new AbortController();
+        fetch('https://example.com/?flood=' + Math.random(), { mode: 'no-cors', cache: 'no-store', signal: stop.signal }).catch(() => {});
+        fetch('http://10.9.9.9/refused?' + Math.random(), { mode: 'no-cors', signal: stop.signal }).catch(() => {});
+        setTimeout(() => stop.abort(), 5);
+        window.floodCount += 2;
+      };
+      (async () => { while (window.floodOn) { for (let i = 0; i < 20; i += 1) once(); await new Promise((r) => setTimeout(r, 5)); } })();
+      return true;
+    })()`,
+  );
+  const usage = await helper({ cmd: "proxy-usage", index: flooder.index });
+  await wakes(victim, live, "disk-warm", samples, 0, { kind: "flood-wake", flood: true });
+  const count = await flooderCdp.evaluate<number>(
+    session,
+    "window.floodOn = false, window.floodCount",
+  );
+  flooderCdp.close();
+  live.cdp.close();
+  await flooder.call("stop");
+  const rows = emitted.filter((row) => row.kind === "flood-wake");
+  const median = (values: number[]) =>
+    values.sort((a, b) => a - b)[Math.ceil(values.length / 2) - 1]!;
+  const of = (flood: boolean) => rows.filter((row) => row.flood === flood);
+  const baseline = median(of(false).map((row) => row.cdp_ms as number));
+  const flooded = median(of(true).map((row) => row.cdp_ms as number));
+  emit({
+    kind: "flood",
+    samples,
+    requests_sent: count,
+    flooder_proxy: usage,
+    baseline_cdp_median_ms: Math.round(baseline),
+    flooded_cdp_median_ms: Math.round(flooded),
+    baseline_https_ok: of(false).filter((row) => row.https === "opaque").length,
+    flooded_https_ok: of(true).filter((row) => row.https === "opaque").length,
+    ok:
+      of(false).every((row) => row.https === "opaque") &&
+      of(true).every((row) => row.https === "opaque") &&
+      flooded <= baseline * 1.5 + 100,
+  });
+}
+
+/** What one Chromium holds on its proxy while the series run (round D, D1), sampled. */
+function proxySampler(slot: Slot) {
+  const peak = { connections: 0, memory: 0, samples: 0 };
+  let running = true;
+  void (async () => {
+    while (running) {
+      const usage = await helper({ cmd: "proxy-usage", index: slot.index }).catch(() => undefined);
+      if (usage) {
+        peak.samples += 1;
+        peak.connections = Math.max(peak.connections, (usage.connections as number) ?? 0);
+        peak.memory = Math.max(peak.memory, (usage.memory as number | null) ?? 0);
+      }
+      await sleep(250);
+    }
+  })();
+  return () => {
+    running = false;
+    emit({ kind: "proxy-usage", slot: slot.id, ...peak });
+  };
+}
+
+/** Round D, D3: the run's own verdict, from every row it wrote. */
+function assertAll() {
+  const failed = emitted.filter(
+    (row) =>
+      row.passed === false ||
+      row.ok === false ||
+      ("https" in row && row.https !== "opaque" && row.kind !== "crash-loop"),
+  );
+  emit({
+    kind: "assertions",
+    rows: emitted.length,
+    failed: failed.map((row) => `${String(row.kind)}${row.tier ? ` ${String(row.tier)}` : ""}`),
+    ok: failed.length === 0,
+  });
+  if (failed.length) process.exitCode = 1;
 }
 
 async function clock(slot: Slot, live: { cdp: Cdp; workload: Workload }) {
@@ -1162,6 +1317,7 @@ async function main() {
     const { cdp } = await firstReply(first!, now());
     live = { cdp, workload: await setup(cdp) };
   }
+  const stopSampling = proxySampler(first!);
   if (options.phases.includes("memory")) await wakes(first!, live, "memory", options.samples);
   if (options.phases.includes("disk-warm")) await wakes(first!, live, "disk-warm", options.samples);
   if (options.phases.includes("disk-cold")) await wakes(first!, live, "disk-cold", options.samples);
@@ -1182,6 +1338,10 @@ async function main() {
   if (options.phases.includes("journal-repeat")) await journalRepeated(slots[0]!);
   if (options.phases.includes("kvm-pit")) await kvmPit();
   if (options.phases.includes("after-reboot")) await afterReboot(slots);
+  stopSampling();
+  if (options.phases.includes("crash-loop")) await crashLoop(slots[2]!);
+  if (options.phases.includes("flood")) await floodNeighbour(slots[0]!, slots[1]!, 5);
+  assertAll();
   emit({ kind: "done" });
 }
 
