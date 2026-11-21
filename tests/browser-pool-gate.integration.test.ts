@@ -1018,6 +1018,41 @@ it("keeps the person's pages through a Runner restart and reattaches them under 
   }
 });
 
+it("keeps the person's pages when the Runner's channel closes cleanly, code 1000 included", async () => {
+  const j = await journey("runner-clean-close");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("restart"));
+    const page = await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    const before = (await j.slot())!.attachmentGeneration;
+    j.runnerDown(1000);
+    // Nothing ends: the row stays ready, the page keeps running, sends wait.
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(page.page.isClosed()).toBe(false);
+    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+    j.runnerUp();
+    const held = await waiting;
+    held.release();
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect((await j.slot())!.attachmentGeneration).toBeGreaterThan(before);
+    expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    expect(await page.value()).toBe('["unsent draft",99]');
+    // No pause happened: the controller saw only the start.
+    expect(j.controller.effects).toEqual(["start"]);
+    const watching = j.viewer(home, sessionId);
+    const attached = await watching.attaching;
+    try {
+      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+    } finally {
+      attached.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
 it("ends the sessions with their note when the Runner does not come back before the deadline", async () => {
   const j = await journey("runner-gone", { channelDeadlineMs: 1_500 });
   try {

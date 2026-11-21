@@ -7741,6 +7741,8 @@ interface HostedBrowserBrokerOptions {
 export class HostedBrowserBroker {
   readonly #poolAdmission: PoolBrokerAdmission | undefined;
   readonly #onChannelLost: (() => void) | undefined;
+  /** The runtime announced this session's end: its close is not a lost channel. */
+  #runtimeEnded = false;
   readonly #adoptedFromPool: boolean;
   readonly #poolEnded = new AbortController();
   readonly profileId: BrowserProfileId | null;
@@ -8837,13 +8839,14 @@ export class HostedBrowserBroker {
           this.#poolAdmission?.retiring() &&
           code === 1012 &&
           reason.toString() === "browser-pool-retire";
-        // A pooled guest outlives its Runner: a lost channel ends nothing, the Home reattaches.
+        // A pooled guest outlives its Runner: a close the Home did not ask for, and that the
+        // runtime did not announce as the session's end, is a lost channel whatever its code.
         const channelLost =
           !this.#stopping &&
           !retired &&
           ready &&
           this.#poolAdmission !== undefined &&
-          code !== 1000;
+          !this.#runtimeEnded;
         if (channelLost) queueMicrotask(() => this.#onChannelLost?.());
         void this.#runtimeFrameTail
           .then(() =>
@@ -9204,6 +9207,7 @@ export class HostedBrowserBroker {
         this.#snapshot = { ...this.#snapshot, dialog: message.dialog };
     } else if (message.type === "browser.status") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
+      if (message.state === "closing" || message.state === "closed") this.#runtimeEnded = true;
       if (message.state === "closing") {
         this.#runtimeReady = false;
         this.#latestFrames.clear();

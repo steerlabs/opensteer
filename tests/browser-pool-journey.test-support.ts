@@ -415,11 +415,16 @@ export async function journey(
     withholdNextTicket: () => {
       withholdNext = true;
     },
-    /** The Runner restarts: every channel drops, the guest keeps running. */
-    runnerDown: () => {
+    /**
+     * The Runner restarts: every channel drops, the guest keeps running. `homeCode` is the close
+     * code the Home sees; the runtime always sees the Runner's own 1011 (a 1000 reaches it only
+     * as the relay of the Home's own close).
+     */
+    runnerDown: (homeCode = 1011) => {
       runnerDown = true;
       bridge.closeAll(1011, "runner restarting");
-      for (const connection of connections.splice(0)) connection.lose(1011, "runner restarting");
+      for (const connection of connections.splice(0))
+        connection.lose(homeCode, "runner restarting");
     },
     runnerUp: () => {
       runnerDown = false;
