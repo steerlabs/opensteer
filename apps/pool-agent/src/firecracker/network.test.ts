@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentConfigSchema } from "../config.js";
+import { agentConfigSchema, refuseUnsupportedMode } from "../config.js";
 import { egressRuleset, hostRuleset, type NetworkConfig } from "./network.js";
 
 const config: NetworkConfig = {
@@ -62,33 +62,34 @@ describe("review G4: the proxies' egress rules", () => {
   });
 });
 
+const base = () => ({
+  journal: "/var/lib/opensteer-pool/journal",
+  listen: { host: "127.0.0.1", port: 7310 },
+  admin: {
+    listen: { host: "127.0.0.1", port: 7311 },
+    provisionerKey: "a".repeat(60),
+    hostId: "pool-host-a",
+    hostKeyFile: "/etc/opensteer-pool/host-key.pem",
+  },
+  driver: {
+    firecracker: "/opt/f",
+    jailer: "/opt/j",
+    images: "/srv/i",
+    jailRoot: "/srv/j",
+    savedRoot: "/srv/s",
+    stateDirectory: "/var/d",
+    arrayIdFile: "/srv/a",
+    profilesRoot: "/var/p",
+    credentialsRoot: "/etc/c",
+    slotUidBase: 200_000,
+    egressUidBase: 300_000,
+    egress: { node: "/opt/n", main: "/opt/m" },
+  },
+});
+
 describe("review G4: the configuration", () => {
-  const base = {
-    journal: "/var/lib/opensteer-pool/journal",
-    listen: { host: "127.0.0.1", port: 7310 },
-    admin: {
-      listen: { host: "127.0.0.1", port: 7311 },
-      provisionerKey: "a".repeat(60),
-      hostId: "pool-host-a",
-      hostKeyFile: "/etc/opensteer-pool/host-key.pem",
-    },
-    driver: {
-      firecracker: "/opt/f",
-      jailer: "/opt/j",
-      images: "/srv/i",
-      jailRoot: "/srv/j",
-      savedRoot: "/srv/s",
-      stateDirectory: "/var/d",
-      arrayIdFile: "/srv/a",
-      profilesRoot: "/var/p",
-      credentialsRoot: "/etc/c",
-      slotUidBase: 200_000,
-      egressUidBase: 300_000,
-      egress: { node: "/opt/n", main: "/opt/m" },
-    },
-  };
   const parse = (network: Record<string, unknown>) =>
-    agentConfigSchema.safeParse({ ...base, driver: { ...base.driver, network } });
+    agentConfigSchema.safeParse({ ...base(), driver: { ...base().driver, network } });
 
   it("accepts only public resolvers, and a blocked one only when named as private", () => {
     expect(parse({ resolvers: ["8.8.8.8"] }).success).toBe(true);
@@ -102,5 +103,19 @@ describe("review G4: the configuration", () => {
     expect(
       parse({ resolvers: [], hostUpstreams: [{ address: "192.0.43.10", port: 8443 }] }).success,
     ).toBe(true);
+  });
+});
+
+describe("review G5: the guest mode", () => {
+  it("defaults to the mode that works and refuses the runtime mode with a plain message", () => {
+    const config = agentConfigSchema.parse({
+      ...base(),
+      driver: { ...base().driver, network: { resolvers: [] } },
+    });
+    expect(config.driver.guestMode).toBe("bench");
+    expect(() => refuseUnsupportedMode(config)).not.toThrow();
+    expect(() =>
+      refuseUnsupportedMode({ ...config, driver: { ...config.driver, guestMode: "runtime" } }),
+    ).toThrow('guestMode "runtime" is not supported yet');
   });
 });

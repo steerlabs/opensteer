@@ -116,7 +116,7 @@ is saved to disk or stopped.
       "hostUpstreams": [],
       "relayUid": null
     },
-    "guestMode": "runtime"
+    "guestMode": "bench"
   }
 }
 ```

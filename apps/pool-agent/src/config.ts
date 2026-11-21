@@ -56,12 +56,25 @@ export const agentConfigSchema = z.strictObject({
       relayUid: z.number().int().min(0).nullable().default(null),
       nftDirectory: path.default("/etc/opensteer-pool/nft"),
     }),
-    guestMode: z.enum(["runtime", "bench"]).default("runtime"),
+    /** The mode that works today is the default (review G5); `runtime` is refused at start. */
+    guestMode: z.enum(["runtime", "bench"]).default("bench"),
     serialConsole: z.boolean().default(false),
   }),
 });
 
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
+
+/**
+ * Review G5: our browser runtime does not yet run in a pool guest (it reads no pool fence,
+ * refuses a non-loopback egress proxy, and its bridge token is made inside the guest). The
+ * agent refuses that mode at start rather than boot guests that cannot work.
+ */
+export function refuseUnsupportedMode(config: AgentConfig): void {
+  if (config.driver.guestMode === "runtime")
+    throw new Error(
+      'guestMode "runtime" is not supported yet: the browser runtime does not run in a pool guest. Use "bench".',
+    );
+}
 
 export async function readAgentConfig(file: string): Promise<AgentConfig> {
   const text = await readFile(file, "utf8");

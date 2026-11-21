@@ -9,7 +9,7 @@ import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
 import { PoolAgent, type PoolAgentOptions } from "./agent.js";
-import { readAgentConfig } from "./config.js";
+import { readAgentConfig, refuseUnsupportedMode } from "./config.js";
 import { FirecrackerDriver } from "./firecracker/driver.js";
 import { SlotJournal } from "./journal.js";
 import { createAdminServer, createHomeServer, listen, parseProvisionerKey } from "./server.js";
@@ -22,6 +22,7 @@ export function log(event: Readonly<Record<string, unknown>>): void {
 export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}): Promise<void> {
   const file = process.argv[2] ?? "/etc/opensteer-pool/agent.json";
   const config = await readAgentConfig(file);
+  refuseUnsupportedMode(config);
   const driver = new FirecrackerDriver(config.driver);
   await driver.open();
   const agent = new PoolAgent({
