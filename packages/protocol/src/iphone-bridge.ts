@@ -65,6 +65,10 @@ export const iphoneNativeReasonSchema = z.enum([
   "wifi-pairing-required",
   "wifi-transport-unsupported",
   "wifi-identity-mismatch",
+  /** The person chose not to allow this Mac when the iPhone asked. */
+  "wifi-pairing-denied",
+  /** Wi‑Fi pairing over the cable didn’t finish; trying again can work. */
+  "wifi-pairing-failed",
 ]);
 export type IphoneNativeReason = z.infer<typeof iphoneNativeReasonSchema>;
 export const iphoneNativeCapabilitiesSchema = z.strictObject({

@@ -48,9 +48,13 @@ const (
 	WifiPairingRequired            Reason = "wifi-pairing-required"
 	WifiTransportUnsupported       Reason = "wifi-transport-unsupported"
 	WifiIdentityMismatch           Reason = "wifi-identity-mismatch"
+	// WifiPairingDenied means the phone's owner declined this Mac when the phone asked.
+	WifiPairingDenied Reason = "wifi-pairing-denied"
+	// WifiPairingFailed means Wi-Fi pairing over the cable did not finish; trying again can work.
+	WifiPairingFailed Reason = "wifi-pairing-failed"
 )
 
-var Reasons = append([]Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported, WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch}, screenReasons...)
+var Reasons = append([]Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported, WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch, WifiPairingDenied, WifiPairingFailed}, screenReasons...)
 
 type Failure struct {
 	Code           Reason `json:"code"`

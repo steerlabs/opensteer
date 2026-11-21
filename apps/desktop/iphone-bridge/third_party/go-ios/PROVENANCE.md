@@ -56,6 +56,14 @@ Opensteer patches:
   the same userspace stack. Peer Ed25519 proofs, physical identity, pairing states,
   listener ports, TLS version and handshake sizes are validated. No automatic
   re-pairing, kernel tunnel or exported network listener is retained.
+- Pair Setup is an explicit state machine (`ios/tunnel/remote_setup.go`). iOS 27 resets
+  the control stream (HTTP/2 `STREAM_CLOSED`) when `pairVerifyFailed` or Pair Setup M1
+  arrives before Pair Verify was opened, so a host without a record opens Verify with a
+  fresh ephemeral key and declines it first. M1, M3 and M5 carry the Mac's own name as
+  `sendingHost`, M5 names its model, `awaitingUserConsent` is reported to the caller,
+  and refusals, TLV errors and off-protocol answers are typed errors. HTTP/2 stream
+  resets keep the peer's error code. The sequence follows the MIT idevice
+  `remote_pairing` implementation at revision 2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132.
 - RemotePairing JSON framing and IRK auth-tag matching follow the MIT idevice
   implementation at revision 2dca9a58a9a1dd02ec7d6213fcfd8fe861e74132.
   Its notice is retained in LICENSE.idevice and THIRD_PARTY_NOTICES.md.
