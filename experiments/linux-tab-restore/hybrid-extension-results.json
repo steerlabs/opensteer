@@ -1,0 +1,141 @@
+{
+  "phase1LiveAndDiscard": {
+    "liveRenderers": 8,
+    "afterDiscardRenderers": 3,
+    "discardWhileAttached": {
+      "ok": true,
+      "oldTabId": 1206636566,
+      "newTabId": 1206636566,
+      "discarded": true
+    },
+    "detachedEventSeen": false,
+    "evalAfterDiscardErr": "CDP timeout (15000ms): Runtime.evaluate",
+    "discardResults": {
+      "surf_dup_B": {
+        "ok": true,
+        "oldTabId": 1206636559,
+        "newTabId": 1206636559,
+        "discarded": true
+      },
+      "surf_form": {
+        "ok": true,
+        "oldTabId": 1206636560,
+        "newTabId": 1206636560,
+        "discarded": true
+      },
+      "surf_spa": {
+        "ok": true,
+        "oldTabId": 1206636562,
+        "newTabId": 1206636562,
+        "discarded": true
+      },
+      "surf_ss": {
+        "ok": true,
+        "oldTabId": 1206636563,
+        "newTabId": 1206636563,
+        "discarded": true
+      }
+    },
+    "inventoryBeforeExit": [
+      {
+        "index": 0,
+        "url": "http://site-1.localhost:51606/article",
+        "discarded": false,
+        "targetId": "3EEBC93380BF7659A0414A5BA3D99745"
+      },
+      {
+        "index": 1,
+        "url": "http://site-1.localhost:51606/article",
+        "discarded": true,
+        "targetId": "3B7D71698F6EB4BDDC0E9010FA1FC935"
+      },
+      {
+        "index": 2,
+        "url": "http://site-2.localhost:51606/form",
+        "discarded": true,
+        "targetId": "FE136B4474A7868D1E06B3533E580B6C"
+      },
+      {
+        "index": 3,
+        "url": "http://site-4.localhost:51606/spa/step-2",
+        "discarded": true,
+        "targetId": "ABA221AEF3B46426E9B5EF79073A41D4"
+      },
+      {
+        "index": 4,
+        "url": "http://site-5.localhost:51606/session-storage",
+        "discarded": true,
+        "targetId": "F04C60689DC4DED78FB64E7159F85123"
+      }
+    ],
+    "allTargetIdsPreserved": true
+  },
+  "phase2CrashRestart": {
+    "previousExitPrefs": {
+      "exit_type": "Crashed"
+    },
+    "restoredCount": 5,
+    "expectedCount": 5,
+    "indexOrderMatches": true,
+    "eagerRequestsBeforeActivate": [
+      "site-4.localhost:51606/spa/step-2"
+    ],
+    "inventoryAfterCrash": [
+      {
+        "index": 0,
+        "url": "http://site-1.localhost:51606/article",
+        "status": "complete",
+        "targetId": "444DD9F3B22D476F8F9F463EE8116E57"
+      },
+      {
+        "index": 1,
+        "url": "http://site-1.localhost:51606/article",
+        "status": "unloaded",
+        "targetId": "1153AB49F548A202B91AF19503B0E12E"
+      },
+      {
+        "index": 2,
+        "url": "http://site-2.localhost:51606/form",
+        "status": "complete",
+        "targetId": "0F47B80F019FB107BA337BCB92FC1FFE"
+      },
+      {
+        "index": 3,
+        "url": "http://site-4.localhost:51606/spa/step-2",
+        "status": "complete",
+        "targetId": "F495293D49437F10C1FF32A8FB97883D"
+      },
+      {
+        "index": 4,
+        "url": "http://site-5.localhost:51606/session-storage",
+        "status": "complete",
+        "targetId": "A7A538897A9A0C4B1BC3F72DFBA04F1B"
+      }
+    ],
+    "verified": {
+      "surf_dup_A": {
+        "expectedScrollY": 1100,
+        "actualScrollY": 1100
+      },
+      "surf_dup_B": {
+        "expectedScrollY": 2900,
+        "actualScrollY": 2900
+      },
+      "surf_form": {
+        "expectedFill": "Hybrid draft",
+        "actualFill": "Hybrid draft"
+      },
+      "surf_spa": {
+        "pathname": "/spa/step-2",
+        "state": {
+          "step": 2
+        },
+        "historyCount": 4
+      },
+      "surf_ss": {
+        "expectedSs": "kept-ss",
+        "actualSs": "kept-ss"
+      }
+    }
+  }
+}
