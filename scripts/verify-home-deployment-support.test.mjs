@@ -9,6 +9,7 @@ import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs"
 import {
   assertBuildSpace,
   builderPlatforms,
+  checkoutTemporaryDirectory,
   homeImageBuilds,
   platformSummary,
   quote,
@@ -166,6 +167,17 @@ await test("builder platforms are read from buildx inspect, including default ma
   ]);
   assert.ok(!builderPlatforms(inspected).includes("linux/arm64"));
   assert.deepEqual(builderPlatforms("Name: stopped"), []);
+});
+
+await test("the verifier's working directory is created in a fresh checkout without .opensteer", () => {
+  const checkout = mkdtempSync(resolve(tmpdir(), "home-proof-checkout-"));
+  try {
+    const directory = checkoutTemporaryDirectory(checkout);
+    assert.ok(directory.startsWith(resolve(checkout, ".opensteer", "home-proof-")));
+    assert.ok(existsSync(directory));
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
 });
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {

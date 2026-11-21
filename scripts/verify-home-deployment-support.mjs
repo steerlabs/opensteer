@@ -1,3 +1,4 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function quote(value) {
@@ -110,6 +111,12 @@ export function platformSummary({
         ? `the ${buildOnlyPlatform} Home image build failed.`
         : `the ${buildOnlyPlatform} Home image build did not run.`;
   return `${proof}; ${build}`;
+}
+
+/** The verifier's own scratch directory; `.opensteer` is ignored, so a fresh checkout lacks it. */
+export function checkoutTemporaryDirectory(root) {
+  mkdirSync(resolve(root, ".opensteer"), { recursive: true });
+  return mkdtempSync(resolve(root, ".opensteer/home-proof-"));
 }
 
 export function assertBuildSpace(location, dfOutput) {

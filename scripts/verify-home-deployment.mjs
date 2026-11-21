@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,6 +27,7 @@ import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync
 import {
   assertBuildSpace,
   builderPlatforms,
+  checkoutTemporaryDirectory,
   homeImageBuilds,
   platformSummary,
   quote,
@@ -1448,7 +1449,7 @@ try {
   for (const ref of publicImageRefs) {
     if (result("docker", ["image", "inspect", ref]).status === 0) preexisting.add(ref);
   }
-  checkoutTemp = mkdtempSync(resolve(root, ".opensteer/home-proof-"));
+  checkoutTemp = checkoutTemporaryDirectory(root);
   const bundleDirectory = resolve(checkoutTemp, "bundle");
   mkdirSync(bundleDirectory);
   const bootPackage = resolve(bundleDirectory, "opensteer-home-installer.sh");
