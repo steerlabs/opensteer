@@ -2,11 +2,17 @@
 # Builds the six Home images from this source for this machine and writes a release manifest
 # that names them, for `install.sh --local-images --manifest MANIFEST.json HOSTNAME`.
 set -euo pipefail
+umask 077
 [[ $# == 1 ]] || { echo 'Usage: sudo bash deploy/home/build-images.sh MANIFEST.json' >&2; exit 2; }
+fail() { echo "$*" >&2; exit 1; }
+# The manifest goes where it was asked for, relative to where this was run.
 output=$1
+[[ $output == /* ]] || output="$PWD/$output"
+[[ -d ${output%/*} && ! -d $output ]] || fail "Cannot write the manifest to $output: ${output%/*} is not a directory."
+probe=$(mktemp "$output.XXXXXX") || fail "Cannot write the manifest to $output."
+rm -f -- "$probe"
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
-fail() { echo "$*" >&2; exit 1; }
 
 for program in docker git jq; do
   command -v "$program" >/dev/null || fail "Missing $program."
@@ -41,6 +47,8 @@ for service in "${services[@]}"; do
   fi
   images=$(jq -c --arg service "$service" --arg ref "$ref" '. + {($service): $ref}' <<< "$images")
 done
-jq -n --arg version "$version" --argjson images "$images" '{version: $version, images: $images}' > "$output"
+written=$(mktemp "$output.XXXXXX")
+jq -n --arg version "$version" --argjson images "$images" '{version: $version, images: $images}' > "$written"
+mv -f -- "$written" "$output"
 echo "Wrote $output. Install with:"
 echo "  sudo bash deploy/home/install.sh --local-images --manifest $output HOSTNAME"

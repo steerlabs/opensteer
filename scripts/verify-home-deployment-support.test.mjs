@@ -783,6 +783,50 @@ await test("a backup sent TERM midway starts the Home again and removes its stag
   );
 });
 
+await test("build-images.sh writes the manifest where it was asked, and checks that first", (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-build-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bin = resolve(directory, "bin");
+  mkdirSync(bin);
+  mkdirSync(resolve(directory, "work"));
+  const work = realpathSync(resolve(directory, "work"));
+  writeFileSync(
+    resolve(bin, "docker"),
+    `#!/bin/sh
+echo "docker $*" >> ${quote(resolve(directory, "docker.log"))}
+case "$*" in
+  "image inspect --format {{.Id}} "*) echo sha256:${"a".repeat(64)} ;;
+esac
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  const build = (manifest) =>
+    spawnSync("bash", [resolve("deploy/home/build-images.sh"), manifest], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        OPENSTEER_SOURCE_REVISION: "b".repeat(40),
+      },
+    });
+  const built = build("release.json");
+  assert.equal(built.status, 0, built.stderr);
+  const manifest = JSON.parse(readFileSync(resolve(work, "release.json"), "utf8"));
+  assert.deepEqual(Object.keys(manifest.images).sort(), [...homeServices].sort());
+  assert.match(
+    built.stdout,
+    new RegExp(`--manifest ${resolve(work, "release.json")} HOSTNAME`, "u"),
+  );
+  assert.equal(existsSync(resolve("release.json")), false);
+  rmSync(resolve(directory, "docker.log"));
+  const refused = build("missing/release.json");
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Cannot write the manifest to .*\/work\/missing\/release\.json/u);
+  assert.equal(existsSync(resolve(directory, "docker.log")), false, "it built before checking");
+});
+
 await test("restore rollback reselects the previous volume set before restarting the Home", () => {
   const output = runRecovery(`${restoreJournal}
     compose() { printf '%s %s\\n' "\${stage_project:-live}" "$*"; }
