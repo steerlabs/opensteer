@@ -24,6 +24,7 @@ import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   BrowserPoolCoordinator,
+  loopbackPoolChannel,
   type BrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
@@ -122,7 +123,7 @@ export type Home = { service: BrowserService; coordinator: BrowserPoolCoordinato
 export function dyingAfter(runtime: BrowserRuntime, kind: string): BrowserPoolRuntimeChannel {
   let dead = false;
   return {
-    poolState: () => runtime.poolState(),
+    poolState: async () => runtime.poolState() ?? null,
     controlPool: async (control, signature) => {
       if (dead) return new Promise(() => {});
       const state = await runtime.controlPool(control, signature);
@@ -259,7 +260,9 @@ export async function journey(
       })
     : null;
   const homes: Home[] = [];
-  const startHome = async (channel: BrowserPoolRuntimeChannel = guest): Promise<Home> => {
+  const startHome = async (
+    channel: BrowserPoolRuntimeChannel = loopbackPoolChannel(guest),
+  ): Promise<Home> => {
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,

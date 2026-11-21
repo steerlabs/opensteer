@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolAdopter,
@@ -73,6 +73,8 @@ async function poolFixture(
     now?: () => number;
     /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
     freshGuests?: boolean;
+    /** The channel behaves as a remote one: slow, and answers none when no guest is running. */
+    remote?: boolean;
     /** The runtime's page probe during a retire; a retire waits for it. */
     probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
@@ -190,7 +192,17 @@ async function poolFixture(
     extra: Partial<ConstructorParameters<typeof BrowserPoolCoordinator>[0]> = {},
   ) => {
     const channel: BrowserPoolRuntimeChannel = {
-      poolState: () => runtime.poolState(),
+      poolState: async () => {
+        // As a remote runtime behind a relay: slow, and with no guest running there is no
+        // runtime to ask.
+        if (options.remote) {
+          for (let turn = 0; turn < 5; turn++)
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          const status = await controller.status(`slot-${key}`, 1);
+          if (status.phase !== "running") return null;
+        }
+        return runtime.poolState() ?? null;
+      },
       controlPool: (control, signature) =>
         crash
           ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
@@ -611,6 +623,88 @@ it("chooses a restart asked while the loop reads the sessions without a channel 
   } finally {
     await f.close();
   }
+});
+
+describe("with a runtime that cannot always be asked, as a remote one behind a relay", () => {
+  it("recovers a parked browser after a Home restart with nothing cached, and wakes it", async () => {
+    const f = await poolFixture("remote-parked", { remote: true });
+    try {
+      const first = f.home();
+      await first.recover();
+      await f.openSession(first);
+      expect(await first.tryPark()).toBe("parked");
+      first.close();
+      // The new Home has only the slot row and the controller's signed status: paused.
+      const next = f.home();
+      await withTimeout(next.recover(), 10_000, {
+        timeoutError: () => new Error("The parked browser was never recovered."),
+      });
+      expect(next.gate.phase).toBe("parked");
+      expect(f.controller.effects).toEqual(["start", "pause"]);
+      // Demand wakes it; the runtime is asked only once the guest runs again.
+      (await next.gate.reserve(AbortSignal.timeout(10_000))).release();
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+      expect(next.gate.phase).toBe("open");
+      expect((await f.row())?.state).toBe("ready");
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        outcome: { adopted: [f.sessionId], lost: [] },
+      });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("starts a first guest where there is none, asking no runtime before it exists", async () => {
+    const f = await poolFixture("remote-first", { remote: true });
+    try {
+      const home = f.home();
+      await withTimeout(home.recover(), 10_000, {
+        timeoutError: () => new Error("The first start never installed."),
+      });
+      expect(f.controller.effects).toEqual(["start"]);
+      expect(home.gate.phase).toBe("open");
+      await f.admitted();
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("removes a device with no guest, with and without a slot row", async () => {
+    const never = await poolFixture("remote-removed-never", { remote: true });
+    try {
+      await never.database
+        .updateTable("runners")
+        .set({ revokedAt: new Date() })
+        .where("id", "=", never.task.runnerId)
+        .execute();
+      const home = never.home();
+      await home.recover();
+      await withTimeout(home.released(), 10_000, {
+        timeoutError: () => new Error("The removal with no guest did not end."),
+      });
+      expect(never.controller.effects).toEqual([]);
+      expect(await never.slot()).toBeUndefined();
+    } finally {
+      await never.close();
+    }
+    const died = await poolFixture("remote-removed-died", { remote: true });
+    try {
+      const home = died.home();
+      await home.recover();
+      await died.openSession(home);
+      // The guest died: the controller reports it stopped, and there is no runtime to ask.
+      died.controller.observe({ phase: "stopped", savedState: null, epoch: null });
+      await withTimeout(Promise.all([home.releaseDevice(), home.released()]), 10_000, {
+        timeoutError: () => new Error("The removal of a dead guest did not end."),
+      });
+      expect(died.controller.effects).toEqual(["start"]);
+      expect(await died.slot()).toBeUndefined();
+      expect((await died.row())?.state).toBe("failed");
+    } finally {
+      await died.close();
+    }
+  });
 });
 
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
@@ -1146,8 +1240,8 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
     const seen: string[] = [];
     const next = f.home(undefined, f.controller, {
       runtime: {
-        poolState: () => {
-          const state = f.runtime.poolState();
+        poolState: async () => {
+          const state = f.runtime.poolState() ?? null;
           if (state) seen.push(state.phase);
           return state;
         },
@@ -1560,7 +1654,7 @@ it("aborts a park when a page was ended while its session was suspended", async 
     const home = f.home(undefined, f.controller, {
       runtime: {
         // The runtime reports a page it ended during the suspension (a late popup).
-        poolState: () => {
+        poolState: async () => {
           const state = f.runtime.poolState()!;
           return dropAfterRetire && state.phase === "retired" ? { ...state, dropped: 1 } : state;
         },
@@ -1624,12 +1718,12 @@ it("discards a running slot whose recovery keeps failing, and never opens it unc
     let unreadable = 9;
     const next = f.home(undefined, f.controller, {
       runtime: {
-        poolState: () => {
+        poolState: async () => {
           if (unreadable > 0) {
             unreadable--;
-            return undefined;
+            return null;
           }
-          return f.runtime.poolState();
+          return f.runtime.poolState() ?? null;
         },
         controlPool: (control, signature) => f.runtime.controlPool(control, signature),
       },
@@ -1961,7 +2055,7 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
     // After the restart the runtime refuses every release: the recovery cannot abort.
     const next = f.home(undefined, f.controller, {
       runtime: {
-        poolState: () => f.runtime.poolState(),
+        poolState: async () => f.runtime.poolState() ?? null,
         controlPool: (control, signature) =>
           control.kind === "release"
             ? Promise.reject(new Error("The release never applies."))

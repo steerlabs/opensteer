@@ -42,9 +42,25 @@ import {
 import { BrowserPoolGate } from "./browser-pool-gate.js";
 
 /** The runtime's signed control channel; in-process for the loopback target. */
+/**
+ * The Home's way to the runtime inside the guest. A remote one cannot always answer: with no
+ * guest (stopped) or a paused one there is no runtime to ask, and it says so as `null`, never by
+ * throwing. A throw or a deadline is not knowing, and the loop asks again later.
+ */
 export interface BrowserPoolRuntimeChannel {
+  poolState(signal?: AbortSignal): Promise<BrowserPoolRuntimeState | null>;
+  controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+}
+
+/** A runtime in this process (loopback): its state is always there to read. */
+export function loopbackPoolChannel(runtime: {
   poolState(): BrowserPoolRuntimeState | undefined;
   controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+}): BrowserPoolRuntimeChannel {
+  return {
+    poolState: async () => runtime.poolState() ?? null,
+    controlPool: (control, signature) => runtime.controlPool(control, signature),
+  };
 }
 
 /** What the Home does per session; one session's failure is that session's alone. */
@@ -682,9 +698,23 @@ export class BrowserPoolCoordinator {
     return this.#slot;
   }
 
-  #state(): BrowserPoolRuntimeState {
-    const state = this.#options.runtime.poolState();
-    if (!state) throw new Error("The pooled runtime has no pool control.");
+  /** The runtime's state, read now; null: there is no runtime to ask (no guest, or paused). */
+  async #runtimeState(): Promise<BrowserPoolRuntimeState | null> {
+    this.#signal?.throwIfAborted();
+    return withTimeout(
+      this.#options.runtime.poolState(this.#signal),
+      this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
+      {
+        timeoutError: () => new Error("The pooled runtime did not answer in time."),
+        ...(this.#signal ? { signal: this.#signal } : {}),
+      },
+    );
+  }
+
+  /** The state of a runtime that must be running here; not answering is not knowing. */
+  async #state(): Promise<BrowserPoolRuntimeState> {
+    const state = await this.#runtimeState();
+    if (!state) throw new Error("The pooled runtime cannot be asked yet.");
     return state;
   }
 
@@ -765,7 +795,7 @@ export class BrowserPoolCoordinator {
   ): Promise<{ readonly state: BrowserPoolRuntimeState; readonly answered: boolean }> {
     this.#signal?.throwIfAborted();
     const fault = this.#options.runtimeFault?.(control.kind);
-    if (fault === "request") return { state: this.#state(), answered: false };
+    if (fault === "request") return { state: await this.#state(), answered: false };
     try {
       const state = await withTimeout(
         this.#options.runtime.controlPool(control, Buffer.from(signature, "base64")),
@@ -778,11 +808,11 @@ export class BrowserPoolCoordinator {
         },
       );
       return fault === "reply"
-        ? { state: this.#state(), answered: false }
+        ? { state: await this.#state(), answered: false }
         : { state, answered: true };
     } catch {
       // A refusal and a lost reply look alike here: the current state decides.
-      return { state: this.#state(), answered: false };
+      return { state: await this.#state(), answered: false };
     }
   }
 
@@ -843,7 +873,7 @@ export class BrowserPoolCoordinator {
   async #afterD(intent: BrowserPoolSlot, vetoedDuringCommit: boolean) {
     const expected = this.#adopter?.inventory() ?? [];
     await this.#journal.settleOpen(this.#signal);
-    let state = this.#state();
+    let state = await this.#state();
     let abort = vetoedDuringCommit;
     if (!vetoedDuringCommit) {
       const retired = await this.#retire(intent);
@@ -881,7 +911,7 @@ export class BrowserPoolCoordinator {
 
   /** Release, then reattach so every retained page is reachable, then open. */
   async #abort(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
-    let state = this.#state();
+    let state = await this.#state();
     const pending =
       !sameIntent(state, slot) ||
       (!state.cancelled && (state.phase === "running" || state.phase === "retiring")) ||
@@ -909,7 +939,7 @@ export class BrowserPoolCoordinator {
   }
 
   async #sealAndPause(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
-    let state = this.#state();
+    let state = await this.#state();
     // A lost seal request is sent again once; a refusal leaves it released.
     for (
       let tries = 0;
@@ -991,7 +1021,8 @@ export class BrowserPoolCoordinator {
         phase: "waking",
         fence: { instanceId: adopt.fence.instance, epoch: adopt.fence.epoch },
       });
-    let state = this.#state();
+    // Resumed, the guest runs again: only now is its runtime asked.
+    let state = await this.#state();
     if (state.phase === "sealed") state = (await this.#deliver(adopt, resumed.signature!)).state;
     // An adopt that did not arrive leaves the runtime sealed under the epoch before it: the
     // next attempt sends it again.
@@ -1208,7 +1239,6 @@ export class BrowserPoolCoordinator {
     const slot = await this.#read();
     await this.#journal.settleOpen(this.#signal);
     const status = await this.#status();
-    const state = this.#state();
     if (!slot) return this.#install(status);
     // The whole fence, the controller's and the runtime's. Only waking may find the epoch moved
     // on by a resume that applied; its own check compares it with that resume.
@@ -1218,8 +1248,30 @@ export class BrowserPoolCoordinator {
       slot.phase === "waking" && fence
         ? sameFence(fence, { ...fenceOf(slot), epoch: fence.epoch })
         : sameFence(fence, fenceOf(slot));
-    if (!expected(statusFence(status)) || !expected(state.fence))
-      return this.#discard(slot, "guest-restarted");
+    // A stopped guest has no fence: it is replaced, with nothing to adopt.
+    if (!expected(statusFence(status))) return this.#discard(slot, "guest-restarted");
+    // A paused guest has no runtime to ask: the row and the controller's signed status say where
+    // it is, with nothing cached from before a Home restart.
+    if (status.phase === "paused") {
+      const saved = slot.savedState as { id?: string } | null;
+      switch (slot.phase) {
+        case "parked":
+          if (saved?.id && status.savedState?.id === saved.id) return;
+          return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
+        case "waking":
+          return this.#continueWake(slot);
+        case "preparing":
+          // The pause applied before its row was written: the park finishes.
+          await this.#pause(slot);
+          return;
+        default:
+          // Running by the row and paused by the controller: no intent explains it.
+          return this.#discard(slot, "guest-changed");
+      }
+    }
+    // A running guest is asked; one that cannot answer yet is asked again by a later turn.
+    const state = await this.#state();
+    if (!expected(state.fence)) return this.#discard(slot, "guest-restarted");
     switch (slot.phase) {
       case "running":
         if (state.phase === "running") return this.#finishRunning(slot, []);
@@ -1230,17 +1282,9 @@ export class BrowserPoolCoordinator {
         if (sameIntent(state, slot) && state.phase === "sealed") await this.#sealAndPause(slot);
         else await this.#abort(slot);
         return;
-      case "parked": {
-        const saved = slot.savedState as { id?: string } | null;
-        if (
-          status.phase === "paused" &&
-          status.savedState?.id === saved?.id &&
-          state.phase === "sealed" &&
-          sameIntent(state, slot)
-        )
-          return;
+      case "parked":
+        // Parked by the row and running by the controller: it is woken from what it holds.
         return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
-      }
       case "waking":
         return this.#continueWake(slot);
     }
