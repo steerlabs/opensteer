@@ -31,9 +31,6 @@ const extensionManifestJson = JSON.stringify(
 );
 
 const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
-chrome.tabs.onCreated.addListener(() => {});
-chrome.tabs.onUpdated.addListener(() => {});
-
 globalThis.__opensteer = {
   async inventory() {
     const [tabs, targets] = await Promise.all([

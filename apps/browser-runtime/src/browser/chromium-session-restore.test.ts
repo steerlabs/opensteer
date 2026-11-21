@@ -597,3 +597,36 @@ it("fails closed on launch inventory failure by closing every restored non-helpe
   expect(pageTargets.some((t) => t.url.includes("/article"))).toBe(false);
   expect(pageTargets.length).toBeLessThanOrEqual(1);
 });
+
+it("handles a fresh native launch with no restored tabs cleanly under the Playwright defer-restore patch", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-no-restore-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+
+  const browser = await launcher.launch(request);
+  cleanup.push(() => browser.close());
+
+  // Fresh profile with --restore-last-session exposes zero spurious pages and keeps session cookies working.
+  expect(browser.context.pages()).toHaveLength(0);
+  await browser.context.sessionRestore!.reconcile(new Set());
+
+  const ledger = new SurfaceLedger(browser.context, { savedLineageId: "profile-fresh" });
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  const opened = await ledger.openSurface();
+  const live = ledger.binding(opened.id)!;
+  expect(live.page.restoredFromSession).toBe(false);
+  await live.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/fresh-home` });
+  await waitLoaded(live.cdp, "/fresh-home");
+  expect(
+    await evalValue<string>(live.cdp, "document.getElementById('fresh').textContent"),
+  ).toBe("Fresh Home Tab");
+});
