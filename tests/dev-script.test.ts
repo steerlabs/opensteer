@@ -53,14 +53,6 @@ describe("development service selection", () => {
     );
     expect(environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toHaveLength(43);
   });
-  it("starts a team without Personal hosting configuration", () => {
-    const environment: NodeJS.ProcessEnv = {};
-    configureDevelopmentEnvironment("team", environment);
-    expect(environment.OPENSTEER_DEPLOYMENT_KIND).toBe("team");
-    expect(environment.OPENSTEER_HOSTING_ENVIRONMENT_ID).toBeUndefined();
-    expect(environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN).toHaveLength(43);
-    expect(developmentPreflightCommands(["host", "web"], "team")).toEqual([]);
-  });
   it("rejects mismatched local Host and Runner environment identities", () => {
     expect(() =>
       configureDevelopmentEnvironment("personal", {
@@ -87,7 +79,7 @@ describe("development service selection", () => {
 
   it("runs every service under the supervisor built for this computer", () => {
     const environment: NodeJS.ProcessEnv = {};
-    configureDevelopmentEnvironment("team", environment);
+    configureDevelopmentEnvironment("personal", environment);
     expect(environment.OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE).toBe(
       builtProcessSupervisor(resolve(import.meta.dirname, "..")),
     );

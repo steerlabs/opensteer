@@ -449,16 +449,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: { "values.seed!": 1 },
     reason: "Benchmark seed labels include team; this is not a Deployment authority decision.",
   },
-  "scripts/dev.ts": {
-    counts: {
-      kind: 3,
-      deploymentShape: 2,
-      "environment.OPENSTEER_DEPLOYMENT_KIND": 2,
-      "arguments_[0]": 1,
-    },
-    reason:
-      "Configuration admits only the supported deployment kind, `pnpm dev:team` selects it by argument, and the services that can start follow.",
-  },
   "scripts/setup-local.ts": {
     counts: {
       value: 2,
@@ -469,13 +459,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "scripts/smoke-desktop-release-profile.ts": {
     counts: {
       "entry.kind": 1,
-    },
-    reason:
-      "Configuration admits only the supported deployment kind and selects the services that can start.",
-  },
-  "scripts/verify-team-deployment.mjs": {
-    counts: {
-      "host.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
     },
     reason:
       "Configuration admits only the supported deployment kind and selects the services that can start.",
