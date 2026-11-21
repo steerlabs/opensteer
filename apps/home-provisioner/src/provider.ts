@@ -11,6 +11,11 @@ export interface Addresses {
 
 export type VmServerId = number | GoogleComputeServerRef;
 
+export interface VmAddress {
+  readonly id: CloudComputerId;
+  readonly generation: number;
+}
+
 export interface VmServer<Id extends VmServerId = VmServerId> extends Addresses {
   readonly id: Id;
   readonly generation: number;
@@ -67,9 +72,9 @@ export interface VmProvider {
   ): Promise<void>;
   powerOff(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
   delete(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
-  listManagedAddresses?(signal: AbortSignal): Promise<readonly CloudComputerId[]>;
+  listManagedAddresses?(signal: AbortSignal): Promise<readonly VmAddress[]>;
   releaseAddress?(
-    id: CloudComputerId,
+    address: VmAddress,
     signal: AbortSignal,
     check?: () => Promise<void>,
   ): Promise<boolean>;

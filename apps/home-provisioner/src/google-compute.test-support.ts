@@ -6,7 +6,7 @@ export const computeComputerId = CloudComputerIdSchema.parse(
   "cc_00000000-0000-4000-8000-000000000001",
 );
 export const computeInstanceName = `os-${computeComputerId.replace("_", "-")}-3`;
-export const addressName = `os-${computeComputerId.replace("_", "-")}-ip`;
+export const addressName = `${computeInstanceName}-ip`;
 export const regionPath = "projects/test-project/regions/us-central1";
 export const zonePath = "projects/test-project/zones/us-central1-a";
 export const globalPath = "projects/test-project/global";
@@ -78,6 +78,7 @@ export class ComputeFake {
   rejectMetadata = false;
   rejectComputeToken = false;
   #nextId = BigInt(computeInstanceId);
+  #nextAddress = 21;
   #nextOperation = 0;
 
   adapter() {
@@ -226,7 +227,7 @@ export class ComputeFake {
     if (this.addresses.has(body.name)) return json({}, 409);
     return json(
       this.#start(req, regionPath, () =>
-        this.addresses.set(body.name, { ...body, address: computeIpv4 }),
+        this.addresses.set(body.name, { ...body, address: `192.0.2.${this.#nextAddress++}` }),
       ),
     );
   }
@@ -246,12 +247,7 @@ export class ComputeFake {
           if (req.method === "DELETE") this.instances.delete(current.name);
           else if (action === "start") current.status = "RUNNING";
           else if (action === "stop") current.status = "TERMINATED";
-          else if (action === "deleteAccessConfig") {
-            for (const nic of current.networkInterfaces)
-              nic.accessConfigs = nic.accessConfigs.filter(
-                ({ name }) => name !== req.query.get("accessConfig"),
-              );
-          } else if (action === "setTags") current.tags = req.body as Instance["tags"];
+          else if (action === "setTags") current.tags = req.body as Instance["tags"];
           else if (action === "setMetadata") {
             current.metadata = { ...(req.body as Metadata), fingerprint: "changed" };
           } else throw new Error(`Unexpected Compute action ${action}`);

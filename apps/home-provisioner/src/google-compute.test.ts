@@ -158,7 +158,9 @@ it("pages Compute inventories without filters and selects journal operations loc
     ProviderOutcomeUnknown,
   );
   expect(await provider.listManaged(signal)).toEqual([]);
-  expect(await provider.listManagedAddresses(signal)).toEqual([computeComputerId]);
+  expect(await provider.listManagedAddresses(signal)).toEqual([
+    { id: computeComputerId, generation: 3 },
+  ]);
   const write = {
     kind: "create" as const,
     token: computeCreate.requestId!,
@@ -218,7 +220,7 @@ it("paginates and preserves distinct VMs for the same generation and refuses wro
   ]);
 });
 
-it("preserves the static address through stop, start, and replacement, then releases it", async () => {
+it("preserves each machine's own address through stop, start, and replacement", async () => {
   const fake = new ComputeFake();
   const provider = fake.adapter();
   const vm = await provider.create(computeCreate, signal);
@@ -237,14 +239,24 @@ it("preserves the static address through stop, start, and replacement, then rele
     { ...computeCreate, generation: 4, requestId: "00000000-0000-4000-8000-000000000011" },
     signal,
   );
-  expect(replacement).toMatchObject({ ipv4: computeIpv4, status: "running" });
-  expect(await provider.describe(vm.id, signal)).toMatchObject({ ipv4: null, status: "off" });
+  expect(replacement).toMatchObject({ ipv4: "192.0.2.22", status: "running" });
+  expect(await provider.describe(vm.id, signal)).toMatchObject({
+    ipv4: computeIpv4,
+    status: "off",
+  });
+  expect(await provider.listManagedAddresses(signal)).toEqual([
+    { id: computeComputerId, generation: 3 },
+    { id: computeComputerId, generation: 4 },
+  ]);
   await provider.delete(vm.id, signal);
-  expect(await provider.listManagedAddresses(signal)).toEqual([computeComputerId]);
+  expect(await provider.listManagedAddresses(signal)).toEqual([
+    { id: computeComputerId, generation: 4 },
+  ]);
+  expect(await provider.describe(replacement.id, signal)).toMatchObject({ ipv4: "192.0.2.22" });
   await provider.delete(replacement.id, signal);
   expect(await provider.describe(replacement.id, signal)).toBeUndefined();
   expect(await provider.listManagedAddresses(signal)).toEqual([]);
-  expect(reqs(fake, "POST", `${regionPath}/addresses`)).toHaveLength(1);
+  expect(reqs(fake, "POST", `${regionPath}/addresses`)).toHaveLength(2);
   expect(reqs(fake, "DELETE", `${regionPath}/addresses/${addressName}`)).toHaveLength(1);
 });
 

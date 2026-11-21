@@ -134,9 +134,10 @@ export class Reconciler {
           provider.delete(server.id, job, () => this.#check(id, { operation: "orphan" }, job)),
         );
     }
-    for (const id of addresses) {
-      await clean(`address:${id}`, id, async (job) => {
-        await provider.releaseAddress?.(id, job, () =>
+    for (const address of addresses) {
+      const { id, generation } = address;
+      await clean(`address:${id}/${generation}`, id, async (job) => {
+        await provider.releaseAddress?.(address, job, () =>
           this.#check(id, { operation: "orphan" }, job),
         );
       });
@@ -245,6 +246,20 @@ export class Reconciler {
       return action(job, check);
     };
     const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check, observe));
+    const releaseAddresses = async (beforeGeneration?: number) => {
+      if (!provider.listManagedAddresses || !provider.releaseAddress) return true;
+      let settled = true;
+      for (const address of await provider.listManagedAddresses(signal)) {
+        if (
+          address.id !== id ||
+          (beforeGeneration !== undefined && address.generation >= beforeGeneration)
+        )
+          continue;
+        if (!(await act((job, check) => provider.releaseAddress!(address, job, check))))
+          settled = false;
+      }
+      return settled;
+    };
     const receiptRecorded = computer.bootstrapReceiptRecorded === true;
     const scrubBootstrap = async (server: VmServer | undefined) => {
       if (
@@ -321,9 +336,7 @@ export class Reconciler {
           for (const write of pending.values()) await recover(write);
         }
         let settled = vmResult.value && !pending.size;
-        if (settled && state === "deleted" && provider.releaseAddress) {
-          settled = await act((job, check) => provider.releaseAddress!(id, job, check));
-        }
+        if (settled && state === "deleted") settled = await releaseAddresses();
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
         await scrubBootstrap(current);
         return report(settled ? "suspended" : "provisioning");
@@ -476,10 +489,13 @@ export class Reconciler {
       if (!replies.length || replies.some((identity) => !identity)) return unready("booting");
 
       failure = "The Cloud Computer provider operation failed.";
-      for (const old of computer.restoreSnapshot && !computer.replacementVerified ? [] : previous) {
-        if (old.status !== "deleting")
-          await act((job, check) => provider.delete(old.id, job, check));
-        if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
+      if (!computer.restoreSnapshot || computer.replacementVerified) {
+        for (const old of previous) {
+          if (old.status !== "deleting")
+            await act((job, check) => provider.delete(old.id, job, check));
+          if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
+        }
+        if (generation > 1 && !(await releaseAddresses(generation))) return unready("booting");
       }
       await scrubBootstrap(current);
       return report("ready");

@@ -49,9 +49,9 @@ cluster.
    ```
 
 3. Check the regional static and in-use external IPv4 quotas. Budget one of
-   each per active Home and allow for reservations held by suspended Homes
-   and pending operations. A replacement transfers the existing reservation
-   after the previous VM stops. Enable Cloud Quotas if you need to request an
+   each per VM and allow for reservations held by suspended VMs and pending
+   operations. Budget another reservation during a replacement. The old VM
+   keeps its address until the provisioner deletes it. Enable Cloud Quotas if you need to request an
    increase. Use the quota ID and dimensions returned for the required metric.
 
    ```sh

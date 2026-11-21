@@ -687,6 +687,40 @@ describe("Cloud Computer reconciliation", () => {
     );
   });
 
+  it("keeps the old Google address during a refused replacement and releases it after verification", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    const old = [...compute.instances.values()][0]!;
+    const oldAddress = old.networkInterfaces[0]?.accessConfigs[0]?.natIP;
+    h.status.desired = [
+      {
+        ...home,
+        generation: 2,
+        revision: 2,
+        restoreSnapshot: "deadbeef",
+        replacementVerified: false,
+      },
+    ];
+    compute.nextInsert = "quota";
+    await h.pass();
+    expect(h.last()).toMatchObject({ phase: "failed", generation: 2 });
+    expect(old.networkInterfaces[0]?.accessConfigs[0]?.natIP).toBe(oldAddress);
+    expect(compute.addresses.size).toBe(2);
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(compute.instances.has(old.name)).toBe(true);
+    expect(compute.addresses.size).toBe(2);
+    h.status.desired = [{ ...h.status.desired[0]!, replacementVerified: true }];
+    await h.pass();
+    expect(h.last()).toMatchObject({ phase: "ready", generation: 2, ipv4: "192.0.2.22" });
+    expect(h.records.get(home.hostname)?.ipv4).toBe("192.0.2.22");
+    expect(compute.instances.has(old.name)).toBe(false);
+    expect([...compute.addresses.values()].map(({ address }) => address)).toEqual(["192.0.2.22"]);
+  });
+
   it.each(["create", "power-on"] as const)(
     "reports an unknown Google %s as provisioning and applies the readiness deadline",
     async (kind) => {

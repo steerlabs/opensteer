@@ -20,7 +20,7 @@ import {
   type HttpOptions,
 } from "./http.js";
 import { googleBootstrapReadyKey } from "./boot.js";
-import type { CreateVm, ExpectedVm, VmProvider, VmServer } from "./provider.js";
+import type { CreateVm, ExpectedVm, VmAddress, VmProvider, VmServer } from "./provider.js";
 
 const homeLabel = "opensteer-cloud-computer";
 const generationLabel = "opensteer-generation";
@@ -326,12 +326,12 @@ export class GoogleCompute implements VmProvider {
 
   async listManagedAddresses(signal: AbortSignal) {
     const found = await this.#list(this.#addressesPath(), address, signal);
-    const ids = new Set<CloudComputerId>();
+    const addresses = new Map<string, VmAddress>();
     for (const entry of found) {
-      const id = CloudComputerIdSchema.safeParse(entry.labels[homeLabel]);
-      if (id.success && isManagedAddress(entry, id.data)) ids.add(id.data);
+      const identity = managedIdentity(entry.labels);
+      if (identity && isManagedAddress(entry, identity)) addresses.set(entry.name, identity);
     }
-    return [...ids];
+    return [...addresses.values()];
   }
 
   async #list<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal) {
@@ -367,8 +367,12 @@ export class GoogleCompute implements VmProvider {
     if (found) return googleVm(verifyNamedInstance(found, id, generation), generation);
 
     const dualStack = await this.#dualStack(signal);
-    const reservation = await this.#reserveAddress(id, input.requestId, signal, check);
-    await this.#detachPreviousAddress(input, reservation, signal, check);
+    const reservation = await this.#reserveAddress(
+      { id, generation },
+      input.requestId,
+      signal,
+      check,
+    );
     let inserted: Operation;
     try {
       inserted = await this.#write(`${this.#zone}/instances`, "zone", signal, {
@@ -379,7 +383,7 @@ export class GoogleCompute implements VmProvider {
         body: {
           name,
           machineType: `${this.#zone}/machineTypes/${input.serverType}`,
-          labels: { ...managedLabels(id), [generationLabel]: String(generation) },
+          labels: managedLabels({ id, generation }),
           tags: { items: [firewallTag] },
           shieldedInstanceConfig: {
             enableSecureBoot: true,
@@ -450,13 +454,13 @@ export class GoogleCompute implements VmProvider {
   }
 
   async #reserveAddress(
-    id: CloudComputerId,
+    target: VmAddress,
     journalId: string | undefined,
     signal: AbortSignal,
     check?: Check,
   ) {
     const path = this.#addressesPath();
-    const name = addressName(id);
+    const name = addressName(target);
     let current = await this.#get(`${path}/${name}`, address, signal);
     if (!current) {
       try {
@@ -470,7 +474,7 @@ export class GoogleCompute implements VmProvider {
             addressType: "EXTERNAL",
             networkTier: "PREMIUM",
             ipVersion: "IPV4",
-            labels: managedLabels(id),
+            labels: managedLabels(target),
           },
         });
       } catch (error) {
@@ -479,56 +483,16 @@ export class GoogleCompute implements VmProvider {
       current = await this.#get(`${path}/${name}`, address, signal);
     }
     if (!current?.address || current.status === "RESERVING") throw new ProviderOutcomeUnknown();
-    if (!isManagedAddress(current, id))
+    if (!isManagedAddress(current, target))
       throw refused("conflict", "The Google Cloud Computer address name is already in use");
     return { ...current, address: current.address };
   }
 
-  async #detachPreviousAddress(
-    input: CreateVm,
-    reservation: z.infer<typeof address>,
-    signal: AbortSignal,
-    check?: Check,
-  ) {
-    for (const user of reservation.users) {
-      const name = user.split("/").at(-1)!;
-      if (
-        !resourceName.safeParse(name).success ||
-        !matchesResource(user, `${this.#zone}/instances/${name}`)
-      )
-        throw refused("conflict", "The Google Cloud Computer address belongs to another VM");
-      const previous = await this.#instance(name, signal);
-      if (!previous) continue;
-      const identity = managedInstance(previous);
-      if (
-        identity?.id !== input.id ||
-        identity.generation >= input.generation ||
-        previous.status !== "TERMINATED"
-      )
-        throw refused("conflict", "The Google Cloud Computer address is still attached");
-      for (const nic of previous.networkInterfaces) {
-        const access = nic.accessConfigs.find(({ natIP }) => natIP === reservation.address);
-        if (access) {
-          await this.#write(`${this.#zone}/instances/${name}/deleteAccessConfig`, "zone", signal, {
-            method: "POST",
-            requestId: childRequestId(
-              input.requestId,
-              "delete-access-config",
-              `${name}/${nic.name}/${access.name}`,
-            ),
-            query: { accessConfig: access.name, networkInterface: nic.name },
-            check,
-          });
-        }
-      }
-    }
-  }
-
-  async releaseAddress(id: CloudComputerId, signal: AbortSignal, check?: Check) {
-    const path = `${this.#addressesPath()}/${addressName(id)}`;
+  async releaseAddress(target: VmAddress, signal: AbortSignal, check?: Check) {
+    const path = `${this.#addressesPath()}/${addressName(target)}`;
     const current = await this.#get(path, address, signal);
     if (!current) return true;
-    if (!isManagedAddress(current, id))
+    if (!isManagedAddress(current, target))
       throw refused("conflict", "The Google Cloud Computer address name is already in use");
     if (current.status !== "RESERVED" || current.users.length) return false;
     try {
@@ -609,7 +573,7 @@ export class GoogleCompute implements VmProvider {
       if (!hasStatus(error, 404)) throw error;
     }
     const identity = managedInstance(current) ?? namedIdentity(current.name);
-    if (identity) await this.releaseAddress(identity.id, signal, check);
+    if (identity) await this.releaseAddress(identity, signal, check);
   }
 
   async canRecoverWrite(write: CloudComputerProviderWrite, signal: AbortSignal) {
@@ -810,16 +774,16 @@ function hasStatus(error: unknown, status: number): boolean {
   );
 }
 
-function managedLabels(id: CloudComputerId) {
-  return { [homeLabel]: id, [managedLabel]: managedBy };
+function managedLabels({ id, generation }: VmAddress) {
+  return { [homeLabel]: id, [managedLabel]: managedBy, [generationLabel]: String(generation) };
 }
 
 function instanceName(id: CloudComputerId, generation: number) {
   return `os-${id.replace("_", "-")}-${generation}`;
 }
 
-function addressName(id: CloudComputerId) {
-  return `os-${id.replace("_", "-")}-ip`;
+function addressName({ id, generation }: VmAddress) {
+  return `${instanceName(id, generation)}-ip`;
 }
 
 function childRequestId(journalId: string | undefined, kind: string, name: string) {
@@ -841,9 +805,13 @@ function namedIdentity(name: string) {
 }
 
 function managedInstance(vm: Instance) {
-  if (vm.labels[managedLabel] !== managedBy) return undefined;
-  const id = CloudComputerIdSchema.safeParse(vm.labels[homeLabel]);
-  const generation = CloudComputerGenerationSchema.safeParse(Number(vm.labels[generationLabel]));
+  return managedIdentity(vm.labels);
+}
+
+function managedIdentity(labels: Instance["labels"]): VmAddress | undefined {
+  if (labels[managedLabel] !== managedBy) return undefined;
+  const id = CloudComputerIdSchema.safeParse(labels[homeLabel]);
+  const generation = CloudComputerGenerationSchema.safeParse(Number(labels[generationLabel]));
   return id.success && generation.success
     ? { id: id.data, generation: generation.data }
     : undefined;
@@ -861,10 +829,11 @@ function verifyNamedInstance(vm: Instance, id: CloudComputerId, generation: numb
   return vm;
 }
 
-function isManagedAddress(entry: z.infer<typeof address>, id: CloudComputerId) {
+function isManagedAddress(entry: z.infer<typeof address>, target: VmAddress) {
   return (
-    entry.name === addressName(id) &&
-    entry.labels[homeLabel] === id &&
+    entry.name === addressName(target) &&
+    entry.labels[homeLabel] === target.id &&
+    entry.labels[generationLabel] === String(target.generation) &&
     entry.labels[managedLabel] === managedBy &&
     entry.addressType === "EXTERNAL" &&
     entry.networkTier === "PREMIUM" &&
