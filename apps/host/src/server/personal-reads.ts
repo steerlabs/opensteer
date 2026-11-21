@@ -419,6 +419,9 @@ export function createPersonalReads(
       const viewerId = requireSession(context).user.id;
       const ready = await withPersonalSyncRead(database, async (tx) => {
         await resources.authorize(tx, viewerId);
+        // A Home still waiting for its hosting computer's agent home is not ready, never
+        // refused: the owner's reads need the Personal settings it has yet to create.
+        if (!dependencies.execution.initialized()) return false;
         const environment = await tx
           .selectFrom("executionEnvironments")
           .select("runnerId")
