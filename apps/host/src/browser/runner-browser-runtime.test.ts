@@ -157,6 +157,137 @@ it("uses fresh attachment authority on the replacement boot only for the person'
   }
 });
 
+it.each(["capability.grant", "browser.attach"] as const)(
+  "keeps the person's channel alive when a second device-restarting arrives mid-%s",
+  async (interceptType) => {
+    const f = await maintenanceFixture();
+    let issued = 0;
+    const prepare = vi.fn(async () => {});
+    const ticket = vi.fn(() => `fresh-person-ticket-${++issued}`);
+    const person = f.target.connect("old-person-ticket", { prepare, ticket });
+    const personClosed = vi.fn();
+    const personErrors: Error[] = [];
+    person.once("close", personClosed);
+    person.on("error", (error: Error) => personErrors.push(error));
+    try {
+      await vi.waitFor(() => expect(person.readyState).toBe(1));
+      // Hold the replacement boot's handshake at the requested step, then restart again.
+      f.fixture.intercept = (message) =>
+        message.connectionGeneration === 2 && message.type === interceptType;
+      await f.restart();
+      await vi.waitFor(() =>
+        expect(
+          f.sent.some(
+            (message) => message.connectionGeneration === 2 && message.type === interceptType,
+          ),
+        ).toBe(true),
+      );
+      f.fixture.intercept = undefined;
+      await f.restart();
+      await vi.waitFor(() => expect(person.readyState).toBe(1));
+      expect(personClosed).not.toHaveBeenCalled();
+      expect(personErrors).toEqual([]);
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(ticket).toHaveBeenCalledTimes(2);
+      expect(f.sent.filter((message) => message.type === "browser.attach")).toMatchObject(
+        interceptType === "browser.attach"
+          ? [
+              { attachTicket: "old-person-ticket", connectionGeneration: 1 },
+              { attachTicket: "fresh-person-ticket-1", connectionGeneration: 2 },
+              { attachTicket: "fresh-person-ticket-2", connectionGeneration: 3 },
+            ]
+          : [
+              { attachTicket: "old-person-ticket", connectionGeneration: 1 },
+              { attachTicket: "fresh-person-ticket-2", connectionGeneration: 3 },
+            ],
+      );
+    } finally {
+      f.router.close();
+    }
+  },
+);
+
+it("still closes the person's channel on a non-restart disconnect during reconnect", async () => {
+  const runnerId = createId("runner");
+  let stream: RunnerAuxiliaryStream | null = {
+    fence: { runnerId, connectionId: "restart-loss", connectionGeneration: 1 },
+    identity: {
+      runnerId,
+      bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+    },
+    streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+  } as unknown as RunnerAuxiliaryStream;
+  let hooks: RunnerBrowserHooks = {};
+  const sent: BrowserRuntimeRelayRequest[] = [];
+  const router = new RunnerBrowserRuntimeRouter({
+    registry: {
+      browserStreams: () => (stream ? [stream] : []),
+      stream: () => stream,
+      subscribe: (value) => {
+        hooks = value;
+        return () => {};
+      },
+      send: async (_id, message) => {
+        sent.push(message);
+        const current = stream;
+        if (!current) return;
+        if (message.type === "capability.grant")
+          await hooks.onMessage?.(current, {
+            ...current.fence,
+            type: "capability.accepted",
+            requestId: message.requestId,
+            capability: {
+              capabilityGeneration: message.lease.capabilityGeneration,
+              capabilityLeaseId: message.lease.capabilityLeaseId,
+              runtimeId: message.lease.runtimeId,
+            },
+          });
+        if (message.type === "browser.attach" && message.connectionGeneration === 1)
+          await hooks.onMessage?.(current, { ...message, type: "browser.attached" });
+      },
+    },
+  });
+  try {
+    const target = router.resolve({ kind: "runner", runnerId })!;
+    const person = target.connect("old-person-ticket", {
+      prepare: async () => {},
+      ticket: () => "fresh-person-ticket",
+    });
+    const errors: string[] = [];
+    person.on("error", (error: Error) => errors.push(error.message));
+    const closed = new Promise<void>((resolve) => person.once("close", () => resolve()));
+    await vi.waitFor(() => expect(person.readyState).toBe(1));
+    const first = stream!;
+    stream = null;
+    hooks.onLost?.(first, "device-restarting");
+    const second = {
+      ...first,
+      fence: { ...first.fence, connectionGeneration: 2 },
+      identity: {
+        ...first.identity,
+        bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
+      },
+    } as unknown as RunnerAuxiliaryStream;
+    stream = second;
+    hooks.onAttached?.(second);
+    await vi.waitFor(() =>
+      expect(
+        sent.some(
+          (message) => message.connectionGeneration === 2 && message.type === "browser.attach",
+        ),
+      ).toBe(true),
+    );
+    stream = null;
+    hooks.onLost?.(second, "transport-disconnected");
+    await closed;
+    expect(person.readyState).toBe(3);
+    expect(errors).toEqual(["The computer's browser stream went away."]);
+  } finally {
+    router.close();
+  }
+});
+
 it("opens Host relay channel 33 on one runtime", async () => {
   const f = await maintenanceFixture();
   try {

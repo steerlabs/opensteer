@@ -121,6 +121,7 @@ interface RoutedChannel {
   readonly connection: RunnerBrowserConnection;
   lastSequence: number;
   readonly placementLease: PlacementCapabilityLease;
+  reconnecting: boolean;
 }
 
 interface RunnerBrowserRuntimeRouterOptions {
@@ -166,6 +167,14 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     RunnerId,
     { fence: RunnerAuxiliaryFrameFence; complete: boolean; failed: boolean; profiles: Set<string> }
   >();
+  readonly #lastLoss = new Map<
+    RunnerId,
+    {
+      readonly bootId: RunnerAuxiliaryStream["identity"]["bootId"];
+      readonly reason: RunnerStreamLossReason;
+    }
+  >();
+  readonly #restartingStreams = new WeakSet<RunnerAuxiliaryStream>();
   readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
   readonly #onPlacementChanged: RunnerBrowserRuntimeRouterOptions["onPlacementChanged"];
@@ -457,7 +466,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     runtimeId: string,
     expectedFence: RunnerAuxiliaryFrameFence,
     ticket: string,
-  ): Promise<void> {
+    reconnectContext?: { readonly stream: RunnerAuxiliaryStream },
+  ): Promise<"opened" | "restarting" | "closed"> {
     let placementLease: PlacementCapabilityLease | undefined;
     let channel: RoutedChannel | undefined;
     try {
@@ -476,7 +486,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       if (connection.readyState !== WebSocket.CONNECTING) {
         await this.#releasePlacementLease(activePlacementLease).catch(() => undefined);
         connection.acceptClose(1000, "Browser attach cancelled");
-        return;
+        return "closed";
       }
       const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
       const routedChannel: RoutedChannel = {
@@ -484,6 +494,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         connection,
         lastSequence: -1,
         placementLease: activePlacementLease,
+        reconnecting: reconnectContext !== undefined,
       };
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
@@ -506,25 +517,40 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       if (connection.readyState !== WebSocket.CONNECTING) {
         await this.#bestEffortCloseAndRevoke(routedChannel);
         this.#dropChannel(routedChannel, 1000, "Browser attach cancelled");
-        return;
+        return "closed";
       }
       if (attached.type !== "browser.attached")
         throw relayError("The browser did not acknowledge attachment.");
       const initialPage = attached.initialPage;
       connection.initialPage = initialPage;
       connection.standardCdpMode = attached.standardCdpMode;
+      routedChannel.reconnecting = false;
       connection.acceptOpen();
       if (!activePlacementLease.renewalTimer && !activePlacementLease.renewal) {
         this.#scheduleRenewal(activePlacementLease, activePlacementLease.expiresAt);
       }
+      return "opened";
     } catch (error) {
-      connection.acceptError(normalizeError(error));
+      const normalized = normalizeError(error);
+      if (
+        reconnectContext &&
+        this.#restartingStreams.has(reconnectContext.stream) &&
+        !protocolRejection.has(normalized) &&
+        connection.readyState === WebSocket.CONNECTING
+      ) {
+        if (channel) this.#forgetChannel(channel);
+        if (placementLease)
+          await this.#releasePlacementLease(placementLease).catch(() => undefined);
+        return "restarting";
+      }
+      connection.acceptError(normalized);
       if (channel) {
         this.#dropChannel(channel, 1011, "Browser Runtime attach failed");
         await this.#bestEffortCloseAndRevoke(channel);
       }
       if (placementLease) await this.#releasePlacementLease(placementLease).catch(() => undefined);
       connection.acceptClose(1011, "Browser Runtime attach failed");
+      return "closed";
     } finally {
       if (placementLease) {
         placementLease.maintenanceCount--;
@@ -883,6 +909,11 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #handleDisconnect(stream: RunnerAuxiliaryStream, reason: RunnerStreamLossReason): void {
+    if (reason === "device-restarting") this.#restartingStreams.add(stream);
+    this.#lastLoss.set(stream.identity.runnerId, {
+      bootId: stream.identity.bootId,
+      reason,
+    });
     for (const [id, late] of this.#lateErasures)
       if (sameRunnerAuxiliaryFence(late.fence, stream.fence)) this.#lateErasures.delete(id);
     if (
@@ -890,6 +921,13 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       sameRunnerAuxiliaryFence(this.#inventory.get(stream.identity.runnerId)!.fence, stream.fence)
     )
       this.#inventory.delete(stream.identity.runnerId);
+    for (const [key, lease] of this.#leaseByPlacement) {
+      if (!sameRunnerAuxiliaryFence(lease.fence, stream.fence)) continue;
+      lease.released = true;
+      if (lease.renewalTimer) clearTimeout(lease.renewalTimer);
+      lease.renewalTimer = undefined;
+      this.#leaseByPlacement.delete(key);
+    }
     const error = relayError("The computer's browser stream went away.", true);
     for (const [requestId, pending] of this.#pending) {
       if (
@@ -905,7 +943,18 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     for (const channel of this.#channels.values()) {
       if (!sameRunnerAuxiliaryFence(channel.placementLease.fence, stream.fence)) continue;
       const reconnect = channel.connection.reconnect;
-      if (reason === "device-restarting" && reconnect && channel.connection.prepareForRestart()) {
+      if (
+        reason === "device-restarting" &&
+        channel.reconnecting &&
+        channel.connection.readyState === WebSocket.CONNECTING
+      ) {
+        // #reconnectPerson owns this connection and will retry on the next boot.
+        this.#forgetChannel(channel);
+      } else if (
+        reason === "device-restarting" &&
+        reconnect &&
+        channel.connection.prepareForRestart()
+      ) {
         this.#forgetChannel(channel);
         void this.#reconnectPerson(channel.connection, reconnect, channel.placementLease, stream);
       } else {
@@ -923,33 +972,59 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     lease: PlacementCapabilityLease,
     oldStream: RunnerAuxiliaryStream,
   ): Promise<void> {
-    const timeout = AbortSignal.timeout(12_000);
-    const expire = () => connection.terminate();
-    timeout.addEventListener("abort", expire, { once: true });
-    const deadline = AbortSignal.any([connection.lifetime, timeout]);
-    try {
-      await reconnect.prepare();
-      deadline.throwIfAborted();
-      await this.waitForTarget(lease.runnerId, deadline, oldStream.identity.bootId);
-      const stream = this.#registry.stream(lease.runnerId);
-      if (
-        !stream ||
-        stream.identity.modules.browser?.runtimeId !== lease.runtimeId ||
-        stream.identity.bootId === oldStream.identity.bootId
-      )
-        throw relayError("The browser computer could not reconnect the page.");
-      await this.#open(
-        connection,
-        lease.runnerId,
-        lease.runtimeId,
-        stream.fence,
-        reconnect.ticket(),
-      );
-    } catch (error) {
-      connection.acceptError(normalizeError(error));
-      connection.acceptClose(1011, "Browser stream could not reconnect");
-    } finally {
-      timeout.removeEventListener("abort", expire);
+    let prepared = false;
+    let previousBootId = oldStream.identity.bootId;
+    while (true) {
+      const timeout = AbortSignal.timeout(12_000);
+      const expire = () => connection.terminate();
+      timeout.addEventListener("abort", expire, { once: true });
+      const deadline = AbortSignal.any([connection.lifetime, timeout]);
+      try {
+        if (!prepared) {
+          await reconnect.prepare();
+          prepared = true;
+        }
+        deadline.throwIfAborted();
+        await this.waitForTarget(lease.runnerId, deadline, previousBootId);
+        const stream = this.#registry.stream(lease.runnerId);
+        if (!stream) {
+          const lastLoss = this.#lastLoss.get(lease.runnerId);
+          if (
+            lastLoss?.reason === "device-restarting" &&
+            lastLoss.bootId !== previousBootId &&
+            connection.readyState === WebSocket.CONNECTING &&
+            !deadline.aborted
+          ) {
+            previousBootId = lastLoss.bootId;
+            continue;
+          }
+          throw relayError("The browser computer could not reconnect the page.");
+        }
+        if (
+          stream.identity.modules.browser?.runtimeId !== lease.runtimeId ||
+          stream.identity.bootId === previousBootId
+        )
+          throw relayError("The browser computer could not reconnect the page.");
+        const outcome = await this.#open(
+          connection,
+          lease.runnerId,
+          lease.runtimeId,
+          stream.fence,
+          reconnect.ticket(),
+          { stream },
+        );
+        if (outcome === "restarting" && !connection.lifetime.aborted) {
+          previousBootId = stream.identity.bootId;
+          continue;
+        }
+        return;
+      } catch (error) {
+        connection.acceptError(normalizeError(error));
+        connection.acceptClose(1011, "Browser stream could not reconnect");
+        return;
+      } finally {
+        timeout.removeEventListener("abort", expire);
+      }
     }
   }
 
@@ -1470,8 +1545,12 @@ function capabilityReference(lease: BrowserCapabilityLease): BrowserCapabilityRe
   };
 }
 
+const protocolRejection = new WeakSet<Error>();
+
 function protocolFailure(error: { readonly message: string; readonly retryable: boolean }): Error {
-  return relayError(error.message, error.retryable);
+  const failure = relayError(error.message, error.retryable);
+  protocolRejection.add(failure);
+  return failure;
 }
 
 function normalizeError(error: unknown): Error {
