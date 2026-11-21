@@ -478,8 +478,13 @@ async function observe(
     if (checks.edited && checks.frame_changed) row.edited_frame_ms = now() - start;
     row.host_wall_ms = Date.now();
     row.guest_wall_ms = after.wallMs;
+    const httpsSince = new Date(Date.now() - 1_000).toISOString().replace("T", " ").slice(0, 19);
     row.https = await httpsProbe(cdp, session);
     checks.https = row.https === "opaque";
+    if (!checks.https)
+      row.egress_log = (
+        (await helper({ cmd: "egress-log", since: httpsSince })).lines as string[]
+      ).map((line) => line.slice(0, 300));
     const ticked = await cdp.evaluate<number>(
       session,
       "new Promise(resolve => setTimeout(() => resolve(window.testTicks), 1100))",

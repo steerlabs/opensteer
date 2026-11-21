@@ -103,6 +103,23 @@ async function run(command) {
           .slice(-400),
       };
     }
+    case "egress-log": {
+      // Round 4, item 2: what the slots' proxies refused (driver.egressLog), and their starts.
+      const text = spawnSync(
+        "journalctl",
+        [
+          "-u",
+          "opensteer-pool-egress-*",
+          "--since",
+          command.since,
+          "-o",
+          "short-unix",
+          "--no-pager",
+        ],
+        { encoding: "utf8" },
+      ).stdout;
+      return { lines: text.trim().split("\n").filter(Boolean).slice(-40) };
+    }
     case "agent-state":
       // `is-active` exits non-zero for every state but active; its answer is still the state.
       return {
