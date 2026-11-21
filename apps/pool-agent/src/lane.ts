@@ -51,12 +51,18 @@ export async function within<T>(
 ): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const running = work(controller.signal);
+  // The step may still be working after its deadline: whoever gave up on it can wait for it.
+  const settled = running.then(
+    () => undefined,
+    () => undefined,
+  );
   try {
     return await Promise.race([
-      work(controller.signal),
+      running,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          const error = new DeadlineExceeded(`${what} did not finish within ${ms} ms.`);
+          const error = new DeadlineExceeded(`${what} did not finish within ${ms} ms.`, settled);
           controller.abort(error);
           reject(error);
         }, ms);
@@ -69,4 +75,25 @@ export async function within<T>(
 
 export class DeadlineExceeded extends Error {
   override readonly name = "DeadlineExceeded";
+  /** Resolves when the step that ran out of time has actually finished, whatever its outcome. */
+  readonly settled: Promise<void>;
+  constructor(message: string, settled: Promise<void>) {
+    super(message);
+    this.settled = settled;
+  }
+}
+
+/** Whether `work` finished within `ms`. */
+export async function finishedWithin(work: Promise<void>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

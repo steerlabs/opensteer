@@ -17,11 +17,8 @@ export const agentConfigSchema = z.strictObject({
     /** SPKI DER, base64, of the provisioner's Ed25519 key. */
     provisionerKey: z.string().min(40).max(200),
   }),
-  retentionHours: z
-    .number()
-    .positive()
-    .max(24 * 7)
-    .default(24),
+  /** May lower the binding 24-hour limit on a parked guest's live state, never raise it. */
+  retentionHours: z.number().positive().max(24).default(24),
   /** Seconds a guest stays paused in memory before it is saved to disk; null keeps it there. */
   saveAfterSeconds: z.number().nonnegative().nullable().default(600),
   maxConcurrentSaves: z.number().int().min(1).max(64).default(2),

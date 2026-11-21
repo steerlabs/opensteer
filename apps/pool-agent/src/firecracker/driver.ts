@@ -237,7 +237,12 @@ export class FirecrackerDriver implements HypervisorDriver {
     await helperCall(join(this.#root(jailId), "v.sock"), { kind: "time" }, signal);
   }
 
-  async snapshot(slotId: string, jailId: string, savedStateId: string): Promise<SavedImage> {
+  async snapshot(
+    slotId: string,
+    jailId: string,
+    savedStateId: string,
+    signal: AbortSignal,
+  ): Promise<SavedImage> {
     const root = this.#root(jailId);
     const began = performance.now();
     const memoryBytes = await this.#memoryBytes(jailId);
@@ -251,6 +256,12 @@ export class FirecrackerDriver implements HypervisorDriver {
       { snapshot_type: "Full", snapshot_path: "/snap/vmstate", mem_file_path: "/snap/memory" },
       600_000,
     );
+    // The caller gave up on this snapshot: its files are deleted unpublished, never moved to
+    // where an image is looked for (the agent also waits for this call before releasing).
+    if (signal.aborted) {
+      for (const name of ["vmstate", "memory"]) await rm(join(root, "snap", name), { force: true });
+      throw new Error("The snapshot finished after its deadline and was not kept.");
+    }
     const target = this.#savedDirectory(slotId, savedStateId);
     await mkdir(target, { recursive: true, mode: 0o700 });
     for (const name of ["vmstate", "memory"]) {

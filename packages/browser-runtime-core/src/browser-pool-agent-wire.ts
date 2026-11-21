@@ -38,6 +38,12 @@ export interface BrowserPoolAgentExpectation {
   readonly savedStateId: string | null;
 }
 
+/**
+ * A call's id makes it idempotent while the agent keeps its answer: 24 hours, and never evicted
+ * while younger than twice the request window. After that the id is unknown to the agent, and
+ * what refuses a late repeat is the call's expected predecessor, which every call but `sign`
+ * changes; a late `sign` of an unchanged guest would be signed again.
+ */
 export interface BrowserPoolAgentCall {
   readonly id: string;
   readonly slotId: string;

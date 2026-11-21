@@ -12,6 +12,8 @@ import {
   randomUUID,
   type KeyObject,
 } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+import { browserPoolAgentRequestWindowMs } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   browserPoolControlBytes,
   type BrowserPoolControl,
@@ -25,9 +27,9 @@ import type {
   BrowserPoolAgentStatus,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import { signBrowserPoolAgentBytes } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import type { GuestBoot, HypervisorDriver } from "./driver.js";
+import type { GuestBoot, GuestProcessState, HypervisorDriver } from "./driver.js";
 import type { PendingRecord, SlotJournal, SlotRecord } from "./journal.js";
-import { Lane, Semaphore, within } from "./lane.js";
+import { DeadlineExceeded, finishedWithin, Lane, Semaphore, within } from "./lane.js";
 
 export interface PoolAgentDeadlines {
   readonly boot: number;
@@ -108,6 +110,10 @@ interface Slot {
   demand: number;
   saveTimer: ReturnType<typeof setTimeout> | undefined;
   expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** An unfinished step (a failed clean-up, a failed expiry) is tried again from here. */
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last job failed: the next timed attempt waits at least the retry interval. */
+  failedAt: number | undefined;
 }
 
 /** Thrown by a test checkpoint: the agent is dead from here on and writes nothing more. */
@@ -138,7 +144,8 @@ export class AgentUnavailable extends Error {
   override readonly name = "AgentUnavailable";
 }
 
-const maximumResults = 512;
+/** A Home may repeat a call (with a fresh envelope) for this long after its first answer. */
+const protectedAnswerMs = 2 * browserPoolAgentRequestWindowMs;
 const maximumEffects = 256;
 
 export class PoolAgent {
@@ -183,7 +190,7 @@ export class PoolAgent {
    */
   async start(): Promise<void> {
     await this.#journal.open();
-    this.#incarnation = await this.#driver.incarnation();
+    this.#incarnation = await this.#step("verify", () => this.#driver.incarnation());
     for (const record of await this.#journal.list()) {
       if (record.deletedAt && Date.parse(record.deletedAt) + tombstoneRetentionMs <= this.#now()) {
         await this.#removeRecord(record.slotId);
@@ -194,17 +201,21 @@ export class PoolAgent {
     }
     // A host restart removed every namespace: each slot's network is made again first.
     for (const slot of this.#live())
-      await this.#driver.prepareSlot(slot.record.slotId, slot.record.guest.egress);
+      await this.#step("network", () =>
+        this.#driver.prepareSlot(slot.record.slotId, slot.record.guest.egress),
+      );
     for (const slot of this.#live()) await slot.lane.run(() => this.#settle(slot));
-    const swept = await this.#driver.sweep(
-      new Map(
-        this.#live().map((slot) => [
-          slot.record.slotId,
-          {
-            jailId: slot.record.jailId,
-            savedStateId: slot.record.saved?.image ? slot.record.saved.id : null,
-          },
-        ]),
+    const swept = await this.#step("sweep", () =>
+      this.#driver.sweep(
+        new Map(
+          this.#live().map((slot) => [
+            slot.record.slotId,
+            {
+              jailId: slot.record.jailId,
+              savedStateId: slot.record.saved?.image ? slot.record.saved.id : null,
+            },
+          ]),
+        ),
       ),
     );
     if (swept.length) this.#log({ event: "sweep", removed: swept });
@@ -306,9 +317,18 @@ export class PoolAgent {
 
   /** One job on the slot's lane; whatever its outcome, the slot's timers are armed again. */
   #run<T>(slot: Slot, job: () => Promise<T>): Promise<T> {
-    return slot.lane.run(job).finally(() => {
-      if (!this.#dead && !slot.deleted) this.#schedule(slot);
-    });
+    return slot.lane.run(job).then(
+      (value) => {
+        slot.failedAt = undefined;
+        if (!this.#dead && !slot.deleted) this.#schedule(slot);
+        return value;
+      },
+      (error: unknown) => {
+        slot.failedAt = performance.now();
+        if (!this.#dead && !slot.deleted) this.#schedule(slot);
+        throw error;
+      },
+    );
   }
 
   // ---- Slot administration (the provisioner's interface) -----------------------------------
@@ -362,7 +382,7 @@ export class PoolAgent {
       results: [],
       effects: [],
     };
-    await this.#driver.prepareSlot(input.slotId, input.guest.egress);
+    await this.#step("network", () => this.#driver.prepareSlot(input.slotId, input.guest.egress));
     await this.#write(record);
     const slot = this.#load(record);
     this.#slots.set(input.slotId, slot);
@@ -436,6 +456,10 @@ export class PoolAgent {
     await this.#settle(slot);
     const settled = stored(slot.record, call.id);
     if (settled) return settled;
+    // Finding 6: an answer the Home may still repeat is never evicted to make room; a new call
+    // that would need its place is refused before it acts.
+    if (!this.#hasRoom(slot.record))
+      throw new AgentUnavailable("The slot answered too many calls recently; try again later.");
     const record = slot.record;
     const refusal = refusalOf(record, call);
     if (refusal) return this.#store(slot, record, refused(call.id, refusal, record));
@@ -664,7 +688,10 @@ export class PoolAgent {
     );
     await this.#kill(slot);
     this.#checkpoint("stop:killed");
-    if (slot.record.saved) await this.#driver.discard(slot.record.slotId, slot.record.saved.id);
+    if (slot.record.saved)
+      await this.#step("discard", () =>
+        this.#driver.discard(slot.record.slotId, slot.record.saved!.id),
+      );
     const next: SlotRecord = { ...slot.record, phase: "stopped", saved: null, jailId: null };
     return this.#store(slot, next, this.#applied(call.id, next, slot), "stop");
   }
@@ -704,19 +731,39 @@ export class PoolAgent {
 
   // ---- Parked guests: the idle save and the discard ----------------------------------------
 
+  /**
+   * Arms the slot's timers from its record. Called after every job on its lane, whatever the
+   * outcome (finding 10): an expiry that fired early because the clock moved, or whose clean-up
+   * failed, is armed again; an unfinished step is retried without waiting for a call.
+   */
   #schedule(slot: Slot): void {
     this.#unschedule(slot);
-    if (this.#closed) return;
+    if (this.#closed || this.#dead || slot.deleted) return;
+    const retry = this.#options.retryMs ?? 5_000;
+    const floor =
+      slot.failedAt === undefined ? 0 : Math.max(0, slot.failedAt + retry - performance.now());
+    if (slot.record.pending) {
+      slot.retryTimer = setTimeout(
+        () => {
+          void this.#run(slot, () => this.#settle(slot)).catch((error: unknown) =>
+            this.#background(slot, error),
+          );
+        },
+        Math.max(floor, retry),
+      );
+      slot.retryTimer.unref?.();
+      return;
+    }
     const saved = slot.record.saved;
     if (slot.record.phase !== "paused" || !saved) return;
     const discardIn = Date.parse(saved.discardAt) - this.#now();
     slot.expiryTimer = setTimeout(
       () => {
-        void slot.lane
-          .run(() => this.#settle(slot))
-          .catch((error: unknown) => this.#background(slot, error));
+        void this.#run(slot, () => this.#settle(slot)).catch((error: unknown) =>
+          this.#background(slot, error),
+        );
       },
-      Math.max(0, Math.min(discardIn, 2 ** 31 - 1)),
+      Math.max(floor, Math.min(Math.max(0, discardIn), 2 ** 31 - 1)),
     );
     slot.expiryTimer.unref?.();
     const saveAfter = this.#options.saveAfterMs;
@@ -728,7 +775,7 @@ export class PoolAgent {
             this.#background(slot, error),
           );
         },
-        Math.max(0, saveIn),
+        Math.max(floor, saveIn),
       );
       slot.saveTimer.unref?.();
     }
@@ -737,8 +784,10 @@ export class PoolAgent {
   #unschedule(slot: Slot): void {
     if (slot.saveTimer) clearTimeout(slot.saveTimer);
     if (slot.expiryTimer) clearTimeout(slot.expiryTimer);
+    if (slot.retryTimer) clearTimeout(slot.retryTimer);
     slot.saveTimer = undefined;
     slot.expiryTimer = undefined;
+    slot.retryTimer = undefined;
   }
 
   #background(slot: Slot, error: unknown): void {
@@ -766,7 +815,8 @@ export class PoolAgent {
     if (!eligible()) return "skipped";
     const release = await this.#saves.acquire();
     try {
-      return await slot.lane.run(async () => {
+      return await this.#run(slot, async () => {
+        this.#admit(slot, undefined);
         await this.#settle(slot);
         if (!eligible()) return "skipped";
         const before = slot.record;
@@ -783,14 +833,28 @@ export class PoolAgent {
         } catch (error) {
           if (error instanceof AgentCrashed) throw error;
           this.#log({ event: "save.failed", slotId, message: messageOf(error) });
-          await this.#driver.discard(slotId, savedStateId);
+          // Finding 3: a snapshot that ran out of time may still be writing. Its writer is
+          // waited for, and ended with its VMM if it does not finish, before the image is
+          // deleted and the slot released, so no image can appear afterwards.
+          if (error instanceof DeadlineExceeded) {
+            if (!(await finishedWithin(error.settled, this.#deadlines.snapshotDrain))) {
+              await this.#lose(slot);
+              if (!(await finishedWithin(error.settled, this.#deadlines.kill)))
+                throw new Error("The timed-out snapshot did not end with its VMM.", {
+                  cause: error,
+                });
+              await this.#step("discard", () => this.#driver.discard(slotId, savedStateId));
+              return "skipped";
+            }
+          }
+          await this.#step("discard", () => this.#driver.discard(slotId, savedStateId));
           await this.#commit(slot, { ...before, pending: null });
           return "skipped";
         }
         this.#checkpoint("save:written");
         if (slot.demand > 0) {
           // A wake is waiting: resume from memory and never load this image.
-          await this.#driver.discard(slotId, savedStateId);
+          await this.#step("discard", () => this.#driver.discard(slotId, savedStateId));
           await this.#commit(slot, { ...before, pending: null });
           return "skipped";
         }
@@ -816,7 +880,6 @@ export class PoolAgent {
       });
     } finally {
       release();
-      this.#schedule(slot);
     }
   }
 
@@ -875,7 +938,7 @@ export class PoolAgent {
     if (
       pending.step === "ending-vmm" &&
       saved?.image &&
-      (await this.#driver.verify(slot.record.slotId, saved.image))
+      (await this.#step("verify", () => this.#driver.verify(slot.record.slotId, saved.image!)))
     ) {
       await this.#kill(slot, { keepEgress: true });
       await this.#commit(slot, {
@@ -887,8 +950,10 @@ export class PoolAgent {
       });
       return;
     }
-    await this.#driver.discard(slot.record.slotId, pending.savedStateId);
-    const alive = jailId ? await this.#driver.inspect(slot.record.slotId, jailId) : "absent";
+    await this.#step("discard", () =>
+      this.#driver.discard(slot.record.slotId, pending.savedStateId),
+    );
+    const alive = jailId ? await this.#confirm(slot.record.slotId, jailId) : "absent";
     if (alive === "paused" && saved)
       await this.#commit(slot, { ...slot.record, saved: { ...saved, image: null }, pending: null });
     else await this.#lose(slot);
@@ -915,16 +980,19 @@ export class PoolAgent {
     }
     if (record.phase === "running" || (record.phase === "paused" && saved?.tier === "memory")) {
       const want = record.phase === "running" ? "running" : "paused";
-      const state = record.jailId
-        ? await this.#driver.inspect(record.slotId, record.jailId)
-        : "absent";
-      if (state === "unknown" || state === want) return;
+      // Finding 4: an unknown is asked again over a bounded wait, and never accepted.
+      const state = record.jailId ? await this.#confirm(record.slotId, record.jailId) : "absent";
+      if (state === want) return;
       this.#log({ event: "guest.lost", slotId: record.slotId, expected: want, found: state });
       await this.#lose(slot);
       return;
     }
     if (record.phase === "paused" && saved?.tier === "disk") {
-      if (saved.image && (await this.#driver.verify(record.slotId, saved.image))) return;
+      if (
+        saved.image &&
+        (await this.#step("verify", () => this.#driver.verify(record.slotId, saved.image!)))
+      )
+        return;
       this.#log({ event: "saved.lost", slotId: record.slotId, savedStateId: saved.id });
       await this.#lose(slot);
     }
@@ -955,7 +1023,8 @@ export class PoolAgent {
     });
     await this.#kill(slot);
     const saved = slot.record.saved;
-    if (saved) await this.#driver.discard(slot.record.slotId, saved.id);
+    if (saved)
+      await this.#step("discard", () => this.#driver.discard(slot.record.slotId, saved.id));
     const lost = slot.record.phase !== "stopped" || saved !== null;
     const stopped: SlotRecord = {
       ...slot.record,
@@ -986,6 +1055,24 @@ export class PoolAgent {
     );
   }
 
+  /**
+   * The VMM's state, asked again while it answers "unknown" for up to the inspect deadline. Still
+   * unknown means it cannot be confirmed: the caller treats the guest as lost.
+   */
+  async #confirm(slotId: string, jailId: string): Promise<GuestProcessState> {
+    const until = performance.now() + this.#deadlines.inspect;
+    for (;;) {
+      const state = await this.#step("inspect", () => this.#driver.inspect(slotId, jailId)).catch(
+        (error: unknown): GuestProcessState => {
+          if (error instanceof AgentCrashed) throw error;
+          return "unknown";
+        },
+      );
+      if (state !== "unknown" || performance.now() >= until) return state;
+      await sleep(Math.min(100, Math.max(1, until - performance.now())));
+    }
+  }
+
   // ---- Records ------------------------------------------------------------------------------
 
   #load(record: SlotRecord): Slot {
@@ -1003,6 +1090,8 @@ export class PoolAgent {
       demand: 0,
       saveTimer: undefined,
       expiryTimer: undefined,
+      retryTimer: undefined,
+      failedAt: undefined,
     };
   }
 
@@ -1052,20 +1141,38 @@ export class PoolAgent {
     return result;
   }
 
-  /** The record with this answer stored and no step open. */
+  /**
+   * The record with this answer stored and no step open. Answers older than the result retention
+   * go; past the count limit only answers older than twice the request window go, since a Home may
+   * still repeat a younger one. After retention an id is unknown: its expected predecessor is what
+   * refuses a late repeat.
+   */
   #withResult(next: SlotRecord, result: BrowserPoolAgentResult, effect?: string): SlotRecord {
     const now = this.#now();
-    const retention = this.#options.resultRetentionMs ?? 24 * 60 * 60_000;
-    const results = [
-      ...next.results.filter((entry) => now - entry.at < retention),
-      { at: now, result },
-    ];
+    const results = [...this.#retained(next, now), { at: now, result }];
+    while (results.length > this.#maxResults && now - results[0]!.at >= protectedAnswerMs)
+      results.shift();
     return {
       ...next,
       pending: null,
-      results: results.slice(-maximumResults),
+      results,
       effects: effect ? bounded([...next.effects, effect]) : next.effects,
     };
+  }
+
+  #retained(record: SlotRecord, now: number) {
+    const retention = this.#options.resultRetentionMs ?? 24 * 60 * 60_000;
+    return record.results.filter((entry) => now - entry.at < retention);
+  }
+
+  #hasRoom(record: SlotRecord): boolean {
+    const now = this.#now();
+    const results = this.#retained(record, now);
+    return results.length < this.#maxResults || now - results[0]!.at >= protectedAnswerMs;
+  }
+
+  get #maxResults(): number {
+    return this.#options.maxResults ?? 512;
   }
 
   async #commit(slot: Slot, record: SlotRecord): Promise<void> {
