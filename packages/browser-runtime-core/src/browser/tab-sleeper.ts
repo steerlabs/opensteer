@@ -1,5 +1,6 @@
 import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { BrowserMemoryPressure, BrowserRendererUsage } from "./backend.js";
 import type { PageCounts, SleepBlocker } from "./page-ownership.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
@@ -25,6 +26,10 @@ export const linuxMemorySleepStartRatio = 0.7;
 export const linuxMemorySleepStopRatio = 0.6;
 const linuxPressureSampleMs = 2_000;
 const linuxPressureSettleMs = 500;
+/** A reading taken as a page opens is bounded; a slow one is skipped, never waited out. */
+const openPressureReadMs = 250;
+/** Under pressure, how long an open waits for the sleeps it started. */
+const openPressureWaitMs = 2_000;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
@@ -103,6 +108,7 @@ export class TabSleeper {
   private nextPressureSample = 0;
   private samplingPressure = false;
   private pendingAsyncPressurePass = false;
+  private readonly passWaiters: Array<() => void> = [];
   private declined = new WeakSet<TabRecord>();
   private reclaimFrom: {
     usage: BrowserRendererUsage | null;
@@ -414,6 +420,42 @@ export class TabSleeper {
     );
     this.timer.unref();
   }
+  /**
+   * The Linux pressure rule, evaluated as a page is about to open instead of waiting for its
+   * timer: same reading, same thresholds. Over the start threshold, the open waits (bounded) for
+   * the pass that sheds other tabs, so a burst is paced by sleeping rather than by the kernel.
+   */
+  async beforePageOpen(): Promise<void> {
+    const measure = this.options.memoryPressure;
+    if (!measure || !this.usesLinuxMemoryPressure() || this.closed) return;
+    let reading: BrowserMemoryPressure | null;
+    try {
+      reading = await withTimeout(Promise.resolve(measure()), openPressureReadMs, {
+        timeoutError: () => new Error("Memory pressure reading timed out."),
+      });
+    } catch {
+      return;
+    }
+    if (this.closed || reading === null) return;
+    this.applyMemoryPressureSample(reading, Date.now());
+    if (!this.releasing) return;
+    const settled = new Promise<void>((resolve) => this.passWaiters.push(resolve));
+    this.pendingAsyncPressurePass = true;
+    this.poke();
+    // Nothing can sleep now (every page blocked or backing off): the open is not held.
+    if (!this.running && this.timer === undefined) {
+      this.releasePassWaiters();
+      return;
+    }
+    await withTimeout(settled, openPressureWaitMs, {
+      timeoutError: () => new Error("Pressure pass did not settle."),
+    }).catch(() => undefined);
+  }
+
+  private releasePassWaiters(): void {
+    for (const resolve of this.passWaiters.splice(0)) resolve();
+  }
+
   private sampleMemoryPressure(): void {
     if (!this.usesLinuxMemoryPressure() || this.samplingPressure) return;
     const measure = this.options.memoryPressure;
@@ -705,6 +747,7 @@ export class TabSleeper {
           }
         }
       }
+      this.releasePassWaiters();
       this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
       if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });
     }
@@ -712,6 +755,7 @@ export class TabSleeper {
 
   close(): void {
     this.closed = true;
+    this.releasePassWaiters();
     clearTimeout(this.flushTimer);
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;

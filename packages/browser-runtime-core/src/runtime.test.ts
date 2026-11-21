@@ -94,6 +94,34 @@ describe("BrowserRuntime", () => {
     }
   });
 
+  it.each([true, false])(
+    "evaluates memory pressure before each page a host creates only where it is read (C9, %s)",
+    async (linux) => {
+      const context = new FakeContext([new FakePage()]);
+      const pressure = vi.fn(async () => ({ usedBytes: 1, limitBytes: 100 }));
+      const launcher = Object.assign(
+        new FakeLauncher(new FakeLaunchedBrowser(context)),
+        linux ? { memoryPressure: pressure } : {},
+      );
+      const runtime = new BrowserRuntime({
+        launcher,
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(freshClaims()),
+      });
+      try {
+        await runtime.attach("fresh-ticket", new FakeSink());
+        expect(typeof context.beforeCreatePage).toBe(linux ? "function" : "undefined");
+        if (linux) {
+          await context.beforeCreatePage!();
+          expect(pressure).toHaveBeenCalled();
+        }
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
   it("never takes the first page a tab-restoring browser has as a new session's root (C2)", async () => {
     // A page that reached the page list by arrival order, as another surface's restored tab could.
     const arrived = new FakePage({ url: "https://another-surface.test/", title: "Another" });

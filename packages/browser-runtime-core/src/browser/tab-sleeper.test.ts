@@ -530,6 +530,56 @@ describe("TabSleeper", () => {
     },
   );
 
+  it("evaluates the Linux pressure rule as a page opens, sheds other tabs first under pressure, and holds nothing otherwise (C9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+    let readings = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        readings++;
+        return Promise.resolve(pressure);
+      },
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(suspended()).toBe(0);
+
+      // Below the start threshold: one reading, and the open is not held.
+      const before = readings;
+      let opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      expect(readings).toBe(before + 1);
+      expect(suspended()).toBe(0);
+
+      // A burst crosses 70% between timer samples: the open reads it at once and waits for the
+      // pass that sleeps other tabs, instead of adding a page first.
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      // The timer alone has not seen it yet.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBe(0);
+      opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBeGreaterThan(0);
+      expect(opened).toBe(true);
+
+      // Under pressure with nothing that may sleep (every page pinned), the open is not held.
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("uses Linux memoryPressure with 70%/60% hysteresis, falls back to page estimate on null, and respects memoryBudgetBytes override", async () => {
     const limit = 2 * 1024 ** 3; // 2 GiB
     let pressure: { usedBytes: number; limitBytes: number } | null = {

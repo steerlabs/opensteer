@@ -177,6 +177,11 @@ export interface BrowserContext {
   /** Present only on engines that persist and reconcile native session restore. */
   readonly sessionRestore?: BrowserSessionRestore | undefined;
   /**
+   * Set by the runtime where it reads memory pressure: awaited before `createPage` makes a page,
+   * so a burst of opens sheds sleeping-eligible tabs first. It never rejects.
+   */
+  beforeCreatePage?: (() => Promise<void>) | undefined;
+  /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the
    * page whose script opened it. Pages that already exist are handed off at

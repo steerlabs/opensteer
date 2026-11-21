@@ -1308,6 +1308,7 @@ class PlaywrightContextHandle implements BrowserContext {
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
   /** Whether the browser behind this context still answers its own debugger. */
   browserAlive: (() => Promise<boolean>) | undefined;
+  beforeCreatePage: (() => Promise<void>) | undefined;
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
@@ -3144,6 +3145,7 @@ class PlaywrightContextHandle implements BrowserContext {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
   }): Promise<BrowserPage> {
+    await this.beforeCreatePage?.().catch(() => undefined);
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
     if (discardRestore && this.lifecycle) {
       const sleeping = this.sleepingTabs.get(discardRestore.tokenId);

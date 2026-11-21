@@ -332,6 +332,7 @@ export class FakePage implements BrowserPage {
 
 export class FakeContext implements BrowserContext {
   connected = true;
+  beforeCreatePage: (() => Promise<void>) | undefined;
   isConnected(): boolean {
     return this.connected;
   }
