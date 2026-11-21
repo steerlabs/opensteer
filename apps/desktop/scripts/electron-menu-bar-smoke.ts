@@ -11,8 +11,6 @@ import { menuBarWords } from "@opensteer/client/computers";
 import { HttpHostClient, placeList, type WebSocketClient } from "@opensteer/client/host";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   app,
   BrowserWindow,
@@ -24,7 +22,6 @@ import {
   protocol,
   screen,
   Tray,
-  utilityProcess,
   webContents,
 } from "electron";
 import assert from "node:assert/strict";
@@ -47,15 +44,10 @@ import { DesktopMenuBarService } from "../src/app/menu-bar-service.js";
 import { DesktopQuitRouting, type QuitActions } from "../src/app/quit-routing.js";
 import { parentedQuitQuestion, quitQuestionParentOptions } from "../src/app/quit-question.js";
 import { AgentBrowserGate } from "../src/browser/agent-browser-gate.js";
-import { readDesktopConfiguration } from "../src/config.js";
 import { createDesktopHostApi } from "../src/connections/desktop-host-api.js";
 import { NativePersonalDeploymentCredentials } from "../src/secrets/personal-deployment-credentials.js";
 import { NativePersonalDeploymentFilesystem } from "../src/secrets/personal-deployment-store.js";
 import { startLocalBrowserRuntime } from "../src/supervisor/local-browser-runtime.js";
-import {
-  electronUtilityProcessFork,
-  LocalRunnerService,
-} from "../src/supervisor/local-runner-service.js";
 import { PersonalDeploymentSupervisor } from "../src/supervisor/personal-deployment-supervisor.js";
 import { NativePersonalHostControl } from "../src/supervisor/personal-host-control.js";
 import {
@@ -352,7 +344,7 @@ async function popoverPhases(): Promise<void> {
   passed();
 }
 
-/** This Mac's own Home and the Device Runner it lends to it, as the quit smoke starts them. */
+/** This Mac's own Home and its hosted Runner, as `PersonalDeploymentSupervisor` runs them. */
 async function startHome(input: {
   readonly agentsStoppedSince: () => string | null;
   readonly gate: AgentBrowserGate;
@@ -489,83 +481,16 @@ exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stre
   };
   const runtime = await supervisor.current();
   assert(runtime);
-  // In the shipped app, LocalRunnerAuthority refuses to run a Device Runner
-  // against this Mac's own hosted Home; here the smoke composes both in one
-  // process, so give the Device Runner its own data dir to avoid colliding on
-  // the hosted Home's profile-storage lock.
-  const deviceRoot = path.join(root, "device-runner");
-  mkdirSync(deviceRoot, { recursive: true, mode: 0o700 });
-  const config = readDesktopConfiguration({
-    appDataDirectory: deviceRoot,
-    defaultMode: "development",
-    packaged: false,
-    resourcesDirectory: resources,
-    environment: {
-      OPENSTEER_DESKTOP_DATA_DIR: deviceRoot,
-      OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: path.join(resources, "personal-runtime"),
-      OPENSTEER_DESKTOP_RUNNER_WORKER: path.join(import.meta.dirname, "quit-runner-worker.js"),
-      OPENSTEER_DESKTOP_NATIVE_FS_HELPER: path.join(
-        resources,
-        "personal-runtime/bin/opensteer-native-fs",
-      ),
-    },
-  }).config;
-  const target = {
-    authority: runtime.discoveryEnvelope,
-    source: { kind: "manual" as const },
-    accessRoute: null,
-    deploymentId: manifest.deploymentId,
-    deploymentShape: { kind: "personal" as const },
-    hostUrl: DesktopAccessOriginSchema.parse(origin),
-    key: "menu-bar-smoke",
-    mayRunAgents: false,
-  };
-  const localRunners = new LocalRunnerService(config, {
-    agentsStoppedSince: input.agentsStoppedSince,
-    log,
-    browser: (browserInput) =>
-      startLocalBrowserRuntime({
-        agentGate: input.gate,
-        downloads: smokeDesktopDownloads(),
-        logPath: browserInput.logPath,
-        pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
-        profileRoot: browserInput.profileRoot,
-        runtimeId: browserInput.runtimeId,
-      }),
-    fork: (modulePath, args, options) =>
-      electronUtilityProcessFork(utilityProcess.fork)(modulePath, args, {
-        ...options,
-        env: {
-          ...options.env,
-          [processSupervisorExecutableVariable]: readPersonalProcessSupervisorRelease(resources),
-        },
-      }),
-    homeDirectory: root,
-    computerName: async () => "Menu bar smoke Mac",
-    targets: {
-      resolve: async () => target,
-      isCurrent: async () => true,
-      subscribe: () => () => undefined,
-    },
-    userEnvironment: { resolve: async () => environment },
-  });
-  shutdown.add({
-    component: "local-runners",
-    step: "stop",
-    order: 30,
-    timeoutMs: 8_000,
-    stop: async (signal) => {
-      await localRunners.shutdown(signal);
-      localRunners.dispose();
-    },
-  });
-  return { fetch, host, localRunners, manifest, network, origin, rpc, supervisor };
+  return { fetch, host, manifest, network, origin, rpc, supervisor };
 }
 
 /**
- * Stop everything with this Mac's own Home and a Device Runner here:
+ * Stop everything on the Mac hosting its own Personal Home (the shipped path,
+ * where `LocalRunnerAuthority` never attaches a separate Device Runner to this
+ * Mac's own Home and Stop acts on the Home's own Runner via
+ * `PersonalDeploymentSupervisor.restartForAgentMode()`):
  * - an active Run and agent browser tab both stop;
- * - the confirmed Stop time appears only after the Runners finish restarting;
+ * - the confirmed Stop time appears only after the Runner finishes restarting;
  * - the person's own tab keeps its exact page instance and form text across Stop and Resume;
  * - an open live Watch view reconnects by itself across Stop;
  * - Resume continues held work while a manually paused queue stays paused;
@@ -581,10 +506,7 @@ async function homeStop(): Promise<void> {
     restart: async () => {
       restartInFlight = true;
       try {
-        await Promise.all([
-          home.supervisor.restartForAgentMode(),
-          home.localRunners.restartForAgentMode(),
-        ]);
+        await home.supervisor.restartForAgentMode();
         restartCompleted += 1;
       } finally {
         restartInFlight = false;
@@ -601,24 +523,7 @@ async function homeStop(): Promise<void> {
   await localStop.restore();
   const home = await startHome({ agentsStoppedSince: () => localStop.agentsStoppedSince, gate });
   assert.equal(localStop.phase, "running");
-  const enrollment = z.object({ token: z.string() }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "runner.enrollment.createLocal",
-      idempotencyKey: randomUUID(),
-      name: "Menu bar smoke Device",
-      allowedModules: ["browser", "integrations", "shell"],
-      access: { apps: false, browser: true, files: false },
-    }),
-  );
-  await home.localRunners.start({
-    deploymentId: home.manifest.deploymentId,
-    enrollmentToken: enrollment.token,
-    runAgents: false,
-    runnerName: "Menu bar smoke Device",
-  });
-  const deviceRunnerId = z
-    .string()
-    .parse((await home.localRunners.status(home.manifest.deploymentId)).runner.runnerId);
+  const homeRunnerId = home.manifest.runnerId;
 
   // The person's own tab (with a form input and page-instance nonce), and an agent page URL.
   const pages = createServer((request, response) => {
@@ -657,7 +562,7 @@ async function homeStop(): Promise<void> {
         fresh: true,
         initialUrl: pageUrl,
         reuseExisting: false,
-        placement: { kind: "runner", runnerId: deviceRunnerId },
+        placement: { kind: "runner", runnerId: homeRunnerId },
       },
     }),
   ).session;
@@ -901,9 +806,7 @@ async function homeStop(): Promise<void> {
     local: () => ({
       apps: [],
       tabs: gate.agentTabDetails(),
-      runs: home.localRunners
-        .localActivity()
-        .map((run) => ({ ...run, threadId: run.threadId ?? null })),
+      runs: [],
     }),
     stop: () => ({
       phase: localStop.phase,
@@ -914,7 +817,6 @@ async function homeStop(): Promise<void> {
     log,
   });
   localStop.subscribe(() => service.changed());
-  home.localRunners.subscribe(() => service.changed());
   const item = statusItem({
     service,
     stop: () => localStop.stop(),
@@ -975,10 +877,10 @@ async function homeStop(): Promise<void> {
     async () => (await taskState())?.failurePreview?.includes("Stopped on") === true,
   );
   await waitFor(
-    "the Home showing the Device stopped while its Runner is online",
+    "the Home showing this Mac stopped while its Runner stays online",
     async () => {
-      const device = await row(deviceRunnerId);
-      return Boolean(device?.agentsStoppedSince) && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return Boolean(self?.agentsStoppedSince) && self?.status === "online";
     },
     30_000,
   );
@@ -1017,10 +919,10 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   await waitFor(
-    "the Device back online",
+    "this Mac's Runner back online",
     async () => {
-      const device = await row(deviceRunnerId);
-      return !device?.agentsStoppedSince && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return !self?.agentsStoppedSince && self?.status === "online";
     },
     60_000,
   );
@@ -1085,10 +987,10 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   await waitFor(
-    "Device online after rapid Stop+Resume",
+    "this Mac's Runner online after rapid Stop+Resume",
     async () => {
-      const device = await row(deviceRunnerId);
-      return !device?.agentsStoppedSince && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return !self?.agentsStoppedSince && self?.status === "online";
     },
     60_000,
   );
@@ -1102,7 +1004,7 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("stop-then-resume-quickly");
-  passed({ deviceRunnerId });
+  passed({ runnerId: homeRunnerId });
 }
 
 /**

@@ -10,6 +10,7 @@ import path from "node:path";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { acquireElectronLocalProfile } from "../src/browser/electron-local-profile.js";
 import { assertCookies } from "./test-support/native-profile-smoke.js";
+import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 const root = await mkdtemp(path.join(tmpdir(), "native-cookie-proof-"));
 const userData = path.join(root, "user-data");
@@ -110,6 +111,7 @@ const cookies: BrowserCookie[] = [
 let failed = false;
 try {
   await app.whenReady();
+  await requireSmokeProtectedStorage();
   const nativeRoot = path.join(root, "profiles");
   const store = await LocalProfileStore.acquire(nativeRoot, "electron");
   const binding = LocalProfileBindingSchema.parse({

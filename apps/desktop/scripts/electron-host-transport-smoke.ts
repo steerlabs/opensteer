@@ -581,15 +581,15 @@ async function run(): Promise<void> {
         window.webContents.executeJavaScript(
           `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(connection.authority.document.deploymentId)}, ${JSON.stringify(action)})`,
         );
-      for (const [mode, code, retryable] of [
-        ["large", "response-too-large", false],
-        ["unreachable", "unreachable", true],
+      for (const [mode, code, reason, retryable] of [
+        ["large", "response-too-large", "response-too-large", false],
+        ["unreachable", "unreachable", "transport-unreachable", true],
       ] as const) {
         rpcMode = mode;
         const result = z
           .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
           .parse(await execute("rpc"));
-        assert.equal(result.error.reason, `transport-${code}`);
+        assert.equal(result.error.reason, reason);
         assert.equal(result.error.retryable, retryable);
         assert.equal(result.error.message, new HostTransportError(code).message);
         cases.push({ case: `renderer-rpc-${mode}`, ...result });
@@ -617,7 +617,7 @@ async function run(): Promise<void> {
       };
       const binary = z
         .strictObject({
-          code: z.literal("transport-response-too-large"),
+          code: z.literal("response-too-large"),
           retryable: z.literal(false),
         })
         .parse(await execute("binary"));
