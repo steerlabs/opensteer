@@ -180,7 +180,9 @@ async function waitSessionFilesContain(
       );
       const combined = chunks.join("\n");
       for (const expected of requiredSubstrings) {
-        expect(combined).toContain(expected);
+        // Group titles are written as UTF-16; addresses as UTF-8.
+        const utf16 = Buffer.from(expected, "utf16le").toString("latin1");
+        expect(combined.includes(expected) || combined.includes(utf16)).toBe(true);
       }
     },
     { timeout: 15_000, interval: 100 },
@@ -926,17 +928,24 @@ integration("Linux cold-start session restore through Home BrowserService", () =
     await stack1.browser.pageTabs.admitted!(writeParked);
     await waitPageLoaded(stack1.getBrowser(), "tab=parked");
 
-    // Ensure sidecar flushed AND Chromium flushed Session_* before SIGKILL crash!
+    // Ensure the person's tabs carry their Home ids and Chromium flushed Session_* (with those
+    // names) before the SIGKILL crash.
     await stack1.getBrowser().context.sessionRestore!.flush!();
     const profileDir = stack1.getDirectory();
-    await waitSessionFilesContain(profileDir, ["tab=shared", "tab=parked"]);
-
-    // Verify full-strip sidecar contains a placeholder (surfaceId: null) for the agent tab!
-    const sidecarRaw = JSON.parse(
-      await readFile(path.join(profileDir, "opensteer-tabs.json"), "utf8"),
-    ) as { version: number; tabs: Array<{ surfaceId: string | null; url: string }> };
-    expect(sidecarRaw.version).toBe(3);
-    expect(sidecarRaw.tabs.some((t) => t.surfaceId === null && t.url === sharedUrl)).toBe(true);
+    const lifecycle1 = (
+      stack1.getBrowser() as unknown as {
+        contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+      }
+    ).contextHandle.lifecycle;
+    await vi.waitFor(
+      async () => {
+        const named = (await lifecycle1.inventory()).filter((t) => t.url === sharedUrl);
+        // The person's tab carries its own Home id; the agent's tab on the same address none.
+        expect(named.map((t) => t.identity ?? null).sort()).toEqual([null, writeP.id].sort());
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+    await waitSessionFilesContain(profileDir, ["tab=shared", "tab=parked", writeP.id]);
 
     // Hard crash Chromium with SIGKILL!
     const pid1 = (

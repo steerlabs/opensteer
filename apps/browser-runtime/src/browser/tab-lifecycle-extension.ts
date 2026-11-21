@@ -13,7 +13,7 @@ export const tabLifecycleExtensionDirName = ".opensteer-tab-lifecycle-extension"
 
 /**
  * Minimal MV3 extension bundled with the Linux runtime for native profiles only.
- * Permissions are strictly `tabs` and `debugger`: no host permissions, no content
+ * Permissions are strictly `tabs`, `tabGroups` and `debugger`: no host permissions, no content
  * scripts, no `externally_connectable`, no network access.
  */
 const extensionManifestJson = JSON.stringify(
@@ -21,7 +21,7 @@ const extensionManifestJson = JSON.stringify(
     manifest_version: 3,
     name: "Opensteer Tab Lifecycle Helper",
     version: "0.1.0",
-    permissions: ["tabs", "debugger"],
+    permissions: ["tabs", "debugger", "tabGroups"],
     background: {
       service_worker: "sw.js",
     },
@@ -30,32 +30,32 @@ const extensionManifestJson = JSON.stringify(
   2,
 );
 
-/** The helper's service worker source; exported so its replacement record can be tested alone. */
+/** The helper's service worker source; exported so its rules can be tested alone. */
 export const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
-// Replacements are remembered only by this worker; a restarted worker has a new epoch, so the
-// runtime knows its memory may not cover a replacement made before.
-const helperEpoch = crypto.randomUUID();
-const ancestorsByTabId = new Map();
-function recordReplacement(addedTabId, removedTabId) {
-  if (typeof addedTabId !== "number" || typeof removedTabId !== "number" || addedTabId === removedTabId) {
-    return;
-  }
-  const ancestors = [removedTabId, ...(ancestorsByTabId.get(removedTabId) ?? [])].slice(0, 32);
-  ancestorsByTabId.delete(removedTabId);
-  ancestorsByTabId.set(addedTabId, ancestors);
+// A saved tab's identity is the title of its own tab group: Chromium keeps it through discard and
+// session restore, and no page can read or change it. The helper keeps no memory of its own.
+// A named group belongs to the one tab it was made for: a tab Chromium adds to it later (a link
+// opened from that tab) is taken out again, so a group title never names two tabs for long.
+async function keepGroupSingle(tabId, groupId) {
+  if (typeof tabId !== "number" || typeof groupId !== "number" || groupId < 0) return;
+  const members = await chrome.tabs.query({ groupId });
+  if (members.length > 1) await chrome.tabs.ungroup(tabId).catch(() => {});
 }
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  recordReplacement(addedTabId, removedTabId);
+chrome.tabs.onCreated.addListener((tab) => {
+  void keepGroupSingle(tab.id, tab.groupId);
 });
-chrome.tabs.onRemoved.addListener((tabId) => {
-  ancestorsByTabId.delete(tabId);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if ("groupId" in changeInfo) void keepGroupSingle(tabId, changeInfo.groupId);
 });
 globalThis.__opensteer = {
   async inventory() {
-    const [tabs, targets] = await Promise.all([
+    const [tabs, targets, groups] = await Promise.all([
       chrome.tabs.query({}),
       chrome.debugger.getTargets(),
+      chrome.tabGroups.query({}),
     ]);
+    const titleByGroupId = new Map();
+    for (const group of groups) titleByGroupId.set(group.id, group.title || "");
     const targetByTabId = new Map();
     for (const target of targets) {
       if (target.type === "page" && typeof target.tabId === "number") {
@@ -74,30 +74,29 @@ globalThis.__opensteer = {
         discarded: Boolean(tab.discarded),
         status: tab.status || "",
         targetId: targetByTabId.get(tab.id) ?? null,
-        replacedFromTabIds: ancestorsByTabId.get(tab.id) ?? [],
-        helperEpoch,
+        identity:
+          typeof tab.groupId === "number" && tab.groupId >= 0
+            ? titleByGroupId.get(tab.groupId) || null
+            : null,
       }));
+  },
+  async nameTab(tabId, name) {
+    const tab = await chrome.tabs.get(tabId);
+    if (typeof tab.groupId === "number" && tab.groupId >= 0) {
+      const group = await chrome.tabGroups.get(tab.groupId);
+      const members = await chrome.tabs.query({ groupId: tab.groupId });
+      if (group.title === name && members.length === 1) return true;
+      await chrome.tabs.ungroup(tabId);
+    }
+    const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
+    return true;
   },
   async discardByTabId(tabId) {
     const updated = await chrome.tabs.discard(tabId);
-    const newTabId = typeof updated?.id === "number" ? updated.id : null;
-    if (newTabId !== null && newTabId !== tabId) {
-      recordReplacement(newTabId, tabId);
-    }
-    let newTargetId = null;
-    if (newTabId !== null) {
-      const targets = await chrome.debugger.getTargets();
-      for (const target of targets) {
-        if (target.type === "page" && target.tabId === newTabId && typeof target.id === "string") {
-          newTargetId = target.id;
-          break;
-        }
-      }
-    }
     return {
       ok: Boolean(updated?.discarded),
-      newTabId,
-      newTargetId,
+      newTabId: typeof updated?.id === "number" ? updated.id : null,
     };
   },
   async activateByTabId(tabId) {
@@ -129,10 +128,8 @@ const tabEntrySchema = z.object({
   discarded: z.boolean(),
   status: z.string(),
   targetId: z.string().nullable(),
-  /** Every earlier tab id Chromium replaced this tab from, nearest first, as far as this worker saw. */
-  replacedFromTabIds: z.array(z.number().int()).max(64).optional(),
-  /** The helper worker that answered; a different one may not remember earlier replacements. */
-  helperEpoch: z.string().min(1).max(128).optional(),
+  /** The title of the tab's own group: the Home surface id Opensteer named it with, or null. */
+  identity: z.string().max(256).nullable().optional(),
 });
 
 export type ChromiumTabEntry = z.infer<typeof tabEntrySchema>;
@@ -141,7 +138,6 @@ const inventorySchema = z.array(tabEntrySchema);
 const discardResultSchema = z.object({
   ok: z.boolean(),
   newTabId: z.number().int().nullable(),
-  newTargetId: z.string().nullable().optional(),
 });
 const activateResultSchema = z.object({
   ok: z.boolean(),
@@ -364,14 +360,8 @@ export class ChromiumTabLifecycleBridge {
     return inventorySchema.parse(raw);
   }
 
-  async tabIdForTargetId(targetId: string): Promise<number | null> {
-    const tabs = await this.inventory();
-    return tabs.find((tab) => tab.targetId === targetId)?.tabId ?? null;
-  }
-
-  async discardByTabIdDetailed(
-    tabId: number,
-  ): Promise<{ readonly newTabId: number; readonly newTargetId: string | null } | null> {
+  /** Discards a tab; the id Chromium answers is the tab's id afterwards (it may be new). */
+  async discardByTabId(tabId: number): Promise<number | null> {
     const raw = await this.callWorker(
       (worker) =>
         worker.evaluate(
@@ -386,16 +376,7 @@ export class ChromiumTabLifecycleBridge {
       "change",
     );
     const parsed = discardResultSchema.parse(raw);
-    if (!parsed.ok || parsed.newTabId === null) return null;
-    return {
-      newTabId: parsed.newTabId,
-      newTargetId: parsed.newTargetId ?? null,
-    };
-  }
-
-  async discardByTabId(tabId: number): Promise<number | null> {
-    const result = await this.discardByTabIdDetailed(tabId);
-    return result ? result.newTabId : null;
+    return parsed.ok ? parsed.newTabId : null;
   }
 
   async activateByTabId(tabId: number): Promise<boolean> {
@@ -413,6 +394,23 @@ export class ChromiumTabLifecycleBridge {
       "change",
     );
     return activateResultSchema.parse(raw).ok;
+  }
+
+  async nameTab(tabId: number, name: string): Promise<boolean> {
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          ([id, title]) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { nameTab(tabId: number, name: string): Promise<unknown> };
+              }
+            ).__opensteer.nameTab(id, title),
+          [tabId, name] as const,
+        ),
+      "change",
+    );
+    return raw === true;
   }
 
   async removeByTabId(tabId: number): Promise<boolean> {

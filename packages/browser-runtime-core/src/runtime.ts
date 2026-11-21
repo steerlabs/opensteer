@@ -2010,12 +2010,12 @@ export class BrowserRuntime implements NativePresentationSource {
         "cookie import drain",
       );
       if (host.browser.context.sessionRestore && reason === "runtime-shutdown") {
-        // Orderly runtime shutdown closes non-durable agent tabs and flushes the
-        // saved-tab sidecar BEFORE closing Chromium so Default/Sessions matches.
+        // Orderly runtime shutdown closes non-durable agent tabs and lets saved tabs finish
+        // taking their identity BEFORE closing Chromium, so Default/Sessions carries it.
         await quiesced.catch(() => undefined);
         await boundedCleanup(
           Promise.resolve(host.browser.context.sessionRestore.flush?.()),
-          "saved tab map flush",
+          "saved tab identity",
         ).catch(() => undefined);
       }
       if (!host.disposal) {

@@ -1067,7 +1067,7 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
     };
     contextHandle: {
       lifecycle: ChromiumTabLifecycleBridge;
-      restoredBySurfaceId: Map<string, unknown>;
+      restored: Map<string, unknown>;
     };
   };
   const lifecycle2 = internal2.contextHandle.lifecycle;
@@ -1089,23 +1089,23 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
 
   // Inject one inventory failure AND one discard failure right as parked tab 3 reloads. Each is
   // pinned to its caller (C7): the inventory failure lands on the parked run's own read for that
-  // tab, the discard failure on its discard, never on a map flush, a probe or the arrival check.
+  // tab, the discard failure on its discard, never on a probe or the arrival check.
   const origInventory = lifecycle2.inventory.bind(lifecycle2);
-  const origDiscard = lifecycle2.discardByTabIdDetailed.bind(lifecycle2);
+  const origDiscard = lifecycle2.discardByTabId.bind(lifecycle2);
   const calledFrom = (name: string) => new Error().stack?.includes(name) === true;
   let failNextInventory = true;
   let failNextDiscard = true;
   let sawFailureWithEntryIntact = false;
   const invSpy = vi.spyOn(lifecycle2, "inventory").mockImplementation(async () => {
-    if (failNextInventory && calledFrom("readInventoryWithRetry")) {
+    if (failNextInventory && calledFrom("parkOnLane")) {
       failNextInventory = false;
-      sawFailureWithEntryIntact = internal2.contextHandle.restoredBySurfaceId.has(surfaceIds[3]!);
+      sawFailureWithEntryIntact = internal2.contextHandle.restored.has(surfaceIds[3]!);
       throw new Error("injected helper inventory failure");
     }
     return origInventory();
   });
-  const discSpy = vi.spyOn(lifecycle2, "discardByTabIdDetailed").mockImplementation(async (id) => {
-    if (failNextDiscard && calledFrom("discardParkedRestoredTab")) {
+  const discSpy = vi.spyOn(lifecycle2, "discardByTabId").mockImplementation(async (id) => {
+    if (failNextDiscard && calledFrom("parkOnLane")) {
       failNextDiscard = false;
       throw new Error("injected helper discard failure");
     }
@@ -1173,7 +1173,7 @@ it("serializes a claim racing a held parked discard and returns a single live un
   await browser1.context.sessionRestore!.flush!();
   await browser1.close();
 
-  // Run 2: cold start, claim tab 0, gate discardByTabIdDetailed for tab 2 while claiming it!
+  // Run 2: cold start, claim tab 0, gate the parked discard of tab 2 while claiming it!
   const browser2 = await launcher.launch(request);
   cleanup.push(() => browser2.close());
   const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
@@ -1183,18 +1183,18 @@ it("serializes a claim racing a held parked discard and returns a single live un
   const internal2 = browser2 as unknown as {
     contextHandle: {
       lifecycle: ChromiumTabLifecycleBridge;
-      claimingSurfaceIds: Set<BrowserSurfaceId>;
+      claimingTitles: Set<string>;
     };
   };
   const lifecycle2 = internal2.contextHandle.lifecycle;
-  const origDiscard = lifecycle2.discardByTabIdDetailed.bind(lifecycle2);
+  const origDiscard = lifecycle2.discardByTabId.bind(lifecycle2);
   const invBefore = await lifecycle2.inventory();
   const tab2Entry = invBefore.find((t) => t.url.includes("tab=f4_2"));
   expect(tab2Entry).toBeDefined();
 
   const discardGate = Promise.withResolvers<void>();
   let discardHeld = false;
-  const discSpy = vi.spyOn(lifecycle2, "discardByTabIdDetailed").mockImplementation(async (id) => {
+  const discSpy = vi.spyOn(lifecycle2, "discardByTabId").mockImplementation(async (id) => {
     if (id === tab2Entry!.tabId) {
       discardHeld = true;
       await discardGate.promise;
@@ -1213,7 +1213,7 @@ it("serializes a claim racing a held parked discard and returns a single live un
   // Claim surfaceIds[2] while its parked discard is held!
   const opening = ledger2.openSurface({ surfaceId: surfaceIds[2]! });
   await vi.waitFor(
-    () => expect(internal2.contextHandle.claimingSurfaceIds.has(surfaceIds[2]!)).toBe(true),
+    () => expect(internal2.contextHandle.claimingTitles.has(surfaceIds[2]!)).toBe(true),
     { timeout: 2_000, interval: 10 },
   );
   discardGate.resolve();

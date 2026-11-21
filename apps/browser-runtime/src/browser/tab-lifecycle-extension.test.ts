@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { extensionServiceWorkerJs } from "./tab-lifecycle-extension.js";
@@ -11,19 +10,43 @@ interface FakeTab {
   active: boolean;
   discarded: boolean;
   status: string;
+  groupId: number;
 }
 
 /** One start of the helper's service worker against a fake `chrome`, as Chromium starts it. */
 function startWorker(tabs: FakeTab[]) {
-  const replaced: Array<(added: number, removed: number) => void> = [];
-  const removed: Array<(tabId: number) => void> = [];
+  const groups = new Map<number, { id: number; title: string }>();
+  let nextGroup = 1;
+  const created: Array<(tab: FakeTab) => void> = [];
+  const updated: Array<(tabId: number, change: { groupId?: number }) => void> = [];
+  const joinGroup = (tabId: number, groupId: number) => {
+    tabs.find((tab) => tab.id === tabId)!.groupId = groupId;
+    for (const listener of updated) listener(tabId, { groupId });
+  };
   const globals: Record<string, unknown> = {
-    crypto: { randomUUID },
     chrome: {
       tabs: {
-        onReplaced: { addListener: (listener: never) => replaced.push(listener) },
-        onRemoved: { addListener: (listener: never) => removed.push(listener) },
-        query: async () => tabs.map((tab) => ({ ...tab })),
+        onCreated: { addListener: (listener: never) => created.push(listener) },
+        onUpdated: { addListener: (listener: never) => updated.push(listener) },
+        query: async (filter: { groupId?: number }) =>
+          tabs
+            .filter((tab) => filter.groupId === undefined || tab.groupId === filter.groupId)
+            .map((tab) => ({ ...tab })),
+        get: async (tabId: number) => ({ ...tabs.find((tab) => tab.id === tabId)! }),
+        group: async ({ tabIds }: { tabIds: number[] }) => {
+          const id = nextGroup++;
+          groups.set(id, { id, title: "" });
+          for (const tabId of tabIds) joinGroup(tabId, id);
+          return id;
+        },
+        ungroup: async (tabId: number) => joinGroup(tabId, -1),
+      },
+      tabGroups: {
+        query: async () => [...groups.values()].map((group) => ({ ...group })),
+        get: async (id: number) => ({ ...groups.get(id)! }),
+        update: async (id: number, change: { title: string }) => {
+          groups.get(id)!.title = change.title;
+        },
       },
       debugger: { getTargets: async () => [] },
     },
@@ -31,59 +54,40 @@ function startWorker(tabs: FakeTab[]) {
   globals.globalThis = globals;
   runInNewContext(extensionServiceWorkerJs, globals);
   const api = globals.__opensteer as {
-    inventory(): Promise<
-      Array<{ tabId: number; replacedFromTabIds: number[]; helperEpoch: string }>
-    >;
+    inventory(): Promise<Array<{ tabId: number; identity: string | null }>>;
+    nameTab(tabId: number, name: string): Promise<boolean>;
   };
-  return {
-    inventory: () => api.inventory(),
-    replace(added: number, removedId: number) {
-      const tab = tabs.find((candidate) => candidate.id === removedId)!;
-      tab.id = added;
-      for (const listener of replaced) listener(added, removedId);
-    },
-    remove(tabId: number) {
-      tabs.splice(
-        tabs.findIndex((tab) => tab.id === tabId),
-        1,
-      );
-      for (const listener of removed) listener(tabId);
-    },
-  };
+  return { api, joinGroup, created };
 }
 
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
 describe("tab lifecycle helper", () => {
-  it("names every tab a row was replaced from, nearest first, and a restarted worker by a new epoch (C4)", async () => {
-    const tabs: FakeTab[] = [
-      {
-        id: 10,
-        windowId: 1,
-        index: 0,
-        url: "https://twice.test/",
-        active: false,
-        discarded: false,
-        status: "complete",
-      },
-    ];
-    const worker = startWorker(tabs);
-    const [first] = await worker.inventory();
-    expect(first).toMatchObject({ tabId: 10, replacedFromTabIds: [] });
+  it("names a tab by its own group's title and keeps that group to the one tab it was made for", async () => {
+    const tab = (id: number): FakeTab => ({
+      id,
+      windowId: 1,
+      index: id,
+      url: `https://site.test/${id}`,
+      active: false,
+      discarded: false,
+      status: "complete",
+      groupId: -1,
+    });
+    const tabs = [tab(10), tab(11)];
+    const { api, joinGroup } = startWorker(tabs);
+    expect((await api.inventory()).map((row) => row.identity)).toEqual([null, null]);
 
-    // Parked by discard (10 -> 20), claimed and woken, then slept by discard (20 -> 30).
-    worker.replace(20, 10);
-    worker.replace(30, 20);
-    const [twice] = await worker.inventory();
-    expect(twice).toMatchObject({ tabId: 30, replacedFromTabIds: [20, 10] });
-    expect(twice!.helperEpoch).toBe(first!.helperEpoch);
+    expect(await api.nameTab(10, "srf_a")).toBe(true);
+    // Naming again with the same name is a no-op; a new name gives the tab a group of its own.
+    expect(await api.nameTab(10, "srf_a")).toBe(true);
+    expect((await api.inventory()).map((row) => row.identity)).toEqual(["srf_a", null]);
 
-    // A worker started again has forgotten the chain, and says so by its epoch.
-    const restarted = startWorker(tabs);
-    const [afterRestart] = await restarted.inventory();
-    expect(afterRestart).toMatchObject({ tabId: 30, replacedFromTabIds: [] });
-    expect(afterRestart!.helperEpoch).not.toBe(first!.helperEpoch);
-
-    // A removed tab's record goes with it.
-    worker.remove(30);
-    expect(await worker.inventory()).toEqual([]);
+    // A tab Chromium adds to that group (a link opened from it) is taken out again.
+    const group = tabs[0]!.groupId;
+    joinGroup(11, group);
+    await settle();
+    await settle();
+    expect((await api.inventory()).map((row) => row.identity)).toEqual(["srf_a", null]);
   });
 });

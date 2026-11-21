@@ -344,27 +344,22 @@ sign-ins is the browser profile. A connected agent works only in profiles grante
 Guest. Two agents granted the same profile share its signed-in state.
 
 On Linux and Opensteer Cloud Computers, a native browser profile keeps Chromium's own session files
-(`Default/Sessions/`) and a full-strip `opensteer-tabs.json` sidecar (holding strip indices, Home
-tab ids, and addresses of every open tab with placeholders for unsaved and agent tabs, never typed
-text or page content; brought current or deleted before Chromium closes, and deleted after three
-failed writes in a row) inside the profile directory so
-durable person tabs survive orderly runtime restarts or crashes with scroll, standard form controls,
-navigation history and `sessionStorage`, reconciled by each restore session against its own lineage's Home saved tab
-list (discarding any loaded parked saved tabs off the path to ready and any parked tab Chromium
-loads later while leaving never-loaded `unloaded` tabs untouched so their `sessionStorage` survives,
-closing agent and deleted tabs and every other lineage's restored tab no session has claimed with
-evidence, so the latest restore session decides and no tab crosses to another surface, handing off
-no arriving page that is not positively identified as no restored tab, failing closed if launch
-inventory or removal cannot be confirmed, and letting a session continue opening tabs by address
-while hiding and removing remaining restored tabs in the background if reconciliation passes its
-deadline). As in a desktop
-browser, typed text in standard form fields of tabs in the person's profile stays on disk in
-Chromium's session files while those tabs exist; passwords typed into a form are not kept there. A
-sleeping tab on Linux is discarded in Chromium (freeing its renderer while keeping its tab state,
-driven by container working set or host memory pressure with 70%/60% hysteresis, also checked
-before each new page opens, and removed with confirmation and bounded retries when the tab closes or
-its session ends) through a minimal internal helper
-extension that is never visible to tab lists, session CDP or connected agents.
+(`Default/Sessions/`) inside the profile directory, so durable person tabs survive orderly runtime
+restarts and crashes with scroll, standard form controls, navigation history and `sessionStorage`.
+Which Home tab a Chromium tab is, Chromium carries itself: each saved tab is in its own tab group
+whose title is its Home id, kept through discard and session restore, out of every page's reach and
+out of every streamed picture. A restored tab is the Home tab its title names or is closed with
+evidence; Opensteer keeps no second record to match tabs by address or position. Each restore
+session reconciles against its own lineage's saved tab list, closing every restored tab outside it
+that no session has claimed (the latest restore session decides; no tab crosses to another
+surface), parking the rest and giving them up in the background if reconciliation passes its
+deadline. As in a desktop browser, typed text in standard form fields of tabs in the person's
+profile stays on disk in Chromium's session files while those tabs exist; passwords typed into a form
+are not kept there. A sleeping tab on Linux is discarded in Chromium and found again by its group
+title (freeing its renderer while keeping its tab state, driven by container working set or host
+memory pressure with 70%/60% hysteresis, also checked before each new page opens, and removed with
+confirmation and bounded retries when the tab closes or its session ends) through a minimal internal
+helper extension that is never visible to tab lists, session CDP or connected agents.
 
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with

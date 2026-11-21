@@ -8,7 +8,7 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
-import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
+import { BrowserSurfaceIdSchema, type BrowserSurfaceId } from "@opensteer/protocol/browser";
 import {
   BrowserRuntimeError,
   pageUnnameableReason,
@@ -37,6 +37,7 @@ import {
   browserPageDisabledBlinkFeatures,
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
+import { delay } from "@opensteer/shared/delay";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -70,16 +71,7 @@ import {
   type ChromiumTabEntry,
 } from "./tab-lifecycle-extension.js";
 
-import {
-  deleteTabRestoreSidecar,
-  flushNativeCookies,
-  initializeNativePreferences,
-  matchRestoredTabs,
-  readTabRestoreSidecarState,
-  writeTabRestoreSidecar,
-  type MatchedRestoredTab,
-  type TabRestoreSidecarEntry,
-} from "./native-profile-storage.js";
+import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
 
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
 import {
@@ -625,6 +617,53 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     return pending;
   }
 
+  /** Exactly how a native profile's Chromium is launched; real-Chromium probes reuse it. */
+  nativeLaunchOptions(
+    directory: string,
+    lifecycleExtensionDir: string,
+    deadline: number,
+  ): Parameters<typeof chromium.launchPersistentContext>[1] {
+    return {
+      // Playwright owns the child before returning the context and reaps it on
+      // launch timeout. A Promise race alone would strand that owned process.
+      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
+      executablePath: this.executablePath,
+      // Explicit arguments bypass Playwright's initial-page wait and test key stores.
+      ignoreDefaultArgs: true,
+      args: [
+        ...this.args,
+        `--user-data-dir=${directory}`,
+        "--remote-debugging-pipe",
+        // ignoreDefaultArgs drops Playwright's --disable-field-trial-config; without it
+        // Chrome for Testing enables TrackEmptyRendererProcessesForReuse and holds closed
+        // tab renderers alive past TabSleeper's settle window.
+        "--disable-field-trial-config",
+        // Load only Opensteer's minimal internal tab-lifecycle helper (zero host permissions)
+        // for native profiles; every other extension stays disabled.
+        `--disable-extensions-except=${lifecycleExtensionDir}`,
+        `--load-extension=${lifecycleExtensionDir}`,
+        "--disable-component-extensions-with-background-pages",
+        "--disable-component-update",
+        "--disable-background-networking",
+        "--restore-last-session",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
+        ...(this.headless ? ["--headless=new"] : []),
+        ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
+        ...(this.proxyUrl ? [`--proxy-server=${this.proxyUrl}`, ...this.proxyTrafficArgs()] : []),
+      ],
+      chromiumSandbox: this.chromiumSandbox,
+      headless: this.headless,
+      env: { ...this.childEnvironment },
+      handleSIGHUP: false,
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      acceptDownloads: false,
+      viewport: null,
+    };
+  }
+
   private async launchNative(
     directory: string,
     deadline: number,
@@ -656,45 +695,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     const lifecycleExtensionDir = await ensureTabLifecycleExtension(directory);
     timing("preferences");
     signal?.throwIfAborted();
-    const context = await chromium.launchPersistentContext(directory, {
-      // Playwright owns the child before returning the context and reaps it on
-      // launch timeout. A Promise race alone would strand that owned process.
-      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
-      executablePath: this.executablePath,
-      // Explicit arguments bypass Playwright's initial-page wait and test key stores.
-      ignoreDefaultArgs: true,
-      args: [
-        ...this.args,
-        `--user-data-dir=${directory}`,
-        "--remote-debugging-pipe",
-        // ignoreDefaultArgs drops Playwright's --disable-field-trial-config; without it
-        // Chrome for Testing enables TrackEmptyRendererProcessesForReuse and holds closed
-        // tab renderers alive past TabSleeper's settle window.
-        "--disable-field-trial-config",
-        // Load only Opensteer's minimal internal tab-lifecycle helper (tabs + debugger,
-        // zero host permissions) for native profiles; every other extension stays disabled.
-        `--disable-extensions-except=${lifecycleExtensionDir}`,
-        `--load-extension=${lifecycleExtensionDir}`,
-        "--disable-component-extensions-with-background-pages",
-        "--disable-component-update",
-        "--disable-background-networking",
-        "--restore-last-session",
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
-        ...(this.headless ? ["--headless=new"] : []),
-        ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
-        ...(this.proxyUrl ? [`--proxy-server=${this.proxyUrl}`, ...this.proxyTrafficArgs()] : []),
-      ],
-      chromiumSandbox: this.chromiumSandbox,
-      headless: this.headless,
-      env: { ...this.childEnvironment },
-      handleSIGHUP: false,
-      handleSIGINT: false,
-      handleSIGTERM: false,
-      acceptDownloads: false,
-      viewport: null,
-    });
+    const context = await chromium.launchPersistentContext(
+      directory,
+      this.nativeLaunchOptions(directory, lifecycleExtensionDir, deadline),
+    );
     let ownedProcess: ChildProcess;
     try {
       // The pinned Playwright patch exposes the same owner as BrowserServer.process().
@@ -840,7 +844,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           : undefined;
       let lifecycle: ChromiumTabLifecycleBridge | undefined;
       let helperTargetId: string | null = syncTargetIdOfPage(helper);
-      const matchedRestored = new Map<BrowserSurfaceId, MatchedRestoredTab>();
+      const restoredRows: ChromiumTabEntry[] = [];
       if (candidateLifecycle) {
         if (!helperTargetId) {
           try {
@@ -910,9 +914,19 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             }
             rawRestored.push(tab);
           }
-          const map = await readTabRestoreSidecarState(directory);
-          const { matched, orphans } = matchRestoredTabs(rawRestored, map.tabs);
-          reportRestoreLaunch(map, rawRestored, matched.size, orphans.length);
+          // A restored tab is the Home tab its own group title names, and nothing else is: a
+          // tab with no title, a title that is no Home tab id, or a title two tabs carry closes.
+          const titleCounts = new Map<string, number>();
+          for (const tab of rawRestored)
+            if (tab.identity)
+              titleCounts.set(tab.identity, (titleCounts.get(tab.identity) ?? 0) + 1);
+          const orphans: ChromiumTabEntry[] = [];
+          for (const tab of rawRestored) {
+            if (tab.identity && titleCounts.get(tab.identity) === 1 && isHomeTabName(tab.identity))
+              restoredRows.push(tab);
+            else orphans.push(tab);
+          }
+          reportRestoreLaunch(rawRestored, restoredRows.length, titleCounts);
           for (const orphan of orphans) {
             const confirmed = await removeLaunchTabWithEvidence(
               lifecycle,
@@ -923,18 +937,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
               throw new Error("Chromium restored unauthorized tabs that could not be removed.");
             }
           }
-          for (const [surfaceId, entry] of matched) {
-            matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
-          }
         } else {
           // Fail closed when launch inventory fails: never leave unowned restored tabs alive.
           process.stderr.write(
             '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
-          );
-          // This run cannot keep the map current, so no later start may bind by it.
-          await deleteTabRestoreSidecar(directory).then(
-            () => reportMapDeleted("launch-inventory-unavailable"),
-            () => process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n'),
           );
           for (const page of context.pages()) {
             if (page === helper || page.isClosed()) continue;
@@ -986,8 +992,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         helper,
         true,
         lifecycle,
-        directory,
-        matchedRestored,
+        restoredRows,
         preHelperPages,
         helperTargetId ?? undefined,
       );
@@ -1030,8 +1035,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     privatePage?: Page,
     dedicatedContext = false,
     lifecycle?: ChromiumTabLifecycleBridge,
-    profileDirectory?: string,
-    matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
+    restoredRows: readonly ChromiumTabEntry[] = [],
     preHelperPages: ReadonlySet<Page> = new Set(),
     privatePageTargetId?: string,
   ) {
@@ -1047,10 +1051,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       providerConfig,
       privatePage,
       lifecycle,
-      profileDirectory,
-      matchedRestored,
+      restoredRows,
       preHelperPages,
-      privatePageTargetId,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -1133,22 +1135,15 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
-    // Before Chromium writes its clean session, the map is brought current within a bound, and a
-    // map that still is not current is deleted rather than left beside that session.
-    await this.contextHandle.flushSidecarBeforeClose();
+    // Tabs still being named finish first, so Chromium's own session carries their names.
+    await this.contextHandle.settleNaming();
     this.contextHandle.markClosed();
-    await this.contextHandle.retireSidecarBeforeClose();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
       }),
     ]);
     const stopped = await Promise.allSettled([this.owner.close()]);
-    // Best-effort drain of any in-flight sidecar write after the browser stops so
-    // temp-dir cleanup never races a write, without failing close on a crashed helper.
-    await withTimeout(this.contextHandle.drainSidecar(), 500, {
-      timeoutError: () => new Error("Sidecar flush did not finish."),
-    }).catch(() => undefined);
     const results = [...detached, ...stopped];
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -1179,16 +1174,18 @@ function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | n
 }
 
 const wakeDiscardedTabMs = 10_000;
-/** Consecutive failed map writes, since the last success, after which the map is deleted. */
-const sidecarFailureBound = 3;
-/** How long close waits for a map write in flight before deleting the map. */
-const sidecarCloseWaitMs = 500;
-/** How long close tries to bring a map that is not current up to date first. */
-const sidecarCloseFlushMs = 1_500;
 /** How long a claim waits for a parked run on its surface before giving the tab up. */
 const claimQueueWaitMs = 6_000;
-/** Looks at an arriving page that cannot be identified at once, about 300 ms apart, then closes it. */
-const arrivalIdentifyAttempts = 3;
+/** How long a park waits for the page of a tab Chromium is loading, before freezing it. */
+const parkPageWaitMs = 1_000;
+/** The whole bound for identifying an arriving page; past it the page is closed, never handed off. */
+const arrivalIdentifyMs = 2_000;
+/** How long an orderly close waits for tabs still being named. */
+const namingSettleMs = 1_500;
+/** Background removal attempts per name, since it was given up, before it is reported. */
+const removalRetryBound = 8;
+/** The group title a tab that is not a saved Home tab carries while it sleeps. */
+const sleepTitlePrefix = "opensteer-sleep:";
 
 /**
  * Reads a Playwright Chromium page's CDP targetId synchronously from its
@@ -1213,95 +1210,86 @@ function syncTargetIdOfPage(page: Page): string | null {
   }
 }
 
-type TabWhereabouts =
-  | { readonly status: "found"; readonly row: ChromiumTabEntry }
-  | { readonly status: "gone" }
-  | { readonly status: "unknown" };
-
-/**
- * Where the tab last seen as `tabId` (in a row the helper answered at `epoch`) is now. A discard
- * can replace a tab, so a row replaced from it any number of times is that tab. "Gone" needs the
- * same helper worker: a restarted one has forgotten earlier replacements, so its silence is
- * "not known" (Rule A), never "gone".
- */
-function locateTab(
-  inventory: readonly ChromiumTabEntry[],
-  tabId: number,
-  epoch: string | undefined,
-): TabWhereabouts {
-  const row = inventory.find(
-    (entry) => entry.tabId === tabId || entry.replacedFromTabIds?.includes(tabId) === true,
-  );
-  if (row) return { status: "found", row };
-  return inventory[0]?.helperEpoch === epoch ? { status: "gone" } : { status: "unknown" };
-}
-
-/** Why a map was deleted, so a later start that matches nothing can be read against it. */
-function reportMapDeleted(
-  reason:
-    "write-failures" | "flush-not-current" | "close-not-current" | "launch-inventory-unavailable",
-): void {
-  process.stderr.write(`${JSON.stringify({ event: "browser-runtime.tab-map-deleted", reason })}\n`);
-}
-
-/**
- * One line per native launch: what Chromium restored, what the map held, what matched, and when
- * nothing of a saved map matched, which of the reasons it was.
- */
-function reportRestoreLaunch(
-  map: {
-    readonly state: "absent" | "unreadable" | "present";
-    readonly tabs: readonly { readonly surfaceId: string | null; readonly url: string }[];
-  },
-  restored: readonly ChromiumTabEntry[],
-  matched: number,
-  orphans: number,
-): void {
-  const saved = map.tabs.filter((tab) => tab.surfaceId !== null).length;
-  const stripEqual =
-    restored.length === map.tabs.length &&
-    [...restored]
-      .sort((a, b) => a.windowId - b.windowId || a.index - b.index)
-      .every((tab, index) => tab.url === map.tabs[index]!.url);
-  const nothing =
-    matched > 0 || (restored.length === 0 && saved === 0)
-      ? undefined
-      : map.state !== "present"
-        ? `map-${map.state}`
-        : saved === 0
-          ? "map-has-no-saved-tabs"
-          : restored.length === 0
-            ? "chromium-restored-nothing"
-            : "no-position-or-address-match";
-  process.stderr.write(
-    `${JSON.stringify({
-      event: "browser-runtime.tab-restore-launch",
-      map: map.state,
-      mapTabs: map.tabs.length,
-      mapSaved: saved,
-      restored: restored.length,
-      matched,
-      orphans,
-      stripEqual,
-      ...(nothing ? { matchedNothing: nothing } : {}),
-    })}\n`,
-  );
-}
-
-/** Background removal attempts per tab, since it was last queued, before it is reported. */
-const removalRetryBound = 8;
-
-function reportUnconfirmedRemoval(kind: "restored" | "sleeping", attempts: number): void {
-  process.stderr.write(
-    `${JSON.stringify({ event: "browser-runtime.tab-removal-unconfirmed", kind, attempts })}\n`,
-  );
-}
-
 function syncOpenerOfPage(page: Page): Page | null {
   const opener = (page as unknown as { _opener?: Page | null })._opener;
   return opener && !opener.isClosed() ? opener : null;
 }
 
+/** A group title that names a saved Home tab, rather than a sleeping tab's token or junk. */
+function isHomeTabName(title: string): boolean {
+  return !title.startsWith(sleepTitlePrefix) && BrowserSurfaceIdSchema.safeParse(title).success;
+}
+
+/**
+ * One line per native launch: what Chromium restored and what its group titles said. Every
+ * restored tab is a Home tab by its own title or is closed, so this tells a lost restore apart:
+ * Chromium restored nothing, or tabs came back without a title, with a title no Home tab id has,
+ * or with a title two tabs carry.
+ */
+function reportRestoreLaunch(
+  restored: readonly ChromiumTabEntry[],
+  named: number,
+  titleCounts: ReadonlyMap<string, number>,
+): void {
+  const untitled = restored.filter((tab) => !tab.identity).length;
+  let duplicated = 0;
+  let unknown = 0;
+  for (const [title, count] of titleCounts) {
+    if (count > 1) duplicated += count;
+    else if (!isHomeTabName(title)) unknown++;
+  }
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "browser-runtime.tab-restore-launch",
+      restored: restored.length,
+      named,
+      untitled,
+      unknownTitle: unknown,
+      duplicateTitle: duplicated,
+    })}\n`,
+  );
+}
+
+function reportUnconfirmedRemoval(attempts: number): void {
+  process.stderr.write(
+    `${JSON.stringify({ event: "browser-runtime.tab-removal-unconfirmed", attempts })}\n`,
+  );
+}
+
+function isBlankAddress(url: string): boolean {
+  return url === "" || url === "about:blank" || url === "chrome://newtab/";
+}
+
+/** Rows of an inventory whose own tab group carries `title`. */
+function rowsNamed(
+  inventory: readonly ChromiumTabEntry[],
+  title: string,
+): readonly ChromiumTabEntry[] {
+  return inventory.filter((row) => row.identity === title);
+}
+
+/** A Home tab Chromium restored with its group title, not yet claimed by a session. */
+interface RestoredTab {
+  /** Its page, once Chromium loaded it; hidden until a claim takes it. */
+  page: Page | undefined;
+}
+
+/** A tab put to sleep by discard; it is found again by its group title, never by its id. */
+interface SleepingTab {
+  readonly title: string;
+  readonly url: string;
+  readonly surfaceId?: BrowserSurfaceId;
+  /** Resolves when the discard (or the close it fell back to) has finished. */
+  readonly settled: Promise<void>;
+}
+
+/**
+ * Chromium carries each saved Home tab's identity itself: the helper puts the tab in its own tab
+ * group whose title is the tab's Home surface id. The title survives discard (whatever Chromium
+ * does to the tab id) and session restore after a clean exit or a crash, and no page can read or
+ * change it. Restore and sleep both find a tab by that title and by nothing else; what no title
+ * names is never handed off as someone's tab.
+ */
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
   isConnected(): boolean {
@@ -1322,84 +1310,44 @@ class PlaywrightContextHandle implements BrowserContext {
   readonly providerConfig: BrowserPagePolicyConfig;
   readonly lifecycle: ChromiumTabLifecycleBridge | undefined;
   readonly sessionRestore: BrowserSessionRestore | undefined;
-  private readonly profileDirectory: string | undefined;
   private readonly privatePage: Page | undefined;
-  private readonly helperTargetId: string | undefined;
-  private readonly sleepingTabs = new Map<
-    string,
-    | {
-        readonly state: "discarding";
-        readonly url: string;
-        readonly surfaceId?: BrowserSurfaceId;
-        readonly settled: Promise<number | null>;
-      }
-    | {
-        readonly state: "discarded";
-        readonly tabId: number;
-        readonly url: string;
-        readonly surfaceId?: BrowserSurfaceId;
-      }
-    | {
-        readonly state: "unknown";
-        readonly originalTabId: number;
-        /** The helper worker that saw `originalTabId` before the discard. */
-        readonly epoch: string | undefined;
-        readonly url: string;
-        readonly surfaceId?: BrowserSurfaceId;
-      }
-  >();
-  private readonly pendingSleepingRemovals = new Map<string, { attempts: number }>();
-  private pendingRemovalTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly pendingRestoredRemovals = new Map<
-    number,
-    { targetId: string | null; epoch: string | undefined; attempts: number }
-  >();
-  private pendingRestoredRemovalTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly claimedWakePages = new WeakSet<Page>();
-  private readonly hiddenRestoredPages = new WeakSet<Page>();
-  private readonly frozenRestoredPages = new WeakSet<Page>();
-  private readonly unclaimedRestoredTabs = new Map<number, ChromiumTabEntry>();
-  private readonly unclaimedRestoredTargetIds = new Set<string>();
-  /** Targets from session restore that must NEVER be handed off unless explicitly claimed or confirmed gone. */
-  private readonly neverHandOffTargetIds = new Set<string>();
-  /** Restored tabs whose targetId was initially null so arrivals are still hidden by tabId. */
-  private readonly neverHandOffTabIds = new Set<number>();
-  private readonly restoredPagesByTabId = new Map<number, Page>();
-  private readonly restoredBySurfaceId = new Map<BrowserSurfaceId, MatchedRestoredTab>();
-  private readonly claimingSurfaceIds = new Set<BrowserSurfaceId>();
-  private readonly removingSurfaceIds = new Set<BrowserSurfaceId>();
-  private readonly parkedDiscardTails = new Map<BrowserSurfaceId, Promise<void>>();
-  private parkedDiscardActive = 0;
-  private readonly parkedDiscardWaiters: Array<() => void> = [];
-  private parkedAutoDiscardArmed = false;
-  private readonly savedTabsBySurfaceId = new Map<
-    BrowserSurfaceId,
-    { page: PlaywrightPageHandle | null; sleepingTokenId?: string }
-  >();
-  private readonly savedSurfaceByPage = new WeakMap<PlaywrightPageHandle, BrowserSurfaceId>();
-  private readonly trackedNavigationPages = new WeakSet<Page>();
-  private readonly inFlightDiscards = new Set<Promise<void>>();
-  private reconcileTail: Promise<void> = Promise.resolve();
-  private reconcileAbort: AbortController | undefined;
-  private reconcileFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-  private sidecarTail: Promise<void> = Promise.resolve();
-  private sidecarDirty = false;
-  private sidecarScheduled = false;
-  private sidecarVersion = 0;
-  private sidecarFailures = 0;
-  private sidecarRetryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Restored Home tabs nobody has claimed, by the surface id their group title names. */
+  private readonly restored = new Map<BrowserSurfaceId, RestoredTab>();
+  /** Names being claimed right now: a page carrying one waits, hidden, for its claim. */
+  private readonly claimingTitles = new Set<string>();
+  private readonly sleepingByToken = new Map<string, SleepingTab>();
+  private readonly sleepingTitles = new Map<string, string>();
+  /** Names given up and being removed from Chromium, with their background attempts. */
+  private readonly removals = new Map<string, { attempts: number }>();
+  /** Names whose removal could not be confirmed within the bound; still never handed off. */
+  private readonly unremovable = new Set<string>();
+  private removalTimer: ReturnType<typeof setTimeout> | undefined;
+  private removalDrain: Promise<void> | null = null;
+  /** Saved tabs whose naming waits for another tab still carrying the same name to go. */
+  private readonly deferredNames = new Map<BrowserSurfaceId, PlaywrightPageHandle>();
+  private readonly naming = new Set<Promise<void>>();
+  private readonly awaitingFirstNavigation = new WeakSet<Page>();
+  private readonly hiddenPages = new WeakSet<Page>();
+  private readonly frozenPages = new WeakSet<Page>();
+  /** Pages a claim or wake took; they never go through identification again. */
+  private readonly claimedPages = new WeakSet<Page>();
+  private readonly identifyingPages = new WeakSet<Page>();
   /** `newPage` calls in flight; a page they create is identified by their answer. */
   private readonly openingPages = new Set<Promise<Page>>();
   private readonly ownCreatedPages = new WeakSet<Page>();
-  /** Pages held hidden while `identifyArrival` decides what they are. */
-  private readonly identifyingPages = new WeakSet<Page>();
+  /** One lane per name: parks, evictions and naming of one tab never run beside each other. */
+  private readonly laneTails = new Map<string, Promise<void>>();
+  private parkingArmed = false;
+  private parkedActive = 0;
+  private readonly parkedWaiters: Array<() => void> = [];
+  private readonly savedSurfaceByPage = new WeakMap<PlaywrightPageHandle, BrowserSurfaceId>();
+  private reconcileTail: Promise<void> = Promise.resolve();
+  private reconcileAbort: AbortController | undefined;
+  private reconcileFallbackTimer: ReturnType<typeof setTimeout> | undefined;
   private wakeTail: Promise<void> = Promise.resolve();
-  private activeWake: {
-    readonly tabId: number;
-    /** Learnt from the inventory when the wake began without it. */
-    expectedTargetId: string | null;
-    readonly resolve: (page: Page) => void;
-  } | null = null;
+  private activeWake: { readonly title: string; readonly resolve: (page: Page) => void } | null =
+    null;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1408,46 +1356,42 @@ class PlaywrightContextHandle implements BrowserContext {
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
     lifecycle?: ChromiumTabLifecycleBridge,
-    profileDirectory?: string,
-    matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
+    restoredRows: readonly ChromiumTabEntry[] = [],
     preHelperPages: ReadonlySet<Page> = new Set(),
-    helperTargetId?: string,
   ) {
     this.privatePage = privatePage;
-    this.helperTargetId = helperTargetId;
     this.lifecycle = lifecycle;
-    this.profileDirectory = profileDirectory;
     this.authenticator = authenticator;
     this.providerConfig = providerConfig;
     this.context = context;
+    this.openDialogs = openDialogs;
+    const restoredByTarget = new Map<string, BrowserSurfaceId>();
+    for (const row of restoredRows) {
+      const surfaceId = row.identity as BrowserSurfaceId;
+      this.restored.set(surfaceId, { page: undefined });
+      if (row.targetId) restoredByTarget.set(row.targetId, surfaceId);
+    }
     for (const page of preHelperPages) {
-      if (page !== privatePage) {
-        this.hiddenRestoredPages.add(page);
-        const preTargetId = syncTargetIdOfPage(page);
-        if (preTargetId) this.neverHandOffTargetIds.add(preTargetId);
+      if (page === privatePage) continue;
+      this.hiddenPages.add(page);
+      const targetId = syncTargetIdOfPage(page);
+      const surfaceId = targetId ? restoredByTarget.get(targetId) : undefined;
+      if (surfaceId) this.restored.get(surfaceId)!.page = page;
+      else {
+        // A page the launch inventory did not name: identified like any arrival, or closed.
+        this.identifyingPages.add(page);
+        void this.identifyArrival(page).catch(() => undefined);
       }
     }
-    for (const [surfaceId, entry] of matchedRestored) {
-      this.restoredBySurfaceId.set(surfaceId, entry);
-      this.unclaimedRestoredTabs.set(entry.tab.tabId, entry.tab);
-      if (entry.tab.targetId) {
-        this.unclaimedRestoredTargetIds.add(entry.tab.targetId);
-        this.neverHandOffTargetIds.add(entry.tab.targetId);
-      } else {
-        this.neverHandOffTabIds.add(entry.tab.tabId);
-      }
-    }
-    if (lifecycle && profileDirectory) {
+    if (lifecycle) {
       this.sessionRestore = {
-        claim: (surfaceId, url, own) => this.claimSavedRestoredTab(surfaceId, url, own),
+        claim: (surfaceId, _url, own) => this.claimRestored(surfaceId, own),
         reconcile: (savedTabIds) => this.reconcileSavedTabs(savedTabIds),
         armFallbackReconcile: (keepIds, delayMs = 5_000) =>
           this.armFallbackReconcile(keepIds, delayMs),
         trackSavedTab: (surfaceId, page) => this.trackSavedTab(surfaceId, page),
-        flush: () => this.flushSavedTabsOrDeleteMap(),
+        flush: () => this.settleNaming(),
       };
-      // The map on disk was written by an earlier run and is not yet confirmed for this one.
-      this.sidecarDirty = true;
     }
     context.on("close", () => {
       this.markClosed();
@@ -1456,17 +1400,12 @@ class PlaywrightContextHandle implements BrowserContext {
     });
     context.on("page", (page) => {
       if (this.isHiddenPage(page)) return;
-      const targetId = syncTargetIdOfPage(page);
       const opener = syncOpenerOfPage(page);
       if (opener) {
-        const openerTargetId = syncTargetIdOfPage(opener);
-        if (
-          this.isHiddenPage(opener) ||
-          (openerTargetId !== null && this.neverHandOffTargetIds.has(openerTargetId))
-        ) {
-          this.hiddenRestoredPages.add(page);
-          if (targetId) this.neverHandOffTargetIds.add(targetId);
-          void page.close({ runBeforeUnload: false }).catch(() => undefined);
+        // A tab opened by a hidden (restored or sleeping) page is nobody's: it is closed.
+        if (this.isHiddenPage(opener)) {
+          this.hiddenPages.add(page);
+          void this.closePageWithEvidence(page);
           return;
         }
         const handle = this.wrap(page);
@@ -1475,46 +1414,137 @@ class PlaywrightContextHandle implements BrowserContext {
         for (const listener of this.pageListeners) listener(handle);
         return;
       }
-      // The tab a wake waits for is a restored or sleeping tab, so the wake is asked first.
-      const wake = this.activeWake;
-      if (wake && targetId !== null && targetId === wake.expectedTargetId) {
-        this.resolveWake(page, wake);
-        return;
-      }
-      if (targetId && this.neverHandOffTargetIds.has(targetId)) {
-        this.handleHiddenRestoredPageArrival(page, targetId);
-        return;
-      }
-      if (!this.ownCreatedPages.has(page) && this.arrivalNeedsIdentity(targetId)) {
-        // Rule A: this page may be a restored or woken tab; it is hidden at once and handed off
-        // only on positive evidence that it is neither.
-        this.hiddenRestoredPages.add(page);
+      if (!this.ownCreatedPages.has(page) && this.hasGuardedNames()) {
+        // Rule A: while any tab is restored, sleeping or being removed, an opener-less page we
+        // did not create is hidden at once and handed off only once its tab is known.
+        this.hiddenPages.add(page);
         this.identifyingPages.add(page);
-        void this.identifyArrival(page, targetId).catch(() => undefined);
+        void this.identifyArrival(page).catch(() => undefined);
         return;
       }
       const handle = this.wrap(page);
       queueMicrotask(() => {
-        if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
+        if (this.claimedPages.has(page) || this.hiddenPages.has(page)) return;
         for (const listener of this.handOffs) listener(handle, handle.openerHandle);
       });
       for (const listener of this.pageListeners) listener(handle);
     });
-    this.openDialogs = openDialogs;
+  }
+
+  private hasGuardedNames(): boolean {
+    return (
+      this.restored.size > 0 ||
+      this.claimingTitles.size > 0 ||
+      this.sleepingTitles.size > 0 ||
+      this.removals.size > 0 ||
+      this.unremovable.size > 0 ||
+      this.activeWake !== null
+    );
+  }
+
+  private isHiddenPage(page: Page): boolean {
+    if (page === this.privatePage) return true;
+    if (this.hiddenPages.has(page)) return true;
+    const url = typeof page.url === "function" ? page.url() : "";
+    return isInternalExtensionUrl(url);
+  }
+
+  /** Hands off a page that was held back while it was identified. */
+  private releaseIdentifiedPage(page: Page): void {
+    if (!this.identifyingPages.delete(page)) return;
+    if (this.closed || page.isClosed() || this.claimedPages.has(page)) return;
+    this.hiddenPages.delete(page);
+    const handle = this.wrap(page);
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+    for (const listener of this.pageListeners) listener(handle);
   }
 
   /**
-   * Whether an opener-less page we did not create can be handed off on what is known at once.
-   * It cannot while a restored tab has no target id yet, while a wake waits for a tab whose
-   * target is not known, or while the page's own target is not known and restored targets are.
+   * Rule A for an arriving page: its tab's own group title says what it is. Within one bound for
+   * the whole work it is the tab a wake waits for, a restored or sleeping tab (kept hidden), a
+   * tab being removed (closed), or a tab no name guards (handed off). Otherwise it is closed.
    */
-  private arrivalNeedsIdentity(targetId: string | null): boolean {
-    if (this.neverHandOffTabIds.size > 0) return true;
-    const wake = this.activeWake;
-    if (wake && (wake.expectedTargetId === null || targetId === null)) return true;
-    return targetId === null && this.neverHandOffTargetIds.size > 0;
+  private async identifyArrival(page: Page): Promise<void> {
+    const deadline = performance.now() + arrivalIdentifyMs;
+    const remaining = () => Math.max(1, deadline - performance.now());
+    const taken = () =>
+      this.closed ||
+      page.isClosed() ||
+      !this.identifyingPages.has(page) ||
+      this.claimedPages.has(page);
+    // A page this context is creating is its own: its creator releases it when it resolves.
+    if (this.openingPages.size > 0) {
+      await withTimeout(Promise.allSettled(this.openingPages), remaining(), {
+        timeoutError: () => new Error("Page creation did not settle."),
+      }).catch(() => undefined);
+    }
+    for (let attempt = 0; performance.now() < deadline; attempt++) {
+      if (taken()) return;
+      const targetId = syncTargetIdOfPage(page) ?? (await this.targetIdOfPage(page, remaining()));
+      if (taken()) return;
+      const inventory =
+        targetId && this.lifecycle
+          ? await withTimeout(this.lifecycle.inventory(), remaining(), {
+              timeoutError: () => new Error("Arrival inventory timed out."),
+            }).catch(() => null)
+          : null;
+      if (taken()) return;
+      const row = inventory?.find((entry) => entry.targetId === targetId);
+      if (row) {
+        this.placeArrival(page, row);
+        return;
+      }
+      await delay(Math.min(100 * (attempt + 1), remaining()));
+    }
+    if (taken()) return;
+    this.identifyingPages.delete(page);
+    process.stderr.write('{"event":"browser-runtime.unidentified-page-closed"}\n');
+    await this.closePageWithEvidence(page);
   }
 
+  private placeArrival(page: Page, row: ChromiumTabEntry): void {
+    const title = row.identity ?? null;
+    const wake = this.activeWake;
+    if (wake && title === wake.title) {
+      this.resolveWake(page, wake);
+      return;
+    }
+    if (title === null || !this.isGuardedName(title)) {
+      // Positive: the inventory names this page's tab, and no name we guard is on it.
+      this.releaseIdentifiedPage(page);
+      return;
+    }
+    this.identifyingPages.delete(page);
+    this.pageTitles.set(page, title);
+    const restored = this.restored.get(title as BrowserSurfaceId);
+    if (restored) {
+      restored.page = page;
+      if (this.parkingArmed && !this.claimingTitles.has(title))
+        void this.parkRestored(title as BrowserSurfaceId, restored, { waitForLoad: true });
+      return;
+    }
+    if (this.claimingTitles.has(title)) return;
+    if (this.sleepingTitles.has(title)) {
+      // A sleeping tab Chromium loaded by itself goes back to sleep, unseen. A discarded tab's own
+      // placeholder page is left alone: discarding it again would rewrite its saved entry.
+      if (!row.discarded && row.status !== "unloaded")
+        void this.lifecycle?.discardByTabId(row.tabId).catch(() => undefined);
+      return;
+    }
+    void this.closePageWithEvidence(page);
+  }
+
+  private isGuardedName(title: string): boolean {
+    return (
+      this.restored.has(title as BrowserSurfaceId) ||
+      this.claimingTitles.has(title) ||
+      this.sleepingTitles.has(title) ||
+      this.removals.has(title) ||
+      this.unremovable.has(title)
+    );
+  }
+
+  /** A wake's page stays hidden until the caller that asked for it takes it. */
   private resolveWake(
     page: Page,
     waiter: NonNullable<PlaywrightContextHandle["activeWake"]>,
@@ -1522,159 +1552,35 @@ class PlaywrightContextHandle implements BrowserContext {
     if (this.activeWake !== waiter) return;
     this.activeWake = null;
     this.identifyingPages.delete(page);
-    this.hiddenRestoredPages.delete(page);
-    this.claimedWakePages.add(page);
+    this.claimedPages.add(page);
     waiter.resolve(page);
   }
 
-  /** Hands off a page that was held back while it was identified. */
-  private releaseIdentifiedPage(page: Page): void {
-    if (!this.identifyingPages.delete(page)) return;
-    if (this.closed || page.isClosed() || this.claimedWakePages.has(page)) return;
-    this.hiddenRestoredPages.delete(page);
-    const handle = this.wrap(page);
-    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-    for (const listener of this.pageListeners) listener(handle);
+  /** Closes a page that is nobody's; it stays hidden whether or not the close is confirmed. */
+  private async closePageWithEvidence(page: Page): Promise<void> {
+    this.hiddenPages.add(page);
+    if (page.isClosed()) return;
+    await withTimeout(page.close({ runBeforeUnload: false }), nameTargetMs, {
+      timeoutError: () => new Error("Page close timed out."),
+    }).catch(() => undefined);
+    if (page.isClosed()) return;
+    const targetId = syncTargetIdOfPage(page);
+    if (targetId && this.closeTarget) await this.closeTarget(targetId).catch(() => undefined);
+    if (!page.isClosed())
+      process.stderr.write('{"event":"browser-runtime.page-close-unconfirmed"}\n');
   }
 
-  /**
-   * Guards a restored tab's current row: by its target id when Chromium names one, else by its
-   * tab id, so a page it later loads is never handed off before it is identified.
-   */
-  private protectRestoredRow(row: ChromiumTabEntry): void {
-    if (row.targetId === null) {
-      this.neverHandOffTabIds.add(row.tabId);
-      return;
-    }
-    this.neverHandOffTargetIds.add(row.targetId);
-    if (this.unclaimedRestoredTabs.has(row.tabId)) {
-      this.unclaimedRestoredTargetIds.add(row.targetId);
-      this.unclaimedRestoredTabs.set(row.tabId, row);
-      for (const [surfaceId, entry] of this.restoredBySurfaceId) {
-        if (entry.tab.tabId === row.tabId) {
-          this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: row });
-          break;
-        }
-      }
-    }
-    this.neverHandOffTabIds.delete(row.tabId);
-  }
-
-  /** A parked entry now lives in `row` (the same tab, or what a discard replaced it with). */
-  private rebindRestoredEntry(
-    surfaceId: BrowserSurfaceId,
-    entry: MatchedRestoredTab,
-    row: ChromiumTabEntry,
-  ): void {
-    if (row.tabId !== entry.tab.tabId) {
-      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-      this.neverHandOffTabIds.delete(entry.tab.tabId);
-      this.restoredPagesByTabId.delete(entry.tab.tabId);
-    }
-    this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: row });
-    this.unclaimedRestoredTabs.set(row.tabId, row);
-    this.protectRestoredRow(row);
-  }
-
-  /** Restored tabs whose target id the inventory now names are guarded by that id instead. */
-  private learnRestoredTargets(inventory: readonly ChromiumTabEntry[]): void {
-    const wake = this.activeWake;
-    for (const row of inventory) {
-      if (wake && wake.expectedTargetId === null && row.tabId === wake.tabId && row.targetId) {
-        wake.expectedTargetId = row.targetId;
-      }
-      if (row.targetId !== null && this.neverHandOffTabIds.has(row.tabId)) {
-        this.protectRestoredRow(row);
-      }
-    }
-  }
-
-  /**
-   * Rule A for an arriving page: it is a restored tab (kept hidden), the tab a wake waits for,
-   * or positively neither (handed off). What cannot be told within the bound is closed with a
-   * diagnostic, never handed off.
-   */
-  private async identifyArrival(page: Page, syncTargetId: string | null): Promise<void> {
-    const taken = () =>
-      this.closed ||
-      page.isClosed() ||
-      !this.identifyingPages.has(page) ||
-      this.claimedWakePages.has(page);
-    // A page this context is creating is its own: its creator releases it when it resolves.
-    if (this.openingPages.size > 0) await Promise.allSettled(this.openingPages);
-    for (let attempt = 0; attempt < arrivalIdentifyAttempts; attempt++) {
-      if (taken()) return;
-      const targetId = syncTargetId ?? (await this.targetIdOfPage(page));
-      if (taken()) return;
-      if (targetId !== null) {
-        const wake = this.activeWake;
-        if (wake && wake.expectedTargetId === targetId) {
-          this.resolveWake(page, wake);
-          return;
-        }
-        if (this.neverHandOffTargetIds.has(targetId)) {
-          this.identifyingPages.delete(page);
-          this.handleHiddenRestoredPageArrival(page, targetId);
-          return;
-        }
-        if (!this.arrivalNeedsIdentity(targetId)) {
-          this.releaseIdentifiedPage(page);
-          return;
-        }
-        const inventory = await this.lifecycle?.inventory().catch(() => null);
-        if (taken()) return;
-        if (inventory) {
-          this.learnRestoredTargets(inventory);
-          const row = inventory.find((entry) => entry.targetId === targetId);
-          // The inventory names this page's tab as the one a wake waits for.
-          const waiting = this.activeWake;
-          if (row && waiting && row.tabId === waiting.tabId) {
-            this.resolveWake(page, waiting);
-            return;
-          }
-          if (row && this.unclaimedRestoredTabs.has(row.tabId)) {
-            // A restored tab whose target changed since it was last seen.
-            this.protectRestoredRow(row);
-          }
-          if (row && this.neverHandOffTargetIds.has(targetId)) {
-            this.identifyingPages.delete(page);
-            this.handleHiddenRestoredPageArrival(page, targetId);
-            return;
-          }
-          // The inventory names this page's tab, and it is no restored tab and no awaited wake.
-          if (row && !this.unclaimedRestoredTabs.has(row.tabId)) {
-            this.releaseIdentifiedPage(page);
-            return;
-          }
-        }
-      }
-      if (attempt < arrivalIdentifyAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-      }
-    }
-    if (taken()) return;
-    this.identifyingPages.delete(page);
-    process.stderr.write('{"event":"browser-runtime.unidentified-page-closed"}\n');
-    await page.close({ runBeforeUnload: false }).catch(() => undefined);
-  }
-
-  private isHiddenPage(page: Page): boolean {
-    if (page === this.privatePage) return true;
-    if (this.hiddenRestoredPages.has(page)) return true;
-    const url = typeof page.url === "function" ? page.url() : "";
-    return isInternalExtensionUrl(url);
-  }
-
-  private async targetIdOfPage(page: Page): Promise<string | null> {
+  private async targetIdOfPage(page: Page, boundMs = nameTargetMs): Promise<string | null> {
     const synced = syncTargetIdOfPage(page);
     if (synced) return synced;
     if (page.isClosed()) return null;
+    const stepMs = Math.max(1, Math.min(nameTargetMs, boundMs));
     let session: PlaywrightCdpSession | undefined;
     try {
-      session = await withTimeout(this.context.newCDPSession(page), nameTargetMs, {
+      session = await withTimeout(this.context.newCDPSession(page), stepMs, {
         timeoutError: () => new Error("Target lookup CDP attach timed out."),
       });
-      const response = (await withTimeout(session.send("Target.getTargetInfo"), nameTargetMs, {
+      const response = (await withTimeout(session.send("Target.getTargetInfo"), stepMs, {
         timeoutError: () => new Error("Target lookup getTargetInfo timed out."),
       })) as { targetInfo?: { targetId?: unknown } };
       return typeof response.targetInfo?.targetId === "string"
@@ -1683,65 +1589,136 @@ class PlaywrightContextHandle implements BrowserContext {
     } catch {
       return null;
     } finally {
-      await session?.detach().catch(() => undefined);
+      if (session)
+        void withTimeout(session.detach(), nameTargetMs, {
+          timeoutError: () => new Error("Target lookup detach timed out."),
+        }).catch(() => undefined);
     }
+  }
+
+  /** Runs `fn` after every earlier task on the same name; tasks on one name never overlap. */
+  private onLane<T>(title: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.laneTails.get(title) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.laneTails.set(title, tail);
+    void tail.then(() => {
+      if (this.laneTails.get(title) === tail) this.laneTails.delete(title);
+    });
+    return run;
   }
 
   /**
-   * Removes the tab last seen as `tabId` and proves it gone. Where a discard may have replaced
-   * it (`replaceable`, with the helper epoch of that sighting), the tab is followed through its
-   * replacements, and "no row has that id" is evidence only from the same helper worker or right
-   * after this removal of the tab itself succeeded.
+   * Removes every tab carrying `title` and proves it: a complete inventory in which no tab
+   * carries the name. Unreadable or ambiguous (a second tab still carrying it) is "not known".
    */
-  private async removeTabWithEvidence(
-    tabId: number,
-    targetId: string | null,
-    attempts = 3,
-    replaceable?: { readonly epoch: string | undefined },
-  ): Promise<boolean> {
+  private async removeNamed(title: string, attempts = 3): Promise<boolean> {
     if (!this.lifecycle) return false;
-    let currentId = tabId;
-    let currentTargetId = targetId;
-    const where = (check: readonly ChromiumTabEntry[]): TabWhereabouts =>
-      replaceable
-        ? locateTab(check, tabId, replaceable.epoch)
-        : locateTab(check, tabId, check[0]?.helperEpoch);
-    // Following a replacement is not a failed attempt; a chain is short, and this bounds it.
-    let follows = 4;
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const removed = await this.lifecycle.removeByTabId(currentId).catch(() => false);
-      const check = await this.lifecycle.inventory().catch(() => null);
-      if (check) {
-        const found = where(check);
-        if (found.status === "gone") return true;
-        // Removing this id succeeded, so it was not replaced before the removal.
-        if (found.status === "unknown" && removed) return true;
-        if (found.status === "found" && found.row.tabId !== currentId && follows-- > 0) {
-          currentId = found.row.tabId;
-          currentTargetId = found.row.targetId ?? currentTargetId;
-          attempt--;
-          continue;
+      // A closed context acts on no tab: the browser it named is ending.
+      if (this.closed) return false;
+      const inventory = await this.lifecycle.inventory().catch(() => null);
+      if (this.closed) return false;
+      if (inventory) {
+        const rows = rowsNamed(inventory, title);
+        if (rows.length === 0) return true;
+        if (rows.length === 1) {
+          const row = rows[0]!;
+          const removed = await this.lifecycle.removeByTabId(row.tabId).catch(() => false);
+          if (!removed && row.targetId && this.closeTarget)
+            await this.closeTarget(row.targetId).catch(() => undefined);
         }
       }
-      if (currentTargetId && this.closeTarget) {
-        const targetClosed = await this.closeTarget(currentTargetId).then(
-          () => true,
-          () => false,
-        );
-        if (targetClosed) {
-          const after = await this.lifecycle.inventory().catch(() => null);
-          if (after && where(after).status === "gone") return true;
-        }
-      }
-      if (attempt < attempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-      }
+      if (attempt < attempts - 1) await delay(40);
     }
-    return false;
+    const last = await this.lifecycle.inventory().catch(() => null);
+    return last !== null && rowsNamed(last, title).length === 0;
+  }
+
+  /** Gives `title` up: guarded at once, removed in the background until proven, or reported. */
+  private giveUpName(title: string): void {
+    if (this.closed || this.removals.has(title) || this.unremovable.has(title)) return;
+    this.removals.set(title, { attempts: 0 });
+    this.scheduleRemovalDrain(0);
+  }
+
+  private scheduleRemovalDrain(delayMs?: number): void {
+    if (this.closed || this.removalTimer || this.removalDrain || this.removals.size === 0) return;
+    let attempts = 0;
+    for (const tracker of this.removals.values()) attempts = Math.max(attempts, tracker.attempts);
+    this.removalTimer = setTimeout(
+      () => {
+        this.removalTimer = undefined;
+        // One drain at a time: a give-up while it runs is picked up by its next pass.
+        this.removalDrain = this.drainRemovals().finally(() => {
+          this.removalDrain = null;
+          this.scheduleRemovalDrain();
+        });
+      },
+      delayMs ?? Math.min(2_000, 100 * 2 ** Math.min(attempts, 4)),
+    );
+    this.removalTimer.unref?.();
+  }
+
+  private async drainRemovals(): Promise<void> {
+    for (const [title, tracker] of Array.from(this.removals)) {
+      if (this.closed) return;
+      // A name still being worked on its lane is removed there first.
+      await this.onLane(title, async () => {
+        if (this.removals.get(title) !== tracker) return;
+        tracker.attempts++;
+        const page = this.restoredPageOf(title);
+        if (page) await this.closePageWithEvidence(page);
+        if (await this.removeNamed(title, 1)) {
+          this.removals.delete(title);
+          this.retryDeferredName(title);
+        } else if (tracker.attempts >= removalRetryBound) {
+          // Rule A: recorded as not removed, never retried silently forever; still guarded.
+          this.removals.delete(title);
+          this.unremovable.add(title);
+          reportUnconfirmedRemoval(tracker.attempts);
+        }
+      });
+    }
+  }
+
+  private restoredPageOf(title: string): Page | undefined {
+    for (const page of this.context.pages()) {
+      if (!this.hiddenPages.has(page) || page.isClosed()) continue;
+      if (this.pageTitles.get(page) === title) return page;
+    }
+    return undefined;
+  }
+
+  /** The name a hidden page was last seen with, so its removal can close it first. */
+  private readonly pageTitles = new WeakMap<Page, string>();
+
+  /**
+   * Takes a restored tab from every claim at once and removes it on its lane; its page stays
+   * hidden and its name guarded until its removal is proven.
+   */
+  private evictRestored(surfaceId: BrowserSurfaceId): Promise<boolean> {
+    const entry = this.restored.get(surfaceId);
+    this.restored.delete(surfaceId);
+    if (entry?.page) this.pageTitles.set(entry.page, surfaceId);
+    this.removals.set(surfaceId, this.removals.get(surfaceId) ?? { attempts: 0 });
+    return this.onLane(surfaceId, async () => {
+      if (this.closed) return false;
+      if (entry?.page) await this.closePageWithEvidence(entry.page);
+      const removed = await this.removeNamed(surfaceId);
+      if (removed) {
+        this.removals.delete(surfaceId);
+        this.retryDeferredName(surfaceId);
+      } else this.scheduleRemovalDrain();
+      return removed;
+    });
   }
 
   private armFallbackReconcile(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs: number): void {
-    if (this.closed || this.restoredBySurfaceId.size === 0) return;
+    if (this.closed || this.restored.size === 0) return;
     if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
     this.reconcileFallbackTimer = setTimeout(() => {
       this.reconcileFallbackTimer = undefined;
@@ -1766,22 +1743,19 @@ class PlaywrightContextHandle implements BrowserContext {
       () => undefined,
       () => undefined,
     );
-
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        // Deadline passed (R5/B3, Rule B): fence the timed-out body and give up every restored tab
-        // nobody is claiming, so the session goes on opening tabs by address. Each one stays
-        // hidden and is removed on its own surface's queue, after any run there; a removal the
-        // body already started finishes inside that queue and records its own failure.
+        // Deadline passed (Rule B): the body is fenced and every restored tab nobody is claiming
+        // is given up, so the session goes on opening tabs by address.
         abort.abort();
-        for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
-          if (this.claimingSurfaceIds.has(surfaceId)) continue;
-          void this.queueEviction(surfaceId, entry).catch(() => undefined);
+        for (const surfaceId of Array.from(this.restored.keys())) {
+          if (!this.claimingTitles.has(surfaceId))
+            void this.evictRestored(surfaceId).catch(() => undefined);
         }
-        this.parkedAutoDiscardArmed = true;
+        this.parkingArmed = true;
         resolve();
       }, 6_000);
       timer.unref?.();
@@ -1804,782 +1778,319 @@ class PlaywrightContextHandle implements BrowserContext {
     });
   }
 
+  /**
+   * Closes every restored tab whose name is outside `savedTabIds` and that no session is
+   * claiming, then parks the rest: a loaded one is discarded so no unowned page runs, a
+   * never-loaded one is left untouched so its `sessionStorage` survives.
+   */
   private async reconcileSavedTabsOnce(
     savedTabIds: ReadonlySet<BrowserSurfaceId>,
     signal: AbortSignal,
   ): Promise<void> {
-    if (!this.lifecycle || !this.profileDirectory || signal.aborted || this.closed) return;
-    let failedRemovals = 0;
-    for (const [surfaceId] of Array.from(this.restoredBySurfaceId)) {
-      if (signal.aborted || this.closed) return;
-      if (savedTabIds.has(surfaceId) || this.claimingSurfaceIds.has(surfaceId)) continue;
-      this.removingSurfaceIds.add(surfaceId);
-      try {
-        const confirmed = await this.runOnParkedSurfaceQueue(surfaceId, async () => {
-          if (signal.aborted || this.closed || this.claimingSurfaceIds.has(surfaceId)) return true;
-          const latest = this.restoredBySurfaceId.get(surfaceId);
-          if (!latest) return true;
-          return (await this.evictUnparkableRestoredTab(surfaceId, latest)) === 0;
-        });
-        if (!confirmed) failedRemovals++;
-      } finally {
-        this.removingSurfaceIds.delete(surfaceId);
+    if (!this.lifecycle || signal.aborted || this.closed) return;
+    const removals: Promise<boolean>[] = [];
+    for (const surfaceId of Array.from(this.restored.keys())) {
+      if (savedTabIds.has(surfaceId) || this.claimingTitles.has(surfaceId)) continue;
+      removals.push(this.evictRestored(surfaceId));
+    }
+    const failed = (await Promise.all(removals)).filter((removed) => !removed).length;
+    if (signal.aborted || this.closed) return;
+    const inventory =
+      this.restored.size > 0 ? await this.lifecycle.inventory().catch(() => null) : [];
+    if (signal.aborted || this.closed) return;
+    this.parkingArmed = true;
+    for (const [surfaceId, entry] of Array.from(this.restored)) {
+      if (this.claimingTitles.has(surfaceId)) continue;
+      if (!inventory) {
+        // Not known is never "absent" (Rule A): the tab is given up.
+        void this.evictRestored(surfaceId).catch(() => undefined);
+        continue;
       }
+      const rows = rowsNamed(inventory, surfaceId);
+      const row = rows.length === 1 ? rows[0]! : undefined;
+      if (row && (row.discarded || (row.status === "unloaded" && !entry.page))) continue;
+      // Off the path to ready: parking a loaded tab waits for a discard slot.
+      void this.parkRestored(surfaceId, entry, { waitForLoad: false });
     }
-    if (signal.aborted || this.closed) return;
-    if (this.restoredBySurfaceId.size > 0) {
-      const parkFailed = await this.parkUnclaimedRestoredTabs(signal);
-      failedRemovals += parkFailed;
-    }
-    if (signal.aborted || this.closed) return;
-    this.scheduleSidecarWrite();
-    if (failedRemovals > 0) {
+    if (failed > 0)
       throw new Error("Chromium restored unauthorized tabs that could not be removed.");
-    }
   }
 
-  /**
-   * Keeps never-loaded `status: "unloaded"` parked tabs untouched so their
-   * `sessionStorage` survives, and schedules background bounded-concurrency
-   * discards for any kept parked tab Chromium has already loaded (off the
-   * critical path to ready so slow guests never trip the reconcile deadline).
-   * Arms automatic discard whenever an unloaded parked tab comes alive later.
-   */
-  private async parkUnclaimedRestoredTabs(signal: AbortSignal): Promise<number> {
-    if (!this.lifecycle || this.restoredBySurfaceId.size === 0 || signal.aborted || this.closed) {
-      return 0;
+  private async withParkingSlot<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.parkedActive >= 4 && !this.closed) {
+      await new Promise<void>((resolve) => this.parkedWaiters.push(resolve));
     }
-    let failedRemovals = 0;
-    const inventory = await this.lifecycle.inventory().catch(() => null);
-    if (signal.aborted || this.closed) return 0;
-    if (!inventory) {
-      // Not known is never "absent" (B2): give every unclaimed tab up now, remove on its queue.
-      this.parkedAutoDiscardArmed = true;
-      const evictions: Promise<number>[] = [];
-      for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
-        if (this.claimingSurfaceIds.has(surfaceId)) continue;
-        evictions.push(this.queueEviction(surfaceId, entry));
-      }
-      for (const failed of await Promise.all(evictions)) failedRemovals += failed;
-      return failedRemovals;
-    }
-    for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
-      if (signal.aborted || this.closed) return 0;
-      if (this.claimingSurfaceIds.has(surfaceId)) continue;
-      const where = locateTab(inventory, entry.tab.tabId, entry.tab.helperEpoch);
-      if (where.status === "unknown") {
-        failedRemovals += await this.queueEviction(surfaceId, entry);
-        continue;
-      }
-      const current = where.status === "found" ? where.row : undefined;
-      if (!current) {
-        this.restoredBySurfaceId.delete(surfaceId);
-        this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) {
-          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-          this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        }
-        this.restoredPagesByTabId.delete(entry.tab.tabId);
-        continue;
-      }
-      if (current.discarded) {
-        this.rebindRestoredEntry(surfaceId, entry, current);
-        this.restoredPagesByTabId.delete(current.tabId);
-        continue;
-      }
-      if (current.targetId) {
-        this.neverHandOffTargetIds.add(current.targetId);
-        this.unclaimedRestoredTargetIds.add(current.targetId);
-      }
-      const hasLivePage =
-        this.restoredPagesByTabId.has(current.tabId) ||
-        (current.targetId !== null &&
-          this.context
-            .pages()
-            .some(
-              (candidate) =>
-                candidate !== this.privatePage &&
-                !candidate.isClosed() &&
-                syncTargetIdOfPage(candidate) === current.targetId,
-            ));
-      if (current.status === "unloaded" && !current.active && !hasLivePage) {
-        // Inert unloaded tab: leave untouched so Chromium keeps its SessionStorageNamespace
-        // intact. If Chromium's background loader brings it alive later before a session claims
-        // it, handleHiddenRestoredPageArrival discards it immediately.
-        this.rebindRestoredEntry(surfaceId, entry, current);
-        continue;
-      }
-      // Take already-loaded parked tab discards off the path to ready with bounded concurrency.
-      void this.enqueueParkedDiscard(surfaceId, { initialCurrent: current });
-    }
-    this.parkedAutoDiscardArmed = true;
-    // Sweep any parked tab whose Playwright Page arrived while the loop above ran.
-    for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
-      if (this.claimingSurfaceIds.has(surfaceId) || entry.tab.discarded) continue;
-      const arrivedPage = this.restoredPagesByTabId.get(entry.tab.tabId);
-      if (arrivedPage && !arrivedPage.isClosed()) {
-        void this.enqueueParkedDiscard(surfaceId, { page: arrivedPage, waitForLoad: true });
-      }
-    }
-    return failedRemovals;
-  }
-
-  private async withParkedDiscardSlot<T>(fn: () => Promise<T>): Promise<T> {
-    while (this.parkedDiscardActive >= 4 && !this.closed) {
-      await new Promise<void>((resolve) => {
-        this.parkedDiscardWaiters.push(resolve);
-      });
-    }
-    this.parkedDiscardActive++;
+    this.parkedActive++;
     try {
       return await fn();
     } finally {
-      this.parkedDiscardActive--;
-      const next = this.parkedDiscardWaiters.shift();
-      next?.();
-    }
-  }
-
-  private handleHiddenRestoredPageArrival(page: Page, targetId: string): void {
-    this.hiddenRestoredPages.add(page);
-    if (!this.unclaimedRestoredTargetIds.has(targetId)) {
-      // A surviving orphan or failed-removal tab arrived late: close it and never hand it off.
-      void page.close({ runBeforeUnload: false }).catch(() => undefined);
-      return;
-    }
-    let matchedSurfaceId: BrowserSurfaceId | undefined;
-    for (const [surfaceId, entry] of this.restoredBySurfaceId) {
-      if (entry.tab.targetId === targetId) {
-        matchedSurfaceId = surfaceId;
-        this.restoredPagesByTabId.set(entry.tab.tabId, page);
-        break;
-      }
-    }
-    if (!matchedSurfaceId) {
-      for (const tab of this.unclaimedRestoredTabs.values()) {
-        if (tab.targetId === targetId) {
-          this.restoredPagesByTabId.set(tab.tabId, page);
-          break;
-        }
-      }
-      return;
-    }
-    if (this.parkedAutoDiscardArmed && !this.claimingSurfaceIds.has(matchedSurfaceId)) {
-      void this.enqueueParkedDiscard(matchedSurfaceId, { page, waitForLoad: true });
+      this.parkedActive--;
+      this.parkedWaiters.shift()?.();
     }
   }
 
   /**
-   * Serializes every discard or reconcile removal for one parked `surfaceId` so
-   * reconcile, background-loader arrivals, and `claimSavedRestoredTab` never race
-   * on the same tabId or replacement tabId.
+   * Discards a restored tab Chromium has loaded before any session claimed it. Runs on the tab's
+   * lane and acts only while the entry it was given is still the tab's unclaimed entry.
    */
-  private runOnParkedSurfaceQueue<T>(
+  private parkRestored(
     surfaceId: BrowserSurfaceId,
-    fn: () => Promise<T>,
-  ): Promise<T> {
-    const prev = this.parkedDiscardTails.get(surfaceId) ?? Promise.resolve();
-    const run = prev.catch(() => undefined).then(fn);
-    const tail = run.then(
-      () => undefined,
-      () => undefined,
+    entry: RestoredTab,
+    options: { readonly waitForLoad: boolean },
+  ): Promise<void> {
+    const current = () =>
+      !this.closed &&
+      this.lifecycle !== undefined &&
+      this.restored.get(surfaceId) === entry &&
+      !this.claimingTitles.has(surfaceId);
+    if (!current()) return Promise.resolve();
+    return this.onLane(surfaceId, () =>
+      this.withParkingSlot(() => this.parkOnLane(surfaceId, entry, options, current)),
     );
-    const tracked = tail.finally(() => {
-      if (this.parkedDiscardTails.get(surfaceId) === tracked) {
-        this.parkedDiscardTails.delete(surfaceId);
-      }
-    });
-    this.parkedDiscardTails.set(surfaceId, tracked);
-    return run;
   }
 
-  private enqueueParkedDiscard(
+  private async parkOnLane(
     surfaceId: BrowserSurfaceId,
-    options?: {
-      readonly page?: Page;
-      readonly waitForLoad?: boolean;
-      readonly initialCurrent?: ChromiumTabEntry;
-    },
-  ): Promise<number> {
-    if (
-      this.closed ||
-      !this.lifecycle ||
-      this.claimingSurfaceIds.has(surfaceId) ||
-      this.removingSurfaceIds.has(surfaceId)
-    ) {
-      return Promise.resolve(0);
+    entry: RestoredTab,
+    options: { readonly waitForLoad: boolean },
+    current: () => boolean,
+  ): Promise<void> {
+    if (!current()) return;
+    const inventory = await this.lifecycle!.inventory().catch(() => null);
+    if (!current()) return;
+    const rows = inventory ? rowsNamed(inventory, surfaceId) : null;
+    if (!rows || rows.length > 1) {
+      // Not known, or not one tab: given up.
+      void this.evictRestored(surfaceId);
+      return;
     }
-    const hadPriorTail = this.parkedDiscardTails.has(surfaceId);
-    return this.runOnParkedSurfaceQueue(surfaceId, () =>
-      this.withParkedDiscardSlot(async (): Promise<number> => {
-        if (
-          this.closed ||
-          !this.lifecycle ||
-          this.claimingSurfaceIds.has(surfaceId) ||
-          this.removingSurfaceIds.has(surfaceId) ||
-          !this.restoredBySurfaceId.has(surfaceId)
-        ) {
-          return 0;
-        }
-        const page = options?.page;
-        if (
-          options?.waitForLoad &&
-          page &&
-          !page.isClosed() &&
-          typeof page.waitForLoadState === "function"
-        ) {
-          // Let Chromium finish restoring PageState and attaching SessionStorageNamespace
-          // (bounded tightly) so discarding keeps scroll, form controls, and sessionStorage.
-          await page.waitForLoadState("load", { timeout: 1_000 }).catch(() => undefined);
-        }
-        if (
-          this.closed ||
-          !this.lifecycle ||
-          this.claimingSurfaceIds.has(surfaceId) ||
-          this.removingSurfaceIds.has(surfaceId) ||
-          !this.restoredBySurfaceId.has(surfaceId)
-        ) {
-          return 0;
-        }
-        const entry = this.restoredBySurfaceId.get(surfaceId);
-        if (!entry) return 0;
-        let current: ChromiumTabEntry | undefined;
-        if (
-          !hadPriorTail &&
-          !options?.waitForLoad &&
-          options?.initialCurrent &&
-          options.initialCurrent.tabId === entry.tab.tabId
-        ) {
-          current = options.initialCurrent;
-        } else {
-          const inv = await this.readInventoryWithRetry(surfaceId, 3);
-          if (
-            this.closed ||
-            !this.lifecycle ||
-            this.claimingSurfaceIds.has(surfaceId) ||
-            this.removingSurfaceIds.has(surfaceId) ||
-            !this.restoredBySurfaceId.has(surfaceId)
-          ) {
-            return 0;
-          }
-          if (inv === null) {
-            // Unreadable inventory is "unknown", never "absent": close any live Playwright page
-            // directly, keep the target in neverHandOffTargetIds, and retry removal in background.
-            return await this.evictUnparkableRestoredTab(
-              surfaceId,
-              entry,
-              page ? { page } : undefined,
+    const row = rows[0];
+    if (!row) {
+      // A complete inventory and no tab carries the name: the tab is gone.
+      this.restored.delete(surfaceId);
+      return;
+    }
+    if (row.discarded) return;
+    // The tab's page, as cached or as the target its named row names: frozen before the discard,
+    // or its page state (scroll, form fields) would not reach Chromium's own record.
+    const findPage = () =>
+      entry.page && !entry.page.isClosed()
+        ? entry.page
+        : this.context
+            .pages()
+            .find(
+              (candidate) =>
+                !candidate.isClosed() &&
+                row.targetId !== null &&
+                syncTargetIdOfPage(candidate) === row.targetId,
             );
-          }
-          const where = locateTab(inv, entry.tab.tabId, entry.tab.helperEpoch);
-          if (where.status === "unknown") {
-            return await this.evictUnparkableRestoredTab(
-              surfaceId,
-              entry,
-              page ? { page } : undefined,
-            );
-          }
-          current = where.status === "found" ? where.row : undefined;
-        }
-        if (!current) {
-          if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
-            this.restoredBySurfaceId.delete(surfaceId);
-            this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-            if (entry.tab.targetId) {
-              this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-              this.neverHandOffTargetIds.delete(entry.tab.targetId);
-            }
-            this.restoredPagesByTabId.delete(entry.tab.tabId);
-          }
-          return 0;
-        }
-        if (current.discarded) {
-          this.rebindRestoredEntry(surfaceId, entry, current);
-          this.restoredPagesByTabId.delete(current.tabId);
-          return 0;
-        }
-        return await this.discardParkedRestoredTab(surfaceId, entry, current, {
-          skipLoadWait: Boolean(options?.waitForLoad),
-          ...(page ? { page } : {}),
-        });
-      }),
-    );
-  }
-
-  private async readInventoryWithRetry(
-    surfaceId: BrowserSurfaceId,
-    attempts = 3,
-  ): Promise<readonly ChromiumTabEntry[] | null> {
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      if (
-        this.closed ||
-        !this.lifecycle ||
-        this.claimingSurfaceIds.has(surfaceId) ||
-        !this.restoredBySurfaceId.has(surfaceId)
-      ) {
-        return null;
-      }
-      const inv = await this.lifecycle.inventory().catch(() => null);
-      if (inv !== null) return inv;
-      if (attempt < attempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-      }
-    }
-    return null;
-  }
-
-  private findLivePageForRestoredTab(
-    tabId: number,
-    targetId: string | null,
-    preferred?: Page,
-  ): Page | undefined {
-    if (preferred && !preferred.isClosed()) return preferred;
-    const cached = this.restoredPagesByTabId.get(tabId);
-    if (cached && !cached.isClosed()) return cached;
-    if (targetId) {
-      for (const candidate of this.context.pages()) {
-        if (candidate === this.privatePage || candidate.isClosed()) continue;
-        if (syncTargetIdOfPage(candidate) === targetId) return candidate;
-      }
-    }
-    return undefined;
-  }
-
-  private enqueuePendingRestoredRemoval(
-    tabId: number,
-    targetId: string | null,
-    epoch: string | undefined,
-  ): void {
-    if (this.closed) return;
-    if (targetId) this.neverHandOffTargetIds.add(targetId);
-    else this.neverHandOffTabIds.add(tabId);
-    if (!this.pendingRestoredRemovals.has(tabId)) {
-      this.pendingRestoredRemovals.set(tabId, { targetId, epoch, attempts: 0 });
-    }
-    this.schedulePendingRestoredRemovalRetry();
-  }
-
-  private schedulePendingRestoredRemovalRetry(): void {
-    if (
-      this.closed ||
-      this.pendingRestoredRemovalTimer ||
-      this.pendingRestoredRemovals.size === 0
-    ) {
-      return;
-    }
-    let maxAttempts = 0;
-    for (const item of this.pendingRestoredRemovals.values()) {
-      maxAttempts = Math.max(maxAttempts, item.attempts);
-    }
-    const delayMs = Math.min(2_000, 100 * 2 ** Math.min(maxAttempts, 4));
-    this.pendingRestoredRemovalTimer = setTimeout(() => {
-      this.pendingRestoredRemovalTimer = undefined;
-      void this.drainPendingRestoredRemovals().catch(() => undefined);
-    }, delayMs);
-    this.pendingRestoredRemovalTimer.unref?.();
-  }
-
-  private async drainPendingRestoredRemovals(): Promise<void> {
-    if (this.closed || !this.lifecycle) return;
-    for (const [tabId, tracker] of Array.from(this.pendingRestoredRemovals)) {
-      if (this.closed) return;
-      tracker.attempts++;
-      const livePage = this.findLivePageForRestoredTab(tabId, tracker.targetId);
-      if (livePage) {
-        await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
-      }
-      const confirmed = await this.removeTabWithEvidence(tabId, tracker.targetId, 1, {
-        epoch: tracker.epoch,
-      });
-      if (confirmed) {
-        if (tracker.targetId) this.neverHandOffTargetIds.delete(tracker.targetId);
-        this.neverHandOffTabIds.delete(tabId);
-        this.pendingRestoredRemovals.delete(tabId);
-      } else if (tracker.attempts >= removalRetryBound) {
-        // Rule A: recorded as not removed, never retried silently forever. Its guards stay, so a
-        // page it loads later is still closed on arrival.
-        this.pendingRestoredRemovals.delete(tabId);
-        reportUnconfirmedRemoval("restored", tracker.attempts);
-      }
-    }
-    if (this.pendingRestoredRemovals.size > 0 && !this.closed) {
-      this.schedulePendingRestoredRemovalRetry();
-    }
-  }
-
-  /**
-   * Takes the entry from every claim at once; its page stays hidden and its targets stay
-   * never-hand-off, and the close and removal run on the surface's queue, after any run there.
-   */
-  private queueEviction(
-    surfaceId: BrowserSurfaceId,
-    entry: MatchedRestoredTab,
-    options?: Parameters<PlaywrightContextHandle["evictUnparkableRestoredTab"]>[2],
-  ): Promise<number> {
-    this.restoredBySurfaceId.delete(surfaceId);
-    if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
-    else this.neverHandOffTabIds.add(entry.tab.tabId);
-    return this.runOnParkedSurfaceQueue(surfaceId, () =>
-      this.evictUnparkableRestoredTab(surfaceId, entry, options),
-    );
-  }
-
-  private async evictUnparkableRestoredTab(
-    surfaceId: BrowserSurfaceId,
-    entry: MatchedRestoredTab,
-    options?: {
-      readonly page?: Page;
-      readonly latestTabId?: number;
-      readonly latestTargetId?: string | null;
-      readonly latestEpoch?: string | undefined;
-    },
-  ): Promise<number> {
-    const tabId = options?.latestTabId ?? entry.tab.tabId;
-    const targetId = options?.latestTargetId ?? entry.tab.targetId;
-    const epoch = options?.latestTabId !== undefined ? options.latestEpoch : entry.tab.helperEpoch;
-    if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
-    if (targetId) this.neverHandOffTargetIds.add(targetId);
-    else this.neverHandOffTabIds.add(tabId);
-
-    const livePage =
-      this.findLivePageForRestoredTab(tabId, targetId, options?.page) ??
-      this.findLivePageForRestoredTab(entry.tab.tabId, entry.tab.targetId, options?.page);
-
-    this.restoredBySurfaceId.delete(surfaceId);
-    this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-    this.unclaimedRestoredTabs.delete(tabId);
-    if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-    if (targetId) this.unclaimedRestoredTargetIds.delete(targetId);
-    this.restoredPagesByTabId.delete(entry.tab.tabId);
-    this.restoredPagesByTabId.delete(tabId);
-
-    if (livePage && !livePage.isClosed()) {
-      await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
-    }
-
-    const confirmed = await this.removeTabWithEvidence(tabId, targetId, 3, { epoch });
-    if (confirmed) {
-      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      if (targetId) this.neverHandOffTargetIds.delete(targetId);
-      this.neverHandOffTabIds.delete(entry.tab.tabId);
-      this.neverHandOffTabIds.delete(tabId);
-      this.scheduleSidecarWrite();
-      return 0;
-    }
-    this.enqueuePendingRestoredRemoval(tabId, targetId, epoch);
-    return 1;
-  }
-
-  private async discardParkedRestoredTab(
-    surfaceId: BrowserSurfaceId,
-    entry: MatchedRestoredTab,
-    current: ChromiumTabEntry,
-    options?: { readonly skipLoadWait?: boolean; readonly page?: Page },
-  ): Promise<number> {
-    if (!this.lifecycle || this.closed) return 0;
-    if (this.claimingSurfaceIds.has(surfaceId) || !this.restoredBySurfaceId.has(surfaceId)) {
-      return 0;
-    }
-    if (current.active) {
-      await this.activatePrivateAnchor();
-    }
-    let frozePage: Page | undefined;
-    if (current.status !== "unloaded" && current.targetId) {
-      frozePage = await this.freezeRestoredTabBeforeDiscard(
-        current.tabId,
-        current.targetId,
-        current.status,
-        options?.skipLoadWait,
-      );
-    }
-    if (
-      this.closed ||
-      this.claimingSurfaceIds.has(surfaceId) ||
-      this.removingSurfaceIds.has(surfaceId) ||
-      !this.restoredBySurfaceId.has(surfaceId)
-    ) {
-      // The entry was claimed, given up or removed meanwhile: what this run froze it unfreezes,
-      // whoever holds the page now.
-      if (frozePage && !frozePage.isClosed() && !this.closed) {
-        await this.unfreezeRestoredPage(frozePage);
-      }
-      return 0;
-    }
-    const discardResult =
-      typeof this.lifecycle.discardByTabIdDetailed === "function"
-        ? await this.lifecycle.discardByTabIdDetailed(current.tabId).catch(() => null)
-        : await this.lifecycle
-            .discardByTabId(current.tabId)
-            .then((newTabId) => (newTabId !== null ? { newTabId, newTargetId: null } : null))
-            .catch(() => null);
-    if (discardResult !== null) {
-      const { newTabId, newTargetId } = discardResult;
-      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-      if (entry.tab.targetId) {
-        this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-        this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      }
-      if (current.targetId) {
-        this.unclaimedRestoredTargetIds.delete(current.targetId);
-        this.neverHandOffTargetIds.delete(current.targetId);
-      }
-      this.restoredPagesByTabId.delete(entry.tab.tabId);
-      const stillTracked = this.restoredBySurfaceId.has(surfaceId);
-      if (!stillTracked) {
-        // Entry was evicted (e.g., deadline timeout) while discard was in flight: do not
-        // resurrect it; remove the replacement tabId with evidence instead.
-        if (newTargetId) this.neverHandOffTargetIds.add(newTargetId);
-        else this.neverHandOffTabIds.add(newTabId);
-        const removed = await this.removeTabWithEvidence(newTabId, newTargetId, 3, {
-          epoch: current.helperEpoch,
-        });
-        if (removed) {
-          if (newTargetId) this.neverHandOffTargetIds.delete(newTargetId);
-          this.neverHandOffTabIds.delete(newTabId);
-        } else {
-          this.enqueuePendingRestoredRemoval(newTabId, newTargetId, current.helperEpoch);
-        }
-        return 0;
-      }
-      if (newTargetId) {
-        this.unclaimedRestoredTargetIds.add(newTargetId);
-        this.neverHandOffTargetIds.add(newTargetId);
-      } else {
-        // A replacement Chromium names no target for yet: a page it loads later is guarded by tab.
-        this.neverHandOffTabIds.add(newTabId);
-      }
-      this.neverHandOffTabIds.delete(entry.tab.tabId);
-      const parked: ChromiumTabEntry = {
-        ...current,
-        tabId: newTabId,
-        active: false,
-        discarded: true,
-        status: "unloaded",
-        targetId: newTargetId,
-      };
-      this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: parked });
-      this.unclaimedRestoredTabs.set(newTabId, parked);
-      this.scheduleSidecarWrite();
-      return 0;
-    }
-    const recheck = await this.readInventoryWithRetry(surfaceId, 3);
-    if (
-      this.closed ||
-      this.claimingSurfaceIds.has(surfaceId) ||
-      !this.restoredBySurfaceId.has(surfaceId)
-    ) {
-      return 0;
-    }
-    if (recheck === null) {
-      return await this.evictUnparkableRestoredTab(surfaceId, entry, {
-        ...(options?.page ? { page: options.page } : {}),
-        latestTabId: current.tabId,
-        latestTargetId: current.targetId,
-      });
-    }
-    // The discard may have committed and replaced the tab before the helper failed.
-    const where = locateTab(recheck, current.tabId, current.helperEpoch);
-    if (where.status === "unknown") {
-      return await this.evictUnparkableRestoredTab(surfaceId, entry, {
-        ...(options?.page ? { page: options.page } : {}),
-        latestTabId: current.tabId,
-        latestTargetId: current.targetId,
-        latestEpoch: current.helperEpoch,
-      });
-    }
-    const after = where.status === "found" ? where.row : undefined;
-    if (!after) {
-      if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
-        this.restoredBySurfaceId.delete(surfaceId);
-        this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) {
-          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-          this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        }
-        if (current.targetId) this.neverHandOffTargetIds.delete(current.targetId);
-        this.restoredPagesByTabId.delete(entry.tab.tabId);
-      }
-      return 0;
-    }
-    if (after.discarded || (after.targetId === null && after.status === "unloaded")) {
-      this.rebindRestoredEntry(surfaceId, entry, after);
-      this.restoredPagesByTabId.delete(after.tabId);
-      return 0;
-    }
-    // Still live and could not be discarded: close so it opens by address when claimed.
-    return await this.evictUnparkableRestoredTab(surfaceId, entry, {
-      ...(options?.page ? { page: options.page } : {}),
-      latestTabId: after.tabId,
-      latestTargetId: after.targetId,
-    });
-  }
-
-  /**
-   * Flushes Blink's restored PageState (scroll, form controls) back into
-   * Chromium's NavigationEntry before discarding an already-loaded parked tab.
-   */
-  private async freezeRestoredTabBeforeDiscard(
-    tabId: number,
-    targetId: string,
-    status: string,
-    skipLoadWait = false,
-  ): Promise<Page | undefined> {
-    const findPage = (): Page | undefined => {
-      const cached = this.restoredPagesByTabId.get(tabId);
-      if (cached && !cached.isClosed()) return cached;
-      for (const candidate of this.context.pages()) {
-        if (candidate === this.privatePage || candidate.isClosed()) continue;
-        if (syncTargetIdOfPage(candidate) === targetId) return candidate;
-      }
-      return undefined;
-    };
     let page = findPage();
-    if (!skipLoadWait && (status === "loading" || !page)) {
-      // Chromium's BackgroundTabLoadingPolicy may have started loading a few restored tabs
-      // before reconcile runs. Bound the wait tightly so slow remote sites never stall
-      // reconciliation while fast pages finish restoring Blink FormController state before freeze.
-      const deadline = performance.now() + 500;
-      while (performance.now() < deadline) {
-        page = findPage();
-        if (page) {
-          const remaining = Math.max(25, Math.floor(deadline - performance.now()));
-          if (typeof page.waitForLoadState === "function") {
-            await page.waitForLoadState("load", { timeout: remaining }).catch(() => undefined);
-          }
-          break;
-        }
-        const inv = await this.lifecycle?.inventory().catch(() => null);
-        const entry = inv?.find((tab) => tab.tabId === tabId);
-        if (!entry || entry.discarded || entry.status === "unloaded") return undefined;
-        if (entry.status === "complete") {
-          page = findPage();
-          if (page) break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+    // A tab Chromium is loading may not have its page yet: wait for it briefly, since a discard
+    // mid-load without a freeze would save a half-restored state over the tab's own.
+    const pageDeadline = performance.now() + parkPageWaitMs;
+    while (
+      !page &&
+      row.targetId &&
+      row.status !== "unloaded" &&
+      performance.now() < pageDeadline &&
+      current()
+    ) {
+      await delay(25);
+      page = findPage();
     }
-    page ??= findPage();
-    if (!page || page.isClosed()) return undefined;
+    if (page && page !== entry.page) {
+      this.hiddenPages.add(page);
+      entry.page = page;
+    }
+    if (page && (options.waitForLoad || row.status !== "complete")) {
+      // Let Chromium finish restoring page state before it is frozen and discarded.
+      await page.waitForLoadState("load", { timeout: 1_000 }).catch(() => undefined);
+    }
+    if (!current()) return;
+    if (row.active) await this.activatePrivateAnchor();
+    const frozen = page && !page.isClosed() ? await this.freezeBeforeDiscard(page) : undefined;
+    if (!current()) {
+      // Claimed, given up or removed meanwhile: what this run froze it unfreezes.
+      if (frozen && !this.closed) await this.unfreezeRestoredPage(frozen);
+      return;
+    }
+    await this.lifecycle!.discardByTabId(row.tabId).catch(() => null);
+    if (!current()) return;
+    const after = await this.lifecycle!.inventory().catch(() => null);
+    if (!current()) return;
+    const afterRows = after ? rowsNamed(after, surfaceId) : null;
+    if (afterRows?.length === 1 && afterRows[0]!.discarded) {
+      if (entry.page?.isClosed()) entry.page = undefined;
+      return;
+    }
+    if (afterRows?.length === 0) {
+      this.restored.delete(surfaceId);
+      return;
+    }
+    // Still loaded, ambiguous or not known: given up, so it opens by address when claimed.
+    void this.evictRestored(surfaceId);
+  }
+
+  /**
+   * Flushes Blink's page state (scroll, form controls) into Chromium's navigation entry before a
+   * discard. The page is marked before the request, so even a freeze that timed out is undone.
+   */
+  private async freezeBeforeDiscard(page: Page): Promise<Page | undefined> {
+    this.frozenPages.add(page);
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
-        timeoutError: () => new Error("Freeze parked tab CDP attach timed out."),
+        timeoutError: () => new Error("Freeze CDP attach timed out."),
       });
-      // Mark before sending freeze so even an uncertain/timed-out freeze must be explicitly unfrozen on claim.
-      this.frozenRestoredPages.add(page);
       await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
-        timeoutError: () => new Error("Freeze parked tab timed out."),
+        timeoutError: () => new Error("Freeze timed out."),
       });
-      return page;
     } catch {
-      // Best-effort flush; discard still proceeds so no unowned page stays live.
-      return undefined;
+      // Best-effort flush; the discard still proceeds so no unowned page stays live.
     } finally {
-      await session?.detach().catch(() => undefined);
+      if (session)
+        await withTimeout(session.detach(), 500, {
+          timeoutError: () => new Error("Freeze detach timed out."),
+        }).catch(() => undefined);
     }
+    return page;
   }
 
   private async unfreezeRestoredPage(page: Page): Promise<boolean> {
     if (page.isClosed()) {
-      this.frozenRestoredPages.delete(page);
+      this.frozenPages.delete(page);
       return false;
     }
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
-        timeoutError: () => new Error("Unfreeze parked tab CDP attach timed out."),
+        timeoutError: () => new Error("Unfreeze CDP attach timed out."),
       });
       await withTimeout(session.send("Page.setWebLifecycleState", { state: "active" }), 1_000, {
-        timeoutError: () => new Error("Unfreeze parked tab timed out."),
+        timeoutError: () => new Error("Unfreeze timed out."),
       });
-      this.frozenRestoredPages.delete(page);
+      this.frozenPages.delete(page);
       return true;
     } catch {
       return false;
     } finally {
-      await session?.detach().catch(() => undefined);
+      if (session)
+        await withTimeout(session.detach(), 500, {
+          timeoutError: () => new Error("Unfreeze detach timed out."),
+        }).catch(() => undefined);
     }
   }
 
-  private async claimSavedRestoredTab(
+  /**
+   * A session's claim of its own restored tab: the tab whose group title is `surfaceId`, or
+   * nothing (the caller opens the tab by address).
+   */
+  private async claimRestored(
     surfaceId: BrowserSurfaceId,
-    url?: string,
     own?: (page: BrowserPage) => void,
   ): Promise<BrowserPage | null> {
-    if (!this.lifecycle || !this.restoredBySurfaceId.has(surfaceId)) return null;
-    this.claimingSurfaceIds.add(surfaceId);
+    if (!this.lifecycle || !this.restored.has(surfaceId)) return null;
+    this.claimingTitles.add(surfaceId);
     try {
-      const pendingPark = this.parkedDiscardTails.get(surfaceId);
-      if (pendingPark) {
+      const lane = this.laneTails.get(surfaceId);
+      if (lane) {
         const settled = await withTimeout(
-          pendingPark.then(() => true),
+          lane.then(() => true),
           claimQueueWaitMs,
           { timeoutError: () => new Error("Pending parked discard wait timed out.") },
         ).catch(() => false);
         if (!settled) {
-          // Rule B: the run on this surface is still in its freeze or discard, so the claim gives
-          // the tab up instead of taking it beside that run. The tab opens by address; its
-          // restored page stays hidden and is removed after the run, on the same queue.
-          const abandoned = this.restoredBySurfaceId.get(surfaceId);
-          if (abandoned) void this.queueEviction(surfaceId, abandoned).catch(() => undefined);
+          // Rule B: the run on this tab is still in its freeze or discard, so the claim gives the
+          // tab up instead of taking it beside that run.
+          if (this.restored.has(surfaceId)) void this.evictRestored(surfaceId);
           return null;
         }
       }
-      const entry = this.restoredBySurfaceId.get(surfaceId);
+      const entry = this.restored.get(surfaceId);
       if (!entry) return null;
-      this.restoredBySurfaceId.delete(surfaceId);
-      if (url !== undefined && entry.tab.url !== url) {
-        void this.queueEviction(surfaceId, entry).catch(() => undefined);
-        return null;
-      }
+      this.restored.delete(surfaceId);
       try {
-        const restoredPage = await this.claimRestoredTab(entry.tab);
-        this.neverHandOffTabIds.delete(entry.tab.tabId);
-        if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        // The page may have been named by a target learnt after the entry was taken.
-        const claimedTargetId = syncTargetIdOfPage(restoredPage);
-        if (claimedTargetId) {
-          this.neverHandOffTargetIds.delete(claimedTargetId);
-          this.unclaimedRestoredTargetIds.delete(claimedTargetId);
+        // Always through the named tab: a cached page may be a discarded tab's placeholder, which
+        // only activation loads with its own history and state.
+        const page = await this.wakeNamed(surfaceId);
+        this.claimedPages.add(page);
+        if (this.frozenPages.has(page) && !(await this.unfreezeRestoredPage(page))) {
+          throw new Error("Restored tab remained frozen and could not be unfrozen.");
         }
-        const handle = this.wrap(restoredPage);
+        this.hiddenPages.delete(page);
+        await this.ensurePagePolicyOnRestoredPage(page);
+        const handle = this.wrap(page);
         handle.restoredFromSession = true;
         this.trackSavedTab(surfaceId, handle);
         own?.(handle);
         return handle;
       } catch {
-        void this.queueEviction(surfaceId, entry).catch(() => undefined);
+        // The restored tab is given up; its page stays hidden until its removal is proven.
+        this.restored.set(surfaceId, entry);
+        void this.evictRestored(surfaceId);
         return null;
       }
     } finally {
-      this.claimingSurfaceIds.delete(surfaceId);
+      this.claimingTitles.delete(surfaceId);
     }
   }
 
+  /**
+   * Names a saved tab's own Chromium tab with its Home surface id, on that name's lane. A name
+   * another tab still carries (one being removed) is not given twice: it waits for that removal.
+   */
   private trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void {
     if (page === null) {
-      const existing = this.savedTabsBySurfaceId.get(surfaceId);
-      if (existing?.page) this.savedSurfaceByPage.delete(existing.page);
-      this.savedTabsBySurfaceId.delete(surfaceId);
-      this.restoredBySurfaceId.delete(surfaceId);
-      this.scheduleSidecarWrite();
+      this.deferredNames.delete(surfaceId);
       return;
     }
-    if (!(page instanceof PlaywrightPageHandle)) return;
-    const existing = this.savedTabsBySurfaceId.get(surfaceId);
-    if (existing?.page && existing.page !== page) {
-      this.savedSurfaceByPage.delete(existing.page);
-    }
-    this.savedTabsBySurfaceId.set(surfaceId, { page });
+    if (!(page instanceof PlaywrightPageHandle) || !this.lifecycle) return;
     this.savedSurfaceByPage.set(page, surfaceId);
-    const rawPage = page.rawPage;
-    if (!this.trackedNavigationPages.has(rawPage)) {
-      this.trackedNavigationPages.add(rawPage);
-      rawPage.on("framenavigated", (frame) => {
-        if (frame === rawPage.mainFrame()) this.scheduleSidecarWrite();
-      });
+    this.deferredNames.delete(surfaceId);
+    // A tab still at its initial blank entry is named after its first real navigation: naming it
+    // earlier makes Chromium save a broken history for it (seen on real Chromium), and a blank
+    // tab has nothing to restore.
+    if (isBlankAddress(page.url())) {
+      const raw = page.rawPage;
+      if (this.awaitingFirstNavigation.has(raw)) return;
+      this.awaitingFirstNavigation.add(raw);
+      const onNavigated = (frame: Frame) => {
+        if (frame !== raw.mainFrame() || isBlankAddress(frame.url())) return;
+        raw.off("framenavigated", onNavigated);
+        this.awaitingFirstNavigation.delete(raw);
+        if (this.savedSurfaceByPage.get(page) === surfaceId) this.trackSavedTab(surfaceId, page);
+      };
+      raw.on("framenavigated", onNavigated);
+      return;
     }
-    this.scheduleSidecarWrite();
+    const naming = this.onLane(surfaceId, async () => {
+      if (this.closed || page.isClosed() || page.closeRequested) return;
+      const targetId = await page.targetId().catch(() => null);
+      const inventory = targetId ? await this.lifecycle!.inventory().catch(() => null) : null;
+      const row = inventory?.find((entry) => entry.targetId === targetId);
+      if (!inventory || !row) return;
+      if (row.identity === surfaceId) return;
+      if (rowsNamed(inventory, surfaceId).length > 0 || this.isGuardedName(surfaceId)) {
+        this.deferredNames.set(surfaceId, page);
+        return;
+      }
+      await this.lifecycle!.nameTab(row.tabId, surfaceId).catch(() => false);
+    }).catch(() => undefined);
+    this.naming.add(naming);
+    void naming.finally(() => this.naming.delete(naming));
+  }
+
+  private retryDeferredName(surfaceId: string): void {
+    const page = this.deferredNames.get(surfaceId as BrowserSurfaceId);
+    if (page) this.trackSavedTab(surfaceId as BrowserSurfaceId, page);
+  }
+
+  /** Before an orderly close: tabs being named finish, so Chromium's session carries them. */
+  async settleNaming(): Promise<void> {
+    if (this.naming.size === 0) return;
+    await withTimeout(Promise.allSettled(this.naming), namingSettleMs, {
+      timeoutError: () => new Error("Tab naming did not settle."),
+    }).catch(() => undefined);
   }
 
   markClosed(): void {
@@ -2587,245 +2098,24 @@ class PlaywrightContextHandle implements BrowserContext {
     this.closed = true;
     this.reconcileAbort?.abort();
     this.reconcileAbort = undefined;
-    for (const wake of this.parkedDiscardWaiters.splice(0)) wake();
+    for (const wake of this.parkedWaiters.splice(0)) wake();
     if (this.reconcileFallbackTimer) {
       clearTimeout(this.reconcileFallbackTimer);
       this.reconcileFallbackTimer = undefined;
     }
-    if (this.pendingRemovalTimer) {
-      clearTimeout(this.pendingRemovalTimer);
-      this.pendingRemovalTimer = undefined;
+    if (this.removalTimer) {
+      clearTimeout(this.removalTimer);
+      this.removalTimer = undefined;
     }
-    if (this.pendingRestoredRemovalTimer) {
-      clearTimeout(this.pendingRestoredRemovalTimer);
-      this.pendingRestoredRemovalTimer = undefined;
-    }
-    if (this.sidecarRetryTimer) {
-      clearTimeout(this.sidecarRetryTimer);
-      this.sidecarRetryTimer = undefined;
-    }
-    this.pendingSleepingRemovals.clear();
-    this.pendingRestoredRemovals.clear();
-    this.sleepingTabs.clear();
-    this.unclaimedRestoredTabs.clear();
-    this.unclaimedRestoredTargetIds.clear();
-    this.neverHandOffTargetIds.clear();
-    this.neverHandOffTabIds.clear();
-    this.restoredPagesByTabId.clear();
-    this.restoredBySurfaceId.clear();
-    this.claimingSurfaceIds.clear();
-    this.removingSurfaceIds.clear();
-    this.parkedDiscardTails.clear();
-    this.parkedAutoDiscardArmed = false;
-    this.savedTabsBySurfaceId.clear();
-  }
-
-  drainSidecar(): Promise<void> {
-    return this.sidecarTail;
-  }
-
-  private scheduleSidecarWrite(): void {
-    if (!this.lifecycle || !this.profileDirectory || this.closed) return;
-    this.sidecarVersion++;
-    this.sidecarDirty = true;
-    // The failure count is not reset here: only a successful write resets it (Rule C).
-    if (this.sidecarRetryTimer) {
-      clearTimeout(this.sidecarRetryTimer);
-      this.sidecarRetryTimer = undefined;
-    }
-    if (this.sidecarScheduled) return;
-    this.sidecarScheduled = true;
-    queueMicrotask(() => {
-      this.sidecarScheduled = false;
-      void this.flushSavedTabs().catch(() => undefined);
-    });
-  }
-
-  /** The map is gone, so nothing stale is on disk; a later change makes it dirty again. */
-  private async deleteSidecarMap(
-    reason: "write-failures" | "flush-not-current" | "close-not-current",
-  ): Promise<void> {
-    if (!this.profileDirectory) return;
-    // A map is deleted because Chromium will go on, or close cleanly, past it. A browser that no
-    // longer answers writes no further session, so its last map is kept as it is.
-    if (this.browserAlive && !(await this.browserAlive())) {
-      process.stderr.write(
-        `${JSON.stringify({ event: "browser-runtime.tab-map-kept", reason: "browser-gone" })}\n`,
-      );
-      return;
-    }
-    try {
-      await deleteTabRestoreSidecar(this.profileDirectory);
-      this.sidecarDirty = false;
-      reportMapDeleted(reason);
-    } catch {
-      process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n');
-    }
-  }
-
-  /**
-   * The Home's orderly flush before Chromium closes: the map is brought current, or deleted.
-   * A second attempt covers a change that landed during the first write.
-   */
-  private async flushSavedTabsOrDeleteMap(): Promise<void> {
-    if (!this.lifecycle || !this.profileDirectory || this.closed) return;
-    for (let attempt = 0; attempt < 2 && this.sidecarDirty && !this.closed; attempt++) {
-      await this.flushSavedTabs().catch(() => undefined);
-    }
-    if (this.sidecarDirty && !this.closed) await this.deleteSidecarMap("flush-not-current");
-  }
-
-  /** A close's last write of a map that is not current, bounded; `retireSidecarBeforeClose` follows. */
-  async flushSidecarBeforeClose(): Promise<void> {
-    if (!this.lifecycle || !this.profileDirectory || this.closed || !this.sidecarDirty) return;
-    await withTimeout(this.flushSavedTabsOrDeleteMap(), sidecarCloseFlushMs, {
-      timeoutError: () => new Error("Tab map flush did not finish before close."),
-    }).catch(() => undefined);
-  }
-
-  /**
-   * Runs after `markClosed` and before Chromium closes: a map that is not current is deleted,
-   * so Chromium's clean session file never sits beside a stale map. A write that was already
-   * past its last check may still land; a second delete is chained behind it for that case.
-   */
-  async retireSidecarBeforeClose(): Promise<void> {
-    if (!this.lifecycle || !this.profileDirectory) return;
-    let writeInFlight = false;
-    const dirty = await withTimeout(
-      this.sidecarTail.then(() => this.sidecarDirty),
-      sidecarCloseWaitMs,
-      { timeoutError: () => new Error("Tab map write did not settle before close.") },
-    ).catch(() => {
-      writeInFlight = true;
-      return true;
-    });
-    if (!dirty) return;
-    await this.deleteSidecarMap("close-not-current");
-    if (!writeInFlight) return;
-    // The late write clears this only if it succeeds, and versions no longer move once closed.
-    this.sidecarDirty = true;
-    this.sidecarTail = this.sidecarTail.then(async () => {
-      if (this.sidecarDirty) await this.deleteSidecarMap("close-not-current");
-    });
-  }
-
-  private scheduleSidecarRetry(): void {
-    if (this.closed || this.sidecarRetryTimer) return;
-    const delayMs = 100 * this.sidecarFailures;
-    this.sidecarRetryTimer = setTimeout(() => {
-      this.sidecarRetryTimer = undefined;
-      if (this.closed || !this.sidecarDirty) return;
-      void this.flushSavedTabs().catch(() => undefined);
-    }, delayMs);
-    this.sidecarRetryTimer.unref?.();
-  }
-
-  trackInFlightDiscard(operation: Promise<void>): void {
-    this.inFlightDiscards.add(operation);
-    void operation.finally(() => {
-      this.inFlightDiscards.delete(operation);
-    });
-  }
-
-  private flushSavedTabs(): Promise<void> {
-    if (!this.lifecycle || !this.profileDirectory || this.closed) return this.sidecarTail;
-    this.sidecarDirty = true;
-    const write = this.sidecarTail.then(async () => {
-      if (this.inFlightDiscards.size > 0) {
-        await Promise.allSettled(this.inFlightDiscards);
-      }
-      if (!this.sidecarDirty || this.closed || !this.lifecycle || !this.profileDirectory) return;
-      const writeVersion = this.sidecarVersion;
-      const handleFailure = async (): Promise<void> => {
-        if (this.closed || !this.profileDirectory) return;
-        this.sidecarDirty = true;
-        this.sidecarFailures++;
-        if (this.sidecarFailures < sidecarFailureBound) {
-          this.scheduleSidecarRetry();
-          return;
-        }
-        // Cannot bring the sidecar current: delete the stale map so a later cold start matches
-        // nothing and opens by address instead of binding a stale slot. The count stays until a
-        // write succeeds, so every further failure deletes again (an absent map stays absent).
-        await this.deleteSidecarMap("write-failures");
-      };
-      const inventory = await this.lifecycle.inventory().catch(() => null);
-      if (this.closed) return;
-      if (!inventory) {
-        await handleFailure();
-        return;
-      }
-      const byTargetId = new Map<string, { surfaceId: string; url: string }>();
-      const byTabId = new Map<number, { surfaceId: string; url: string }>();
-      for (const [surfaceId, saved] of this.savedTabsBySurfaceId) {
-        if (saved.page && !saved.page.isClosed()) {
-          const targetId = await saved.page.targetId().catch(() => null);
-          if (targetId) {
-            byTargetId.set(targetId, {
-              surfaceId,
-              url: saved.page.url() || "",
-            });
-          }
-        } else if (saved.sleepingTokenId) {
-          const sleeping = this.sleepingTabs.get(saved.sleepingTokenId);
-          if (sleeping?.state === "discarded") {
-            byTabId.set(sleeping.tabId, {
-              surfaceId,
-              url: sleeping.url,
-            });
-          }
-        }
-      }
-      for (const [surfaceId, parked] of this.restoredBySurfaceId) {
-        if (!byTabId.has(parked.tab.tabId)) {
-          byTabId.set(parked.tab.tabId, {
-            surfaceId,
-            url: parked.tab.url,
-          });
-        }
-      }
-      const orderedInventory = [...inventory].sort(
-        (a, b) => a.windowId - b.windowId || a.index - b.index,
-      );
-      const entries: TabRestoreSidecarEntry[] = [];
-      const seenSurfaceIds = new Set<string>();
-      for (const tab of orderedInventory) {
-        if (tab.targetId !== null && tab.targetId === this.helperTargetId) continue;
-        if (isInternalExtensionUrl(tab.url)) continue;
-        if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") continue;
-        const matched =
-          (tab.targetId ? byTargetId.get(tab.targetId) : undefined) ?? byTabId.get(tab.tabId);
-        if (matched && !seenSurfaceIds.has(matched.surfaceId)) {
-          seenSurfaceIds.add(matched.surfaceId);
-          entries.push({
-            index: entries.length,
-            surfaceId: matched.surfaceId,
-            url: tab.url || matched.url,
-          });
-        } else {
-          // Record unsaved/agent tabs as strip-order placeholders so crash drift can never bind them to saved tabs.
-          entries.push({
-            index: entries.length,
-            surfaceId: null,
-            url: tab.url,
-          });
-        }
-      }
-      if (this.closed) return;
-      try {
-        await writeTabRestoreSidecar(this.profileDirectory, entries);
-        this.sidecarFailures = 0;
-        if (this.sidecarVersion === writeVersion) {
-          this.sidecarDirty = false;
-        } else {
-          this.scheduleSidecarWrite();
-        }
-      } catch {
-        await handleFailure();
-      }
-    });
-    this.sidecarTail = write.catch(() => undefined);
-    return write;
+    this.restored.clear();
+    this.claimingTitles.clear();
+    this.sleepingByToken.clear();
+    this.sleepingTitles.clear();
+    this.removals.clear();
+    this.unremovable.clear();
+    this.deferredNames.clear();
+    this.laneTails.clear();
+    this.parkingArmed = false;
   }
 
   private async ensurePagePolicyOnRestoredPage(page: Page): Promise<void> {
@@ -2852,52 +2142,6 @@ class PlaywrightContextHandle implements BrowserContext {
     ).catch(() => undefined);
   }
 
-  private async claimRestoredTab(tab: ChromiumTabEntry): Promise<Page> {
-    const ensureUnfrozen = async (page: Page): Promise<void> => {
-      if (!this.frozenRestoredPages.has(page)) return;
-      const unfrozen = await this.unfreezeRestoredPage(page);
-      if (!unfrozen) {
-        await page.close({ runBeforeUnload: false }).catch(() => undefined);
-        throw new Error("Restored tab remained frozen and could not be unfrozen.");
-      }
-    };
-    try {
-      const cached = this.restoredPagesByTabId.get(tab.tabId);
-      this.restoredPagesByTabId.delete(tab.tabId);
-      if (cached && !cached.isClosed()) {
-        await ensureUnfrozen(cached);
-        this.hiddenRestoredPages.delete(cached);
-        this.claimedWakePages.add(cached);
-        await this.ensurePagePolicyOnRestoredPage(cached);
-        return cached;
-      }
-      if (tab.targetId) {
-        for (const candidate of this.context.pages()) {
-          if (candidate === this.privatePage || candidate.isClosed()) continue;
-          const candidateTargetId = await this.targetIdOfPage(candidate);
-          if (candidateTargetId === tab.targetId) {
-            await ensureUnfrozen(candidate);
-            this.hiddenRestoredPages.delete(candidate);
-            this.claimedWakePages.add(candidate);
-            await this.ensurePagePolicyOnRestoredPage(candidate);
-            return candidate;
-          }
-        }
-      }
-      const woken = await this.wakeDiscardedTab(tab.tabId);
-      await ensureUnfrozen(woken);
-      this.hiddenRestoredPages.delete(woken);
-      this.claimedWakePages.add(woken);
-      await this.ensurePagePolicyOnRestoredPage(woken);
-      return woken;
-    } finally {
-      // The tab-id guard stays on failure: the eviction lifts it once removal is confirmed.
-      this.unclaimedRestoredTabs.delete(tab.tabId);
-      if (tab.targetId) this.unclaimedRestoredTargetIds.delete(tab.targetId);
-      this.restoredPagesByTabId.delete(tab.tabId);
-    }
-  }
-
   async activatePrivateAnchor(): Promise<void> {
     if (!this.privatePage || this.privatePage.isClosed()) return;
     await withTimeout(this.privatePage.bringToFront(), nameTargetMs, {
@@ -2905,182 +2149,103 @@ class PlaywrightContextHandle implements BrowserContext {
     }).catch(() => undefined);
   }
 
-  beginSleepingTab(
-    tokenId: string,
-    url: string,
-    pageHandle: PlaywrightPageHandle | undefined,
-    settled: Promise<number | null>,
-  ): void {
-    const surfaceId = pageHandle ? this.savedSurfaceByPage.get(pageHandle) : undefined;
-    this.sleepingTabs.set(tokenId, {
-      state: "discarding",
-      url,
-      settled,
+  /**
+   * Puts a page's tab to sleep by discard. The tab is named first (a saved tab keeps its Home
+   * surface id, any other tab gets its token's name), the name is guarded before Chromium is
+   * asked, and afterwards the tab is found by that name whatever Chromium did to its id.
+   */
+  async sleepTab(
+    handle: PlaywrightPageHandle,
+    page: Page,
+    token: { readonly tokenId: string; readonly targetId: string; readonly url: string },
+    detach: () => Promise<void>,
+  ): Promise<void> {
+    const lifecycle = this.lifecycle!;
+    const surfaceId = this.savedSurfaceByPage.get(handle);
+    const title = surfaceId ?? `${sleepTitlePrefix}${token.tokenId}`;
+    const settled = Promise.withResolvers<void>();
+    this.sleepingByToken.set(token.tokenId, {
+      title,
+      url: token.url,
+      settled: settled.promise,
       ...(surfaceId ? { surfaceId } : {}),
     });
-    this.trackInFlightDiscard(
-      settled.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    if (surfaceId) {
-      this.savedTabsBySurfaceId.set(surfaceId, {
-        page: null,
-        sleepingTokenId: tokenId,
-      });
-      this.scheduleSidecarWrite();
-    }
-  }
-
-  finishSleepingTab(
-    tokenId: string,
-    newTabId: number | null,
-    unknownOutcome?: {
-      readonly originalTabId: number;
-      readonly epoch: string | undefined;
-    },
-  ): void {
-    const current = this.sleepingTabs.get(tokenId);
-    if (!current) return;
-    if (newTabId === null) {
-      if (unknownOutcome) {
-        // Unknown discard outcome: keep tracking the token by tabId only so release/wake
-        // reconciles and removes any surviving tab without ever matching another owner's tab.
-        this.sleepingTabs.set(tokenId, {
-          state: "unknown",
-          originalTabId: unknownOutcome.originalTabId,
-          epoch: unknownOutcome.epoch,
-          url: current.url,
-          ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
-        });
+    this.sleepingTitles.set(title, token.tokenId);
+    const forget = () => {
+      this.sleepingByToken.delete(token.tokenId);
+      if (this.sleepingTitles.get(title) === token.tokenId) this.sleepingTitles.delete(title);
+    };
+    const closePlainly = async () => {
+      await detach().catch(() => undefined);
+      if (!page.isClosed()) await page.close({ runBeforeUnload: false });
+    };
+    try {
+      const inventory = await lifecycle.inventory().catch(() => null);
+      const row = inventory?.find((entry) => entry.targetId === token.targetId);
+      // A name is never given to a second tab: one another tab still carries, or one being
+      // restored or removed, leaves this tab unnamed.
+      const nameTaken =
+        row !== undefined &&
+        row.identity !== title &&
+        (rowsNamed(inventory!, title).length > 0 ||
+          this.restored.has(title as BrowserSurfaceId) ||
+          this.removals.has(title) ||
+          this.unremovable.has(title));
+      const named =
+        row !== undefined &&
+        !nameTaken &&
+        // A blank tab is not named (see trackSavedTab); it closes and wakes as the same blank tab.
+        !isBlankAddress(token.url) &&
+        (row.identity === title || (await lifecycle.nameTab(row.tabId, title).catch(() => false)));
+      if (!row || !named) {
+        // The tab cannot be named, so it could not be found again: it closes and wakes by address.
+        forget();
+        await closePlainly();
         return;
       }
-      this.sleepingTabs.delete(tokenId);
-      return;
-    }
-    this.sleepingTabs.set(tokenId, {
-      state: "discarded",
-      tabId: newTabId,
-      url: current.url,
-      ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
-    });
-    if (current.surfaceId) this.scheduleSidecarWrite();
-  }
-
-  private async resolveUnknownSleepingTabId(probe: {
-    readonly originalTabId: number;
-    readonly epoch: string | undefined;
-  }): Promise<TabWhereabouts> {
-    if (!this.lifecycle) return { status: "unknown" };
-    const after = await this.lifecycle.inventory().catch(() => null);
-    if (!after) return { status: "unknown" };
-    return locateTab(after, probe.originalTabId, probe.epoch);
-  }
-
-  private enqueuePendingSleepingRemoval(tokenId: string): void {
-    if (this.closed) return;
-    if (!this.pendingSleepingRemovals.has(tokenId)) {
-      this.pendingSleepingRemovals.set(tokenId, { attempts: 0 });
-    }
-    this.schedulePendingRemovalRetry();
-  }
-
-  private schedulePendingRemovalRetry(): void {
-    if (this.closed || this.pendingRemovalTimer || this.pendingSleepingRemovals.size === 0) return;
-    let maxAttempts = 0;
-    for (const item of this.pendingSleepingRemovals.values()) {
-      maxAttempts = Math.max(maxAttempts, item.attempts);
-    }
-    const delayMs = Math.min(2_000, 100 * 2 ** Math.min(maxAttempts, 4));
-    this.pendingRemovalTimer = setTimeout(() => {
-      this.pendingRemovalTimer = undefined;
-      void this.drainPendingSleepingRemovals().catch(() => undefined);
-    }, delayMs);
-    this.pendingRemovalTimer.unref?.();
-  }
-
-  private async drainPendingSleepingRemovals(): Promise<void> {
-    if (this.closed || !this.lifecycle) return;
-    for (const [tokenId, tracker] of this.pendingSleepingRemovals) {
-      if (this.closed) return;
-      const sleeping = this.sleepingTabs.get(tokenId);
-      if (!sleeping) {
-        this.pendingSleepingRemovals.delete(tokenId);
-        continue;
+      if (row.active) await this.activatePrivateAnchor();
+      await this.freezeBeforeDiscard(page);
+      await detach().catch(() => undefined);
+      await lifecycle.discardByTabId(row.tabId).catch(() => null);
+      const after = await lifecycle.inventory().catch(() => null);
+      const rows = after ? rowsNamed(after, title) : null;
+      if (rows?.length === 1 && rows[0]!.discarded) return;
+      if (rows?.length === 0) {
+        // A complete inventory and no tab carries the name: the tab is gone.
+        forget();
+        return;
       }
-      tracker.attempts++;
-      const removed = await this.attemptSleepingRemoval(tokenId, sleeping);
-      if (removed) {
-        if (sleeping.state === "discarded") this.neverHandOffTabIds.delete(sleeping.tabId);
-        this.sleepingTabs.delete(tokenId);
-        this.pendingSleepingRemovals.delete(tokenId);
-      } else if (tracker.attempts >= removalRetryBound) {
-        // The token stays owned, so a later release or wake can try again; the background stops.
-        this.pendingSleepingRemovals.delete(tokenId);
-        reportUnconfirmedRemoval("sleeping", tracker.attempts);
-      }
+      // Still loaded, ambiguous or not known: the page closes; the name stays guarded until a
+      // wake or release resolves it.
+      if (!page.isClosed()) await page.close({ runBeforeUnload: false }).catch(() => undefined);
+    } finally {
+      settled.resolve();
     }
-    if (this.pendingSleepingRemovals.size > 0 && !this.closed) {
-      this.schedulePendingRemovalRetry();
-    }
-  }
-
-  private async attemptSleepingRemoval(
-    _tokenId: string,
-    sleeping:
-      | { readonly state: "discarded"; readonly tabId: number }
-      | {
-          readonly state: "unknown";
-          readonly originalTabId: number;
-          readonly epoch: string | undefined;
-        }
-      | { readonly state: "discarding"; readonly settled: Promise<number | null> },
-  ): Promise<boolean> {
-    if (sleeping.state === "discarding") {
-      const tabId = await sleeping.settled;
-      if (tabId === null) {
-        const refreshed = this.sleepingTabs.get(_tokenId);
-        if (refreshed?.state === "unknown") {
-          return this.attemptSleepingRemoval(_tokenId, refreshed);
-        }
-        return true;
-      }
-      return this.removeTabWithEvidence(tabId, null, 1);
-    }
-    if (sleeping.state === "unknown") {
-      const probed = await this.resolveUnknownSleepingTabId(sleeping);
-      if (probed.status === "gone") return true;
-      if (probed.status === "unknown") return false;
-      return this.removeTabWithEvidence(probed.row.tabId, probed.row.targetId, 1, {
-        epoch: probed.row.helperEpoch,
-      });
-    }
-    return this.removeTabWithEvidence(sleeping.tabId, null, 1);
   }
 
   async releaseRestore(restore: unknown): Promise<boolean> {
     const discardRestore = parseChromiumDiscardRestore(restore);
     if (!discardRestore || !this.lifecycle) return true;
-    const sleeping = this.sleepingTabs.get(discardRestore.tokenId);
+    const sleeping = this.sleepingByToken.get(discardRestore.tokenId);
     if (!sleeping) return true;
-    if (sleeping.surfaceId) {
-      this.savedTabsBySurfaceId.delete(sleeping.surfaceId);
-      this.scheduleSidecarWrite();
+    await sleeping.settled;
+    const removed = await this.onLane(sleeping.title, () => this.removeNamed(sleeping.title, 1));
+    if (!removed) {
+      // The token stays, so a later release asks again; the background drain retries meanwhile.
+      this.giveUpName(sleeping.title);
+      return false;
     }
-    const removed = await this.attemptSleepingRemoval(discardRestore.tokenId, sleeping);
-    if (removed) {
-      this.sleepingTabs.delete(discardRestore.tokenId);
-      this.pendingSleepingRemovals.delete(discardRestore.tokenId);
-      return true;
-    }
-    // Keep the tab owned and keep retrying in the background until confirmed gone.
-    this.enqueuePendingSleepingRemoval(discardRestore.tokenId);
-    return false;
+    this.sleepingByToken.delete(discardRestore.tokenId);
+    if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
+      this.sleepingTitles.delete(sleeping.title);
+    this.removals.delete(sleeping.title);
+    this.retryDeferredName(sleeping.title);
+    return true;
   }
 
-  private wakeDiscardedTab(tabId: number): Promise<Page> {
-    const run = this.wakeTail.then(() => this.wakeDiscardedTabOnce(tabId));
+  /** Wakes the one tab carrying `title`; its page is returned hidden, for the caller to take. */
+  private wakeNamed(title: string): Promise<Page> {
+    const run = this.wakeTail.then(() => this.wakeNamedOnce(title));
     this.wakeTail = run.then(
       () => undefined,
       () => undefined,
@@ -3088,52 +2253,38 @@ class PlaywrightContextHandle implements BrowserContext {
     return run;
   }
 
-  private async wakeDiscardedTabOnce(tabId: number): Promise<Page> {
+  private async wakeNamedOnce(title: string): Promise<Page> {
     const lifecycle = this.lifecycle;
     if (!lifecycle) throw new Error("Tab lifecycle helper is unavailable.");
-    const inventory = await lifecycle.inventory();
-    const entry = inventory.find((tab) => tab.tabId === tabId);
-    if (!entry) throw new Error("Sleeping Chromium tab no longer exists.");
-
-    const cached = this.restoredPagesByTabId.get(tabId);
-    if (cached && !cached.isClosed()) {
-      this.hiddenRestoredPages.delete(cached);
-      this.claimedWakePages.add(cached);
-      await lifecycle.activateByTabId(tabId).catch(() => undefined);
-      return cached;
-    }
-    if (entry.targetId) {
+    const rows = rowsNamed(await lifecycle.inventory(), title);
+    if (rows.length !== 1) throw new Error("The named tab is not exactly one tab.");
+    const row = rows[0]!;
+    if (row.targetId) {
       for (const candidate of this.context.pages()) {
         if (candidate === this.privatePage || candidate.isClosed()) continue;
-        if (isInternalExtensionUrl(typeof candidate.url === "function" ? candidate.url() : "")) {
-          continue;
+        if (syncTargetIdOfPage(candidate) !== row.targetId) continue;
+        this.identifyingPages.delete(candidate);
+        this.claimedPages.add(candidate);
+        // A discarded or never-loaded tab loads its own entry only when activated.
+        if (row.discarded || row.status === "unloaded") {
+          if (!(await lifecycle.activateByTabId(row.tabId)))
+            throw new Error("Chromium could not activate sleeping tab.");
         }
-        const candidateTargetId = await this.targetIdOfPage(candidate);
-        if (candidateTargetId && candidateTargetId === entry.targetId) {
-          this.hiddenRestoredPages.delete(candidate);
-          this.claimedWakePages.add(candidate);
-          await lifecycle.activateByTabId(tabId).catch(() => undefined);
-          return candidate;
-        }
+        return candidate;
       }
     }
-
-    const waiterPromise = Promise.withResolvers<Page>();
-    const waiter = {
-      tabId,
-      expectedTargetId: entry.targetId,
-      resolve: (page: Page) => waiterPromise.resolve(page),
-    };
-    this.activeWake = waiter;
+    const waiter = Promise.withResolvers<Page>();
+    const wake = { title, resolve: (page: Page) => waiter.resolve(page) };
+    // The guard is in place before Chromium is asked to activate the tab.
+    this.activeWake = wake;
     try {
-      const activated = await lifecycle.activateByTabId(tabId);
-      if (!activated) throw new Error("Chromium could not activate sleeping tab.");
-
-      return await withTimeout(waiterPromise.promise, wakeDiscardedTabMs, {
+      if (!(await lifecycle.activateByTabId(row.tabId)))
+        throw new Error("Chromium could not activate sleeping tab.");
+      return await withTimeout(waiter.promise, wakeDiscardedTabMs, {
         timeoutError: () => new Error("Waking sleeping Chromium tab timed out."),
       });
     } finally {
-      if (this.activeWake === waiter) this.activeWake = null;
+      if (this.activeWake === wake) this.activeWake = null;
     }
   }
 
@@ -3175,60 +2326,28 @@ class PlaywrightContextHandle implements BrowserContext {
     await this.beforeCreatePage?.().catch(() => undefined);
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
     if (discardRestore && this.lifecycle) {
-      const sleeping = this.sleepingTabs.get(discardRestore.tokenId);
+      const sleeping = this.sleepingByToken.get(discardRestore.tokenId);
       if (sleeping) {
-        let tabId: number | null = null;
-        let currentSleeping = sleeping;
-        if (currentSleeping.state === "discarding") {
-          tabId = await currentSleeping.settled;
-          currentSleeping = this.sleepingTabs.get(discardRestore.tokenId) ?? currentSleeping;
-        } else if (currentSleeping.state === "discarded") {
-          tabId = currentSleeping.tabId;
-        }
-        if (currentSleeping.state === "unknown") {
-          const removed = await this.attemptSleepingRemoval(
-            discardRestore.tokenId,
-            currentSleeping,
-          );
-          if (removed) {
-            this.sleepingTabs.delete(discardRestore.tokenId);
-            this.pendingSleepingRemovals.delete(discardRestore.tokenId);
-          } else {
-            this.enqueuePendingSleepingRemoval(discardRestore.tokenId);
-          }
-        } else if (tabId !== null) {
-          this.sleepingTabs.delete(discardRestore.tokenId);
-          this.pendingSleepingRemovals.delete(discardRestore.tokenId);
-          try {
-            const wokenPage = await this.wakeDiscardedTab(tabId);
-            const handle = this.wrap(wokenPage);
-            if (currentSleeping.surfaceId) {
-              this.trackSavedTab(currentSleeping.surfaceId, handle);
-            }
-            options?.own?.(handle);
-            return handle;
-          } catch {
-            // Rule B: the wake gave up its page, so a page that tab loads late is never handed off.
-            this.neverHandOffTabIds.add(tabId);
-            const removed = await this.removeTabWithEvidence(tabId, null);
-            if (removed) this.neverHandOffTabIds.delete(tabId);
-            else {
-              this.sleepingTabs.set(discardRestore.tokenId, {
-                state: "discarded",
-                tabId,
-                url: currentSleeping.url,
-              });
-              this.enqueuePendingSleepingRemoval(discardRestore.tokenId);
-            }
-          }
-        } else {
-          this.sleepingTabs.delete(discardRestore.tokenId);
+        await sleeping.settled;
+        this.sleepingByToken.delete(discardRestore.tokenId);
+        try {
+          const woken = await this.wakeNamed(sleeping.title);
+          if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
+            this.sleepingTitles.delete(sleeping.title);
+          this.hiddenPages.delete(woken);
+          const handle = this.wrap(woken);
+          if (sleeping.surfaceId) this.trackSavedTab(sleeping.surfaceId, handle);
+          options?.own?.(handle);
+          return handle;
+        } catch {
+          // Rule B: the wake gave its tab up; the name stays guarded until its removal is proven.
+          if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
+            this.sleepingTitles.delete(sleeping.title);
+          this.giveUpName(sleeping.title);
         }
       }
       const fallback = this.wrap(await this.openFreshPage());
-      if (sleeping?.surfaceId) {
-        this.trackSavedTab(sleeping.surfaceId, fallback);
-      }
+      if (sleeping?.surfaceId) this.trackSavedTab(sleeping.surfaceId, fallback);
       options?.own?.(fallback);
       if (discardRestore.url && discardRestore.url !== "about:blank") {
         void fallback
@@ -3260,25 +2379,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
       this.pagesByPlaywrightPage.set(page, handle);
-      if (this.lifecycle && this.profileDirectory && !this.trackedNavigationPages.has(page)) {
-        this.trackedNavigationPages.add(page);
-        page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) this.scheduleSidecarWrite();
-        });
-      }
-      page.once("close", () => {
-        this.pagesByPlaywrightPage.delete(page);
-        if (this.lifecycle && this.profileDirectory) {
-          const savedSurfaceId = this.savedSurfaceByPage.get(handle!);
-          if (savedSurfaceId) {
-            const current = this.savedTabsBySurfaceId.get(savedSurfaceId);
-            if (current && current.page === handle) {
-              this.savedTabsBySurfaceId.delete(savedSurfaceId);
-            }
-          }
-          this.scheduleSidecarWrite();
-        }
-      });
+      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
     }
     return handle;
   }
@@ -3609,25 +2710,6 @@ class PlaywrightPageHandle implements BrowserPage {
     return { kind: "chromium-discard", tokenId, url };
   }
 
-  private async freezeBeforeDiscard(): Promise<void> {
-    if (this.page.isClosed()) return;
-    let session: PlaywrightCdpSession | undefined;
-    try {
-      session = await withTimeout(this.context.newCDPSession(this.page), 1_500, {
-        timeoutError: () => new Error("Freeze CDP attach timed out."),
-      });
-      // Freezing synchronously triggers RenderFrameImpl::SendUpdateState so Blink
-      // flushes recent scroll/form PageState before AttemptFastKillForDiscard.
-      await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_500, {
-        timeoutError: () => new Error("Freeze before discard timed out."),
-      });
-    } catch {
-      // Best-effort flush; discard still proceeds if the renderer already exited.
-    } finally {
-      await session?.detach().catch(() => undefined);
-    }
-  }
-
   /**
    * Each call is a new attempt; a page asked to close never returns to service.
    * The first closes through Playwright, which waits on its own first request
@@ -3643,64 +2725,9 @@ class PlaywrightPageHandle implements BrowserPage {
     this.pendingDiscard = null;
     const operation = (async () => {
       if (sleepDiscard && this.contextHandle.lifecycle) {
-        const settled = Promise.withResolvers<number | null>();
-        this.contextHandle.beginSleepingTab(
-          sleepDiscard.tokenId,
-          sleepDiscard.url,
-          this,
-          settled.promise,
-        );
-        let newTabId: number | null = null;
-        let unknownOutcome:
-          | {
-              readonly originalTabId: number;
-              readonly epoch: string | undefined;
-            }
-          | undefined;
-        try {
-          const inventory = await this.contextHandle.lifecycle.inventory().catch(() => null);
-          const tab = inventory?.find((entry) => entry.targetId === sleepDiscard.targetId);
-          if (tab && inventory) {
-            // Only activate the private anchor when Chromium considers this exact tab active,
-            // so sleeping a background tab never steals focus or visibility from the foreground tab.
-            if (tab.active) await this.contextHandle.activatePrivateAnchor();
-            await this.freezeBeforeDiscard();
-            await this.cdpChannel?.detach();
-            if (!this.page.isClosed()) {
-              let discardThrew = false;
-              try {
-                newTabId = await this.contextHandle.lifecycle.discardByTabId(tab.tabId);
-              } catch {
-                discardThrew = true;
-                // Unknown outcome: follow this tab by its id through any replacement, never by
-                // another tab's URL.
-                const after = await this.contextHandle.lifecycle.inventory().catch(() => null);
-                const where = after ? locateTab(after, tab.tabId, tab.helperEpoch) : null;
-                if (where?.status === "found" && where.row.discarded) {
-                  newTabId = where.row.tabId;
-                }
-              }
-              if (newTabId === null && !this.page.isClosed()) {
-                await this.page.close({ runBeforeUnload: false });
-              } else if (newTabId === null && discardThrew && this.page.isClosed()) {
-                // Page vanished during an errored discard without a confirmed tabId outcome:
-                // retain unknown-outcome tabId so release/wake can clean it up if it survives.
-                unknownOutcome = {
-                  originalTabId: tab.tabId,
-                  epoch: tab.helperEpoch,
-                };
-              }
-            }
-          } else {
-            await this.cdpChannel?.detach();
-            if (!this.page.isClosed()) {
-              await this.page.close({ runBeforeUnload: false });
-            }
-          }
-        } finally {
-          this.contextHandle.finishSleepingTab(sleepDiscard.tokenId, newTabId, unknownOutcome);
-          settled.resolve(newTabId);
-        }
+        await this.contextHandle.sleepTab(this, this.page, sleepDiscard, async () => {
+          await this.cdpChannel?.detach();
+        });
         return;
       }
       if (first) {
@@ -3723,9 +2750,6 @@ class PlaywrightPageHandle implements BrowserPage {
         });
       await closeTarget(targetId);
     })();
-    if (sleepDiscard && this.contextHandle.lifecycle) {
-      this.contextHandle.trackInFlightDiscard(operation.catch(() => undefined));
-    }
     return operation;
   }
 

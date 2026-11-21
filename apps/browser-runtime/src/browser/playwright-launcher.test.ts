@@ -24,13 +24,7 @@ import {
   type Frame,
 } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
-import {
-  assertImportedCookies,
-  initializeNativePreferences,
-  matchRestoredTabs,
-  readTabRestoreSidecar,
-  writeTabRestoreSidecar,
-} from "./native-profile-storage.js";
+import { assertImportedCookies, initializeNativePreferences } from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
 import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 import {
@@ -1237,8 +1231,8 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("normalizes unclean Preferences exit_type, writes atomic tab sidecar, and matches duplicate URLs by strip order", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "os-sidecar-unit-"));
+  it("normalizes unclean Preferences exit_type so Chromium restores its last session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os-prefs-unit-"));
     try {
       await mkdir(join(directory, "Default"), { recursive: true });
       await writeFile(
@@ -1256,56 +1250,80 @@ describe("native Chromium profiles", () => {
           other: 42,
         },
       );
-
-      await writeTabRestoreSidecar(directory, [
-        {
-          index: 1,
-          surfaceId: "surface_b",
-          url: "https://example.test/doc",
-        },
-        {
-          index: 0,
-          surfaceId: "surface_a",
-          url: "https://example.test/doc",
-        },
-      ]);
-      const sidecar = await readTabRestoreSidecar(directory);
-      expect(sidecar).toEqual([
-        {
-          index: 0,
-          surfaceId: "surface_a",
-          url: "https://example.test/doc",
-        },
-        {
-          index: 1,
-          surfaceId: "surface_b",
-          url: "https://example.test/doc",
-        },
-      ]);
-
-      const tab = (tabId: number, index: number, url: string) => ({
-        tabId,
-        windowId: 1,
-        index,
-        url,
-        title: "",
-        active: false,
-        discarded: true,
-        status: "unloaded",
-        targetId: `target_${tabId}`,
-      });
-      const result = matchRestoredTabs(
-        [tab(10, 0, "https://example.test/doc"), tab(11, 1, "https://example.test/doc")],
-        sidecar,
-        {
-          savedTabIds: new Set(["surface_a", "surface_b", "surface_missing"]),
-        },
-      );
-      expect(result.matched.get("surface_a")?.tab.tabId).toBe(10);
-      expect(result.matched.get("surface_b")?.tab.tabId).toBe(11);
-      expect(result.orphans).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("binds each restored tab to the Home tab its own group title names, closes every tab no single valid title names, and says so (R3a)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const same = "https://same.test/doc";
+    const surfA = "srf_00000000-0000-4000-8000-0000000e0a01" as BrowserSurfaceId;
+    const surfB = "srf_00000000-0000-4000-8000-0000000e0a02" as BrowserSurfaceId;
+    const surfDup = "srf_00000000-0000-4000-8000-0000000e0a03";
+    const restoredRow = (
+      tabId: number,
+      url: string,
+      identity: string | null,
+    ): ChromiumTabEntry => ({
+      tabId,
+      windowId: 1,
+      index: tabId,
+      url,
+      title: "",
+      active: false,
+      discarded: false,
+      status: "unloaded",
+      targetId: null,
+      identity,
+    });
+    // Two tabs on one address told apart only by their titles; then an untitled tab, two tabs
+    // carrying one title, and a sleeping agent tab's token title.
+    let tabs: ChromiumTabEntry[] = [
+      restoredRow(10, same, surfB),
+      restoredRow(11, same, surfA),
+      restoredRow(12, "https://untitled.test/", null),
+      restoredRow(13, "https://dup.test/1", surfDup),
+      restoredRow(14, "https://dup.test/2", surfDup),
+      restoredRow(15, "https://agent.test/", "opensteer-sleep:token"),
+    ];
+    Object.assign(f.context, { serviceWorkers: () => [], pages: () => [] });
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return true;
+      });
+    const diagnostic = vi.spyOn(process.stderr, "write");
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      expect(tabs.map((t) => t.tabId)).toEqual([10, 11]);
+      const line = diagnostic.mock.calls
+        .map(([text]) => String(text))
+        .find((text) => text.includes('"event":"browser-runtime.tab-restore-launch"'));
+      expect(JSON.parse(line!)).toEqual({
+        event: "browser-runtime.tab-restore-launch",
+        restored: 6,
+        named: 2,
+        untitled: 1,
+        unknownTitle: 1,
+        duplicateTitle: 2,
+      });
+      const handle = (launched as unknown as { contextHandle: { restored: Map<string, unknown> } })
+        .contextHandle;
+      expect([...handle.restored.keys()].sort()).toEqual([surfA, surfB].sort());
+    } finally {
+      invSpy.mockRestore();
+      remSpy.mockRestore();
+      diagnostic.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
     }
   });
 
@@ -1371,13 +1389,6 @@ describe("native Chromium profiles", () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const sidecarUrl = "https://person-private.test/";
-    await writeTabRestoreSidecar(f.directory, [
-      {
-        index: 0,
-        surfaceId: "surface_00000000-0000-4000-8000-00000000r201",
-        url: sidecarUrl,
-      },
-    ]);
     const restoredTab = {
       tabId: 88,
       windowId: 1,
@@ -1388,6 +1399,7 @@ describe("native Chromium profiles", () => {
       discarded: false,
       status: "complete",
       targetId: "target-restored-88",
+      identity: "surface_00000000-0000-4000-8000-00000000r201",
     };
     const pageHandlers: Array<(page: Page) => void> = [];
     Object.assign(f.context, {
@@ -1444,13 +1456,6 @@ describe("native Chromium profiles", () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const sidecarUrl = "https://stale-tab.test/";
-    await writeTabRestoreSidecar(f.directory, [
-      {
-        index: 0,
-        surfaceId: "surface_00000000-0000-4000-8000-00000000r501",
-        url: sidecarUrl,
-      },
-    ]);
     let tabPresent = true;
     const restoredTab = {
       tabId: 91,
@@ -1462,6 +1467,7 @@ describe("native Chromium profiles", () => {
       discarded: true,
       status: "unloaded",
       targetId: "target-r5-91",
+      identity: "surface_00000000-0000-4000-8000-00000000r501",
     };
     Object.assign(f.context, {
       serviceWorkers: () => [],
@@ -1514,10 +1520,10 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("retries failed releaseRestore in the background until confirmed removed (R6) and retains unknown-outcome discards (R7)", async () => {
+  it("finds a sleeping tab again by its name whatever Chromium did to its id, retries a failed release in the background (R6), and keeps a token whose discard outcome is unknown (R7)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-    const makeRawPage = () => {
+    const makeRawPage = (targetId: string) => {
       let closed = false;
       return {
         markClosed: () => {
@@ -1534,16 +1540,12 @@ describe("native Chromium profiles", () => {
           off: vi.fn(),
           frames: () => [],
           mainFrame: () => ({}),
-          _connection: {
-            toImpl: () => ({ delegate: { _targetId: "target-sleep-1" } }),
-          },
+          _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
         } as unknown as Page,
       };
     };
-    const raw1 = makeRawPage();
-    const raw2 = makeRawPage();
-    const raw3 = makeRawPage();
-    const raw4 = makeRawPage();
+    const raw1 = makeRawPage("target-sleep-1");
+    const raw2 = makeRawPage("target-sleep-2");
     const helperPage = {
       url: () => "about:blank",
       isClosed: () => false,
@@ -1556,53 +1558,71 @@ describe("native Chromium profiles", () => {
     Object.assign(f.context, {
       serviceWorkers: () => [],
       pages: () => [],
-      newPage: vi.fn(async () => {
-        newPageCalls++;
-        if (newPageCalls === 1) return helperPage;
-        return [raw1, raw2, raw3, raw4][newPageCalls - 2]!.page;
-      }),
-      newCDPSession: vi.fn(async () => ({
+      newPage: vi.fn(async () =>
+        ++newPageCalls === 1 ? helperPage : [raw1, raw2][newPageCalls - 2]!.page,
+      ),
+      newCDPSession: vi.fn(async (page: Page) => ({
         send: vi.fn(async (method: string) =>
-          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-sleep-1" } } : {},
+          method === "Target.getTargetInfo"
+            ? { targetInfo: { targetId: page === raw1.page ? "target-sleep-1" : "target-sleep-2" } }
+            : {},
         ),
         on: vi.fn(),
         off: vi.fn(),
         detach: vi.fn().mockResolvedValue(undefined),
       })),
     });
-
-    // Scenario A (R6): discard succeeds -> first releaseRestore fails -> returns false -> background retry confirms gone.
-    let tabs: Array<{
-      tabId: number;
-      windowId: number;
-      index: number;
-      url: string;
-      title: string;
-      active: boolean;
-      discarded: boolean;
-      status: string;
-      targetId: string | null;
-      replacedFromTabIds?: number[];
-      helperEpoch?: string;
-    }> = [];
-    let removeAttempts = 0;
+    const row = (tabId: number, targetId: string): ChromiumTabEntry => ({
+      tabId,
+      windowId: 1,
+      index: 0,
+      url: "https://sleeping.test/page",
+      title: "Sleep",
+      active: false,
+      discarded: false,
+      status: "complete",
+      targetId,
+    });
+    let tabs: ChromiumTabEntry[] = [];
+    let failInventory = 0;
     const invSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
-      .mockImplementation(async () => [...tabs]);
+      .mockImplementation(async () => {
+        if (failInventory > 0) {
+          failInventory--;
+          throw new Error("Helper worker temporarily dead");
+        }
+        return [...tabs];
+      });
+    const nameSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab")
+      .mockImplementation(async (tabId, name) => {
+        tabs = tabs.map((t) => (t.tabId === tabId ? { ...t, identity: name } : t));
+        return true;
+      });
+    // A replacing discard: the page closes and the tab comes back under a new id, still named.
+    const replace = (from: number, to: number, page: { markClosed(): void }) => {
+      page.markClosed();
+      tabs = tabs.map((t) =>
+        t.tabId === from
+          ? { ...t, tabId: to, discarded: true, status: "unloaded", targetId: null }
+          : t,
+      );
+    };
     const discSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
-      .mockImplementation(async () => {
-        raw1.markClosed();
-        tabs = [{ ...tabs[0]!, tabId: 202, discarded: true, status: "unloaded", targetId: null }];
+      .mockImplementationOnce(async () => {
+        replace(101, 202, raw1);
         return 202;
       });
+    let removeAttempts = 0;
     const remSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
       .mockImplementation(async (tabId) => {
         removeAttempts++;
-        // Fail the first 2 attempts (initial releaseRestore call), succeed on background retry!
-        if (tabId === 202 && removeAttempts >= 3) {
-          tabs = [];
+        // The first release's attempts fail; the background retry succeeds.
+        if (tabId === 202 && removeAttempts >= 4) {
+          tabs = tabs.filter((t) => t.tabId !== tabId);
           return true;
         }
         return false;
@@ -1611,179 +1631,40 @@ describe("native Chromium profiles", () => {
     let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
     try {
       launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-      tabs = [
-        {
-          tabId: 101,
-          windowId: 1,
-          index: 0,
-          url: "https://sleeping.test/page",
-          title: "Sleep",
-          active: false,
-          discarded: false,
-          status: "complete",
-          targetId: "target-sleep-1",
-        },
-      ];
+      // Scenario A (R6): the discard succeeds and the first release cannot remove the tab.
+      tabs = [row(101, "target-sleep-1")];
       const page = await launched.context.createPage();
       const token = await page.captureRestore!();
       await page.close({ reason: "slept" });
-
-      // First releaseRestore fails and returns false so Stop/Disconnect stays "still closing".
+      expect(tabs).toMatchObject([{ tabId: 202, discarded: true }]);
+      expect(tabs[0]!.identity).toMatch(/^opensteer-sleep:/);
       expect(await launched.context.releaseRestore!(token)).toBe(false);
       expect(tabs).toHaveLength(1);
+      await vi.waitFor(() => expect(tabs).toHaveLength(0), { timeout: 3_000, interval: 25 });
 
-      // Background retry loop keeps trying and confirms the tab gone!
-      await vi.waitFor(
-        () => {
-          expect(tabs).toHaveLength(0);
-          expect(removeAttempts).toBeGreaterThanOrEqual(3);
-        },
-        { timeout: 3_000, interval: 25 },
-      );
-
-      // Scenario B (R7): discardByTabId throws AND follow-up inventory fails while page closes ->
-      // unknown-outcome token is retained, and subsequent releaseRestore locates and removes it!
-      tabs = [
-        {
-          tabId: 303,
-          windowId: 1,
-          index: 1,
-          url: "https://sleeping.test/page",
-          title: "Unknown",
-          active: false,
-          discarded: false,
-          status: "complete",
-          targetId: "target-sleep-1",
-        },
-      ];
-      let invCallCount = 0;
-      invSpy.mockImplementation(async () => {
-        invCallCount++;
-        // Call 1: pre-discard inventory succeeds; Call 2: immediate post-throw inventory FAILS!
-        if (invCallCount === 2) throw new Error("Helper worker temporarily dead");
-        return [...tabs];
-      });
+      // Scenario B (R7): the discard commits (replacing 303 with 404) and then the helper throws,
+      // and the inventory right after cannot be read. The token is kept, and the release finds
+      // the tab by its name although its id changed twice (404, then 505).
+      tabs = [row(303, "target-sleep-2")];
       discSpy.mockImplementationOnce(async () => {
-        // Chromium committed the discard (closing the page and replacing tab 303 with discarded
-        // tab 404) before the helper threw.
-        raw2.markClosed();
-        tabs = [
-          {
-            ...tabs[0]!,
-            tabId: 404,
-            replacedFromTabIds: [303],
-            discarded: true,
-            status: "unloaded",
-            targetId: null,
-          },
-        ];
+        replace(303, 404, raw2);
+        failInventory = 1;
         throw new Error("Helper call timed out");
       });
       remSpy.mockImplementation(async (tabId) => {
-        if (tabId === 404) {
-          tabs = [];
-          return true;
-        }
-        return false;
+        const before = tabs.length;
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return tabs.length < before;
       });
-
       const page2 = await launched.context.createPage();
       const token2 = await page2.captureRestore!();
       await page2.close({ reason: "slept" });
-      expect(tabs.map((t) => t.tabId)).toEqual([404]);
-
-      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, follows 303 to its
-      // replacement 404, and removes it.
+      tabs = tabs.map((t) => (t.tabId === 404 ? { ...t, tabId: 505 } : t));
       expect(await launched.context.releaseRestore!(token2)).toBe(true);
       expect(tabs).toHaveLength(0);
-
-      // Scenario C (C4): a tab replaced twice. Tab 505 was itself the replacement of 500 (an earlier
-      // park discard); this sleep's discard replaces it again with 606 and the helper throws.
-      tabs = [
-        {
-          tabId: 505,
-          windowId: 1,
-          index: 1,
-          url: "https://sleeping.test/page",
-          title: "Twice",
-          active: false,
-          discarded: false,
-          status: "complete",
-          targetId: "target-sleep-1",
-          replacedFromTabIds: [500],
-          helperEpoch: "worker-1",
-        },
-      ];
-      invCallCount = 0;
-      discSpy.mockImplementationOnce(async () => {
-        raw3.markClosed();
-        tabs = [
-          {
-            ...tabs[0]!,
-            tabId: 606,
-            replacedFromTabIds: [505, 500],
-            discarded: true,
-            status: "unloaded",
-            targetId: null,
-          },
-        ];
-        throw new Error("Helper call timed out");
-      });
-      remSpy.mockImplementation(async (tabId) => {
-        if (tabId === 606) {
-          tabs = [];
-          return true;
-        }
-        return false;
-      });
-      const page3 = await launched.context.createPage();
-      const token3 = await page3.captureRestore!();
-      await page3.close({ reason: "slept" });
-      expect(tabs.map((t) => t.tabId)).toEqual([606]);
-      expect(await launched.context.releaseRestore!(token3)).toBe(true);
-      expect(tabs).toHaveLength(0);
-
-      // Scenario D (C4): the helper's worker restarted after the discard, so its memory of the
-      // replacement is gone. "Not found" is then "not known": the token is kept, never dropped.
-      tabs = [
-        {
-          tabId: 707,
-          windowId: 1,
-          index: 1,
-          url: "https://sleeping.test/page",
-          title: "Restarted",
-          active: false,
-          discarded: false,
-          status: "complete",
-          targetId: "target-sleep-1",
-          helperEpoch: "worker-1",
-        },
-      ];
-      invCallCount = 0;
-      discSpy.mockImplementationOnce(async () => {
-        raw4.markClosed();
-        tabs = [
-          {
-            ...tabs[0]!,
-            tabId: 808,
-            replacedFromTabIds: [],
-            helperEpoch: "worker-2",
-            discarded: true,
-            status: "unloaded",
-            targetId: null,
-          },
-        ];
-        throw new Error("Helper call timed out");
-      });
-      remSpy.mockImplementation(async () => false);
-      const page4 = await launched.context.createPage();
-      const token4 = await page4.captureRestore!();
-      await page4.close({ reason: "slept" });
-      expect(await launched.context.releaseRestore!(token4)).toBe(false);
-      expect(tabs.map((t) => t.tabId)).toEqual([808]);
     } finally {
-      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
       invSpy.mockRestore();
+      nameSpy.mockRestore();
       discSpy.mockRestore();
       remSpy.mockRestore();
       f.exit();
@@ -1792,7 +1673,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("matches woken tabs strictly by targetId without stealing unrelated pages and clears closed tab URLs from sidecar (R9)", async () => {
+  it("wakes a restored tab by its own name without stealing an unrelated page that arrives meanwhile (R9)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const pageHandlers: Array<(page: Page) => void> = [];
@@ -1830,17 +1711,7 @@ describe("native Chromium profiles", () => {
     const helper = makePage("target-helper", "about:blank");
     const unrelated = makePage("target-unrelated", "https://unrelated.test/");
     const realWoken = makePage("target-woken-55", "https://woken.test/");
-    let tabs: Array<{
-      tabId: number;
-      windowId: number;
-      index: number;
-      url: string;
-      title: string;
-      active: boolean;
-      discarded: boolean;
-      status: string;
-      targetId: string | null;
-    }> = [];
+    let tabs: ChromiumTabEntry[] = [];
     Object.assign(f.context, {
       serviceWorkers: () => [],
       pages: () => [],
@@ -1868,6 +1739,7 @@ describe("native Chromium profiles", () => {
             discarded: false,
             status: "complete",
             targetId: "target-woken-55",
+            identity: "surface_00000000-0000-4000-8000-00000000r901",
           },
           {
             tabId: 56,
@@ -1890,14 +1762,7 @@ describe("native Chromium profiles", () => {
         return true;
       });
 
-    // Seed sidecar so tab 55 is matched with targetId === null (unloaded at launch).
-    await writeTabRestoreSidecar(f.directory, [
-      {
-        index: 0,
-        surfaceId: "surface_00000000-0000-4000-8000-00000000r901",
-        url: "https://woken.test/",
-      },
-    ]);
+    // Restored with its name and no target yet (unloaded at launch).
     tabs = [
       {
         tabId: 55,
@@ -1909,6 +1774,7 @@ describe("native Chromium profiles", () => {
         discarded: true,
         status: "unloaded",
         targetId: null,
+        identity: "surface_00000000-0000-4000-8000-00000000r901",
       },
     ];
 
@@ -1925,15 +1791,8 @@ describe("native Chromium profiles", () => {
       );
       expect(claimed?.url()).toBe("https://woken.test/");
       await vi.waitFor(() => expect(handedOff).toContain("https://unrelated.test/"));
-
-      // Close the claimed tab -> its URL must leave opensteer-tabs.json immediately!
-      tabs = tabs.filter((t) => t.tabId !== 55);
-      realWoken.emitClose();
-      await launched.context.sessionRestore!.flush!();
-      const sidecarAfterClose = await readTabRestoreSidecar(f.directory);
-      expect(sidecarAfterClose.some((e) => e.url === "https://woken.test/")).toBe(false);
+      expect(handedOff).not.toContain("https://woken.test/");
     } finally {
-      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
       invSpy.mockRestore();
       actSpy.mockRestore();
       f.exit();
@@ -1945,7 +1804,6 @@ describe("native Chromium profiles", () => {
   it("leaves never-loaded parked tabs untouched on reconcile and auto-discards them if Chromium loads them later (R1)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-    const { writeTabRestoreSidecar } = await import("./native-profile-storage.js");
     const pageHandlers: Array<(page: Page) => void> = [];
     const makePage = (id: string, url: string) => {
       let closed = false;
@@ -1974,25 +1832,12 @@ describe("native Chromium profiles", () => {
     const helper = makePage("target-helper", "about:blank");
     const loadedParked = makePage("target-loaded", "https://loaded.test/");
     const lateBgPage = makePage("target-unloaded", "https://unloaded.test/");
+    let secondBgPage: ReturnType<typeof makePage> | undefined;
 
     const surfLoaded = "srf_00000000-0000-4000-8000-00000000a101" as BrowserSurfaceId;
     const surfUnloaded = "srf_00000000-0000-4000-8000-00000000a102" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfLoaded, url: "https://loaded.test/" },
-      { index: 1, surfaceId: surfUnloaded, url: "https://unloaded.test/" },
-    ]);
 
-    let tabs: Array<{
-      tabId: number;
-      windowId: number;
-      index: number;
-      url: string;
-      title: string;
-      active: boolean;
-      discarded: boolean;
-      status: string;
-      targetId: string | null;
-    }> = [
+    let tabs: ChromiumTabEntry[] = [
       {
         tabId: 10,
         windowId: 1,
@@ -2003,6 +1848,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "complete",
         targetId: "target-loaded",
+        identity: surfLoaded,
       },
       {
         tabId: 11,
@@ -2014,6 +1860,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-unloaded",
+        identity: surfUnloaded,
       },
     ];
     Object.assign(f.context, {
@@ -2034,7 +1881,7 @@ describe("native Chromium profiles", () => {
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
       .mockImplementation(async () => [...tabs]);
     const discSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
       .mockImplementation(async (tabId) => {
         discardedIds.push(tabId);
         const nextId = tabId + 100;
@@ -2052,7 +1899,8 @@ describe("native Chromium profiles", () => {
         );
         if (tabId === 10) loadedParked.markClosed();
         if (tabId === 11) lateBgPage.markClosed();
-        return { newTabId: nextId, newTargetId: nextTargetId };
+        if (tabId === 111) secondBgPage?.markClosed();
+        return nextId;
       });
     const actSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId")
@@ -2112,7 +1960,7 @@ describe("native Chromium profiles", () => {
       tabs = tabs.map((t) =>
         t.tabId === 111 ? { ...t, discarded: false, status: "complete" } : t,
       );
-      const secondBgPage = makePage("target-discarded-111", "https://unloaded.test/");
+      secondBgPage = makePage("target-discarded-111", "https://unloaded.test/");
       for (const handler of pageHandlers) handler(secondBgPage.page);
       await vi.waitFor(
         () => {
@@ -2148,7 +1996,6 @@ describe("native Chromium profiles", () => {
   it("treats unreadable inventory on parked-tab arrival as unknown, retries within a bound, then closes the live page while keeping it out of handOff (B2)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-    const { writeTabRestoreSidecar } = await import("./native-profile-storage.js");
     const pageHandlers: Array<(page: Page) => void> = [];
     const makePage = (id: string, url: string) => {
       let closed = false;
@@ -2180,12 +2027,8 @@ describe("native Chromium profiles", () => {
 
     const surfTransient = "srf_00000000-0000-4000-8000-00000000b201" as BrowserSurfaceId;
     const surfPersistent = "srf_00000000-0000-4000-8000-00000000b202" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfTransient, url: "https://b2-transient.test/" },
-      { index: 1, surfaceId: surfPersistent, url: "https://b2-persistent.test/" },
-    ]);
 
-    let tabs = [
+    let tabs: ChromiumTabEntry[] = [
       {
         tabId: 1,
         windowId: 1,
@@ -2207,6 +2050,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-b2-transient",
+        identity: surfTransient,
       },
       {
         tabId: 22,
@@ -2218,6 +2062,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-b2-persistent",
+        identity: surfPersistent,
       },
     ];
 
@@ -2248,7 +2093,7 @@ describe("native Chromium profiles", () => {
       });
     const discardedIds: number[] = [];
     const discSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
       .mockImplementation(async (tabId) => {
         discardedIds.push(tabId);
         const newTabId = tabId + 100;
@@ -2264,7 +2109,7 @@ describe("native Chromium profiles", () => {
               }
             : t,
         );
-        return { newTabId, newTargetId };
+        return newTabId;
       });
     const remSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
@@ -2291,7 +2136,7 @@ describe("native Chromium profiles", () => {
       expect(handedOff).toEqual([]);
 
       // Case 2: inventory fails persistently when tab 22 arrives -> after bounded retries,
-      // launcher MUST close the live Playwright page directly AND keep target-b2-persistent in neverHandOff!
+      // launcher MUST close the live Playwright page directly AND keep its name guarded!
       failInventoryAlways = true;
       tabs = tabs.map((t) => (t.tabId === 22 ? { ...t, status: "complete" } : t));
       for (const handler of pageHandlers) handler(tabPersistent.page);
@@ -2304,8 +2149,9 @@ describe("native Chromium profiles", () => {
       // Even if another Playwright page arrives later for target-b2-persistent, it must STILL be closed & never handed off!
       const lateAgain = makePage("target-b2-persistent", "https://b2-persistent.test/");
       for (const handler of pageHandlers) handler(lateAgain.page);
+      // Identification is bounded at 2 s for the whole work, then the page is closed.
       await vi.waitFor(() => expect(lateAgain.close).toHaveBeenCalled(), {
-        timeout: 2_000,
+        timeout: 4_000,
         interval: 25,
       });
       expect(handedOff).toEqual([]);
@@ -2325,10 +2171,6 @@ describe("native Chromium profiles", () => {
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const surfStale = "srf_00000000-0000-4000-8000-00000000b301" as BrowserSurfaceId;
     const surfKept = "srf_00000000-0000-4000-8000-00000000b302" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfStale, url: "https://stale-b3.test/" },
-      { index: 1, surfaceId: surfKept, url: "https://kept-b3.test/" },
-    ]);
     let tabs = [
       {
         tabId: 301,
@@ -2340,6 +2182,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-b3-301",
+        identity: surfStale,
       },
       {
         tabId: 302,
@@ -2351,6 +2194,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-b3-302",
+        identity: surfKept,
       },
     ];
     const pageHandlers: Array<(page: Page) => void> = [];
@@ -2521,285 +2365,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("retries failed sidecar map writes and deletes a stale map if it cannot be brought current (F1)", async () => {
-    const f = await nativeCloseFixture();
-    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-    const surfP = "srf_00000000-0000-4000-8000-00000000f101" as BrowserSurfaceId;
-    let personUrl = "https://w.test/";
-    let navHandler: ((frame: unknown) => void) | undefined;
-    const mainFrame = {};
-    const personRawPage = {
-      url: () => personUrl,
-      isClosed: () => false,
-      close: vi.fn(async () => undefined),
-      on: vi.fn((event: string, cb: (frame: unknown) => void) => {
-        if (event === "framenavigated") navHandler = cb;
-      }),
-      once: vi.fn(),
-      off: vi.fn(),
-      frames: () => [],
-      mainFrame: () => mainFrame,
-      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f1-person" } }) },
-    } as unknown as Page;
-
-    const helperRawPage = {
-      url: () => "about:blank",
-      isClosed: () => false,
-      close: vi.fn(async () => undefined),
-      on: vi.fn(),
-      once: vi.fn(),
-      off: vi.fn(),
-      frames: () => [],
-      mainFrame: () => ({}),
-      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f1-helper" } }) },
-    } as unknown as Page;
-
-    let tabs: Array<{
-      tabId: number;
-      windowId: number;
-      index: number;
-      url: string;
-      title: string;
-      active: boolean;
-      discarded: boolean;
-      status: string;
-      targetId: string | null;
-    }> = [];
-    let newPageCalls = 0;
-    Object.assign(f.context, {
-      serviceWorkers: () => [],
-      pages: () => [],
-      newPage: vi.fn(async () => (++newPageCalls === 1 ? helperRawPage : personRawPage)),
-      newCDPSession: vi.fn(async () => ({
-        send: vi.fn(async (method: string) => {
-          if (method === "Target.getTargetInfo")
-            return { targetInfo: { targetId: "target-f1-person", url: personUrl } };
-          return {};
-        }),
-        on: vi.fn(),
-        off: vi.fn(),
-        detach: vi.fn(async () => undefined),
-      })),
-      on: vi.fn(),
-    });
-
-    let failInventoryCount = 0;
-    let failInventoryAlways = false;
-    const invSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
-      .mockImplementation(async () => {
-        if (failInventoryAlways) throw new Error("inventory down permanently");
-        if (failInventoryCount > 0) {
-          failInventoryCount--;
-          throw new Error("transient inventory failure");
-        }
-        return tabs;
-      });
-
-    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
-    try {
-      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-      const page = await launched.context.createPage();
-      tabs = [
-        {
-          tabId: 401,
-          windowId: 1,
-          index: 0,
-          url: "https://w.test/",
-          title: "P",
-          active: true,
-          discarded: false,
-          status: "complete",
-          targetId: "target-f1-person",
-        },
-      ];
-      launched.context.sessionRestore!.trackSavedTab(surfP, page);
-      await launched.context.sessionRestore!.flush!();
-      expect(await readTabRestoreSidecar(f.directory)).toEqual([
-        { index: 0, surfaceId: surfP, url: "https://w.test/" },
-      ]);
-
-      // Case 1: transient failure on navigation W -> Y + agent tab A at W:
-      // must stay dirty and retry until the map reflects [P: Y, A(null): W]!
-      personUrl = "https://y.test/";
-      tabs = [
-        { ...tabs[0]!, url: "https://y.test/" },
-        {
-          tabId: 402,
-          windowId: 1,
-          index: 1,
-          url: "https://w.test/",
-          title: "Agent",
-          active: false,
-          discarded: false,
-          status: "complete",
-          targetId: "target-f1-agent",
-        },
-      ];
-      failInventoryCount = 1;
-      navHandler?.(mainFrame);
-      await vi.waitFor(
-        async () => {
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([
-            { index: 0, surfaceId: surfP, url: "https://y.test/" },
-            { index: 1, surfaceId: null, url: "https://w.test/" },
-          ]);
-        },
-        { timeout: 3_000, interval: 25 },
-      );
-
-      // Case 2: persistent failure after P navigates Y -> Z:
-      // after bounded retries, stale map MUST be deleted so crash restore opens by address!
-      personUrl = "https://z.test/";
-      tabs = [{ ...tabs[0]!, url: "https://z.test/" }, tabs[1]!];
-      failInventoryAlways = true;
-      navHandler?.(mainFrame);
-      await vi.waitFor(
-        async () => {
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
-        },
-        { timeout: 4_000, interval: 25 },
-      );
-    } finally {
-      failInventoryAlways = false;
-      invSpy.mockRestore();
-      f.exit();
-      await launched?.close();
-      await rm(f.directory, { recursive: true, force: true });
-    }
-  });
-
-  it.each(["navigation", "flush-then-close", "close", "clean-close", "crashed"] as const)(
-    "counts map write failures only since the last success and deletes a map that is not current before Chromium closes (C3, %s)",
-    async (scenario) => {
-      const f = await nativeCloseFixture();
-      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-      const surfP = "srf_00000000-0000-4000-8000-00000000c301" as BrowserSurfaceId;
-      let navHandler: ((frame: unknown) => void) | undefined;
-      const mainFrame = {};
-      const rawPage = (targetId: string, url: string, onNav?: boolean) =>
-        ({
-          url: () => url,
-          isClosed: () => false,
-          close: vi.fn(async () => undefined),
-          on: vi.fn((event: string, cb: (frame: unknown) => void) => {
-            if (onNav && event === "framenavigated") navHandler = cb;
-          }),
-          once: vi.fn(),
-          off: vi.fn(),
-          frames: () => [],
-          mainFrame: () => mainFrame,
-          _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
-        }) as unknown as Page;
-      const helperRawPage = rawPage("target-c3-helper", "about:blank");
-      const personRawPage = rawPage("target-c3-person", "https://c3.test/", true);
-      let newPageCalls = 0;
-      Object.assign(f.context, {
-        serviceWorkers: () => [],
-        pages: () => [],
-        newPage: vi.fn(async () => (++newPageCalls === 1 ? helperRawPage : personRawPage)),
-        newCDPSession: vi.fn(async () => ({
-          send: vi.fn(async (method: string) =>
-            method === "Target.getTargetInfo"
-              ? { targetInfo: { targetId: "target-c3-person" } }
-              : {},
-          ),
-          on: vi.fn(),
-          off: vi.fn(),
-          detach: vi.fn(async () => undefined),
-        })),
-        on: vi.fn(),
-      });
-      const personTab = [
-        {
-          tabId: 501,
-          windowId: 1,
-          index: 0,
-          url: "https://c3.test/",
-          title: "P",
-          active: true,
-          discarded: false,
-          status: "complete",
-          targetId: "target-c3-person" as string | null,
-        },
-      ];
-      let tabs: typeof personTab = [];
-      let failInventory = false;
-      let inventoryCalls = 0;
-      const invSpy = vi
-        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
-        .mockImplementation(async () => {
-          inventoryCalls++;
-          if (failInventory) throw new Error("inventory down");
-          return tabs;
-        });
-      let navigating: ReturnType<typeof setInterval> | undefined;
-      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
-      try {
-        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-        const page = await launched.context.createPage();
-        tabs = personTab;
-        launched.context.sessionRestore!.trackSavedTab(surfP, page);
-        await launched.context.sessionRestore!.flush!();
-        expect(await readTabRestoreSidecar(f.directory)).toEqual([
-          { index: 0, surfaceId: surfP, url: "https://c3.test/" },
-        ]);
-        if (scenario === "navigation") {
-          // An agent browsing keeps scheduling writes; each one is a new failure, never a reset.
-          failInventory = true;
-          navigating = setInterval(() => navHandler?.(mainFrame), 50);
-          await vi.waitFor(
-            async () => expect(await readTabRestoreSidecar(f.directory)).toEqual([]),
-            { timeout: 2_000, interval: 25 },
-          );
-          expect(inventoryCalls).toBeGreaterThanOrEqual(3);
-        } else if (scenario === "flush-then-close") {
-          failInventory = true;
-          navHandler?.(mainFrame);
-          await launched.context.sessionRestore!.flush!();
-          f.exit();
-          await launched.close();
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
-        } else if (scenario === "close") {
-          // A change Chromium will persist at its orderly exit, and a map that cannot follow it.
-          failInventory = true;
-          navHandler?.(mainFrame);
-          f.exit();
-          await launched.close();
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
-        } else if (scenario === "crashed") {
-          // Chromium was killed: nothing answers and nothing will write a later session, so the
-          // map from the last write is kept for the crash restore instead of deleted.
-          failInventory = true;
-          f.cdp.send.mockImplementation(async (method: string) => {
-            if (method === "Browser.getVersion") throw new Error("Target closed");
-            return {};
-          });
-          navHandler?.(mainFrame);
-          await launched.context.sessionRestore!.flush!();
-          f.exit();
-          await launched.close();
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([
-            { index: 0, surfaceId: surfP, url: "https://c3.test/" },
-          ]);
-        } else {
-          f.exit();
-          await launched.close();
-          expect(await readTabRestoreSidecar(f.directory)).toEqual([
-            { index: 0, surfaceId: surfP, url: "https://c3.test/" },
-          ]);
-        }
-      } finally {
-        if (navigating) clearInterval(navigating);
-        invSpy.mockRestore();
-        f.exit();
-        await launched?.close();
-        await rm(f.directory, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it("matches unknown-outcome sleeping probes by tabId only and never binds or removes another owner's same-address discarded tab (F2)", async () => {
+  it("finds an unknown-outcome sleeping tab by its own name only and never removes another owner's same-address discarded tab (F2)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const sharedUrl = "https://shared-f2.test/page";
@@ -2842,17 +2408,13 @@ describe("native Chromium profiles", () => {
 
     // Tab 501 belongs to session S1; tab 999 belongs to another owner (e.g. a parked tab or S2)
     // that gets discarded at the same URL while S1's discard throws and S1's tab 501 vanishes.
-    let tabs: Array<{
-      tabId: number;
-      windowId: number;
-      index: number;
-      url: string;
-      title: string;
-      active: boolean;
-      discarded: boolean;
-      status: string;
-      targetId: string | null;
-    }> = [];
+    let tabs: ChromiumTabEntry[] = [];
+    const nameSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab")
+      .mockImplementation(async (tabId, name) => {
+        tabs = tabs.map((t) => (t.tabId === tabId ? { ...t, identity: name } : t));
+        return true;
+      });
     let invCalls = 0;
     const invSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
@@ -2879,6 +2441,7 @@ describe("native Chromium profiles", () => {
             discarded: true,
             status: "unloaded",
             targetId: "target-f2-other",
+            identity: "srf_00000000-0000-4000-8000-00000000f299",
           },
         ];
         throw new Error("discard failed");
@@ -2918,6 +2481,7 @@ describe("native Chromium profiles", () => {
       expect(tabs.some((t) => t.tabId === 999)).toBe(true);
     } finally {
       invSpy.mockRestore();
+      nameSpy.mockRestore();
       discSpy.mockRestore();
       remSpy.mockRestore();
       f.exit();
@@ -2926,13 +2490,10 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("serializes reconcile removals on the per-tab queue so a racing discard never resurrects a replaced tabId (F3)", async () => {
+  it("serializes reconcile removals on the tab's lane so a racing discard never resurrects it under its new id (F3)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const surfS = "srf_00000000-0000-4000-8000-00000000f301" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfS, url: "https://race-f3.test/" },
-    ]);
     const pageHandlers: Array<(page: Page) => void> = [];
     const makePage = (id: string, url: string) =>
       ({
@@ -2972,6 +2533,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-f3-601",
+        identity: surfS,
       },
     ];
     Object.assign(f.context, {
@@ -2993,7 +2555,7 @@ describe("native Chromium profiles", () => {
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
       .mockImplementation(async () => [...tabs]);
     const discSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
       .mockImplementation(async (tabId) => {
         discardEntered = true;
         await discardGate.promise;
@@ -3004,7 +2566,7 @@ describe("native Chromium profiles", () => {
             ? { ...t, tabId: newTabId, discarded: true, status: "unloaded", targetId: newTargetId }
             : t,
         );
-        return { newTabId, newTargetId };
+        return newTabId;
       });
     const removedIds: number[] = [];
     const remSpy = vi
@@ -3031,17 +2593,17 @@ describe("native Chromium profiles", () => {
       const secondReconcile = launched.context.sessionRestore!.reconcile(new Set());
       const f3Handle = (
         launched as unknown as {
-          contextHandle: { removingSurfaceIds: Set<BrowserSurfaceId> };
+          contextHandle: { removals: Map<string, unknown> };
         }
       ).contextHandle;
-      await vi.waitFor(() => expect(f3Handle.removingSurfaceIds.has(surfS)).toBe(true), {
+      await vi.waitFor(() => expect(f3Handle.removals.has(surfS)).toBe(true), {
         timeout: 2_000,
         interval: 10,
       });
       discardGate.resolve();
       await secondReconcile;
 
-      // Replacement tab 701 MUST be removed with evidence (NOT orphaned or re-inserted into restoredBySurfaceId)!
+      // Replacement tab 701 MUST be removed with evidence (NOT orphaned or parked again)!
       expect(tabs.filter((t) => t.tabId !== 1)).toEqual([]);
       expect(removedIds).toContain(701);
       expect(await launched.context.sessionRestore!.claim(surfS, "https://race-f3.test/")).toBe(
@@ -3064,9 +2626,6 @@ describe("native Chromium profiles", () => {
       const f = await nativeCloseFixture();
       const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
       const surfS = "srf_00000000-0000-4000-8000-00000000c101" as BrowserSurfaceId;
-      await writeTabRestoreSidecar(f.directory, [
-        { index: 0, surfaceId: surfS, url: "https://c1.test/" },
-      ]);
       const makePage = (id: string, url: string) => {
         const state = { closed: false, lifecycle: "active" };
         const close = vi.fn(async () => {
@@ -3116,6 +2675,7 @@ describe("native Chromium profiles", () => {
           discarded: false,
           status: "complete",
           targetId: "target-c1-s",
+          identity: surfS,
         },
       ];
       const freezeGate = Promise.withResolvers<void>();
@@ -3145,7 +2705,7 @@ describe("native Chromium profiles", () => {
         .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
         .mockImplementation(async () => [...tabs]);
       const discSpy = vi
-        .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
         .mockImplementation(async (tabId) => {
           discardEntered = true;
           if (held === "discard") await discardGate.promise;
@@ -3163,7 +2723,7 @@ describe("native Chromium profiles", () => {
                 }
               : t,
           );
-          return { newTabId: 951, newTargetId: null };
+          return 951;
         });
       const remSpy = vi
         .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
@@ -3224,10 +2784,6 @@ describe("native Chromium profiles", () => {
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const surfS = "srf_00000000-0000-4000-8000-00000000c501" as BrowserSurfaceId;
     const surfU = "srf_00000000-0000-4000-8000-00000000c502" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfS, url: "https://c5-s.test/" },
-      { index: 1, surfaceId: surfU, url: "https://c5-u.test/" },
-    ]);
     const pageHandlers: Array<(page: Page) => void> = [];
     const makePage = (id: string, url: string) => {
       const state = { closed: false };
@@ -3266,8 +2822,8 @@ describe("native Chromium profiles", () => {
     });
     let tabs: ChromiumTabEntry[] = [
       { ...row(1, 0, "about:blank", "target-c5-helper"), active: true, status: "complete" },
-      row(901, 1, "https://c5-s.test/", "target-c5-s"),
-      row(902, 2, "https://c5-u.test/", "target-c5-u"),
+      { ...row(901, 1, "https://c5-s.test/", "target-c5-s"), identity: surfS },
+      { ...row(902, 2, "https://c5-u.test/", "target-c5-u"), identity: surfU },
     ];
     let pagesNow: Page[] = [helper.page];
     Object.assign(f.context, {
@@ -3291,7 +2847,7 @@ describe("native Chromium profiles", () => {
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
       .mockImplementation(async () => [...tabs]);
     const discSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
       .mockImplementation(async (tabId) => {
         discardPending = true;
         await discardGate.promise;
@@ -3382,9 +2938,6 @@ describe("native Chromium profiles", () => {
       const f = await nativeCloseFixture();
       const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
       const surfN = "srf_00000000-0000-4000-8000-00000000c201" as BrowserSurfaceId;
-      await writeTabRestoreSidecar(f.directory, [
-        { index: 0, surfaceId: surfN, url: "https://c2.test/" },
-      ]);
       const pageHandlers: Array<(page: Page) => void> = [];
       const makePage = (id: string, url: string) => {
         const state = { closed: false };
@@ -3434,6 +2987,7 @@ describe("native Chromium profiles", () => {
           discarded: scenario === "wake",
           status: "unloaded",
           targetId: null,
+          identity: surfN,
         },
       ];
       let pagesNow: Page[] = [helper.page];
@@ -3531,9 +3085,6 @@ describe("native Chromium profiles", () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const surfX = "srf_00000000-0000-4000-8000-00000000d801" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfX, url: "https://stuck.test/" },
-    ]);
     const pageHandlers: Array<(page: Page) => void> = [];
     let lateClosed = false;
     const late = {
@@ -3586,6 +3137,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-stuck",
+        identity: surfX,
       },
     ];
     // Removal never takes: the tab stays listed whatever is asked.
@@ -3621,7 +3173,6 @@ describe("native Chromium profiles", () => {
       expect(await reconciling).toBeInstanceOf(Error);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(unconfirmed()).toHaveLength(1);
-      expect(String(unconfirmed()[0]![0])).toContain('"kind":"restored"');
       const callsAtBound = removeCalls;
       await vi.advanceTimersByTimeAsync(60_000);
       vi.useRealTimers();
@@ -3642,85 +3193,12 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it.each([
-    ["map-absent", null, ["https://a.test/", "https://b.test/"]],
-    ["chromium-restored-nothing", ["https://a.test/", "https://b.test/"], []],
-    [
-      "no-position-or-address-match",
-      ["https://same.test/", "https://same.test/"],
-      ["https://other.test/", "https://same.test/", "https://same.test/"],
-    ],
-  ] as const)(
-    "names why a cold start matched nothing: %s",
-    async (reason, mapUrls, restoredUrls) => {
-      const f = await nativeCloseFixture();
-      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
-      if (mapUrls) {
-        await writeTabRestoreSidecar(
-          f.directory,
-          mapUrls.map((url, index) => ({
-            index,
-            surfaceId: `srf_00000000-0000-4000-8000-0000000d900${index}`,
-            url,
-          })),
-        );
-      }
-      let tabs: ChromiumTabEntry[] = restoredUrls.map((url, index) => ({
-        tabId: 900 + index,
-        windowId: 1,
-        index,
-        url,
-        title: "",
-        active: false,
-        discarded: false,
-        status: "unloaded",
-        targetId: null,
-      }));
-      Object.assign(f.context, { serviceWorkers: () => [], pages: () => [] });
-      const invSpy = vi
-        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
-        .mockImplementation(async () => [...tabs]);
-      const remSpy = vi
-        .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
-        .mockImplementation(async (tabId) => {
-          tabs = tabs.filter((t) => t.tabId !== tabId);
-          return true;
-        });
-      const diagnostic = vi.spyOn(process.stderr, "write");
-      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
-      try {
-        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-        const line = diagnostic.mock.calls
-          .map(([text]) => String(text))
-          .find((text) => text.includes('"event":"browser-runtime.tab-restore-launch"'));
-        expect(JSON.parse(line!)).toMatchObject({
-          matched: 0,
-          restored: restoredUrls.length,
-          mapSaved: mapUrls?.length ?? 0,
-          matchedNothing: reason,
-        });
-      } finally {
-        invSpy.mockRestore();
-        remSpy.mockRestore();
-        diagnostic.mockRestore();
-        f.exit();
-        await launched?.close();
-        await rm(f.directory, { recursive: true, force: true });
-      }
-    },
-  );
-
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const surfPopupOpener = "srf_00000000-0000-4000-8000-00000000f401" as BrowserSurfaceId;
     const surfNullTarget = "srf_00000000-0000-4000-8000-00000000f402" as BrowserSurfaceId;
     const surfFrozen = "srf_00000000-0000-4000-8000-00000000f403" as BrowserSurfaceId;
-    await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfPopupOpener, url: "https://opener-f4.test/" },
-      { index: 1, surfaceId: surfNullTarget, url: "https://null-target-f4.test/" },
-      { index: 2, surfaceId: surfFrozen, url: "https://frozen-f4.test/" },
-    ]);
 
     const pageHandlers: Array<(page: Page) => void> = [];
     const makePage = (id: string, url: string, opener?: Page | null) => {
@@ -3776,6 +3254,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-f4-opener" as string | null,
+        identity: surfPopupOpener,
       },
       {
         tabId: 802,
@@ -3787,6 +3266,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: null as string | null,
+        identity: surfNullTarget,
       },
       {
         tabId: 803,
@@ -3798,6 +3278,7 @@ describe("native Chromium profiles", () => {
         discarded: false,
         status: "unloaded",
         targetId: "target-f4-frozen" as string | null,
+        identity: surfFrozen,
       },
     ];
 
@@ -3838,7 +3319,7 @@ describe("native Chromium profiles", () => {
       .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
       .mockImplementation(async () => [...tabs]);
     const discSpy = vi
-      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
       .mockImplementation(async (tabId) => {
         const newTabId = tabId + 100;
         const newTargetId = `target-f4-disc-${newTabId}`;
@@ -3847,7 +3328,7 @@ describe("native Chromium profiles", () => {
             ? { ...t, tabId: newTabId, discarded: true, status: "unloaded", targetId: newTargetId }
             : t,
         );
-        return { newTabId, newTargetId };
+        return newTabId;
       });
     const remSpy = vi
       .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
@@ -3901,13 +3382,13 @@ describe("native Chromium profiles", () => {
       const handle = (
         launched as unknown as {
           contextHandle: {
-            claimingSurfaceIds: Set<BrowserSurfaceId>;
+            claimingTitles: Set<string>;
             closeTarget?: (id: string) => Promise<void>;
             activatePrivateAnchor(): Promise<void>;
           };
         }
       ).contextHandle;
-      await vi.waitFor(() => expect(handle.claimingSurfaceIds.has(surfFrozen)).toBe(true), {
+      await vi.waitFor(() => expect(handle.claimingTitles.has(surfFrozen)).toBe(true), {
         timeout: 2_000,
         interval: 10,
       });

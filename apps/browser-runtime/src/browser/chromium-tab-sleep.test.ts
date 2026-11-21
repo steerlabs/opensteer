@@ -595,20 +595,21 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   const invWhileAsleep = await lifecycle.inventory();
   expect(invWhileAsleep.some((tab) => tab.url === url && tab.discarded)).toBe(true);
 
-  // If removal fails once, confirmed session end must refuse and keep the restore handle for retry.
-  const origRemove = lifecycle.removeByTabId.bind(lifecycle);
-  let failOnce = true;
-  const spy = vi.spyOn(lifecycle, "removeByTabId").mockImplementation(async (tabId) => {
-    if (failOnce) {
-      failOnce = false;
-      return false;
-    }
-    return origRemove(tabId);
-  });
+  // If the removal attempt fails (the helper and the target close both refuse), confirmed session
+  // end must refuse and keep the restore handle for retry.
+  const handle = (
+    launched as unknown as { contextHandle: { closeTarget?: (id: string) => Promise<void> } }
+  ).contextHandle;
+  const closeTarget = handle.closeTarget;
+  handle.closeTarget = async () => {
+    throw new Error("closeTarget refused");
+  };
+  const spy = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValue(false);
   await expect(ledger.closeOwnedPages("session-ended", true)).rejects.toThrow(
     /Pages are still closing/,
   );
   spy.mockRestore();
+  handle.closeTarget = closeTarget;
 
   // Retrying confirmed session end removes the sleeping tab from Chromium with evidence.
   await ledger.closeOwnedPages("session-ended", true);
@@ -648,7 +649,7 @@ it("still sleeps and wakes by address without marking unrestorable when the help
   await ledger.start();
   cleanup.push(() => ledger.close());
 
-  // Tab 1: helper inventory / tabIdForTargetId throws during sleep -> must STILL sleep and wake by address!
+  // Tab 1: helper inventory throws during sleep -> must STILL sleep and wake by address!
   const url1 = `${server.originForSite(1)}/article`;
   const s1 = await ledger.openSurface();
   const live1 = ledger.binding(s1.id)!;
@@ -658,15 +659,11 @@ it("still sleeps and wakes by address without marking unrestorable when the help
   const invSpy = vi
     .spyOn(lifecycle, "inventory")
     .mockRejectedValue(new Error("Helper worker crashed"));
-  const tabIdSpy = vi
-    .spyOn(lifecycle, "tabIdForTargetId")
-    .mockRejectedValue(new Error("Helper worker crashed"));
   expect(await ledger.sleep(s1.id, () => null)).toBe(true);
   expect(ledger.stateOf(s1.id)).toBe("suspended");
   const rec1 = [...ledger.policyRecords()].find((r) => r.id === s1.id)!;
   expect(rec1.unrestorable).toBe(false);
   invSpy.mockRestore();
-  tabIdSpy.mockRestore();
 
   const woken1 = await ledger.wake(s1.id);
   await waitLoaded(woken1.cdp, "/article");
@@ -894,19 +891,21 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   expect(await ledger.sleep(surface.id, () => null)).toBe(true);
   await launched.context.sessionRestore!.flush!();
 
-  // Fail removeByTabId once -> closeSurface must reject retryably, keep tab listed, emit no closed event.
-  const removeSpy = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValueOnce(false);
+  // Fail one removal attempt (helper and target close) -> closeSurface must reject retryably,
+  // keep the tab listed, emit no closed event.
+  const handle = (
+    launched as unknown as { contextHandle: { closeTarget?: (id: string) => Promise<void> } }
+  ).contextHandle;
+  const closeTarget = handle.closeTarget;
+  handle.closeTarget = async () => {
+    throw new Error("closeTarget refused");
+  };
+  const removeSpy = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValue(false);
   await expect(ledger.closeSurface(surface.id)).rejects.toThrow(/This tab is still closing/);
   expect(ledger.snapshot().some((s) => s.id === surface.id)).toBe(true);
   expect(closedEvents).toEqual([]);
-  // Sidecar must already have removed the closing tab.
-  await launched.context.sessionRestore!.flush!();
-  const { readFile } = await import("node:fs/promises");
-  const sidecarAfterFailedClose = JSON.parse(
-    await readFile(path.join(directory, "opensteer-tabs.json"), "utf8"),
-  ) as { tabs: readonly { surfaceId: string }[] };
-  expect(sidecarAfterFailedClose.tabs.some((t) => t.surfaceId === surface.id)).toBe(false);
   removeSpy.mockRestore();
+  handle.closeTarget = closeTarget;
 
   // Retry succeeds once Chromium confirms removal.
   await ledger.closeSurface(surface.id);
@@ -923,10 +922,14 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   await waitLoaded(live2.cdp, "/article");
   expect(await ledger.sleep(s2.id, () => null)).toBe(true);
 
-  const removeSpy2 = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValueOnce(false);
+  handle.closeTarget = async () => {
+    throw new Error("closeTarget refused");
+  };
+  const removeSpy2 = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValue(false);
   await expect(ledger.closeDurableSurface(s2.id)).rejects.toThrow(/This tab is still closing/);
   expect(ledger.snapshot().some((s) => s.id === s2.id)).toBe(true);
   removeSpy2.mockRestore();
+  handle.closeTarget = closeTarget;
 
   await ledger.closeDurableSurface(s2.id);
   expect(ledger.snapshot().some((s) => s.id === s2.id)).toBe(false);

@@ -41,52 +41,53 @@ tab or explicitly resuming it as an agent wakes the existing record within its a
 
 Restore state stays in runtime memory or inside the browser profile itself, never a database, stream
 or log. On macOS, Electron captures navigation history with Blink page state and `sessionStorage` in
-runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), a sleeping tab in a
-native Chromium profile is discarded via Chromium's own tab lifecycle (`chrome.tabs.discard`,
-after freezing to flush Blink page state and detaching CDP) through a minimal bundled MV3 helper
-extension (`tabs` and `debugger` permissions only, hidden from tab lists, session CDP and connected
-agents); if the helper is unavailable or fails, the tab still sleeps by closing its page and wakes
-by address. A discard whose outcome is unknown stays tracked by the tab's Chromium id, followed
-through every tab Chromium replaced it with; if the helper's worker restarted since, so its record
-of replacements may be gone, the tab is "not known" and stays tracked, never taken as gone.
-Closing a sleeping tab or ending its session removes it from Chromium with confirmation, retrying
-an unconfirmed removal in the background a bounded number of times and then reporting it as not
-removed; a page such a tab loads later is still never handed off. On Linux without an explicit
-`OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab sleeper reacts to container working set
-(`memory.current - inactive_file` against `memory.max`, or bare-Linux `MemTotal - MemAvailable`
-against `MemTotal`) — sleeping eligible tabs above 70% and stopping below 60%, evaluated on its
-timer and again before each new page is created, so a burst of opens sheds other tabs first — while
-keeping renderer `Pss` for reporting only and falling back to its page estimate when memory state
-cannot be read.
+runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), Chromium itself carries
+which Home tab a native-profile tab is: a minimal bundled MV3 helper extension (`tabs`, `tabGroups`
+and `debugger` permissions only, hidden from tab lists, session CDP and connected agents) puts each
+saved Home tab in its own tab group whose title is the tab's Home id, once the tab has left its
+initial blank page. Chromium keeps that title through a discard (whatever it does to the tab's id)
+and through its own session restore after a clean exit or a crash; no page can read or change it,
+it is not part of any picture a person is streamed, and a tab Chromium adds to the group (a link
+opened from the tab) is taken out of it again. No file or store of Opensteer's says which tab is
+which.
+
+A sleeping tab is discarded through Chromium's own tab lifecycle (`chrome.tabs.discard`, after
+freezing to flush Blink page state and detaching CDP) and found again by its group title; a saved tab
+keeps its Home id, any other tab carries its sleep token's name while it sleeps. If the tab cannot
+be named or the helper fails, it sleeps by closing its page and wakes by address. A tab whose
+discard outcome is not known stays guarded under its name until a wake or a release finds it, or a
+complete inventory shows no tab carrying it. Closing a sleeping tab or ending its session removes it
+from Chromium with that evidence, retrying an unconfirmed removal in the background a bounded number
+of times and then reporting it as not removed; a page such a tab loads later is still never handed
+off. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab sleeper
+reacts to container working set (`memory.current - inactive_file` against `memory.max`, or bare-Linux
+`MemTotal - MemAvailable` against `MemTotal`) — sleeping eligible tabs above 70% and stopping below
+60%, evaluated on its timer and again before each new page is created, so a burst of opens sheds
+other tabs first, waiting only while some tab can actually sleep — while keeping renderer `Pss` for
+reporting only and falling back to its page estimate when memory state cannot be read.
+
 Native Chromium profiles keep Chromium's own `Default/Sessions/` files across orderly runtime
-restarts or crashes, plus an atomic full-strip `opensteer-tabs.json` sidecar holding strip indices,
-Home tab ids, and addresses of every open tab (with placeholders for unsaved and agent tabs), never
-typed text or page content. A map that fails to be written three times in a row since its last
-successful write is deleted, and both the Home's flush and a browser close bring the map current or
-delete it before Chromium writes its own session, so a later cold start opens by address rather than
-matching a stale strip. Each native launch logs what the map held, what Chromium restored and what
-matched, naming the reason when nothing matched. As in a desktop browser, typed text
-in standard form fields of durable tabs in the person's profile stays on disk in Chromium's
-`Default/Sessions/` files while those tabs exist; passwords typed into a form are not kept there.
-Every restore session, on a cold or a running browser, reconciles restored tabs against its own Home
-saved tab list —
-matching only exact unshifted full-strip slots or unique addresses by globally unique Home tab id,
-discarding any kept parked saved tab Chromium has loaded off the path to ready (while leaving
-never-loaded `unloaded` tabs untouched so their `sessionStorage` survives, and automatically
-discarding any parked tab Chromium loads later before a session claims it so no unowned background
-page stays running), closing unowned, deleted, agent and other-lineage tabs with evidence (failing
-closed if launch inventory or removal fails), and opening unmatched Home tabs by address. A page
-that arrives while restored tabs are tracked is handed off only on positive evidence that it is no
-restored tab and no tab a wake waits for; otherwise it stays hidden, is looked at again for about
-300 ms and is then closed, and a hidden restored page's popups are closed too. A session's first page
-is its own claim or a new page by address, never whichever page the browser listed first. Each
-restore session closes every restored tab outside its own lineage's list that no session has
-claimed, so the latest reconcile decides which kept tabs of another lineage survive; no tab ever
-crosses to another surface, and a tab whose restored page was closed opens by address. If
-reconciliation exceeds its runtime deadline, or a claim waits too long behind a park of the same
-tab, the remaining restored tabs (or that tab) are given up: they stay hidden and are removed in the
-background, one tab at a time with any discard of it, while the session goes on opening tabs by
-address.
+restarts and crashes. As in a desktop browser, typed text in standard form fields of durable tabs in
+the person's profile stays on disk there while those tabs exist; passwords typed into a form are not
+kept there. On a cold start, a restored tab is the Home tab its own group title names and nothing
+else: a tab with no title, a title that is no Home tab id, or a title two tabs carry is closed with
+evidence at launch (launch fails closed if that cannot be confirmed, or if the helper cannot list the
+tabs), and each launch logs how many tabs came back named, untitled, with an unknown title or with a
+duplicated one. Every restore session, on a cold or a running browser, then reconciles against its
+own Home saved tab list: it closes every restored tab outside that list that no session is claiming,
+so the latest reconcile decides which kept tabs of another lineage survive, and parks the rest —
+discarding any tab Chromium has loaded, off the path to ready, and leaving never-loaded tabs
+untouched so their `sessionStorage` survives. A Home tab with no restored tab opens by address. A
+session's claim takes the one tab carrying its id and wakes it; a session's first page is its own
+claim or a new page by address, never whichever page the browser listed first. While any tab is
+restored, sleeping or being removed, an arriving page Opensteer did not create is handed off only
+when its tab's group title shows it is none of those; otherwise it stays hidden and, if it cannot be
+told within 2 seconds, is closed. A hidden page's popups are closed too. If reconciliation exceeds
+its runtime deadline, or a claim waits too long behind a park of the same tab, the remaining restored
+tabs (or that tab) are given up: hidden, and removed in the background one tab at a time, while the
+session goes on opening tabs by address. After a restart a person's saved tabs therefore come back
+as themselves, with what was typed, scrolled and navigated, or, when Chromium did not bring a tab
+back under its name, at their address without that state.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
 Guest sessions promise only a descriptor and URL reload.
