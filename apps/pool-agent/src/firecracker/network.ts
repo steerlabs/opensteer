@@ -38,6 +38,23 @@ export interface NetworkConfig {
 const blocked4 = `0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
                  172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3`;
 
+/**
+ * Every resolver a slot's proxy is told to use: the named private ones first, then the public
+ * ones. The firewall opens port 53 to exactly these (re-check finding 2).
+ */
+export function slotResolvers(config: NetworkConfig): readonly string[] {
+  return [...config.privateResolvers, ...config.resolvers];
+}
+
+/** The slot's resolver file, which the proxy reads in place of the host's. */
+export function resolverFile(config: NetworkConfig): string {
+  return (
+    slotResolvers(config)
+      .map((address) => `nameserver ${address}\n`)
+      .join("") || "\n"
+  );
+}
+
 /** What the proxy may send out of its namespace, in order: the same in the namespace and on the host. */
 function egressRules(config: NetworkConfig, hostAddresses: readonly string[]): string {
   const set = (values: readonly string[]) => `{ ${values.join(", ")} }`;
@@ -224,11 +241,7 @@ export async function prepareNamespace(
   await inNs(["ip", "route", "replace", "default", "via", host, "dev", "eth0"]);
   // The proxy resolves names with these resolvers, never the host's own stub.
   await mkdir(join("/etc/netns", ns), { recursive: true, mode: 0o755 });
-  await writeFile(
-    join("/etc/netns", ns, "resolv.conf"),
-    config.resolvers.map((address) => `nameserver ${address}\n`).join("") || "\n",
-    { mode: 0o644 },
-  );
+  await writeFile(join("/etc/netns", ns, "resolv.conf"), resolverFile(config), { mode: 0o644 });
 }
 
 function namespaceTable(): string {

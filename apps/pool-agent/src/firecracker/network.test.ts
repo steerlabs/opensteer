@@ -3,7 +3,7 @@ import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentConfigSchema, readAgentConfig, refuseUnsupportedMode } from "../config.js";
-import { egressRuleset, hostRuleset, type NetworkConfig } from "./network.js";
+import { egressRuleset, hostRuleset, resolverFile, type NetworkConfig } from "./network.js";
 
 const config: NetworkConfig = {
   resolvers: ["8.8.8.8"],
@@ -146,5 +146,34 @@ describe("review G10: the configuration's own checks", () => {
     await expect(readAgentConfig(file)).rejects.toThrow("readable by other users");
     await chmod(file, 0o600);
     expect((await readAgentConfig(file)).driver.guestMode).toBe("bench");
+  });
+});
+
+describe("re-check finding 2: the resolvers the firewall opens are the ones the proxy uses", () => {
+  it("writes a private resolver into the slot's resolver file when no public one is named", () => {
+    const config: NetworkConfig = {
+      resolvers: [],
+      privateResolvers: ["169.254.169.254"],
+      hostUpstreams: [],
+      relayUid: null,
+    };
+    expect(resolverFile(config)).toBe("nameserver 169.254.169.254\n");
+    const rules = egressRuleset(config, []);
+    expect(rules).toContain(
+      "ip daddr { 169.254.169.254 } meta l4proto { tcp, udp } th dport 53 accept",
+    );
+    // Port 53 is open to nothing else.
+    expect(rules.match(/dport 53 accept/g)).toHaveLength(1);
+  });
+
+  it("names private resolvers before public ones", () => {
+    expect(
+      resolverFile({
+        resolvers: ["1.1.1.1"],
+        privateResolvers: ["169.254.169.254"],
+        hostUpstreams: [],
+        relayUid: null,
+      }),
+    ).toBe("nameserver 169.254.169.254\nnameserver 1.1.1.1\n");
   });
 });
