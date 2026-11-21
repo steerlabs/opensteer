@@ -266,6 +266,114 @@ async function run(command) {
         memory: /^\d+$/u.test(memory) ? Number(memory) : null,
       };
     }
+    case "make-profile": {
+      const file = `/var/lib/opensteer-pool/profiles/${command.name}.ext4`;
+      if (!existsSync(file)) execFileSync("truncate", ["-s", "256M", file]);
+      return { ok: true };
+    }
+    case "slot-number": {
+      // The driver's own record of which number a slot holds.
+      const numbers = JSON.parse(readFileSync("/var/lib/opensteer-pool/driver/slots.json", "utf8"));
+      return { index: numbers[command.slotId] ?? null };
+    }
+    case "egress-socket": {
+      // Round F, E2: a slot's proxy socket taken down, so its next start must define it again.
+      spawnSync("systemctl", [command.action, `opensteer-pool-egress-${command.index}.socket`]);
+      return { ok: true };
+    }
+    case "egress-unit": {
+      // What systemd holds for one slot number: its socket's state and its proxy's settings.
+      const show = (name, property) =>
+        spawnSync("systemctl", ["show", "-p", property, "--value", name], {
+          encoding: "utf8",
+        }).stdout.trim();
+      const listed = spawnSync(
+        "systemctl",
+        [
+          "list-units",
+          `opensteer-pool-egress-${command.index}.*`,
+          "--all",
+          "--plain",
+          "--no-legend",
+        ],
+        { encoding: "utf8" },
+      ).stdout.trim();
+      const upstream = show(`opensteer-pool-egress-${command.index}.service`, "Environment")
+        .split(" ")
+        .find((entry) => entry.startsWith("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL="));
+      return {
+        socket: show(`opensteer-pool-egress-${command.index}.socket`, "ActiveState"),
+        listed: listed
+          ? listed.split("\n").map((line) => line.split(/\s+/u).slice(0, 4).join(" "))
+          : [],
+        upstream: upstream?.slice("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL=".length) ?? null,
+      };
+    }
+    case "slow-tool": {
+      // Round F: a one-shot slow host tool, for E1 and E2 on a host. The wrapper sits in
+      // /usr/local/sbin, first on the agent's tool path, ignores SIGTERM (standing for a request
+      // PID 1 already took) and then runs the real tool. Removed again with `remove: true`.
+      const wrappers = {
+        "systemd-run": `#!/bin/bash
+flag=/run/opensteer-pool-bench/slow-systemd-run
+if mv "$flag" "$flag.used" 2>/dev/null; then trap '' TERM; date +%s%3N >> "$flag.used"; sleep "$(head -1 "$flag.used")"; fi
+exec /usr/bin/systemd-run "$@"
+`,
+        systemctl: `#!/bin/bash
+flag=/run/opensteer-pool-bench/slow-systemctl-stop
+if [[ "$1" == stop && -f $flag && "$2" == "$(cut -d' ' -f1 "$flag")" ]] && mv "$flag" "$flag.used" 2>/dev/null; then trap '' TERM; date +%s%3N >> "$flag.used"; sleep "$(head -1 "$flag.used" | cut -d' ' -f2)"; fi
+exec /usr/bin/systemctl "$@"
+`,
+      };
+      if (command.remove) {
+        for (const name of Object.keys(wrappers))
+          rmSync(`/usr/local/sbin/${name}`, { force: true });
+        for (const flag of ["slow-systemd-run", "slow-systemctl-stop"]) {
+          rmSync(`/run/opensteer-pool-bench/${flag}`, { force: true });
+          rmSync(`/run/opensteer-pool-bench/${flag}.used`, { force: true });
+        }
+        return { ok: true };
+      }
+      if (command.used) {
+        const file = `/run/opensteer-pool-bench/${command.used}.used`;
+        return { used: existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : null };
+      }
+      for (const [name, text] of Object.entries(wrappers))
+        writeFileSync(`/usr/local/sbin/${name}`, text, { mode: 0o755 });
+      if (command.tool === "systemd-run")
+        writeFileSync("/run/opensteer-pool-bench/slow-systemd-run", `${command.seconds}\n`);
+      if (command.tool === "systemctl-stop")
+        writeFileSync(
+          "/run/opensteer-pool-bench/slow-systemctl-stop",
+          `${command.unit} ${command.seconds}\n`,
+        );
+      return { ok: true };
+    }
+    case "capacity-events": {
+      // Round F, E4: whether the kernel killed anything in the guests' group or the proxies'
+      // slice (memory.events counts a cgroup and everything below it).
+      const events = (file) =>
+        existsSync(file)
+          ? Object.fromEntries(
+              readFileSync(file, "utf8")
+                .trim()
+                .split("\n")
+                .map((line) => line.split(" "))
+                .map(([k, v]) => [k, Number(v)]),
+            )
+          : null;
+      const failed = spawnSync(
+        "systemctl",
+        ["list-units", "opensteer-pool-egress-*", "--state=failed", "--plain", "--no-legend"],
+        { encoding: "utf8" },
+      ).stdout.trim();
+      return {
+        guests: events(join(agentCgroup, "memory.events")),
+        slice: events("/sys/fs/cgroup/opensteer-pool-egress.slice/memory.events"),
+        failedProxies: failed ? failed.split("\n").length : 0,
+        vmms: processes(agentCgroup),
+      };
+    }
     case "proxy-unit": {
       // Round E, E3: the properties the results claim for a slot's proxy unit and its slice,
       // read from systemd, and the host's cores the slice's CPU ceiling is chosen from.
@@ -289,6 +397,11 @@ async function run(command) {
           "Slice",
         ]),
         slice: read("opensteer-pool-egress.slice", ["MemoryMax", "CPUQuotaPerSecUSec"]),
+        // The ceiling in force, as the kernel has it: quota and period in microseconds.
+        sliceCpuMax: readFileSync(
+          "/sys/fs/cgroup/opensteer-pool-egress.slice/cpu.max",
+          "utf8",
+        ).trim(),
         cores: Number(spawnSync("nproc", [], { encoding: "utf8" }).stdout.trim()),
       };
     }

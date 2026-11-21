@@ -156,6 +156,9 @@ import json
 path = "/etc/opensteer-pool/agent.json"
 config = json.load(open(path))
 config["driver"]["guestMode"] = "runtime"
+# Round F: a Home restart while the guest is parked in memory needs the park to stay in memory
+# a little longer than the bench's 4 s.
+config["saveAfterSeconds"] = 20
 open(path, "w").write(json.dumps(config, indent=2))
 PY
     chmod 0600 /etc/opensteer-pool/agent.json

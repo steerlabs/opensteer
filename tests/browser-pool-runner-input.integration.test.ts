@@ -33,7 +33,10 @@ import {
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { BrowserModuleRelay } from "../packages/runner-client/src/browser-relay.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import {
+  BrowserPoolCoordinator,
+  loopbackPoolChannel,
+} from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
@@ -107,7 +110,8 @@ async function typeThroughRunner(options: { readonly profile: boolean }) {
     runtimeId: "pool-runtime",
     slotId: "slot-input",
     term: 1,
-    runtime,
+    // The Home side's channel interface (round 10): an in-process runtime through its loopback.
+    runtime: loopbackPoolChannel(runtime),
     controller,
     retryMs: 20,
   });

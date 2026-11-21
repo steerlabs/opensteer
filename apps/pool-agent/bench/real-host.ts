@@ -111,11 +111,29 @@ class Slot {
   readonly index: number;
   readonly #home: KeyObject;
   #agentKey!: KeyObject;
+  readonly #guest: { readonly memoryMib: number; readonly upstreamPort: number };
 
-  constructor(id: string, index: number) {
+  constructor(
+    id: string,
+    index: number,
+    guest: { readonly memoryMib?: number; readonly upstreamPort?: number } = {},
+  ) {
     this.id = id;
     this.index = index;
     this.#home = generateKeyPairSync("ed25519").privateKey;
+    this.#guest = {
+      memoryMib: guest.memoryMib ?? 2048,
+      upstreamPort: guest.upstreamPort ?? options.upstreamPort,
+    };
+  }
+
+  /** This slot's calls signed by its Home's key, at its term: what a replaced Home still has. */
+  get home(): KeyObject {
+    return this.#home;
+  }
+
+  get agentKey(): KeyObject {
+    return this.#agentKey;
   }
 
   get bridge(): string {
@@ -132,10 +150,10 @@ class Slot {
         .toString("base64"),
       guest: {
         vcpus: 2,
-        memoryMib: 2048,
+        memoryMib: this.#guest.memoryMib,
         profilePath: `${options.profiles}/${this.id}.ext4`,
         egress: {
-          upstreamUrl: `https://192.0.43.10:${options.upstreamPort}`,
+          upstreamUrl: `https://192.0.43.10:${this.#guest.upstreamPort}`,
           usernameFile: `${options.credentials}/upstream-username`,
           passwordFile: `${options.credentials}/upstream-password`,
           caFile: `${options.credentials}/upstream-ca.pem`,
@@ -611,6 +629,8 @@ async function proxyUnit(slot: Slot) {
     slice: "opensteer-pool-egress.slice",
     slice_memory_max: String(1536 * 1024 ** 2),
     slice_cpu_quota_us: Math.max(1, cores / 4) * 1e6,
+    // In force: the kernel's cpu.max for the slice, per 100 ms period.
+    slice_cpu_max: `${Math.max(1, cores / 4) * 100_000} 100000`,
   };
   const found = {
     start_limit_window_us: microseconds(unit.StartLimitIntervalUSec),
@@ -620,6 +640,7 @@ async function proxyUnit(slot: Slot) {
     slice: unit.Slice,
     slice_memory_max: slice.MemoryMax,
     slice_cpu_quota_us: microseconds(slice.CPUQuotaPerSecUSec),
+    slice_cpu_max: read.sliceCpuMax,
   };
   emit({
     kind: "proxy-unit",
@@ -757,6 +778,243 @@ function proxySampler(slot: Slot) {
     running = false;
     emit({ kind: "proxy-usage", slot: slot.id, ...peak });
   };
+}
+
+// ---- Round F on the host ------------------------------------------------------------------
+
+const mib = 1024 ** 2;
+const spkiOf = (key: KeyObject) =>
+  createPublicKey(key).export({ format: "der", type: "spki" }).toString("base64");
+const agentLines = async (since: string) =>
+  ((await helper({ cmd: "agent-events", since })).lines as string[]).map(
+    (line) => JSON.parse(line) as Record<string, unknown>,
+  );
+const sinceNow = () => new Date(Date.now() - 1_000).toISOString().replace("T", " ").slice(0, 19);
+const refusalOf = (error: unknown) => ({
+  name: error instanceof Error ? error.name : "unknown",
+  message: error instanceof Error ? error.message : String(error),
+});
+
+/**
+ * E1 on a host: the replacement of a Home's keys is held in its stop of the guest's proxy (a
+ * slow `systemctl stop`, one shot), and the old Home sends a call at the old term meanwhile. It
+ * is refused as unauthenticated, after the replacement, and nothing is stored under its id.
+ */
+async function oldKeyDuringReplacement() {
+  await helper({ cmd: "make-profile", name: "bench-e1" });
+  const slot = new Slot("bench-e1", -1);
+  await slot.create();
+  await slot.call("start");
+  const index = (await helper({ cmd: "slot-number", slotId: slot.id })).index as number;
+  const pause = await slot.prepare("pause");
+  await helper({
+    cmd: "slow-tool",
+    tool: "systemctl-stop",
+    unit: `opensteer-pool-egress-${index}.service`,
+    seconds: 3,
+  });
+  const next = generateKeyPairSync("ed25519");
+  const began = now();
+  let replacedAt = 0;
+  const replacing = admin({
+    op: "replace-key",
+    slotId: slot.id,
+    term: term + 1,
+    homeKey: spkiOf(next.publicKey),
+  }).then((reply) => ((replacedAt = now()), reply));
+  // Inside the held stop: the old Home's call is authenticated under the old key and queued.
+  await sleep(1_000);
+  let answeredAt = 0;
+  const sent = slot.send(pause).then(
+    (result) => ((answeredAt = now()), { answered: result }),
+    (error: unknown) => ((answeredAt = now()), refusalOf(error)),
+  );
+  const replaced = await replacing;
+  const reply = await sent;
+  const held = (await helper({ cmd: "slow-tool", used: "slow-systemctl-stop" })).used;
+  await helper({ cmd: "slow-tool", remove: true });
+  // The new Home finds nothing of the old Home's call.
+  const stored = await callBrowserPoolAgent(
+    { url: options.agent, homeKey: next.privateKey, agentKey: slot.agentKey, timeoutMs: 60_000 },
+    slot.id,
+    term + 1,
+    { op: "result", id: pause.id },
+  );
+  await admin({ op: "delete", slotId: slot.id, term: term + 1 });
+  emit({
+    kind: "e1-old-key",
+    held,
+    replace_ms: Math.round(replacedAt - began),
+    reply,
+    answered_after_replacement: answeredAt >= replacedAt,
+    stored_for_new_home: stored.op === "result" ? stored.result : stored,
+    ok:
+      replaced.op === "replace-key" &&
+      Array.isArray(held) &&
+      "name" in reply &&
+      reply.name === "BrowserPoolAgentUnavailable" &&
+      /not signed by this slot's Home/u.test(reply.message) &&
+      answeredAt >= replacedAt &&
+      stored.op === "result" &&
+      stored.result === null,
+  });
+}
+
+/**
+ * E2 on a host: a slot whose proxy must be defined again at its start (its socket taken down),
+ * with that `systemd-run` slow (one shot, SIGTERM ignored, as a request PID 1 already took),
+ * past the 5 s network step; then the slot is deleted, then a new slot is made. No socket is
+ * left for the deleted slot, and the new slot's proxy carries its own upstream.
+ */
+async function slowRevive() {
+  for (const name of ["bench-e2-old", "bench-e2-new"]) await helper({ cmd: "make-profile", name });
+  const old = new Slot("bench-e2-old", -1, { upstreamPort: 8443 });
+  await old.create();
+  await old.call("start");
+  await old.call("stop");
+  const number = (await helper({ cmd: "slot-number", slotId: old.id })).index as number;
+  await helper({ cmd: "egress-socket", index: number, action: "stop" });
+  await helper({ cmd: "slow-tool", tool: "systemd-run", seconds: 8 });
+  const since = sinceNow();
+  const began = now();
+  const starting = old.call("start").then(
+    () => "started",
+    (error: unknown) => refusalOf(error),
+  );
+  // Past the network step's 5 s deadline: the start has given up on the revive.
+  await sleep(5_500);
+  const deleting = admin({ op: "delete", slotId: old.id, term });
+  const [start, deleted] = await Promise.all([starting, deleting]);
+  const deleteMs = now() - began;
+  const used = (await helper({ cmd: "slow-tool", used: "slow-systemd-run" })).used;
+  await helper({ cmd: "slow-tool", remove: true });
+  const afterDelete = await helper({ cmd: "egress-unit", index: number });
+  const fresh = new Slot("bench-e2-new", -1, { upstreamPort: 8444 });
+  await fresh.create();
+  const freshNumber = (await helper({ cmd: "slot-number", slotId: fresh.id })).index as number;
+  const freshUnit = await helper({ cmd: "egress-unit", index: freshNumber });
+  const drained = (await agentLines(since)).some(
+    (line) => line.event === "step.draining" && line.slotId === old.id,
+  );
+  await admin({ op: "delete", slotId: fresh.id, term });
+  emit({
+    kind: "e2-slow-revive",
+    old_number: number,
+    new_number: freshNumber,
+    slow_systemd_run: used,
+    start,
+    drained,
+    delete_done_ms: Math.round(deleteMs),
+    after_delete: afterDelete,
+    new_slot: freshUnit,
+    ok:
+      Array.isArray(used) &&
+      start !== "started" &&
+      drained &&
+      deleted.op === "delete" &&
+      afterDelete.socket !== "active" &&
+      (afterDelete.listed as string[]).every((line) => !/ active /u.test(` ${line} `)) &&
+      freshUnit.upstream === "https://192.0.43.10:8444",
+  });
+}
+
+/**
+ * E4 on a host: guests sized so the host holds four in memory. Three are parked in memory
+ * (oldest first) and one runs; two starts at once save the two oldest to disk; two more at once
+ * save the third, and the one that still does not fit is refused "try again later", and is let
+ * in when a guest leaves. The kernel kills nothing in the guests' group or the proxies' slice.
+ */
+async function capacity(others: Slot[]) {
+  const since = new Date(Date.now() - 6 * 3_600_000).toISOString().replace("T", " ").slice(0, 19);
+  const logged = (await agentLines(since)).filter((line) => line.event === "capacity").at(-1);
+  if (!logged) throw new Error("The agent logged no capacity.");
+  const guestBytes = logged.guestBytes as number;
+  // The largest guest of which four fit and five do not, in 256 MiB steps.
+  const memoryMib = Math.floor((guestBytes / 4 / mib - 512) / 256) * 256;
+  const holds = Math.floor(guestBytes / ((memoryMib + 512) * mib));
+  for (const slot of others) await slot.ensureStopped();
+  // Parked guests stay in memory until the run says otherwise.
+  await helper({ cmd: "configure", saveAfterSeconds: null });
+  await waitForAgent(others[0]!);
+  const names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  for (const name of names) await helper({ cmd: "make-profile", name: `bench-cap-${name}` });
+  const slots = Object.fromEntries(
+    names.map((name) => [name, new Slot(`bench-cap-${name}`, -1, { memoryMib })]),
+  ) as Record<string, Slot>;
+  for (const slot of Object.values(slots)) await slot.create();
+  const before = await helper({ cmd: "capacity-events" });
+  const marks = sinceNow();
+  for (const name of ["a", "b", "c"]) {
+    await slots[name]!.call("start");
+    await slots[name]!.call("pause");
+  }
+  await slots.d!.call("start");
+  const tier = async (slot: Slot) => {
+    const summary = await slot.summary();
+    return summary?.parked?.tier ?? summary?.status.phase ?? null;
+  };
+  const startAll = (batch: Slot[]) =>
+    Promise.all(
+      batch.map(async (slot) => {
+        const call = await slot.prepare("start");
+        return slot.send(call).then(
+          (result) => ({ slot: slot.id, call, applied: result.applied }),
+          (error: unknown) => ({ slot: slot.id, call, ...refusalOf(error) }),
+        );
+      }),
+    );
+  const first = await startAll([slots.e!, slots.f!]);
+  const afterFirst = { a: await tier(slots.a!), b: await tier(slots.b!), c: await tier(slots.c!) };
+  const second = await startAll([slots.g!, slots.h!]);
+  const afterSecond = { c: await tier(slots.c!) };
+  const refused = second.flatMap((entry) => ("applied" in entry ? [] : [entry]));
+  // A guest leaves memory; the refused start, sent again as a Home's journal does, is let in.
+  await slots.d!.call("stop");
+  const retried = refused[0]
+    ? await slots[refused[0].slot.slice("bench-cap-".length)]!.send(refused[0].call).then(
+        (result) => result.applied,
+        (error: unknown) => refusalOf(error),
+      )
+    : null;
+  const after = await helper({ cmd: "capacity-events" });
+  const saves = (await agentLines(marks))
+    .filter((line) => line.event === "capacity.save")
+    .map((line) => line.saving as string);
+  const kills = (events: Record<string, unknown>) =>
+    ((events.guests as Record<string, number> | null)?.oom_kill ?? 0) +
+    ((events.slice as Record<string, number> | null)?.oom_kill ?? 0);
+  for (const slot of Object.values(slots)) await admin({ op: "delete", slotId: slot.id, term });
+  await helper({ cmd: "configure", saveAfterSeconds: options.saveAfterMs / 1000 });
+  await waitForAgent(others[0]!);
+  emit({
+    kind: "capacity",
+    guest_budget_bytes: guestBytes,
+    guest_memory_mib: memoryMib,
+    holds,
+    first: first.map(({ call: _call, ...entry }) => entry),
+    after_first: afterFirst,
+    second: second.map(({ call: _call, ...entry }) => entry),
+    after_second: afterSecond,
+    saved_in_order: saves,
+    retried,
+    events_before: before,
+    events_after: after,
+    ok:
+      holds === 4 &&
+      first.every((entry) => "applied" in entry && entry.applied) &&
+      afterFirst.a === "disk" &&
+      afterFirst.b === "disk" &&
+      afterFirst.c === "memory" &&
+      afterSecond.c === "disk" &&
+      second.filter((entry) => "applied" in entry && entry.applied).length === 1 &&
+      refused.length === 1 &&
+      refused[0]!.name === "BrowserPoolAgentUnavailable" &&
+      /try again later/u.test(refused[0]!.message) &&
+      retried === true &&
+      JSON.stringify(saves) === JSON.stringify(["bench-cap-a", "bench-cap-b", "bench-cap-c"]) &&
+      kills(after) === kills(before) &&
+      after.failedProxies === 0,
+  });
 }
 
 /** Round D, D3: the run's own verdict, from every row it wrote. */
@@ -1387,6 +1645,10 @@ async function main() {
   stopSampling();
   if (options.phases.includes("crash-loop")) await crashLoop(slots[2]!);
   if (options.phases.includes("flood")) await floodNeighbour(slots[0]!, slots[1]!, 5);
+  // Round F: E1, E2 and E4 on the host, after every series (their wrappers stay off the series).
+  if (options.phases.includes("e1")) await oldKeyDuringReplacement();
+  if (options.phases.includes("e2")) await slowRevive();
+  if (options.phases.includes("capacity")) await capacity(slots);
   assertAll();
   emit({ kind: "done" });
 }

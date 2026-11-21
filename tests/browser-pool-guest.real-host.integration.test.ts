@@ -176,19 +176,22 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     });
     if (created.op !== "create")
       throw new Error(`The slot was not created: ${JSON.stringify(created)}`);
-    // What the provisioner hands the Home: public material only.
-    const parts = managedBrowserPool(
-      {
-        kind: "managed-pool",
-        agentUrl: r.agentUrl,
-        slotId,
-        term,
-        agentKey: created.slot.controlKey,
-        hostKey: spkiOf(hostKey),
-        relay: { ...r.relay, relayHostKey: spkiOf(relayHostKey) },
-      },
-      homeKeys,
-    );
+    // What the provisioner hands the Home: public material only. A restarted Home makes its
+    // clients again from it and its own keys.
+    const homeParts = () =>
+      managedBrowserPool(
+        {
+          kind: "managed-pool",
+          agentUrl: r.agentUrl,
+          slotId,
+          term,
+          agentKey: created.slot.controlKey,
+          hostKey: spkiOf(hostKey),
+          relay: { ...r.relay, relayHostKey: spkiOf(relayHostKey) },
+        },
+        homeKeys,
+      );
+    let parts = homeParts();
     const endpoint = (overrides: Partial<Parameters<typeof openPoolRelay>[0]> = {}) => ({
       host: r.relay.host,
       port: r.relay.port,
@@ -214,13 +217,16 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       );
     // Every start's install, kept for the replay check at the end.
     const installs: { control: unknown; signature: string }[] = [];
-    const apply = parts.controller.apply.bind(parts.controller);
-    parts.controller.apply = async (call) => {
-      const result = await apply(call);
-      if (call.kind === "start" && result.control && result.signature)
-        installs.push({ control: result.control, signature: result.signature });
-      return result;
+    const keepInstalls = (controller: typeof parts.controller) => {
+      const apply = controller.apply.bind(controller);
+      controller.apply = async (call) => {
+        const result = await apply(call);
+        if (call.kind === "start" && result.control && result.signature)
+          installs.push({ control: result.control, signature: result.signature });
+        return result;
+      };
     };
+    keepInstalls(parts.controller);
     const fixture = await createStoreFixture();
     const task = await fixture.startRunFixture("pool-proof");
     const { database, store } = fixture;
@@ -235,18 +241,20 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       errors.push(message);
       process.stderr.write(`POOLPROOF ${message}\n`);
     };
-    const coordinator = new BrowserPoolCoordinator({
-      database,
-      runnerId: task.runnerId,
-      runtimeId: "browser-main",
-      slotId,
-      term,
-      runtime: parts.runtime,
-      controller: parts.controller,
-      retryMs: 500,
-      callTimeoutMs: 60_000,
-      onError: (error) => report(error),
-    });
+    const newCoordinator = () =>
+      new BrowserPoolCoordinator({
+        database,
+        runnerId: task.runnerId,
+        runtimeId: "browser-main",
+        slotId,
+        term,
+        runtime: parts.runtime,
+        controller: parts.controller,
+        retryMs: 500,
+        callTimeoutMs: 60_000,
+        onError: (error) => report(error),
+      });
+    let coordinator = newCoordinator();
     // The guest starts (our runtime and Chromium boot) and the Home installs its fence.
     let mark = performance.now();
     process.stderr.write("POOLPROOF recover\n");
@@ -354,20 +362,47 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         return target ? Object.assign(Object.create(target), { main: true }) : target;
       },
     };
-    const service = new BrowserService({
-      deploymentId: task.deploymentId,
-      hostOrigin: new URL("http://127.0.0.1"),
-      personal: true,
-      pools: new Map([[task.runnerId, coordinator]]),
-      localProfiles,
-      tabs: new TabStore(database),
-      tabPlaces: { write: async () => false, notice: () => {} },
-      repository: personalBrowserRepository(store),
-      signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: tickets.privateKey }),
-      onError: (error) => report(error),
-      onSessionsChanged: () => {},
-      targetResolver: targetResolver as never,
-    });
+    const newService = () =>
+      new BrowserService({
+        deploymentId: task.deploymentId,
+        hostOrigin: new URL("http://127.0.0.1"),
+        personal: true,
+        pools: new Map([[task.runnerId, coordinator]]),
+        localProfiles,
+        tabs: new TabStore(database),
+        tabPlaces: { write: async () => false, notice: () => {} },
+        repository: personalBrowserRepository(store),
+        signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: tickets.privateKey }),
+        onError: (error) => report(error),
+        onSessionsChanged: () => {},
+        targetResolver: targetResolver as never,
+      });
+    let service = newService();
+    /**
+     * Round F, item 1: the Home process stops and a new one starts against the same database:
+     * its browser service, pool coordinator, agent client and runtime channel are all new. The
+     * Runner (another process) and its connection registry stay.
+     */
+    const restartHome = async () => {
+      await service.close();
+      coordinator.close();
+      parts = homeParts();
+      keepInstalls(parts.controller);
+      coordinator = newCoordinator();
+      await coordinator.recover();
+      service = newService();
+      await service.initialize();
+      await vi.waitFor(
+        () => expect(service.isPlacementReady(task.runnerId, "browser-main")).toBe(true),
+        { timeout: 60_000 },
+      );
+    };
+    const parkedTier = async () => {
+      const listed = await admin({ op: "list" });
+      return listed.op === "list"
+        ? (listed.slots.find((slot) => slot.slotId === slotId)?.parked?.tier ?? null)
+        : null;
+    };
     try {
       await service.initialize();
       await vi.waitFor(
@@ -535,13 +570,64 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       });
       viewing.close();
       first.close();
-      // The agent's Run lets go of its page (the ordinary way), then the browser idles, parks,
-      // and is saved to disk.
+      // The agent's Run lets go of its page (the ordinary way), then the browser idles and parks.
       await service.detachAgentSessionsForBinding(agentRun.agentBindingId);
+      await vi.waitFor(() => expect(coordinator.gate.held).toBe(0), { timeout: 30_000 });
+      const sessions = [person.sessionId, agent.sessionId, saved.sessionId].sort();
+      const adoptedAll = async (epoch: number) => {
+        const slot = await readBrowserPoolSlot(database, task.runnerId);
+        expect(slot).toMatchObject({ phase: "running", epoch });
+        const outcome = slot?.outcome as { adopted?: string[]; lost?: unknown[] } | null;
+        expect(outcome?.lost).toEqual([]);
+        expect([...(outcome?.adopted ?? [])].sort()).toEqual(sessions);
+        return outcome;
+      };
+      // Round F, item 1: parked in memory, the Home restarts, and a viewer wakes it.
+      mark = performance.now();
+      expect(await coordinator.tryPark()).toBe("parked");
+      emit({ kind: "proof-park", tier: "memory", ms: Math.round(performance.now() - mark) });
+      mark = performance.now();
+      await restartHome();
+      const restartMs = performance.now() - mark;
+      const tierAtWake = await parkedTier();
+      mark = performance.now();
+      const fromMemory = watch();
+      const awake = await fromMemory.attaching;
+      await awake.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: person.tabId })),
+        false,
+      );
+      await vi.waitFor(() => expect(fromMemory.frames.length).toBeGreaterThan(0), {
+        timeout: 30_000,
+      });
+      const memoryFrameMs = performance.now() - mark;
+      expect(tierAtWake).toBe("memory");
+      expect(documentOf(person.sessionId, person.tabId)).toBe(before.person);
+      expect(documentOf(agent.sessionId, agent.tabId)).toBe(before.agent);
+      expect(documentOf(saved.sessionId, saved.tabId)).toBe(before.profile);
+      await vi.waitFor(async () => expect(await latestColour(fromMemory.frames)).toBe("blue"), {
+        timeout: 30_000,
+        interval: 250,
+      });
+      const memoryOutcome = await adoptedAll(2);
+      emit({
+        kind: "proof-wake",
+        from: "memory",
+        home_restarted: true,
+        home_restart_ms: Math.round(restartMs),
+        tier_at_wake: tierAtWake,
+        first_frame_ms: Math.round(memoryFrameMs),
+        same_documents: true,
+        draft_after_wake: true,
+        outcome: memoryOutcome,
+      });
+      awake.close();
+      fromMemory.close();
+      // Then parked again, and saved to disk.
       await vi.waitFor(() => expect(coordinator.gate.held).toBe(0), { timeout: 30_000 });
       mark = performance.now();
       expect(await coordinator.tryPark()).toBe("parked");
-      emit({ kind: "proof-park", ms: Math.round(performance.now() - mark) });
+      emit({ kind: "proof-park", tier: "disk", ms: Math.round(performance.now() - mark) });
       expect(await refusal(openPoolRelay(endpoint()))).toBe("parked");
       await vi.waitFor(
         async () => {
@@ -560,6 +646,11 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
           ),
         ),
       ).toBe("refused");
+      // Round F, item 1: saved to disk, the Home restarts, and a viewer wakes it.
+      mark = performance.now();
+      await restartHome();
+      const diskRestartMs = performance.now() - mark;
+      expect(await parkedTier()).toBe("disk");
       // The wake: a viewer of the person's tab.
       mark = performance.now();
       const second = watch();
@@ -591,6 +682,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       emit({
         kind: "proof-wake",
         from: "disk",
+        home_restarted: true,
+        home_restart_ms: Math.round(diskRestartMs),
         attach_ms: Math.round(wakeMs),
         first_frame_ms: Math.round(firstFrameMs),
         edited_frame_ms: Math.round(edited),
@@ -600,13 +693,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         new_key_after_wake: true,
         outcome: slot?.outcome ?? null,
       });
-      expect(slot).toMatchObject({ phase: "running", epoch: 2 });
-      // Round D, D3: three sessions adopted, none lost.
-      const outcome = slot?.outcome as { adopted?: string[]; lost?: unknown[] } | null | undefined;
-      expect(outcome?.lost).toEqual([]);
-      expect([...(outcome?.adopted ?? [])].sort()).toEqual(
-        [person.sessionId, agent.sessionId, saved.sessionId].sort(),
-      );
+      // Round D, D3: three sessions adopted, none lost (round F: after a Home restart).
+      await adoptedAll(3);
       // An HTTPS request from a page after the wake.
       // (The agent's Run let go before the park, so this page is a person's.)
       const https = await service.openTab(task.userId, {

@@ -64,17 +64,12 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     control: BrowserPoolControl,
     signature: Uint8Array,
   ): Promise<BrowserPoolRuntimeState> {
-    let answer: Awaited<ReturnType<typeof requestOverTunnel>>;
-    try {
-      answer = await this.#send(
-        "POST",
-        "/v1/pool/control",
-        JSON.stringify({ control, signature: Buffer.from(signature).toString("base64") }),
-      );
-    } catch (error) {
-      // The control may or may not have applied: its outcome is read with the state later.
-      throw error;
-    }
+    // A lost answer may or may not have applied: its outcome is read with the state later.
+    const answer = await this.#send(
+      "POST",
+      "/v1/pool/control",
+      JSON.stringify({ control, signature: Buffer.from(signature).toString("base64") }),
+    );
     const body = JSON.parse(answer.text || "{}") as {
       state?: BrowserPoolRuntimeState;
       code?: string;
