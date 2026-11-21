@@ -90,7 +90,8 @@ agent() {
     "egressUidBase": 300000,
     "egress": { "node": "/opt/opensteer-pool/node/bin/node", "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js" },
     "network": { "resolvers": [], "privateResolvers": ["169.254.169.254"], "hostUpstreams": [{ "address": "192.0.43.10", "port": 8443 }], "relayUid": $relay_uid },
-    "guestMode": "bench"
+    "guestMode": "bench",
+    "egressLog": true
   }
 }
 EOF

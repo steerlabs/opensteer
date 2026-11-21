@@ -115,7 +115,7 @@ export async function defineEgress(
     "--property=TasksMax=64",
     "--property=LimitCORE=0",
     "--property=StandardOutput=null",
-    // A debug host (serialConsole) keeps the proxy's refusals in the journal.
+    // A diagnostics host (driver.egressLog) keeps the proxy's refusals in the journal.
     `--property=StandardError=${program.debug ? "journal" : "null"}`,
     ...(program.debug ? ["--setenv=OPENSTEER_BROWSER_EGRESS_DEBUG=1"] : []),
     `--setenv=OPENSTEER_BROWSER_EGRESS_HOST=${proxyAddress}`,

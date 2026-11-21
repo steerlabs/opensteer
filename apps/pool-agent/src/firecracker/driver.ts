@@ -96,6 +96,8 @@ export interface FirecrackerDriverConfig {
   readonly guestMode: "runtime" | "bench";
   /** The 8250 serial console; off in production (the guest could fill the host's stdout). */
   readonly serialConsole?: boolean;
+  /** Each slot proxy's refusals go to the journal (diagnostics). */
+  readonly egressLog?: boolean;
 }
 
 const execName = "firecracker";
@@ -211,7 +213,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     if (!this.#present.has(index) || !(await namespaceTablesPresent(index))) {
       await prepareNamespace(index, this.#uid(index), this.#config.network, this.#hostAddresses);
       await defineEgress(
-        { ...this.#config.egress, debug: this.#config.serialConsole === true },
+        { ...this.#config.egress, debug: this.#config.egressLog === true },
         index,
         this.#config.egressUidBase + index,
         egress,

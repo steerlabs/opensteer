@@ -61,6 +61,8 @@ export const agentConfigSchema = z
       /** The mode that works today is the default (review G5); `runtime` is refused at start. */
       guestMode: z.enum(["runtime", "bench"]).default("bench"),
       serialConsole: z.boolean().default(false),
+      /** Diagnostics: each slot proxy's refusals go to the journal. Off by default. */
+      egressLog: z.boolean().default(false),
     }),
   })
   .refine(
