@@ -9,6 +9,7 @@ import {
   advanceBrowserPoolSlot,
   beginBrowserPoolPark,
   BrowserPoolAdmissionClosed,
+  withDatabaseOperationSignal,
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
   listBrowserPoolRuntimeSessions,
@@ -139,6 +140,11 @@ export class BrowserPoolCoordinator {
   readonly #releasedForGood = Promise.withResolvers<void>();
   #changed = new AbortController();
   #running: Promise<void> | undefined;
+  /** The step running now, and the signal everything it awaits takes: its deadline or a removal. */
+  #step: { readonly name: string; readonly preempt: AbortController } | undefined;
+  #signal: AbortSignal | undefined;
+  /** Live state is given up for (R3): a step the next turn may choose, never run from a catch. */
+  #discardWanted: string | undefined;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -262,6 +268,9 @@ export class BrowserPoolCoordinator {
     this.#released ??= { ended: new Set(), noted: Promise.withResolvers() };
     for (const sessionId of ended) this.#released.ended.add(sessionId);
     this.gate.set({ hold: "released" });
+    // A removal goes first: the step under way stops awaiting, and the next turn is the release.
+    if (this.#step && this.#step.name !== "release")
+      this.#step.preempt.abort(new BrowserPoolAdmissionClosed("This device was removed."));
     this.#start();
     this.#kick();
     return this.#released.noted.promise;
@@ -320,8 +329,21 @@ export class BrowserPoolCoordinator {
           await abortableWait(changed);
           continue;
         }
-        // The step is awaited to its end; its own deadlines bound it, so nothing is abandoned.
-        await step.run(AbortSignal.timeout(step.deadlineMs ?? defaultStepMs));
+        // Everything the step awaits takes its signal (the database included), so a deadline or
+        // a removal ends the wait; what it had sent is fenced by its id, sequence or predecessor.
+        const deadlineMs = step.deadlineMs ?? defaultStepMs;
+        const preempt = new AbortController();
+        const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
+        this.#step = { name: step.name, preempt };
+        this.#signal = signal;
+        try {
+          await withDatabaseOperationSignal(signal, Date.now() + deadlineMs, () =>
+            step!.run(signal),
+          );
+        } finally {
+          this.#step = undefined;
+          this.#signal = undefined;
+        }
         if (failing === step.name) failures = 0;
         this.#publish(this.#slot);
       } catch (error) {
@@ -329,10 +351,10 @@ export class BrowserPoolCoordinator {
         if (step) {
           failures = failing === step.name ? failures + 1 : 1;
           failing = step.name;
-          // Once the attempts are used and the step has just failed again, its live state is
-          // given up for behind a fresh guest (R3); a failed fallback is tried again later.
-          if (step.fallback && failures >= discardAfterAttempts)
-            await step.fallback().catch((fallback: unknown) => this.#options.onError?.(fallback));
+          // Once the attempts are used, live state is given up for behind a fresh guest (R3):
+          // the next turn chooses again, so anything wanted above it goes first.
+          if (step.discards && failures >= discardAfterAttempts)
+            this.#discardWanted = "unrecoverable";
         }
         await delay(
           Math.min(this.#options.retryMs ?? 100 * 2 ** Math.min(failures, 6), 5_000),
@@ -352,11 +374,15 @@ export class BrowserPoolCoordinator {
       return { name: "release", run: () => this.#releaseStep(slot) };
     if (this.#restartWanted) return { name: "restart", run: () => this.#restartStep(slot) };
     if (this.#unknownIntent) return { name: "intent", run: () => this.#readIntent() };
+    if (this.#discardWanted && slot) {
+      const reason = this.#discardWanted;
+      return { name: "discard", run: () => this.#discardRead(reason) };
+    }
     if (!this.#recovered || !slot || slot.phase === "preparing" || slot.phase === "waking")
       return {
         name: "recover",
         run: () => this.#recoverStep(),
-        ...(slot ? { fallback: () => this.#discardRead("unrecoverable") } : {}),
+        ...(slot ? { discards: true } : {}),
       };
     const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
     if (withoutChannel.length)
@@ -366,11 +392,7 @@ export class BrowserPoolCoordinator {
         run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
       };
     if (slot.phase === "parked" && this.gate.demand)
-      return {
-        name: "wake",
-        run: () => this.#wakeStep(),
-        fallback: () => this.#discardRead("unrecoverable"),
-      };
+      return { name: "wake", run: () => this.#wakeStep(), discards: true };
     if (this.#parkWanted && slot.phase === "running")
       return { name: "park", run: () => this.#parkStep() };
     if (this.#parkWanted) this.#settlePark("vetoed");
@@ -513,10 +535,12 @@ export class BrowserPoolCoordinator {
       if (!wanted.keys.size || [...wanted.keys].some((key) => !handled.has(key))) {
         await this.#adopter?.quiesce();
         await withTimeout(this.gate.idle(), quiesceMs, {
+          ...(this.#signal ? { signal: this.#signal } : {}),
           timeoutError: () => new Error("A send still holds the browser."),
         }).catch((error: unknown) => this.#options.onError?.(error));
         // The live set: a restart that joins while this one runs is answered by the same start.
         await this.#discard(slot, "person", wanted.keys);
+        this.#discardWanted = undefined;
       }
       // One that joined after the start was written: its key is recorded with that start too.
       for (
@@ -581,6 +605,7 @@ export class BrowserPoolCoordinator {
     const slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
     await this.#discard(slot, reason);
+    this.#discardWanted = undefined;
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
@@ -612,6 +637,8 @@ export class BrowserPoolCoordinator {
     next: Parameters<typeof advanceBrowserPoolSlot>[2],
     losses?: readonly BrowserPoolSessionLoss[],
   ): Promise<BrowserPoolSlot> {
+    // A step whose deadline passed, or that a removal ended, writes nothing more.
+    this.#signal?.throwIfAborted();
     this.#slot = await advanceBrowserPoolSlot(this.#options.database, slot, next, losses);
     return this.#slot;
   }
@@ -623,7 +650,7 @@ export class BrowserPoolCoordinator {
   }
 
   #status(): Promise<BrowserPoolPhysicalStatus> {
-    return this.#journal.status(this.#options.slotId, this.#options.term);
+    return this.#journal.status(this.#options.slotId, this.#options.term, this.#signal);
   }
 
   /** `replacing`: this call replaces the guest, and closes every open journal row with `status`. */
@@ -633,6 +660,7 @@ export class BrowserPoolCoordinator {
     status: BrowserPoolPhysicalStatus,
     replacing = false,
   ): Promise<BrowserPoolControllerResult> {
+    this.#signal?.throwIfAborted();
     return this.#journal.call(
       {
         slotId: this.#options.slotId,
@@ -645,6 +673,7 @@ export class BrowserPoolCoordinator {
       },
       slot?.intentId ?? null,
       replacing ? status : undefined,
+      this.#signal,
     );
   }
 
@@ -670,6 +699,8 @@ export class BrowserPoolCoordinator {
         control,
       },
       slot.intentId,
+      undefined,
+      this.#signal,
     );
     const issued = signed.control;
     if (
@@ -693,13 +724,19 @@ export class BrowserPoolCoordinator {
     control: BrowserPoolControl,
     signature: string,
   ): Promise<{ readonly state: BrowserPoolRuntimeState; readonly answered: boolean }> {
+    this.#signal?.throwIfAborted();
     const fault = this.#options.runtimeFault?.(control.kind);
     if (fault === "request") return { state: this.#state(), answered: false };
     try {
       const state = await withTimeout(
         this.#options.runtime.controlPool(control, Buffer.from(signature, "base64")),
         this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
-        { timeoutError: () => new Error("The runtime did not answer in time.") },
+        {
+          timeoutError: () => new Error("The runtime did not answer in time."),
+          // The control is not cancelled: the runtime orders controls by sequence, and the
+          // next one the loop sends (a release, a newer intent) is applied after it.
+          ...(this.#signal ? { signal: this.#signal } : {}),
+        },
       );
       return fault === "reply"
         ? { state: this.#state(), answered: false }
@@ -726,6 +763,8 @@ export class BrowserPoolCoordinator {
         },
       },
       slot.intentId,
+      undefined,
+      this.#signal,
     );
     if (!signed.applied || !signed.signature || signed.control?.kind !== "retire")
       throw new Error(`The controller did not sign retire: ${signed.reason ?? "refused"}.`);
@@ -764,7 +803,7 @@ export class BrowserPoolCoordinator {
 
   async #afterD(intent: BrowserPoolSlot, vetoedDuringCommit: boolean) {
     const expected = this.#adopter?.inventory() ?? [];
-    await this.#journal.settleOpen();
+    await this.#journal.settleOpen(this.#signal);
     let state = this.#state();
     let abort = vetoedDuringCommit;
     if (!vetoedDuringCommit) {
@@ -875,7 +914,7 @@ export class BrowserPoolCoordinator {
   async #wake(): Promise<void> {
     // One recovery live and at start: an open journal row is settled by its id first, so a
     // guest a lost acknowledgement left resumed is never mistaken for one without live state.
-    await this.#journal.settleOpen();
+    await this.#journal.settleOpen(this.#signal);
     let slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed();
     if (slot.phase === "running") return;
@@ -953,12 +992,14 @@ export class BrowserPoolCoordinator {
         attachmentGeneration: slot.attachmentGeneration + 1,
       });
       const attempt = slot.attachmentGeneration;
+      this.#signal?.throwIfAborted();
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,
           documents: retained.documents,
           fence: state.fence!,
           attempt,
+          ...(this.#signal ? { signal: this.#signal } : {}),
         });
       // Partial results survive a restart: they are durable before the runtime completes.
       slot = await this.#advance(slot, {
@@ -1126,7 +1167,7 @@ export class BrowserPoolCoordinator {
 
   async #recover(): Promise<void> {
     const slot = await this.#read();
-    await this.#journal.settleOpen();
+    await this.#journal.settleOpen(this.#signal);
     const status = await this.#status();
     const state = this.#state();
     if (!slot) return this.#install(status);
@@ -1217,7 +1258,8 @@ interface Step {
   readonly name: string;
   readonly deadlineMs?: number;
   run(signal: AbortSignal): Promise<void>;
-  readonly fallback?: () => Promise<void>;
+  /** After its attempts are used, the loop may choose to give live state up for this one. */
+  readonly discards?: boolean;
 }
 
 function restartKeysOf(slot: BrowserPoolSlot): readonly string[] {

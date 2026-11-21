@@ -123,21 +123,25 @@ export class BrowserPoolControllerJournal {
   readonly #settle: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>;
 
   /** A read of the slot: it changes nothing, so it carries no journal row. */
-  status(slotId: string, term: number) {
+  status(slotId: string, term: number, signal?: AbortSignal) {
     return withTimeout(this.#controller.status(slotId, term), this.#timeoutMs, {
       timeoutError: () => new Error("The pool controller did not answer in time."),
+      ...(signal ? { signal } : {}),
     });
   }
 
   /**
    * Journals the call, then sends it. `closeOpen` is the status the caller read before a call
    * that replaces the guest (a discard, a restart, a removal): every open row is closed with it
-   * in the same write.
+   * in the same write. `signal` ends the wait, never the call: one whose answer did not come
+   * stays open in the journal and is settled by its id later, and its expected predecessor
+   * keeps it from applying over anything that moved since.
    */
   async call(
     input: Omit<BrowserPoolControllerCall, "id">,
     intentId: string | null,
     closeOpen?: BrowserPoolPhysicalStatus,
+    signal?: AbortSignal,
   ): Promise<BrowserPoolControllerResult> {
     const call: BrowserPoolControllerCall = { id: randomUUID(), ...input };
     await recordBrowserPoolControllerCall(
@@ -153,22 +157,28 @@ export class BrowserPoolControllerJournal {
       },
       closeOpen as unknown as Record<string, unknown> | undefined,
     );
-    return this.#deliver(call);
+    return this.#deliver(call, signal);
   }
 
   /** Delivers every call the journal still has open, oldest first. */
-  async settleOpen(): Promise<readonly BrowserPoolControllerResult[]> {
+  async settleOpen(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
     const settled: BrowserPoolControllerResult[] = [];
     for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
-      settled.push(await this.#deliver(row.request as unknown as BrowserPoolControllerCall));
+      settled.push(
+        await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
+      );
     return settled;
   }
 
-  async #deliver(call: BrowserPoolControllerCall): Promise<BrowserPoolControllerResult> {
+  async #deliver(
+    call: BrowserPoolControllerCall,
+    signal?: AbortSignal,
+  ): Promise<BrowserPoolControllerResult> {
     // Every call has a deadline. Past it the outcome is unknown and is read by the call's id.
     const bounded = <T>(work: Promise<T>) =>
       withTimeout(work, this.#timeoutMs, {
         timeoutError: () => new Error("The pool controller did not answer in time."),
+        ...(signal ? { signal } : {}),
       });
     let result: BrowserPoolControllerResult | null;
     try {

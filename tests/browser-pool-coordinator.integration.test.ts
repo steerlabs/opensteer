@@ -148,7 +148,9 @@ async function poolFixture(
       if (stalled)
         await Promise.race([
           stalled,
-          new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve())),
+          new Promise<void>((resolve) =>
+            signal?.aborted ? resolve() : signal?.addEventListener("abort", () => resolve()),
+          ),
         ]);
       if (signal?.aborted) return [];
       for (const id of sessions) {
@@ -323,6 +325,46 @@ async function parkAndWake(f: Awaited<ReturnType<typeof poolFixture>>, home = f.
   woken.release();
   return home;
 }
+
+it("lets a removal asked while a wake's reattach never answers go first, and nothing of the wake acts after it", async () => {
+  const f = await poolFixture("wake-stall-removal");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const never = Promise.withResolvers<void>();
+    f.stallReattach(never.promise);
+    const waking = home.gate.reserve(AbortSignal.timeout(30_000)).then(
+      (reservation) => {
+        reservation.release();
+        return "admitted";
+      },
+      () => "refused",
+    );
+    // The wake resumed the guest and waits on a reattach that never answers.
+    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("adopting"));
+    const woken = [...f.controller.effects];
+    expect(woken).toEqual(["start", "pause", "resume"]);
+    const attached = [...f.sinks.values()];
+    const removed = home.releaseDevice();
+    await withTimeout(Promise.all([removed, home.released()]), 10_000, {
+      timeoutError: () => new Error("The removal waited behind the wake."),
+    });
+    expect(await waking).toBe("refused");
+    expect(f.controller.effects).toEqual([...woken, "stop"]);
+    expect(await f.slot()).toBeUndefined();
+    expect(home.gate.phase).toBe("released");
+    // The stalled reattach ends: nothing of the wake attaches or calls the controller after.
+    never.resolve();
+    await Promise.resolve();
+    expect([...f.sinks.values()]).toEqual(attached);
+    expect(f.controller.effects).toEqual([...woken, "stop"]);
+    expect((await f.row())?.state).toBe("failed");
+  } finally {
+    await f.close();
+  }
+});
 
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
@@ -800,8 +842,9 @@ for (const asked of ["removal", "restart"] as const)
         (error: unknown) => (error instanceof Error ? error.message : "refused"),
       );
       pause.resolve();
-      // The park finishes and reports where the browser is; it admits nothing.
-      expect(await parking).toBe("parked");
+      // A restart lets the park finish and report where the browser is; a removal goes first and
+      // ends it, so it did not park. Either way it admits nothing.
+      expect(await parking).toBe(asked === "removal" ? "vetoed" : "parked");
       expect(home.gate.phase).toBe(asked === "removal" ? "released" : "restarting");
       expect(home.gate.held).toBe(0);
       await done;
