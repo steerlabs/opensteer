@@ -33,7 +33,7 @@ import {
   type TeamConnectionIntentStore,
   type TeamCoordinator,
   type TeamSessionPort,
-  type TeamRuntimeOwner,
+  type AccountRuntimeOwner,
   type VerifiedTeam,
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, teamPageUrl, type DeploymentId } from "@opensteer/core";
@@ -55,7 +55,7 @@ import { createDesktopHostFetch } from "../desktop/desktop-host-transport.js";
 /** Account's hosted-team calls through the desktop bridge; main holds the Account session. */
 export function desktopAccountTeams(
   bridge: Required<Pick<OpensteerDesktopBridge, "accountTeams">>,
-  owner?: TeamRuntimeOwner,
+  owner?: AccountRuntimeOwner,
 ): AccountTeamsClient {
   const call = async <T>(input: DesktopAccountTeamsCall, schema: z.ZodType<T>): Promise<T> => {
     owner?.assertCurrent();
@@ -95,7 +95,7 @@ export function desktopTeamSessions(
   bridge: OpensteerDesktopBridge & Required<Pick<OpensteerDesktopBridge, "teamSessions">>,
   /** Where a team this computer already shows lives, for one not verified since launch. */
   originOf: (teamDeploymentId: DeploymentId) => string | null = () => null,
-  owner?: TeamRuntimeOwner,
+  owner?: AccountRuntimeOwner,
 ): TeamSessionPort {
   const call = async <T>(input: DesktopTeamSessionsCall, schema: z.ZodType<T>): Promise<T> => {
     owner?.assertCurrent();
@@ -270,7 +270,7 @@ function personalOf(hostClient: HostClient): () => DeploymentId | null {
 /** The desktop's coordinator, once main can both reach Account and enter teams natively. */
 export function desktopTeamCoordination(input: {
   readonly bridge: OpensteerDesktopBridge;
-  readonly owner: TeamRuntimeOwner;
+  readonly owner: AccountRuntimeOwner;
   readonly hostClient: HostClient;
   readonly accountSubject: () => ControlPlaneAccountId | null;
   readonly open: (teamDeploymentId: DeploymentId) => void;

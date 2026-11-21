@@ -210,10 +210,7 @@ vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string; color: string | null } }) => (

@@ -24,7 +24,7 @@ import {
 } from "../apps/control-plane/src/hosted-teams/hosted-team-bootstrap.js";
 import { HttpHostedTeamHost } from "../apps/control-plane/src/hosted-teams/hosted-team-host.js";
 import { HostedTeamStore } from "../apps/control-plane/src/hosted-teams/hosted-team-store.js";
-import { HostedTeamSetupTokenCipher } from "../apps/control-plane/src/hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-computers/secret-cipher.js";
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";
 import { createHostRuntime, type TeamHostRuntime } from "../apps/host/src/runtime/runtime.js";
 import { parseHostConfig } from "../packages/config/src/index.js";
@@ -158,7 +158,7 @@ async function startHostedTeam() {
     adoptionProofVerifier: new HttpHostAccountAdoptionProofVerifier({ fetch: toHost }),
   });
   const host = new HttpHostedTeamHost({ fetch: toHost });
-  const cipher = new HostedTeamSetupTokenCipher(operationKey);
+  const cipher = new CloudComputerSecretCipher(operationKey);
   const ownerCheck = hostedTeamOwnerCheck({
     host,
     issuer,

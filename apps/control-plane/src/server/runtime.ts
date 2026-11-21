@@ -43,7 +43,7 @@ import {
   hostedTeamOwnerCheck,
 } from "../hosted-teams/hosted-team-bootstrap.js";
 import { HttpHostedTeamHost } from "../hosted-teams/hosted-team-host.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
 import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
 
 const operationResultCleanupIntervalMilliseconds = 5 * 60 * 1_000;
@@ -82,7 +82,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     });
     const hostedTeams = config.hostedTeams
       ? new HostedTeamStore(database, {
-          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+          cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
           ownerCheck,
         })
       : undefined;
@@ -102,7 +102,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         ? new CloudComputerStore(database, {
             config: cloud,
             accountOrigin: config.publicOrigin,
-            cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+            cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
             stripe,
             ...(organizations ? { organizations } : {}),
             returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),

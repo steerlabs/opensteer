@@ -19,10 +19,10 @@ import {
   listedTeams,
   NativeTeamEntry,
   assertTeamEntryOutcome,
-  TeamEntryOutcomeError,
+  HostSignInOutcomeError,
   TeamSavedStateSchema,
   TeamTransportRegistry,
-  TeamRuntimeOwner,
+  AccountRuntimeOwner,
   teamVersionRefusal,
   type AccountProfileRelay,
   type TeamCacheScope,
@@ -220,14 +220,14 @@ const TeamMemoSchema = z.strictObject({
  */
 class MobileTeamRuntime {
   readonly registry: TeamTransportRegistry;
-  readonly owner: TeamRuntimeOwner;
+  readonly owner: AccountRuntimeOwner;
   readonly #client: MobileClient;
   readonly #transport: (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport;
   readonly #verify: (origin: string) => Promise<VerifiedHostEndpoint>;
   readonly #entry: NativeTeamEntry;
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
-  readonly #files: ReturnType<TeamRuntimeOwner["files"]>;
+  readonly #files: ReturnType<AccountRuntimeOwner["files"]>;
   readonly #previews: NotificationPreviews | null;
   readonly #listeners = new Set<() => void>();
   readonly #sessions = new Map<string, TeamSessionClient>();
@@ -270,7 +270,7 @@ class MobileTeamRuntime {
     readonly profiles?: AccountProfileRelay;
   }) {
     this.#onForgotten = options.onForgotten;
-    this.owner = options.client.oauth.teamRuntime();
+    this.owner = options.client.oauth.accountRuntime();
     this.#seed = options.seed ?? {};
     this.#client = options.client;
     this.#transport = (connection, scope) => {
@@ -344,7 +344,7 @@ class MobileTeamRuntime {
       for (const teamId of this.#sessions.keys())
         if (
           !this.#connection(teamId) ||
-          this.#client.oauth.isTeamSignInSuppressed(this.#connection(teamId)!)
+          this.#client.oauth.isHostSignInSuppressed(this.#connection(teamId)!)
         )
           void this.#signedOut(teamId);
       this.#publish();
@@ -1060,7 +1060,7 @@ class MobileTeamRuntime {
     const held = this.#states.get(team.teamId);
     const session = this.#sessions.get(team.teamId) ?? null;
     const state: TeamState =
-      entry && this.#client.oauth.isTeamSignInSuppressed(entry.connection)
+      entry && this.#client.oauth.isHostSignInSuppressed(entry.connection)
         ? "signed-out"
         : (held?.state ??
           (entry === null || !entry.signedIn
@@ -1095,7 +1095,7 @@ const placeholderUser = UserIdSchema.parse("usr_00000000-0000-4000-8000-00000000
 
 /** What a failed team call says about the team, for the drawer and its banner. */
 export function teamFailure(error: unknown): TeamState {
-  if (error instanceof TeamEntryOutcomeError) {
+  if (error instanceof HostSignInOutcomeError) {
     if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
       return "signed-out";
     if (error.outcome.status === "update-required")
@@ -1172,7 +1172,7 @@ export class MobileTeams {
     this.profiles = options.profiles ?? null;
     this.#runtime = new MobileTeamRuntime(options);
   }
-  get owner(): TeamRuntimeOwner {
+  get owner(): AccountRuntimeOwner {
     return this.#runtime.owner;
   }
   get registry() {
@@ -1197,7 +1197,7 @@ export class MobileTeams {
     }
   }
   #establish(): boolean {
-    if (this.owner === this.#options.client.oauth.teamRuntime()) return false;
+    if (this.owner === this.#options.client.oauth.accountRuntime()) return false;
     // Another Account signed in: its name is not the one held.
     this.profiles?.changed();
     this.#detachRuntime?.();

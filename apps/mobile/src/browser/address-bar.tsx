@@ -18,7 +18,7 @@ import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import type { ComputerSymbol } from "../screens/settings-model.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { AgentOrb } from "../team/team-marks.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";

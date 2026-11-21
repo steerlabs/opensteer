@@ -204,10 +204,7 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { readonly name: string }) => <i data-symbol={name} />,
 }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string | null } }) => (
     <i data-task-icon={mark.icon} />

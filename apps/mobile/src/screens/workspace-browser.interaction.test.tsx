@@ -487,10 +487,7 @@ vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p data-gate="deployment">Deployment gate</p>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => null,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
 interface MenuOption {
   readonly disabled?: boolean;

@@ -44,7 +44,7 @@ describe("NativeOAuthManager", () => {
     cleanup.resolve();
     await signingOut;
     expect(f.manager.hostCredentialState(f.connection).status).toBe("signed-in");
-    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(false);
+    expect(f.manager.isHostSignInSuppressed(f.connection)).toBe(false);
     f.manager.dispose();
   });
 
@@ -215,7 +215,7 @@ describe("NativeOAuthManager", () => {
     await f.manager.initialize();
     await f.manager.signOutHost(f.connection);
     await f.manager.signInTeam(f.connection, undefined, false);
-    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(true);
+    expect(f.manager.isHostSignInSuppressed(f.connection)).toBe(true);
     expect(f.opened).toEqual([]);
     f.manager.dispose();
   });
@@ -873,7 +873,7 @@ describe("NativeOAuthManager", () => {
     const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
     await fixture.signInAccount();
-    const owner = fixture.manager.teamRuntime();
+    const owner = fixture.manager.accountRuntime();
     const lease = await fixture.manager.accountAuthorizationLease();
     const listener = vi.fn();
     fixture.manager.subscribe(listener);
@@ -893,7 +893,7 @@ describe("NativeOAuthManager", () => {
     });
     const refreshed = await fixture.manager.accountAuthorizationLease();
     expect(refreshed?.authorization).toBe(expected);
-    expect(fixture.manager.teamRuntime()).toBe(owner);
+    expect(fixture.manager.accountRuntime()).toBe(owner);
     expect(owner.signal.aborted).toBe(false);
     expect(refreshed?.signal).toBe(lease?.signal);
     expect(lease?.signal.aborted).toBe(false);
@@ -1411,7 +1411,7 @@ describe("NativeOAuthManager team session exchange", () => {
     await f.manager.initialize();
     await f.signInAccount();
     await f.manager.exchangeTeamSession(f.connection);
-    const owner = f.manager.teamRuntime();
+    const owner = f.manager.accountRuntime();
     const host = new MockTeamHost();
     const persistence = createMemoryTeamPersistence();
     const scope = { teamDeploymentId: host.teamId, userId: host.userId };
@@ -1426,7 +1426,7 @@ describe("NativeOAuthManager team session exchange", () => {
     await session.setDraft(channel, "Before reauthorization");
     const lease = await f.manager.accountAuthorizationLease();
     await f.signInAccount();
-    expect(f.manager.teamRuntime()).toBe(owner);
+    expect(f.manager.accountRuntime()).toBe(owner);
     expect(owner.signal.aborted).toBe(false);
     expect(lease?.signal.aborted).toBe(true);
     await session.setDraft(channel, "After reauthorization");
@@ -1706,7 +1706,7 @@ describe("NativeOAuthManager team session exchange", () => {
     lookup.resolve(null);
     await rejected;
     expect(fixture.opened).toEqual([]);
-    expect(fixture.manager.isTeamSignInSuppressed(fixture.connection)).toBe(true);
+    expect(fixture.manager.isHostSignInSuppressed(fixture.connection)).toBe(true);
   });
 
   it("signs in through the browser when the team does not advertise the exchange", async () => {
@@ -2083,8 +2083,8 @@ async function managerFixture(
   const store: ProtectedAuthStore = {
     assertAvailable: () => memoryStore.assertAvailable(),
     clearAccount: () => memoryStore.clearAccount(),
-    setTeamSignOutSuppression: (deploymentId, suppressed) =>
-      memoryStore.setTeamSignOutSuppression(deploymentId, suppressed),
+    setHostSignOutSuppression: (deploymentId, suppressed) =>
+      memoryStore.setHostSignOutSuppression(deploymentId, suppressed),
     clearHost: (deploymentId) => memoryStore.clearHost(deploymentId),
     clearHosts: (deploymentIds) => memoryStore.clearHosts(deploymentIds),
     load: () => memoryStore.load(),

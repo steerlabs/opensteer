@@ -1,6 +1,6 @@
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { HostVersionMismatchError } from "./deployment-catalog.js";
-import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
+import { HostSignInOutcomeError } from "../auth/host-sign-in-outcome.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
@@ -134,7 +134,7 @@ export class HostTransport {
 
   constructor(options: HostTransportOptions) {
     const owner =
-      options.expectedKind === "team" ? options.credentials?.teamRuntime?.() : undefined;
+      options.expectedKind === "team" ? options.credentials?.accountRuntime?.() : undefined;
     owner?.own(() => this.invalidateSession());
     this.#fence = new HostAttachmentFence({
       catalog: options.catalog,
@@ -145,7 +145,7 @@ export class HostTransport {
               ? {
                   authorizationHeader: (connection) =>
                     options.credentials!.authorizationHeader(connection),
-                  teamRuntime: () => owner,
+                  accountRuntime: () => owner,
                 }
               : options.credentials,
           }),
@@ -222,7 +222,7 @@ export class HostTransport {
         selected.resolved.key !== this.currentKey()
       )
         throw new HostTransportError("deployment-changed");
-      if (selected.resolved.teamRuntime?.signal.aborted)
+      if (selected.resolved.accountRuntime?.signal.aborted)
         throw new HostTransportError("deployment-changed");
     };
   }
@@ -312,7 +312,7 @@ export class HostTransport {
       )
         throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
-      const owner = resolved.teamRuntime;
+      const owner = resolved.accountRuntime;
       const deadline = new HostResponseDeadline(
         owner
           ? AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])])
@@ -469,7 +469,7 @@ export class HostTransport {
     if (!scoped) setApiVersionQuery(target, kind);
     assertCurrent();
     this.#sockets.add(socket);
-    releaseOwner = resolved.teamRuntime?.own(() =>
+    releaseOwner = resolved.accountRuntime?.own(() =>
       socket.close(deploymentChangedCloseCode, "Deployment changed"),
     );
     network = this.#network.openWebSocket(
@@ -543,7 +543,7 @@ export class HostTransport {
     signal: AbortSignal,
   ): Promise<Response> {
     signal.throwIfAborted();
-    resolved.teamRuntime?.assertCurrent();
+    resolved.accountRuntime?.assertCurrent();
     request.admitted?.();
     let response: Response;
     try {
@@ -612,7 +612,7 @@ export class HostTransport {
         throw error;
       }
       signal.throwIfAborted();
-      if (outcome instanceof TeamEntryOutcomeError && outcome.outcome.status === "update-required")
+      if (outcome instanceof HostSignInOutcomeError && outcome.outcome.status === "update-required")
         return Response.json(
           {
             ok: false,

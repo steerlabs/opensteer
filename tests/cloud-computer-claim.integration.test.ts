@@ -62,7 +62,7 @@ import { resetManagedCloudTables } from "../apps/control-plane/src/cloud-compute
 import { migrateControlPlaneToLatest } from "../apps/control-plane/src/database/migrations.js";
 import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
 import { googleServiceAccountVerifier } from "../apps/control-plane/src/hosted-teams/provisioner-routes.js";
-import { HostedTeamSetupTokenCipher } from "../apps/control-plane/src/hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-computers/secret-cipher.js";
 import { OrganizationStore } from "../apps/control-plane/src/organizations/store.js";
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";
 import { createHostRuntime, type PersonalHostRuntime } from "../apps/host/src/runtime/runtime.js";
@@ -360,7 +360,7 @@ const cloud = new CloudComputerStore(database, {
   onBillingAttention: () => undefined,
   config,
   accountOrigin: publicOrigin,
-  cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
+  cipher: new CloudComputerSecretCipher(Buffer.alloc(32, 5).toString("base64url")),
   stripe,
 });
 const claimErrors: unknown[] = [];

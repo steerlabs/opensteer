@@ -44,7 +44,7 @@ import {
   type Updateable,
 } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
-import type { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import type { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { ControlPlaneError } from "../server/errors.js";
 import {
   createHostCredential,
@@ -111,7 +111,7 @@ export class CloudComputerClaimSupersededError extends Error {}
 interface StoreOptions {
   readonly config: CloudComputerConfig;
   readonly accountOrigin: URL;
-  readonly cipher: HostedTeamSetupTokenCipher;
+  readonly cipher: CloudComputerSecretCipher;
   readonly stripe: StripeBilling;
   readonly now?: () => Date;
   readonly backupKeyVault?: BackupKeyVault;

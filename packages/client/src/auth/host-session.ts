@@ -1,6 +1,6 @@
 import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { presentActionFailure } from "../feedback/client-issue.js";
-import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
+import { HostSignInOutcomeError } from "./host-sign-in-outcome.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
@@ -118,7 +118,7 @@ export type HostSessionRecoveryOutcome =
   | "unavailable"
   | "unsupported"
   | TeamEntryRefusedError
-  | TeamEntryOutcomeError;
+  | HostSignInOutcomeError;
 
 export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
@@ -505,7 +505,7 @@ export class HostSession implements HostSessionRecovery {
             : await this.#oauth.signInHome(connection, interactive),
         );
       } catch (error) {
-        if (error instanceof TeamEntryOutcomeError) {
+        if (error instanceof HostSignInOutcomeError) {
           if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
             return observation(resolved, "needs-sign-in", error.message);
           if (error.outcome.status === "update-required")
@@ -662,7 +662,7 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
-  if (outcome instanceof TeamEntryOutcomeError)
+  if (outcome instanceof HostSignInOutcomeError)
     return observation(resolved, "blocked", outcome.message);
   if (outcome instanceof TeamEntryRefusedError) {
     if (teamEntryRefusalOutcome(outcome.reason) === "membership")
@@ -728,7 +728,7 @@ function recoveryFromObservation(
 }
 
 function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
-  if (error instanceof TeamEntryOutcomeError && error.outcome.status === "update-required")
+  if (error instanceof HostSignInOutcomeError && error.outcome.status === "update-required")
     return error;
   if (error instanceof TeamEntryRefusedError) return error;
   if (error instanceof HostSessionExchangeError) return error.outcome;

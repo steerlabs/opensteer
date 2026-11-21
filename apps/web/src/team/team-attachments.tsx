@@ -26,7 +26,7 @@ import {
   listedTeams,
   TeamSessionClient,
   TeamTransportRegistry,
-  TeamRuntimeOwner,
+  AccountRuntimeOwner,
   teamVersionRefusal,
   type MockTeamHost,
   type MockTeamWorld,
@@ -103,7 +103,7 @@ export interface TeamAccount {
 
 interface TeamsValue {
   readonly forgotten: ReadonlySet<string>;
-  readonly owner: TeamRuntimeOwner | null;
+  readonly owner: AccountRuntimeOwner | null;
   readonly surface: TeamSurface["kind"] | null;
   readonly teams: readonly TeamAttachment[];
   /** The personal Host's team commands; null on a team's own web app. */
@@ -157,7 +157,7 @@ export function notifyTeam(
   entry: TeamSidebar["channels"][number],
   open: (channelId: string) => void,
   current: () => boolean,
-  owner?: TeamRuntimeOwner,
+  owner?: AccountRuntimeOwner,
 ): void {
   if (typeof Notification === "undefined" || Notification.permission === "denied") return;
   const show = () => {
@@ -189,7 +189,7 @@ export function notifyTeam(
 }
 
 function useOwnedState<Value>(
-  owner: TeamRuntimeOwner,
+  owner: AccountRuntimeOwner,
   create: () => Value,
 ): readonly [Value, (update: SetStateAction<Value>) => void] {
   const [state, setState] = useState(() => ({ owner, value: create() }));
@@ -226,10 +226,10 @@ export function TeamsProvider({
   readonly surface: TeamSurface;
 }) {
   const identity = account ? { issuer: account.issuer ?? "", subject: account.subject } : null;
-  const ownerRef = useRef<TeamRuntimeOwner | null>(null);
+  const ownerRef = useRef<AccountRuntimeOwner | null>(null);
   if (!ownerRef.current || !ownerRef.current.matches(identity)) {
     ownerRef.current?.retire();
-    ownerRef.current = new TeamRuntimeOwner(identity);
+    ownerRef.current = new AccountRuntimeOwner(identity);
   }
   const owner = ownerRef.current;
   const hostClient =

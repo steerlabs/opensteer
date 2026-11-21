@@ -10,7 +10,7 @@ import { classifyClientFailure, unrefTimer } from "../connections/operation-erro
 import { HostTransportError } from "../connections/host-transport-error.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
 import { mergeTeamPeople, type TeamRemotePeople } from "./shared-channels.js";
-import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
+import type { AccountRuntimeOwner } from "../auth/account-runtime-owner.js";
 import type { AccountProfileRelay } from "./account-profile-relay.js";
 import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
@@ -107,7 +107,7 @@ export interface TeamSessionOptions {
   readonly name?: string;
   readonly loginId?: string;
   readonly authorityKey?: string;
-  readonly owner?: TeamRuntimeOwner;
+  readonly owner?: AccountRuntimeOwner;
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
@@ -157,7 +157,7 @@ export class TeamSessionClient {
   #revocationsDirty = false;
   readonly #probeAnswers = new Set<() => void>();
   readonly rpc: HostApiClient;
-  readonly owner: TeamRuntimeOwner | undefined;
+  readonly owner: AccountRuntimeOwner | undefined;
   readonly #controller = new AbortController();
   readonly signal: AbortSignal;
   readonly #releaseOwner: (() => void) | undefined;

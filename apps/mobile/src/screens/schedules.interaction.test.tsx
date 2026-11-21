@@ -149,10 +149,7 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: (props: { name: string }) => <i data-symbol={props.name} />,
 }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-mark="chat" />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-mark="chat" /> }));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: (props: { quiet?: boolean }) => <i data-mark="task" data-quiet={props.quiet} />,
 }));

@@ -20,7 +20,7 @@ import {
   TeamEntryRefusedError,
   TeamIdentityGrantUnsupportedError,
   type HostOAuthState,
-  type TeamEntryFence,
+  type HostEntryFence,
   type NativeOAuthManager,
 } from "../auth/native-oauth.js";
 import {
@@ -34,6 +34,7 @@ import {
 import { HostTransportError, isGatewayFailure } from "../connections/host-transport-error.js";
 import { HostClientRequestError } from "../host/client.js";
 import { ClientOperationError } from "../connections/operation-error.js";
+import { HostSignInOutcomeError } from "../auth/host-sign-in-outcome.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
 export function verifiedTeam(verified: VerifiedHostEndpoint): VerifiedTeam {
@@ -123,12 +124,12 @@ export async function previewTeamInvite(
 
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
-  | "teamEntryFence"
-  | "teamRuntime"
+  | "hostEntryFence"
+  | "accountRuntime"
   | "authorizationHeader"
-  | "refreshTeamAuthorization"
-  | "isTeamSignInSuppressed"
-  | "resumeTeamSignIn"
+  | "refreshHostAuthorization"
+  | "isHostSignInSuppressed"
+  | "resumeHostSignIn"
   | "accountIdentity"
   | "accountAuthorizationLease"
   | "beginHostSignIn"
@@ -158,7 +159,7 @@ const entryAttempts = new WeakMap<
     {
       mode: "passive" | "interactive";
       invite: TeamInviteSecret | null;
-      owner: ReturnType<TeamEntryOAuth["teamRuntime"]>;
+      owner: ReturnType<TeamEntryOAuth["accountRuntime"]>;
       promise: Promise<TeamEntryOutcome>;
       /** One interactive attempt queued behind this one; identical callers share it. */
       next?: {
@@ -194,12 +195,12 @@ export class NativeTeamEntry {
     readonly invite?: TeamInviteSecret | null;
     readonly recover?: { readonly authorization: string | null | undefined };
   }): Promise<TeamEntryOutcome> {
-    return this.#enqueue(input, this.#oauth.teamEntryFence(input.deploymentId));
+    return this.#enqueue(input, this.#oauth.hostEntryFence(input.deploymentId));
   }
 
   async #enqueue(
     input: Parameters<NativeTeamEntry["authorize"]>[0],
-    lease: TeamEntryFence,
+    lease: HostEntryFence,
   ): Promise<TeamEntryOutcome> {
     try {
       lease.assertCurrent();
@@ -207,7 +208,7 @@ export class NativeTeamEntry {
       if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
       const pending = attempts.get(input.deploymentId);
       // An attempt started under a retired Account never answers the next Account's caller.
-      const held = pending?.owner === this.#oauth.teamRuntime() ? pending : undefined;
+      const held = pending?.owner === this.#oauth.accountRuntime() ? pending : undefined;
       if (held) {
         if (input.mode === "passive" && held.mode === "interactive")
           return this.#passiveDuringBrowser(input, held.promise, lease);
@@ -243,7 +244,7 @@ export class NativeTeamEntry {
       attempts.set(input.deploymentId, {
         mode: input.mode,
         invite: input.invite ?? null,
-        owner: this.#oauth.teamRuntime(),
+        owner: this.#oauth.accountRuntime(),
         promise,
       });
       return promise;
@@ -260,15 +261,15 @@ export class NativeTeamEntry {
   async #passiveDuringBrowser(
     input: Parameters<NativeTeamEntry["authorize"]>[0],
     pending: Promise<TeamEntryOutcome>,
-    lease: TeamEntryFence,
+    lease: HostEntryFence,
   ): Promise<TeamEntryOutcome> {
     const entry = lease;
     try {
       const connection = await this.#held(input.deploymentId);
       entry.assertCurrent();
-      if (connection && !this.#oauth.isTeamSignInSuppressed(connection)) {
+      if (connection && !this.#oauth.isHostSignInSuppressed(connection)) {
         const authorization = input.recover
-          ? await this.#oauth.refreshTeamAuthorization(connection, input.recover.authorization)
+          ? await this.#oauth.refreshHostAuthorization(connection, input.recover.authorization)
           : await this.#oauth.authorizationHeader(connection);
         entry.assertCurrent();
         if (authorization && (!input.recover || authorization !== input.recover.authorization))
@@ -286,15 +287,15 @@ export class NativeTeamEntry {
   }
 
   async #authorize(input: Parameters<NativeTeamEntry["authorize"]>[0]): Promise<TeamEntryOutcome> {
-    const entry = this.#oauth.teamEntryFence(input.deploymentId, input.mode === "interactive");
+    const entry = this.#oauth.hostEntryFence(input.deploymentId, input.mode === "interactive");
     let createdRevision: number | undefined;
     try {
       if (input.recover) {
         const held = await this.#held(input.deploymentId);
         entry.assertCurrent();
         if (held) {
-          if (this.#oauth.isTeamSignInSuppressed(held)) return { status: "suppressed" };
-          const refreshed = await this.#oauth.refreshTeamAuthorization(
+          if (this.#oauth.isHostSignInSuppressed(held)) return { status: "suppressed" };
+          const refreshed = await this.#oauth.refreshHostAuthorization(
             held,
             input.recover.authorization,
           );
@@ -329,8 +330,8 @@ export class NativeTeamEntry {
       const connection = catalog.deployments.find(
         ({ authority }) => authority.document.deploymentId === input.deploymentId,
       )!;
-      if (input.mode === "interactive") await this.#oauth.resumeTeamSignIn(connection, entry);
-      else if (this.#oauth.isTeamSignInSuppressed(connection)) return { status: "suppressed" };
+      if (input.mode === "interactive") await this.#oauth.resumeHostSignIn(connection, entry);
+      else if (this.#oauth.isHostSignInSuppressed(connection)) return { status: "suppressed" };
       entry.assertCurrent();
       const existing = await this.#oauth.authorizationHeader(connection);
       entry.assertCurrent();
@@ -401,7 +402,7 @@ export class NativeTeamEntry {
   async bootstrap(
     deploymentId: DeploymentId,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const entry = this.#oauth.teamEntryFence(deploymentId);
+    const entry = this.#oauth.hostEntryFence(deploymentId);
     const connection = (await this.#held(deploymentId))!;
     entry.assertCurrent();
     const member = await this.#bootstrap(connection);
@@ -449,7 +450,7 @@ export class NativeTeamEntry {
   async #browserSignIn(
     connection: DeploymentConnection,
     invite: TeamInviteSecret | null,
-    entry: TeamEntryFence,
+    entry: HostEntryFence,
   ): Promise<void> {
     entry.assertCurrent();
     const deploymentId = connection.authority.document.deploymentId;
@@ -489,26 +490,12 @@ export class NativeTeamEntry {
   }
 }
 
-export class TeamEntryOutcomeError extends Error {
-  readonly outcome: Exclude<TeamEntryOutcome, { status: "authorized" }>;
-  constructor(outcome: Exclude<TeamEntryOutcome, { status: "authorized" }>) {
-    super(
-      outcome.error instanceof Error
-        ? outcome.error.message
-        : outcome.status === "sign-in-required"
-          ? "Sign in to this team."
-          : "Team authorization changed. Try again.",
-    );
-    this.outcome = outcome;
-  }
-}
-
 export function assertTeamEntryOutcome(outcome: TeamEntryOutcome): void {
   if (outcome.status === "authorized" || outcome.status === "suppressed") return;
   if (outcome.status === "join-required" || outcome.status === "retryable") {
     if (outcome.error) throw outcome.error;
   }
-  throw new TeamEntryOutcomeError(outcome);
+  throw new HostSignInOutcomeError(outcome);
 }
 
 function sameInvite(a: TeamInviteSecret | null, b: TeamInviteSecret | null | undefined): boolean {

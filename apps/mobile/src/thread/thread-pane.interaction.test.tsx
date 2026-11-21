@@ -626,10 +626,7 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../team/team-context.js", () => ({
   useTeamsSnapshot: () => ({ computerId: null, teams: [], unlinked: [], selected: null }),
   useCoordinatorSnapshot: () => ({ hostedTeams: [], intents: [], watching: null, ready: [] }),

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import {
-  TeamHostDescriptorSchema,
+  HostDescriptorBaseSchema,
   minimumTeamApiVersion,
   teamApiVersion,
 } from "@opensteer/deployment-authority";
@@ -128,7 +128,7 @@ function teamWire(): TeamWire {
       "session exchange": json(TeamSessionExchangeResponseSchema),
       "invite preview": json(TeamInvitePreviewResponseSchema),
       // Strict: a signed discovery document is verified over exactly what was signed.
-      descriptor: json(TeamHostDescriptorSchema),
+      descriptor: json(HostDescriptorBaseSchema),
     },
     frames: Object.fromEntries(
       Object.entries(frameViews).map(([surface, [, view]]) => [surface, json(view)]),

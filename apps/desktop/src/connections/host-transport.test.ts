@@ -1,4 +1,4 @@
-import { TeamRuntimeOwner } from "@opensteer/client/team";
+import { AccountRuntimeOwner } from "@opensteer/client/auth";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import {
   createDesktopHostFetch,
@@ -318,11 +318,11 @@ describe("DesktopHostTransport", () => {
   it("ends a team response mid-body when its Account owner retires", async () => {
     const team = deployment("Team", "https://team.example");
     const id = team.authority.document.deploymentId;
-    const owner = new TeamRuntimeOwner(null);
+    const owner = new AccountRuntimeOwner(null);
     let body!: ReadableStreamDefaultController<Uint8Array>;
     const transport = desktopHostTransport({
       catalog: catalogStore([team], id),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => "Bearer team" },
+      credentials: { accountRuntime: () => owner, authorizationHeader: async () => "Bearer team" },
       network: {
         openWebSocket: () => socket(),
         request: async () =>
@@ -351,12 +351,12 @@ describe("DesktopHostTransport", () => {
   it("sends an upload under the Account it arrived with, never one that replaced it mid-body", async () => {
     const team = deployment("Team", "https://team.example");
     const id = team.authority.document.deploymentId;
-    let owner = new TeamRuntimeOwner(null);
+    let owner = new AccountRuntimeOwner(null);
     let account = "Bearer original";
     const request = vi.fn(async () => Response.json({}));
     const transport = desktopHostTransport({
       catalog: catalogStore([team], id),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => account },
+      credentials: { accountRuntime: () => owner, authorizationHeader: async () => account },
       network: { openWebSocket: () => socket(), request },
     });
     let upload!: ReadableStreamDefaultController<Uint8Array>;
@@ -390,7 +390,7 @@ describe("DesktopHostTransport", () => {
       await reading.promise;
       upload.enqueue(new TextEncoder().encode("first part"));
       owner.retire();
-      owner = new TeamRuntimeOwner(null);
+      owner = new AccountRuntimeOwner(null);
       account = "Bearer replacement";
       upload.enqueue(new TextEncoder().encode("rest"));
       upload.close();
@@ -412,9 +412,9 @@ describe("DesktopHostTransport", () => {
     const catalog = catalogStore([team], team.authority.document.deploymentId);
     const gate = Promise.withResolvers<void>();
     const read = vi.fn();
-    const owner = new TeamRuntimeOwner(null);
+    const owner = new AccountRuntimeOwner(null);
     const credentials = {
-      teamRuntime: () => owner,
+      accountRuntime: () => owner,
       authorizationHeader: async () => {
         read();
         if (stage === "credential") await gate.promise;
@@ -469,10 +469,10 @@ describe("DesktopHostTransport", () => {
       const gate = Promise.withResolvers<Response>();
       const started: HostNetworkRequest[] = [];
       const closes = new Map<DeploymentId, ReturnType<typeof vi.fn>>();
-      const owner = new TeamRuntimeOwner(null);
+      const owner = new AccountRuntimeOwner(null);
       const transport = desktopHostTransport({
         catalog,
-        credentials: { teamRuntime: () => owner, authorizationHeader: async () => null },
+        credentials: { accountRuntime: () => owner, authorizationHeader: async () => null },
         network: {
           request: async (input) => {
             started.push(input);
@@ -687,12 +687,12 @@ describe("DesktopHostTransport", () => {
     const home = deployment("Home", "https://home.connect.opensteer.test", "personal");
     const work = deployment("Work", "https://work.connect.opensteer.test", "personal");
     const team = deployment("Team", "https://team.example");
-    const owner = new TeamRuntimeOwner(null);
+    const owner = new AccountRuntimeOwner(null);
     let token = "Bearer first";
     const request = vi.fn(async (_input: HostNetworkRequest) => Response.json({}));
     const transport = desktopHostTransport({
       catalog: catalogStore([home, work, team], home.authority.document.deploymentId),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => token },
+      credentials: { accountRuntime: () => owner, authorizationHeader: async () => token },
       network: { openWebSocket: () => socket(), request },
     });
     // An upload main is reading, finished only when told.

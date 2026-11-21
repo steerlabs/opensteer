@@ -1,0 +1,25 @@
+/** Why signing in to a Host at its own address ended without a usable credential. */
+export interface HostSignInFailure {
+  readonly status:
+    | "join-required"
+    | "retryable"
+    | "update-required"
+    | "sign-in-required"
+    | "suppressed"
+    | "superseded";
+  readonly error?: unknown;
+}
+
+export class HostSignInOutcomeError extends Error {
+  readonly outcome: HostSignInFailure;
+  constructor(outcome: HostSignInFailure) {
+    super(
+      outcome.error instanceof Error
+        ? outcome.error.message
+        : outcome.status === "sign-in-required"
+          ? "Sign in to this team."
+          : "Team authorization changed. Try again.",
+    );
+    this.outcome = outcome;
+  }
+}

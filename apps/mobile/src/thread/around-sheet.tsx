@@ -45,7 +45,7 @@ import {
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { useOpenPlace, useShowTab } from "../tabs/viewer-open.js";
 import { color, radius, space, type } from "../theme.js";
-import { AgentOrb } from "../team/team-marks.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, StatusDot, Toggle } from "../ui/primitives.js";

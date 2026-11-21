@@ -10,6 +10,7 @@ import {
 } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import type { FaceView, PersonView, TeamTileView } from "./team-models.js";
 
 /**
@@ -18,6 +19,8 @@ import type { FaceView, PersonView, TeamTileView } from "./team-models.js";
  * People only badge. All are decoration to a screen reader: the row beside
  * each mark says the name.
  */
+
+export { AgentOrb };
 
 const tones = Object.values(deploymentPaint);
 
@@ -135,27 +138,6 @@ export const Avatar = memo(function Avatar(props: {
     </View>
   );
 });
-
-/** The Opensteer orb at any size: an agent's mark wherever one appears. */
-export function AgentOrb(props: { readonly size: number }): ReactNode {
-  return (
-    <View
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      style={{ height: props.size, width: props.size }}
-    >
-      <Image
-        resizeMode="contain"
-        source={require("../../assets/opensteer.png") as number}
-        style={{ height: props.size, width: props.size }}
-      />
-      <View
-        pointerEvents="none"
-        style={[StyleSheet.absoluteFill, material.mark, { borderRadius: props.size / 2 }]}
-      />
-    </View>
-  );
-}
 
 /** Up to three faces, overlapping, for a thread summary or a group DM. */
 export function FaceStack(props: {

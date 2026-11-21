@@ -1,4 +1,4 @@
-import { TeamEntryOutcomeError, TeamRuntimeOwner } from "@opensteer/client/team";
+import { HostSignInOutcomeError, AccountRuntimeOwner } from "@opensteer/client/team";
 import { ClientOperationError, HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError } from "@opensteer/client/host";
 import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
@@ -119,7 +119,7 @@ function fixture(
     ],
   };
   let suppressed = false;
-  let owner = new TeamRuntimeOwner(null);
+  let owner = new AccountRuntimeOwner(null);
   const identities = new Set<() => void>();
   let entryGeneration = 0;
   let visibility: "foreground" | "background" = "foreground";
@@ -140,13 +140,13 @@ function fixture(
   const client = {
     lifecycle,
     oauth: {
-      teamRuntime: () => owner,
+      accountRuntime: () => owner,
       subscribeAccountIdentityChanges: (listener: () => void) => {
         identities.add(listener);
         return () => identities.delete(listener);
       },
       accountIdentity: () => null,
-      teamEntryFence: () => {
+      hostEntryFence: () => {
         const generation = entryGeneration;
         return {
           generation,
@@ -157,7 +157,7 @@ function fixture(
         };
       },
       hostCredentialState: () => ({ detail: null }),
-      isTeamSignInSuppressed: () => suppressed,
+      isHostSignInSuppressed: () => suppressed,
     },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -200,7 +200,7 @@ function fixture(
     },
     switchAccount: () => {
       owner.retire();
-      owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "B" });
+      owner = new AccountRuntimeOwner({ issuer: "https://accounts.test", subject: "B" });
       for (const listener of identities) listener();
     },
     showComputer(deploymentId: string) {
@@ -497,14 +497,14 @@ describe("adding a computer's team to the phone", () => {
       connection: held,
     }));
     let entryCurrent = true;
-    const owner = new TeamRuntimeOwner(null);
+    const owner = new AccountRuntimeOwner(null);
     const client = {
       catalog,
       oauth: {
-        teamRuntime: () => owner,
+        accountRuntime: () => owner,
         subscribeAccountIdentityChanges: () => () => undefined,
         accountIdentity: () => null,
-        teamEntryFence: () => {
+        hostEntryFence: () => {
           const captured = entryCurrent;
           return {
             generation: 0,
@@ -516,8 +516,8 @@ describe("adding a computer's team to the phone", () => {
         },
         accountAuthorizationLease: async () => (mode.endsWith("no-account") ? null : lease),
         authorizationHeader: async () => null,
-        resumeTeamSignIn: async () => {},
-        isTeamSignInSuppressed: () => false,
+        resumeHostSignIn: async () => {},
+        isHostSignInSuppressed: () => false,
         exchangeTeamSession: exchange,
         beginHostSignIn: browser,
         hostCredentialState: () => ({ status: "signed-out" }),
@@ -608,7 +608,7 @@ it.each([
   ["client-too-old", "update-app"],
   ["host-too-old", "update-server"],
 ] as const)("tells the person who must update when entry finds %s", (code, state) => {
-  const error = new TeamEntryOutcomeError({
+  const error = new HostSignInOutcomeError({
     status: "update-required",
     error: new HostVersionMismatchError(code),
   });

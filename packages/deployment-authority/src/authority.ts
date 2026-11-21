@@ -259,7 +259,8 @@ export const HostIdentityProofSchema = z.strictObject({
 });
 export type HostIdentityProof = z.infer<typeof HostIdentityProofSchema>;
 
-export const TeamHostDescriptorSchema = z.object({
+/** What every Host serves at `/.well-known/opensteer`, before a Home answers a proof nonce. */
+export const HostDescriptorBaseSchema = z.object({
   kind: DeploymentKindSchema,
   /**
    * A team's current version. A personal Host's minimum: a client from before
@@ -276,7 +277,7 @@ export const TeamHostDescriptorSchema = z.object({
   capabilities: z.array(z.string().min(1).max(64)).max(64),
 });
 
-export const HostDescriptorSchema = TeamHostDescriptorSchema.extend({
+export const HostDescriptorSchema = HostDescriptorBaseSchema.extend({
   /** Present when a Personal request carried `?proof=<nonce>`. */
   identityProof: HostIdentityProofSchema.optional(),
 });

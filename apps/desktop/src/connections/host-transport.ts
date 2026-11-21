@@ -997,7 +997,7 @@ export class DesktopHostTransport extends HostTransport {
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
-    const owner = this.#teamOptions.credentials?.teamRuntime?.();
+    const owner = this.#teamOptions.credentials?.accountRuntime?.();
     const catalog = await this.#catalog.load();
     if (this.#disposed) throw new HostTransportError("cancelled");
     const connection = catalog.deployments.find(

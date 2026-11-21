@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
   MockTeamHost,
-  TeamRuntimeOwner,
+  AccountRuntimeOwner,
   TeamSessionClient,
   createMemoryTeamPersistence,
   type TeamSessionOptions,
@@ -44,7 +44,7 @@ const kinds = [
   "persistence write",
 ] as const;
 it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => {
-  const owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "A" });
+  const owner = new AccountRuntimeOwner({ issuer: "https://accounts.test", subject: "A" });
   const host = new MockTeamHost();
   const scope = { teamDeploymentId: host.teamId, userId: host.userId };
   const delivered = vi.fn();

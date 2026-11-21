@@ -9,7 +9,7 @@ import {
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
-import { PagedList } from "./paged-list.js";
+import { PagedList } from "../reads/paged-list.js";
 import { teamRpcResult } from "./rpc-result.js";
 import type { TeamSessionClient } from "./team-session-client.js";
 

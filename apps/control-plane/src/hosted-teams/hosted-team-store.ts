@@ -39,7 +39,7 @@ import type {
   HostedTeamTable,
 } from "../database/schema.js";
 import { ControlPlaneError } from "../server/errors.js";
-import type { HostedTeamSetupTokenCipher } from "./setup-token-cipher.js";
+import type { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema>;
 type DatabaseTransaction = Transaction<ControlPlaneDatabaseSchema>;
@@ -84,13 +84,13 @@ export type HostedTeamOwnerCheck = (input: {
  */
 export class HostedTeamStore {
   readonly #database: Database;
-  readonly #cipher: HostedTeamSetupTokenCipher;
+  readonly #cipher: CloudComputerSecretCipher;
   readonly #ownerCheck: HostedTeamOwnerCheck;
 
   constructor(
     database: Database,
     options: {
-      readonly cipher: HostedTeamSetupTokenCipher;
+      readonly cipher: CloudComputerSecretCipher;
       readonly ownerCheck?: HostedTeamOwnerCheck;
     },
   ) {

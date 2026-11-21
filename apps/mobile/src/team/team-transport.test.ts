@@ -1,4 +1,4 @@
-import { TeamRuntimeOwner } from "@opensteer/client/team";
+import { AccountRuntimeOwner } from "@opensteer/client/team";
 import { expect, it, vi } from "vitest";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import type { MockTeamHost } from "@opensteer/client/team";
@@ -48,9 +48,9 @@ it("forces one team refresh for concurrent 401s on a phone", async () => {
     token = "Bearer renewed";
     return true;
   });
-  const owner = new TeamRuntimeOwner(null);
+  const owner = new AccountRuntimeOwner(null);
   const oauth = {
-    teamRuntime: () => owner,
+    accountRuntime: () => owner,
     subscribeAccountIdentityChanges: () => () => undefined,
     recoverHostAuthorization,
     subscribe: () => () => undefined,
@@ -133,7 +133,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
       sha256: "a".repeat(64),
       preview: { mediaType: "image/png", sizeBytes: 1 },
     });
-    const owner = new TeamRuntimeOwner(null);
+    const owner = new AccountRuntimeOwner(null);
     let events: import("@opensteer/client/connections").HostNetworkSocketEvents | undefined;
     const transport = networkTeamTransport({
       catalog: {
@@ -149,12 +149,12 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
       },
       credentials: {
         authorizationHeader: async () => "Bearer team",
-        teamRuntime: () => owner,
+        accountRuntime: () => owner,
       },
       oauth: {
         subscribeHostCredentials: () => () => {},
         subscribe: () => () => {},
-        teamRuntime: () => owner,
+        accountRuntime: () => owner,
         subscribeAccountIdentityChanges: () => () => {},
       } as unknown as import("@opensteer/client/auth").NativeOAuthManager,
       network: {

@@ -17,7 +17,7 @@ import {
 } from "../test-support/index.js";
 import { classifyClientFailure, hostUnanswered } from "../connections/operation-error.js";
 import { NativeTeamEntry, previewTeamInvite } from "./native-team-entry.js";
-import { TeamRuntimeOwner } from "./team-runtime-owner.js";
+import { AccountRuntimeOwner } from "../auth/account-runtime-owner.js";
 
 let latestVerified: VerifiedHostEndpoint;
 const keys = testHostAuthorityKeys();
@@ -67,17 +67,17 @@ function setup() {
   const listeners = new Set<(state: HostOAuthState) => void>();
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
-  let runtime = new TeamRuntimeOwner(null);
+  let runtime = new AccountRuntimeOwner(null);
   const oauth = {
-    teamRuntime: () => runtime,
-    refreshTeamAuthorization: vi.fn(async (): Promise<string | null> => null),
-    teamEntryFence: () => ({
+    accountRuntime: () => runtime,
+    refreshHostAuthorization: vi.fn(async (): Promise<string | null> => null),
+    hostEntryFence: () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {},
     }),
-    resumeTeamSignIn: vi.fn(async () => {}),
-    isTeamSignInSuppressed: vi.fn(() => false),
+    resumeHostSignIn: vi.fn(async () => {}),
+    isHostSignInSuppressed: vi.fn(() => false),
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
       signedIn ? "Bearer team" : null,
     ),
@@ -118,7 +118,7 @@ function setup() {
     signOut: () => (signedIn = false),
     switchAccount: () => {
       runtime.retire();
-      runtime = new TeamRuntimeOwner(null);
+      runtime = new AccountRuntimeOwner(null);
     },
     entry: new NativeTeamEntry({ oauth, catalog, bootstrap, verify }),
     verify,
@@ -174,7 +174,7 @@ describe("NativeTeamEntry", () => {
       const { entry, oauth, verify } = setup();
       const verified = team();
       let controller = new AbortController();
-      oauth.teamEntryFence = () => {
+      oauth.hostEntryFence = () => {
         const captured = controller;
         return {
           generation: 0,
@@ -200,7 +200,7 @@ describe("NativeTeamEntry", () => {
       await expect(active).resolves.toMatchObject({ status: "superseded" });
       await expect(queued).resolves.toMatchObject({ status: "superseded" });
       expect(verify).toHaveBeenCalledOnce();
-      expect(oauth.resumeTeamSignIn).not.toHaveBeenCalled();
+      expect(oauth.resumeHostSignIn).not.toHaveBeenCalled();
       expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
     },
   );
@@ -211,7 +211,7 @@ describe("NativeTeamEntry", () => {
     const gate = Promise.withResolvers<VerifiedHostEndpoint>();
     verify.mockReturnValueOnce(gate.promise);
     oauth.authorizationHeader.mockResolvedValue("Bearer rejected");
-    oauth.refreshTeamAuthorization.mockResolvedValue("Bearer renewed");
+    oauth.refreshHostAuthorization.mockResolvedValue("Bearer renewed");
     const input = {
       deploymentId: verified.discovery.deploymentId,
       origin: verified.discovery.canonicalOrigin,
@@ -222,7 +222,7 @@ describe("NativeTeamEntry", () => {
     gate.resolve(verified);
     await startup;
     await expect(recovery).resolves.toMatchObject({ status: "authorized" });
-    expect(oauth.refreshTeamAuthorization).toHaveBeenCalledOnce();
+    expect(oauth.refreshHostAuthorization).toHaveBeenCalledOnce();
   });
 
   it.each(["signed-in", "signed-out"] as const)(
@@ -260,7 +260,7 @@ describe("NativeTeamEntry", () => {
   it("releases unfinished browser work when the entry fence is invalidated", async () => {
     const { entry, oauth, callback } = setup();
     const controller = new AbortController();
-    oauth.teamEntryFence = () => ({
+    oauth.hostEntryFence = () => ({
       generation: 0,
       signal: controller.signal,
       assertCurrent: () => controller.signal.throwIfAborted(),
@@ -286,7 +286,7 @@ describe("NativeTeamEntry", () => {
         timeoutError: () => new Error("Browser entry never settled after its flow ended"),
       }),
     ).resolves.toMatchObject({ status: "superseded" });
-    oauth.teamEntryFence = () => ({
+    oauth.hostEntryFence = () => ({
       generation: 1,
       signal: new AbortController().signal,
       assertCurrent: () => {},
@@ -314,7 +314,7 @@ describe("NativeTeamEntry", () => {
     };
     const entering = entry.authorize({ ...input, mode: "interactive" });
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), { timeout: 1000 });
-    oauth.refreshTeamAuthorization.mockResolvedValue("Bearer valid");
+    oauth.refreshHostAuthorization.mockResolvedValue("Bearer valid");
     await expect(
       withTimeout(
         entry.authorize({
@@ -362,7 +362,7 @@ describe("NativeTeamEntry", () => {
     const { entry, oauth, verify, switchAccount } = setup();
     const verified = team();
     let account = new AbortController();
-    oauth.teamEntryFence = () => {
+    oauth.hostEntryFence = () => {
       const signal = account.signal;
       return { generation: 0, signal, assertCurrent: () => signal.throwIfAborted() };
     };
@@ -436,7 +436,7 @@ describe("NativeTeamEntry", () => {
     const pending = Promise.withResolvers<VerifiedHostEndpoint>();
     verify.mockReturnValueOnce(pending.promise);
     let current = true;
-    oauth.teamEntryFence = () => ({
+    oauth.hostEntryFence = () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {
@@ -460,7 +460,7 @@ describe("NativeTeamEntry", () => {
     const lookup = Promise.withResolvers<Awaited<ReturnType<typeof catalog.load>>>();
     const original = await catalog.load();
     let invalidated = false;
-    oauth.teamEntryFence = () => ({
+    oauth.hostEntryFence = () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {
@@ -473,7 +473,7 @@ describe("NativeTeamEntry", () => {
     invalidated = true;
     lookup.resolve(original);
     await rejected;
-    expect(oauth.resumeTeamSignIn).not.toHaveBeenCalled();
+    expect(oauth.resumeHostSignIn).not.toHaveBeenCalled();
     expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
     expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
   });
@@ -619,12 +619,12 @@ describe("NativeTeamEntry", () => {
 
   it("leaves explicit sign-out suppressed during restore until explicit sign-in", async () => {
     const { entry, oauth } = setup();
-    oauth.isTeamSignInSuppressed.mockReturnValue(true);
+    oauth.isHostSignInSuppressed.mockReturnValue(true);
     await entry.ensureAuthorized(team(), null, false);
     expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
     expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
     await entry.ensureAuthorized(team());
-    expect(oauth.resumeTeamSignIn).toHaveBeenCalled();
+    expect(oauth.resumeHostSignIn).toHaveBeenCalled();
     expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce();
   });
 

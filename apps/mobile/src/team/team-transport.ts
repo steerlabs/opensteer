@@ -33,12 +33,12 @@ export function networkTeamTransport(options: {
   readonly network: HostNetwork;
   readonly oauth: NativeOAuthManager;
 }): (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport {
-  let owner = options.oauth.teamRuntime();
+  let owner = options.oauth.accountRuntime();
   let transports = owner.cache<string, ReturnType<typeof pinnedTeamTransport>>();
   const observeSignOut = () =>
     owner.own(
       options.oauth.subscribeHostCredentials((state) => {
-        if (!options.oauth.isTeamSignInSuppressed(state.connection)) return;
+        if (!options.oauth.isHostSignInSuppressed(state.connection)) return;
         const id = state.connection.authority.document.deploymentId;
         transports.get(id)?.transport.retire();
         transports.delete(id);
@@ -46,8 +46,8 @@ export function networkTeamTransport(options: {
     );
   observeSignOut();
   return (connection, scope) => {
-    if (owner !== options.oauth.teamRuntime()) {
-      owner = options.oauth.teamRuntime();
+    if (owner !== options.oauth.accountRuntime()) {
+      owner = options.oauth.accountRuntime();
       transports = owner.cache();
       observeSignOut();
     }

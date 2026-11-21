@@ -5,19 +5,19 @@ import type { PrivateFilesystem } from "../connections/private-filesystem.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import type { HostApiClient } from "@opensteer/protocol";
 
-export type TeamAccountIdentity = { readonly issuer: string; readonly subject: string } | null;
+export type AccountRuntimeIdentity = { readonly issuer: string; readonly subject: string } | null;
 
 const fileWrites = new WeakMap<PrivateFilesystem, MutationQueue>();
 
-/** Account identity owns team work; token rotation and entry attempts have separate lifetimes. */
-export class TeamRuntimeOwner {
+/** Account identity owns Account-scoped work; token rotation and entry attempts have separate lifetimes. */
+export class AccountRuntimeOwner {
   readonly id = globalThis.crypto.randomUUID();
   readonly #controller = new AbortController();
   readonly #resources = new Set<() => void>();
   readonly signal = this.#controller.signal;
   readonly partition: string;
-  readonly identity: TeamAccountIdentity;
-  constructor(identity: TeamAccountIdentity) {
+  readonly identity: AccountRuntimeIdentity;
+  constructor(identity: AccountRuntimeIdentity) {
     this.identity = identity;
     this.partition = encodeBase64Url(
       sha256(
@@ -25,7 +25,7 @@ export class TeamRuntimeOwner {
       ),
     );
   }
-  matches(identity: TeamAccountIdentity): boolean {
+  matches(identity: AccountRuntimeIdentity): boolean {
     return (
       this.identity?.issuer === identity?.issuer && this.identity?.subject === identity?.subject
     );

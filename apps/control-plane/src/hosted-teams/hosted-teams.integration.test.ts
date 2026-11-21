@@ -46,7 +46,7 @@ import {
   HostedTeamSupersededError,
 } from "./hosted-team-store.js";
 import { hostedTeamSetupDeadlineMilliseconds } from "./hosted-team-bootstrap.js";
-import { HostedTeamSetupTokenCipher } from "./setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
 import { googleServiceAccountVerifier } from "./provisioner-routes.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
@@ -87,7 +87,7 @@ integration("Hosted teams", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
-  const cipher = new HostedTeamSetupTokenCipher(config.adoptionOperationKey);
+  const cipher = new CloudComputerSecretCipher(config.adoptionOperationKey);
   let ownerAnswer: boolean | undefined;
   const ownerChecks: ControlPlaneAccountId[] = [];
   const hostedTeams = new HostedTeamStore(database, {

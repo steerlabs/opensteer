@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
-import { MockTeamHost, TeamRuntimeOwner, TeamSessionClient } from "@opensteer/client/team";
+import { MockTeamHost, AccountRuntimeOwner, TeamSessionClient } from "@opensteer/client/team";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { desktopTeamSession, localTeamPersistence } from "./team-transports.js";
 
@@ -14,7 +14,7 @@ it.each(["same", "different", "stale-scope"])(
       ...legacyScope,
       userId: viewer === "different" ? createId("user") : host.userId,
     };
-    const owner = new TeamRuntimeOwner({
+    const owner = new AccountRuntimeOwner({
       issuer: "https://account.test",
       subject: viewer === "same" ? "A" : "B",
     });

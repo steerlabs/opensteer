@@ -21,7 +21,7 @@ import type {
   TeamPersistence,
   TeamSavedState,
   TeamSessionOptions,
-  TeamRuntimeOwner,
+  AccountRuntimeOwner,
 } from "@opensteer/client/team";
 import {
   teamCacheKey,
@@ -74,7 +74,7 @@ function fileType(file: TeamFile, part: "preview" | "original"): string {
   return part === "preview" ? file.preview!.mediaType : "application/octet-stream";
 }
 
-function ownedSignal(owner: TeamRuntimeOwner | undefined) {
+function ownedSignal(owner: AccountRuntimeOwner | undefined) {
   return (signal?: AbortSignal) =>
     owner ? AbortSignal.any([owner.signal, ...(signal ? [signal] : [])]) : signal;
 }
@@ -83,7 +83,7 @@ function ownedSignal(owner: TeamRuntimeOwner | undefined) {
 function teamFiles(
   fetch: typeof globalThis.fetch,
   origin: string,
-  owner?: TeamRuntimeOwner,
+  owner?: AccountRuntimeOwner,
 ): Pick<TeamSessionOptions, "readFile" | "uploadFile"> {
   const owned = ownedSignal(owner);
   return {
@@ -188,7 +188,7 @@ export function browserTeamSession(input: {
  */
 export function desktopTeamSession(input: {
   readonly name?: string;
-  readonly owner?: TeamRuntimeOwner;
+  readonly owner?: AccountRuntimeOwner;
   readonly bridge: OpensteerDesktopBridge;
   readonly origin: string;
   readonly scope: TeamCacheScope;
@@ -224,7 +224,7 @@ export function desktopTeamSession(input: {
   };
 }
 
-function ownedLocalTeamPersistence(owner: TeamRuntimeOwner): TeamPersistence {
+function ownedLocalTeamPersistence(owner: AccountRuntimeOwner): TeamPersistence {
   // The key already names the team user, so a retired Account only needs to stop reading and writing.
   return {
     async load(scope) {

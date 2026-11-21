@@ -102,13 +102,13 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     "recovered";
   const { TeamEntryRefusedError } = await import("../auth/native-oauth.js");
   const { HostSession } = await import("../auth/host-session.js");
-  const { TeamEntryOutcomeError } = await import("./native-team-entry.js");
+  const { HostSignInOutcomeError } = await import("../auth/host-sign-in-outcome.js");
   const sessions: InstanceType<typeof HostSession>[] = [];
   const refresh = vi.fn(async () => {
     const reason = TeamEntryRefusalReasonSchema.safeParse(recoveryOutcome);
     if (reason.success) throw new TeamEntryRefusedError(reason.data, "Ask for an invite");
     if (recoveryOutcome === "update-required")
-      throw new TeamEntryOutcomeError({ status: "update-required" });
+      throw new HostSignInOutcomeError({ status: "update-required" });
     if (recoveryOutcome === "unavailable") throw new Error("Offline");
     if (recoveryOutcome === "account-required") return false;
     token = "Bearer refreshed";

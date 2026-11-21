@@ -1345,7 +1345,7 @@ export class MobileClient {
 
   /** What a pinned team transport presents: the team Host's own credential, nothing else. */
   readonly teamCredentials: HostCredentialProvider = {
-    teamRuntime: () => this.oauth.teamRuntime(),
+    accountRuntime: () => this.oauth.accountRuntime(),
     authorizationHeader: (connection) => this.#host.credentials.authorization(connection),
   };
 
