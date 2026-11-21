@@ -137,6 +137,7 @@ export function ComposerEditor({
         composerBehavior(scope, () => imeKey.current),
       ],
       immediatelyRender: true,
+      injectCSS: false,
       shouldRerenderOnTransaction: false,
       editorProps: {
         attributes: (state: EditorState): Record<string, string> => ({
