@@ -40,6 +40,7 @@ import { GuestCgroups } from "./cgroup.js";
 import {
   egressActive,
   startEgress,
+  ensureEgressUser,
   stopEgress,
   waitForEgress,
   type EgressProgram,
@@ -136,6 +137,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     const index = await this.#number(slotId);
     this.#egress.set(slotId, egress);
     await prepareNamespace(index, this.#uid(index), this.#config.network);
+    await ensureEgressUser(index, this.#config.egressUidBase + index);
   }
 
   async removeSlot(slotId: string): Promise<void> {
@@ -354,11 +356,16 @@ export class FirecrackerDriver implements HypervisorDriver {
     }
   }
 
-  async kill(slotId: string, signal: AbortSignal): Promise<void> {
+  async kill(
+    slotId: string,
+    signal: AbortSignal,
+    options: { readonly keepEgress?: boolean } = {},
+  ): Promise<void> {
     const key = slotKey(slotId);
     await this.#cgroups.kill(key, signal);
     const index = this.#numbers[slotId];
-    if (index !== undefined && (await egressActive(index))) await stopEgress(index);
+    if (!options.keepEgress && index !== undefined && (await egressActive(index)))
+      await stopEgress(index);
     this.#pendingEgress.delete(slotId);
     for (const jail of await this.#jails(key)) await this.#removeJail(jail);
   }

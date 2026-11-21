@@ -34,8 +34,11 @@ mount -o loop "$work/rootfs.ext4" "$root"
 runtime=$(docker create "$RUNTIME_IMAGE")
 egress=$(docker create "$EGRESS_IMAGE")
 docker export "$runtime" | tar --numeric-owner -xpf - -C "$root"
-# The egress image ships the same bundle; the host runs it outside the guest.
-docker cp "$egress:/app" "$work/egress"
+# The egress image ships the same bundle; the host runs it outside the guest. Its /app keeps
+# pnpm's workspace links (dangling outside the build), which docker cp refuses; tar keeps them.
+mkdir "$work/egress-root"
+docker export "$egress" | tar --numeric-owner -xpf - -C "$work/egress-root" app
+mv "$work/egress-root/app" "$work/egress"
 cmp "$work/egress/dist/egress-main.js" "$root/app/dist/egress-main.js"
 
 install -d "$root/opensteer" "$root/dev/shm" "$root/run" "$root/tmp" "$root/var/lib/opensteer/browser"

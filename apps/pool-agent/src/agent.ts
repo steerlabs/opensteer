@@ -450,14 +450,23 @@ export class PoolAgent {
       },
     });
     this.#checkpoint("resume:consumed");
+    const steps: Record<string, number> = {};
+    let mark = performance.now();
+    const step = (name: string) => {
+      const at = performance.now();
+      steps[name] = Math.round((at - mark) * 10) / 10;
+      mark = at;
+    };
     try {
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),
       );
+      step("close");
       if (saved.tier === "disk") {
         if (!saved.image || saved.diskGeneration !== before.diskGeneration)
           throw new Error("The saved state does not match the profile disk.");
-        await this.#kill(slot);
+        await this.#kill(slot, { keepEgress: true });
+        step("kill");
         await within(this.#deadlines.restore, "The guest restore", (signal) =>
           this.#driver.restore(
             this.#boot(slot, jailId!, before.sequence + 1),
@@ -465,19 +474,24 @@ export class PoolAgent {
             signal,
           ),
         );
+        step("restore");
         this.#checkpoint("resume:restored");
       }
       await within(this.#deadlines.resume, "The guest resume", (signal) =>
         this.#driver.resume(before.slotId, jailId!, signal),
       );
+      step("vcpus");
       this.#checkpoint("resume:resumed");
       // The guest's wall clock is stepped before any traffic can reach it.
       await within(this.#deadlines.clock, "The guest clock step", (signal) =>
         this.#driver.stepClock(before.slotId, jailId!, signal),
       );
+      step("clock");
       await within(this.#deadlines.network, "Opening the guest network", () =>
         this.#driver.openNetwork(before.slotId),
       );
+      step("network");
+      this.#log({ event: "resumed", slotId: before.slotId, tier: saved.tier, steps });
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
       return this.#fail(slot, call, "resume-failed", error);
@@ -663,7 +677,7 @@ export class PoolAgent {
         };
         await this.#commit(slot, withImage);
         this.#checkpoint("save:image-recorded");
-        await this.#kill(slot);
+        await this.#kill(slot, { keepEgress: true });
         this.#checkpoint("save:vmm-ended");
         const next: SlotRecord = {
           ...withImage,
@@ -740,7 +754,7 @@ export class PoolAgent {
       saved?.image &&
       (await this.#driver.verify(slot.record.slotId, saved.image))
     ) {
-      await this.#kill(slot);
+      await this.#kill(slot, { keepEgress: true });
       await this.#commit(slot, {
         ...slot.record,
         saved: { ...saved, tier: "disk" },
@@ -825,9 +839,13 @@ export class PoolAgent {
     });
   }
 
-  async #kill(slot: Slot): Promise<void> {
+  /**
+   * `keepEgress`: the guest's VMM ends but the slot stays parked (a save, or the restore that
+   * follows one), so its host-side proxy keeps running and a wake does not wait to start it.
+   */
+  async #kill(slot: Slot, options: { readonly keepEgress?: boolean } = {}): Promise<void> {
     await within(this.#deadlines.kill, "Ending the guest's processes", (signal) =>
-      this.#driver.kill(slot.record.slotId, signal),
+      this.#driver.kill(slot.record.slotId, signal, options),
     );
   }
 

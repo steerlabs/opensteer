@@ -85,7 +85,11 @@ export interface HypervisorDriver {
   /** The state of one VMM process, from the process and its API, never from the guest. */
   inspect(slotId: string, jailId: string): Promise<GuestProcessState>;
   /** Ends every process of the slot and waits until none is left, then removes its jails. */
-  kill(slotId: string, signal: AbortSignal): Promise<void>;
+  kill(
+    slotId: string,
+    signal: AbortSignal,
+    options?: { readonly keepEgress?: boolean },
+  ): Promise<void>;
   /** Ends processes and removes jails and images that no slot record names. */
   sweep(
     known: ReadonlyMap<string, { jailId: string | null; savedStateId: string | null }>,

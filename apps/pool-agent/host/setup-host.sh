@@ -128,6 +128,9 @@ RestartSec=1
 # Guests are in the agent's delegated subtree and outlive an agent restart: the next agent
 # reconciles with them. Only the agent's own process is ended on stop.
 Delegate=yes
+# systemd starts the agent in its own leaf: the subtree root has controllers enabled for the
+# guests, and a cgroup with enabled controllers cannot hold a process (status 219/CGROUP).
+DelegateSubgroup=agent
 KillMode=process
 LimitCORE=0
 LimitNOFILE=65536

@@ -6,7 +6,8 @@
  * IPv6 destination; nothing on the host itself). Every name and address is the same in each
  * namespace except the veth, so a guest's device state never names another slot.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { run } from "./exec.js";
 
@@ -92,7 +93,7 @@ table inet opensteer_pool {
   }
 }
 `;
-  await run("nft", ["-f", "-"], { input: ruleset });
+  await applyRuleset([], ruleset);
 }
 
 /** The slot's namespace, TAP, veth and filter; repairs a missing piece, keeps a live one. */
@@ -138,7 +139,7 @@ export async function prepareNamespace(
   // The filter is created once; a live slot's gate (open or closed) is left as it is.
   const tables = await inNs(["nft", "list", "tables"]);
   if (!tables.includes("table inet osp"))
-    await run("ip", ["netns", "exec", ns, "nft", "-f", "-"], { input: namespaceTable() });
+    await applyRuleset(["ip", "netns", "exec", ns], namespaceTable());
 }
 
 function namespaceTable(): string {
@@ -183,4 +184,17 @@ export async function removeNamespace(index: number): Promise<void> {
   const ns = namespaceName(index);
   await run("ip", ["link", "del", hostVeth(index)], { allow: [1] });
   await run("ip", ["netns", "del", ns], { allow: [1] });
+}
+
+/** nft reads a ruleset only from a regular file (not a pipe) on some releases. */
+async function applyRuleset(prefix: readonly string[], ruleset: string): Promise<void> {
+  await mkdir("/run/opensteer-pool", { recursive: true, mode: 0o700 });
+  const file = `/run/opensteer-pool/ruleset-${randomUUID()}.nft`;
+  await writeFile(file, ruleset, { mode: 0o600 });
+  try {
+    const [command = "nft", ...rest] = prefix.length ? [...prefix, "nft"] : ["nft"];
+    await run(command, [...rest, "-f", file]);
+  } finally {
+    await rm(file, { force: true });
+  }
 }

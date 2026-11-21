@@ -830,6 +830,11 @@ async function concurrent(slots: Slot[], rounds: number) {
 }
 
 async function main() {
+  // A rerun starts clean: the previous run's slots are deleted (their guests ended, state erased).
+  const listed = await admin({ op: "list" });
+  if (listed.op === "list")
+    for (const slot of listed.slots)
+      if (slot.slotId.startsWith("bench-")) await admin({ op: "delete", slotId: slot.slotId });
   const slots = [0, 1, 2, 3, 4].map((index) => new Slot(`bench-${index}`, index));
   for (const slot of slots) await slot.create();
   const [first] = slots;

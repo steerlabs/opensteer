@@ -54,7 +54,8 @@ images() {
 agent() {
     install -d -m 0755 /opt/opensteer-pool/agent
     install -m 0644 "$agent_dir/dist/main.js" /opt/opensteer-pool/agent/main.js
-    install -d -m 0700 "$creds" "$bench"
+    install -d -m 0700 "$creds"
+    install -d -m 0711 "$bench"
     local relay_uid; relay_uid=$(id -u opensteer-pool-relay)
     # The bench's provisioner key; the relay user reads it (test only).
     if [[ ! -f $creds/provisioner.pem ]]; then
@@ -125,9 +126,11 @@ run_bench() {
         /opt/opensteer-pool/node/bin/node "$agent_dir/bench/root-helper.mjs" \
         /run/opensteer-pool-bench-helper.sock opensteer-pool-relay
     for _ in $(seq 50); do [[ -S /run/opensteer-pool-bench-helper.sock ]] && break; sleep 0.1; done
+    # The agent answers only after it reconciled every slot.
+    for _ in $(seq 150); do curl -s -o /dev/null http://127.0.0.1:7310/v1 && break; sleep 0.2; done
     install -d -o opensteer-pool-relay -m 0755 "$bench/out"
     setpriv --reuid=opensteer-pool-relay --regid=opensteer-pool-relay --clear-groups --no-new-privs \
-        /opt/opensteer-pool/node/bin/node "$agent_dir/bench/real-host.mjs" \
+        /opt/opensteer-pool/node/bin/node "$agent_dir/dist/real-host.mjs" \
         --provisioner-key "$creds/provisioner.pem" --helper /run/opensteer-pool-bench-helper.sock \
         --credentials "$creds" --out "$bench/out/results.jsonl" "$@"
 }

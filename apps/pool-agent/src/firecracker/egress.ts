@@ -19,6 +19,28 @@ export function egressUnit(index: number): string {
   return `opensteer-pool-egress-${index}.service`;
 }
 
+/** systemd runs a unit only as a user it can resolve: each slot's proxy has its own. */
+export async function ensureEgressUser(index: number, uid: number): Promise<void> {
+  const group = await run("getent", ["group", String(uid)], { allow: [2] });
+  if (!group.trim())
+    await run("groupadd", ["--system", "--gid", String(uid), `osp-egress-${index}`]);
+  const known = await run("getent", ["passwd", String(uid)], { allow: [2] });
+  if (known.trim()) return;
+  await run("useradd", [
+    "--system",
+    "--no-create-home",
+    "--home-dir",
+    "/nonexistent",
+    "--shell",
+    "/usr/sbin/nologin",
+    "--uid",
+    String(uid),
+    "--gid",
+    String(uid),
+    `osp-egress-${index}`,
+  ]);
+}
+
 export async function egressActive(index: number): Promise<boolean> {
   const state = await run("systemctl", ["is-active", egressUnit(index)], { allow: [3, 4] });
   return state.trim() === "active";

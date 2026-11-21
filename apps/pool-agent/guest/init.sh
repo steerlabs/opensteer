@@ -36,7 +36,7 @@ chmod 0700 "$profile" /tmp/home
 "$b" ip addr add 172.16.0.2/30 dev eth0
 "$b" ip link set eth0 up
 "$b" ip route add default via 172.16.0.1
-: > /etc/resolv.conf
+# No resolver: the root is read-only and ships an empty resolv.conf; names go to the proxy.
 
 export HOME=/tmp/home
 export OPENSTEER_BROWSER_PROXY_URL=http://172.16.0.1:3128
