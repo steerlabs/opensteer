@@ -2,10 +2,13 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { testDiscoveryEnvelope } from "../test-support/host-authority.js";
 import { DeploymentCatalogSchema } from "./deployment-catalog.js";
-import { hostResponseStallTimeoutMs } from "./host-response-deadline.js";
+import {
+  hostResponseHeadersTimeoutMs,
+  hostResponseStallTimeoutMs,
+} from "./host-response-deadline.js";
 import { HostTransport } from "./host-transport.js";
 
-function fixture(response: Response) {
+function fixture(response: Response | (() => Response | Promise<Response>)) {
   const deploymentId = createId("deployment");
   const origin = "https://home.example";
   const now = new Date().toISOString();
@@ -38,13 +41,15 @@ function fixture(response: Response) {
   });
   const sessions = {
     sessionEnded: vi.fn(),
-    recoverUnauthorized: vi.fn(async () => "blocked" as const),
+    recoverUnauthorized: vi.fn<() => Promise<"recovered" | "blocked" | "unavailable">>(
+      async () => "blocked",
+    ),
   };
   const transport = new HostTransport({
     catalog: { load: async () => catalog, subscribe: () => () => undefined },
     localRuntime: { current: async () => null },
     network: {
-      request: async () => response,
+      request: async () => (typeof response === "function" ? response() : response),
       openWebSocket: () => {
         throw new Error("Unexpected WebSocket");
       },
@@ -54,8 +59,10 @@ function fixture(response: Response) {
   return {
     transport,
     sessions,
-    exchange: <Result>(read: (response: Response) => Promise<Result>) =>
-      transport.exchange({ method: "GET", path: "/auth.config", headers: {} }, read),
+    exchange: <Result>(
+      read: (response: Response) => Promise<Result>,
+      options?: { readonly timeoutMs?: number; readonly signal?: AbortSignal },
+    ) => transport.exchange({ method: "GET", path: "/auth.config", headers: {}, ...options }, read),
   };
 }
 
@@ -186,6 +193,75 @@ describe("Host transport handling of a 401 response", () => {
       expect(sessions.recoverUnauthorized).not.toHaveBeenCalled();
       expect(read).not.toHaveBeenCalled();
       expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a stalled 401 session recovery at request timeoutMs with sign-in-required", async () => {
+    vi.useFakeTimers();
+    try {
+      const { exchange, sessions } = fixture(() =>
+        Response.json({ ok: false, error: { code: "unauthorized" } }, { status: 401 }),
+      );
+      sessions.recoverUnauthorized.mockImplementation(() => new Promise(() => undefined));
+
+      const outcome = exchange((response) => response.text(), { timeoutMs: 500 }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+
+      const settled = await outcome;
+      expect(settled.ok).toBe(false);
+      if (!settled.ok) {
+        expect(settled.error).toMatchObject({
+          code: "timed-out",
+          failure: {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            kind: "session",
+            provenance: "host",
+            retryable: false,
+          },
+        });
+      }
+      expect(sessions.recoverUnauthorized).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a recovered replay its full timeout budget and propagates recovery throws unchanged", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempt = 0;
+      const { exchange, sessions } = fixture(() => {
+        attempt += 1;
+        if (attempt === 1) return Response.json({ ok: false }, { status: 401 });
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(Response.json({ ok: true }, { status: 200 })), 400);
+        });
+      });
+      sessions.recoverUnauthorized.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve("recovered"), 400);
+          }),
+      );
+
+      const outcome = exchange((response) => response.json(), { timeoutMs: 500 });
+      await vi.advanceTimersByTimeAsync(400);
+      await vi.advanceTimersByTimeAsync(400);
+      await expect(outcome).resolves.toEqual({ ok: true });
+      expect(hostResponseHeadersTimeoutMs).toBeGreaterThan(0);
+
+      const thrown = new Error("recovery exploded");
+      const failing = fixture(() => Response.json({ ok: false }, { status: 401 }));
+      failing.sessions.recoverUnauthorized.mockRejectedValueOnce(thrown);
+      await expect(
+        failing.exchange((response) => response.text(), { timeoutMs: 500 }),
+      ).rejects.toBe(thrown);
     } finally {
       vi.useRealTimers();
     }
