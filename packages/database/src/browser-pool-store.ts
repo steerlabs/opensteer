@@ -403,6 +403,7 @@ export async function finishBrowserPoolRelease(
         .select("id")
         .where("runnerId", "=", runnerId)
         .orderBy("id")
+        // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
         .execute();
       if (calls.length)
@@ -419,6 +420,7 @@ export async function finishBrowserPoolRelease(
         .select("id")
         .where("runnerId", "=", runnerId)
         .orderBy("id")
+        // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
         .execute();
       if (relays.length)
@@ -471,7 +473,7 @@ export async function recordBrowserPoolControllerCall(
       .where("runnerId", "=", call.runnerId)
       .where("settledAt", "is", null)
       .orderBy("id")
-      .forUpdate()
+      .forNoKeyUpdate()
       .execute();
     for (const { id } of open)
       await tx
@@ -631,7 +633,7 @@ export async function seeBrowserPoolDocumentLoss(
         )`,
       )
       .orderBy("intentId")
-      .forUpdate()
+      .forNoKeyUpdate()
       .execute();
     if (!rows.length) return;
     mutation.bumpResource("browser-placement");
