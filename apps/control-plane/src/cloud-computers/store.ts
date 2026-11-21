@@ -851,10 +851,9 @@ export class CloudComputerStore {
 
   /**
    * Brings a personal Cloud Computer's billing up to date with Stripe. A row whose deletion is
-   * requested has its subscription cancelled whatever else is open: a checkout keeps its own
-   * path. Returns how long after the request the cancellation was confirmed, when it was.
+   * requested has its subscription cancelled whatever else is open: a checkout keeps its own path.
    */
-  async #refreshSubscription(tx: TransactionDb, id: string): Promise<number | undefined> {
+  async #refreshSubscription(tx: TransactionDb, id: string) {
     const row = await tx
       .selectFrom("cloudComputers")
       .selectAll()
@@ -862,7 +861,7 @@ export class CloudComputerStore {
       .where("workAssignmentId", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!row || row.tombstonedAt) return undefined;
+    if (!row || row.tombstonedAt) return;
     const subscription = await this.#options.stripe.subscription(id);
     if (subscription.id !== id || subscription.customer !== row.stripeCustomerId) {
       throw new ControlPlaneError("unavailable", "Stripe returned a different subscription");
@@ -885,15 +884,14 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
-      return now.getTime() - row.deletionRequestedAt.getTime();
+      return;
     }
     const status =
       billing === "active" && !matchesPrice(subscription, row.stripePriceId, row.billingCurrency)
         ? "inactive"
         : billing;
     const renewsAt = subscriptionRenewal(subscription, status);
-    if (status === row.billingStatus && renewsAt?.getTime() === row.renewsAt?.getTime())
-      return undefined;
+    if (status === row.billingStatus && renewsAt?.getTime() === row.renewsAt?.getTime()) return;
     await tx
       .updateTable("cloudComputers")
       .where("id", "=", row.id)
@@ -904,7 +902,6 @@ export class CloudComputerStore {
         updatedAt: this.#now(),
       })
       .executeTakeFirst();
-    return undefined;
   }
 
   async reconcileBilling(onError: (error: unknown) => void) {
