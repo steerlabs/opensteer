@@ -38,7 +38,8 @@ export function workHomeSections(
   handlers: {
     readonly listed: (deploymentId: string | null) => boolean;
     readonly onOpen: (deploymentId: string) => void;
-    readonly onSee: (card: WorkHomeCard) => void;
+    /** Opens "What {organization} can see" inside that work Home. */
+    readonly onSee: (deploymentId: string) => void;
   },
 ): readonly NativeSettingsSection[] {
   return cards.flatMap((card): NativeSettingsSection[] => {
@@ -110,13 +111,18 @@ export function workHomeSections(
             label: `${line.title}: ${line.value}`,
             detail: line.detail,
           })),
-          {
-            key: "see",
-            kind: "button",
-            label: card.seeTitle,
-            opens: true,
-            onPress: () => handlers.onSee(card),
-          },
+          // Read from inside the work Home: offered once there is a Home to read it from.
+          ...(card.deploymentId === null
+            ? []
+            : [
+                {
+                  key: "see",
+                  kind: "button" as const,
+                  label: card.seeTitle,
+                  opens: true,
+                  onPress: () => handlers.onSee(card.deploymentId!),
+                },
+              ]),
         ],
       },
     ];

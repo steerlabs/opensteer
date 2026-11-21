@@ -56,7 +56,7 @@ async function render(
 }
 
 describe("what an organization can see of a work Home", () => {
-  it("has one page, the work Home's own Settings → Work: the old address goes there", async () => {
+  it("sends the old address of one work Home's page to where the work Homes are listed", async () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -64,13 +64,16 @@ describe("what an organization can see of a work Home", () => {
       root!.render(
         <MemoryRouter initialEntries={[`/settings/account/cloud-computer/work/${assignment}`]}>
           <Routes>
+            <Route path="/settings/account/cloud-computer" element={<p>Your work Homes</p>} />
             <Route path="/settings/account/*" element={<AccountSection />} />
             <Route path="/settings/work" element={<p>Settings → Work</p>} />
           </Routes>
         </MemoryRouter>,
       ),
     );
-    await vi.waitFor(() => expect(container.textContent).toContain("Settings → Work"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Your work Homes"));
+    // Never the Work page of the Home that happens to be open, which may be another's.
+    expect(container.textContent).not.toContain("Settings → Work");
     // The page that never finished loading in a browser is gone.
     expect(container.textContent).not.toContain("Loading");
   });
