@@ -23,6 +23,7 @@ type Home = Awaited<ReturnType<Journey["startHome"]>>;
  * real script service. The tab list is the Home's own rows; authority stays in the database.
  */
 async function directWork(j: Journey, home: () => Home) {
+  let tabChange: ((tab: TabRecord) => TabRecord) | undefined;
   const refuse = async (): Promise<never> => {
     throw new Error("Unexpected tab operation in this fixture.");
   };
@@ -60,12 +61,22 @@ async function directWork(j: Journey, home: () => Home) {
     await home().service.pageTabs.admitted?.(write);
     return { tab: { tabId: write.id } };
   };
+  /** The tab row a connection reads; a test can make the next reads see a changed tab. */
+  const tabRow = async (tabId: string) => {
+    const tab = await row(tabId);
+    return tabChange ? tabChange(tab) : tab;
+  };
   const handlers = new BrowserToolHandlers({
     sessions,
     tabs: {
-      list: refuse,
+      // The owner's own page tabs, as a connection with this grant lists them.
+      list: async () => ({
+        tabs: (await j.tabs.snapshot(ownerId)).rows
+          .filter((tab) => tab.kind === "page")
+          .map((tab) => ({ tabId: tab.id })),
+      }),
       open,
-      connectionTab: async (_actor: never, tabId: string) => row(tabId),
+      connectionTab: async (_actor: never, tabId: string) => tabRow(tabId),
       bindBrowserScript: async (actor: never, tabId: string) =>
         home().service.pageTabs.bindBrowserScript!(actor, await row(tabId)),
     } as never,
@@ -75,6 +86,8 @@ async function directWork(j: Journey, home: () => Home) {
     requireDevice: (runnerId) => j.store.requireSelfDeviceId(runnerId),
     issueTicket: (input) => home().service.issueStandardCdpTicket(input),
     pooledBrowser: (runnerId) => home().service.pooledDirectBrowser(runnerId),
+    // As the Home wires it: the connection's own read of the tab row.
+    pooledTab: async (_actor: never, tabId: string) => tabRow(tabId),
     origin: new URL("https://home.example.test"),
   });
   const url = await serveMcp(j.fixture, { browser: handlers });
@@ -102,7 +115,21 @@ async function directWork(j: Journey, home: () => Home) {
       name: "browser_connect",
       arguments: { profileId: j.profile!.id, reason: "Drive the page" },
     });
-  return { sessions, scripts, agent, use, resume, connect };
+  const useTab = (code: string, tabId: string, operationId?: string) =>
+    agent.client.callTool({
+      name: "browser_use",
+      arguments: { tabId, code, reason: "Read the draft", ...(operationId ? { operationId } : {}) },
+    });
+  const connectTab = (tabId: string) =>
+    agent.client.callTool({
+      name: "browser_connect",
+      arguments: { tabId, reason: "Drive the page" },
+    });
+  /** From now on, reads of a tab see it changed by `change`; undefined restores them. */
+  const changeTabs = (change: ((tab: TabRecord) => TabRecord) | undefined) => {
+    tabChange = change;
+  };
+  return { sessions, scripts, agent, use, resume, connect, useTab, connectTab, changeTabs };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -466,6 +493,32 @@ it("never wakes a parked browser for an approved call whose grant was cut before
       .executeTakeFirstOrThrow();
     expect(operation).toMatchObject({ state: "refused", handedOffAt: null });
   } finally {
+    await p.j.close();
+  }
+});
+
+it("never wakes a parked browser for a tab-targeted call whose tab changed before its hand-off", async () => {
+  const p = await parkedAfterWork("parked-tab-changed");
+  try {
+    // The call's own target and witness read the tab as it was; from the next read on, the tab
+    // has changed (another generation), as if the person rebound it in that interval.
+    let reads = 0;
+    p.work.changeTabs((tab) => (++reads > 2 ? { ...tab, generation: tab.generation + 1 } : tab));
+    const result = await p.work.useTab(p.read, p.tab.id);
+    expect(reads).toBe(3);
+    expect(text(result)).not.toContain("unsent draft");
+    // Refused before anything could wake the browser, and recorded so.
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+    expect(
+      await p.j.database
+        .selectFrom("agentOperations")
+        .select(["state", "handedOffAt"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", handedOffAt: null });
+  } finally {
+    p.work.changeTabs(undefined);
     await p.j.close();
   }
 });
