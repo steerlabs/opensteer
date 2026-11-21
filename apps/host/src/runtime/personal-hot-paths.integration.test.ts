@@ -83,6 +83,7 @@ it.skipIf(Boolean(reportPath))(
       tracing = undefined;
       expect(projected.tabs).toEqual([]);
       expect(tabSql).toHaveLength(1);
+      expect([...shellSql, ...tabSql].filter((sql) => /browser_pool_slots/u.test(sql))).toEqual([]);
       expect(
         [...shellSql, ...tabSql].some((sql) => /work_home_policy|organization/u.test(sql)),
       ).toBe(false);
