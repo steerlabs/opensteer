@@ -1148,6 +1148,20 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
       };
     };
     closeApp = () => app.close();
+    // The Trigger's attachment cleanup fails after doing its work: the session it owns still ends.
+    const attach = home.service.attachCdpForAgent.bind(home.service);
+    const failingCleanup = vi
+      .spyOn(home.service, "attachCdpForAgent")
+      .mockImplementation(async (...args) => {
+        const attached = await attach(...args);
+        return {
+          ...attached,
+          pooledClose: async () => {
+            await attached.pooledClose?.();
+            throw new Error("The attachment cleanup failed.");
+          },
+        };
+      });
     const triggerBrowser = await connect(
       "trigger-token-0123456789abcdef",
       hostInternalRoutePaths.triggerCdp,
@@ -1156,6 +1170,7 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
     expect((await j.row(triggerBrowser.session))?.origin).toBe("trigger");
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     await triggerBrowser.close();
+    failingCleanup.mockRestore();
     expect(await home.coordinator.tryPark()).toBe("parked");
     const watchBrowser = await connect(
       "watch-token-0123456789abcdef",
