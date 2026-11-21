@@ -13,7 +13,8 @@ export interface RunOptions {
 /**
  * Runs a host tool without a shell; arguments are never interpreted. Round E, E2: it takes the
  * signal of the step it runs for, so a step that was given up on starts no further tool and its
- * running one is ended.
+ * running one is ended. Round F: it settles only once the tool has exited, so a step that is
+ * drained has no tool still acting; one that ignores SIGTERM is killed 10 s later.
  */
 export function run(
   file: string,
@@ -23,12 +24,18 @@ export function run(
   const signal = options.signal ?? currentStepSignal();
   if (signal?.aborted)
     return Promise.reject(new Error(`${file} was not started: its step was given up on.`));
+  const timeoutMs = options.timeoutMs ?? 10_000;
   return new Promise((resolve, reject) => {
+    let outcome: (() => void) | undefined;
+    let exited = false;
+    const finish = () => {
+      if (outcome && exited) outcome();
+    };
     const child = execFile(
       file,
       args,
       {
-        timeout: options.timeoutMs ?? 10_000,
+        timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
         env: { PATH: hostPath },
         ...(signal ? { signal } : {}),
@@ -38,11 +45,32 @@ export function run(
           error && typeof (error as { code?: unknown }).code === "number"
             ? (error as { code: number }).code
             : 0;
-        if (error && !(options.allow ?? []).includes(code))
-          reject(new Error(`${file} ${args.join(" ")} failed: ${stderr.trim() || error.message}`));
-        else resolve(stdout);
+        outcome =
+          error && !(options.allow ?? []).includes(code)
+            ? () =>
+                reject(
+                  new Error(`${file} ${args.join(" ")} failed: ${stderr.trim() || error.message}`),
+                )
+            : () => resolve(stdout);
+        // A tool that never started has nothing to wait for.
+        if (child.pid === undefined) exited = true;
+        finish();
       },
     );
+    const kill = () => {
+      const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      timer.unref?.();
+      child.once("close", () => clearTimeout(timer));
+    };
+    signal?.addEventListener("abort", kill, { once: true });
+    const late = setTimeout(kill, timeoutMs);
+    late.unref?.();
+    child.once("close", () => {
+      clearTimeout(late);
+      signal?.removeEventListener("abort", kill);
+      exited = true;
+      finish();
+    });
     if (options.input !== undefined) child.stdin?.end(options.input);
   });
 }

@@ -13,6 +13,20 @@ describe("a host tool under a step's signal", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  // Round F, found while preparing E2 on a host: a tool that does not end at once when its
+  // step is given up on (one that ignores SIGTERM, standing for a request PID 1 already took)
+  // must still be waited for, or the drained step ends while the tool still acts.
+  it("is waited for until it has exited, even after its step was given up on", async () => {
+    const step = new AbortController();
+    const started = Date.now();
+    const stubborn = withStepSignal(step.signal, () =>
+      run("bash", ["-c", "trap '' TERM; sleep 1"]),
+    ).catch(() => "given up");
+    setTimeout(() => step.abort(), 50);
+    expect(await stubborn).toBe("given up");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+  });
+
   it("is not started at all once its step was given up on", async () => {
     const step = new AbortController();
     step.abort();

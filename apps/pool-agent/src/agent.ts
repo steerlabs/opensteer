@@ -247,6 +247,9 @@ export class PoolAgent {
   async start(): Promise<void> {
     await this.#journal.open();
     this.#incarnation = await this.#step("verify", () => this.#driver.incarnation());
+    // Round E, E4: the room the agent admits guests into memory by, as computed on this host.
+    const capacity = this.#driver.memoryCapacity();
+    if (capacity) this.#log({ event: "capacity", ...capacity });
     for (const found of await this.#journal.list()) {
       let record: JournalRecord = found;
       // A tombstone written before re-check finding 4 still held the slot's key: replaced now.
