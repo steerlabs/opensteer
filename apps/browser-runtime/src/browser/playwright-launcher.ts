@@ -2646,6 +2646,14 @@ class PlaywrightContextHandle implements BrowserContext {
     reason: "write-failures" | "flush-not-current" | "close-not-current",
   ): Promise<void> {
     if (!this.profileDirectory) return;
+    // A map is deleted because Chromium will go on, or close cleanly, past it. A browser that no
+    // longer answers writes no further session, so its last map is kept as it is.
+    if (this.browserAlive && !(await this.browserAlive())) {
+      process.stderr.write(
+        `${JSON.stringify({ event: "browser-runtime.tab-map-kept", reason: "browser-gone" })}\n`,
+      );
+      return;
+    }
     try {
       await deleteTabRestoreSidecar(this.profileDirectory);
       this.sidecarDirty = false;

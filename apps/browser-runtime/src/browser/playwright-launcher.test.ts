@@ -2669,7 +2669,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it.each(["navigation", "flush-then-close", "close", "clean-close"] as const)(
+  it.each(["navigation", "flush-then-close", "close", "clean-close", "crashed"] as const)(
     "counts map write failures only since the last success and deletes a map that is not current before Chromium closes (C3, %s)",
     async (scenario) => {
       const f = await nativeCloseFixture();
@@ -2767,6 +2767,21 @@ describe("native Chromium profiles", () => {
           f.exit();
           await launched.close();
           expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
+        } else if (scenario === "crashed") {
+          // Chromium was killed: nothing answers and nothing will write a later session, so the
+          // map from the last write is kept for the crash restore instead of deleted.
+          failInventory = true;
+          f.cdp.send.mockImplementation(async (method: string) => {
+            if (method === "Browser.getVersion") throw new Error("Target closed");
+            return {};
+          });
+          navHandler?.(mainFrame);
+          await launched.context.sessionRestore!.flush!();
+          f.exit();
+          await launched.close();
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([
+            { index: 0, surfaceId: surfP, url: "https://c3.test/" },
+          ]);
         } else {
           f.exit();
           await launched.close();
