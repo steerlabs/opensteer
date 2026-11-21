@@ -4,6 +4,7 @@ import type {
   CloudComputerId,
   CloudComputerProviderWrite,
   CloudComputerReport,
+  GoogleComputeServerRef,
   WorkAssignmentId,
   OrganizationId,
   ControlPlaneAccountId,
@@ -42,6 +43,7 @@ export interface CloudComputerTable {
   readinessStartedAt: Timestamp;
   phase: CloudComputerReport["phase"];
   providerServerId: string | null;
+  providerServerRef: Generated<GoogleComputeServerRef | null>;
   ipv4: string | null;
   ipv6: string | null;
   deploymentId: string | null;
@@ -67,6 +69,7 @@ export interface CloudComputerTable {
   lastBackupSnapshotId: Generated<string | null>;
   completedBootDigest: string | null;
   previousProviderServerId: string | null;
+  previousProviderServerRef: Generated<GoogleComputeServerRef | null>;
   restoreSnapshot: string | null;
   ipv6Enabled: Generated<boolean>;
   deletionRequestedAt: NullableTimestamp;

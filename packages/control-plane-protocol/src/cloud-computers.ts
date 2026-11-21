@@ -50,14 +50,28 @@ export type CloudComputerIdentity = z.infer<typeof CloudComputerIdentitySchema>;
 export const CloudComputerSnapshotSchema = z.string().regex(/^[0-9a-f]{8,64}$/u);
 export const CloudComputerDesiredRevisionSchema = z.number().int().positive();
 
-export const CloudComputerProviderWriteSchema = z.strictObject({
-  token: z.uuid(),
-  kind: z.enum(["create", "dns-a", "dns-aaaa", "power-on"]),
-  generation: CloudComputerGenerationSchema,
-  serverId: z.number().int().positive().optional(),
-  recoverAfter: z.iso.datetime().optional(),
-  dispatched: z.boolean().optional(),
-});
+export const GoogleComputeServerRefSchema = z
+  .string()
+  .regex(/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?\/[1-9][0-9]{0,19}$/u)
+  .pipe(
+    z
+      .string()
+      .refine((ref) => BigInt(ref.slice(ref.indexOf("/") + 1)) <= 18_446_744_073_709_551_615n),
+  )
+  .brand<"GoogleComputeServerRef">();
+export type GoogleComputeServerRef = z.infer<typeof GoogleComputeServerRefSchema>;
+
+export const CloudComputerProviderWriteSchema = z
+  .strictObject({
+    token: z.uuid(),
+    kind: z.enum(["create", "dns-a", "dns-aaaa", "power-on"]),
+    generation: CloudComputerGenerationSchema,
+    serverId: z.number().int().positive().optional(),
+    serverRef: GoogleComputeServerRefSchema.optional(),
+    recoverAfter: z.iso.datetime().optional(),
+    dispatched: z.boolean().optional(),
+  })
+  .refine(({ serverId, serverRef }) => serverId === undefined || serverRef === undefined);
 export type CloudComputerProviderWrite = z.infer<typeof CloudComputerProviderWriteSchema>;
 
 export const CloudComputerDesiredSchema = z
@@ -74,9 +88,12 @@ export const CloudComputerDesiredSchema = z
     bootstrapToken: CloudComputerBootstrapTokenSchema.optional(),
     providerServerId: z.number().int().positive().optional(),
     previousProviderServerId: z.number().int().positive().optional(),
+    providerServerRef: GoogleComputeServerRefSchema.optional(),
+    previousProviderServerRef: GoogleComputeServerRefSchema.optional(),
     ipv6Enabled: z.boolean().optional(),
     restoreSnapshot: CloudComputerSnapshotSchema.optional(),
     bootCompleted: z.boolean().optional(),
+    bootstrapReceiptRecorded: z.boolean().optional(),
     replacementVerified: z.boolean().optional(),
     dnsQuarantined: z.boolean().optional(),
     pendingProviderWrites: z.array(CloudComputerProviderWriteSchema).max(4).optional(),
@@ -94,6 +111,7 @@ export type CloudComputerDesired = z.infer<typeof CloudComputerDesiredSchema>;
 export const CloudComputerDesiredPageSchema = z.object({
   after: CloudComputerIdSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  provider: z.literal("google").optional(),
 });
 export const CloudComputerDesiredResponseSchema = z.object({
   next: CloudComputerIdSchema.optional(),
@@ -126,6 +144,7 @@ export const CloudComputerReportSchema = z
     revision: CloudComputerDesiredRevisionSchema,
     phase: CloudComputerPhaseSchema,
     providerServerId: z.number().int().positive().nullable(),
+    providerServerRef: GoogleComputeServerRefSchema.optional(),
     ipv4: z.ipv4().nullable(),
     ipv6: z.ipv6().nullable(),
     observedIdentity: CloudComputerIdentitySchema.nullable(),
@@ -142,9 +161,16 @@ export const CloudComputerReportSchema = z
       .nullable(),
   })
   .superRefine((report, context) => {
+    const hasServer = report.providerServerId !== null || report.providerServerRef !== undefined;
+    if (report.providerServerId !== null && report.providerServerRef !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "A report can have only one provider server ID",
+      });
+    }
     if (
       report.phase === "ready" &&
-      (!report.providerServerId || (!report.ipv4 && !report.ipv6) || !report.observedIdentity)
+      (!hasServer || (!report.ipv4 && !report.ipv6) || !report.observedIdentity)
     ) {
       context.addIssue({
         code: "custom",
@@ -153,7 +179,7 @@ export const CloudComputerReportSchema = z
     }
     if (
       report.phase === "deleted" &&
-      (report.providerServerId || report.ipv4 || report.ipv6 || report.observedIdentity)
+      (hasServer || report.ipv4 || report.ipv6 || report.observedIdentity)
     ) {
       context.addIssue({
         code: "custom",

@@ -67,6 +67,7 @@ export function accountClient(
   token: WorkloadToken,
   http: HttpOptions,
   holder: string = randomUUID(),
+  provider?: "google",
 ): AccountApi {
   const headers = async (signal: AbortSignal) => ({
     authorization: `Bearer ${await token(signal)}`,
@@ -101,6 +102,7 @@ export function accountClient(
       do {
         const url = new URL(cloudComputersDesiredPath, origin);
         if (after) url.searchParams.set("after", after);
+        if (provider) url.searchParams.set("provider", provider);
         const page = await request(
           "Account",
           url,

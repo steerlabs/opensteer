@@ -1120,7 +1120,10 @@ export class CloudComputerStore {
           write.generation !== row.generation ||
           row.pendingProviderWrites.some(({ kind }) => kind === write.kind) ||
           (write.kind === "create" && (!needsVm(row) || !row.bootstrapDigest)) ||
-          (write.kind === "power-on" && String(write.serverId) !== row.providerServerId)
+          (write.kind === "power-on" &&
+            (write.serverRef
+              ? write.serverRef !== row.providerServerRef
+              : String(write.serverId) !== row.providerServerId))
         )
           return false;
         await tx
@@ -1181,7 +1184,7 @@ export class CloudComputerStore {
     });
   }
 
-  async desired(after?: CloudComputerId, limit = 100) {
+  async desired(after?: CloudComputerId, limit = 100, provider?: "google") {
     let query = this.#db
       .selectFrom("cloudComputers")
       .selectAll()
@@ -1229,6 +1232,13 @@ export class CloudComputerStore {
           previousProviderServerId: row.previousProviderServerId
             ? Number(row.previousProviderServerId)
             : undefined,
+          ...(provider === "google"
+            ? {
+                providerServerRef: row.providerServerRef ?? undefined,
+                previousProviderServerRef: row.previousProviderServerRef ?? undefined,
+                bootstrapReceiptRecorded: row.bootstrapReceiptAt !== null,
+              }
+            : {}),
           ipv6Enabled: row.ipv6Enabled,
           restoreSnapshot: row.restoreSnapshot ?? undefined,
           bootCompleted: row.bootCompletedAt !== null,
@@ -1237,12 +1247,21 @@ export class CloudComputerStore {
             !row.restoreSnapshot ||
             Boolean(row.bootCompletedAt && row.bootstrapReceiptAt && row.ownerAccessAt),
           ...(row.pendingProviderWrites.length
-            ? { pendingProviderWrites: row.pendingProviderWrites }
+            ? {
+                pendingProviderWrites:
+                  provider === "google"
+                    ? row.pendingProviderWrites
+                    : row.pendingProviderWrites.map((write) => {
+                        const legacy = { ...write };
+                        delete legacy.serverRef;
+                        return legacy;
+                      }),
+              }
             : {}),
           state: row.state,
           hostname: row.hostname,
           region: row.region,
-          serverType: row.serverType,
+          serverType: provider === "google" && row.serverType === "default" ? null : row.serverType,
           release: row.release,
           readinessStartedAt: row.readinessStartedAt.toISOString(),
           ...(row.deploymentId
@@ -1306,6 +1325,7 @@ export class CloudComputerStore {
           providerServerId: deleted
             ? null
             : (report.providerServerId?.toString() ?? row.providerServerId),
+          providerServerRef: deleted ? null : (report.providerServerRef ?? row.providerServerRef),
           lastError: report.lastError,
           reportedAt: now,
           updatedAt: now,
@@ -1315,7 +1335,9 @@ export class CloudComputerStore {
             ? { dnsQuarantined: true }
             : {}),
           ...(deleted ? clearBootToken : {}),
-          ...(row.bootstrapDigest && !row.bootstrapExpiresAt && report.providerServerId
+          ...(row.bootstrapDigest &&
+          !row.bootstrapExpiresAt &&
+          (report.providerServerId || report.providerServerRef)
             ? {
                 bootstrapExpiresAt: new Date(now.getTime() + bootstrapLifetimeMs),
                 readinessStartedAt: now,
@@ -2163,6 +2185,10 @@ export class CloudComputerStore {
       hostname: row.hostname,
       providerServerId: row.providerServerId,
       previousProviderServerId: row.previousProviderServerId,
+      ...(row.providerServerRef ? { providerServerRef: row.providerServerRef } : {}),
+      ...(row.previousProviderServerRef
+        ? { previousProviderServerRef: row.previousProviderServerRef }
+        : {}),
       ipv4: row.ipv4,
       ipv6: row.ipv6,
       deploymentId: row.deploymentId,
@@ -2319,6 +2345,7 @@ export class CloudComputerStore {
       } else if (
         action === "reissue" &&
         !row.providerServerId &&
+        !row.providerServerRef &&
         !row.createAttempted &&
         !row.bootCompletedAt &&
         !row.sealedHostCredential
@@ -2377,6 +2404,7 @@ export class CloudComputerStore {
           completedBootDigest: null,
           createAttempted: false,
           previousProviderServerId: row.providerServerId ?? row.previousProviderServerId,
+          previousProviderServerRef: row.providerServerRef ?? row.previousProviderServerRef,
           restoreSnapshot: snapshot?.success ? snapshot.data : row.restoreSnapshot,
           ownerAccessAt: null,
           phase: "provisioning",
@@ -2385,6 +2413,7 @@ export class CloudComputerStore {
           setupCodeDigest: digestSecret(setupCode),
           sealedSetupCode: this.#options.cipher.seal(id, generation, setupCode),
           providerServerId: null,
+          providerServerRef: null,
           ipv4: null,
           ipv6: null,
           deploymentId: null,
@@ -3030,6 +3059,7 @@ function needsVm(row: Computer) {
     row.state === "active" &&
     !row.deletionRequestedAt &&
     !row.providerServerId &&
+    !row.providerServerRef &&
     !row.bootCompletedAt &&
     !row.deploymentId
   );
@@ -3100,7 +3130,8 @@ function transition(
 }
 
 function preparationSteps(row: Computer): CloudComputerPreparationStep[] {
-  const machineSeen = row.providerServerId !== null || row.phase === "ready";
+  const machineSeen =
+    row.providerServerId !== null || row.providerServerRef !== null || row.phase === "ready";
   const opensteerReady = row.phase === "ready";
   return [
     { id: "payment", state: "done" },

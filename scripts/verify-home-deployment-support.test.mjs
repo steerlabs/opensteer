@@ -8,10 +8,52 @@ import { parseHostConfig } from "../packages/config/src/config.ts";
 import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs";
 import {
   assertBuildSpace,
+  homeImageBuilds,
+  platformSummary,
   quote,
   redact,
   requiredFreeKiB,
 } from "./verify-home-deployment-support.mjs";
+
+await test("loads ARM64 for the deployment proof first and builds AMD64 only afterwards", () => {
+  const bake = [
+    "buildx",
+    "bake",
+    "--builder",
+    "test-builder",
+    "-f",
+    "deploy/container/docker-bake.hcl",
+  ];
+  assert.deepEqual(homeImageBuilds("test-builder"), {
+    proof: {
+      platform: "linux/arm64",
+      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+    },
+    buildOnly: {
+      platform: "linux/amd64",
+      args: [
+        ...bake,
+        "--set",
+        "home-*.platform=linux/amd64",
+        "--set",
+        "home-*.output=type=cacheonly",
+        "home",
+      ],
+    },
+  });
+  assert.equal(
+    platformSummary({ proofPassed: true, buildOnly: false }),
+    "The linux/arm64 deployment proof passed; the linux/amd64 Home image build failed.",
+  );
+  assert.equal(
+    platformSummary({ proofPassed: false, buildOnly: undefined }),
+    "The linux/arm64 deployment proof did not pass; the linux/amd64 Home image build did not run.",
+  );
+  assert.equal(
+    platformSummary({ proofPassed: true, buildOnly: true }),
+    "The linux/arm64 deployment proof passed; the linux/amd64 Home image build passed.",
+  );
+});
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
   const value = "'a b' `printf substituted` $(printf substituted)\n--arg";

@@ -57,6 +57,17 @@ Runtime's defaults are two CPUs and 4 GiB. Set
 Host and PostgreSQL are each capped at two CPUs and 2 GiB. Caddy, the browser
 egress proxy, and Channel Runtime are each capped at one CPU and 512 MiB.
 
+Compute Engine defaults to `e2-standard-4` (4 vCPUs, 16 GiB) because the
+Runner's default `cpus: 4` cap requires at least four vCPUs. The current
+Compose memory caps total 17.5 GiB. They are upper bounds, so the VM can run
+out of memory if several services approach their caps together. A 4 GB shape
+becomes the default once Chromium moves to the browser pool and Home sizes
+its CPU and memory limits from the machine type.
+
+The listed on-demand Linux compute price in `us-central1` was USD $0.134 per
+hour (about $97.84 for 730 hours) on November 20, 2026. Disk and networking
+are billed separately. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Regional list-price mirror](https://gcloud-compute.com/us-central1/e2-standard-4.html)
+
 For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE` during install. The egress
@@ -150,9 +161,24 @@ can set `releaseManifestUrl` in the managed boot response to schedule updates.
 
 Generate the standalone cloud-init artifact with
 `bash deploy/home/package-installer.sh /path/to/opensteer-home-installer.sh`.
-Publish it with its SHA-256 and the six multi-architecture images from
-`deploy/container/docker-bake.hcl`'s `home` group. Publish the release manifest
-with the image digests. The Home Provisioner renders cloud-init user data. On the
+The installer bundles shell scripts and Compose files for both AMD64 and ARM64.
+The `home` Bake group in `deploy/container/docker-bake.hcl` defines six images
+for `linux/amd64` and `linux/arm64`. Inspect the resolved targets locally with
+`docker buildx bake -f deploy/container/docker-bake.hcl home --print`. The local
+verifier loads ARM64 and runs the Colima deployment test on it first. After that
+test it builds AMD64 into the BuildKit cache only; nothing runs the AMD64 images.
+Its last line says separately whether the ARM64 proof passed and whether the
+AMD64 build passed. Building AMD64 locally requires a builder that can execute
+AMD64 instructions, either natively or through emulation.
+
+The release owner must complete these steps.
+
+1. Build and push the six Home images for both platforms with the `home` Bake group.
+2. Check that each registry manifest lists both platforms and pin the manifest-list digests in the Home release manifest.
+3. Publish the installer at the manifest's HTTPS URL with its SHA-256.
+4. Run one AMD64 Home end to end.
+
+The Home Provisioner renders cloud-init user data. On the
 VM, cloud-init writes `/root/opensteer-home-boot.json` and
 `/root/opensteer-home-bootstrap-token` and enables a systemd download unit. The
 unit downloads the installer, verifies its SHA-256, and passes the files to it
@@ -163,10 +189,10 @@ Home's identity only after all seven services are healthy and retries an ambiguo
 completion with the same identity. The Account revokes the single-use token on
 completion; a matching replay only acknowledges the same identity. The installer
 removes its local token and boot-result files before enabling normal operation,
-or on terminal refusal, when it also stops the pod. Provider instance user data and
-cloud-init's cached copy can still contain the spent token; neither provides new
-boot authority after completion. Cleanup resumes on the next installer run if
-power is lost after the terminal outcome.
+or on terminal refusal, when it also stops the pod. On Google Compute Engine,
+the provisioner removes the instance's user data once Account records the claim
+receipt. Cloud-init's cached copy can still contain the spent token. Cleanup
+resumes on the next installer run if power is lost after the terminal outcome.
 For a managed replacement, `restoreSnapshot` stages and verifies the snapshot
 before starting the restored identity. The Account claims the new generation for
 the same linked owner; enrolled services keep their restored credentials. Account

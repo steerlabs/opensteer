@@ -1,4 +1,14 @@
 import { sql } from "kysely";
+
+export const cloudComputerGoogleServerRefMigration: Migration = {
+  async up(db) {
+    await sql`
+      alter table cloud_computers
+        add column provider_server_ref text,
+        add column previous_provider_server_ref text
+    `.execute(db);
+  },
+};
 import type { Migration } from "kysely/migration";
 
 export const cloudComputersMigration: Migration = {

@@ -22,15 +22,23 @@ const specPath = "/root/opensteer-home-boot.json";
 const tokenPath = "/root/opensteer-home-bootstrap-token";
 const downloadPath = "/root/opensteer-home-download.sh";
 const downloadUnit = "opensteer-home-download.service";
+export const googleBootstrapReadyKey = "opensteer-bootstrap-ready";
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 
-export function renderUserData(input: HomeBootSpec): string {
+export function renderUserData(input: HomeBootSpec, gateOnGoogleMetadata = false): string {
   const parsed = HomeBootSpecSchema.safeParse(input);
   if (!parsed.success) throw refused("bad_request", "Invalid Cloud Computer boot specification");
   const { bootstrapToken, ...spec } = parsed.data;
   const script = [
     "set -eu",
     "umask 077",
+    ...(gateOnGoogleMetadata
+      ? [
+          // Compute starts the VM during insert. Wait for the Account to record its ID and open
+          // the bootstrap window before the installer makes a request that could spend the token.
+          `curl -q --fail --silent --noproxy '*' --max-time 5 -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/${googleBootstrapReadyKey} | grep -qx 1`,
+        ]
+      : []),
     "installer=$(mktemp /root/opensteer-home-installer.XXXXXX)",
     `trap 'rm -f "$installer"' EXIT`,
     `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 --output "$installer" -- ${quote(spec.installerUrl)}`,
