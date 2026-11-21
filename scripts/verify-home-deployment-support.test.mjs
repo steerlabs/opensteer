@@ -80,7 +80,7 @@ await test("the Colima target is the default and keeps its socket, root shell an
   });
   assert.deepEqual(target, {
     name: "colima",
-    dockerHost: "unix:///Users/timjang/.colima/default/docker.sock",
+    dockerHost: "unix:///Users/proof/.colima/default/docker.sock",
     rootShell: ["colima", ["ssh", "--", "sudo", "-n", "bash", "-s"]],
     shellLabel: "Colima",
     checkoutLabel: "macOS",

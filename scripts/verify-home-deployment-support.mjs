@@ -27,7 +27,7 @@ export function verifierTarget({ env, home, os, arch, builder }) {
   if (name === "colima") {
     return {
       name,
-      dockerHost: "unix:///Users/timjang/.colima/default/docker.sock",
+      dockerHost: `unix://${resolve(home, ".colima", "default", "docker.sock")}`,
       rootShell: ["colima", ["ssh", "--", "sudo", "-n", "bash", "-s"]],
       shellLabel: "Colima",
       checkoutLabel: "macOS",
