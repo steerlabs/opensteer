@@ -4,7 +4,7 @@ import { outcomeWords, runAction } from "../use-action.js";
 
 /**
  * Why this Mac is not a finished device yet, with the one move that fixes it.
- * `remote` is Home's Use from anywhere, which admitting a new device needs.
+ * `remote` is Home's Remote access, which admitting a new device needs.
  */
 export type FinishSetupCause =
   | { readonly kind: "use-from-anywhere"; readonly homeName: string }
@@ -18,7 +18,7 @@ export function finishSetupLine(cause: FinishSetupCause): {
   switch (cause.kind) {
     case "use-from-anywhere":
       return {
-        text: `Turn on Use from anywhere on ${cause.homeName} to finish`,
+        text: `Turn on Remote access on ${cause.homeName} to finish`,
         action: "Turn on",
       };
     case "bind":
@@ -29,7 +29,7 @@ export function finishSetupLine(cause: FinishSetupCause): {
 }
 
 export interface DeviceSetupPorts {
-  /** Home's Use from anywhere, or null when it can't be read from here. */
+  /** Home's Remote access, or null when it can't be read from here. */
   readonly remoteAccessMode: () => Promise<"off" | "connect" | "private" | null>;
   readonly prepare: (name: string) => Promise<DevicePreparedIdentity>;
   readonly mint: (input: {

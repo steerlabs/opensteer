@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Route, Routes } from "react-router";
+import { Navigate, Route, Routes } from "react-router";
 import type {
   DeploymentAccessSnapshot,
   DesktopAccountAuthStatus,
@@ -14,7 +14,7 @@ import { OwnerNameRow } from "./owner-name.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
 import { HomeAccountLinkCard } from "./home-account-link-card.js";
 import { CloudComputerEntryRow, CloudComputerPage } from "./cloud-computer.js";
-import { WorkHomeSeePage } from "./work-home.js";
+import { workHomeSeePath } from "./work-home.js";
 
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to,
@@ -26,7 +26,11 @@ export function AccountSection() {
     <Routes>
       <Route index element={<AccountHome />} />
       <Route path="cloud-computer" element={<CloudComputerPage />} />
-      <Route path="cloud-computer/work/:assignmentId" element={<WorkHomeSeePage />} />
+      {/* The page this once was is the work Home's own Settings → Work now. */}
+      <Route
+        path="cloud-computer/work/:assignmentId"
+        element={<Navigate replace to={workHomeSeePath} />}
+      />
     </Routes>
   );
 }

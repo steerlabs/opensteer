@@ -49,7 +49,7 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
             ok: false,
             error: {
               code: "forbidden",
-              message: "Turn on Use from anywhere to add a computer.",
+              message: "Turn on Remote access to add a computer.",
               reason: "personal-remote-access-off",
             },
           },
@@ -85,7 +85,7 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
       expect(target.mock.invocationCallOrder[0]).toBeLessThan(mint.mock.invocationCallOrder[0]!);
     } else {
       expect(mint).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Turn on Use from anywhere");
+      expect(document.body.textContent).toContain("Turn on Remote access");
       expect(document.querySelector("pre")).toBeNull();
     }
   },

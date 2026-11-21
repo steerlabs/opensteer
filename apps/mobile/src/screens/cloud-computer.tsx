@@ -55,7 +55,11 @@ export function CloudComputerScreen(): ReactNode {
   const sections = cloudComputerSections({
     screen: cloud.screen,
     work: cloud.work,
-    onSeeWork: (card) => navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
+    // One page of what an organization can see, read from inside that work Home.
+    onSeeWork: (card) => {
+      if (card.deploymentId)
+        navigation.navigate("WorkHomePolicy", { deploymentId: card.deploymentId });
+    },
     pending: cloud.pending,
     actionFailure: cloud.actionFailure,
     portalOrigin: client.portalOrigin,

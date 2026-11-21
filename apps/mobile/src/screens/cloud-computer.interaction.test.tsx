@@ -349,8 +349,9 @@ describe("work Homes on the phone", () => {
     const client = state.client as { openDeployment: ReturnType<typeof vi.fn> };
     expect(client.openDeployment).toHaveBeenCalledWith(workDeployment);
     await press(row("work-policy-was_00000000-0000-4000-8000-0000000000a1", "see"));
-    expect(state.navigate).toHaveBeenCalledWith("WorkHomeSee", {
-      assignmentId: "was_00000000-0000-4000-8000-0000000000a1",
+    // The one page, read from inside the work Home, as Settings there opens it.
+    expect(state.navigate).toHaveBeenCalledWith("WorkHomePolicy", {
+      deploymentId: workDeployment,
     });
   });
 

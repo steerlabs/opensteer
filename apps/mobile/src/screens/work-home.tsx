@@ -1,17 +1,12 @@
 import {
   cloudComputerDeployments,
   cloudWords,
-  orgWords,
-  workAuditExcluded,
-  workAuditRecordKinds,
   workHomeBadges,
   type WorkHomeCard,
 } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
 
 /** The person's work Homes, from the one Cloud Computer read the app already makes. */
@@ -148,69 +143,4 @@ export function homeWorkSection(
     ],
     footer: { text: card.managed },
   };
-}
-
-/** What the organization can see of a work Home, from the record schema it sends. */
-export function workHomeSeeSections(card: WorkHomeCard): readonly NativeSettingsSection[] {
-  const organization = card.organizationName;
-  return [
-    {
-      key: "lead",
-      title: "",
-      rows: [],
-      footer: { text: orgWords("org.work.see.lead", { organization }) },
-    },
-    {
-      key: "sees",
-      title: orgWords("org.work.see.sees", { organization }),
-      rows: [
-        { key: "status", kind: "text", label: orgWords("org.work.see.status") },
-        { key: "policy", kind: "text", label: orgWords("org.work.see.policy") },
-      ],
-    },
-    {
-      key: "records",
-      title: orgWords("org.work.see.records"),
-      rows: workAuditRecordKinds.map(({ kind, words }) => ({
-        key: kind,
-        kind: "text",
-        label: words,
-      })),
-    },
-    {
-      key: "never",
-      title: orgWords("org.work.see.never", { organization }),
-      rows: [
-        ...workAuditExcluded.map((item) => ({ key: item, kind: "text" as const, label: item })),
-        { key: "personal", kind: "text", label: orgWords("org.work.see.personal") },
-      ],
-    },
-  ];
-}
-
-type Props = StaticScreenProps<{ readonly assignmentId: string }>;
-
-export function WorkHomeSeeScreen({ route }: Props): ReactNode {
-  const work = useWorkHomes();
-  const navigation = useNavigation();
-  const card = work.find((entry) => entry.assignmentId === route.params.assignmentId) ?? null;
-  const title = card?.seeTitle ?? null;
-  useEffect(() => {
-    if (title) navigation.setOptions({ title });
-  }, [navigation, title]);
-  return (
-    <NativeSettingsPage
-      sections={
-        card
-          ? workHomeSeeSections(card)
-          : [
-              {
-                key: "loading",
-                title: "",
-                rows: [{ key: "loading", kind: "placeholder", label: cloudWords("cloud.loading") }],
-              },
-            ]
-      }
-    />
-  );
 }

@@ -26,6 +26,7 @@ import {
   deviceScreenRow,
   devicesScreen,
   cloudComputerDeployments,
+  cloudComputerEntryDetail,
   homeKind,
   parseCloudSuggestionMemory,
   serverHomeFacts,
@@ -505,5 +506,14 @@ describe("which listed Homes are Cloud Computers", () => {
         work: [{ computer: { deploymentId: "dep_work" } }, { computer: null }] as never,
       }),
     ]).toEqual(["dep_mine", "dep_work"]);
+  });
+});
+
+describe("the Cloud Computer row in Settings", () => {
+  it("never offers to keep agents working while a Mac sleeps on a Cloud Computer or work Home", () => {
+    expect(cloudComputerEntryDetail("cloud")).toBe("Its status and address");
+    expect(cloudComputerEntryDetail("work")).toBe("Its status and address");
+    for (const kind of ["this-mac", "mac"] as const)
+      expect(cloudComputerEntryDetail(kind)).toBe("Keep agents working while your Mac sleeps");
   });
 });

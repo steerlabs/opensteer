@@ -105,6 +105,7 @@ export const cloudComputerCopy = {
   "cloud.loading": "Loading…",
   "cloud.entry.title": "Opensteer Cloud Computer",
   "cloud.entry.detail": "Keep agents working while your Mac sleeps",
+  "cloud.entry.here": "Its status and address",
   "cloud.entry.running": "Running · {address}",
   "cloud.notNowDetail": "This won’t be suggested again for two weeks.",
   "cloud.asleep.link": "Keep agents working while your Mac sleeps",

@@ -57,6 +57,17 @@ export function cloudComputerDeployments(
   return ids;
 }
 
+/**
+ * What the Opensteer Cloud Computer row in Settings says under its name: on a Cloud Computer
+ * or a work Home it is about the Home already open, so it never offers to keep agents
+ * working while a Mac sleeps.
+ */
+export function cloudComputerEntryDetail(kind: HomeKind): string {
+  return cloudWords(
+    kind === "cloud" || kind === "work" ? "cloud.entry.here" : "cloud.entry.detail",
+  );
+}
+
 export function homeKind(input: {
   readonly exposure: "loopback" | "networked" | undefined;
   /** What the Home's own configuration says it is; absent from older Homes. */

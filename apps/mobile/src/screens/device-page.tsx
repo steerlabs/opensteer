@@ -780,8 +780,8 @@ function DevicePage(props: {
   // A work Home says whose it is and what they can see; it is never offered a Cloud Computer.
   const work = isHome(machine) ? workHomeBadges(workHomes).get(props.deploymentId) : undefined;
   const cloud = work
-    ? homeWorkSection(work, (card) =>
-        navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
+    ? homeWorkSection(work, () =>
+        navigation.navigate("WorkHomePolicy", { deploymentId: props.deploymentId }),
       )
     : homeKind === "mac"
       ? homeCloudComputerSection({

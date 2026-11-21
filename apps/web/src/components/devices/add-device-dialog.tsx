@@ -178,7 +178,7 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
       </p>
       {off ? (
         <p className="notice" role="status">
-          Turn on Use from anywhere on {homeName} first, so the new device can reach it.
+          Turn on Remote access on {homeName} first, so the new device can reach it.
         </p>
       ) : null}
       {link ? (
