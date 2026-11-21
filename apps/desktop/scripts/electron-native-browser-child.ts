@@ -1342,6 +1342,7 @@ function bridgeOptions(
     bridgeToken,
     browserPresentation,
     hostTransport,
+    isWorkspaceContents: (sender) => sender === kit.shell?.webContents,
     ipcMain: {
       removeHandler: (channel) => ipcMain.removeHandler(channel),
       handle: (channel, listener) =>
