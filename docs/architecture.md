@@ -344,11 +344,15 @@ sign-ins is the browser profile. A connected agent works only in profiles grante
 Guest. Two agents granted the same profile share its signed-in state.
 
 On Linux and Opensteer Cloud Computers, a native browser profile keeps Chromium's own session files
-(`Default/Sessions/`) and a strip-order id/address sidecar (`opensteer-tabs.json`) inside the
-profile directory so tabs survive cold browser restarts with scroll, standard form controls,
-navigation history and `sessionStorage`, reconciled against the Home's tab list. A sleeping tab on
-Linux is discarded in Chromium (freeing its renderer while keeping its tab state) through a minimal
-internal helper extension that is never visible to tab lists, session CDP or connected agents.
+(`Default/Sessions/`) and a strip-order id, address and lineage sidecar (`opensteer-tabs.json`)
+inside the profile directory so durable person tabs survive cold browser restarts with scroll,
+standard form controls, navigation history and `sessionStorage`, reconciled against the Home's saved
+tab list (excluding agent and deleted tabs). As in a desktop browser, typed text in standard form
+fields of tabs in the person's profile stays on disk in Chromium's session files while those tabs
+exist; passwords typed into a form are not kept there. A sleeping tab on Linux is discarded in
+Chromium (freeing its renderer while keeping its tab state, and removed with confirmation when the
+tab closes or its session ends) through a minimal internal helper extension that is never visible to
+tab lists, session CDP or connected agents.
 
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with

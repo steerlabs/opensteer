@@ -45,14 +45,19 @@ runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), a s
 native Chromium profile is discarded in place via Chromium's own tab lifecycle (`chrome.tabs.discard`,
 after freezing to flush Blink page state and detaching CDP) through a minimal bundled MV3 helper
 extension (`tabs` and `debugger` permissions only, hidden from tab lists, session CDP and connected
-agents); closing a sleeping tab removes it from Chromium. Native Chromium profiles keep Chromium's
-own `Default/Sessions/` files across browser restarts (plus an atomic `opensteer-tabs.json` sidecar
-holding strip indices, Home tab ids and addresses only, never typed text or page content), and
-reconcile restored tabs against the Home's authoritative tab list — closing unowned restored tabs
-and opening unmatched Home tabs by address. Passwords, `contenteditable` drafts, in-progress uploads,
-playing media position and arbitrary script memory are never promised; POST results and playing
-media stay awake during tab sleep. Phones and Guest sessions promise only a descriptor and URL
-reload.
+agents); if the helper is unavailable or fails, the tab still sleeps by closing its page and wakes
+by address. Closing a sleeping tab or ending its session removes it from Chromium with confirmation.
+Native Chromium profiles keep Chromium's own `Default/Sessions/` files across browser restarts (plus
+an atomic `opensteer-tabs.json` sidecar holding strip indices, Home tab ids, addresses and lineage
+ids only, never typed text or page content). As in a desktop browser, typed text in standard form
+fields of durable tabs in the person's profile stays on disk in Chromium's `Default/Sessions/` files
+while those tabs exist; passwords typed into a form are not kept there. On cold start, the runtime
+reconciles restored tabs against the Home's saved tab list — matching only exact unshifted slots or
+unique addresses within the same lineage, closing unowned, deleted, agent and non-restoring tabs
+(and failing closed if launch inventory fails), and opening unmatched Home tabs by address.
+Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
+memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
+Guest sessions promise only a descriptor and URL reload.
 
 Each engine hands every native page to the runtime as soon as it has a handle. A page the runtime
 can attribute belongs to one session: its creator, its opener's, or the session that adopts a raw
@@ -271,9 +276,9 @@ directory never moves. There is no portable snapshot, sync or profile Vault key
 
 Electron roots live under `sessionData`, outside disposable Runner slots, because the Network
 Service sandbox writes only there: a Session elsewhere looks usable but loses cookies. Eviction and
-failure cleanup never clear a root. Full Chromium restores session cookies itself; the launcher
-removes only tab restore records, only while no engine owns the directory. Electron keeps session
-cookies in an encrypted [mirror](../apps/desktop/src/browser/session-cookie-mirror.ts) with an
+failure cleanup never clear a root. Full Chromium restores session cookies and durable tab sessions itself from `Default/Sessions/`;
+the launcher normalizes unclean-exit markers before launch and reconciles restored tabs against the
+Home's saved tab list. Electron keeps session cookies in an encrypted [mirror](../apps/desktop/src/browser/session-cookie-mirror.ts) with an
 OS-wrapped key. Engine upgrades must requalify cookie persistence.
 
 A mirror failure does not make the live browser jar untrustworthy: keep pages open and retry the
