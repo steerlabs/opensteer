@@ -152,69 +152,60 @@ export async function startPersonalRuntime(input: {
     closed = false;
   const events = new Set<() => void>();
   async function startHost() {
-    const runtime = await createHostRuntime(
-      { ...config, ...(vertical?.account ? { account: vertical.account } : {}) },
-      {
-        ...(hostLog
-          ? {
-              logger: {
-                level: "info",
-                redact: [
-                  "req.headers.authorization",
-                  "req.headers.cookie",
-                  "res.headers.set-cookie",
-                ],
-                stream: new Writable({
-                  write(chunk: Buffer | string, _encoding, done) {
-                    hostLog(chunk.toString().trimEnd());
-                    done();
-                  },
-                }),
-              },
-            }
-          : {}),
-        ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
-        ...(vertical?.notificationTiming
-          ? { notificationTiming: vertical.notificationTiming }
-          : {}),
-        ...(vertical?.browserActivityClock
-          ? { browserActivityClock: vertical.browserActivityClock }
-          : {}),
-        ...(vertical?.runCapabilityLifetimeSeconds
-          ? { runCapabilityLifetimeSeconds: vertical.runCapabilityLifetimeSeconds }
-          : {}),
-        ...(vertical?.runCapabilityNow ? { runCapabilityNow: vertical.runCapabilityNow } : {}),
-        ...(vertical?.accountDirectoryFetch
-          ? { accountDirectoryFetch: vertical.accountDirectoryFetch }
-          : {}),
-        onRunnerCatalogsCommitted: (
-          _identity,
-          _environment,
-          captured,
-          registrationMayResetCatalogs,
-        ) => {
-          for (const notify of changes) notify();
-          catalogState = captured
-            .map((catalog) => `${catalog.status}: ${catalog.detail ?? ""}`)
-            .join("; ");
-          if (
-            !registrationMayResetCatalogs &&
-            captured.some((catalog) =>
-              accountIds.length
-                ? catalog.harnessInstanceId === accountIds[0] && catalog.status !== "preparing"
-                : catalog.status === "ready",
-            )
+    const runtime = await createHostRuntime(config, {
+      ...(hostLog
+        ? {
+            logger: {
+              level: "info",
+              redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
+              stream: new Writable({
+                write(chunk: Buffer | string, _encoding, done) {
+                  hostLog(chunk.toString().trimEnd());
+                  done();
+                },
+              }),
+            },
+          }
+        : {}),
+      ...(vertical?.executionClock ? { executionClock: vertical.executionClock } : {}),
+      ...(vertical?.notificationTiming ? { notificationTiming: vertical.notificationTiming } : {}),
+      ...(vertical?.browserActivityClock
+        ? { browserActivityClock: vertical.browserActivityClock }
+        : {}),
+      ...(vertical?.runCapabilityLifetimeSeconds
+        ? { runCapabilityLifetimeSeconds: vertical.runCapabilityLifetimeSeconds }
+        : {}),
+      ...(vertical?.runCapabilityNow ? { runCapabilityNow: vertical.runCapabilityNow } : {}),
+      ...(vertical?.accountDirectoryFetch
+        ? { accountDirectoryFetch: vertical.accountDirectoryFetch }
+        : {}),
+      onRunnerCatalogsCommitted: (
+        _identity,
+        _environment,
+        captured,
+        registrationMayResetCatalogs,
+      ) => {
+        for (const notify of changes) notify();
+        catalogState = captured
+          .map((catalog) => `${catalog.status}: ${catalog.detail ?? ""}`)
+          .join("; ");
+        if (
+          !registrationMayResetCatalogs &&
+          captured.some((catalog) =>
+            accountIds.length
+              ? catalog.harnessInstanceId === accountIds[0] && catalog.status !== "preparing"
+              : catalog.status === "ready",
           )
-            catalogs.resolve();
-        },
-        ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
-        onPersonalReaction: (reaction) => {
-          input.onPersonalReaction?.(reaction);
-          for (const listener of events) listener();
-          for (const notify of changes) notify();
-        },
+        )
+          catalogs.resolve();
       },
-    );
+      ...(input.onPersonalScopeCut ? { onPersonalScopeCut: input.onPersonalScopeCut } : {}),
+      onPersonalReaction: (reaction) => {
+        input.onPersonalReaction?.(reaction);
+        for (const listener of events) listener();
+        for (const notify of changes) notify();
+      },
+    });
     if (runtime.kind !== "personal")
       throw new Error("Personal fixture constructed another kind of Host");
     host = runtime;

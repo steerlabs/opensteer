@@ -1,4 +1,3 @@
-import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import {
   createId,
   opensteerHostNativeOAuthClients,
@@ -70,7 +69,6 @@ describe("configuration", () => {
   it("uses explicit local defaults without weakening production keys", () => {
     const config = parseHostConfig(localHostEnvironment);
     expect(config.bindAddress).toBe("127.0.0.1");
-    expect(config.account).toBeUndefined();
     expect(config.canonicalOrigin).toEqual(new URL("http://localhost:4310"));
     expect(config.deploymentShape).toEqual({ kind: "personal" });
     expect(config.personal).toMatchObject({
@@ -278,39 +276,6 @@ describe("configuration", () => {
       parseHostConfig({ ...networkedHostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" })
         .identity.nativeOAuth?.clients,
     ).toEqual(opensteerHostNativeOAuthClients);
-  });
-
-  it("rejects partial, noncanonical, and insecure production Account bundles", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_FD: "3",
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: "/private/account-bundle.json",
-      }),
-    ).toThrow(/exactly one/u);
-    const invalidPath = writeAccountAdoptionBundle({ invalid: true });
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: invalidPath,
-      }),
-    ).toThrow(/provisioning bundle/iu);
-    const productionBundle = accountAdoptionBundle({
-      canonicalOrigin: "https://opensteer.example.com",
-      controlApiOrigin: "http://127.0.0.1:4142",
-    });
-    expect(() =>
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(productionBundle),
-        OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
-        OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
-        OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
-        OPENSTEER_MODE: "production",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      }),
-    ).toThrow(/control API must use HTTPS/);
   });
 
   it("rejects undersized identity and setup secrets", () => {
@@ -614,16 +579,6 @@ describe("configuration", () => {
         OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       }),
     ).toThrow(/local owner claim token is allowed only for an unmanaged loopback Personal Host/u);
-
-    const accountBundle = accountAdoptionBundle();
-    expect(() =>
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(accountBundle),
-        OPENSTEER_CANONICAL_ORIGIN: accountBundle.deployment.canonicalOrigin,
-        OPENSTEER_DEPLOYMENT_KIND: "personal",
-      }),
-    ).toThrow();
   });
 
   it("accepts an operator-held first-owner code only where enrollment establishes the owner", () => {
@@ -792,45 +747,6 @@ describe("Runner enrollment token delivery", () => {
     ).toThrow(/could not be read/);
   });
 });
-
-function accountAdoptionBundle(
-  input: {
-    readonly canonicalOrigin?: string;
-    readonly controlApiOrigin?: string;
-  } = {},
-) {
-  const canonicalOrigin = input.canonicalOrigin ?? "https://deployment.connect.opensteer.test";
-  const controlApiOrigin = input.controlApiOrigin ?? "https://accounts.opensteer.test";
-  return HostAccountAdoptionBundleSchema.parse({
-    provisioningMode: "adoption",
-    controlApiOrigin,
-    deployment: {
-      canonicalOrigin,
-      deploymentId: createId("deployment"),
-      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
-      hostInstanceId: createId("hostInstance"),
-      reachability: "canonical",
-    },
-    hostCredential: `osc_${"a".repeat(43)}`,
-    oidc: {
-      clientId: "opensteer-host-deployment",
-      issuer: controlApiOrigin,
-      redirectUri: `${canonicalOrigin}/v1/auth/oidc/callback`,
-      requirePkce: true,
-      scopes: ["openid", "profile", "email"],
-      tokenEndpointAuthMethod: "client_secret_basic",
-    },
-    oidcClientSecret: `ocs_${"b".repeat(43)}`,
-  });
-}
-
-function writeAccountAdoptionBundle(value: unknown): string {
-  const directory = mkdtempSync(join(tmpdir(), "opensteer-config-account-bundle-"));
-  temporaryDirectories.push(directory);
-  const path = join(directory, "account-bundle.json");
-  writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  return path;
-}
 
 it.each([undefined, "0", "1", "false", "true"])(
   "validates the default-off passkey flag %s",

@@ -16,7 +16,6 @@ import type { DatabaseSchema } from "@opensteer/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
 import { issueLocalAdministratorPasswordRecovery } from "./operator-password-reset.js";
-import type { VerifiedAccountAdoptionGrant } from "./types.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -989,10 +988,6 @@ integration("IdentityService", () => {
         proofId: issued.proofId,
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-    await expect(identity.completeAccountAdoption(consumed, session)).rejects.toMatchObject({
-      code: "not_found",
-      message: "Account attachment completion is not configured",
-    });
 
     const stale = await identity.issueAccountAdoptionProof(session, account);
     await database
@@ -1008,96 +1003,6 @@ integration("IdentityService", () => {
         proofId: stale.proofId,
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-  });
-
-  it("atomically binds only a verified Account grant to the existing administrator", async () => {
-    const origin = "http://127.0.0.1:4310";
-    await ensureDeployment({
-      canonicalOrigin: origin,
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: {
-        kind: "personal" as const,
-      },
-    });
-    let verifiedGrant: VerifiedAccountAdoptionGrant | undefined;
-    const identity = identityService({
-      accountAdoption: {
-        grantVerifier: {
-          async verify() {
-            if (!verifiedGrant) throw new Error("Missing fixture grant");
-            return verifiedGrant;
-          },
-        },
-        logicalProviderId: "opensteer-account",
-      },
-      signupPolicy: "open",
-    });
-    const signedUp = await identity.signUpPassword(
-      {
-        displayName: "Existing Administrator",
-        email: "existing-local-email@example.com",
-        password: "correct horse battery staple",
-      },
-      new Headers({ origin }),
-    );
-    await database
-      .updateTable("users")
-      .set({ updatedAt: new Date() })
-      .where("id", "=", signedUp.data.session.user.id)
-      .executeTakeFirstOrThrow();
-    const session = await identity.requireSession(
-      new Headers({ cookie: cookieHeader(signedUp.headers), origin }),
-    );
-    const account = {
-      issuer: "https://account.opensteer.example",
-      subject: "acct_00000000-0000-4000-8000-000000000001",
-    };
-    const issued = await identity.issueAccountAdoptionProof(session, account);
-    const consumed = await identity.consumeAccountAdoptionProof({
-      expectedAccount: account,
-      expectedDeployment: issued.deployment,
-      proofCredential: issued.proofCredential,
-      proofId: issued.proofId,
-    });
-    verifiedGrant = {
-      ...consumed,
-      expiresAt: new Date(Date.now() + 5 * 60_000),
-      grantId: `hag_${crypto.randomUUID()}`,
-      issuedAt: new Date(),
-    };
-
-    const attached = await identity.completeAccountAdoption("signed-control-plane-grant", session);
-    expect(attached).toMatchObject({ account, userId: session.user.id });
-    expect(attached.providerId).toMatch(/^oidc\.opensteer-account\./u);
-    await expect(
-      database
-        .selectFrom("authAccounts")
-        .select(["accountId", "providerId", "userId"])
-        .where("providerId", "=", attached.providerId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      accountId: account.subject,
-      providerId: attached.providerId,
-      userId: session.user.id,
-    });
-    await expect(
-      database
-        .selectFrom("users")
-        .select("email")
-        .where("id", "=", session.user.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ email: "existing-local-email@example.com" });
-    await expect(
-      identity.completeAccountAdoption("replayed-control-plane-grant", session),
-    ).resolves.toEqual(attached);
-    verifiedGrant = {
-      ...verifiedGrant,
-      account: { ...verifiedGrant.account, subject: "acct_00000000-0000-4000-8000-000000000002" },
-    };
-    await expect(
-      identity.completeAccountAdoption("altered-control-plane-grant", session),
-    ).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("replaces stale browser session cookies when signing in again", async () => {

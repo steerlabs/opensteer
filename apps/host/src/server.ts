@@ -417,9 +417,6 @@ export interface HostServerDependencies {
   /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
   readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
-  /** Present when account attachment uses adoption. */
-  readonly accountAdoption?:
-    { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
@@ -671,9 +668,6 @@ export async function createHostServer(
         ),
     });
   registerIdentityRoutes(app, dependencies.authenticator, {
-    ...(dependencies.accountAdoption
-      ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
-      : {}),
     assertOwner: (userId) => requirePersonalOwner(dependencies.store.database, userId),
   });
   const connectionRoutes = dependencies.connections
