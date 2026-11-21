@@ -27,6 +27,7 @@ readonly RUN=/run/opensteer-pool
 readonly MAPPER=osp-saved
 : "${OSP_LOCAL_SSDS:=/dev/disk/by-id/google-local-nvme-ssd-*}"
 : "${OSP_HOME_CIDR:=10.0.0.0/8}"              # who may reach the agent's Home interface
+: "${OSP_PROVISIONER_CIDR:=127.0.0.1/32}"     # who may reach its administration interface
 : "${OSP_AGENT_PORT:=7310}"
 : "${OSP_ADMIN_PORT:=7311}"
 
@@ -102,7 +103,7 @@ install_units() {
 [Unit]
 Description=Opensteer pool host: encrypted saved-state array and kernel settings
 DefaultDependencies=no
-After=local-fs.target systemd-udev-settle.service
+After=local-fs.target systemd-udev-settle.service nftables.service
 Before=opensteer-pool-agent.service
 
 [Service]
@@ -175,20 +176,31 @@ EOF
 }
 
 host_firewall() {
-    # The agent's own interfaces: the Homes' network and the provisioner only. The slots'
-    # namespaces are filtered by the agent itself (table inet opensteer_pool).
-    cat > /etc/nftables.d-opensteer-pool.nft <<EOF
+    # The agent's own interfaces: the Home interface from the Homes' range, the administration
+    # interface from the provisioner's range only, neither from any slot. The slots are
+    # filtered in their own namespaces and by the agent's table (inet opensteer_pool).
+    install -d -m 0755 /etc/opensteer-pool/nft
+    cat > /etc/opensteer-pool/nft/host.nft <<EOF
 table inet opensteer_pool_host
 delete table inet opensteer_pool_host
 table inet opensteer_pool_host {
   chain input {
     type filter hook input priority -20; policy accept;
-    tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } ip saddr != { 127.0.0.0/8, $OSP_HOME_CIDR } drop
+    iifname "ospv*" tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } drop
     tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } meta nfproto ipv6 drop
+    tcp dport $OSP_AGENT_PORT ip saddr != { 127.0.0.0/8, $OSP_HOME_CIDR } drop
+    tcp dport $OSP_ADMIN_PORT ip saddr != { 127.0.0.0/8, $OSP_PROVISIONER_CIDR } drop
   }
 }
 EOF
-    nft -f /etc/nftables.d-opensteer-pool.nft
+    # Installed through the system's own nftables configuration, so a reload (which starts
+    # with "flush ruleset") loads these tables again: this one and the agent's (agent.nft).
+    local include='include "/etc/opensteer-pool/nft/*.nft"'
+    if ! grep -qxF "$include" /etc/nftables.conf 2>/dev/null; then
+        printf '\n%s\n' "$include" >> /etc/nftables.conf
+    fi
+    systemctl enable nftables.service >/dev/null 2>&1 || true
+    nft -f /etc/opensteer-pool/nft/host.nft
 }
 
 saved_state_array() {

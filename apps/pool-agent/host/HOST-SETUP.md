@@ -105,7 +105,12 @@ is saved to disk or stopped.
       "node": "/opt/opensteer-pool/node/bin/node",
       "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js"
     },
-    "network": { "resolvers": ["8.8.8.8", "1.1.1.1"], "hostUpstreamPorts": [], "relayUid": null },
+    "network": {
+      "resolvers": ["8.8.8.8", "1.1.1.1"],
+      "privateResolvers": [],
+      "hostUpstreams": [],
+      "relayUid": null
+    },
     "guestMode": "runtime"
   }
 }

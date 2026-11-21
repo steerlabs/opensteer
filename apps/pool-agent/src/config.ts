@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { isPublicIp } from "@opensteer/access/public-network";
 
 const path = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u);
 const port = z.number().int().min(1).max(65_535);
@@ -37,9 +38,19 @@ export const agentConfigSchema = z.strictObject({
     egressUidBase: z.number().int().min(10_000),
     egress: z.strictObject({ node: path, main: path }),
     network: z.strictObject({
-      resolvers: z.array(z.ipv4()).max(4),
-      hostUpstreamPorts: z.array(port).max(8).default([]),
+      /** Public resolvers only; a resolver in a blocked range must be named below. */
+      resolvers: z
+        .array(z.ipv4().refine(isPublicIp, "A resolver here must be a public address."))
+        .max(4),
+      /** Review G4(b): opened for port 53 only because it is named (Google's is 169.254.169.254). */
+      privateResolvers: z.array(z.ipv4()).max(2).default([]),
+      /** Review G4(c): a host-local upstream proxy, by address and port. */
+      hostUpstreams: z
+        .array(z.strictObject({ address: z.ipv4(), port }))
+        .max(8)
+        .default([]),
       relayUid: z.number().int().min(0).nullable().default(null),
+      nftDirectory: path.default("/etc/opensteer-pool/nft"),
     }),
     guestMode: z.enum(["runtime", "bench"]).default("runtime"),
     serialConsole: z.boolean().default(false),

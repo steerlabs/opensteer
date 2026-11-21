@@ -54,6 +54,8 @@ export interface HypervisorDriver {
   incarnation(): Promise<string>;
   /** The hardware and software a saved image is bound to. */
   fingerprint(): Promise<string>;
+  /** Re-applies the host's own rules if they are gone; true if it had to. */
+  ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */
   confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void>;
   /** Prepares the slot's network namespace, TAP and host-side egress. Idempotent. */

@@ -19,12 +19,46 @@ export const tapName = "tap0";
 export const guestMac = "06:00:ac:10:00:02";
 
 export interface NetworkConfig {
-  /** Public resolvers the egress proxy may ask; DNS to anything else is dropped. */
+  /** Public resolvers the egress proxy may ask on port 53; DNS to anything else is dropped. */
   readonly resolvers: readonly string[];
-  /** Host TCP ports a slot's egress proxy may reach on the host itself (a local upstream). */
-  readonly hostUpstreamPorts: readonly number[];
+  /**
+   * Resolvers inside a blocked range, opened only because they are named here, for port 53
+   * only (Google Cloud's resolver is the metadata address). None by default (review G4b).
+   */
+  readonly privateResolvers: readonly string[];
+  /** A local upstream proxy a slot's egress proxy may reach, by address and port (G4c). */
+  readonly hostUpstreams: readonly { readonly address: string; readonly port: number }[];
   /** The one local user allowed to connect to a guest's bridge port (the transport relay). */
   readonly relayUid: number | null;
+  /** Where the host table is also written, for the system's nftables to load on a reload. */
+  readonly nftDirectory?: string | undefined;
+}
+
+const blocked4 = `0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+                 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3`;
+
+/** What the proxy may send out of its namespace, in order: the same in the namespace and on the host. */
+function egressRules(config: NetworkConfig, hostAddresses: readonly string[]): string {
+  const set = (values: readonly string[]) => `{ ${values.join(", ")} }`;
+  return [
+    "meta nfproto ipv6 counter drop",
+    ...config.hostUpstreams.map(
+      ({ address, port }) => `ip daddr ${address} tcp dport ${port} accept`,
+    ),
+    config.privateResolvers.length
+      ? `ip daddr ${set(config.privateResolvers)} meta l4proto { tcp, udp } th dport 53 accept`
+      : "",
+    `ip daddr @blocked4 counter drop`,
+    hostAddresses.length ? `ip daddr ${set(hostAddresses)} counter drop` : "",
+    config.resolvers.length
+      ? `ip daddr ${set(config.resolvers)} meta l4proto { tcp, udp } th dport 53 accept`
+      : "",
+    "meta l4proto tcp accept",
+    "counter drop",
+  ]
+    .filter(Boolean)
+    .map((rule) => `    ${rule}`)
+    .join("\n");
 }
 
 export function namespaceName(index: number): string {
@@ -45,29 +79,28 @@ export function vethAddresses(index: number): { readonly host: string; readonly 
   return { host: ip(base + 1), inside: ip(base + 2) };
 }
 
-/** The host's own table, shared by all slots. Applied whole at agent start. */
-export async function applyHostTable(config: NetworkConfig): Promise<void> {
-  const upstreams = config.hostUpstreamPorts.length
-    ? `iifname "ospv*" tcp dport { ${config.hostUpstreamPorts.join(", ")} } accept`
-    : "";
-  const resolvers = config.resolvers.length ? `{ ${config.resolvers.join(", ")} }` : "";
+/**
+ * The host's own table: the slots' NAT, the host-side copy of the proxies' egress rules, and the
+ * relay-only bridge seam. Slot isolation does not depend on it (the same rules live in each slot's
+ * namespace), but the NAT and the seam do: the agent re-applies it when it finds it gone.
+ */
+export function hostRuleset(config: NetworkConfig, hostAddresses: readonly string[]): string {
+  const upstreams = config.hostUpstreams
+    .map(({ address, port }) => `    iifname "ospv*" ip daddr ${address} tcp dport ${port} accept`)
+    .join("\n");
   const relay =
     config.relayUid === null
       ? `ip daddr 10.200.0.0/16 tcp dport ${bridgePort} reject`
       : `ip daddr 10.200.0.0/16 tcp dport ${bridgePort} meta skuid != ${config.relayUid} reject`;
-  const ruleset = `
+  return `
 table inet opensteer_pool
 delete table inet opensteer_pool
 table inet opensteer_pool {
-  set blocked4 {
-    type ipv4_addr; flags interval;
-    elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
-                 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 }
-  }
+  set blocked4 { type ipv4_addr; flags interval; elements = { ${blocked4} } }
   chain input {
     type filter hook input priority -10; policy accept;
     iifname "ospv*" ct state established,related accept
-    ${upstreams}
+${upstreams}
     iifname "ospv*" counter drop
   }
   chain forward {
@@ -77,11 +110,7 @@ table inet opensteer_pool {
     oifname "ospv*" counter drop
   }
   chain from_slot {
-    meta nfproto ipv6 counter drop
-    ${resolvers ? `ip daddr ${resolvers} meta l4proto { tcp, udp } th dport 53 accept` : ""}
-    ip daddr @blocked4 counter drop
-    meta l4proto tcp accept
-    counter drop
+${egressRules(config, hostAddresses)}
   }
   chain output {
     type filter hook output priority -10; policy accept;
@@ -93,7 +122,54 @@ table inet opensteer_pool {
   }
 }
 `;
+}
+
+/** The proxy's egress filter inside the slot's namespace: a host flush cannot remove it. */
+export function egressRuleset(config: NetworkConfig, hostAddresses: readonly string[]): string {
+  return `
+table inet osp_egress
+delete table inet osp_egress
+table inet osp_egress {
+  set blocked4 { type ipv4_addr; flags interval; elements = { ${blocked4} } }
+  chain output {
+    type filter hook output priority 10; policy accept;
+    oifname "eth0" jump to_world
+  }
+  chain to_world {
+${egressRules(config, hostAddresses)}
+  }
+}
+`;
+}
+
+/** The host's own IPv4 addresses (not the slots' veths): no proxy may reach the host itself. */
+export async function hostAddresses(): Promise<string[]> {
+  const text = await run("ip", ["-4", "-o", "addr", "show"]);
+  return [
+    ...new Set(
+      text
+        .split("\n")
+        .filter((line) => line && !/ ospv[0-9]+ /u.test(line))
+        .map((line) => line.match(/ inet ([0-9.]+)\//u)?.[1])
+        .filter((address): address is string => !!address && !address.startsWith("127.")),
+    ),
+  ];
+}
+
+/** Applies the host table, and writes it where the system's nftables loads it on a reload. */
+export async function applyHostTable(config: NetworkConfig): Promise<void> {
+  const ruleset = hostRuleset(config, await hostAddresses());
   await applyRuleset([], ruleset);
+  if (config.nftDirectory) {
+    await mkdir(config.nftDirectory, { recursive: true, mode: 0o755 });
+    await writeFile(join(config.nftDirectory, "agent.nft"), ruleset, { mode: 0o600 });
+  }
+}
+
+/** Whether the host table is still loaded (a flush or a reload of the system ruleset removes it). */
+export async function hostTablePresent(): Promise<boolean> {
+  const listed = await run("nft", ["list", "tables"]);
+  return listed.split("\n").some((line) => line.trim() === "table inet opensteer_pool");
 }
 
 /** The slot's namespace, TAP, veth and filter; repairs a missing piece, keeps a live one. */
@@ -101,6 +177,7 @@ export async function prepareNamespace(
   index: number,
   tapOwner: number,
   config: NetworkConfig,
+  addresses: readonly string[],
 ): Promise<void> {
   const ns = namespaceName(index);
   const veth = hostVeth(index);
@@ -110,6 +187,12 @@ export async function prepareNamespace(
   const namespaces = await run("ip", ["netns", "list"]);
   if (!namespaces.split("\n").some((line) => line.split(" ")[0] === ns))
     await run("ip", ["netns", "add", ns]);
+  // The filters come before any interface is up: there is never a moment without them.
+  const tables = await inNs(["nft", "list", "tables"]);
+  if (!tables.split("\n").some((line) => line.trim() === "table inet osp"))
+    await applyRuleset(["ip", "netns", "exec", ns], namespaceTable());
+  // The proxy's egress filter is replaced whole each time (it has no live state).
+  await applyRuleset(["ip", "netns", "exec", ns], egressRuleset(config, addresses));
   await inNs(["sysctl", "-q", "-w", "net.ipv6.conf.all.disable_ipv6=1"]);
   await inNs(["sysctl", "-q", "-w", "net.ipv6.conf.default.disable_ipv6=1"]);
   await inNs(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"]);
@@ -136,10 +219,6 @@ export async function prepareNamespace(
     config.resolvers.map((address) => `nameserver ${address}\n`).join("") || "\n",
     { mode: 0o644 },
   );
-  // The filter is created once; a live slot's gate (open or closed) is left as it is.
-  const tables = await inNs(["nft", "list", "tables"]);
-  if (!tables.includes("table inet osp"))
-    await applyRuleset(["ip", "netns", "exec", ns], namespaceTable());
 }
 
 function namespaceTable(): string {

@@ -111,6 +111,17 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     return this.#fingerprint;
   }
 
+  /** The host table was flushed: the next check re-applies it. */
+  hostTableGone = false;
+  hostRepairs = 0;
+
+  async ensureHost(): Promise<boolean> {
+    if (!this.hostTableGone) return false;
+    this.hostTableGone = false;
+    this.hostRepairs += 1;
+    return true;
+  }
+
   async confineGuest(guest: { readonly profilePath: string }): Promise<void> {
     if (guest.profilePath.split("/").includes(".."))
       throw new Error("The profile path leaves its root.");

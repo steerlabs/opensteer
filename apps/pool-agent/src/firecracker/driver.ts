@@ -46,6 +46,8 @@ import {
 import { run, runUntil } from "./exec.js";
 import {
   applyHostTable,
+  hostAddresses,
+  hostTablePresent,
   guestMac,
   prepareNamespace,
   removeNamespace,
@@ -97,6 +99,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   #numbers!: SlotNumbers;
   #fingerprint = "";
   #arrayId: string | undefined;
+  #hostAddresses: readonly string[] = [];
   readonly #egress = new Map<string, SlotEgress | undefined>();
   readonly #pendingEgress = new Map<string, Promise<void>>();
 
@@ -111,6 +114,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     await this.#numbers.load();
     // Review G3: never write guest memory anywhere but the encrypted array.
     this.#arrayId = await requireEncryptedArray(this.#config);
+    this.#hostAddresses = await hostAddresses();
     await applyHostTable(this.#config.network);
     this.#fingerprint = await this.#computeFingerprint();
   }
@@ -123,6 +127,14 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async fingerprint(): Promise<string> {
     return this.#fingerprint;
+  }
+
+  /** Review G4(a): the host table is re-applied when a flush or a reload removed it. */
+  async ensureHost(): Promise<boolean> {
+    if (await hostTablePresent()) return false;
+    this.#hostAddresses = await hostAddresses();
+    await applyHostTable(this.#config.network);
+    return true;
   }
 
   async confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void> {
@@ -140,7 +152,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     // Allocation, the namespace and the host user happen under the host-wide number lock; a
     // failure releases a newly allocated number again.
     await this.#numbers.allocate(slotId, async (index) => {
-      await prepareNamespace(index, this.#uid(index), this.#config.network);
+      await prepareNamespace(index, this.#uid(index), this.#config.network, this.#hostAddresses);
       await ensureEgressUser(index, this.#config.egressUidBase + index);
     });
   }

@@ -83,6 +83,8 @@ export interface PoolAgentOptions {
   readonly resultRetentionMs?: number;
   /** How many stored answers a slot keeps (512). */
   readonly maxResults?: number;
+  /** How often the host's own rules are checked for a flush or a reload. */
+  readonly hostCheckMs?: number;
   /** How soon an unfinished step (a failed clean-up, a failed expiry) is tried again. */
   readonly retryMs?: number;
   readonly deadlines?: Partial<PoolAgentDeadlines>;
@@ -160,6 +162,7 @@ export class PoolAgent {
   readonly #admin = new Lane();
   #incarnation = "";
   #dead = false;
+  #hostCheck: ReturnType<typeof setInterval> | undefined;
   #closed = false;
 
   constructor(options: PoolAgentOptions) {
@@ -220,6 +223,18 @@ export class PoolAgent {
     );
     if (swept.length) this.#log({ event: "sweep", removed: swept });
     for (const slot of this.#live()) this.#schedule(slot);
+    // Review G4(a): a flush or reload of the host's ruleset is noticed and repaired.
+    this.#hostCheck = setInterval(() => {
+      void this.#ensureHost().catch((error: unknown) =>
+        this.#log({ event: "host-table.failed", message: messageOf(error) }),
+      );
+    }, this.#options.hostCheckMs ?? 10_000);
+    this.#hostCheck.unref?.();
+  }
+
+  async #ensureHost(): Promise<void> {
+    if (await this.#step("network", () => this.#driver.ensureHost()))
+      this.#log({ event: "host-table.repaired" });
   }
 
   #live(): Slot[] {
@@ -229,6 +244,7 @@ export class PoolAgent {
   /** Stops timers. The guests keep running: an agent restart is not a guest restart. */
   close(): void {
     this.#closed = true;
+    if (this.#hostCheck) clearInterval(this.#hostCheck);
     for (const slot of this.#slots.values()) this.#unschedule(slot);
   }
 
@@ -496,6 +512,7 @@ export class PoolAgent {
     });
     this.#checkpoint("start:journaled");
     try {
+      await this.#ensureHost();
       // Nobody else may write the profile: every earlier process of the slot is gone first.
       await this.#kill(slot);
       await within(this.#deadlines.network, "Closing the guest network", () =>
@@ -613,6 +630,7 @@ export class PoolAgent {
       mark = at;
     };
     try {
+      await this.#ensureHost();
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),
       );

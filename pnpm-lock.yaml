@@ -1152,6 +1152,9 @@ importers:
 
   apps/pool-agent:
     dependencies:
+      '@opensteer/access':
+        specifier: workspace:*
+        version: link:../../packages/access
       '@opensteer/browser-runtime-core':
         specifier: workspace:*
         version: link:../../packages/browser-runtime-core

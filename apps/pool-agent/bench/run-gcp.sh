@@ -85,7 +85,7 @@ agent() {
     "slotUidBase": 200000,
     "egressUidBase": 300000,
     "egress": { "node": "/opt/opensteer-pool/node/bin/node", "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js" },
-    "network": { "resolvers": [], "hostUpstreamPorts": [8443], "relayUid": $relay_uid },
+    "network": { "resolvers": [], "hostUpstreams": [{ "address": "192.0.43.10", "port": 8443 }], "relayUid": $relay_uid },
     "guestMode": "bench"
   }
 }

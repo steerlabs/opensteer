@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opensteer/access": "workspace:*",
     "@opensteer/browser-runtime-core": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
