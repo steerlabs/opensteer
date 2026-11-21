@@ -686,3 +686,83 @@ it("still sleeps and wakes by address without marking unrestorable when the help
   const woken2 = await ledger.wake(s2.id);
   await waitLoaded(woken2.cdp, "/article");
 });
+
+it("serializes immediate wake behind an in-flight discard and settles helper timeouts via inventory with zero orphan tabs", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-f4-race-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  // Case A: wake starts while discardByTabId reply is still in flight after Chromium discarded the tab.
+  const urlA = `${server.originForSite(1)}/article`;
+  const sA = await ledger.openSurface();
+  const liveA = ledger.binding(sA.id)!;
+  await liveA.cdp.send("Page.navigate", { url: urlA });
+  await waitLoaded(liveA.cdp, "/article");
+  await evalValue(liveA.cdp, "window.scrollTo(0, 1750)");
+
+  const origDiscard = lifecycle.discardByTabId.bind(lifecycle);
+  const releaseReply = Promise.withResolvers<void>();
+  const discardSpyA = vi.spyOn(lifecycle, "discardByTabId").mockImplementation(async (tabId) => {
+    const newId = await origDiscard(tabId);
+    await releaseReply.promise;
+    return newId;
+  });
+
+  // ledger.sleep returns as soon as Chromium closes the WebContents during discard,
+  // while discardByTabId's reply is still held!
+  expect(await ledger.sleep(sA.id, () => null)).toBe(true);
+  const wakePromise = ledger.wake(sA.id);
+  // Release the discard reply after wake has already entered createPage.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  releaseReply.resolve();
+  const wokenA = await wakePromise;
+  discardSpyA.mockRestore();
+
+  await waitLoaded(wokenA.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(wokenA.cdp, "window.scrollY")).toBe(1750),
+    { timeout: 3_000, interval: 50 },
+  );
+  const invA = await lifecycle.inventory();
+  expect(invA.filter((tab) => tab.url === urlA)).toHaveLength(1);
+
+  // Case B: discardByTabId throws/times out AFTER Chromium already discarded the tab!
+  const urlB = `${server.originForSite(2)}/article`;
+  const sB = await ledger.openSurface();
+  const liveB = ledger.binding(sB.id)!;
+  await liveB.cdp.send("Page.navigate", { url: urlB });
+  await waitLoaded(liveB.cdp, "/article");
+  await evalValue(liveB.cdp, "window.scrollTo(0, 2350)");
+
+  const discardSpyB = vi.spyOn(lifecycle, "discardByTabId").mockImplementation(async (tabId) => {
+    await origDiscard(tabId);
+    throw new Error("Opensteer tab lifecycle helper call timed out.");
+  });
+  expect(await ledger.sleep(sB.id, () => null)).toBe(true);
+  discardSpyB.mockRestore();
+
+  const wokenB = await ledger.wake(sB.id);
+  await waitLoaded(wokenB.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(wokenB.cdp, "window.scrollY")).toBe(2350),
+    { timeout: 3_000, interval: 50 },
+  );
+  const invB = await lifecycle.inventory();
+  expect(invB.filter((tab) => tab.url === urlB)).toHaveLength(1);
+});

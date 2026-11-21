@@ -2059,14 +2059,39 @@ class PlaywrightPageHandle implements BrowserPage {
         try {
           const inventory = await this.contextHandle.lifecycle.inventory().catch(() => null);
           const tab = inventory?.find((entry) => entry.targetId === sleepDiscard.targetId);
-          if (tab) {
+          if (tab && inventory) {
+            const priorDiscardedIds = new Set(
+              inventory.filter((entry) => entry.discarded).map((entry) => entry.tabId),
+            );
             await this.contextHandle.activatePrivateAnchor();
             await this.freezeBeforeDiscard();
             await this.cdpChannel?.detach();
             if (!this.page.isClosed()) {
-              newTabId = await this.contextHandle.lifecycle
-                .discardByTabId(tab.tabId)
-                .catch(() => null);
+              try {
+                newTabId = await this.contextHandle.lifecycle.discardByTabId(tab.tabId);
+              } catch {
+                // Unknown outcome: discard may have committed in Chromium before the helper
+                // timed out or errored. Reconcile via inventory before assuming failure.
+                const after = await this.contextHandle.lifecycle.inventory().catch(() => null);
+                if (after) {
+                  const sameId = after.find((entry) => entry.tabId === tab.tabId);
+                  if (sameId?.discarded) {
+                    newTabId = sameId.tabId;
+                  } else if (!sameId) {
+                    const newlyDiscarded = after.filter(
+                      (entry) =>
+                        entry.discarded &&
+                        !priorDiscardedIds.has(entry.tabId) &&
+                        entry.url === tab.url,
+                    );
+                    const exactSlot = newlyDiscarded.find(
+                      (entry) => entry.windowId === tab.windowId && entry.index === tab.index,
+                    );
+                    if (exactSlot) newTabId = exactSlot.tabId;
+                    else if (newlyDiscarded.length === 1) newTabId = newlyDiscarded[0]!.tabId;
+                  }
+                }
+              }
               if (newTabId === null && !this.page.isClosed()) {
                 await this.page.close({ runBeforeUnload: false });
               }
