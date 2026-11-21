@@ -932,6 +932,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           process.stderr.write(
             '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
           );
+          // This run cannot keep the map current, so no later start may bind by it.
+          await deleteTabRestoreSidecar(directory).catch(() => {
+            process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n');
+          });
           for (const page of context.pages()) {
             if (page === helper || page.isClosed()) continue;
             await page.close({ runBeforeUnload: false }).catch(() => undefined);
@@ -1130,6 +1134,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    */
   private async closeOnce(): Promise<void> {
     this.contextHandle.markClosed();
+    // Before Chromium writes its clean session: a map that is not current must not survive it.
+    await this.contextHandle.retireSidecarBeforeClose();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
@@ -1171,6 +1177,10 @@ function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | n
 }
 
 const wakeDiscardedTabMs = 10_000;
+/** Consecutive failed map writes, since the last success, after which the map is deleted. */
+const sidecarFailureBound = 3;
+/** How long close waits for a map write in flight before deleting the map. */
+const sidecarCloseWaitMs = 500;
 
 /**
  * Reads a Playwright Chromium page's CDP targetId synchronously from its
@@ -1334,8 +1344,10 @@ class PlaywrightContextHandle implements BrowserContext {
         armFallbackReconcile: (keepIds, delayMs = 5_000) =>
           this.armFallbackReconcile(keepIds, delayMs),
         trackSavedTab: (surfaceId, page) => this.trackSavedTab(surfaceId, page),
-        flush: () => this.flushSavedTabs(),
+        flush: () => this.flushSavedTabsOrDeleteMap(),
       };
+      // The map on disk was written by an earlier run and is not yet confirmed for this one.
+      this.sidecarDirty = true;
     }
     context.on("close", () => {
       this.markClosed();
@@ -2399,7 +2411,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!this.lifecycle || !this.profileDirectory || this.closed) return;
     this.sidecarVersion++;
     this.sidecarDirty = true;
-    this.sidecarFailures = 0;
+    // The failure count is not reset here: only a successful write resets it (Rule C).
     if (this.sidecarRetryTimer) {
       clearTimeout(this.sidecarRetryTimer);
       this.sidecarRetryTimer = undefined;
@@ -2409,6 +2421,55 @@ class PlaywrightContextHandle implements BrowserContext {
     queueMicrotask(() => {
       this.sidecarScheduled = false;
       void this.flushSavedTabs().catch(() => undefined);
+    });
+  }
+
+  /** The map is gone, so nothing stale is on disk; a later change makes it dirty again. */
+  private async deleteSidecarMap(): Promise<void> {
+    if (!this.profileDirectory) return;
+    try {
+      await deleteTabRestoreSidecar(this.profileDirectory);
+      this.sidecarDirty = false;
+    } catch {
+      process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n');
+    }
+  }
+
+  /**
+   * The Home's orderly flush before Chromium closes: the map is brought current, or deleted.
+   * A second attempt covers a change that landed during the first write.
+   */
+  private async flushSavedTabsOrDeleteMap(): Promise<void> {
+    if (!this.lifecycle || !this.profileDirectory || this.closed) return;
+    for (let attempt = 0; attempt < 2 && this.sidecarDirty && !this.closed; attempt++) {
+      await this.flushSavedTabs().catch(() => undefined);
+    }
+    if (this.sidecarDirty && !this.closed) await this.deleteSidecarMap();
+  }
+
+  /**
+   * Runs after `markClosed` and before Chromium closes: a map that is not current is deleted,
+   * so Chromium's clean session file never sits beside a stale map. A write that was already
+   * past its last check may still land; a second delete is chained behind it for that case.
+   */
+  async retireSidecarBeforeClose(): Promise<void> {
+    if (!this.lifecycle || !this.profileDirectory) return;
+    let writeInFlight = false;
+    const dirty = await withTimeout(
+      this.sidecarTail.then(() => this.sidecarDirty),
+      sidecarCloseWaitMs,
+      { timeoutError: () => new Error("Tab map write did not settle before close.") },
+    ).catch(() => {
+      writeInFlight = true;
+      return true;
+    });
+    if (!dirty) return;
+    await this.deleteSidecarMap();
+    if (!writeInFlight) return;
+    // The late write clears this only if it succeeds, and versions no longer move once closed.
+    this.sidecarDirty = true;
+    this.sidecarTail = this.sidecarTail.then(async () => {
+      if (this.sidecarDirty) await this.deleteSidecarMap();
     });
   }
 
@@ -2443,15 +2504,14 @@ class PlaywrightContextHandle implements BrowserContext {
         if (this.closed || !this.profileDirectory) return;
         this.sidecarDirty = true;
         this.sidecarFailures++;
-        if (this.sidecarFailures < 3) {
+        if (this.sidecarFailures < sidecarFailureBound) {
           this.scheduleSidecarRetry();
           return;
         }
-        // Cannot bring the sidecar current after bounded retries: delete the stale map so a
-        // later cold start matches nothing and opens by address instead of binding a stale slot.
-        this.sidecarDirty = false;
-        this.sidecarFailures = 0;
-        await deleteTabRestoreSidecar(this.profileDirectory).catch(() => undefined);
+        // Cannot bring the sidecar current: delete the stale map so a later cold start matches
+        // nothing and opens by address instead of binding a stale slot. The count stays until a
+        // write succeeds, so every further failure deletes again (an absent map stays absent).
+        await this.deleteSidecarMap();
       };
       const inventory = await this.lifecycle.inventory().catch(() => null);
       if (this.closed) return;

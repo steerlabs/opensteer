@@ -2568,6 +2568,119 @@ describe("native Chromium profiles", () => {
     }
   });
 
+  it.each(["navigation", "flush-then-close", "close", "clean-close"] as const)(
+    "counts map write failures only since the last success and deletes a map that is not current before Chromium closes (C3, %s)",
+    async (scenario) => {
+      const f = await nativeCloseFixture();
+      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+      const surfP = "srf_00000000-0000-4000-8000-00000000c301" as BrowserSurfaceId;
+      let navHandler: ((frame: unknown) => void) | undefined;
+      const mainFrame = {};
+      const rawPage = (targetId: string, url: string, onNav?: boolean) =>
+        ({
+          url: () => url,
+          isClosed: () => false,
+          close: vi.fn(async () => undefined),
+          on: vi.fn((event: string, cb: (frame: unknown) => void) => {
+            if (onNav && event === "framenavigated") navHandler = cb;
+          }),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => mainFrame,
+          _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
+        }) as unknown as Page;
+      const helperRawPage = rawPage("target-c3-helper", "about:blank");
+      const personRawPage = rawPage("target-c3-person", "https://c3.test/", true);
+      let newPageCalls = 0;
+      Object.assign(f.context, {
+        serviceWorkers: () => [],
+        pages: () => [],
+        newPage: vi.fn(async () => (++newPageCalls === 1 ? helperRawPage : personRawPage)),
+        newCDPSession: vi.fn(async () => ({
+          send: vi.fn(async (method: string) =>
+            method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-c3-person" } } : {},
+          ),
+          on: vi.fn(),
+          off: vi.fn(),
+          detach: vi.fn(async () => undefined),
+        })),
+        on: vi.fn(),
+      });
+      const personTab = [
+        {
+          tabId: 501,
+          windowId: 1,
+          index: 0,
+          url: "https://c3.test/",
+          title: "P",
+          active: true,
+          discarded: false,
+          status: "complete",
+          targetId: "target-c3-person" as string | null,
+        },
+      ];
+      let tabs: typeof personTab = [];
+      let failInventory = false;
+      let inventoryCalls = 0;
+      const invSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+        .mockImplementation(async () => {
+          inventoryCalls++;
+          if (failInventory) throw new Error("inventory down");
+          return tabs;
+        });
+      let navigating: ReturnType<typeof setInterval> | undefined;
+      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+      try {
+        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        const page = await launched.context.createPage();
+        tabs = personTab;
+        launched.context.sessionRestore!.trackSavedTab(surfP, page);
+        await launched.context.sessionRestore!.flush!();
+        expect(await readTabRestoreSidecar(f.directory)).toEqual([
+          { index: 0, surfaceId: surfP, url: "https://c3.test/" },
+        ]);
+        if (scenario === "navigation") {
+          // An agent browsing keeps scheduling writes; each one is a new failure, never a reset.
+          failInventory = true;
+          navigating = setInterval(() => navHandler?.(mainFrame), 50);
+          await vi.waitFor(
+            async () => expect(await readTabRestoreSidecar(f.directory)).toEqual([]),
+            { timeout: 2_000, interval: 25 },
+          );
+          expect(inventoryCalls).toBeGreaterThanOrEqual(3);
+        } else if (scenario === "flush-then-close") {
+          failInventory = true;
+          navHandler?.(mainFrame);
+          await launched.context.sessionRestore!.flush!();
+          f.exit();
+          await launched.close();
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
+        } else if (scenario === "close") {
+          // A change Chromium will persist at its orderly exit, and a map that cannot follow it.
+          failInventory = true;
+          navHandler?.(mainFrame);
+          f.exit();
+          await launched.close();
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
+        } else {
+          f.exit();
+          await launched.close();
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([
+            { index: 0, surfaceId: surfP, url: "https://c3.test/" },
+          ]);
+        }
+      } finally {
+        if (navigating) clearInterval(navigating);
+        invSpy.mockRestore();
+        f.exit();
+        await launched?.close();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("matches unknown-outcome sleeping probes by tabId only and never binds or removes another owner's same-address discarded tab (F2)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
