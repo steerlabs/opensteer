@@ -19,7 +19,7 @@ func reasonPointer(reason wire.Reason) *wire.Reason {
 	return &reason
 }
 func unavailableCapabilities(reason wire.Reason) wire.Capabilities {
-	return wire.Capabilities{Observe: reasonPointer(reason), Act: reasonPointer(reason), Launch: reasonPointer(reason), InstalledApps: reasonPointer(reason), Text: wire.UnsupportedText, Clear: wire.UnsupportedClear, IndexedTargets: wire.GeometryUnavailable, LiveVideo: wire.Unsupported}
+	return wire.Capabilities{Observe: reasonPointer(reason), Act: reasonPointer(reason), Launch: reasonPointer(reason), InstalledApps: reasonPointer(reason), Text: reasonPointer(wire.UnsupportedText), Clear: reasonPointer(wire.UnsupportedClear), IndexedTargets: reasonPointer(wire.GeometryUnavailable), LiveVideo: reasonPointer(wire.Unsupported), Wake: reasonPointer(reason)}
 }
 func (s *Session) setDDIReason(reason wire.Reason) {
 	s.mu.Lock()
@@ -69,6 +69,27 @@ func (s *Session) capabilities() wire.Capabilities {
 	}
 	result.Launch = available(true, deviceInfoService, appService, inventoryService)
 	result.InstalledApps = available(false, inventoryService)
+	result.Text = available(true, deviceInfoService, hidService, pasteboardService, deviceHubAXService)
+	result.Clear = available(true, deviceInfoService, hidService, deviceHubAXService)
+	result.IndexedTargets = result.Act
+	if result.IndexedTargets == nil && s.services.GetPort(deviceHubAXService) < 1 && s.visionOCR == nil {
+		result.IndexedTargets = reasonPointer(wire.GeometryUnavailable)
+	}
+	if s.mediaAvailable {
+		result.LiveVideo = available(true, deviceInfoService, DisplayService)
+		if result.LiveVideo == nil && s.state.Rotation == nil {
+			result.LiveVideo = reasonPointer(wire.GeometryUnavailable)
+		}
+	}
+	result.Wake = available(false, deviceInfoService, hidService)
+	if result.Wake == nil {
+		switch {
+		case s.stateReason != "":
+			result.Wake = reasonPointer(s.stateReason)
+		case s.state.Display != "on" && s.state.Display != "off":
+			result.Wake = reasonPointer(wire.DisplayUnknown)
+		}
+	}
 	return result
 }
 func (s *Session) Probe(ctx context.Context) error {
@@ -88,7 +109,15 @@ func (s *Session) recordScreenState(state DeviceState, reason wire.Reason) {
 	s.mu.Lock()
 	changed := s.state.Lock != state.Lock || s.state.Display != state.Display || s.stateReason != reason
 	s.state, s.stateReason = state, reason
+	screen := s.screen
 	s.mu.Unlock()
+	if screen != nil && (reason != "" || state.screenBlocker() != "") {
+		if state.Display == "off" {
+			screen.hideDisplay("screen-off", "locked-screen")
+		} else {
+			screen.hideDisplay("protected", "locked-screen")
+		}
+	}
 	if changed {
 		if reason == "" {
 			reason = state.screenBlocker()
@@ -99,10 +128,9 @@ func (s *Session) recordScreenState(state DeviceState, reason wire.Reason) {
 func (s *Session) stopControl() error {
 	s.mu.Lock()
 	screen := s.screen
-	s.screen = nil
 	s.mu.Unlock()
 	if screen != nil {
-		screen.close()
+		screen.closeAgent()
 	}
 	return nil
 }
@@ -169,6 +197,7 @@ func (m *Manager) ensureTransport(ctx context.Context, p *localPhone) (*Session,
 		_ = session.Close()
 		return nil, wire.Fail(wire.StaleEpoch)
 	}
+	session.mediaAvailable, session.visionOCR = m.mediaFactory != nil, m.visionOCR
 	p.session, p.cancel = session, cancel
 	m.mu.Unlock()
 	if session.Done() != nil {
@@ -185,6 +214,7 @@ func (m *Manager) ensureTransport(ctx context.Context, p *localPhone) (*Session,
 				m.revision++
 			}
 			m.mu.Unlock()
+			_ = session.Close()
 			m.wakeInspections()
 			if m.publish != nil {
 				m.publish(m.roster())

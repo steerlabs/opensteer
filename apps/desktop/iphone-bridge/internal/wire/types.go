@@ -178,21 +178,23 @@ type Capabilities struct {
 	Act            *Reason `json:"act"`
 	Launch         *Reason `json:"launch"`
 	InstalledApps  *Reason `json:"installedApps"`
-	Text           Reason  `json:"text"`
-	Clear          Reason  `json:"clear"`
-	IndexedTargets Reason  `json:"indexedTargets"`
-	LiveVideo      Reason  `json:"liveVideo"`
+	Text           *Reason `json:"text"`
+	Clear          *Reason `json:"clear"`
+	IndexedTargets *Reason `json:"indexedTargets"`
+	LiveVideo      *Reason `json:"liveVideo"`
+	Wake           *Reason `json:"wake"`
 }
 type Roster struct {
 	Revision   uint64      `json:"revision"`
 	Candidates []Candidate `json:"candidates"`
 }
 type Event struct {
-	Kind     string `json:"kind"`
-	BootID   string `json:"bootId"`
-	Sequence uint64 `json:"sequence"`
-	Event    string `json:"event"`
-	Roster   Roster `json:"roster"`
+	Kind         string             `json:"kind"`
+	BootID       string             `json:"bootId"`
+	Sequence     uint64             `json:"sequence"`
+	Event        string             `json:"event"`
+	Roster       *Roster            `json:"roster,omitempty"`
+	DisplayState *DisplayStateEvent `json:"displayState,omitempty"`
 }
 
 func Params(r Request) (interface{}, error) {

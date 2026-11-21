@@ -146,3 +146,30 @@ func TestCloseDuringOpenCannotLeaveAnActiveSession(t *testing.T) {
 		t.Fatal("close left an active session")
 	}
 }
+
+func TestDisplayCapabilitiesFollowServicesAndPrivacyState(t *testing.T) {
+	rotation := 0
+	s := &Session{
+		identity: "fixture", announced: true, mediaAvailable: true,
+		state:    DeviceState{Lock: "unlocked", Display: "on", Rotation: &rotation},
+		services: ios.RsdHandshakeResponse{Udid: "fixture", Services: map[string]ios.RsdServiceEntry{}},
+	}
+	for _, name := range []string{deviceInfoService, hidService, pasteboardService, deviceHubAXService, DisplayService} {
+		s.services.Services[name] = ios.RsdServiceEntry{Port: 1000}
+	}
+	caps := s.capabilities()
+	if caps.Text != nil || caps.Clear != nil || caps.IndexedTargets != nil || caps.LiveVideo != nil || caps.Wake != nil {
+		t.Fatalf("present services with an unlocked display reported a blocker: %+v", caps)
+	}
+	delete(s.services.Services, pasteboardService)
+	caps = s.capabilities()
+	if caps.Text == nil || *caps.Text != wire.ServiceMissing || caps.Clear != nil {
+		t.Fatal("missing pasteboard also disabled clear, or text advertised full availability")
+	}
+	s.state.Display = "off"
+	s.state.Lock = "locked"
+	caps = s.capabilities()
+	if caps.Wake != nil || caps.LiveVideo == nil || *caps.LiveVideo != wire.PhoneLocked {
+		t.Fatal("capabilities do not admit wake while withholding locked content")
+	}
+}

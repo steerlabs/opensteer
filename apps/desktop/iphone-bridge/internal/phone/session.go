@@ -31,21 +31,23 @@ type RSD interface {
 	Close() error
 }
 type Session struct {
-	mu           sync.Mutex
-	closeOnce    sync.Once
-	closeErr     error
-	tunnel       *tunnel.Userspace
-	dialTCP      func(context.Context, uint16) (net.Conn, error)
-	identity     string
-	services     ios.RsdHandshakeResponse
-	announced    bool
-	newRSD       func(context.Context) (RSD, error)
-	openLockdown func(context.Context) (*ios.LockDownConnection, error)
-	screen       *screenSession
-	closed       bool
-	state        DeviceState
-	stateReason  wire.Reason
-	ddiReason    wire.Reason
+	mu             sync.Mutex
+	closeOnce      sync.Once
+	closeErr       error
+	tunnel         *tunnel.Userspace
+	dialTCP        func(context.Context, uint16) (net.Conn, error)
+	identity       string
+	services       ios.RsdHandshakeResponse
+	announced      bool
+	newRSD         func(context.Context) (RSD, error)
+	openLockdown   func(context.Context) (*ios.LockDownConnection, error)
+	screen         *screenSession
+	mediaAvailable bool
+	visionOCR      VisionOCRFunc
+	closed         bool
+	state          DeviceState
+	stateReason    wire.Reason
+	ddiReason      wire.Reason
 }
 
 func OpenSession(lifetime, setup context.Context, device ios.DeviceEntry) (*Session, error) {
@@ -154,21 +156,25 @@ func (s *Session) DialService(ctx context.Context, name string) (conn net.Conn, 
 	return dial(ctx, uint16(port))
 }
 func (s *Session) OpenXPC(ctx context.Context, name string) (*xpc.Connection, error) {
+	x, _, err := s.openXPC(ctx, name)
+	return x, err
+}
+func (s *Session) openXPC(ctx context.Context, name string) (*xpc.Connection, net.Conn, error) {
 	c, err := s.DialService(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	h, err := http.NewHttpConnection(c)
 	if err != nil {
 		_ = c.Close()
-		return nil, Classify(err, wire.ProtocolUnsupported)
+		return nil, nil, Classify(err, wire.ProtocolUnsupported)
 	}
 	x, err := ios.CreateXpcConnection(h)
 	if err != nil {
 		_ = h.Close()
-		return nil, Classify(err, wire.ProtocolUnsupported)
+		return nil, nil, Classify(err, wire.ProtocolUnsupported)
 	}
-	return x, nil
+	return x, c, nil
 }
 func (s *Session) Device(ctx context.Context, d ios.DeviceEntry) ios.DeviceEntry {
 	s.mu.Lock()
@@ -182,13 +188,16 @@ func (s *Session) Device(ctx context.Context, d ios.DeviceEntry) ios.DeviceEntry
 func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
-		s.closed = true
 		screen := s.screen
 		t := s.tunnel
 		s.mu.Unlock()
 		if screen != nil {
+			// Run screen teardown (including scoped CoreDevice stop) while the tunnel is still dialable.
 			screen.close()
 		}
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
 		if t != nil {
 			_ = t.Close()
 			t.Wait()
@@ -205,7 +214,7 @@ func (s *Session) Done() <-chan struct{} {
 func Classify(err error, fallback wire.Reason) (result *wire.Failure) {
 	if err != nil {
 		defer func() {
-			slog.Debug("bridge.native-error", "err", err, "reason", string(result.Code))
+			slog.Debug("bridge.native-error", "reason", string(result.Code))
 		}()
 	}
 	if errors.Is(err, ios.ErrRSDIdentityMismatch) {

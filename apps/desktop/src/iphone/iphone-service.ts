@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { DisplayInputRefusalSchema, displayDataTicketTtlMs } from "@opensteer/protocol";
 import { z } from "zod";
 import {
   iphoneNativeRosterSchema,
+  iphoneNativeDisplayInputResultSchema,
+  iphoneNativeDisplayPowerResultSchema,
+  iphoneNativeDisplayStartResultSchema,
+  type IphoneMediaAttachment,
+  type IphoneNativeMessage,
   iphoneScreenshotHiddenReason,
   iphoneNativeInspectionSchema,
   iphoneNativePhoneRefSchema,
@@ -56,6 +63,30 @@ type Session = {
   controller: AbortController;
 };
 type Slot = { owner: IphoneRunnerOwner; assignments: readonly Assignment[]; key: object };
+type DisplayParams = Extract<IphoneRunnerParams<IphoneRunnerMethod>, { streamId: string }>;
+type DisplayStream = {
+  key: object;
+  binding: Binding;
+  native: IphoneNativeTransport;
+  ref: { bindingToken: string; nativeEpoch: number; streamId: string };
+  target: { deviceId: string; driverGeneration: number };
+  authorized: () => boolean;
+  controller: AbortController;
+  started: Promise<z.infer<typeof iphoneNativeDisplayStartResultSchema>>;
+  token?: string;
+  socketPath?: string;
+  claimTimer?: ReturnType<typeof setTimeout>;
+  stopping?: Promise<void>;
+  state?: Extract<IphoneNativeMessage, { event: "display.state" }>["displayState"];
+  inputSequence: number;
+};
+
+function displayRefusal(reason: string | undefined) {
+  if (reason === undefined) return {};
+  const parsed = DisplayInputRefusalSchema.safeParse(reason);
+  return { reason: parsed.success ? parsed.data : ("unavailable" as const) };
+}
+
 export interface IphoneServiceOptions {
   readonly store: IphoneStore;
   readonly startNative: () => Promise<{
@@ -79,6 +110,8 @@ export class IphoneService {
   readonly #bindings = new Map<string, Binding>();
   readonly #bindingWork = new Map<string, Promise<Binding>>();
   readonly #sessions = new Map<string, Session>();
+  readonly #displays = new Map<string, DisplayStream>();
+  readonly #mediaTokens = new Map<string, DisplayStream>();
   readonly #changed = new Set<() => void>();
   readonly #invalidatedSlots = new Set<(deploymentId: string) => void>();
   readonly #listeners = new Set<(deploymentId: string, event: IphoneRunnerEvent) => void>();
@@ -439,6 +472,8 @@ export class IphoneService {
     const previous = this.#records.find((r) => r.udid === record.udid);
     await this.store.save(record);
     this.#records = await this.store.records();
+    if (previous && previous.localPhoneId !== record.localPhoneId)
+      this.#invalidate(previous, "phone-disconnected");
     const slot = this.#slots.get(record.deploymentId);
     if (
       record.phase === "bound" &&
@@ -541,11 +576,17 @@ export class IphoneService {
   forSlot(owner: IphoneRunnerOwner): IphoneRunnerPort {
     const { deploymentId } = owner;
     return {
+      claimMediaAttachment: (token) => this.#claimMediaAttachment(owner, token),
       connect: (emit) => {
         const key = {};
         let alive = true;
         const listener = (slot: string, event: IphoneRunnerEvent) => {
-          if (alive && slot === deploymentId) emit(event);
+          if (
+            alive &&
+            slot === deploymentId &&
+            (event.event !== "iphone.displayState" || this.#slots.get(slot)?.key === key)
+          )
+            emit(event);
         };
         this.#listeners.add(listener);
         return {
@@ -659,6 +700,12 @@ export class IphoneService {
     );
     if (!record || slot?.key !== key) throw new IphoneServiceError("no-session");
     if (method === "iphone.media") return { available: false, reason: "unsupported" };
+    if (
+      method === "iphone.display.stop" &&
+      "streamId" in params &&
+      !this.#displays.has(params.streamId)
+    )
+      return {};
     const maxTimeoutMs = method === "iphone.session.open" ? 120000 : 30000;
     const timeoutMs = Math.min(maxTimeoutMs, Math.floor(options.deadline - Date.now()));
     if (timeoutMs <= 0 || options.signal?.aborted)
@@ -678,7 +725,11 @@ export class IphoneService {
       }
       return {};
     }
-    if (method !== "iphone.session.open" && method !== "iphone.installedApps") {
+    if (
+      !("streamId" in params) &&
+      method !== "iphone.session.open" &&
+      method !== "iphone.installedApps"
+    ) {
       if (
         !session ||
         !("sessionId" in params) ||
@@ -704,6 +755,8 @@ export class IphoneService {
         this.#records.some(
           (r) =>
             r.udid === record.udid &&
+            r.setupId === record.setupId &&
+            r.localPhoneId === record.localPhoneId &&
             r.phase === "bound" &&
             r.deviceId === record.deviceId &&
             r.driverGeneration === record.driverGeneration &&
@@ -722,6 +775,17 @@ export class IphoneService {
       timeoutMs: remaining,
       ...(options.signal ? { signal: options.signal } : {}),
     };
+    if ("streamId" in params)
+      return this.#display(
+        method,
+        params,
+        key,
+        binding,
+        native,
+        record.localPhoneId,
+        authorized,
+        callOptions,
+      );
     if (method === "iphone.installedApps") {
       const p = iphoneRunnerParams[method].parse(params);
       const inventory = await native.request(
@@ -768,6 +832,9 @@ export class IphoneService {
         );
         if (this.#sessions.get(record.udid) !== session || session.controller.signal.aborted)
           throw new IphoneServiceError("no-session");
+        if (binding.epoch !== ref.nativeEpoch)
+          for (const display of this.#displays.values())
+            if (display.binding === binding) void this.#stopDisplay(display);
         binding.epoch = ref.nativeEpoch;
         return { nativeEpoch: ref.nativeEpoch };
       } catch (error) {
@@ -819,6 +886,211 @@ export class IphoneService {
     }
     throw new IphoneServiceError("unsupported");
   }
+  async #display(
+    method: IphoneRunnerMethod,
+    params: DisplayParams,
+    key: object,
+    binding: Binding,
+    native: IphoneNativeTransport,
+    localPhoneId: string,
+    authorized: () => boolean,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<unknown> {
+    const { streamId, deviceId, driverGeneration } = params;
+    const epoch = binding.epoch;
+    const candidate = () => this.#roster.find((c) => c.localPhoneId === localPhoneId);
+    const ownsEpoch = () =>
+      authorized() && binding.epoch === epoch && candidate()?.nativeEpoch === epoch;
+    if (!ownsEpoch()) throw new IphoneServiceError("stale-native-epoch");
+    if (method === "iphone.display.start") {
+      const conflicts = () =>
+        [...this.#displays.values()].filter(
+          (entry) => entry.ref.streamId === streamId || entry.binding === binding,
+        );
+      const stopping = conflicts().flatMap((entry) => (entry.stopping ? [entry.stopping] : []));
+      const deadline = Date.now() + options.timeoutMs;
+      if (stopping.length) await Promise.all(stopping);
+      if (conflicts().length) throw new IphoneServiceError("phone-in-use");
+      if (!ownsEpoch()) throw new IphoneServiceError("stale-native-epoch");
+      const timeoutMs = deadline - Date.now();
+      if (timeoutMs <= 0 || options.signal?.aborted)
+        throw new IphoneServiceError("deadline-exceeded");
+      const reason = candidate()?.capabilities?.liveVideo;
+      if (reason !== null) throw new IphoneServiceError(reason ?? "unsupported");
+      const { maxLongSide, maxFps } = iphoneRunnerParams[method].parse(params);
+      const ref = { streamId, bindingToken: binding.token, nativeEpoch: epoch };
+      // Keep the start receipt so revocation can stop a late native start.
+      const started = native.request(
+        "display.start",
+        { ...ref, maxLongSide, maxFps },
+        iphoneNativeDisplayStartResultSchema,
+        { timeoutMs },
+      );
+      const entry: DisplayStream = {
+        key,
+        binding,
+        native,
+        ref,
+        target: { deviceId, driverGeneration },
+        authorized: ownsEpoch,
+        controller: new AbortController(),
+        started,
+        inputSequence: -1,
+      };
+      this.#displays.set(streamId, entry);
+      const cancel = () => {
+        void this.#stopDisplay(entry);
+      };
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        const { socketPath } = await started;
+        if (!ownsEpoch() || entry.controller.signal.aborted || options.signal?.aborted)
+          throw new IphoneServiceError("no-session");
+        if (!isAbsolute(socketPath)) throw new IphoneServiceError("protocol-unsupported");
+        const attachmentToken = randomUUID();
+        entry.token = attachmentToken;
+        entry.socketPath = socketPath;
+        this.#mediaTokens.set(attachmentToken, entry);
+        entry.claimTimer = setTimeout(cancel, displayDataTicketTtlMs);
+        entry.claimTimer.unref();
+        return { attachmentToken };
+      } catch (error) {
+        void this.#stopDisplay(entry);
+        throw error;
+      } finally {
+        options.signal?.removeEventListener("abort", cancel);
+      }
+    }
+    const current = this.#displays.get(streamId);
+    if (!current && method === "iphone.display.stop") return {};
+    if (!current || current.binding !== binding || current.key !== key || !current.authorized())
+      throw new IphoneServiceError("no-session");
+    if (method === "iphone.display.stop") {
+      await this.#stopDisplay(current);
+      return {};
+    }
+    if (current.controller.signal.aborted) throw new IphoneServiceError("no-session");
+    const ref = current.ref;
+    const callOptions = {
+      timeoutMs: options.timeoutMs,
+      signal: AbortSignal.any([
+        current.controller.signal,
+        ...(options.signal ? [options.signal] : []),
+      ]),
+    };
+    switch (method) {
+      case "iphone.display.demand": {
+        const { maxLongSide, maxFps } = iphoneRunnerParams[method].parse(params);
+        return native.request(
+          "display.demand",
+          {
+            ...ref,
+            ...(maxLongSide === undefined ? {} : { maxLongSide }),
+            ...(maxFps === undefined ? {} : { maxFps }),
+          },
+          empty,
+          callOptions,
+        );
+      }
+      case "iphone.display.refresh":
+        return native.request("display.refresh", ref, empty, callOptions);
+      case "iphone.display.inputReset":
+        return native.request("display.inputReset", ref, empty, callOptions);
+      case "iphone.display.input": {
+        const { geometry, sequence, events } = iphoneRunnerParams[method].parse(params);
+        if (current.state?.generation !== geometry || sequence <= current.inputSequence)
+          return { outcome: "stale", reason: "stale" };
+        if (current.state.state !== "live" || candidate()?.capabilities?.act !== null)
+          return { outcome: "refused", reason: "unavailable" };
+        current.inputSequence = sequence;
+        const result = await native.request(
+          "display.input",
+          { ...ref, geometry, events },
+          iphoneNativeDisplayInputResultSchema,
+          callOptions,
+        );
+        if (!current.authorized() || callOptions.signal.aborted)
+          throw new IphoneServiceError("no-session");
+        return { outcome: result.outcome, ...displayRefusal(result.reason) };
+      }
+      case "iphone.display.power": {
+        if (candidate()?.capabilities?.wake !== null)
+          return { outcome: "refused", reason: "unsupported" };
+        const { action } = iphoneRunnerParams[method].parse(params);
+        const result = await native.request(
+          "display.power",
+          { ...ref, action },
+          iphoneNativeDisplayPowerResultSchema,
+          callOptions,
+        );
+        if (!current.authorized() || callOptions.signal.aborted)
+          throw new IphoneServiceError("no-session");
+        return { outcome: result.outcome, ...displayRefusal(result.reason) };
+      }
+      default:
+        throw new IphoneServiceError("unsupported");
+    }
+  }
+
+  #claimMediaAttachment(
+    owner: IphoneRunnerOwner,
+    token: string,
+  ): IphoneMediaAttachment | undefined {
+    const entry = this.#mediaTokens.get(token);
+    if (
+      !entry?.socketPath ||
+      entry.controller.signal.aborted ||
+      !sameOwner(owner, entry.binding.record) ||
+      !entry.authorized()
+    )
+      return undefined;
+    this.#mediaTokens.delete(token);
+    clearTimeout(entry.claimTimer);
+    return {
+      socketPath: entry.socketPath,
+      signal: entry.controller.signal,
+      close: () => {
+        void this.#stopDisplay(entry);
+      },
+    };
+  }
+
+  #stopDisplay(entry: DisplayStream): Promise<void> | undefined {
+    if (entry.controller.signal.aborted) return entry.stopping;
+    entry.controller.abort();
+    clearTimeout(entry.claimTimer);
+    if (entry.token) this.#mediaTokens.delete(entry.token);
+    // Hold the stream ID until native stop finishes, so a late stop cannot
+    // accidentally stop a replacement using the same ID.
+    const stopped = entry.started
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.#native === entry.native)
+          await entry.native.request("display.stop", entry.ref, empty, { timeoutMs: 2000 });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#displays.get(entry.ref.streamId) === entry)
+          this.#displays.delete(entry.ref.streamId);
+      });
+    entry.stopping = stopped;
+    this.#cleanup(stopped);
+    return stopped;
+  }
+
+  #displayState(event: Extract<IphoneNativeMessage, { event: "display.state" }>["displayState"]) {
+    const entry = this.#displays.get(event.streamId);
+    if (!entry || entry.controller.signal.aborted || !entry.authorized()) return;
+    if (entry.state && event.generation < entry.state.generation) return;
+    entry.state = event;
+    this.#emit(entry.binding.record.deploymentId, {
+      kind: "event",
+      event: "iphone.displayState",
+      params: { ...entry.target, ...event },
+    });
+    if (event.state === "failed" || event.state === "stopped") void this.#stopDisplay(entry);
+  }
+
   #ref(record: IphoneMapping) {
     const candidate = this.#roster.find((c) => c.localPhoneId === record.localPhoneId);
     if (!candidate) throw new IphoneServiceError("phone-disconnected");
@@ -1069,6 +1341,9 @@ export class IphoneService {
         ).request("binding.forget", this.#privateBindingRef(record), empty, { timeoutMs: 2000 });
       return;
     }
+    for (const display of this.#displays.values())
+      if (display.binding === binding) await this.#stopDisplay(display);
+    if (this.#bindings.get(record.udid) !== binding) return;
     this.#bindings.delete(record.udid);
     await this.#native?.request("binding.release", { bindingToken: binding.token, forget }, empty, {
       timeoutMs: 2000,
@@ -1104,6 +1379,8 @@ export class IphoneService {
     void work.finally(() => this.#cleanups.delete(work)).catch(() => undefined);
   }
   #closeOwner(key: object): void {
+    for (const display of this.#displays.values())
+      if (display.key === key) void this.#stopDisplay(display);
     for (const session of Array.from(this.#sessions.values()))
       if (session.key === key) this.#end(session, "no-session");
   }
@@ -1112,6 +1389,8 @@ export class IphoneService {
     reason: "cancelled" | "no-session" | "phone-disconnected",
   ): void {
     this.#cancelProbe(record.udid);
+    for (const display of this.#displays.values())
+      if (display.binding.record.udid === record.udid) void this.#stopDisplay(display);
     const session = this.#sessions.get(record.udid);
     if (session) this.#end(session, reason);
     if (record.deviceId && record.driverGeneration)
@@ -1196,7 +1475,10 @@ export class IphoneService {
           this.#roster = [];
           this.#revision = -1;
         }) ?? (() => undefined),
-        result.client.onEvent((event) => this.#reconcile(event.roster)),
+        result.client.onEvent((event) => {
+          if (event.event === "roster.changed") this.#reconcile(event.roster);
+          else this.#displayState(event.displayState);
+        }),
         result.client.onLost(() => {
           if (this.#native !== result.client) return;
           this.#stopMacWatch();
@@ -1301,6 +1583,7 @@ export class IphoneService {
       this.#stopped = true;
       this.#stopMacWatch();
       this.#cancelAllProbes();
+      for (const display of this.#displays.values()) void this.#stopDisplay(display);
       for (const session of Array.from(this.#sessions.values())) this.#end(session, "cancelled");
       await this.#starting?.catch(() => undefined);
       await this.#drain();
