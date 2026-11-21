@@ -1047,7 +1047,7 @@
   color: var(--muted);
 }
 .homecard__note {
-  margin: auto 0 0;
+  margin: 0 0 20px;
   color: var(--text-soft);
   font-size: 14px;
   line-height: 1.5;
