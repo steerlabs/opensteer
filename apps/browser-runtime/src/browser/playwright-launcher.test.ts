@@ -2683,6 +2683,129 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("serializes reconcile removals on the per-tab queue so a racing discard never resurrects a replaced tabId (F3)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfS = "srf_00000000-0000-4000-8000-00000000f301" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfS, url: "https://race-f3.test/" },
+    ]);
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const makePage = (id: string, url: string) => ({
+      url: () => url,
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+      waitForLoadState: vi.fn(async () => undefined),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+    } as unknown as Page);
+    const helper = makePage("target-f3-helper", "about:blank");
+    const arrivedPage = makePage("target-f3-601", "https://race-f3.test/");
+
+    let tabs = [
+      {
+        tabId: 1,
+        windowId: 1,
+        index: 0,
+        url: "about:blank",
+        title: "",
+        active: true,
+        discarded: false,
+        status: "complete",
+        targetId: "target-f3-helper",
+      },
+      {
+        tabId: 601,
+        windowId: 1,
+        index: 1,
+        url: "https://race-f3.test/",
+        title: "Race",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-f3-601",
+      },
+    ];
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [helper],
+      newPage: vi.fn(async () => helper),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async () => ({})),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+
+    const discardGate = Promise.withResolvers<void>();
+    let discardEntered = false;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .mockImplementation(async (tabId) => {
+        discardEntered = true;
+        await discardGate.promise;
+        const newTabId = tabId + 100;
+        const newTargetId = `target-f3-${newTabId}`;
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? { ...t, tabId: newTabId, discarded: true, status: "unloaded", targetId: newTargetId }
+            : t,
+        );
+        return { newTabId, newTargetId };
+      });
+    const removedIds: number[] = [];
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removedIds.push(tabId);
+        const existed = tabs.some((t) => t.tabId === tabId);
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return existed;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      // First reconcile keeps surfS (unloaded, untouched).
+      await launched.context.sessionRestore!.reconcile(new Set([surfS]));
+
+      // Chromium brings surfS alive -> arrival discard starts and blocks in discardByTabIdDetailed(601).
+      tabs = tabs.map((t) => (t.tabId === 601 ? { ...t, status: "complete" } : t));
+      for (const handler of pageHandlers) handler(arrivedPage);
+      await vi.waitFor(() => expect(discardEntered).toBe(true), { timeout: 3_000, interval: 10 });
+
+      // While discard(601 -> 701) is in flight, a second reconcile removes surfS!
+      const secondReconcile = launched.context.sessionRestore!.reconcile(new Set());
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      discardGate.resolve();
+      await secondReconcile;
+
+      // Replacement tab 701 MUST be removed with evidence (NOT orphaned or re-inserted into restoredBySurfaceId)!
+      expect(tabs.filter((t) => t.tabId !== 1)).toEqual([]);
+      expect(removedIds).toContain(701);
+      expect(await launched.context.sessionRestore!.claim(surfS, "https://race-f3.test/")).toBe(
+        null,
+      );
+    } finally {
+      discardGate.resolve();
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(
