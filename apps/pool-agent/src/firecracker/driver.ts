@@ -448,8 +448,11 @@ export class FirecrackerDriver implements HypervisorDriver {
   async #jail(boot: GuestBoot, index: number, signal: AbortSignal): Promise<void> {
     const uid = this.#uid(index);
     const parent = await this.#cgroups.slotParent(slotKey(boot.slotId));
-    // Guest memory plus the VMM's own; a restored guest's file pages count against it too.
-    const memoryBytes = (boot.memoryMib + 512) * 1024 * 1024;
+    // Twice the guest memory plus the VMM's own. The guest cannot use more than its memory, but
+    // page cache is charged to this cgroup: a save writes the whole memory file through it, and
+    // a restored guest maps that file. At guest + 512 MiB a save under contention was killed by
+    // the memory cgroup (measured on the first real-host run).
+    const memoryBytes = (boot.memoryMib * 2 + 512) * 1024 * 1024;
     const pidFile = join(this.#root(boot.jailId), `${execName}.pid`);
     await runUntil(
       this.#config.jailer,

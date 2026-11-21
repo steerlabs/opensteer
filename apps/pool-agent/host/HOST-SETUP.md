@@ -62,7 +62,7 @@ CAP_DAC_READ_SEARCH CAP_MKNOD CAP_SYS_CHROOT CAP_KILL CAP_SYS_RESOURCE`), `NoNew
   typical service; the jailer confines each VMM instead.
 
 Each guest's VMM: the slot's own uid/gid (`slotUidBase + index`), a chroot on the array, its
-network namespace, a new PID namespace, cgroup limits `memory.max` = guest memory + 512 MiB,
+network namespace, a new PID namespace, cgroup limits `memory.max` = twice the guest memory + 512 MiB (page cache of the memory file is charged to the VMM: a save writes it, a restore maps it; at guest + 512 MiB a save under contention was OOM-killed),
 `cpu.max` = vCPUs, `pids.max=256`, `no-file=1024`, Firecracker's default seccomp filter, no
 serial console (`8250.nr_uarts=0`), output to `/dev/null`.
 
