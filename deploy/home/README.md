@@ -57,15 +57,16 @@ Runtime's defaults are two CPUs and 4 GiB. Set
 Host and PostgreSQL are each capped at two CPUs and 2 GiB. Caddy, the browser
 egress proxy, and Channel Runtime are each capped at one CPU and 512 MiB.
 
-On a 4 GB Compute Engine `e2-medium`, plan the memory budget after Chromium
-moves off the VM. The current Compose limits allow simultaneous allocations
-well above 4 GB even without Chromium. A starting budget to qualify is 512 MiB
-for PostgreSQL, 768 MiB for Host, 1 GiB for Runner, 128 MiB each for Caddy and
-browser egress, and 256 MiB for Channel Runtime. That leaves about 1 GiB for
-Linux, Docker and filesystem cache. Set the Runner cap with
-`OPENSTEER_HOME_RUNNER_MEMORY`. Set the other service limits and their
-`memswap_limit` values in the deployment's Compose recipe. Measure an agent
-run and a backup together before using this budget for customers.
+Compute Engine defaults to `e2-standard-4` (4 vCPUs, 16 GiB) because the
+Runner's default `cpus: 4` cap requires at least four vCPUs. The current
+Compose memory caps total 17.5 GiB. They are upper bounds, so the VM can run
+out of memory if several services approach their caps together. A 4 GB shape
+becomes the default once Chromium moves to the browser pool and Home sizes
+its CPU and memory limits from the machine type.
+
+The listed on-demand Linux compute price in `us-central1` was USD $0.134 per
+hour (about $97.84 for 730 hours) on November 20, 2026. Disk and networking
+are billed separately. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Regional list-price mirror](https://gcloud-compute.com/us-central1/e2-standard-4.html)
 
 For a static ISP upstream, pass `OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL`,
 `OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME` and

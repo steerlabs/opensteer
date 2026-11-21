@@ -319,7 +319,7 @@ it("takes an ADC client from local test composition without looking for machine 
   expect(fake.metadataCalls).toBe(0);
 });
 
-it("uses the previous Hetzner variables by default and sizes Google independently", () => {
+it("keeps Hetzner defaults and selects a four-vCPU Google machine with one override", () => {
   const shared = {
     OPENSTEER_ACCOUNT_URL: "https://account.test",
     OPENSTEER_HOME_CLOUDFLARE_TOKEN: "cloudflare_token_for_tests",
@@ -346,10 +346,21 @@ it("uses the previous Hetzner variables by default and sizes Google independentl
   ).toMatchObject({
     provider: "google",
     region: "us-central1-a",
-    serverType: "e2-medium",
+    serverType: "e2-standard-4",
     diskType: "pd-balanced",
     diskSizeGb: 30,
   });
+  expect(
+    loadConfig({
+      ...shared,
+      OPENSTEER_HOME_PROVIDER: "google",
+      OPENSTEER_HOME_GCP_PROJECT: "test-project",
+      OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
+      OPENSTEER_HOME_GCP_NETWORK: "home-net",
+      OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
+      OPENSTEER_HOME_GCP_MACHINE_TYPE: "e2-standard-8",
+    }).serverType,
+  ).toBe("e2-standard-8");
   expect(
     GoogleComputeServerRefSchema.safeParse(`${computeInstanceName}/18446744073709551616`).success,
   ).toBe(false);

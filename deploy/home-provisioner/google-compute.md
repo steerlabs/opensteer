@@ -147,7 +147,7 @@ cluster.
 | `OPENSTEER_HOME_GCP_ZONE`         | Required zone, such as `us-central1-a`. This also selects the region.                                                                                                             |
 | `OPENSTEER_HOME_GCP_NETWORK`      | Required VPC name.                                                                                                                                                                |
 | `OPENSTEER_HOME_GCP_SUBNET`       | Required subnet name.                                                                                                                                                             |
-| `OPENSTEER_HOME_GCP_MACHINE_TYPE` | Defaults to `e2-medium` with 4 GB of memory.                                                                                                                                      |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE` | Defaults to `e2-standard-4` with 4 vCPUs and 16 GiB of memory.                                                                                                                    |
 | `OPENSTEER_HOME_GCP_IMAGE`        | Defaults to `projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64`. Accepts a Compute image or image family resource path. Pin an image name to qualify a release. |
 | `OPENSTEER_HOME_GCP_DISK_TYPE`    | Defaults to `pd-balanced`. Also accepts `pd-standard` and `pd-ssd`.                                                                                                               |
 | `OPENSTEER_HOME_GCP_DISK_SIZE_GB` | Defaults to `30`.                                                                                                                                                                 |
@@ -163,6 +163,4 @@ provisioner. `OPENSTEER_CLOUD_COMPUTER_REGION_LABEL` can override the display
 label. Set `OPENSTEER_CLOUD_COMPUTER_IPV6=on` for AAAA publication and IPv6
 on the Home's Compose ports when using the external dual-stack subnet.
 
-Choose a larger machine type for the current Home stack until the deployment
-moves Chromium off the VM and qualifies tighter limits. See the 4 GB budget
-and release commands in the [Home deployment guide](../home/README.md).
+See the machine requirements and release commands in the [Home deployment guide](../home/README.md).

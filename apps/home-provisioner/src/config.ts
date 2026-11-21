@@ -31,7 +31,7 @@ const googleSchema = z.object({
     .max(63),
   OPENSTEER_HOME_GCP_NETWORK: googleName,
   OPENSTEER_HOME_GCP_SUBNET: googleName,
-  OPENSTEER_HOME_GCP_MACHINE_TYPE: googleName.default("e2-medium"),
+  OPENSTEER_HOME_GCP_MACHINE_TYPE: googleName.default("e2-standard-4"),
   OPENSTEER_HOME_GCP_IMAGE: z
     .string()
     .regex(
