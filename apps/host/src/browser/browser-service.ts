@@ -69,7 +69,7 @@ type BrowserTabOpenAgent = {
   readonly threadId: ThreadId;
   readonly browserSend?: PooledBrowserSend;
 };
-import { browserBasicInputAllows } from "@opensteer/protocol/browser";
+import { browserBasicInputAllows, type BrowserPoolReportView } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
 import {
   BrowserListTabsParametersSchema,
@@ -187,6 +187,7 @@ import {
   nextBrowserPoolDocumentLoss,
   listBrowserPoolRuntimeSessions,
   readBrowserPoolOwner,
+  readBrowserPoolSlot,
   readBrowserPoolSessionLineage,
   type BrowserPoolSessionLoss,
   type BrowserPoolTargetIdentity,
@@ -6382,6 +6383,80 @@ export class BrowserService {
    * there is nothing to write: what is left is the live broker, which would
    * otherwise keep relaying for a computer the Deployment no longer trusts.
    */
+  /**
+   * What clients show of a pooled browser: phase and since, the last fresh start, failed starts,
+   * pages not kept until seen, and each adopted tab's document at the freeze. Nothing for an
+   * ordinary Home, and no read either.
+   */
+  async resourcePools(runnerIds: readonly RunnerId[]): Promise<readonly BrowserPoolReportView[]> {
+    const runnerId = this.#managedPoolTestRunner;
+    if (!runnerId || !runnerIds.includes(runnerId) || !(this.#repository instanceof OpensteerStore))
+      return [];
+    const database = this.#repository.database;
+    const slot = await readBrowserPoolSlot(database, runnerId);
+    if (!slot) return [];
+    const shown = this.#poolTabTarget(runnerId)?.report();
+    const retained =
+      (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
+    const outcome = slot.outcome as { adopted?: string[] } | null;
+    const start = slot.lastStart as { reason?: string; id?: string } | null;
+    const losses = await database
+      .selectFrom("browserPoolDocumentLosses")
+      .select(["surfaceId", "sessionId"])
+      .where("runnerId", "=", runnerId)
+      .where("noticedAt", "is", null)
+      .orderBy("lostAt")
+      .execute();
+    const owner = await readBrowserPoolOwner(database);
+    const pages = await Promise.all(
+      losses.map(async ({ surfaceId, sessionId }) => {
+        const tab = owner ? await this.#workspaceTabs?.get(owner, surfaceId) : null;
+        // Reopened in another session: it came back by reloading. Otherwise it is lost.
+        const reloaded =
+          tab?.pageBinding?.sessionId !== undefined && tab.pageBinding.sessionId !== sessionId;
+        return {
+          surfaceId,
+          outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
+          typed: retained.some(
+            (document) => document.surfaceId === surfaceId && document.typed === true,
+          ),
+        };
+      }),
+    );
+    const adopted = retained
+      .filter((document) => outcome?.adopted?.includes(document.sessionId))
+      .map(({ surfaceId, documentId, pageRevision }) => ({
+        surfaceId,
+        documentId,
+        revision: pageRevision,
+      }));
+    return [
+      {
+        runnerId,
+        phase: shown?.phase ?? slot.phase,
+        since: (shown?.since ?? slot.phaseSince).toISOString(),
+        ...(start?.reason && start.id
+          ? { start: { reason: start.reason as never, at: start.id } }
+          : {}),
+        ...(slot.failedStarts ? { failures: slot.failedStarts } : {}),
+        ...(pages.length ? { pages } : {}),
+        ...(adopted.length ? { adopted } : {}),
+      },
+    ];
+  }
+
+  /** The owner's Restart browser on a pooled Cloud Computer browser. */
+  async restartPooledBrowser(ownerId: UserId, runnerId: RunnerId): Promise<void> {
+    if (runnerId !== this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
+      throw new OpensteerError({ code: "not_found", message: "This browser does not restart." });
+    if ((await readBrowserPoolOwner(this.#repository.database)) !== ownerId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the owner restarts this browser.",
+      });
+    await this.#poolTabTarget(runnerId)!.restart();
+  }
+
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
   async poolDeviceRemoved(runnerId: RunnerId): Promise<void> {
     if (runnerId !== this.#managedPoolTestRunner) return;

@@ -944,3 +944,57 @@ it("ends a removed device's pooled sessions with evidence, releases its slot and
     await j.close();
   }
 });
+
+it("reports the pooled browser's phase, its adopted documents, a fresh start's reason and the pages not kept, and restarts for the owner only", async () => {
+  const j = await journey("pool-report");
+  try {
+    let home = await j.startHome();
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("report"));
+    await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    expect(await report()).toMatchObject({ runnerId: j.task.runnerId, phase: "running" });
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    expect(await report()).toMatchObject({ phase: "parked", since: expect.any(String) });
+    home = await j.restartHome(home);
+    const row = await j.tabs.get(j.task.userId, tabId);
+    await home.service.pageTabs.activate(j.task.userId, row!, "report-wake");
+    // The adopted tab's document at the freeze: a picture of it is current.
+    expect(await report()).toMatchObject({
+      phase: "running",
+      adopted: [{ surfaceId: tabId, documentId: original, revision: expect.any(Number) }],
+    });
+    // Only the owner restarts it; an ordinary computer has no such browser.
+    await expect(
+      home.service.restartPooledBrowser("usr_someone-else" as never, j.task.runnerId),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId);
+    expect(j.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+    const restarted = await report();
+    expect(restarted).toMatchObject({
+      phase: "running",
+      start: { reason: "person", at: expect.any(String) },
+      pages: [{ surfaceId: tabId, outcome: "lost", typed: false }],
+    });
+    expect(restarted).not.toHaveProperty("failures");
+    expect((await j.row(sessionId))?.state).toBe("failed");
+    // Reopened, the page came back by reloading; once seen, it is no longer reported.
+    const reopened = await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "report-reopen",
+    );
+    expect((await report())?.pages).toEqual([
+      { surfaceId: tabId, outcome: "reloaded", typed: false },
+    ]);
+    await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "report-seen",
+      reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
+    );
+    expect(await report()).not.toHaveProperty("pages");
+  } finally {
+    await j.close();
+  }
+});

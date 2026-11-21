@@ -887,9 +887,8 @@ export interface HostSnapshot {
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   /**
-   * What each Cloud Computer's pooled browser reports about its sleep. Absent for every other
-   * Home, and for every Home today: no Home reports it yet. Read only through
-   * `browserSleepFromHome`.
+   * What each Cloud Computer's pooled browser reports about its sleep, from the Home's browser
+   * placements. Absent for every other Home. Read only through `browserSleepFromHome`.
    */
   browserPools?: readonly import("./browser-sleep.js").BrowserPoolReport[] | undefined;
   /** Recorded browser uses of the conversations this client shows, including ended sessions. */

@@ -21,7 +21,10 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       phase text not null check (phase in ('running', 'preparing', 'parked', 'waking')),
       retained jsonb,
       saved_state jsonb,
-      outcome jsonb
+      outcome jsonb,
+      phase_since timestamptz not null default now(),
+      last_start jsonb,
+      failed_starts integer not null default 0
     )
   `.execute(database);
   await sql`

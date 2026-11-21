@@ -221,6 +221,8 @@ export interface BrowserPoolSlotChange {
   readonly attachmentGeneration?: number;
   /** A new fence from the controller: a resume (epoch) or a fresh start (instance). */
   readonly fence?: Pick<BrowserPoolTargetIdentity, "instanceId" | "epoch">;
+  readonly lastStart?: BrowserPoolSlot["lastStart"];
+  readonly failedStarts?: number;
 }
 
 /**
@@ -235,7 +237,9 @@ export async function advanceBrowserPoolSlot(
 ): Promise<BrowserPoolSlot> {
   return commitPersonalMutation(
     database,
-    async (tx) => {
+    async (tx, mutation) => {
+      // Clients read a pooled browser's phase with its placement.
+      mutation.bumpResource("browser-placement");
       const current = await tx
         .selectFrom("browserPoolSlots")
         .selectAll()
@@ -262,6 +266,9 @@ export async function advanceBrowserPoolSlot(
             ? { attachmentGeneration: next.attachmentGeneration }
             : {}),
           ...(next.fence ? next.fence : {}),
+          ...(next.lastStart !== undefined ? { lastStart: next.lastStart } : {}),
+          ...(next.failedStarts !== undefined ? { failedStarts: next.failedStarts } : {}),
+          ...(next.phase !== current.phase ? { phaseSince: new Date() } : {}),
         })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
@@ -325,6 +332,28 @@ async function recordBrowserPoolLosses(
   }
 }
 
+/** Tells clients a pooled browser's shown phase changed, with nothing else written. */
+export async function announceBrowserPool(database: Kysely<DatabaseSchema>): Promise<void> {
+  await commitPersonalMutation(database, async (_tx, mutation) => {
+    mutation.bumpResource("browser-placement");
+  });
+}
+
+/** A fresh start that did not come up: counted until one does. */
+export async function recordBrowserPoolStartFailure(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<void> {
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    mutation.bumpResource("browser-placement");
+    await tx
+      .updateTable("browserPoolSlots")
+      .set({ failedStarts: sql`failed_starts + 1` })
+      .where("runnerId", "=", runnerId)
+      .execute();
+  });
+}
+
 /** A removed device: its sessions end with their notes and the slot row goes with them. */
 export async function releaseBrowserPoolSlot(
   database: Kysely<DatabaseSchema>,
@@ -333,8 +362,9 @@ export async function releaseBrowserPoolSlot(
 ): Promise<void> {
   await commitPersonalMutation(
     database,
-    async (tx) => {
+    async (tx, mutation) => {
       // Lock order: the slot first, then the notes, then the sessions.
+      mutation.bumpResource("browser-placement");
       await tx.deleteFrom("browserPoolSlots").where("runnerId", "=", slot.runnerId).execute();
       await recordBrowserPoolLosses(tx, slot, losses);
     },

@@ -67,6 +67,11 @@ export class BrowserPoolGate {
     if (this.#phase === "open") this.#setPhase("reconnecting");
   }
 
+  /** A restart or another state change the person asked for: sends wait for it to finish. */
+  closing(): void {
+    if (this.#phase !== "released") this.#setPhase("waking");
+  }
+
   /** The device was removed: nothing is admitted or woken again. */
   released(): void {
     this.#setPhase("released");

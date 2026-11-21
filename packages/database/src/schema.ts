@@ -2400,6 +2400,10 @@ export interface DatabaseSchema {
     retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
     savedState: JsonColumn<Readonly<Record<string, unknown>> | null>;
     outcome: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    phaseSince: ColumnType<Date, Date | undefined, Date>;
+    /** The last fresh start: why, when, and its id. */
+    lastStart: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    failedStarts: ColumnType<number, number | undefined, number>;
   };
   browserPoolControllerCalls: {
     id: string;

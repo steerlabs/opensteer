@@ -2354,6 +2354,18 @@ export class HttpHostClient {
             data.placements,
             (row) => row.runnerId,
           ),
+          // A pooled browser's report, copied unchanged; absent from every other Home.
+          ...(data.pools
+            ? {
+                browserPools: mergeResourceRows(
+                  append ? (snapshot.browserPools ?? []) : [],
+                  data.pools,
+                  (row) => row.runnerId,
+                ),
+              }
+            : append
+              ? {}
+              : { browserPools: undefined }),
         };
       case "browser-home":
         return {

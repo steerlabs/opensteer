@@ -52,6 +52,8 @@ export interface BrowserPoolDocument {
   readonly surfaceId: BrowserSurfaceId;
   readonly documentId: string;
   readonly pageRevision: number;
+  /** The page held typed text that was not sent. */
+  readonly typed?: boolean;
 }
 
 export interface BrowserPoolRetirement {

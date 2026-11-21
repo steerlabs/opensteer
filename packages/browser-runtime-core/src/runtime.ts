@@ -576,6 +576,7 @@ export class BrowserRuntime implements NativePresentationSource {
                 surfaceId: record.id,
                 documentId,
                 pageRevision: live.commitSequence,
+                typed: record.typed,
               },
             ]
           : [],

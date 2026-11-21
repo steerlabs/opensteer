@@ -14,6 +14,8 @@ import {
   listBrowserPoolRuntimeSessions,
   listBrowserPoolSessionTabs,
   pruneBrowserPoolBookkeeping,
+  announceBrowserPool,
+  recordBrowserPoolStartFailure,
   releaseBrowserPoolSlot,
   readAppliedBrowserPoolControllerCall,
   readBrowserPoolSlot,
@@ -102,6 +104,7 @@ export class BrowserPoolCoordinator {
   #slot: BrowserPoolSlot | undefined;
   #adopter: BrowserPoolAdopter | undefined;
   #closed = false;
+  #display: { phase: "starting" | "restarting" | "failed"; since: Date } | undefined;
   readonly #lost = new Set<BrowserSessionId>();
   #reconnecting: Promise<void> | undefined;
   #lane: Promise<unknown> = Promise.resolve();
@@ -672,6 +675,39 @@ export class BrowserPoolCoordinator {
 
   /** The ladder's last rung: the live state is discarded and a fresh guest is started. */
   async #discard(slot: BrowserPoolSlot, reason: string): Promise<void> {
+    const since = new Date();
+    this.#display = { phase: reason === "person" ? "restarting" : "starting", since };
+    await announceBrowserPool(this.#options.database).catch(() => undefined);
+    try {
+      await this.#startFresh(slot, reason);
+      this.#display = undefined;
+    } catch (error) {
+      // A fresh start that did not come up: the person sees it failed, and how often.
+      this.#display = { phase: "failed", since: new Date() };
+      await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
+        () => undefined,
+      );
+      throw error;
+    }
+  }
+
+  /** The owner's Restart browser: live and saved state are discarded and a fresh guest starts. */
+  restart(): Promise<void> {
+    this.gate.closing();
+    return this.#serial(async () => {
+      const slot = await this.#read();
+      if (!slot) throw new BrowserPoolAdmissionClosed();
+      await this.#retry(() => this.#discard(slot, "person"));
+    });
+  }
+
+  /** The phase a client shows: a fresh start or a restart in progress, or a failed start. */
+  report():
+    { readonly phase: "starting" | "restarting" | "failed"; readonly since: Date } | undefined {
+    return this.#display;
+  }
+
+  async #startFresh(slot: BrowserPoolSlot, reason: string): Promise<void> {
     let status = await this.#status();
     if (status.phase !== "stopped") {
       const stopped = await this.#call(slot, "stop", status);
@@ -699,6 +735,12 @@ export class BrowserPoolCoordinator {
         fence: { instanceId: started.control.fence.instance, epoch: started.control.fence.epoch },
         savedState: null,
         outcome: { adopted: [], lost: losses.map(({ sessionId }) => ({ sessionId, reason })) },
+        lastStart: {
+          reason: startReason(reason),
+          at: new Date().toISOString(),
+          id: randomUUID(),
+        },
+        failedStarts: 0,
       },
       losses,
     );
@@ -852,6 +894,13 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+
+/** Why a fresh start happened, in the words clients branch on. */
+function startReason(reason: string): "expired" | "host" | "person" {
+  if (reason === "person") return "person";
+  if (reason === "live-state-unavailable") return "expired";
+  return "host";
+}
 const defaultCallTimeoutMs = 10_000;
 
 function sameFence(a: BrowserPoolRuntimeFence | null, b: BrowserPoolRuntimeFence): boolean {

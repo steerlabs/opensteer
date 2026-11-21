@@ -15,7 +15,7 @@
 import type { HostSnapshot } from "./client.js";
 
 /* ------------------------------------------------------------------------- *
- * What the Home reports (proposed: no Home sends it yet)
+ * What the Home reports (with its browser placements; only a Home with a pooled browser)
  * ------------------------------------------------------------------------- */
 
 /** Why a pooled browser started afresh instead of waking as it was. */
@@ -72,6 +72,17 @@ export interface BrowserPoolReport {
         readonly outcome: "reloaded" | "lost";
         /** `BrowserPoolDocument.typed`: the page held typed text that was not sent. */
         readonly typed: boolean;
+      }[]
+    | undefined;
+  /**
+   * Each adopted tab's document and its revision when the browser froze. A picture taken of
+   * that same document and revision is still current after the wake.
+   */
+  readonly adopted?:
+    | readonly {
+        readonly surfaceId: string;
+        readonly documentId: string;
+        readonly revision: number;
       }[]
     | undefined;
 }
@@ -137,14 +148,11 @@ export const browserNotPooled: BrowserSleepView = Object.freeze({
 /**
  * The one place the Home's report becomes what the clients show.
  *
- * No Home reports a pooled browser yet: `HostSnapshot.browserPools` is filled only by the mock
- * Host, so for every real Home this returns `browserNotPooled`. When the Home's wire carries
- * these facts, the client copies them into `browserPools` unchanged and nothing else moves.
- *
- * What it still needs from the Home, beyond `browser-pool-core`: the phases "starting",
- * "restarting" and "failed"; when each phase began; the reason and identity of the last fresh
- * start; the failure count; and, per page, "reloaded" versus "lost" (the core has `lost` only
- * for a warm adoption) kept until the person has seen it.
+ * A Home with a pooled browser reports it with its browser placements (`pools`), and the
+ * client copies that into `browserPools` unchanged; every other Home sends nothing, so this
+ * returns `browserNotPooled` for it. The report carries every phase, when it began, the last
+ * fresh start's reason and id, the count of failed starts, the pages not kept until seen, and
+ * each adopted tab's document at the freeze.
  */
 export function browserSleepFromHome(
   reports: HostSnapshot["browserPools"],
@@ -184,6 +192,30 @@ function tabOf(report: BrowserPoolReport, tabId: string): BrowserTabReturn {
   return page.outcome === "reloaded"
     ? { kind: "reloaded", typed: page.typed, reason: report.start?.reason ?? null, startAt }
     : { kind: "lost", typed: page.typed, startAt };
+}
+
+/**
+ * Whether a picture the client holds of this tab from before a sleep is still current: the
+ * Home adopted the same document at the same revision. A viewport change is not covered: the
+ * Home does not yet report the viewport at the freeze and at adoption, so a picture is current
+ * only for its own size.
+ */
+export function browserPictureIsCurrent(
+  reports: HostSnapshot["browserPools"],
+  computerId: string | null | undefined,
+  picture: { readonly tabId: string; readonly documentId: string; readonly revision: number },
+): boolean {
+  const report = computerId
+    ? reports?.find((candidate) => candidate.runnerId === computerId)
+    : undefined;
+  return (
+    report?.adopted?.some(
+      ({ surfaceId, documentId, revision }) =>
+        surfaceId === picture.tabId &&
+        documentId === picture.documentId &&
+        revision === picture.revision,
+    ) ?? false
+  );
 }
 
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */
