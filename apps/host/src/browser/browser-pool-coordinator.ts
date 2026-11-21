@@ -198,31 +198,53 @@ export class BrowserPoolCoordinator {
       });
   }
 
+  /**
+   * Reattaches the lost sessions until they are back or the deadline passes (R2). The deadline is
+   * a timer, so a step that stalls loses to it; a step that fails is tried again. It ends open
+   * with every session back, or with the ones not back ended with their note.
+   */
   async #reconnect(): Promise<void> {
-    const deadline = Date.now() + (this.#options.channelDeadlineMs ?? pooledChannelDeadlineMs);
-    while (this.#lost.size && Date.now() < deadline && !this.#closed) {
-      let slot = await this.#read();
-      if (!slot || slot.phase !== "running") break;
-      slot = await this.#advance(slot, {
-        phase: slot.phase,
-        attachmentGeneration: slot.attachmentGeneration + 1,
-      });
-      const sessions = [...this.#lost];
-      await this.#adopter?.reattach({
-        sessions,
-        documents: [],
-        fence: fenceOf(slot),
-        attempt: slot.attachmentGeneration,
-      });
-      for (const sessionId of sessions)
-        if (this.#adopter?.live(sessionId)) this.#lost.delete(sessionId);
-      if (this.#lost.size) await delay(this.#options.retryMs ?? 250);
+    const expired = AbortSignal.timeout(this.#options.channelDeadlineMs ?? pooledChannelDeadlineMs);
+    while (this.#lost.size && !expired.aborted && !this.#closed) {
+      try {
+        await untilAborted(this.#reattachLost(), expired);
+      } catch (error) {
+        if (!expired.aborted) this.#options.onError?.(error);
+      }
+      if (this.#lost.size && !expired.aborted)
+        await delay(this.#options.retryMs ?? 250, undefined, { signal: expired }).catch(
+          () => undefined,
+        );
     }
     this.#lost.clear();
-    const slot = await this.#read();
-    // A session not back in time has no channel: it ends here, with its note.
-    if (slot?.phase === "running") await this.#finishRunning(slot, []);
-    else if (slot) this.gate.settle(slot.phase === "parked" ? "parked" : "open");
+    // The end is written whatever failed before it: a session not back has no channel and ends
+    // here with its note.
+    await this.#retry(async () => {
+      const slot = await this.#read();
+      if (slot?.phase === "running") await this.#finishRunning(slot, []);
+      else if (slot) this.gate.settle(slot.phase === "parked" ? "parked" : "open");
+    });
+  }
+
+  async #reattachLost(): Promise<void> {
+    let slot = await this.#read();
+    if (!slot || slot.phase !== "running") {
+      this.#lost.clear();
+      return;
+    }
+    slot = await this.#advance(slot, {
+      phase: slot.phase,
+      attachmentGeneration: slot.attachmentGeneration + 1,
+    });
+    const sessions = [...this.#lost];
+    await this.#adopter?.reattach({
+      sessions,
+      documents: [],
+      fence: fenceOf(slot),
+      attempt: slot.attachmentGeneration,
+    });
+    for (const sessionId of sessions)
+      if (this.#adopter?.live(sessionId)) this.#lost.delete(sessionId);
   }
 
   /** The device was removed: the guest stops, every session ends with its note, the slot goes. */
@@ -257,30 +279,44 @@ export class BrowserPoolCoordinator {
   }
 
   /**
-   * Retries a step until it settles. After a few failures the live state is given up for: the
-   * ladder ends in a discard and an open gate, never in a state only a restart could leave.
+   * Retries a step until it settles. Every round tries the step itself; once the attempts are
+   * used, a round whose step has just failed again gives up the live state with `exhausted`
+   * (R3). A failed round is retried, never taken as an answer.
    */
   async #retry<T>(work: () => Promise<T>, exhausted?: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       if (this.#closed) throw new BrowserPoolAdmissionClosed("The Home is stopping.");
       try {
-        return await (exhausted && attempt >= discardAfterAttempts ? exhausted() : work());
+        return await work();
       } catch (error) {
         this.#options.onError?.(error);
+        if (exhausted && attempt + 1 >= discardAfterAttempts)
+          try {
+            return await exhausted();
+          } catch (fallback) {
+            this.#options.onError?.(fallback);
+          }
         await delay(Math.min(this.#options.retryMs ?? 100 * 2 ** attempt, 5_000));
       }
     }
   }
 
+  /**
+   * The last rung: the live state is discarded behind a fresh guest, whatever phase the slot is
+   * in. With no slot row there is nothing to discard; the only step is install, which the next
+   * round of recovery tries again.
+   */
   async #discardNow(): Promise<void> {
     const slot = await this.#read();
-    if (!slot) throw new BrowserPoolAdmissionClosed();
-    if (slot.phase !== "running") await this.#discard(slot, "unrecoverable");
-    else this.gate.settle("open");
+    if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
+    await this.#discard(slot, "unrecoverable");
   }
 
   async #read(): Promise<BrowserPoolSlot | undefined> {
-    this.#slot = await readBrowserPoolSlot(this.#options.database, this.#options.runnerId);
+    this.#slot = await (this.#options.testHooks?.readSlot ?? readBrowserPoolSlot)(
+      this.#options.database,
+      this.#options.runnerId,
+    );
     return this.#slot;
   }
 
@@ -899,6 +935,25 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+
+/** Stops waiting for `work` when `signal` aborts; the work itself is left to settle. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
 
 /** Why a fresh start happened, in the words clients branch on. */
 function startReason(reason: string): "expired" | "host" | "person" {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
 import {
   BrowserPoolCoordinator,
@@ -101,14 +102,15 @@ async function poolFixture(
   const skip = new Set<BrowserSessionId>();
   const surfaces = new Set<string>();
   let tabLoss: BrowserSessionId | undefined;
+  let stalled: Promise<void> | undefined;
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
+    // As the Home's: a ready session with no live channel here.
     orphans: async (_runtimeId) => {
-      const live = (runtime as unknown as { sessions: Map<string, unknown> }).sessions;
       const current = await getBrowserSessionForOwner(database, sessionId, task.userId);
-      return current && current.state === "ready" && !live.has(sessionId)
+      return current && current.state === "ready" && !sinks.has(sessionId)
         ? [
             {
               sessionId,
@@ -118,6 +120,7 @@ async function poolFixture(
         : [];
     },
     reattach: async ({ sessions, fence, attempt, documents }) => {
+      if (stalled) await stalled;
       for (const id of sessions) {
         if (skip.has(id)) continue;
         const name = `reattach-${id}-${attempt}`;
@@ -266,6 +269,15 @@ async function poolFixture(
     },
     reportTabLoss: (value: BrowserSessionId | undefined) => {
       tabLoss = value;
+    },
+    /** Every reattach waits for this, as one that stalls on the way to the runtime. */
+    stallReattach: (until: Promise<void> | undefined) => {
+      stalled = until;
+    },
+    /** The Runner's channel drops: the guest keeps the session detached. */
+    loseChannel: async (id: BrowserSessionId = sessionId) => {
+      await sinks.get(id)?.close(false, false, true);
+      sinks.delete(id);
     },
     close,
   };
@@ -740,15 +752,20 @@ it("keeps admission closed when the park intent's commit and its read-back fail,
   const f = await poolFixture("commit-unknown");
   try {
     let reads = 0;
+    let readingBack = false;
     const home = f.home(undefined, f.controller, {
       testHooks: {
         beginPark: async (...args) => {
           await beginBrowserPoolPark(...args);
+          readingBack = true;
           throw new Error("The COMMIT reply was lost.");
         },
         readSlot: async (...args) => {
           // The first two read-backs fail too; admission stays closed meanwhile.
-          if (++reads <= 2) throw new Error("The read-back failed.");
+          if (readingBack) {
+            if (++reads <= 2) throw new Error("The read-back failed.");
+            readingBack = false;
+          }
           return readBrowserPoolSlot(...args);
         },
       },
@@ -970,6 +987,124 @@ it("aborts a park when a page was ended while its session was suspended", async 
     expect(f.controller.effects).toEqual(["start"]);
     expect(f.runtime.poolState()).toMatchObject({ phase: "running", cancelled: true });
     expect((await f.row())?.state).toBe("ready");
+  } finally {
+    await f.close();
+  }
+});
+
+it("keeps installing a cold start past the attempts until the controller answers", async () => {
+  const f = await poolFixture("cold-start");
+  try {
+    // The controller cannot be reached for more attempts than the ladder has before its last rung.
+    let unreachable = 9;
+    const flaky: BrowserPoolPhysicalController = {
+      status: async (slot, term) => {
+        if (unreachable > 0) {
+          unreachable--;
+          throw new Error("The pool controller is unreachable.");
+        }
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: (call) => f.controller.apply(call),
+    };
+    const home = f.home(undefined, flaky);
+    await withTimeout(home.recover(), 10_000, {
+      timeoutError: () => new Error("The cold start never installed."),
+    });
+    expect(unreachable).toBe(0);
+    expect(home.gate.phase).toBe("open");
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
+it("discards a running slot whose recovery keeps failing, and never opens it unchecked", async () => {
+  const f = await poolFixture("running-fallback");
+  try {
+    const first = f.home();
+    await first.recover();
+    await f.openSession(first);
+    first.close();
+    // After the restart the runtime's state cannot be read for many attempts.
+    let unreadable = 9;
+    const next = f.home(undefined, f.controller, {
+      runtime: {
+        poolState: () => {
+          if (unreadable > 0) {
+            unreadable--;
+            return undefined;
+          }
+          return f.runtime.poolState();
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+      },
+    });
+    await withTimeout(next.recover(), 10_000, {
+      timeoutError: () => new Error("The recovery never ended."),
+    });
+    // Recovery is tried every round; once the attempts are used and it fails again, the live
+    // state is discarded with its note. Admission opens only behind the fresh guest.
+    expect(next.gate.phase).toBe("open");
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({
+      outcome: { adopted: [], lost: [{ sessionId: f.sessionId, reason: "unrecoverable" }] },
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+it("drives a reconnect whose slot read fails to the session reattached and an open gate", async () => {
+  const f = await poolFixture("reconnect-read");
+  try {
+    let failing = 0;
+    const home = f.home(undefined, f.controller, {
+      channelDeadlineMs: 5_000,
+      testHooks: {
+        readSlot: async (database, runnerId) => {
+          if (failing > 0) {
+            failing--;
+            throw new Error("The slot read failed.");
+          }
+          return readBrowserPoolSlot(database, runnerId);
+        },
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    await f.loseChannel();
+    failing = 2;
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"), { timeout: 4_000 });
+    expect(failing).toBe(0);
+    expect((await f.row())?.state).toBe("ready");
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+it("ends a reconnect whose reattach stalls by its deadline, with the session's end recorded", async () => {
+  const f = await poolFixture("reconnect-stall");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 300 });
+    await home.recover();
+    await f.openSession(home);
+    await f.loseChannel();
+    const never = Promise.withResolvers<void>();
+    f.stallReattach(never.promise);
+    const lost = Date.now();
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"), { timeout: 3_000 });
+    expect(Date.now() - lost).toBeLessThan(3_000);
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+    never.resolve();
   } finally {
     await f.close();
   }
