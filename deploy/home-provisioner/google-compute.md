@@ -1,0 +1,167 @@
+# Google Compute Engine for Opensteer Cloud Computers
+
+Use a dedicated Compute project and VPC. A provisioner deployment manages one
+provider and one Compute zone. Account must run the server-reference migration
+before the provisioner switches to Google. Give the new deployment its own
+Account desired state and DNS configuration if the existing deployment has
+Hetzner computers.
+
+## Set up the project
+
+Set `PROJECT` to the Compute project, `REGION` to the zone's region, and
+`NETWORK` and `SUBNET` to the names you will use below. Set `PROVISIONER_SA`
+to the Google service account email that Account already accepts. Its project
+is `IDENTITY_PROJECT`.
+
+1. Enable Compute in the VM project. For a GKE KSA that impersonates the
+   provisioner service account, enable the IAM Service Account Credentials API
+   in the identity project and use the existing Workload Identity Federation
+   setup. The metadata server issues the provisioner's access token on that
+   same identity.
+
+   ```sh
+   gcloud services enable compute.googleapis.com --project="$PROJECT"
+   gcloud services enable iamcredentials.googleapis.com --project="$IDENTITY_PROJECT"
+   gcloud iam service-accounts add-iam-policy-binding "$PROVISIONER_SA" \
+     --project="$IDENTITY_PROJECT" --role=roles/iam.workloadIdentityUser \
+     --member="serviceAccount:${CLUSTER_PROJECT}.svc.id.goog[opensteer-system/home-provisioner]"
+   kubectl annotate serviceaccount home-provisioner --namespace=opensteer-system \
+     "iam.gke.io/gcp-service-account=$PROVISIONER_SA"
+   ```
+
+   [GKE workload identity instructions](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)
+
+2. Create a custom-mode VPC with no additional ingress rules and a subnet with
+   a CIDR sized for your fleet. Use either the IPv4 command or the dual-stack
+   command. The provisioner installs TCP 80 and 443 ingress on its instance
+   tag. SSH stays closed from the internet.
+
+   ```sh
+   gcloud compute networks create "$NETWORK" --project="$PROJECT" \
+     --subnet-mode=custom --bgp-routing-mode=regional
+   gcloud compute networks subnets create "$SUBNET" --project="$PROJECT" \
+     --network="$NETWORK" --region="$REGION" --range=10.40.0.0/20
+   # Dual-stack subnet with external IPv6, in place of the preceding command
+   gcloud compute networks subnets create "$SUBNET" --project="$PROJECT" \
+     --network="$NETWORK" --region="$REGION" --range=10.40.0.0/20 \
+     --stack-type=IPV4_IPV6 --ipv6-access-type=EXTERNAL
+   ```
+
+3. Check the regional static and in-use external IPv4 quotas. Budget one of
+   each per active Home and allow for reservations held by suspended Homes
+   and pending operations. A replacement transfers the existing reservation
+   after the previous VM stops. Enable Cloud Quotas if you need to request an
+   increase. Use the quota ID and dimensions returned for the required metric.
+
+   ```sh
+   gcloud compute regions describe "$REGION" --project="$PROJECT" \
+     --flatten='quotas[]' --filter='quotas.metric:(STATIC_ADDRESSES IN_USE_ADDRESSES)' \
+     --format='table(quotas.metric,quotas.usage,quotas.limit)'
+   gcloud services enable cloudquotas.googleapis.com --project="$PROJECT"
+   gcloud beta quotas info list --service=compute.googleapis.com --project="$PROJECT"
+   gcloud beta quotas preferences create --project="$PROJECT" \
+     --service=compute.googleapis.com --quota-id="$QUOTA_ID" \
+     --preferred-value="$ADDRESS_LIMIT" --dimensions="region=$REGION"
+   ```
+
+   [Compute quotas](https://cloud.google.com/compute/resource-usage)
+
+4. Check the effective `constraints/compute.vmExternalIpAccess` policy.
+   Instance names are generated as Homes are purchased. If an inherited policy
+   blocks them, ask the organization administrator to permit external IPs in
+   this dedicated project. This project override requires organization policy
+   authority.
+
+   ```sh
+   gcloud org-policies describe compute.vmExternalIpAccess --effective --project="$PROJECT"
+   PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+   cat > home-external-ip-policy.yaml <<EOF_POLICY
+   name: projects/$PROJECT_NUMBER/policies/compute.vmExternalIpAccess
+   spec:
+     rules:
+     - allowAll: true
+   EOF_POLICY
+   gcloud org-policies set-policy home-external-ip-policy.yaml
+   ```
+
+   [External IP organization policy](https://cloud.google.com/compute/docs/ip-addresses/configure-static-external-ip-address)
+
+5. Grant only the permissions used by the adapter. Save this as
+   `home-provisioner-role.yaml`.
+
+   ```yaml
+   title: Opensteer Home Provisioner
+   stage: GA
+   includedPermissions:
+     - compute.addresses.create
+     - compute.addresses.delete
+     - compute.addresses.get
+     - compute.addresses.list
+     - compute.addresses.setLabels
+     - compute.addresses.use
+     - compute.disks.create
+     - compute.firewalls.create
+     - compute.firewalls.get
+     - compute.globalOperations.get
+     - compute.images.useReadOnly
+     - compute.instances.create
+     - compute.instances.delete
+     - compute.instances.deleteAccessConfig
+     - compute.instances.get
+     - compute.instances.list
+     - compute.instances.setLabels
+     - compute.instances.setMetadata
+     - compute.instances.setTags
+     - compute.instances.start
+     - compute.instances.stop
+     - compute.networks.updatePolicy
+     - compute.networks.use
+     - compute.networks.useExternalIp
+     - compute.regionOperations.get
+     - compute.subnetworks.get
+     - compute.subnetworks.use
+     - compute.subnetworks.useExternalIp
+     - compute.zoneOperations.get
+     - compute.zoneOperations.list
+   ```
+
+   ```sh
+   gcloud iam roles create opensteerHomeProvisioner --project="$PROJECT" \
+     --file=home-provisioner-role.yaml
+   gcloud projects add-iam-policy-binding "$PROJECT" \
+     --member="serviceAccount:$PROVISIONER_SA" \
+     --role="projects/$PROJECT/roles/opensteerHomeProvisioner"
+   ```
+
+   The default Ubuntu image is public. If using a private image in another
+   project, grant `compute.images.useReadOnly` on that image as well. Home VMs
+   have no attached service account.
+
+## Set the deployment variables
+
+| Provisioner variable              | Value                                                                                                                                                                             |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENSTEER_HOME_PROVIDER`         | `google`. Omit it for Hetzner.                                                                                                                                                    |
+| `OPENSTEER_HOME_GCP_PROJECT`      | Required Compute project ID.                                                                                                                                                      |
+| `OPENSTEER_HOME_GCP_ZONE`         | Required zone, such as `us-central1-a`. This also selects the region.                                                                                                             |
+| `OPENSTEER_HOME_GCP_NETWORK`      | Required VPC name.                                                                                                                                                                |
+| `OPENSTEER_HOME_GCP_SUBNET`       | Required subnet name.                                                                                                                                                             |
+| `OPENSTEER_HOME_GCP_MACHINE_TYPE` | Defaults to `e2-medium` with 4 GB of memory.                                                                                                                                      |
+| `OPENSTEER_HOME_GCP_IMAGE`        | Defaults to `projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64`. Accepts a Compute image or image family resource path. Pin an image name to qualify a release. |
+| `OPENSTEER_HOME_GCP_DISK_TYPE`    | Defaults to `pd-balanced`. Also accepts `pd-standard` and `pd-ssd`.                                                                                                               |
+| `OPENSTEER_HOME_GCP_DISK_SIZE_GB` | Defaults to `30`.                                                                                                                                                                 |
+
+Keep `OPENSTEER_ACCOUNT_URL`, `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID` and
+`OPENSTEER_HOME_CLOUDFLARE_TOKEN` (or its `_FILE` variant). The Google
+deployment gets its access token from attached Workload Identity. It requires
+no Google key or Hetzner token.
+
+Set Account's `OPENSTEER_CLOUD_COMPUTER_REGION` to the same region or zone and
+`OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE=default` to delegate sizing to the
+provisioner. `OPENSTEER_CLOUD_COMPUTER_REGION_LABEL` can override the display
+label. Set `OPENSTEER_CLOUD_COMPUTER_IPV6=on` for AAAA publication and IPv6
+on the Home's Compose ports when using the external dual-stack subnet.
+
+Choose a larger machine type for the current Home stack until the deployment
+moves Chromium off the VM and qualifies tighter limits. See the 4 GB budget
+and release commands in the [Home deployment guide](../home/README.md).
