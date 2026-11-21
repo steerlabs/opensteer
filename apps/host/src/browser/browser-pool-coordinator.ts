@@ -762,6 +762,22 @@ export class BrowserPoolCoordinator {
     if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
       throw new Error("The browser adoption has no outcome yet.");
     const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
+    // A page that did not thaw is that page's loss with its note; its session is kept.
+    const unthawed = new Map<
+      BrowserSessionId,
+      { surfaceId: string; documentId: string | null }[]
+    >();
+    for (const { sessionId, surfaceId } of outcome.pagesLost ?? [])
+      unthawed.set(sessionId, [
+        ...(unthawed.get(sessionId) ?? []),
+        {
+          surfaceId,
+          documentId:
+            retained.documents.find(
+              (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
+            )?.documentId ?? null,
+        },
+      ]);
     const losses: BrowserPoolSessionLoss[] = [
       ...outcome.lost.map(({ sessionId, reason }) => ({
         sessionId,
@@ -769,6 +785,12 @@ export class BrowserPoolCoordinator {
         surfaces: surfacesOf(retained, sessionId),
       })),
       ...tabLosses.filter(({ sessionId }) => !lostIds.has(sessionId)),
+      ...[...unthawed].map(([sessionId, surfaces]) => ({
+        sessionId,
+        reason: "thaw-failed",
+        surfaces,
+        endSession: false,
+      })),
     ];
     await this.#finishRunning(slot, losses, {
       adopted: outcome.adopted,

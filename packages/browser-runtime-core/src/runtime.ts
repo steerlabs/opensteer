@@ -296,6 +296,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly pool: BrowserPoolRuntimeControl | undefined;
   private readonly poolChannelDeadlineMs: number;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
+  /** The session of each frozen page, so a page that does not thaw is that session's loss. */
+  private readonly frozenSessions = new Map<BrowserSurfaceId, BrowserSessionId>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
   /** Pages a session opened while it was suspended for the pool, and that were ended. */
   private poolDrops = 0;
@@ -554,9 +556,10 @@ export class BrowserRuntime implements NativePresentationSource {
     const before = await boundedProbe("active");
     if (before.length) return before;
     try {
-      for (const { record, live } of pages) {
+      for (const { session, record, live } of pages) {
         if (!live) continue;
         this.frozenPages.set(record.id, live);
+        this.frozenSessions.set(record.id, session.claims.sessionId);
         await this.setPoolLifecycle(live, "frozen");
       }
     } catch {
@@ -598,12 +601,27 @@ export class BrowserRuntime implements NativePresentationSource {
     });
   }
 
-  private async thawPoolPages(): Promise<void> {
+  /**
+   * Thaws every frozen page. A page that cannot be thawed is closed, so it is never shown as
+   * usable while frozen, and is returned as its own loss; the others still thaw.
+   */
+  private async thawPoolPages(): Promise<
+    { readonly surfaceId: BrowserSurfaceId; readonly sessionId: BrowserSessionId | undefined }[]
+  > {
+    const failed: { surfaceId: BrowserSurfaceId; sessionId: BrowserSessionId | undefined }[] = [];
     for (const [id, live] of this.frozenPages) {
-      // A page that cannot be thawed stays a page of its session; the others still thaw.
-      if (!live.page.isClosed()) await this.setPoolLifecycle(live, "active").catch(() => undefined);
+      const sessionId = this.frozenSessions.get(id);
       this.frozenPages.delete(id);
+      this.frozenSessions.delete(id);
+      if (live.page.isClosed()) continue;
+      try {
+        await this.setPoolLifecycle(live, "active");
+      } catch {
+        failed.push({ surfaceId: id, sessionId });
+        await live.page.close().catch(() => undefined);
+      }
     }
+    return failed;
   }
 
   /** A retained session is adopted only if its current channel is the given attempt's. */
@@ -634,19 +652,28 @@ export class BrowserRuntime implements NativePresentationSource {
         : true;
       lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
     }
-    await this.thawPoolPages();
-    return { adopted, lost };
+    // A page that did not thaw is that page's loss; its session and the others are kept.
+    const pagesLost = (await this.thawPoolPages()).flatMap(({ surfaceId, sessionId }) =>
+      sessionId && adopted.includes(sessionId)
+        ? [{ sessionId, surfaceId, reason: "thaw-failed" }]
+        : [],
+    );
+    return { adopted, lost, ...(pagesLost.length ? { pagesLost } : {}) };
   }
 
   private async endPooledSession(session: ActiveSession): Promise<void> {
     session.poolDetached = true;
-    for (const record of session.ledger.policyRecords()) this.frozenPages.delete(record.id);
+    for (const record of session.ledger.policyRecords()) {
+      this.frozenPages.delete(record.id);
+      this.frozenSessions.delete(record.id);
+    }
     await this.detach(session.sessionId, session.generation, true, false, true);
   }
 
   /** The loopback stand-in for a newly started guest: no page of the previous one survives. */
   private async discardForPool(): Promise<void> {
     this.frozenPages.clear();
+    this.frozenSessions.clear();
     // A copy: ending a session removes it from the map.
     for (const session of Array.from(this.sessions.values())) {
       session.poolDetached = true;

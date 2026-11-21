@@ -6,6 +6,7 @@ import {
   type BrowserPoolRuntimeFence,
 } from "./browser-pool.js";
 import { BrowserRuntime } from "./runtime.js";
+import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -266,6 +267,58 @@ it("recovers a retire that threw after detaching by release and adoption", async
       phase: "running",
       adoption: { outcome: { adopted: [f.claims.sessionId], lost: [] } },
     });
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("loses only the page that did not thaw, closed with its note, and keeps both sessions", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sinkA = new FakeSink();
+    await f.open(sinkA);
+    // A second session of the same runtime, with a page of its own.
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    f.verifier.setClaims("open-b", {
+      ...f.claims,
+      sessionId: other,
+      pool: { ...f.fence(), attachment: 1 },
+    });
+    const sinkB = new FakeSink();
+    const b = await f.runtime.attach("open-b", sinkB);
+    await b.handle(
+      JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+    );
+    const pageB = f.context.pages().find((page) => page !== f.page) as FakePage;
+    expect(pageB).toBeDefined();
+    const tabB = [...sinkB.tabs.rows.values()][0]!;
+    await f.controls("retire");
+    await f.controls("seal");
+    // Chromium refuses to thaw session B's page.
+    pageB.cdpSession.responses.set("Page.setWebLifecycleState", (parameters) => {
+      if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
+      return {};
+    });
+    await f.resume();
+    await f.reattach(2);
+    f.verifier.setClaims("reattach-b", {
+      ...f.claims,
+      sessionId: other,
+      reattach: true,
+      initialNavigation: undefined,
+      pool: { ...f.fence(), attachment: 2 },
+    });
+    await f.runtime.attach("reattach-b", new FakeSink());
+    const completed = await f.controls("complete", 1, 2);
+    expect(completed.adoption?.outcome).toEqual({
+      adopted: [f.claims.sessionId, other].sort(),
+      lost: [],
+      pagesLost: [{ sessionId: other, surfaceId: tabB.id, reason: "thaw-failed" }],
+    });
+    // The page that did not thaw is closed, never shown frozen as usable; the other is kept.
+    expect(pageB.isClosed()).toBe(true);
     expect(f.page.isClosed()).toBe(false);
   } finally {
     await f.runtime.shutdown();
