@@ -59,14 +59,21 @@ export function cloudComputerDeployments(
 
 /**
  * What the Opensteer Cloud Computer row in Settings says under its name: on a Cloud Computer
- * or a work Home it is about the Home already open, so it never offers to keep agents
- * working while a Mac sleeps.
+ * or a work Home it is about the Home already open, and only on a Mac does it offer to keep
+ * agents working while the Mac sleeps.
  */
 export function cloudComputerEntryDetail(kind: HomeKind): string {
-  return cloudWords(
-    kind === "cloud" || kind === "work" ? "cloud.entry.here" : "cloud.entry.detail",
-  );
+  return cloudWords(cloudEntryDetails[kind]);
 }
+
+/** A Mac sleeps; a server and a Cloud Computer don't, so their rows never say it does. */
+const cloudEntryDetails = {
+  "this-mac": "cloud.entry.detail",
+  mac: "cloud.entry.detail",
+  server: "cloud.lead",
+  cloud: "cloud.entry.here",
+  work: "cloud.entry.here",
+} as const satisfies Record<HomeKind, Parameters<typeof cloudWords>[0]>;
 
 export function homeKind(input: {
   readonly exposure: "loopback" | "networked" | undefined;

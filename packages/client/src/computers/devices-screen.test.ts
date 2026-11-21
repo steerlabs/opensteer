@@ -510,10 +510,12 @@ describe("which listed Homes are Cloud Computers", () => {
 });
 
 describe("the Cloud Computer row in Settings", () => {
-  it("never offers to keep agents working while a Mac sleeps on a Cloud Computer or work Home", () => {
+  it("offers to keep agents working while a Mac sleeps only on a Mac", () => {
     expect(cloudComputerEntryDetail("cloud")).toBe("Its status and address");
     expect(cloudComputerEntryDetail("work")).toBe("Its status and address");
     for (const kind of ["this-mac", "mac"] as const)
       expect(cloudComputerEntryDetail(kind)).toBe("Keep agents working while your Mac sleeps");
+    // A server doesn't sleep as a Mac does.
+    expect(cloudComputerEntryDetail("server")).toBe("Your Opensteer, always on in the cloud.");
   });
 });

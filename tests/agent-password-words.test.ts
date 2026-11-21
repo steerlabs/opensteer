@@ -19,35 +19,51 @@ const places = [
   "apps/host/src/mcp",
   "apps/control-plane/src",
   "apps/marketing",
+  // The documents say what the product does, and are read as such.
+  "docs",
 ];
+// AGENTS.md is left out: its rule 8 quotes the very claim, to forbid it.
+const documents = ["README.md"];
+/** A filled secret, as the claim names it. */
+const secret = String.raw`(?:passwords?|logins?|cards?|card numbers?|cvcs?|credentials?|codes?)`;
+const who = String.raw`(?:(?:a |the |your |your own |connected )?agents?)`;
+const not = String.raw`(?:can(?:no|['’])t|cannot|could(?:n['’]t| not)|won['’]t|will (?:never|not)|never|do(?:es)?(?:n['’]t| not))`;
+const look = String.raw`(?:see|sees|read|reads|inspect|access|view|get|receive|learn)`;
 const forbidden: readonly RegExp[] = [
-  /agents? never sees? (it|them|your (saved )?(password|login|card))/iu,
-  /agents? (can(no|')t|cannot|won't|will never|do(es)? not|do(es)?n't) (see|read) (it|them|your (saved )?(password|login|card)|the (password|card|values))/iu,
+  // "Agents never see it", "Agents will never see your card".
+  new RegExp(String.raw`${who} ${not} ${look} (?:it|them|the values|[^.]{0,40}?${secret})\b`, "iu"),
+  // "No agent can inspect the password once Opensteer fills it."
+  new RegExp(String.raw`\bno ${who} (?:can|could|will|ever) ${look}[^.]{0,40}?${secret}\b`, "iu"),
+  // "Passwords are invisible to agents", "Your login stays hidden from your own agents."
+  new RegExp(
+    String.raw`${secret} (?:is|are|stays?|remains?) (?:invisible|hidden|secret|kept) (?:to|from) ${who}`,
+    "iu",
+  ),
   /\bfill(ed|s)? (it )?without seeing\b/iu,
   /\byou never see (it|them|the values|cookie values)\b/iu,
 ];
-
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     if (name === "node_modules" || name === "dist" || name.startsWith(".")) return [];
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return files(path);
-    if (!/\.(ts|tsx|html)$/u.test(name) || /\.test\.|test-support/u.test(path)) return [];
+    if (!/\.(ts|tsx|html|md)$/u.test(name) || /\.test\.|test-support/u.test(path)) return [];
     return [path];
   });
 }
 
 describe("what Opensteer says an agent sees of a password", () => {
   it("never says an agent cannot see one, anywhere a person or an agent reads it", () => {
-    const found = places
-      .flatMap((place) => files(join(root, place)))
-      .flatMap((path) => {
-        const text = readFileSync(path, "utf8").replace(/\s+/gu, " ");
-        return forbidden.flatMap((pattern) => {
-          const match = pattern.exec(text);
-          return match ? [`${relative(root, path)}: ${match[0]}`] : [];
-        });
+    const found = [
+      ...places.flatMap((place) => files(join(root, place))),
+      ...documents.map((name) => join(root, name)),
+    ].flatMap((path) => {
+      const text = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+      return forbidden.flatMap((pattern) => {
+        const match = pattern.exec(text);
+        return match ? [`${relative(root, path)}: ${match[0]}`] : [];
       });
+    });
     expect(found).toEqual([]);
   });
 
@@ -61,5 +77,25 @@ describe("what Opensteer says an agent sees of a password", () => {
         pattern.test("Agents never see it, but a tricked agent could reveal it."),
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    "A connected agent can’t read the filled card number.",
+    "A connected agent can't read the filled card number.",
+    "Passwords are invisible to agents after they are filled.",
+    "Your saved login stays hidden from your own agents.",
+    "No agent can inspect the password once Opensteer fills it.",
+    "Agents will never see your card.",
+    "Your agents cannot access the password it fills.",
+  ])("catches the claim in other words: %s", (claim) => {
+    expect(forbidden.some((pattern) => pattern.test(claim))).toBe(true);
+  });
+
+  it.each([
+    "Opensteer fills it into the page and doesn’t hand it to the agent; an agent working in that page can read it.",
+    "Results omit cookie values.",
+    "An agent working in that page can still read what is on it.",
+  ])("lets the truth through: %s", (truth) => {
+    expect(forbidden.some((pattern) => pattern.test(truth))).toBe(false);
   });
 });

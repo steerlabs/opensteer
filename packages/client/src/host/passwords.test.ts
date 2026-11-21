@@ -134,7 +134,7 @@ describe("passwordSignInOutcome", () => {
 describe("sign-in consent copy", () => {
   it("names the site and account", () => {
     expect(passwordSignInPrivacy("https://github.com")).toBe(
-      "Opensteer fills your saved login on github.com, and in apps your agents use, like on your phone. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.",
+      "Opensteer fills your saved login on github.com, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.",
     );
     expect(passwordSignInNoAccount("https://github.com")).toBe("No saved password for github.com.");
     expect(passwordSignInAllowRemembers("alex@company.example")).toBe(
