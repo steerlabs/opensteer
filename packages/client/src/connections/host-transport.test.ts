@@ -173,7 +173,13 @@ describe("Host transport handling of a 401 response", () => {
       if (!settled.ok) {
         expect(settled.error).toMatchObject({
           code: "timed-out",
-          failure: { kind: "transport", retryable: true },
+          failure: {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            kind: "session",
+            provenance: "host",
+            retryable: false,
+          },
         });
       }
       expect(sessions.sessionEnded).toHaveBeenCalledOnce();
