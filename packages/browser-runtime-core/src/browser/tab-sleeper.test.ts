@@ -610,7 +610,7 @@ describe("TabSleeper", () => {
       const newestTab = (await f.ledger.openSurface()).id;
       const ids = [f.record.id, viewedTab, pinnedTab, freeTab, newestTab];
       for (const id of ids) f.ledger.touch(id, true);
-      const state = (pinned: string[], viewed: string[]) =>
+      const state = (pinned: typeof ids, viewed: typeof ids) =>
         f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed, pinned });
       // The oldest tab and the two in use (viewed, pinned) are out; the free tab is the least
       // recently used one that is not in use.
