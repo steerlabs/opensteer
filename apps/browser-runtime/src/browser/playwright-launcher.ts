@@ -1329,7 +1329,11 @@ class PlaywrightContextHandle implements BrowserContext {
   /** Saved tabs whose naming waits for another tab still carrying the same name to go. */
   private readonly deferredNames = new Map<BrowserSurfaceId, PlaywrightPageHandle>();
   private readonly naming = new Set<Promise<void>>();
-  private readonly awaitingFirstNavigation = new WeakSet<Page>();
+  /** Saved tabs waiting for their first real navigation before they are named. */
+  private readonly awaitingFirstNavigation = new Map<
+    Page,
+    { readonly surfaceId: BrowserSurfaceId; readonly page: PlaywrightPageHandle; done(): void }
+  >();
   private readonly hiddenPages = new WeakSet<Page>();
   private readonly frozenPages = new WeakSet<Page>();
   /** Pages a claim or wake took; they never go through identification again. */
@@ -2054,14 +2058,18 @@ class PlaywrightContextHandle implements BrowserContext {
     // tab has nothing to restore.
     if (isBlankAddress(page.url())) {
       const raw = page.rawPage;
-      if (this.awaitingFirstNavigation.has(raw)) return;
-      this.awaitingFirstNavigation.add(raw);
-      const onNavigated = (frame: Frame) => {
-        if (frame !== raw.mainFrame() || isBlankAddress(frame.url())) return;
+      if (this.awaitingFirstNavigation.get(raw)?.surfaceId === surfaceId) return;
+      const done = () => {
         raw.off("framenavigated", onNavigated);
         this.awaitingFirstNavigation.delete(raw);
+      };
+      const onNavigated = (frame: Frame) => {
+        if (frame !== raw.mainFrame() || isBlankAddress(frame.url())) return;
+        done();
         if (this.savedSurfaceByPage.get(page) === surfaceId) this.trackSavedTab(surfaceId, page);
       };
+      this.awaitingFirstNavigation.get(raw)?.done();
+      this.awaitingFirstNavigation.set(raw, { surfaceId, page, done });
       raw.on("framenavigated", onNavigated);
       return;
     }
@@ -2089,8 +2097,28 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /** Before an orderly close: tabs being named finish, so Chromium's session carries them. */
   async settleNaming(): Promise<void> {
+    const deadline = performance.now() + namingSettleMs;
+    const remaining = () => Math.max(1, deadline - performance.now());
+    // A saved tab still waiting for its first real navigation is named now if Chromium already
+    // has an address for it: its navigation commits within the bound, so Chromium's session
+    // carries its name. A tab Chromium shows blank has nothing to restore.
+    if (this.awaitingFirstNavigation.size > 0 && this.lifecycle) {
+      const inventory = await withTimeout(this.lifecycle.inventory(), remaining(), {
+        timeoutError: () => new Error("Settle inventory timed out."),
+      }).catch(() => null);
+      for (const [raw, waiting] of Array.from(this.awaitingFirstNavigation)) {
+        const targetId = syncTargetIdOfPage(raw);
+        const row = inventory?.find((entry) => targetId !== null && entry.targetId === targetId);
+        if (!row || isBlankAddress(row.url)) continue;
+        while (isBlankAddress(waiting.page.url()) && performance.now() < deadline) await delay(50);
+        if (isBlankAddress(waiting.page.url())) continue;
+        if (this.savedSurfaceByPage.get(waiting.page) !== waiting.surfaceId) continue;
+        waiting.done();
+        this.trackSavedTab(waiting.surfaceId, waiting.page);
+      }
+    }
     if (this.naming.size === 0) return;
-    await withTimeout(Promise.allSettled(this.naming), namingSettleMs, {
+    await withTimeout(Promise.allSettled(this.naming), remaining(), {
       timeoutError: () => new Error("Tab naming did not settle."),
     }).catch(() => undefined);
   }
@@ -2116,6 +2144,7 @@ class PlaywrightContextHandle implements BrowserContext {
     this.removals.clear();
     this.unremovable.clear();
     this.deferredNames.clear();
+    for (const waiting of Array.from(this.awaitingFirstNavigation.values())) waiting.done();
     this.laneTails.clear();
     this.parkingArmed = false;
   }
