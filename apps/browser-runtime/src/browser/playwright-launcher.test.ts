@@ -1,5 +1,12 @@
+import {
+  BrowserController,
+  SessionFiles,
+  SurfaceLedger,
+} from "@opensteer/browser-runtime-core";
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
-import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { FakeSink, testSessionFilesRoot, validClaims } from "@opensteer/browser-runtime-core/test-support";
+import { SessionCdpRouter } from "@opensteer/browser-core";
+import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { gate } from "@opensteer/shared/test-support/observation";
@@ -1973,9 +1980,10 @@ describe("native Chromium profiles", () => {
       const handedOff: string[] = [];
       launched.context.handOff((p) => handedOff.push(p.url()));
 
-      // Reconcile keeps both saved tabs: ONLY tab 10 (complete) is discarded; tab 11 (unloaded) is untouched!
+      // Reconcile keeps both saved tabs: ONLY tab 10 (complete) is discarded (off path to ready);
+      // tab 11 (unloaded) is untouched!
       await launched.context.sessionRestore!.reconcile(new Set([surfLoaded, surfUnloaded]));
-      expect(discardedIds).toEqual([10]);
+      await vi.waitFor(() => expect(discardedIds).toEqual([10]), { timeout: 3_000, interval: 25 });
       expect(tabs.find((t) => t.tabId === 11)).toMatchObject({
         discarded: false,
         status: "unloaded",
@@ -2210,6 +2218,196 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("lets the session start go on after the 6s reconcile deadline, hides and removes restored tabs in the background, and answers listTabs (B3)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfStale = "srf_00000000-0000-4000-8000-00000000b301" as BrowserSurfaceId;
+    const surfKept = "srf_00000000-0000-4000-8000-00000000b302" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfStale, url: "https://stale-b3.test/" },
+      { index: 1, surfaceId: surfKept, url: "https://kept-b3.test/" },
+    ]);
+    let tabs = [
+      {
+        tabId: 301,
+        windowId: 1,
+        index: 0,
+        url: "https://stale-b3.test/",
+        title: "Stale",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-b3-301",
+      },
+      {
+        tabId: 302,
+        windowId: 1,
+        index: 1,
+        url: "https://kept-b3.test/",
+        title: "Kept",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-b3-302",
+      },
+    ];
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const rootRawPage = {
+      url: () => "about:blank",
+      title: vi.fn(async () => ""),
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-root-b3" } }) },
+    } as unknown as Page;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => rootRawPage),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) => {
+          if (method === "Target.getTargetInfo")
+            return { targetInfo: { targetId: "target-root-b3", url: "about:blank" } };
+          if (method === "Page.getFrameTree")
+            return {
+              frameTree: {
+                frame: { id: "target-root-b3", loaderId: "loader-1", url: "about:blank" },
+              },
+            };
+          if (method === "Page.getNavigationHistory")
+            return { currentIndex: 0, entries: [{ id: 1, url: "about:blank", title: "" }] };
+          if (method === "Page.getLayoutMetrics")
+            return { cssLayoutViewport: { clientWidth: 1280, clientHeight: 800 } };
+          return {};
+        }),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+
+    let releaseHeldRemove: (() => void) | undefined;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => tabs);
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        if (tabId === 301 && !releaseHeldRemove) {
+          await new Promise<void>((resolve) => {
+            releaseHeldRemove = resolve;
+          });
+        }
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return true;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    let controller: BrowserController | undefined;
+    let ledger: SurfaceLedger | undefined;
+    const files = new SessionFiles(join(testSessionFilesRoot(), "b3-deadline-test"));
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: unknown[] = [];
+      launched.context.handOff((p) => handedOff.push(p));
+
+      const claims = validClaims({ tabRestoreVersion: 1 });
+      const router = new SessionCdpRouter(launched.cdp, {}, false);
+      const rootPage = await launched.context.createPage();
+      ledger = new SurfaceLedger(launched.context, {
+        sessionId: claims.sessionId,
+        rootPages: [rootPage],
+        saveTabs: true,
+      });
+      router.registerSession(
+        claims.sessionId,
+        await rootPage.targetId(),
+        ledger.resolveTarget.bind(ledger),
+        files.root,
+      );
+      await ledger.start();
+      const sink = new FakeSink();
+      controller = new BrowserController({
+        claims,
+        cdpRouter: router,
+        files,
+        ledger,
+        sink,
+        onSavedTabs: async (savedIds) => {
+          await launched!.context.sessionRestore!.reconcile(savedIds);
+        },
+      });
+      await controller.start();
+
+      // Send session.saved keeping surfKept (so surfStale triggers the held removeByTabId).
+      const savedRows = new Map([[surfKept, { id: surfKept }]]);
+      const publisher = new KeyedStreamPublisher({
+        ids: () => savedRows.keys(),
+        read: (id) => savedRows.get(id as BrowserSurfaceId),
+        meta: () => ({}),
+        targetBytes: 64 * 1024,
+        envelopeBytes: 64,
+      });
+      const savedPromises: Promise<void>[] = [];
+      for (let stream = publisher.next(); stream; stream = publisher.next()) {
+        savedPromises.push(controller.handleRaw(JSON.stringify({ type: "session.saved", stream })));
+        publisher.settled(stream, true);
+      }
+      const listRequestId = "00000000-0000-4000-8000-00000000b301";
+      const listDone = controller.handleRaw(
+        JSON.stringify({
+          type: "cdp.command",
+          requestId: listRequestId,
+          command: { method: "Opensteer.listTabs", parameters: {} },
+        }),
+      );
+
+      // After the 6s reconcile deadline passes, listTabs MUST answer with cdp.result (NOT cdp.error)!
+      await Promise.all([...savedPromises, listDone]);
+      let listReply: (typeof sink.messages)[number] | undefined;
+      await vi.waitFor(
+        () => {
+          listReply = sink.messages.find(
+            (m) =>
+              (m.type === "cdp.result" || m.type === "cdp.error") &&
+              "requestId" in m &&
+              m.requestId === listRequestId,
+          );
+          expect(listReply).toBeDefined();
+        },
+        { timeout: 8_000, interval: 25 },
+      );
+      expect(listReply?.type).toBe("cdp.result");
+      // Restored pages stay out of pages() and handOff, and claim returns null (opens by address).
+      expect(launched.context.pages().every((p) => !p.url().includes("b3.test"))).toBe(true);
+      expect(handedOff).toEqual([]);
+      expect(await launched.context.sessionRestore!.claim(surfKept, "https://kept-b3.test/")).toBe(
+        null,
+      );
+
+      // Releasing the held helper call finishes removing BOTH restored tabs in the background.
+      releaseHeldRemove?.();
+      await vi.waitFor(() => expect(tabs).toEqual([]), { timeout: 3_000, interval: 25 });
+    } finally {
+      releaseHeldRemove?.();
+      await controller?.close().catch(() => undefined);
+      await ledger?.close().catch(() => undefined);
+      await files.dispose().catch(() => undefined);
+      invSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 async function nativeCloseFixture(
