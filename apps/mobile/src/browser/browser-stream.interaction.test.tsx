@@ -18,6 +18,7 @@ import type {
 } from "@opensteer/client/host";
 import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
+import { mockBrowserPoolReport } from "@opensteer/client/mock";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -53,14 +54,16 @@ const native = vi.hoisted(() => ({
   /** The view's word that it can draw again, after leaving its window or the foreground. */
   shown: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   renders: 0,
+  /** What the view told VoiceOver or TalkBack. */
+  announced: [] as string[],
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => native.geometry }));
 vi.mock("react-native-reanimated", () => ({
   default: { View: (props: { children?: ReactNode }) => <div>{props.children}</div> },
 }));
-vi.mock("../ui/motion.js", () => ({ dim: undefined, exit: undefined }));
+vi.mock("../ui/motion.js", () => ({ appear: undefined, dim: undefined, exit: undefined }));
 vi.mock("../ui/last-picture-chip.js", () => ({
-  LastPictureChip: () => <span>Last picture</span>,
+  LastPictureChip: ({ label }: { label?: string }) => <span>{label ?? "Last picture"}</span>,
 }));
 vi.mock("../computers/phone-display-native.js", async () => {
   const React = await import("react");
@@ -95,6 +98,9 @@ vi.mock("../computers/phone-display-native.js", async () => {
 });
 
 vi.mock("react-native", () => ({
+  AccessibilityInfo: {
+    announceForAccessibility: (words: string) => native.announced.push(words),
+  },
   Platform: { OS: "ios", Version: "26" },
   Image: ({
     accessibilityLabel,
@@ -165,6 +171,7 @@ afterEach(() => {
   native.cleared = null;
   native.shown = null;
   native.renders = 0;
+  native.announced = [];
   document.body.replaceChildren();
   vi.useRealTimers();
 });
@@ -332,6 +339,8 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
     dropFeed,
     emit,
     hostClient,
+    /** The snapshot the client reads, so a test can say what the Home reports. */
+    listed,
     onTap,
     render,
     send,
@@ -1315,4 +1324,81 @@ it("discards queued iPad hover when the stage moves without resizing", async () 
     await vi.advanceTimersByTimeAsync(20);
   });
   expect(send.mock.calls.map(([, command]) => command.type)).toEqual(["cursor.reset"]);
+});
+
+describe("a browser without a pool", () => {
+  // Written against the commit before a Cloud Computer's browser could sleep; never rewritten.
+  it("draws its page and its last picture exactly as before", async () => {
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    const live = container.innerHTML;
+    render("connecting");
+    expect({ live, stale: container.innerHTML }).toMatchSnapshot();
+    expect(native.announced).toEqual([]);
+  });
+});
+
+describe("a Cloud Computer's browser waking", () => {
+  const report = (listed: HostSnapshot, scene: Parameters<typeof mockBrowserPoolReport>[0]) => {
+    const tab = listed.tabs.get(surfaceId as never);
+    if (tab?.kind !== "page") throw new Error("Not a page tab");
+    Object.assign(listed, {
+      browserPools: [mockBrowserPoolReport(scene, tab.computer.computerId, surfaceId)],
+    });
+  };
+
+  it("names a fresh start on the last picture at once, and says it aloud", async () => {
+    const { container, decode, emit, listed, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    report(listed, "starting");
+    render("connecting");
+    expect(container.textContent).toContain("Last picture · Starting browser…");
+    expect(native.announced).toEqual(["Last picture · Starting browser…"]);
+  });
+
+  it("keeps a waking picture as it was through the quiet moment", async () => {
+    const { container, decode, emit, listed, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    report(listed, "waking");
+    render("connecting");
+    expect(container.textContent).toContain("Last picture");
+    expect(container.textContent).not.toContain("Waking");
+    expect(native.announced).toEqual([]);
+  });
+
+  it("says nothing without a picture until the wait is worth a word, then one line", () => {
+    const { container, listed, render } = setup();
+    report(listed, "waking");
+    render("connecting");
+    // Not the connection's own words: the browser is waking, and under a moment says nothing.
+    expect(container.textContent).not.toContain("Connecting");
+    expect(container.textContent).not.toContain("Waking");
+    report(listed, "restarting");
+    render("connecting");
+    expect(container.textContent).toContain("Restarting browser…");
+    expect(native.announced).toEqual(["Restarting browser…"]);
+  });
+
+  it("shows an awake Cloud Computer browser exactly like any other", async () => {
+    const plain = setup();
+    plain.render("synchronized");
+    plain.emit();
+    await plain.decode();
+    plain.render("connecting");
+    const before = plain.container.innerHTML;
+    act(() => root?.unmount());
+    const pooled = setup();
+    report(pooled.listed, "awake");
+    pooled.render("synchronized");
+    pooled.emit();
+    await pooled.decode();
+    pooled.render("connecting");
+    expect(pooled.container.innerHTML).toBe(before);
+  });
 });
