@@ -508,8 +508,19 @@ export class BrowserPoolCoordinator {
         await withTimeout(this.gate.idle(), quiesceMs, {
           timeoutError: () => new Error("A send still holds the browser."),
         }).catch((error: unknown) => this.#options.onError?.(error));
-        await this.#discard(slot, "person", [...wanted.keys]);
+        // The live set: a restart that joins while this one runs is answered by the same start.
+        await this.#discard(slot, "person", wanted.keys);
       }
+      // One that joined after the start was written: its key is recorded with that start too.
+      for (
+        let late = unrecorded(this.#slot, wanted.keys);
+        this.#slot && late.length;
+        late = unrecorded(this.#slot, wanted.keys)
+      )
+        await this.#advance(this.#slot, {
+          phase: this.#slot.phase,
+          restartKeys: withRestartKeys(this.#slot, late),
+        });
     }
     this.#restartWanted = undefined;
     this.#publish(this.#slot);
@@ -983,7 +994,7 @@ export class BrowserPoolCoordinator {
   async #discard(
     slot: BrowserPoolSlot,
     reason: string,
-    keys: readonly string[] = [],
+    keys: ReadonlySet<string> = new Set(),
   ): Promise<void> {
     const since = new Date();
     this.#display = { phase: reason === "person" ? "restarting" : "starting", since };
@@ -1010,7 +1021,7 @@ export class BrowserPoolCoordinator {
   async #startFresh(
     slot: BrowserPoolSlot,
     reason: string,
-    keys: readonly string[] = [],
+    keys: ReadonlySet<string> = new Set(),
   ): Promise<void> {
     let status = await this.#status();
     // The first call of a replacement closes every open row: nothing old is replayed later.
@@ -1055,9 +1066,7 @@ export class BrowserPoolCoordinator {
           id: randomUUID(),
         },
         // Every key the restart was asked with is handled by this one start.
-        ...(keys.length
-          ? { restartKeys: [...keys, ...restartKeysOf(slot)].slice(0, restartKeysKept) }
-          : {}),
+        ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]) } : {}),
         failedStarts: 0,
       },
       losses,
@@ -1204,6 +1213,16 @@ interface Step {
 
 function restartKeysOf(slot: BrowserPoolSlot): readonly string[] {
   return Array.isArray(slot.restartKeys) ? slot.restartKeys : [];
+}
+
+/** The newest handled keys first, each once, bounded. */
+function withRestartKeys(slot: BrowserPoolSlot, keys: readonly string[]): readonly string[] {
+  return [...new Set([...keys, ...restartKeysOf(slot)])].slice(0, restartKeysKept);
+}
+
+function unrecorded(slot: BrowserPoolSlot | undefined, keys: ReadonlySet<string>): string[] {
+  const handled = new Set(slot ? restartKeysOf(slot) : []);
+  return [...keys].filter((key) => !handled.has(key));
 }
 
 /** Resolves when `signal` aborts. */

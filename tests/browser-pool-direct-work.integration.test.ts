@@ -385,6 +385,22 @@ it("restarts only once a command in flight has its recorded outcome, and once pe
     await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
     expect(j.controller.effects).toEqual(["start", "stop", "start"]);
     expect(home.coordinator.gate.phase).toBe("open");
+    // The joined restart's own retry: its key was recorded with the same start.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-2");
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    // A later cold start that was not a restart (the saved state expired while parked) keeps
+    // both keys handled.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    j.controller.observe({ phase: "stopped", savedState: null, epoch: null });
+    (await home.coordinator.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect(j.controller.effects).toEqual(["start", "stop", "start", "pause", "start"]);
+    expect(await j.slot()).toMatchObject({
+      lastStart: { reason: expect.not.stringMatching(/^person$/) },
+    });
+    for (const key of ["key-1", "key-2"])
+      await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, key);
+    expect(j.controller.effects).toEqual(["start", "stop", "start", "pause", "start"]);
+    expect(home.coordinator.gate.phase).toBe("open");
   } finally {
     await j.close();
   }
