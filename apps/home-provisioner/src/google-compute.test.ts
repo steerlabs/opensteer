@@ -143,7 +143,7 @@ it("reports an unobserved operation as unknown", async () => {
   );
   expect(check).toHaveBeenCalledOnce();
   fake.keepOperationsRunning = false;
-  await provider.powerOff(ref, signal, check);
+  await fake.adapter().powerOff(ref, signal, check);
   expect(await provider.describe(ref, signal)).toMatchObject({ status: "off" });
   expect(check).toHaveBeenCalledOnce();
   expect(reqs(fake, "POST", `${zonePath}/instances/${computeInstanceName}/stop`)).toHaveLength(1);

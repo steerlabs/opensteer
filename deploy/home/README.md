@@ -178,10 +178,10 @@ Home's identity only after all seven services are healthy and retries an ambiguo
 completion with the same identity. The Account revokes the single-use token on
 completion; a matching replay only acknowledges the same identity. The installer
 removes its local token and boot-result files before enabling normal operation,
-or on terminal refusal, when it also stops the pod. Provider instance user data and
-cloud-init's cached copy can still contain the spent token; neither provides new
-boot authority after completion. Cleanup resumes on the next installer run if
-power is lost after the terminal outcome.
+or on terminal refusal, when it also stops the pod. On Google Compute Engine,
+the provisioner removes the instance's user data once Account records the claim
+receipt. Cloud-init's cached copy can still contain the spent token. Cleanup
+resumes on the next installer run if power is lost after the terminal outcome.
 For a managed replacement, `restoreSnapshot` stages and verifies the snapshot
 before starting the restored identity. The Account claims the new generation for
 the same linked owner; enrolled services keep their restored credentials. Account

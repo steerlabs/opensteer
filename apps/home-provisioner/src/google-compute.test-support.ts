@@ -45,6 +45,7 @@ type Operation = {
   name: string;
   status: "RUNNING" | "DONE";
   clientOperationId: string;
+  operationType?: string | undefined;
   targetId?: string;
   error?: { errors: { code: string }[] };
   httpErrorStatusCode?: number;
@@ -140,11 +141,20 @@ export class ComputeFake {
 
   #operationRequest(req: RecordedRequest) {
     if (req.path.endsWith("/operations")) {
-      const token = req.query.get("filter")?.match(/"([^"]+)"/u)?.[1];
+      const filter = req.query.get("filter") ?? "";
+      const token = filter.match(/^clientOperationId = "([^"]+)"$/u)?.[1];
+      const [, targetId, operationType] =
+        filter.match(/^\(targetId = (\d+)\) \(operationType = (\w+)\) \(status != DONE\)$/u) ?? [];
       return this.#page(
         [...this.operations.values()]
           .map(({ operation }) => operation)
-          .filter(({ clientOperationId }) => clientOperationId === token),
+          .filter((operation) =>
+            token
+              ? operation.clientOperationId === token
+              : operation.targetId === targetId &&
+                operation.operationType === operationType &&
+                operation.status !== "DONE",
+          ),
         req.query,
       );
     }
@@ -258,7 +268,7 @@ export class ComputeFake {
             current.metadata = { ...(req.body as Metadata), fingerprint: "changed" };
           } else throw new Error(`Unexpected Compute action ${action}`);
         },
-        { targetId: current.id },
+        { targetId: current.id, operationType: req.method === "DELETE" ? "delete" : action },
       ),
     );
   }

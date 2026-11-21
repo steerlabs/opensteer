@@ -38,6 +38,7 @@ const operation = z.object({
   name: z.string().regex(/^[A-Za-z0-9_-]{1,256}$/u),
   status: z.enum(["PENDING", "RUNNING", "DONE"]),
   clientOperationId: z.string().optional(),
+  operationType: z.string().optional(),
   targetId: z
     .string()
     .regex(/^\d{1,20}$/u)
@@ -131,6 +132,7 @@ type Write = {
   query?: Record<string, string>;
   check?: Check | undefined;
   observedVersion?: string | undefined;
+  instanceAction?: { type: "stop" | "delete"; targetId: string };
 };
 type PendingOperation = { requestId: string; initial?: Operation };
 
@@ -577,6 +579,7 @@ export class GoogleCompute implements VmProvider {
         method: "POST",
         check,
         observedVersion: `${id}/${current.lastStartTimestamp ?? ""}`,
+        instanceAction: { type: "stop", targetId: current.id },
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
@@ -591,6 +594,7 @@ export class GoogleCompute implements VmProvider {
         method: "DELETE",
         check,
         observedVersion: id,
+        instanceAction: { type: "delete", targetId: current.id },
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
@@ -670,7 +674,11 @@ export class GoogleCompute implements VmProvider {
     const prior = this.#pendingOperations.get(key);
     const pending: PendingOperation = prior ?? { requestId: write.requestId ?? randomUUID() };
     const initial =
-      pending.initial ?? (await this.#dispatch(path, query, write, pending, key, signal));
+      pending.initial ??
+      (write.instanceAction
+        ? await this.#activeInstanceOperation(write.instanceAction, signal)
+        : undefined) ??
+      (await this.#dispatch(path, query, write, pending, key, signal));
     let current = initial;
     try {
       while (current.status !== "DONE") {
@@ -688,6 +696,20 @@ export class GoogleCompute implements VmProvider {
         new RemoteRequestError(compute, current.httpErrorStatusCode ?? 500),
       );
     return { ...current, targetId: current.targetId ?? initial.targetId };
+  }
+
+  async #activeInstanceOperation(
+    action: NonNullable<Write["instanceAction"]>,
+    signal: AbortSignal,
+  ) {
+    const filter = `(targetId = ${action.targetId}) (operationType = ${action.type}) (status != DONE)`;
+    const operations = await this.#list(`${this.#zone}/operations`, operation, signal, filter);
+    const matches = operations.filter(
+      ({ targetId, operationType, status }) =>
+        targetId === action.targetId && operationType === action.type && status !== "DONE",
+    );
+    if (matches.length > 1) throw new ProviderOutcomeUnknown();
+    return matches[0];
   }
 
   async #dispatch(
