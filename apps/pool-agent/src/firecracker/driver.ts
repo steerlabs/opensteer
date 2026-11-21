@@ -568,26 +568,31 @@ export class FirecrackerDriver implements HypervisorDriver {
    */
   async #adoptPit(boot: GuestBoot): Promise<void> {
     const pid = (await readFile(join(this.#root(boot.jailId), `${execName}.pid`), "utf8")).trim();
+    // The thread is named after the VMM's pid as the VMM sees it: in its own pid namespace
+    // (the jailer's --new-pid-ns) every VMM is 1. It is found instead as the kvm-pit thread still
+    // in the root cgroup that started after this VMM; two such (concurrent boots) are ambiguous,
+    // and nothing is moved rather than the wrong one.
+    const started = await processStart(pid);
     const threads = await run("ps", ["-e", "-o", "pid=,comm="]);
-    const pit = threads
-      .split("\n")
-      .map((line) => line.trim().split(/\s+/u))
-      .filter(([, comm]) => comm === `kvm-pit/${pid}`)
-      .map(([thread]) => thread!);
-    // Re-check finding 6: what the kernel answered is logged and kept where the host check
-    // reads it. A thread that was not found is reported too.
-    if (!pit.length) this.#pit("absent", undefined);
-    for (const thread of pit)
-      await this.#cgroups.adopt(slotKey(boot.slotId), boot.jailId, thread).then(
-        () => this.#pit("adopted", undefined),
-        (error: unknown) => this.#pit("refused", error),
-      );
+    const candidates: string[] = [];
+    for (const [thread, comm] of threads.split("\n").map((line) => line.trim().split(/\s+/u))) {
+      if (!thread || !comm?.startsWith("kvm-pit/")) continue;
+      const cgroup = await readFile(`/proc/${thread}/cgroup`, "utf8").catch(() => "");
+      if (cgroup.trim() !== "0::/") continue;
+      if ((await processStart(thread).catch(() => -1)) >= started) candidates.push(thread);
+    }
+    if (candidates.length === 0) return this.#pit("absent", undefined);
+    if (candidates.length > 1) return this.#pit("ambiguous", undefined);
+    await this.#cgroups.adopt(slotKey(boot.slotId), boot.jailId, candidates[0]!).then(
+      () => this.#pit("adopted", undefined),
+      (error: unknown) => this.#pit("refused", error),
+    );
   }
 
   /** What became of each VMM's `kvm-pit` thread since the agent started. */
-  readonly pit = { adopted: 0, refused: 0, absent: 0, last: null as string | null };
+  readonly pit = { adopted: 0, refused: 0, absent: 0, ambiguous: 0, last: null as string | null };
 
-  #pit(outcome: "adopted" | "refused" | "absent", error: unknown): void {
+  #pit(outcome: "adopted" | "refused" | "absent" | "ambiguous", error: unknown): void {
     this.pit[outcome] += 1;
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     const message = error instanceof Error ? error.message : undefined;
@@ -703,7 +708,9 @@ export class FirecrackerDriver implements HypervisorDriver {
   }
 
   #bootArgs(boot: GuestBoot): string {
-    const console = this.#config.serialConsole ? "console=ttyS0" : "8250.nr_uarts=0";
+    const console = this.#config.serialConsole
+      ? "console=ttyS0 opensteer.debug=1"
+      : "8250.nr_uarts=0";
     const parameters = Object.entries(boot.parameters).map(([key, value]) => {
       if (!/^[A-Za-z0-9._-]+$/u.test(key) || !/^[A-Za-z0-9+/=._:-]+$/u.test(value))
         throw new Error("A guest boot parameter is not a plain token.");
@@ -772,4 +779,10 @@ function sha256(path: string): Promise<string> {
 async function mounted(path: string): Promise<boolean> {
   const table = await readFile("/proc/self/mountinfo", "utf8");
   return table.split("\n").some((line) => line.split(" ")[4] === path);
+}
+
+/** A process's start time in clock ticks since boot (field 22 of /proc/<pid>/stat). */
+async function processStart(pid: string): Promise<number> {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
 }
