@@ -2936,12 +2936,13 @@ async function browserJourneyHarness(tabId, program) {
       turnId: thread.turnId,
     },
   });
-  const harnessExecutable = process.env.OPENSTEER_BROWSER_HARNESS;
+  const env = threadEnvironment();
+  const harnessExecutable = env.OPENSTEER_BROWSER_HARNESS;
   const isNodeScript = /\.[cm]?js$/u.test(harnessExecutable ?? "");
   const child = spawn(
     isNodeScript ? process.execPath : harnessExecutable,
     [...(isNodeScript ? [harnessExecutable] : []), ...(tabId ? ["--tab", tabId] : [])],
-    { env: threadEnvironment(), timeout: 60_000 },
+    { env, timeout: 60_000 },
   );
   const stdout = [];
   const stderr = [];

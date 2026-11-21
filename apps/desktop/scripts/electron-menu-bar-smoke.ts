@@ -365,7 +365,6 @@ async function startHome(input: {
   const engineFixture = path.join(resources, "codex-fixture", "fake-codex-app-server.mjs");
   const engineWrapper = path.join(root, "codex-fixture");
   const engineRelease = path.join(root, "release-fixture-turn");
-  const engineCapture = path.join(root, "logs", "codex-capture");
   const engineHarnessLog = path.join(root, "logs", "codex-browser-harness.jsonl");
   const shellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const supervisor = new PersonalDeploymentSupervisor({
@@ -433,7 +432,7 @@ async function startHome(input: {
           engineWrapper,
           `#!/bin/sh
 export FAKE_CODEX_HARNESS_LOG=${shellArgument(engineHarnessLog)}
-exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} ${shellArgument(`--capture=${engineCapture}`)} "$@"
+exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held --unique-threads ${shellArgument(`--release-file=${engineRelease}`)} "$@"
 `,
           { mode: 0o700 },
         );
