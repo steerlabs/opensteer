@@ -79,9 +79,9 @@ const instance = z.object({
 type Instance = z.infer<typeof instance>;
 const address = z.object({
   name: resourceName,
-  address: z.ipv4().optional(),
-  addressType: z.literal("EXTERNAL"),
-  networkTier: z.literal("PREMIUM"),
+  address: z.union([z.ipv4(), z.ipv6()]).optional(),
+  addressType: z.string(),
+  networkTier: z.string().optional(),
   status: z.enum(["RESERVING", "RESERVED", "IN_USE"]),
   labels: labels.default({}),
   users: z.array(z.string()).default([]),
@@ -274,7 +274,7 @@ export class GoogleCompute implements VmProvider {
       const observed = googleVm(vm, identity?.generation ?? generation);
       found.set(observed.id, observed);
     };
-    const listed = await this.#instances(signal, `labels.${homeLabel} = ${id}`);
+    const listed = await this.#instances(signal);
     for (const vm of listed) {
       if (managedInstance(vm)?.id === id) add(vm);
     }
@@ -320,22 +320,12 @@ export class GoogleCompute implements VmProvider {
     return [...found.values()];
   }
 
-  async #instances(signal: AbortSignal, filter?: string) {
-    return this.#list(
-      `${this.#zone}/instances`,
-      instance,
-      signal,
-      `(labels.${managedLabel} = ${managedBy})${filter ? ` AND (${filter})` : ""}`,
-    );
+  async #instances(signal: AbortSignal) {
+    return this.#list(`${this.#zone}/instances`, instance, signal);
   }
 
   async listManagedAddresses(signal: AbortSignal) {
-    const found = await this.#list(
-      this.#addressesPath(),
-      address,
-      signal,
-      `labels.${managedLabel} = ${managedBy}`,
-    );
+    const found = await this.#list(this.#addressesPath(), address, signal);
     const ids = new Set<CloudComputerId>();
     for (const entry of found) {
       const id = CloudComputerIdSchema.safeParse(entry.labels[homeLabel]);
@@ -344,7 +334,7 @@ export class GoogleCompute implements VmProvider {
     return [...ids];
   }
 
-  async #list<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal, filter: string) {
+  async #list<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal) {
     const page = z.object({
       items: z.array(schema).default([]),
       nextPageToken: z.string().min(1).optional(),
@@ -353,7 +343,7 @@ export class GoogleCompute implements VmProvider {
     const cursors = new Set<string>();
     let cursor: string | undefined;
     do {
-      const query = new URLSearchParams({ filter, maxResults: "100" });
+      const query = new URLSearchParams({ maxResults: "100" });
       if (cursor) query.set("pageToken", cursor);
       const response = await this.#request(`${path}?${query}`, page, signal);
       records.push(...response.items);
@@ -624,12 +614,7 @@ export class GoogleCompute implements VmProvider {
 
   async canRecoverWrite(write: CloudComputerProviderWrite, signal: AbortSignal) {
     if (!write.dispatched) return true;
-    const operations = await this.#list(
-      `${this.#zone}/operations`,
-      operation,
-      signal,
-      `clientOperationId = "${write.token}"`,
-    );
+    const operations = await this.#list(`${this.#zone}/operations`, operation, signal);
     return operations
       .filter(({ clientOperationId }) => clientOperationId === write.token)
       .every(({ status }) => status === "DONE");
@@ -722,8 +707,7 @@ export class GoogleCompute implements VmProvider {
     action: NonNullable<Write["instanceAction"]>,
     signal: AbortSignal,
   ) {
-    const filter = `(targetId = ${action.targetId}) (operationType = ${action.type}) (status != DONE)`;
-    const operations = await this.#list(`${this.#zone}/operations`, operation, signal, filter);
+    const operations = await this.#list(`${this.#zone}/operations`, operation, signal);
     const matches = operations.filter(
       ({ targetId, operationType, status }) =>
         targetId === action.targetId && operationType === action.type && status !== "DONE",
@@ -881,7 +865,10 @@ function isManagedAddress(entry: z.infer<typeof address>, id: CloudComputerId) {
   return (
     entry.name === addressName(id) &&
     entry.labels[homeLabel] === id &&
-    entry.labels[managedLabel] === managedBy
+    entry.labels[managedLabel] === managedBy &&
+    entry.addressType === "EXTERNAL" &&
+    entry.networkTier === "PREMIUM" &&
+    (entry.address === undefined || z.ipv4().safeParse(entry.address).success)
   );
 }
 

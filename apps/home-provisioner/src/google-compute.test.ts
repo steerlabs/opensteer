@@ -149,6 +149,38 @@ it("reports an unobserved operation as unknown", async () => {
   expect(reqs(fake, "POST", `${zonePath}/instances/${computeInstanceName}/stop`)).toHaveLength(1);
 });
 
+it("pages Compute inventories without filters and selects journal operations locally", async () => {
+  const fake = new ComputeFake();
+  fake.pageSize = 1;
+  fake.nextInsert = "late";
+  const provider = fake.adapter();
+  await expect(provider.create(computeCreate, signal)).rejects.toBeInstanceOf(
+    ProviderOutcomeUnknown,
+  );
+  expect(await provider.listManaged(signal)).toEqual([]);
+  expect(await provider.listManagedAddresses(signal)).toEqual([computeComputerId]);
+  const write = {
+    kind: "create" as const,
+    token: computeCreate.requestId!,
+    generation: 3,
+    dispatched: true,
+  };
+  expect(await provider.canRecoverWrite(write, signal)).toBe(false);
+  expect(await provider.canRecoverWrite({ ...write, token: "unrelated" }, signal)).toBe(true);
+  const lists = fake.requests.filter(
+    ({ method, path }) => method === "GET" && /\/(addresses|instances|operations)$/u.test(path),
+  );
+  expect(lists.map(({ path }) => path)).toEqual(
+    expect.arrayContaining([
+      `${zonePath}/instances`,
+      `${zonePath}/operations`,
+      `${regionPath}/addresses`,
+    ]),
+  );
+  expect(lists.every(({ query }) => !query.has("filter"))).toBe(true);
+  expect(lists.some(({ query }) => query.has("pageToken"))).toBe(true);
+});
+
 it("paginates and preserves distinct VMs for the same generation and refuses wrong identifiers", async () => {
   const fake = new ComputeFake();
   fake.pageSize = 1;

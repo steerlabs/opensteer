@@ -141,20 +141,8 @@ export class ComputeFake {
 
   #operationRequest(req: RecordedRequest) {
     if (req.path.endsWith("/operations")) {
-      const filter = req.query.get("filter") ?? "";
-      const token = filter.match(/^clientOperationId = "([^"]+)"$/u)?.[1];
-      const [, targetId, operationType] =
-        filter.match(/^\(targetId = (\d+)\) \(operationType = (\w+)\) \(status != DONE\)$/u) ?? [];
       return this.#page(
-        [...this.operations.values()]
-          .map(({ operation }) => operation)
-          .filter((operation) =>
-            token
-              ? operation.clientOperationId === token
-              : operation.targetId === targetId &&
-                operation.operationType === operationType &&
-                operation.status !== "DONE",
-          ),
+        [...this.operations.values()].map(({ operation }) => operation),
         req.query,
       );
     }
