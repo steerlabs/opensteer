@@ -1,5 +1,6 @@
 import { SurfaceLedger } from "@opensteer/browser-runtime-core";
 import { BrowserSurfaceIdSchema, type BrowserSurfaceId } from "@opensteer/protocol/browser";
+import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -16,6 +17,46 @@ import { nativeProfileRequest } from "./native-profile.test-support.js";
 import { ChromiumTabLifecycleBridge } from "./tab-lifecycle-extension.js";
 
 const executablePath = findChromium();
+
+function countDescendantRenderers(rootPid: number): number {
+  const output = execFileSync("ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const rows = output
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const match = /^(\d+)\s+(\d+)\s+(.*)$/u.exec(line.trim());
+      return match ? { pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! } : null;
+    })
+    .filter((row): row is { pid: number; ppid: number; command: string } => row !== null);
+
+  const byParent = new Map<number, typeof rows>();
+  for (const row of rows) {
+    const list = byParent.get(row.ppid) ?? [];
+    list.push(row);
+    byParent.set(row.ppid, list);
+  }
+  let renderers = 0;
+  const visited = new Set<number>([rootPid]);
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const child of byParent.get(current) ?? []) {
+      if (visited.has(child.pid)) continue;
+      visited.add(child.pid);
+      queue.push(child.pid);
+      if (
+        child.command.includes("--type=renderer") &&
+        !child.command.includes("--extension-process")
+      ) {
+        renderers++;
+      }
+    }
+  }
+  return renderers;
+}
 
 async function startFixtureServer() {
   const server = createServer((request, response) => {
@@ -703,21 +744,34 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
       contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
     }
   ).contextHandle.lifecycle;
-  const inv = await lifecycle2.inventory();
-  const profileTabs = inv.filter(
-    (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+  await vi.waitFor(
+    async () => {
+      const inv = await lifecycle2.inventory();
+      const profileTabs = inv.filter(
+        (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+      );
+      expect(profileTabs).toHaveLength(6);
+      const liveProfileTabs = profileTabs.filter((t) => !t.discarded && t.status !== "unloaded");
+      expect(liveProfileTabs).toHaveLength(1);
+      expect(liveProfileTabs[0]!.url).toContain("tab=p0");
+      const parkedTabs = profileTabs.filter((t) => !t.url.includes("tab=p0"));
+      expect(parkedTabs.map((t) => t.status)).toEqual(parkedTabs.map(() => "unloaded"));
+      // Only the claimed tab has a live Playwright Page in the context (zero parked live pages).
+      expect(browser2.context.pages()).toHaveLength(1);
+      expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");
+    },
+    { timeout: 10_000, interval: 100 },
   );
-  expect(profileTabs).toHaveLength(6);
-  const liveProfileTabs = profileTabs.filter((t) => !t.discarded && t.targetId !== null);
-  expect(liveProfileTabs).toHaveLength(1);
-  expect(liveProfileTabs[0]!.url).toContain("tab=p0");
-  const parkedTabs = profileTabs.filter((t) => !t.url.includes("tab=p0"));
-  expect(parkedTabs.map((t) => ({ discarded: t.discarded, status: t.status }))).toEqual(
-    parkedTabs.map(() => ({ discarded: true, status: "unloaded" })),
+  // Once settled, only one renderer serves the profile's tabs (plus at most private anchor + Chromium spare).
+  const rootPid2 = (
+    browser2 as unknown as { playwrightContext: { process(): { pid: number } } }
+  ).playwrightContext.process().pid;
+  await vi.waitFor(
+    () => {
+      expect(countDescendantRenderers(rootPid2)).toBeLessThanOrEqual(3);
+    },
+    { timeout: 5_000, interval: 100 },
   );
-  // Only the claimed tab has a live Playwright Page in the context (zero parked live pages).
-  expect(browser2.context.pages()).toHaveLength(1);
-  expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");
 
   // Claim parked tab 4 later -> wakes with scroll state, sessionStorage, AND page policy script intact!
   await ledger2.openSurface({ surfaceId: surfaceIds[4]! });
@@ -745,4 +799,211 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
     );
     expect(policyMsg, `policy missing on ${id}`).toBe("Passkeys aren't available in this browser.");
   }
+}, 60_000);
+
+it("leaves never-loaded parked tabs untouched with sessionStorage intact and auto-discards any parked tab Chromium loads later (R1)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-r1-auto-discard-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  // 25 tabs exceeds Chromium's BackgroundTabLoadingPolicy kMaxTabsToLoad (20),
+  // so tabs near the start genuinely stay never-loaded while MRU tabs load and auto-discard.
+  const totalTabs = 25;
+  const surfaceIds = Array.from({ length: totalTabs }, (_, i) =>
+    BrowserSurfaceIdSchema.parse(
+      `srf_00000000-0000-4000-8000-000000001a${String(i).padStart(2, "0")}`,
+    ),
+  );
+  const urls = surfaceIds.map((_, i) => `${server.originForSite(i + 1)}/article?tab=a${i}`);
+
+  const browser1 = await launcher.launch(request);
+  cleanup.push(() => browser1.close());
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "lineage-r1-auto" });
+  await ledger1.start();
+  for (let i = 0; i < surfaceIds.length; i++) {
+    await ledger1.openSurface({ surfaceId: surfaceIds[i]! });
+    const live = ledger1.binding(surfaceIds[i]!)!;
+    await live.cdp.send("Page.navigate", { url: urls[i]! });
+    if (i === 0 || i === 2 || i === 3 || i === totalTabs - 2) {
+      await waitLoaded(live.cdp, "/article");
+      if (i === 2 || i === 3 || i === totalTabs - 2) {
+        const y = i === 2 ? 950 : i === 3 ? 1050 : 1250;
+        await evalValue(
+          live.cdp,
+          `window.scrollTo(0, ${y}); sessionStorage.setItem("r1_ss", "val-${i}"); window.scrollY;`,
+        );
+        await live.cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+        await live.cdp.send("Page.setWebLifecycleState", { state: "active" });
+      }
+    }
+  }
+  const rootPid1 = (
+    browser1 as unknown as { playwrightContext: { process(): { pid: number } } }
+  ).playwrightContext.process().pid;
+  expect(countDescendantRenderers(rootPid1)).toBeGreaterThanOrEqual(8);
+  await browser1.context.sessionRestore!.flush!();
+  await vi.waitFor(
+    async () => {
+      const sessionsDir = path.join(directory, "Default", "Sessions");
+      const files = (await readdir(sessionsDir).catch(() => [])).filter((n) =>
+        n.startsWith("Session_"),
+      );
+      expect(files.length).toBeGreaterThan(0);
+      const { readFile } = await import("node:fs/promises");
+      const all = (
+        await Promise.all(files.map((n) => readFile(path.join(sessionsDir, n), "latin1")))
+      ).join("\n");
+      expect(all).toContain("tab=a0");
+      expect(all).toContain("tab=a2");
+      expect(all).toContain("tab=a3");
+      expect(all).toContain(`tab=a${totalTabs - 1}`);
+    },
+    { timeout: 15_000, interval: 100 },
+  );
+  await ledger1.close();
+  await browser1.close();
+
+  const browser2 = await launcher.launch(request);
+  cleanup.push(() => browser2.close());
+
+  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "lineage-r1-auto" });
+  await ledger2.start();
+  cleanup.push(() => ledger2.close());
+  await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
+  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds), "lineage-r1-auto");
+
+  const internal2 = browser2 as unknown as {
+    playwrightContext: {
+      serviceWorkers(): Array<{
+        url(): string;
+        evaluate<T, A>(fn: (arg: A) => Promise<T>, arg: A): Promise<T>;
+      }>;
+    };
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle2 = internal2.contextHandle.lifecycle;
+
+  // Wait for Chromium's startup background-loading wave to settle; every loaded parked tab
+  // must have been auto-discarded while never-loaded tabs stay untouched (discarded: false).
+  let p2Settled: { tabId: number; status: string; discarded: boolean; url: string } | undefined;
+  let p3Settled: { tabId: number; status: string; discarded: boolean; url: string } | undefined;
+  let pMruSettled: { tabId: number; status: string; discarded: boolean; url: string } | undefined;
+  await vi.waitFor(
+    async () => {
+      const inv = await lifecycle2.inventory();
+      const profile = inv.filter(
+        (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+      );
+      expect(profile).toHaveLength(totalTabs);
+      expect(profile.filter((t) => t.status !== "unloaded" && !t.discarded)).toHaveLength(1);
+      expect(browser2.context.pages()).toHaveLength(1);
+      expect(browser2.context.pages()[0]!.url()).toContain("tab=a0");
+      p2Settled = profile.find((t) => t.url.includes("tab=a2"));
+      p3Settled = profile.find((t) => t.url.includes("tab=a3"));
+      pMruSettled = profile.find((t) => t.url.includes(`tab=a${totalTabs - 2}`));
+    },
+    { timeout: 15_000, interval: 100 },
+  );
+  // Exactly one renderer serves the profile's tabs (plus at most private anchor + Chromium spare).
+  const rootPid2 = (
+    browser2 as unknown as { playwrightContext: { process(): { pid: number } } }
+  ).playwrightContext.process().pid;
+  await vi.waitFor(
+    () => {
+      expect(countDescendantRenderers(rootPid2)).toBeLessThanOrEqual(3);
+    },
+    { timeout: 5_000, interval: 100 },
+  );
+  expect(p2Settled).toMatchObject({ status: "unloaded", discarded: false });
+  expect(p3Settled).toMatchObject({ status: "unloaded", discarded: false });
+  expect(pMruSettled).toMatchObject({ status: "unloaded", discarded: true });
+
+  // Simulate Chromium's background loader bringing untouched parked tab 3 alive without any session asking.
+  const helperSw = internal2.playwrightContext
+    .serviceWorkers()
+    .find((w) => w.url().endsWith("/sw.js"))!;
+  expect(helperSw).toBeDefined();
+  await helperSw.evaluate(async (tabId: number) => {
+    await (
+      globalThis as unknown as { chrome: { tabs: { reload(id: number): Promise<void> } } }
+    ).chrome.tabs.reload(tabId);
+  }, p3Settled!.tabId);
+
+  // Without any session asking, the launcher must automatically discard tab 3 once it comes alive
+  // and keep it hidden from context.pages()!
+  let p3AutoDiscardedTabId = 0;
+  await vi.waitFor(
+    async () => {
+      const inv = await lifecycle2.inventory();
+      const tab3 = inv.find((t) => t.url.includes("tab=a3"));
+      expect(tab3).toBeDefined();
+      expect(tab3!.discarded).toBe(true);
+      expect(tab3!.status).toBe("unloaded");
+      expect(browser2.context.pages()).toHaveLength(1);
+      p3AutoDiscardedTabId = tab3!.tabId;
+    },
+    { timeout: 10_000, interval: 100 },
+  );
+
+  // Also verify that if Chromium reloads an ALREADY-discarded parked tab, newTargetId tracking
+  // catches it, hides it, and re-discards it too!
+  await helperSw.evaluate(async (tabId: number) => {
+    await (
+      globalThis as unknown as { chrome: { tabs: { reload(id: number): Promise<void> } } }
+    ).chrome.tabs.reload(tabId);
+  }, p3AutoDiscardedTabId);
+  await vi.waitFor(
+    async () => {
+      const inv = await lifecycle2.inventory();
+      const tab3 = inv.find((t) => t.url.includes("tab=a3"));
+      expect(tab3).toBeDefined();
+      expect(tab3!.discarded).toBe(true);
+      expect(tab3!.status).toBe("unloaded");
+      expect(tab3!.tabId).not.toBe(p3AutoDiscardedTabId);
+      expect(browser2.context.pages()).toHaveLength(1);
+    },
+    { timeout: 10_000, interval: 100 },
+  );
+
+  // Claim never-loaded tab 2 -> comes back with scroll + sessionStorage intact!
+  await ledger2.openSurface({ surfaceId: surfaceIds[2]! });
+  const live2 = ledger2.binding(surfaceIds[2]!)!;
+  expect(live2.page.restoredFromSession).toBe(true);
+  await waitLoaded(live2.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(live2.cdp, "window.scrollY")).toBe(950),
+    { timeout: 5_000, interval: 100 },
+  );
+  expect(await evalValue<string | null>(live2.cdp, `sessionStorage.getItem("r1_ss")`)).toBe(
+    "val-2",
+  );
+
+  // Claim auto-discarded tab 3 -> wakes cleanly with sessionStorage intact (chrome.tabs.reload
+  // itself resets scroll like F5, whereas the real BackgroundTabLoadingPolicy MRU tab below keeps both).
+  await ledger2.openSurface({ surfaceId: surfaceIds[3]! });
+  const live3 = ledger2.binding(surfaceIds[3]!)!;
+  expect(live3.page.restoredFromSession).toBe(true);
+  await waitLoaded(live3.cdp, "/article");
+  expect(await evalValue<string | null>(live3.cdp, `sessionStorage.getItem("r1_ss")`)).toBe(
+    "val-3",
+  );
+
+  // Claim eagerly loaded & auto-discarded MRU tab -> comes back with scroll + sessionStorage intact!
+  await ledger2.openSurface({ surfaceId: surfaceIds[totalTabs - 2]! });
+  const liveMru = ledger2.binding(surfaceIds[totalTabs - 2]!)!;
+  expect(liveMru.page.restoredFromSession).toBe(true);
+  await waitLoaded(liveMru.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(liveMru.cdp, "window.scrollY")).toBe(1250),
+    { timeout: 5_000, interval: 100 },
+  );
+  expect(await evalValue<string | null>(liveMru.cdp, `sessionStorage.getItem("r1_ss")`)).toBe(
+    `val-${totalTabs - 2}`,
+  );
 }, 60_000);

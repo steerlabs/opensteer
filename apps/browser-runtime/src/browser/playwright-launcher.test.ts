@@ -1,5 +1,6 @@
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
+import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { ChildProcess } from "node:child_process";
@@ -1835,6 +1836,212 @@ describe("native Chromium profiles", () => {
     } finally {
       await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
       invSpy.mockRestore();
+      actSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves never-loaded parked tabs untouched on reconcile and auto-discards them if Chromium loads them later (R1)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const { writeTabRestoreSidecar } = await import("./native-profile-storage.js");
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const makePage = (id: string, url: string) => {
+      let closed = false;
+      return {
+        markClosed: () => {
+          closed = true;
+        },
+        page: {
+          url: () => url,
+          isClosed: () => closed,
+          close: vi.fn(async () => {
+            closed = true;
+          }),
+          waitForLoadState: vi.fn(async () => undefined),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _connection: {
+            toImpl: () => ({ delegate: { _targetId: id } }),
+          },
+        } as unknown as Page,
+      };
+    };
+    const helper = makePage("target-helper", "about:blank");
+    const loadedParked = makePage("target-loaded", "https://loaded.test/");
+    const lateBgPage = makePage("target-unloaded", "https://unloaded.test/");
+
+    const surfLoaded = "srf_00000000-0000-4000-8000-00000000a101" as BrowserSurfaceId;
+    const surfUnloaded = "srf_00000000-0000-4000-8000-00000000a102" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfLoaded, url: "https://loaded.test/", lineageId: "lin-1" },
+      { index: 1, surfaceId: surfUnloaded, url: "https://unloaded.test/", lineageId: "lin-1" },
+    ]);
+
+    let tabs: Array<{
+      tabId: number;
+      windowId: number;
+      index: number;
+      url: string;
+      title: string;
+      active: boolean;
+      discarded: boolean;
+      status: string;
+      targetId: string | null;
+    }> = [
+      {
+        tabId: 10,
+        windowId: 1,
+        index: 0,
+        url: "https://loaded.test/",
+        title: "Loaded",
+        active: false,
+        discarded: false,
+        status: "complete",
+        targetId: "target-loaded",
+      },
+      {
+        tabId: 11,
+        windowId: 1,
+        index: 1,
+        url: "https://unloaded.test/",
+        title: "Unloaded",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-unloaded",
+      },
+    ];
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [loadedParked.page],
+      newPage: vi.fn(async () => helper.page),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async () => ({})),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+
+    const discardedIds: number[] = [];
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .mockImplementation(async (tabId) => {
+        discardedIds.push(tabId);
+        const nextId = tabId + 100;
+        const nextTargetId = `target-discarded-${nextId}`;
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? {
+                ...t,
+                tabId: nextId,
+                discarded: true,
+                status: "unloaded",
+                targetId: nextTargetId,
+              }
+            : t,
+        );
+        if (tabId === 10) loadedParked.markClosed();
+        if (tabId === 11) lateBgPage.markClosed();
+        return { newTabId: nextId, newTargetId: nextTargetId };
+      });
+    const actSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId")
+      .mockImplementation(async (tabId) => {
+        const entry = tabs.find((t) => t.tabId === tabId);
+        const targetId = entry?.targetId ?? "target-woke-later";
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? {
+                ...t,
+                active: true,
+                discarded: false,
+                status: "complete",
+                targetId,
+              }
+            : t,
+        );
+        const woken = makePage(targetId, "https://unloaded.test/");
+        for (const handler of pageHandlers) handler(woken.page);
+        return true;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+
+      // Reconcile keeps both saved tabs: ONLY tab 10 (complete) is discarded; tab 11 (unloaded) is untouched!
+      await launched.context.sessionRestore!.reconcile(
+        new Set([surfLoaded, surfUnloaded]),
+        "lin-1",
+      );
+      expect(discardedIds).toEqual([10]);
+      expect(tabs.find((t) => t.tabId === 11)).toMatchObject({
+        discarded: false,
+        status: "unloaded",
+      });
+
+      // Later, Chromium's background loader brings tab 11 alive without any session claiming it.
+      tabs = tabs.map((t) => (t.tabId === 11 ? { ...t, status: "complete" } : t));
+      for (const handler of pageHandlers) handler(lateBgPage.page);
+
+      // Launcher hides it from handOff and automatically discards tab 11 -> 111!
+      await vi.waitFor(
+        () => {
+          expect(discardedIds).toEqual([10, 11]);
+          expect(tabs.find((t) => t.tabId === 111)).toMatchObject({
+            discarded: true,
+            status: "unloaded",
+          });
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+      expect(handedOff).toEqual([]);
+
+      // Even if Chromium reloads the already-discarded tab (111) with its new targetId,
+      // the launcher still hides it from handOff and re-discards 111 -> 211!
+      tabs = tabs.map((t) =>
+        t.tabId === 111 ? { ...t, discarded: false, status: "complete" } : t,
+      );
+      const secondBgPage = makePage("target-discarded-111", "https://unloaded.test/");
+      for (const handler of pageHandlers) handler(secondBgPage.page);
+      await vi.waitFor(
+        () => {
+          expect(discardedIds).toEqual([10, 11, 111]);
+          expect(tabs.find((t) => t.tabId === 211)).toMatchObject({
+            discarded: true,
+            status: "unloaded",
+          });
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+      expect(handedOff).toEqual([]);
+
+      // Later, a session claims surfUnloaded -> wakes auto-discarded tab 211 cleanly!
+      const claimed = await launched.context.sessionRestore!.claim(
+        surfUnloaded,
+        "https://unloaded.test/",
+        undefined,
+        "lin-1",
+      );
+      expect(claimed?.url()).toBe("https://unloaded.test/");
+      expect(actSpy).toHaveBeenCalledWith(211);
+    } finally {
+      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
+      invSpy.mockRestore();
+      discSpy.mockRestore();
       actSpy.mockRestore();
       f.exit();
       await launched?.close();

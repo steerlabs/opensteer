@@ -1250,6 +1250,9 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly neverHandOffTargetIds = new Set<string>();
   private readonly restoredPagesByTabId = new Map<number, Page>();
   private readonly restoredBySurfaceId = new Map<BrowserSurfaceId, MatchedRestoredTab>();
+  private readonly claimingSurfaceIds = new Set<BrowserSurfaceId>();
+  private readonly parkedDiscardTails = new Map<BrowserSurfaceId, Promise<void>>();
+  private parkedAutoDiscardArmed = false;
   private readonly savedTabsBySurfaceId = new Map<
     BrowserSurfaceId,
     { page: PlaywrightPageHandle | null; lineageId: string; sleepingTokenId?: string }
@@ -1336,6 +1339,9 @@ class PlaywrightContextHandle implements BrowserContext {
       this.neverHandOffTargetIds.clear();
       this.restoredPagesByTabId.clear();
       this.restoredBySurfaceId.clear();
+      this.claimingSurfaceIds.clear();
+      this.parkedDiscardTails.clear();
+      this.parkedAutoDiscardArmed = false;
       this.savedTabsBySurfaceId.clear();
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
@@ -1376,10 +1382,7 @@ class PlaywrightContextHandle implements BrowserContext {
               return;
             }
             if (resolvedTargetId && this.neverHandOffTargetIds.has(resolvedTargetId)) {
-              this.hiddenRestoredPages.add(page);
-              if (!this.unclaimedRestoredTargetIds.has(resolvedTargetId)) {
-                void page.close({ runBeforeUnload: false }).catch(() => undefined);
-              }
+              this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
               return;
             }
             if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
@@ -1392,18 +1395,7 @@ class PlaywrightContextHandle implements BrowserContext {
         }
       }
       if (targetId && this.neverHandOffTargetIds.has(targetId)) {
-        this.hiddenRestoredPages.add(page);
-        if (this.unclaimedRestoredTargetIds.has(targetId)) {
-          for (const tab of this.unclaimedRestoredTabs.values()) {
-            if (tab.targetId === targetId) {
-              this.restoredPagesByTabId.set(tab.tabId, page);
-              break;
-            }
-          }
-        } else {
-          // A surviving orphan or failed-removal tab arrived late: close it and never hand it off.
-          void page.close({ runBeforeUnload: false }).catch(() => undefined);
-        }
+        this.handleHiddenRestoredPageArrival(page, targetId);
         return;
       }
       const handle = this.wrap(page);
@@ -1417,10 +1409,7 @@ class PlaywrightContextHandle implements BrowserContext {
             void this.targetIdOfPage(page).then((resolved) => {
               if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
               if (resolved && this.neverHandOffTargetIds.has(resolved)) {
-                this.hiddenRestoredPages.add(page);
-                if (!this.unclaimedRestoredTargetIds.has(resolved)) {
-                  void page.close({ runBeforeUnload: false }).catch(() => undefined);
-                }
+                this.handleHiddenRestoredPageArrival(page, resolved);
                 return;
               }
               for (const listener of this.handOffs) listener(handle, handle.openerHandle);
@@ -1561,9 +1550,11 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * Discards every kept unclaimed restored tab so Chromium's background loader
-   * cannot run unowned pages with the person's cookies before the person opens them.
-   * Any parked tab that stays live and cannot be discarded is closed with evidence.
+   * Discards every kept unclaimed restored tab that Chromium has already loaded
+   * (leaving never-loaded `status: "unloaded"` tabs untouched so their
+   * `sessionStorage` survives and cold-start latency stays low). Arms automatic
+   * discard whenever an unloaded parked tab comes alive later before any session
+   * claims it. Any live parked tab that cannot be discarded is closed with evidence.
    * Returns the count of tabs that could neither be discarded nor confirmed closed.
    */
   private async parkUnclaimedRestoredTabs(): Promise<number> {
@@ -1571,6 +1562,7 @@ class PlaywrightContextHandle implements BrowserContext {
     let failedRemovals = 0;
     const inventory = await this.lifecycle.inventory().catch(() => null);
     if (!inventory) {
+      this.parkedAutoDiscardArmed = true;
       for (const [surfaceId, entry] of this.restoredBySurfaceId) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
@@ -1587,6 +1579,7 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     const byTabId = new Map(inventory.map((tab) => [tab.tabId, tab]));
     for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
+      if (this.claimingSurfaceIds.has(surfaceId)) continue;
       const current = byTabId.get(entry.tab.tabId);
       if (!current) {
         this.restoredBySurfaceId.delete(surfaceId);
@@ -1598,46 +1591,251 @@ class PlaywrightContextHandle implements BrowserContext {
         this.restoredPagesByTabId.delete(entry.tab.tabId);
         continue;
       }
-      if (current.targetId) this.neverHandOffTargetIds.add(current.targetId);
+      if (current.targetId) {
+        this.neverHandOffTargetIds.add(current.targetId);
+        this.unclaimedRestoredTargetIds.add(current.targetId);
+      }
       if (current.discarded) {
         this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
         this.unclaimedRestoredTabs.set(current.tabId, current);
         this.restoredPagesByTabId.delete(current.tabId);
         continue;
       }
-      if (current.active) {
-        await this.activatePrivateAnchor();
-      }
-      if (current.status !== "unloaded" && current.targetId) {
-        await this.freezeRestoredTabBeforeDiscard(current.tabId, current.targetId, current.status);
-      }
-      const newTabId = await this.lifecycle.discardByTabId(current.tabId).catch(() => null);
-      if (newTabId !== null) {
-        this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) {
-          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-          this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        }
-        if (current.targetId) {
-          this.unclaimedRestoredTargetIds.delete(current.targetId);
-          this.neverHandOffTargetIds.delete(current.targetId);
-        }
-        this.restoredPagesByTabId.delete(entry.tab.tabId);
-        const parked: ChromiumTabEntry = {
-          ...current,
-          tabId: newTabId,
-          active: false,
-          discarded: true,
-          status: "unloaded",
-          targetId: null,
-        };
-        this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: parked });
-        this.unclaimedRestoredTabs.set(newTabId, parked);
+      const hasLivePage =
+        this.restoredPagesByTabId.has(current.tabId) ||
+        (current.targetId !== null &&
+          this.context
+            .pages()
+            .some(
+              (candidate) =>
+                candidate !== this.privatePage &&
+                !candidate.isClosed() &&
+                syncTargetIdOfPage(candidate) === current.targetId,
+            ));
+      if (current.status === "unloaded" && !current.active && !hasLivePage) {
+        // Inert unloaded tab: leave untouched so Chromium keeps its SessionStorageNamespace
+        // intact. If Chromium's background loader brings it alive later before a session claims
+        // it, handleHiddenRestoredPageArrival discards it immediately.
+        this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
+        this.unclaimedRestoredTabs.set(current.tabId, current);
         continue;
       }
-      const recheck = await this.lifecycle.inventory().catch(() => null);
-      const after = recheck?.find((tab) => tab.tabId === current.tabId);
-      if (!after) {
+      failedRemovals += await this.enqueueParkedDiscard(surfaceId, { initialCurrent: current });
+    }
+    this.parkedAutoDiscardArmed = true;
+    // Sweep any parked tab whose Playwright Page arrived while the loop above ran.
+    for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
+      if (this.claimingSurfaceIds.has(surfaceId) || entry.tab.discarded) continue;
+      const arrivedPage = this.restoredPagesByTabId.get(entry.tab.tabId);
+      if (arrivedPage && !arrivedPage.isClosed()) {
+        void this.enqueueParkedDiscard(surfaceId, { page: arrivedPage, waitForLoad: true });
+      }
+    }
+    return failedRemovals;
+  }
+
+  private handleHiddenRestoredPageArrival(page: Page, targetId: string): void {
+    this.hiddenRestoredPages.add(page);
+    if (!this.unclaimedRestoredTargetIds.has(targetId)) {
+      // A surviving orphan or failed-removal tab arrived late: close it and never hand it off.
+      void page.close({ runBeforeUnload: false }).catch(() => undefined);
+      return;
+    }
+    let matchedSurfaceId: BrowserSurfaceId | undefined;
+    for (const [surfaceId, entry] of this.restoredBySurfaceId) {
+      if (entry.tab.targetId === targetId) {
+        matchedSurfaceId = surfaceId;
+        this.restoredPagesByTabId.set(entry.tab.tabId, page);
+        break;
+      }
+    }
+    if (!matchedSurfaceId) {
+      for (const tab of this.unclaimedRestoredTabs.values()) {
+        if (tab.targetId === targetId) {
+          this.restoredPagesByTabId.set(tab.tabId, page);
+          break;
+        }
+      }
+      return;
+    }
+    if (this.parkedAutoDiscardArmed && !this.claimingSurfaceIds.has(matchedSurfaceId)) {
+      void this.enqueueParkedDiscard(matchedSurfaceId, { page, waitForLoad: true });
+    }
+  }
+
+  /**
+   * Serializes every discard attempt for one parked `surfaceId` so reconcile,
+   * background-loader arrivals, and `claimSavedRestoredTab` never race on the
+   * same tabId. Always re-reads the current map entry before touching Chromium.
+   */
+  private enqueueParkedDiscard(
+    surfaceId: BrowserSurfaceId,
+    options?: {
+      readonly page?: Page;
+      readonly waitForLoad?: boolean;
+      readonly initialCurrent?: ChromiumTabEntry;
+    },
+  ): Promise<number> {
+    if (this.closed || !this.lifecycle || this.claimingSurfaceIds.has(surfaceId)) {
+      return Promise.resolve(0);
+    }
+    const hadPriorTail = this.parkedDiscardTails.has(surfaceId);
+    const prev = this.parkedDiscardTails.get(surfaceId) ?? Promise.resolve();
+    const run = prev
+      .catch(() => undefined)
+      .then(async (): Promise<number> => {
+        if (
+          this.closed ||
+          !this.lifecycle ||
+          this.claimingSurfaceIds.has(surfaceId) ||
+          !this.restoredBySurfaceId.has(surfaceId)
+        ) {
+          return 0;
+        }
+        const page = options?.page;
+        if (
+          options?.waitForLoad &&
+          page &&
+          !page.isClosed() &&
+          typeof page.waitForLoadState === "function"
+        ) {
+          // Let Chromium finish restoring PageState and attaching SessionStorageNamespace
+          // (bounded tightly) so discarding keeps scroll, form controls, and sessionStorage.
+          await page.waitForLoadState("load", { timeout: 1_000 }).catch(() => undefined);
+        }
+        if (
+          this.closed ||
+          !this.lifecycle ||
+          this.claimingSurfaceIds.has(surfaceId) ||
+          !this.restoredBySurfaceId.has(surfaceId)
+        ) {
+          return 0;
+        }
+        const entry = this.restoredBySurfaceId.get(surfaceId);
+        if (!entry) return 0;
+        let current: ChromiumTabEntry | undefined;
+        if (
+          !hadPriorTail &&
+          !options?.waitForLoad &&
+          options?.initialCurrent &&
+          options.initialCurrent.tabId === entry.tab.tabId
+        ) {
+          current = options.initialCurrent;
+        } else {
+          const inv = await this.lifecycle.inventory().catch(() => null);
+          current = inv?.find((tab) => tab.tabId === entry.tab.tabId);
+        }
+        if (!current) {
+          if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
+            this.restoredBySurfaceId.delete(surfaceId);
+            this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+            if (entry.tab.targetId) {
+              this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+              this.neverHandOffTargetIds.delete(entry.tab.targetId);
+            }
+            this.restoredPagesByTabId.delete(entry.tab.tabId);
+          }
+          return 0;
+        }
+        if (current.discarded) {
+          if (current.targetId) {
+            this.unclaimedRestoredTargetIds.add(current.targetId);
+            this.neverHandOffTargetIds.add(current.targetId);
+          }
+          this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
+          this.unclaimedRestoredTabs.set(current.tabId, current);
+          this.restoredPagesByTabId.delete(current.tabId);
+          return 0;
+        }
+        return await this.discardParkedRestoredTab(surfaceId, entry, current, {
+          skipLoadWait: Boolean(options?.waitForLoad),
+        });
+      });
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    const tracked = tail.finally(() => {
+      if (this.parkedDiscardTails.get(surfaceId) === tracked) {
+        this.parkedDiscardTails.delete(surfaceId);
+      }
+    });
+    this.parkedDiscardTails.set(surfaceId, tracked);
+    return run;
+  }
+
+  private async discardParkedRestoredTab(
+    surfaceId: BrowserSurfaceId,
+    entry: MatchedRestoredTab,
+    current: ChromiumTabEntry,
+    options?: { readonly skipLoadWait?: boolean },
+  ): Promise<number> {
+    if (!this.lifecycle || this.closed) return 0;
+    if (this.claimingSurfaceIds.has(surfaceId) || !this.restoredBySurfaceId.has(surfaceId)) {
+      return 0;
+    }
+    if (current.active) {
+      await this.activatePrivateAnchor();
+    }
+    let frozePage: Page | undefined;
+    if (current.status !== "unloaded" && current.targetId) {
+      frozePage = await this.freezeRestoredTabBeforeDiscard(
+        current.tabId,
+        current.targetId,
+        current.status,
+        options?.skipLoadWait,
+      );
+    }
+    if (
+      this.closed ||
+      this.claimingSurfaceIds.has(surfaceId) ||
+      !this.restoredBySurfaceId.has(surfaceId)
+    ) {
+      if (frozePage && !frozePage.isClosed() && this.claimingSurfaceIds.has(surfaceId)) {
+        await this.unfreezeRestoredPage(frozePage);
+      }
+      return 0;
+    }
+    const discardResult =
+      typeof this.lifecycle.discardByTabIdDetailed === "function"
+        ? await this.lifecycle.discardByTabIdDetailed(current.tabId).catch(() => null)
+        : await this.lifecycle
+            .discardByTabId(current.tabId)
+            .then((newTabId) => (newTabId !== null ? { newTabId, newTargetId: null } : null))
+            .catch(() => null);
+    if (discardResult !== null) {
+      const { newTabId, newTargetId } = discardResult;
+      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+      if (entry.tab.targetId) {
+        this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+        this.neverHandOffTargetIds.delete(entry.tab.targetId);
+      }
+      if (current.targetId) {
+        this.unclaimedRestoredTargetIds.delete(current.targetId);
+        this.neverHandOffTargetIds.delete(current.targetId);
+      }
+      this.restoredPagesByTabId.delete(entry.tab.tabId);
+      if (newTargetId) {
+        this.unclaimedRestoredTargetIds.add(newTargetId);
+        this.neverHandOffTargetIds.add(newTargetId);
+      }
+      const parked: ChromiumTabEntry = {
+        ...current,
+        tabId: newTabId,
+        active: false,
+        discarded: true,
+        status: "unloaded",
+        targetId: newTargetId,
+      };
+      this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: parked });
+      this.unclaimedRestoredTabs.set(newTabId, parked);
+      this.scheduleSidecarWrite();
+      return 0;
+    }
+    const recheck = await this.lifecycle.inventory().catch(() => null);
+    const after = recheck?.find((tab) => tab.tabId === current.tabId);
+    if (!after) {
+      if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
         if (entry.tab.targetId) {
@@ -1646,32 +1844,35 @@ class PlaywrightContextHandle implements BrowserContext {
         }
         if (current.targetId) this.neverHandOffTargetIds.delete(current.targetId);
         this.restoredPagesByTabId.delete(entry.tab.tabId);
-        continue;
       }
-      if (after.discarded || (after.targetId === null && after.status === "unloaded")) {
-        this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: after });
-        this.unclaimedRestoredTabs.set(after.tabId, after);
-        this.restoredPagesByTabId.delete(after.tabId);
-        continue;
-      }
-      // Still live and could not be discarded: close so it opens by address when claimed.
-      this.restoredBySurfaceId.delete(surfaceId);
-      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-      if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+      return 0;
+    }
+    if (after.discarded || (after.targetId === null && after.status === "unloaded")) {
       if (after.targetId) {
-        this.unclaimedRestoredTargetIds.delete(after.targetId);
+        this.unclaimedRestoredTargetIds.add(after.targetId);
         this.neverHandOffTargetIds.add(after.targetId);
       }
-      this.restoredPagesByTabId.delete(entry.tab.tabId);
-      const confirmed = await this.removeTabWithEvidence(after.tabId, after.targetId);
-      if (confirmed) {
-        if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-        if (after.targetId) this.neverHandOffTargetIds.delete(after.targetId);
-      } else {
-        failedRemovals++;
-      }
+      this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: after });
+      this.unclaimedRestoredTabs.set(after.tabId, after);
+      this.restoredPagesByTabId.delete(after.tabId);
+      return 0;
     }
-    return failedRemovals;
+    // Still live and could not be discarded: close so it opens by address when claimed.
+    this.restoredBySurfaceId.delete(surfaceId);
+    this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+    if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+    if (after.targetId) {
+      this.unclaimedRestoredTargetIds.delete(after.targetId);
+      this.neverHandOffTargetIds.add(after.targetId);
+    }
+    this.restoredPagesByTabId.delete(entry.tab.tabId);
+    const confirmed = await this.removeTabWithEvidence(after.tabId, after.targetId);
+    if (confirmed) {
+      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+      if (after.targetId) this.neverHandOffTargetIds.delete(after.targetId);
+      return 0;
+    }
+    return 1;
   }
 
   /**
@@ -1682,7 +1883,8 @@ class PlaywrightContextHandle implements BrowserContext {
     tabId: number,
     targetId: string,
     status: string,
-  ): Promise<void> {
+    skipLoadWait = false,
+  ): Promise<Page | undefined> {
     const findPage = (): Page | undefined => {
       const cached = this.restoredPagesByTabId.get(tabId);
       if (cached && !cached.isClosed()) return cached;
@@ -1693,7 +1895,7 @@ class PlaywrightContextHandle implements BrowserContext {
       return undefined;
     };
     let page = findPage();
-    if (status === "loading" || !page) {
+    if (!skipLoadWait && (status === "loading" || !page)) {
       // Chromium's BackgroundTabLoadingPolicy may have started loading a few restored tabs
       // before reconcile runs. Bound the wait tightly so slow remote sites never stall
       // reconciliation while fast pages finish restoring Blink FormController state before freeze.
@@ -1709,7 +1911,7 @@ class PlaywrightContextHandle implements BrowserContext {
         }
         const inv = await this.lifecycle?.inventory().catch(() => null);
         const entry = inv?.find((tab) => tab.tabId === tabId);
-        if (!entry || entry.discarded || entry.status === "unloaded") return;
+        if (!entry || entry.discarded || entry.status === "unloaded") return undefined;
         if (entry.status === "complete") {
           page = findPage();
           if (page) break;
@@ -1718,7 +1920,7 @@ class PlaywrightContextHandle implements BrowserContext {
       }
     }
     page ??= findPage();
-    if (!page || page.isClosed()) return;
+    if (!page || page.isClosed()) return undefined;
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
@@ -1727,8 +1929,27 @@ class PlaywrightContextHandle implements BrowserContext {
       await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
         timeoutError: () => new Error("Freeze parked tab timed out."),
       });
+      return page;
     } catch {
       // Best-effort flush; discard still proceeds so no unowned page stays live.
+      return undefined;
+    } finally {
+      await session?.detach().catch(() => undefined);
+    }
+  }
+
+  private async unfreezeRestoredPage(page: Page): Promise<void> {
+    if (page.isClosed()) return;
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      session = await withTimeout(this.context.newCDPSession(page), 1_000, {
+        timeoutError: () => new Error("Unfreeze parked tab CDP attach timed out."),
+      });
+      await withTimeout(session.send("Page.setWebLifecycleState", { state: "active" }), 1_000, {
+        timeoutError: () => new Error("Unfreeze parked tab timed out."),
+      });
+    } catch {
+      // Best-effort unfreeze when a session claims a tab mid-freeze.
     } finally {
       await session?.detach().catch(() => undefined);
     }
@@ -1740,34 +1961,44 @@ class PlaywrightContextHandle implements BrowserContext {
     own?: (page: BrowserPage) => void,
     lineageId?: string,
   ): Promise<BrowserPage | null> {
-    const entry = this.restoredBySurfaceId.get(surfaceId);
-    if (!entry || !this.lifecycle) return null;
-    this.restoredBySurfaceId.delete(surfaceId);
-    if (
-      (url !== undefined && entry.tab.url !== url) ||
-      (lineageId !== undefined && entry.lineageId !== lineageId)
-    ) {
-      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-      if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-      this.restoredPagesByTabId.delete(entry.tab.tabId);
-      const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
-      if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      this.scheduleSidecarWrite();
-      return null;
-    }
+    if (!this.lifecycle || !this.restoredBySurfaceId.has(surfaceId)) return null;
+    this.claimingSurfaceIds.add(surfaceId);
     try {
-      const restoredPage = await this.claimRestoredTab(entry.tab);
-      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      const handle = this.wrap(restoredPage);
-      handle.restoredFromSession = true;
-      this.trackSavedTab(surfaceId, handle, entry.lineageId);
-      own?.(handle);
-      return handle;
-    } catch {
-      const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
-      if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
-      this.scheduleSidecarWrite();
-      return null;
+      const pendingPark = this.parkedDiscardTails.get(surfaceId);
+      if (pendingPark) {
+        await pendingPark.catch(() => undefined);
+      }
+      const entry = this.restoredBySurfaceId.get(surfaceId);
+      if (!entry) return null;
+      this.restoredBySurfaceId.delete(surfaceId);
+      if (
+        (url !== undefined && entry.tab.url !== url) ||
+        (lineageId !== undefined && entry.lineageId !== lineageId)
+      ) {
+        this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+        if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+        this.restoredPagesByTabId.delete(entry.tab.tabId);
+        const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+        if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        this.scheduleSidecarWrite();
+        return null;
+      }
+      try {
+        const restoredPage = await this.claimRestoredTab(entry.tab);
+        if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        const handle = this.wrap(restoredPage);
+        handle.restoredFromSession = true;
+        this.trackSavedTab(surfaceId, handle, entry.lineageId);
+        own?.(handle);
+        return handle;
+      } catch {
+        const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+        if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        this.scheduleSidecarWrite();
+        return null;
+      }
+    } finally {
+      this.claimingSurfaceIds.delete(surfaceId);
     }
   }
 

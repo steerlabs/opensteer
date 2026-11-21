@@ -449,7 +449,7 @@ integration("Linux cold-start session restore through Home BrowserService", () =
     expect(nonBlankAfterA.some((t) => t.url.includes("/deleted-page"))).toBe(false);
     expect(nonBlankAfterA).toHaveLength(2);
     const parkedB = nonBlankAfterA.find((t) => t.url.includes("tab=b"));
-    expect(parkedB).toMatchObject({ discarded: true, status: "unloaded" });
+    expect(parkedB).toMatchObject({ status: "unloaded" });
     expect(browser2.context.pages()).toHaveLength(1);
     expect(browser2.context.pages()[0]!.url()).toContain("tab=a");
 
@@ -963,7 +963,6 @@ integration("Linux cold-start session restore through Home BrowserService", () =
     expect(nonBlank2).toHaveLength(2);
     expect(nonBlank2.filter((t) => t.url.includes("tab=shared"))).toHaveLength(1);
     expect(nonBlank2.find((t) => t.url.includes("tab=parked"))).toMatchObject({
-      discarded: true,
       status: "unloaded",
     });
     expect(browser2.context.pages()).toHaveLength(1);
@@ -1165,4 +1164,283 @@ integration("Linux cold-start session restore through Home BrowserService", () =
       false,
     );
   }, 60_000);
+
+  it("preserves sessionStorage, scroll, and draft on a never-loaded saved tab while discarding eagerly loaded parked tabs (R1)", async () => {
+    const fixture = await createStoreFixture();
+    const f = await fixture.startRunFixture("linux-r1-never-loaded");
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+
+    const site = await startFixtureServer();
+    const scratch = await mkdtemp(path.join(tmpdir(), "os-r1-never-loaded-"));
+    const profileRoot = path.join(scratch, "profiles");
+    const filesRoot = path.join(scratch, "files");
+    const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
+    const keyPair = generateKeyPairSync("ed25519");
+    const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const keys: BrowserAttachPublicKey[] = [{ keyId: "test", publicKeyPem }];
+    const signer = new BrowserAttachTicketSigner({
+      keyId: "test",
+      privateKey: keyPair.privateKey,
+    });
+
+    const cleanups: (() => Promise<unknown>)[] = [
+      () => site.close(),
+      () => rm(scratch, { recursive: true, force: true }),
+    ];
+    await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+      close: async () => {
+        for (const fn of cleanups.reverse()) await fn().catch(() => undefined);
+      },
+    }));
+
+    const startStack = async (tag: string) => {
+      const launcher = new PlaywrightChromiumLauncher({
+        executablePath: chromium.executablePath(),
+        headless: true,
+        chromiumSandbox: false,
+        args: ["--no-proxy-server"],
+      });
+      let lastBrowser: LaunchedBrowser | undefined;
+      let lastDirectory: string | undefined;
+      const runtime = new BrowserRuntime({
+        runtimeId: "linux-r1-runtime",
+        launcher: {
+          hostCost: launcher.hostCost,
+          localProfiles: launcher.localProfiles,
+          launch: async (request, signal) => {
+            if (request.storage.kind === "local") lastDirectory = request.storage.directory;
+            lastBrowser = await launcher.launch(request, signal);
+            return lastBrowser;
+          },
+        },
+        localProfiles: { root: profileRoot },
+        sessionFilesRoot: path.join(filesRoot, tag),
+        ticketVerifier: await Ed25519AttachTicketVerifier.create({
+          replayLedgerPath: path.join(scratch, `private-${tag}`, "replay.json"),
+          resolvePublicKey: (id) => keys.find((k) => k.keyId === id)?.publicKeyPem ?? null,
+        }),
+      });
+      await runtime.prepare();
+      const bridgeToken = randomBytes(16).toString("base64url");
+      const server = new BrowserRuntimeServer({
+        runtime,
+        port: 0,
+        relayBridge: { token: bridgeToken, updateAttachKeys: () => undefined },
+      });
+      const addr = await server.start();
+      const storage = runtime.localProfileStorage!;
+      const browser = new BrowserService({
+        deploymentId: f.deploymentId,
+        hostOrigin: new URL("http://127.0.0.1"),
+        personal: true,
+        repository: personalBrowserRepository(store),
+        localProfiles: new BrowserLocalProfiles({
+          deploymentId: f.deploymentId,
+          baseUrl: new URL("http://127.0.0.1"),
+          repository: store,
+        }),
+        tabs,
+        tabPlaces: { write: async () => false, notice: () => {} },
+        signer,
+        onSessionsChanged: () => {},
+        onError: () => {},
+        targetResolver: {
+          placements: () => [
+            {
+              kind: "runner",
+              runnerId: f.runnerId,
+              runtimeId: "linux-r1-runtime",
+              label: "Linux Home",
+              available: true,
+              agents: true,
+              environmentIds: [f.environmentId],
+            },
+          ],
+          resolve: (placement) =>
+            placement.runnerId === f.runnerId
+              ? {
+                  runtimeId: "linux-r1-runtime",
+                  placementKey: "linux-r1",
+                  cdpBoundary: true,
+                  sharedControl: true,
+                  targetControl: true,
+                  surfaceState: 1,
+                  tabRestoreVersion: true,
+                  actorClaim: true,
+                  localProfileStorage: storage,
+                  connect: (ticket) =>
+                    new BridgeRuntimeSocket(
+                      addr.port,
+                      bridgeToken,
+                      Buffer.from(JSON.stringify(keys)).toString("base64url"),
+                      ticket,
+                    ),
+                }
+              : undefined,
+        },
+      });
+      const close = async () => {
+        await runtime.shutdown().catch(() => undefined);
+        await server.close().catch(() => undefined);
+        await browser.close().catch(() => undefined);
+      };
+      cleanups.push(close);
+      return {
+        runtime,
+        server,
+        browser,
+        close,
+        getBrowser: () => lastBrowser!,
+        getDirectory: () => lastDirectory!,
+      };
+    };
+
+    const stack1 = await startStack("r1-run1");
+    const profile = await store.createBrowserProfile({
+      ownerId: f.userId,
+      name: "Personal",
+      homeRunnerId: f.runnerId,
+      idempotencyKey: "profile-r1-never-loaded",
+    });
+    const person = { kind: "person", ownerId: f.userId } as const;
+    // 25 tabs exceeds Chromium's BackgroundTabLoadingPolicy kMaxTabsToLoad (20),
+    // ensuring tab 2 genuinely stays never-loaded even on high-RAM hosts while MRU tab 23 loads.
+    const totalTabs = 25;
+    const mruIndex = totalTabs - 2;
+    const openedWrites = [];
+    for (let i = 0; i < totalTabs; i++) {
+      const url = `${site.originForSite(i + 1)}/article?tab=t${i}`;
+      const write = await stack1.browser.pageTabs.open(
+        person,
+        { kind: "page", profileId: profile.id, url },
+        `open-r1-${i}`,
+      );
+      await tabs.open(write, `open-r1-${i}`);
+      await stack1.browser.pageTabs.admitted!(write);
+      openedWrites.push(write);
+      if (i === 0 || i === 2 || i === mruIndex) {
+        await waitPageLoaded(stack1.getBrowser(), `tab=t${i}`);
+        if (i === 2 || i === mruIndex) {
+          const scrollY = i === 2 ? 950 : 1150;
+          const page = stack1
+            .getBrowser()
+            .context.pages()
+            .find((p) => p.url().includes(`tab=t${i}`))!;
+          const cdp = await page.cdp();
+          await evalOnPage(
+            stack1.getBrowser(),
+            `tab=t${i}`,
+            "document.getElementById('draft').focus()",
+          );
+          await cdp.send("Input.insertText", { text: `draft-${i}` });
+          await evalOnPage(
+            stack1.getBrowser(),
+            `tab=t${i}`,
+            `document.activeElement.blur(); window.scrollTo(0, ${scrollY}); sessionStorage.setItem("k", "ss-${i}"); window.scrollY;`,
+          );
+          await cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+          await cdp.send("Page.setWebLifecycleState", { state: "active" });
+        }
+      } else {
+        await vi.waitFor(
+          () =>
+            expect(
+              stack1
+                .getBrowser()
+                .context.pages()
+                .some((p) => p.url().includes(`tab=t${i}`)),
+            ).toBe(true),
+          { timeout: 10_000, interval: 50 },
+        );
+      }
+    }
+
+    await waitSessionFilesContain(stack1.getDirectory(), [
+      "tab=t0",
+      "tab=t2",
+      `tab=t${mruIndex}`,
+      `tab=t${totalTabs - 1}`,
+    ]);
+    await stack1.close();
+
+    // Run 2: cold restart through Home's real BrowserService, activating ONLY tab 0.
+    const stack2 = await startStack("r1-run2");
+    const row0 = (await tabs.get(f.userId, openedWrites[0]!.id))!;
+    await stack2.browser.pageTabs.activate(f.userId, row0, "activate-r1-0");
+    await waitPageLoaded(stack2.getBrowser(), "tab=t0");
+
+    const browser2 = stack2.getBrowser();
+    const lifecycle2 = (
+      browser2 as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+
+    // Wait for Chromium's startup background-loading wave to settle; every loaded parked tab
+    // must be auto-discarded so exactly one profile tab is live (tab 0).
+    let tab2Parked: { status: string; discarded: boolean; url: string } | undefined;
+    let tabMruParked: { status: string; discarded: boolean; url: string } | undefined;
+    await vi.waitFor(
+      async () => {
+        const inv2 = await lifecycle2.inventory();
+        const profileTabs2 = inv2.filter(
+          (t) =>
+            t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+        );
+        expect(profileTabs2).toHaveLength(totalTabs);
+        const loaded2 = profileTabs2.filter((t) => t.status !== "unloaded" && !t.discarded);
+        expect(loaded2).toHaveLength(1);
+        expect(loaded2[0]!.url).toContain("tab=t0");
+        expect(browser2.context.pages()).toHaveLength(1);
+        expect(browser2.context.pages()[0]!.url()).toContain("tab=t0");
+        tab2Parked = profileTabs2.find((t) => t.url.includes("tab=t2"));
+        tabMruParked = profileTabs2.find((t) => t.url.includes(`tab=t${mruIndex}`));
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+
+    // Tab 2 (never loaded by Chromium at startup) must stay untouched (not discarded) until claimed,
+    // and when claimed through BrowserService must come back with sessionStorage, scroll, and draft!
+    expect(tab2Parked).toMatchObject({ status: "unloaded", discarded: false });
+    expect(tabMruParked).toMatchObject({ status: "unloaded", discarded: true });
+
+    const row2 = (await tabs.get(f.userId, openedWrites[2]!.id))!;
+    await stack2.browser.pageTabs.activate(f.userId, row2, "activate-r1-2");
+    await waitPageLoaded(browser2, "tab=t2");
+    const page2 = browser2.context.pages().find((p) => p.url().includes("tab=t2"))!;
+    expect(page2.restoredFromSession).toBe(true);
+    await vi.waitFor(
+      async () => expect(await evalOnPage<number>(browser2, "tab=t2", "window.scrollY")).toBe(950),
+      { timeout: 5_000, interval: 50 },
+    );
+    expect(
+      await evalOnPage<string>(browser2, "tab=t2", "document.getElementById('draft').value"),
+    ).toBe("draft-2");
+    expect(await evalOnPage<string | null>(browser2, "tab=t2", "window.__ssAtLoad")).toBe("ss-2");
+
+    // MRU tab (eagerly loaded by Chromium then discarded by R1) must also keep all state!
+    const rowMru = (await tabs.get(f.userId, openedWrites[mruIndex]!.id))!;
+    await stack2.browser.pageTabs.activate(f.userId, rowMru, `activate-r1-${mruIndex}`);
+    await waitPageLoaded(browser2, `tab=t${mruIndex}`);
+    const pageMru = browser2.context.pages().find((p) => p.url().includes(`tab=t${mruIndex}`))!;
+    expect(pageMru.restoredFromSession).toBe(true);
+    await vi.waitFor(
+      async () =>
+        expect(await evalOnPage<number>(browser2, `tab=t${mruIndex}`, "window.scrollY")).toBe(1150),
+      { timeout: 5_000, interval: 50 },
+    );
+    expect(
+      await evalOnPage<string>(
+        browser2,
+        `tab=t${mruIndex}`,
+        "document.getElementById('draft').value",
+      ),
+    ).toBe(`draft-${mruIndex}`);
+    expect(await evalOnPage<string | null>(browser2, `tab=t${mruIndex}`, "window.__ssAtLoad")).toBe(
+      `ss-${mruIndex}`,
+    );
+  }, 90_000);
 });

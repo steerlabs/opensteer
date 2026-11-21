@@ -59,9 +59,21 @@ globalThis.__opensteer = {
   },
   async discardByTabId(tabId) {
     const updated = await chrome.tabs.discard(tabId);
+    const newTabId = typeof updated?.id === "number" ? updated.id : null;
+    let newTargetId = null;
+    if (newTabId !== null) {
+      const targets = await chrome.debugger.getTargets();
+      for (const target of targets) {
+        if (target.type === "page" && target.tabId === newTabId && typeof target.id === "string") {
+          newTargetId = target.id;
+          break;
+        }
+      }
+    }
     return {
       ok: Boolean(updated?.discarded),
-      newTabId: typeof updated?.id === "number" ? updated.id : null,
+      newTabId,
+      newTargetId,
     };
   },
   async activateByTabId(tabId) {
@@ -101,6 +113,7 @@ const inventorySchema = z.array(tabEntrySchema);
 const discardResultSchema = z.object({
   ok: z.boolean(),
   newTabId: z.number().int().nullable(),
+  newTargetId: z.string().nullable().optional(),
 });
 const activateResultSchema = z.object({
   ok: z.boolean(),
@@ -301,7 +314,9 @@ export class ChromiumTabLifecycleBridge {
     return tabs.find((tab) => tab.targetId === targetId)?.tabId ?? null;
   }
 
-  async discardByTabId(tabId: number): Promise<number | null> {
+  async discardByTabIdDetailed(
+    tabId: number,
+  ): Promise<{ readonly newTabId: number; readonly newTargetId: string | null } | null> {
     const raw = await this.callWorker((worker) =>
       worker.evaluate(
         (id) =>
@@ -314,7 +329,16 @@ export class ChromiumTabLifecycleBridge {
       ),
     );
     const parsed = discardResultSchema.parse(raw);
-    return parsed.ok ? parsed.newTabId : null;
+    if (!parsed.ok || parsed.newTabId === null) return null;
+    return {
+      newTabId: parsed.newTabId,
+      newTargetId: parsed.newTargetId ?? null,
+    };
+  }
+
+  async discardByTabId(tabId: number): Promise<number | null> {
+    const result = await this.discardByTabIdDetailed(tabId);
+    return result ? result.newTabId : null;
   }
 
   async activateByTabId(tabId: number): Promise<boolean> {

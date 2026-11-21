@@ -58,12 +58,14 @@ restarts or crashes (plus an atomic full-strip `opensteer-tabs.json` sidecar hol
 Home tab ids, addresses, real Home lineage ids, and explicit placeholders for unsaved/agent tabs,
 never typed text or page content). As in a desktop browser, typed text in standard form
 fields of durable tabs in the person's profile stays on disk in Chromium's `Default/Sessions/` files
-while those tabs exist; passwords typed into a form are not kept there. On cold start, the first
-restoring lineage reconciles restored tabs against the Home's saved tab list — matching only exact
-unshifted full-strip slots or unique addresses within the same Home lineage, holding kept parked
-saved tabs `discarded` so Chromium never runs unowned background pages, closing unowned, deleted,
-agent and non-restoring tabs with evidence (failing closed if launch inventory or removal fails and
-never handing off a surviving restored tab), and opening unmatched Home tabs by address.
+while those tabs exist; passwords typed into a form are not kept there. On cold start, the first restoring lineage reconciles restored tabs against the Home's saved tab
+list — matching only exact unshifted full-strip slots or unique addresses within the same Home
+lineage, discarding any kept parked saved tab Chromium has loaded (while leaving never-loaded
+`unloaded` tabs untouched so their `sessionStorage` survives, and automatically discarding any
+parked tab Chromium loads later before a session claims it so no unowned background page stays
+running), closing unowned, deleted, agent and non-restoring tabs with evidence (failing closed if
+launch inventory or removal fails and never handing off a surviving restored tab), and opening
+unmatched Home tabs by address.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
 Guest sessions promise only a descriptor and URL reload.

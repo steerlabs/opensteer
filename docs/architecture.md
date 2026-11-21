@@ -347,9 +347,10 @@ On Linux and Opensteer Cloud Computers, a native browser profile keeps Chromium'
 (`Default/Sessions/`) and a full-strip id, address, Home lineage and placeholder sidecar
 (`opensteer-tabs.json`) inside the profile directory so durable person tabs survive orderly runtime
 restarts or crashes with scroll, standard form controls, navigation history and `sessionStorage`,
-reconciled against the Home's saved tab list for the first restoring lineage (holding parked saved
-tabs `discarded`, closing agent, deleted and other-lineage tabs with evidence and failing closed if
-removal cannot be confirmed). As in a desktop browser, typed text in standard form
+reconciled against the Home's saved tab list for the first restoring lineage (discarding any loaded
+parked saved tabs and any parked tab Chromium loads later while leaving never-loaded `unloaded`
+tabs untouched so their `sessionStorage` survives, closing agent, deleted and other-lineage tabs
+with evidence and failing closed if removal cannot be confirmed). As in a desktop browser, typed text in standard form
 fields of tabs in the person's profile stays on disk in Chromium's session files while those tabs
 exist; passwords typed into a form are not kept there. A sleeping tab on Linux is discarded in
 Chromium (freeing its renderer while keeping its tab state, driven by container working set or host
