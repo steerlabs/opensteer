@@ -180,6 +180,18 @@ await test("the verifier's working directory is created in a fresh checkout with
   }
 });
 
+await test("the verifier fetches and removes the PostgreSQL image the Compose recipe pins", () => {
+  const verifier = readFileSync(resolve(import.meta.dirname, "verify-home-deployment.mjs"), "utf8");
+  const recipe = readFileSync(resolve(import.meta.dirname, "../deploy/home/compose.yaml"), "utf8");
+  const pinned = recipe.match(/^ {4}image: (postgres:\S+)$/mu)?.[1];
+  assert.ok(pinned);
+  assert.ok(
+    verifier.includes(`"${pinned}"`),
+    "The verifier's postgresImage must match compose.yaml",
+  );
+  assert.match(verifier, /docker\(\["pull", "--quiet", postgresImage\]\)/u);
+});
+
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
   const value = "'a b' `printf substituted` $(printf substituted)\n--arg";
   const output = execFileSync("bash", ["-c", `printf '%s' ${quote(value)}`], { encoding: "utf8" });

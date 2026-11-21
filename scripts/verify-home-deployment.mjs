@@ -1491,6 +1491,10 @@ try {
   if (!(await buildHome(builds.proof)))
     throw new Error(`The deployment proof needs the source-built ${builds.proof.platform} images.`);
   const prepared = await check("prepare the local Home and stage the standalone installer", () => {
+    // `install.sh --prepare` does not pull, and the pod starts with `--pull never`, so a machine
+    // that has never held the pinned PostgreSQL image could not start the Home at all.
+    if (result("docker", ["image", "inspect", postgresImage]).status !== 0)
+      docker(["pull", "--quiet", postgresImage]);
     checked(
       result("bash", [resolve(recipe, "package-installer.sh"), bootPackage]),
       "Installer packaging failed",
