@@ -205,6 +205,15 @@ export const BrowserAttachTicketClaimsSchema = z
     initialNavigation: InitialNavigationSchema.optional(),
     /** May reconnect to the existing session, never create it. */
     reattach: z.literal(true).optional(),
+    /** Present only for a pooled runtime. */
+    pool: z
+      .strictObject({
+        term: z.number().int().positive(),
+        instance: z.uuid(),
+        epoch: z.number().int().positive(),
+        attachment: z.number().int().positive().optional(),
+      })
+      .optional(),
     /** Host opt-in to navigation IDs and committed-document reports. */
     navigationAttributionVersion: z.literal(1).optional(),
     /**

@@ -183,7 +183,7 @@ export class BrowserRuntimeServer {
     if (new Set(keys.map((key) => key.keyId)).size !== keys.length) {
       throw new Error("The browser attach key IDs are not unique.");
     }
-    bridge.updateAttachKeys(keys);
+    if (!this.runtime.pooled) bridge.updateAttachKeys(keys);
   }
 
   private async profileMaintenance(
@@ -597,6 +597,10 @@ class WebSocketBrowserSink implements BrowserControllerSink {
 
   sendFrame(frame: BrowserFrame): Promise<void> {
     return this.send(encodeBrowserFrame(frame), true);
+  }
+
+  closeForPool(): void {
+    this.websocket.close(1012, "browser-pool-retire");
   }
 
   private send(data: Buffer | string, binary: boolean): Promise<void> {
