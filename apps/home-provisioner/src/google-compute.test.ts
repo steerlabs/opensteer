@@ -316,13 +316,22 @@ it("preserves each machine's own address through stop, start, and replacement", 
     { id: computeComputerId, generation: 3 },
     { id: computeComputerId, generation: 4 },
   ]);
+  expect(await provider.releaseAddress({ id: computeComputerId, generation: 3 }, signal)).toBe(
+    false,
+  );
   await provider.delete(vm.id, signal);
+  expect(await provider.releaseAddress({ id: computeComputerId, generation: 3 }, signal)).toBe(
+    true,
+  );
   expect(await provider.listManagedAddresses(signal)).toEqual([
     { id: computeComputerId, generation: 4 },
   ]);
   expect(await provider.describe(replacement.id, signal)).toMatchObject({ ipv4: "192.0.2.22" });
   await provider.delete(replacement.id, signal);
   expect(await provider.describe(replacement.id, signal)).toBeUndefined();
+  expect(await provider.releaseAddress({ id: computeComputerId, generation: 4 }, signal)).toBe(
+    true,
+  );
   expect(await provider.listManagedAddresses(signal)).toEqual([]);
   expect(reqs(fake, "POST", `${regionPath}/addresses`)).toHaveLength(2);
   expect(reqs(fake, "DELETE", `${regionPath}/addresses/${addressName}`)).toHaveLength(1);

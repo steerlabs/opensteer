@@ -9,6 +9,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   BootstrapScrubFailure,
+  ProviderOutcomeUnknown,
   ProviderRateLimited,
   provisionerFailure,
   RemoteRequestError,
@@ -937,6 +938,41 @@ describe("Cloud Computer reconciliation", () => {
     expect(h.records.get(home.hostname)?.ipv4).toBe("192.0.2.22");
     expect(compute.instances.has(old.name)).toBe(false);
     expect([...compute.addresses.values()].map(({ address }) => address)).toEqual(["192.0.2.22"]);
+  });
+
+  it("reports an unobserved write on a booted Google Home as booting, not as a missed deadline", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.last()?.phase).toBe("ready");
+    h.status.now += 10_000;
+    const [instance] = compute.instances.values();
+    instance!.tags.items = [];
+    compute.holdMatch = (method, path) => method === "POST" && path.endsWith("/setTags");
+    await h.pass();
+    expect(h.last()).toMatchObject({ phase: "booting", lastError: null });
+    expect(h.onError).toHaveBeenCalledWith(expect.any(ProviderOutcomeUnknown));
+  });
+
+  it("keeps a verified Google replacement ready while an old address release is unobserved", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    const [old] = compute.instances.values();
+    h.status.desired = [{ ...home, generation: 2, revision: 2 }];
+    await h.pass();
+    h.pin();
+    h.status.now += 10_000;
+    compute.holdMatch = (method, path) => method === "DELETE" && path.endsWith(`${old!.name}-ip`);
+    await h.pass();
+    expect(compute.instances.has(old!.name)).toBe(false);
+    expect(h.last()).toMatchObject({ phase: "ready", generation: 2, lastError: null });
+    expect(h.onError).toHaveBeenCalledWith(expect.any(ProviderOutcomeUnknown));
+    compute.holdMatch = undefined;
   });
 
   it.each(["create", "power-on"] as const)(

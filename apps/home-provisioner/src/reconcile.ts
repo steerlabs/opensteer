@@ -534,7 +534,18 @@ export class Reconciler {
             await act((job, check) => provider.delete(old.id, job, check));
           if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
         }
-        if (generation > 1 && !(await releaseAddresses(generation))) return unready("booting");
+        // Old generations' addresses are released once their machines are gone. This is
+        // cleanup of a verified Home: it is retried on the next pass and never holds it back.
+        if (generation > 1) {
+          try {
+            await releaseAddresses(generation);
+          } catch (error) {
+            if (error instanceof Superseded || accountRefused(error)) throw error;
+            const limited = rateLimited(error);
+            if (limited) throw limited;
+            this.#options.onError?.(error);
+          }
+        }
       }
       await scrubBootstrap(current);
       return report("ready");
@@ -544,10 +555,20 @@ export class Reconciler {
       const limited = rateLimited(error);
       if (limited) throw limited;
       this.#options.onError?.(error);
-      if (error instanceof ProviderOutcomeUnknown)
-        return state === "active"
-          ? unready("provisioning")
-          : report(state === "deleted" ? "deleting" : "provisioning");
+      if (error instanceof ProviderOutcomeUnknown) {
+        if (state !== "active") return report(state === "deleted" ? "deleting" : "provisioning");
+        // An unobserved create or power-on, or a Home that has not booted: still provisioning,
+        // and the readiness deadline applies.
+        if (
+          !computer.bootCompleted ||
+          !computer.observedIdentity ||
+          [...pending.values()].some(({ kind }) => kind === "create" || kind === "power-on")
+        )
+          return unready("provisioning");
+        // This generation's Home booted; only a later write is unobserved. Report it as not
+        // confirmed this pass, never as a Home that missed its deadline.
+        return report("booting");
+      }
       return report("failed", failure);
     }
   }

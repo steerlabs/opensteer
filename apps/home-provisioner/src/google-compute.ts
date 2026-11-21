@@ -757,11 +757,13 @@ export class GoogleCompute implements VmProvider {
     } finally {
       await this.#refreshAfterWrite(current.name, signal);
     }
+    // Deleting the instance frees its address; the reconciler releases it, as cleanup that
+    // cannot hold back the result of the delete itself.
     const identity = managedInstance(current) ?? namedIdentity(current.name);
-    if (!identity) return;
-    // Deleting the instance frees its address, so the address is read again by name.
-    await this.#refreshAddress(addressName(identity), signal);
-    await this.releaseAddress(identity, signal, check);
+    if (identity && this.#inventory)
+      await this.#refreshAddress(addressName(identity), signal).catch(() => {
+        this.#inventory = undefined;
+      });
   }
 
   /**

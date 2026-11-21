@@ -100,6 +100,9 @@ export class ComputeFake {
   /** The next this many Compute requests are refused for the rate quota. */
   rateLimitRequests = 0;
   rateLimitStatus: 403 | 429 = 403;
+  /** Writes whose operations never answer a poll, so their outcome stays unobserved. */
+  holdMatch: ((method: string, path: string) => boolean) | undefined;
+  readonly #held = new Set<string>();
   /** Refuses the first Compute request that matches, once, for the rate quota. */
   rateLimitMatch: ((method: string, path: string) => boolean) | undefined;
   #nextId = BigInt(computeInstanceId);
@@ -223,6 +226,7 @@ export class ComputeFake {
     }
     const found = this.operations.get(req.path);
     if (!found) return json({}, 404);
+    if (this.#held.has(found.operation.name)) return json({}, 503);
     if (!this.keepOperationsRunning) {
       if (found.advance) {
         found.advance();
@@ -274,6 +278,7 @@ export class ComputeFake {
       ...result,
     };
     this.started.set(clientOperationId, operation);
+    if (this.holdMatch?.(req.method, req.path)) this.#held.add(operation.name);
     this.#replays.set(clientOperationId, { request: requestKey(req), operation });
     this.operations.set(`${scope}/operations/${operation.name}`, { operation, advance, finish });
     return operation;
