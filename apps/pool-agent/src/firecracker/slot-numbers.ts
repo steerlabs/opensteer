@@ -9,6 +9,7 @@ import {
   replacePrivateFileAtomically,
   securePrivateDirectory,
 } from "@opensteer/shared/atomicPrivateFile";
+import { DriverStateUncertain } from "../driver.js";
 import { Lane } from "../lane.js";
 
 export const maximumSlots = 16_384;
@@ -16,10 +17,17 @@ export const maximumSlots = 16_384;
 export class SlotNumbers {
   readonly #file: string;
   readonly #lock = new Lane();
+  readonly #write: (file: string, text: string) => Promise<void>;
   #numbers: Readonly<Record<string, number>> = {};
+  /** A write failed: what is on disk is unknown, so nothing more is allocated or released. */
+  #broken: DriverStateUncertain | undefined;
 
-  constructor(directory: string) {
+  constructor(
+    directory: string,
+    options: { readonly write?: (file: string, text: string) => Promise<void> } = {},
+  ) {
     this.#file = join(directory, "slots.json");
+    this.#write = options.write ?? replacePrivateFileAtomically;
   }
 
   async load(): Promise<void> {
@@ -51,6 +59,7 @@ export class SlotNumbers {
    */
   allocate(slotId: string, prepare?: (index: number) => Promise<void>): Promise<number> {
     return this.#lock.run(async () => {
+      if (this.#broken) throw this.#broken;
       const existing = this.#numbers[slotId];
       if (existing !== undefined) {
         await prepare?.(existing);
@@ -76,6 +85,7 @@ export class SlotNumbers {
   /** Frees the slot's number only after `cleanup` removed everything that used it. */
   release(slotId: string, cleanup: (index: number) => Promise<void>): Promise<void> {
     return this.#lock.run(async () => {
+      if (this.#broken) throw this.#broken;
       const index = this.#numbers[slotId];
       if (index === undefined) return;
       await cleanup(index);
@@ -85,8 +95,16 @@ export class SlotNumbers {
     });
   }
 
+  /** Re-check finding 5: rule S2 holds here too; a failed write is never retried in place. */
   async #save(next: Record<string, number>): Promise<void> {
-    await replacePrivateFileAtomically(this.#file, JSON.stringify(next));
+    try {
+      await this.#write(this.#file, JSON.stringify(next));
+    } catch (error) {
+      this.#broken = new DriverStateUncertain("The slot-number file write failed.", {
+        cause: error,
+      });
+      throw this.#broken;
+    }
     this.#numbers = next;
   }
 }

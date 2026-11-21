@@ -79,11 +79,27 @@ export interface SlotRecord {
   readonly results: readonly { readonly at: number; readonly result: BrowserPoolAgentResult }[];
   /** What changed physically, in order (bounded): diagnostics and tests. */
   readonly effects: readonly string[];
-  /**
-   * A deleted slot keeps a tombstone (its keys, no guest, no saved state) so its Home is told,
-   * signed, that the slot is gone; it is never served again and is forgotten after a while.
-   */
+  /** Only in a tombstone written before re-check finding 4, which kept the slot's keys. */
   readonly deletedAt?: string | null;
+}
+
+/**
+ * A deleted slot (re-check finding 4): nothing secret. Its last term fences a replayed create;
+ * the Home's public key lets only that Home learn, signed by the host key, that it was deleted.
+ * It is forgotten after a while.
+ */
+export interface TombstoneRecord {
+  readonly v: 1;
+  readonly slotId: string;
+  readonly term: number;
+  readonly homeKey: string;
+  readonly deletedAt: string;
+}
+
+export type JournalRecord = SlotRecord | TombstoneRecord;
+
+export function isTombstone(record: JournalRecord): record is TombstoneRecord {
+  return !("controlKey" in record);
 }
 
 const maximumRecordBytes = 4 * 1024 * 1024;
@@ -107,25 +123,25 @@ export class SlotJournal {
     await discardPrivateFileTemporaryFiles(this.#directory, (name) => name.endsWith(".json"));
   }
 
-  async list(): Promise<SlotRecord[]> {
+  async list(): Promise<JournalRecord[]> {
     const names = (await readdir(this.#directory)).filter((name) =>
       /^slot-[a-f0-9]{64}\.json$/u.test(name),
     );
-    const records: SlotRecord[] = [];
+    const records: JournalRecord[] = [];
     for (const name of names.sort()) {
       const text = await readPrivateFileText(join(this.#directory, name), maximumRecordBytes, {
         invalid,
         exposed,
       });
       if (text === undefined) continue;
-      const record = JSON.parse(text) as SlotRecord;
+      const record = JSON.parse(text) as JournalRecord;
       if (record.v !== 1 || fileName(record.slotId) !== name) throw invalid();
       records.push(record);
     }
     return records;
   }
 
-  async write(record: SlotRecord): Promise<void> {
+  async write(record: JournalRecord): Promise<void> {
     const text = JSON.stringify(record);
     if (Buffer.byteLength(text) > maximumRecordBytes)
       throw new Error("A slot record is too large.");

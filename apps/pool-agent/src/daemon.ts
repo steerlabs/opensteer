@@ -45,13 +45,14 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   });
   await agent.start();
   const servers: Server[] = [];
-  const home = createHomeServer({ agent, log });
+  const hostKey = await readHostKey(config.admin.hostKeyFile);
+  const home = createHomeServer({ agent, log, hostKey });
   const admin = createAdminServer({
     agent,
     log,
     provisionerKey: parseProvisionerKey(config.admin.provisionerKey),
     hostId: config.admin.hostId,
-    hostKey: await readHostKey(config.admin.hostKeyFile),
+    hostKey,
   });
   for (const [server, target] of [
     [home, config.listen],

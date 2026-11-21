@@ -28,12 +28,20 @@ import type {
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import { signBrowserPoolAgentBytes } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
+  DriverStateUncertain,
   NoSaveRoom,
   type GuestBoot,
   type GuestProcessState,
   type HypervisorDriver,
 } from "./driver.js";
-import type { PendingRecord, SlotJournal, SlotRecord } from "./journal.js";
+import {
+  isTombstone,
+  type JournalRecord,
+  type PendingRecord,
+  type SlotJournal,
+  type SlotRecord,
+  type TombstoneRecord,
+} from "./journal.js";
 import { DeadlineExceeded, finishedWithin, Lane, mapLimit, Semaphore, within } from "./lane.js";
 
 export interface PoolAgentDeadlines {
@@ -177,6 +185,11 @@ export class PoolAgent {
   readonly #now: () => number;
   readonly #deadlines: PoolAgentDeadlines;
   readonly #saves: Semaphore;
+  /** Deleted slots (re-check finding 4): no key of their own, and gone from #slots. */
+  readonly #tombstones = new Map<
+    string,
+    { readonly record: TombstoneRecord; readonly homeKey: KeyObject }
+  >();
   /** Grows each time an image is deleted: a save that had no room may fit now. */
   #spaceChanges = 0;
   readonly #slots = new Map<string, Slot>();
@@ -221,9 +234,17 @@ export class PoolAgent {
   async start(): Promise<void> {
     await this.#journal.open();
     this.#incarnation = await this.#step("verify", () => this.#driver.incarnation());
-    for (const record of await this.#journal.list()) {
-      if (record.deletedAt && Date.parse(record.deletedAt) + tombstoneRetentionMs <= this.#now()) {
-        await this.#removeRecord(record.slotId);
+    for (const found of await this.#journal.list()) {
+      let record: JournalRecord = found;
+      // A tombstone written before re-check finding 4 still held the slot's key: replaced now.
+      if (!isTombstone(record) && record.deletedAt) {
+        record = tombstoneOf(record, record.deletedAt);
+        await this.#write(record);
+      }
+      if (isTombstone(record)) {
+        if (Date.parse(record.deletedAt) + tombstoneRetentionMs <= this.#now())
+          await this.#removeRecord(record.slotId);
+        else this.#keepTombstone(record);
         continue;
       }
       const slot = this.#load(record);
@@ -262,8 +283,27 @@ export class PoolAgent {
       void this.#ensureHost().catch((error: unknown) =>
         this.#log({ event: "host-table.failed", message: messageOf(error) }),
       );
+      // Re-check finding 4: tombstones are pruned while the agent runs.
+      void this.#admin
+        .run(() => this.#pruneTombstones())
+        .catch((error: unknown) => {
+          if (!(error instanceof AgentCrashed))
+            this.#log({ event: "tombstones.failed", message: messageOf(error) });
+        });
     }, this.#options.hostCheckMs ?? 10_000);
     this.#hostCheck.unref?.();
+  }
+
+  async #pruneTombstones(): Promise<void> {
+    for (const [slotId, { record }] of this.#tombstones)
+      if (Date.parse(record.deletedAt) + tombstoneRetentionMs <= this.#now()) {
+        await this.#removeRecord(slotId);
+        this.#tombstones.delete(slotId);
+      }
+  }
+
+  #keepTombstone(record: TombstoneRecord): void {
+    this.#tombstones.set(record.slotId, { record, homeKey: parsePublicKey(record.homeKey) });
   }
 
   async #ensureHost(): Promise<void> {
@@ -292,18 +332,23 @@ export class PoolAgent {
    */
   authority(slotId: string): SlotAuthority | undefined {
     const slot = this.#slots.get(slotId);
-    return slot
-      ? {
-          key: slot.homeKey,
-          term: slot.record.term,
-          generation: slot.keyGeneration,
-          deleted: slot.deleted,
-        }
+    if (slot)
+      return {
+        key: slot.homeKey,
+        term: slot.record.term,
+        generation: slot.keyGeneration,
+        deleted: slot.deleted,
+      };
+    const tombstone = this.#tombstones.get(slotId);
+    return tombstone
+      ? { key: tombstone.homeKey, term: tombstone.record.term, generation: 0, deleted: true }
       : undefined;
   }
 
+  /** Only a live slot has one; a deleted slot's key was destroyed with it. */
   controlKey(slotId: string): KeyObject | undefined {
-    return this.#slots.get(slotId)?.controlKey;
+    const slot = this.#slots.get(slotId);
+    return slot && !slot.deleted ? slot.controlKey : undefined;
   }
 
   /** Applied effects in order, for diagnostics and tests. */
@@ -374,6 +419,8 @@ export class PoolAgent {
         return value;
       },
       (error: unknown) => {
+        // Re-check finding 5: the driver's own durable state follows rule S2 as the journal.
+        if (error instanceof DriverStateUncertain && !this.#dead) this.#die(error);
         slot.failedAt = performance.now();
         if (!this.#dead && !slot.deleted) this.#schedule(slot);
         throw error;
@@ -402,7 +449,8 @@ export class PoolAgent {
     const existing = found && !found.deleted ? found : undefined;
     // Review G2: a deleted slot's tombstone keeps its last term. A create at or below it is a
     // replay of an earlier create, and changes nothing.
-    if (found?.deleted && input.term <= found.record.term)
+    const tombstone = this.#tombstones.get(input.slotId);
+    if (tombstone && input.term <= tombstone.record.term)
       throw new SlotConflict("This slot was deleted at a later term than this create names.");
     if (existing) {
       // A repeated create with the same facts is the same create.
@@ -442,12 +490,35 @@ export class PoolAgent {
         throw new SlotConflict(messageOf(error));
       },
     );
-    await this.#step("network", () => this.#driver.prepareSlot(input.slotId, input.guest.egress));
+    await this.#prepareCreated(input.slotId, input.guest);
     await this.#write(record);
     const slot = this.#load(record);
+    this.#tombstones.delete(input.slotId);
     this.#slots.set(input.slotId, slot);
     this.#log({ event: "slot.created", slotId: input.slotId, term: input.term });
     return this.#summary(slot);
+  }
+
+  /**
+   * Re-check finding 5: a create whose network failed or ran out of time leaves no number. A
+   * prepare that is still running is waited for (it does not stop at its deadline), then
+   * everything it made is removed, before the next administration call runs.
+   */
+  async #prepareCreated(slotId: string, guest: BrowserPoolAgentGuestSpec): Promise<void> {
+    try {
+      await this.#step("network", () => this.#driver.prepareSlot(slotId, guest.egress));
+    } catch (error) {
+      if (error instanceof DriverStateUncertain) this.#die(error);
+      if (error instanceof DeadlineExceeded)
+        await finishedWithin(error.settled, this.#deadlines.sweep);
+      await this.#step("network", () => this.#driver.removeSlot(slotId)).catch(
+        (cleanup: unknown) => {
+          if (cleanup instanceof DriverStateUncertain) this.#die(cleanup);
+          this.#log({ event: "slot.create-cleanup-failed", slotId, message: messageOf(cleanup) });
+        },
+      );
+      throw error;
+    }
   }
 
   /** A new Home key and a higher term: every call of the previous term is fenced from now on. */
@@ -478,32 +549,32 @@ export class PoolAgent {
    * is the provisioner's and is left where it is.
    */
   async deleteSlot(slotId: string, term?: number): Promise<boolean> {
-    const slot = this.#slots.get(slotId);
-    if (!slot || slot.deleted) return true;
-    return slot.lane.run(async () => {
-      if (slot.deleted) return true;
-      // Review G2: a delete names the term it deletes; a replay after the slot was recreated
-      // at a higher term is refused.
-      if (term !== undefined && term !== slot.record.term)
-        throw new SlotConflict("The slot is at another term than this delete names.");
-      this.#unschedule(slot);
-      await this.#kill(slot);
-      if (slot.record.saved)
-        await this.#step("discard", () => this.#driver.discard(slotId, slot.record.saved!.id));
-      await this.#step("network", () => this.#driver.removeSlot(slotId));
-      // One write: the live record becomes a tombstone. From here nothing queued may act.
-      await this.#commit(slot, {
-        ...slot.record,
-        phase: "stopped",
-        saved: null,
-        jailId: null,
-        pending: null,
-        results: [],
-        deletedAt: this.#iso(),
+    // Re-check finding 5: the administration lane, then the slot's own run wrapper. A create
+    // waits for a delete in progress, and a delete that fails leaves the slot with its timers.
+    return this.#admin.run(async () => {
+      const slot = this.#slots.get(slotId);
+      if (!slot || slot.deleted) return true;
+      return this.#run(slot, async () => {
+        if (slot.deleted) return true;
+        // Review G2: a delete names the term it deletes; a replay after the slot was recreated
+        // at a higher term is refused.
+        if (term !== undefined && term !== slot.record.term)
+          throw new SlotConflict("The slot is at another term than this delete names.");
+        this.#unschedule(slot);
+        await this.#kill(slot);
+        if (slot.record.saved)
+          await this.#step("discard", () => this.#driver.discard(slotId, slot.record.saved!.id));
+        await this.#step("network", () => this.#driver.removeSlot(slotId));
+        // One write: the live record becomes a tombstone that holds nothing secret. From here
+        // nothing queued may act, and the slot's control key is gone.
+        const tombstone = tombstoneOf(slot.record, this.#iso());
+        await this.#write(tombstone);
+        slot.deleted = true;
+        this.#slots.delete(slotId);
+        this.#keepTombstone(tombstone);
+        this.#log({ event: "slot.deleted", slotId });
+        return true;
       });
-      slot.deleted = true;
-      this.#log({ event: "slot.deleted", slotId });
-      return true;
     });
   }
 
@@ -573,6 +644,7 @@ export class PoolAgent {
       );
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
       return this.#fail(slot, call, "start-failed", error);
     }
     const fence = { slot: before.slotId, term: before.term, instance, epoch: 1 };
@@ -611,6 +683,7 @@ export class PoolAgent {
         this.#driver.sync(before.slotId, jailId, signal),
       ).catch((error: unknown) => {
         if (error instanceof AgentCrashed) throw error;
+        if (error instanceof DriverStateUncertain) this.#die(error);
         this.#log({ event: "sync.failed", slotId: before.slotId, message: messageOf(error) });
       });
       await within(this.#deadlines.pause, "The guest pause", (signal) =>
@@ -622,6 +695,7 @@ export class PoolAgent {
       );
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
       return this.#fail(slot, call, "pause-failed", error);
     }
     const parkedAt = this.#now();
@@ -716,6 +790,7 @@ export class PoolAgent {
       this.#log({ event: "resumed", slotId: before.slotId, tier: saved.tier, steps });
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
       return this.#fail(slot, call, "resume-failed", error);
     }
     const fence = {
@@ -951,6 +1026,7 @@ export class PoolAgent {
           );
         } catch (error) {
           if (error instanceof AgentCrashed) throw error;
+          if (error instanceof DriverStateUncertain) this.#die(error);
           this.#log({ event: "save.failed", slotId, message: messageOf(error) });
           this.#saveFailed(slot, savedStateId, error instanceof NoSaveRoom);
           // Finding 3: a snapshot that ran out of time may still be writing. Its writer is
@@ -1136,6 +1212,7 @@ export class PoolAgent {
       this.#driver.closeNetwork(slot.record.slotId),
     ).catch((error: unknown) => {
       if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
       this.#log({
         event: "network.close-failed",
         slotId: slot.record.slotId,
@@ -1182,6 +1259,7 @@ export class PoolAgent {
       const state = await this.#step("inspect", () => this.#driver.inspect(slotId, jailId)).catch(
         (error: unknown): GuestProcessState => {
           if (error instanceof AgentCrashed) throw error;
+          if (error instanceof DriverStateUncertain) this.#die(error);
           return "unknown";
         },
       );
@@ -1203,7 +1281,7 @@ export class PoolAgent {
       }),
       homeKey: parsePublicKey(record.homeKey),
       keyGeneration: 0,
-      deleted: !!record.deletedAt,
+      deleted: false,
       demand: 0,
       saveTimer: undefined,
       expiryTimer: undefined,
@@ -1302,7 +1380,7 @@ export class PoolAgent {
    * Rule S2: a write that fails, before or after its rename, ends the agent. Nothing continues
    * on an in-memory record the disk may not hold; the next agent reads what is on disk.
    */
-  async #write(record: SlotRecord): Promise<void> {
+  async #write(record: JournalRecord): Promise<void> {
     this.#guardAlive();
     try {
       await this.#journal.write(record);
@@ -1472,4 +1550,8 @@ function bounded(effects: readonly string[]): readonly string[] {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function tombstoneOf(record: SlotRecord, deletedAt: string): TombstoneRecord {
+  return { v: 1, slotId: record.slotId, term: record.term, homeKey: record.homeKey, deletedAt };
 }

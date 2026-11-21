@@ -74,10 +74,20 @@ it("tells the Home, as its own outcome, that its slot was deleted", async () => 
     url: f.agent.url,
     homeKey: f.home.privateKey,
     agentKey: f.agentKey,
+    hostKey: f.agent.hostPublicKey,
   });
   await f.agent.agent.deleteSlot("slot-h");
   const outcome = await client.status("slot-h", 1).catch((error: unknown) => error);
   expect(outcome).toBeInstanceOf(BrowserPoolAgentSlotDeleted);
+  // Re-check finding 4: the deleted slot's key is gone; only the host key signs its deletion.
+  const withoutHost = new BrowserPoolAgentClient({
+    url: f.agent.url,
+    homeKey: f.home.privateKey,
+    agentKey: f.agentKey,
+  });
+  const unproven = await withoutHost.status("slot-h", 1).catch((error: unknown) => error);
+  expect(unproven).toBeInstanceOf(BrowserPoolAgentUnavailable);
+  expect(unproven).not.toBeInstanceOf(BrowserPoolAgentSlotDeleted);
   // A slot the agent never had reads like a bad signature, not like a deleted one.
   const never = await client.status("slot-never", 1).catch((error: unknown) => error);
   expect(never).toBeInstanceOf(BrowserPoolAgentUnavailable);

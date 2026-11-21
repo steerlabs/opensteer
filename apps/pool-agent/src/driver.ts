@@ -42,6 +42,14 @@ export interface SavedFile {
   readonly sha256: string | null;
 }
 
+/**
+ * A write of the driver's own durable state failed, before or after its rename: as for the
+ * journal (rule S2), nothing may continue on what memory holds; the agent stops.
+ */
+export class DriverStateUncertain extends Error {
+  override readonly name = "DriverStateUncertain";
+}
+
 /** The saved-state array cannot hold this guest's image now; nothing was written. */
 export class NoSaveRoom extends Error {
   override readonly name = "NoSaveRoom";

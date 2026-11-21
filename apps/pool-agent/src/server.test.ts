@@ -230,7 +230,10 @@ it("signs every administration reply with the host key the provisioner pinned", 
 
 it("bounds both listeners' connections (review G10)", async () => {
   const { f } = await adminFixture();
-  const home = createHomeServer({ agent: f.agent.agent });
+  const home = createHomeServer({
+    agent: f.agent.agent,
+    hostKey: generateKeyPairSync("ed25519").privateKey,
+  });
   const adminServer = createAdminServer({
     agent: f.agent.agent,
     provisionerKey: generateKeyPairSync("ed25519").publicKey,

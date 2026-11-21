@@ -126,6 +126,11 @@ const adminSchema = z.strictObject({
 
 export interface PoolAgentServerOptions {
   readonly agent: PoolAgent;
+  /**
+   * The host's private key. It signs the answer that a slot was deleted (re-check finding 4): a
+   * deleted slot has no key of its own any more.
+   */
+  readonly hostKey: KeyObject;
   readonly now?: () => number;
   readonly log?: (event: Readonly<Record<string, unknown>>) => void;
 }
@@ -156,12 +161,19 @@ export function createHomeServer(options: PoolAgentServerOptions): Server {
             status: 400,
             reply: refusal("stale-request", "The request is outside its time window."),
           };
-        const controlKey = options.agent.controlKey(envelope.slotId)!;
-        // Its own Home is told, signed, that a deleted slot is gone: the guest's end is evidence.
-        const reply = authority.deleted
-          ? refusal("unknown-slot", "The slot was deleted.")
-          : await answer(options.agent, envelope, authority.generation);
-        return { status: 200, reply, sign: { bytes, key: controlKey } };
+        const controlKey = options.agent.controlKey(envelope.slotId);
+        // Its own Home is told, signed by the host key, that a deleted slot is gone: the
+        // guest's end is evidence. Every other answer is signed by the slot's control key.
+        const reply =
+          authority.deleted || !controlKey
+            ? refusal("unknown-slot", "The slot was deleted.")
+            : await answer(options.agent, envelope, authority.generation);
+        const deleted = reply.op === "refused" && reply.code === "unknown-slot";
+        return {
+          status: 200,
+          reply,
+          sign: { bytes, key: deleted || !controlKey ? options.hostKey : controlKey },
+        };
       });
     }),
   );

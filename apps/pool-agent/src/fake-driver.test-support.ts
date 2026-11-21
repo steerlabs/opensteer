@@ -139,7 +139,18 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   prepareMs = 0;
   #prepareLock: Promise<void> = Promise.resolve();
 
+  /** The next prepare waits for this, ignoring its caller's deadline as the real one does. */
+  prepareGate: Promise<void> | undefined;
+  /** Every prepare fails with this. */
+  prepareError: Error | undefined;
+  /** Slots removeSlot was called for, in order. */
+  readonly removed: string[] = [];
+
   async prepareSlot(slotId: string, _egress: SlotEgress | undefined): Promise<void> {
+    if (this.prepareError) throw this.prepareError;
+    const gate = this.prepareGate;
+    this.prepareGate = undefined;
+    if (gate) await gate;
     if (this.prepared.has(slotId)) return;
     const turn = this.#prepareLock.then(async () => {
       if (this.prepareMs) await new Promise((resolve) => setTimeout(resolve, this.prepareMs));
@@ -158,6 +169,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   }
 
   async removeSlot(slotId: string): Promise<void> {
+    this.removed.push(slotId);
     this.prepared.delete(slotId);
     this.networks.delete(slotId);
   }

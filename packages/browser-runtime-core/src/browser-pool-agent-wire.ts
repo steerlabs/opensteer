@@ -236,6 +236,8 @@ export async function callBrowserPoolAgent(
   endpoint: BrowserPoolAgentEndpoint & {
     readonly homeKey: KeyObject;
     readonly agentKey: KeyObject;
+    /** The host's public key: only it signs the answer that the slot was deleted. */
+    readonly hostKey?: KeyObject;
   },
   slotId: string,
   term: number,
@@ -252,13 +254,14 @@ export async function callBrowserPoolAgent(
   const bytes = browserPoolAgentRequestBytes(envelope);
   const parsed = await post<BrowserPoolAgentReply>(endpoint, bytes, envelope, endpoint.homeKey);
   const reply = parsed.reply;
+  // A deleted slot has no key any more: its deletion is signed by the host key, and by nothing
+  // else. Every other answer is the slot's control key's.
+  const deleted = reply.op === "refused" && reply.code === "unknown-slot";
+  const signer = deleted ? endpoint.hostKey : endpoint.agentKey;
   if (
     !parsed.signature ||
-    !verifyBrowserPoolAgentBytes(
-      browserPoolAgentReplyBytes(bytes, reply),
-      endpoint.agentKey,
-      parsed.signature,
-    )
+    !signer ||
+    !verifyBrowserPoolAgentBytes(browserPoolAgentReplyBytes(bytes, reply), signer, parsed.signature)
   ) {
     const message = reply.op === "refused" ? `: ${reply.message}` : ".";
     throw new BrowserPoolAgentUnavailable(

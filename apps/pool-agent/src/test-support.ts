@@ -21,6 +21,8 @@ export interface TestPoolAgent {
   readonly driver: FakeHypervisorDriver;
   readonly directory: string;
   readonly url: string;
+  /** The host key's public half: it signs the answer that a slot was deleted. */
+  readonly hostPublicKey: KeyObject;
   /** Kills this agent (its timers and server) and starts a new one on the same journal and driver. */
   restart(options?: TestPoolAgentOptions): Promise<TestPoolAgent>;
   close(): Promise<void>;
@@ -71,6 +73,7 @@ export type TestPoolAgentOptions = Partial<PoolAgentOptions> & {
   readonly faultyJournal?: boolean;
   /** Armed before the agent starts, so its own recovery writes can fail. */
   readonly journalFault?: { readonly when: "before" | "after"; readonly skip: number };
+  readonly hostKeys?: { readonly privateKey: KeyObject; readonly publicKey: KeyObject };
 };
 
 export async function startTestPoolAgent(
@@ -86,7 +89,12 @@ export async function startTestPoolAgent(
     (journal as FaultyJournal).failWrite(options.journalFault.when, options.journalFault.skip);
   const agent = new PoolAgent({ saveAfterMs: null, ...options, journal, driver });
   await agent.start();
-  const server: Server = createHomeServer({ agent, ...(options.now ? { now: options.now } : {}) });
+  const hostKeys = options.hostKeys ?? generateKeyPairSync("ed25519");
+  const server: Server = createHomeServer({
+    agent,
+    hostKey: hostKeys.privateKey,
+    ...(options.now ? { now: options.now } : {}),
+  });
   const address = (await listen(server, { host: "127.0.0.1", port: 0 })) as AddressInfo;
   const close = async () => {
     agent.close();
@@ -99,10 +107,11 @@ export async function startTestPoolAgent(
     driver,
     directory,
     url: `http://127.0.0.1:${address.port}`,
+    hostPublicKey: hostKeys.publicKey,
     close,
     restart: async (next = {}) => {
       await close();
-      return startTestPoolAgent({ ...options, ...next, directory, driver });
+      return startTestPoolAgent({ ...options, ...next, directory, driver, hostKeys });
     },
   };
 }

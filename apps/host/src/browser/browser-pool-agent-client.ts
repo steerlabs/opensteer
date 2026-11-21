@@ -29,8 +29,13 @@ export interface BrowserPoolAgentClientOptions {
   readonly url: string;
   /** The Home's Ed25519 private key for this slot. */
   readonly homeKey: KeyObject;
-  /** The slot's control key (public): every reply must be signed by it. */
+  /** The slot's control key (public): every reply must be signed by it, but one. */
   readonly agentKey: KeyObject;
+  /**
+   * The pool host's key (public). It alone signs the answer that the slot was deleted; without
+   * it that answer reads as the agent being unavailable.
+   */
+  readonly hostKey?: KeyObject;
   /** One request's deadline; the journal above settles a call past it by its id. */
   readonly timeoutMs?: number;
   readonly fetch?: typeof fetch;
@@ -45,6 +50,11 @@ export class BrowserPoolAgentClient implements BrowserPoolPhysicalController {
       throw new TypeError("The Home key must be an Ed25519 private key.");
     if (options.agentKey.type !== "public" || options.agentKey.asymmetricKeyType !== "ed25519")
       throw new TypeError("The agent key must be an Ed25519 public key.");
+    if (
+      options.hostKey &&
+      (options.hostKey.type !== "public" || options.hostKey.asymmetricKeyType !== "ed25519")
+    )
+      throw new TypeError("The host key must be an Ed25519 public key.");
     this.#options = options;
   }
 
@@ -85,6 +95,8 @@ export interface ManagedBrowserPoolTarget {
   readonly homeKey: string;
   /** SPKI DER, base64, of the slot's control key, as the provisioner received it. */
   readonly agentKey: string;
+  /** SPKI DER, base64, of the pool host's key, which the provisioner pinned at enrolment. */
+  readonly hostKey?: string;
 }
 
 /**
@@ -108,6 +120,15 @@ export function managedBrowserPoolController(
       format: "der",
       type: "spki",
     }),
+    ...(target.hostKey
+      ? {
+          hostKey: createPublicKey({
+            key: Buffer.from(target.hostKey, "base64"),
+            format: "der",
+            type: "spki",
+          }),
+        }
+      : {}),
     ...options,
   });
 }
