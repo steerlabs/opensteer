@@ -1033,3 +1033,94 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
   ).toBe(false);
   createSpy.mockRestore();
 });
+
+it("does not steal foreground visibility or pause screencasting when a background tab sleeps", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-f11-visibility-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: {
+      lifecycle: ChromiumTabLifecycleBridge;
+      activatePrivateAnchor(): Promise<void>;
+    };
+  };
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  // Background tab to sleep
+  const bg = await ledger.openSurface();
+  const bgLive = ledger.binding(bg.id)!;
+  await bgLive.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
+  await waitLoaded(bgLive.cdp, "/article");
+  await evalValue(bgLive.cdp, "window.scrollTo(0, 1900)");
+
+  // Foreground active tab being watched via screencast
+  const fgUrl = `${server.originForSite(2)}/article`;
+  const fg = await ledger.openSurface();
+  const fgLive = ledger.binding(fg.id)!;
+  await fgLive.cdp.send("Page.navigate", { url: fgUrl });
+  await waitLoaded(fgLive.cdp, "/article");
+  await fgLive.cdp.send("Page.bringToFront");
+  await evalValue(
+    fgLive.cdp,
+    `(() => {
+      window.__hiddenCount = 0;
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") window.__hiddenCount++;
+      });
+      return document.visibilityState;
+    })()`,
+  );
+  expect(await evalValue<string>(fgLive.cdp, "document.visibilityState")).toBe("visible");
+
+  let frames = 0;
+  const onFrame = (params: unknown) => {
+    const sessionId = (params as { sessionId?: number })?.sessionId;
+    frames++;
+    if (typeof sessionId === "number") {
+      void fgLive.cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => undefined);
+    }
+  };
+  fgLive.cdp.on("Page.screencastFrame", onFrame);
+  await fgLive.cdp.send("Page.startScreencast", { format: "jpeg", quality: 60 });
+  await vi.waitFor(() => expect(frames).toBeGreaterThanOrEqual(1), { timeout: 5_000, interval: 50 });
+
+  // Sleep background tab -> foreground tab must stay Chromium's active tab and NEVER lose focus/visibility!
+  const anchorSpy = vi.spyOn(internal.contextHandle, "activatePrivateAnchor");
+  expect(await ledger.sleep(bg.id, () => null)).toBe(true);
+  expect(ledger.stateOf(bg.id)).toBe("suspended");
+  expect(anchorSpy).not.toHaveBeenCalled();
+  anchorSpy.mockRestore();
+
+  const invAfterSleep = await internal.contextHandle.lifecycle.inventory();
+  expect(invAfterSleep.find((t) => t.url === fgUrl)?.active).toBe(true);
+  expect(await evalValue<string>(fgLive.cdp, "document.visibilityState")).toBe("visible");
+  expect(await evalValue<number>(fgLive.cdp, "window.__hiddenCount")).toBe(0);
+
+  // Screencast must continue delivering frames on the foreground tab after background sleep.
+  const framesAfterSleep = frames;
+  await evalValue(fgLive.cdp, "document.body.style.background = '#d0f0d0'");
+  await vi.waitFor(() => expect(frames).toBeGreaterThan(framesAfterSleep), {
+    timeout: 5_000,
+    interval: 50,
+  });
+  await fgLive.cdp.send("Page.stopScreencast").catch(() => undefined);
+  fgLive.cdp.off("Page.screencastFrame", onFrame);
+
+  // Background tab still wakes with its scroll state intact.
+  const bgWoken = await ledger.wake(bg.id);
+  await waitLoaded(bgWoken.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(bgWoken.cdp, "window.scrollY")).toBe(1900),
+    { timeout: 3_000, interval: 50 },
+  );
+});

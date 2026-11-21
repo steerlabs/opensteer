@@ -2114,7 +2114,9 @@ class PlaywrightPageHandle implements BrowserPage {
             const priorDiscardedIds = new Set(
               inventory.filter((entry) => entry.discarded).map((entry) => entry.tabId),
             );
-            await this.contextHandle.activatePrivateAnchor();
+            // Only activate the private anchor when Chromium considers this exact tab active,
+            // so sleeping a background tab never steals focus or visibility from the foreground tab.
+            if (tab.active) await this.contextHandle.activatePrivateAnchor();
             await this.freezeBeforeDiscard();
             await this.cdpChannel?.detach();
             if (!this.page.isClosed()) {
