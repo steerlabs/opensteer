@@ -2843,11 +2843,12 @@ integration("Cloud Computer Account service", () => {
           .executeTakeFirstOrThrow()
       ).deletionRequestedAt,
     ).toBeInstanceOf(Date);
-    await cloud.reconcileBilling(() => {
-      throw new Error("unexpected periodic billing failure");
-    });
+    const errors: unknown[] = [];
+    await cloud.reconcileBilling((error) => errors.push(error));
     expect(stripe.cancel).toHaveBeenLastCalledWith(order.subscription);
     expect((await getDesired(id))?.state).toBe("deleted");
+    // The first attempt failed: the pass says so once it is cancelled, and refunds nothing.
+    expect(errors).toEqual([expect.objectContaining({ name: "CloudComputerCancelledLate" })]);
   });
 
   it("reuses the same suspended Home after a final subscription cancellation", async () => {
@@ -3036,7 +3037,7 @@ integration("Cloud Computer Account service", () => {
     expect(await cloud.show(computer!.id)).toMatchObject({ status: "preparing" });
   });
 
-  it("holds deletion pending while a completion wins the Stripe expiry race, then refunds", async () => {
+  it("cancels at once while a completion wins the Stripe expiry race, and refunds that payment", async () => {
     const { id, account, order } = await buy();
     subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
     await cloud.reconcileBilling(() => {
@@ -3074,16 +3075,14 @@ integration("Cloud Computer Account service", () => {
     await expiryStarted.promise;
     const racingEvent = webhook("checkout.session.completed", payment, "evt_race_completed");
     completePayment.resolve();
-    const pending = await deletion;
-    expect(pending.json()).toMatchObject({
-      status: "needs_attention",
-      reasonCode: "cloud-computer-deletion-pending",
-    });
+    expect((await deletion).statusCode).toBe(200);
     expect((await racingEvent).statusCode).toBe(200);
+    // The computer's own subscription is cancelled at once: the checkout no longer holds it.
+    expect((await getDesired(id))?.state).toBe("deleted");
+    // The checkout keeps its own path: expired, and the payment that won cancelled and refunded.
     expect(stripe.expireCheckout).toHaveBeenCalledWith(second.session.id);
     expect(stripe.cancel).toHaveBeenCalledWith(second.subscription);
     expect(stripe.refundCheckout).toHaveBeenCalledWith(payment);
-    expect((await getDesired(id))?.state).not.toBe("deleted");
 
     stripe.refundCheckout.mockResolvedValue(true);
     await cloud.reconcileBilling(() => {
