@@ -219,8 +219,9 @@ export interface BrowserPoolSlotChange {
   readonly savedState?: BrowserPoolSlot["savedState"];
   readonly outcome?: BrowserPoolSlot["outcome"];
   readonly attachmentGeneration?: number;
-  /** A new fence from the controller: a resume (epoch) or a fresh start (instance). */
-  readonly fence?: Pick<BrowserPoolTargetIdentity, "instanceId" | "epoch">;
+  /** A new fence from the controller: a resume (epoch) or a fresh start (the whole fence). */
+  readonly fence?: Pick<BrowserPoolTargetIdentity, "instanceId" | "epoch"> &
+    Partial<Pick<BrowserPoolTargetIdentity, "slotId" | "term">>;
   readonly lastStart?: BrowserPoolSlot["lastStart"];
   readonly failedStarts?: number;
 }

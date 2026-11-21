@@ -302,39 +302,84 @@ it("installs the controller's fence before any traffic and never reads it from t
   }
 });
 
-it("bootstraps a Home without its slot row from the controller's fence, never the guest's", async () => {
+for (const field of ["slotId", "term"] as const)
+  it(`replaces a guest whose ${field} differs from the slot's, with the same instance and epoch`, async () => {
+    const f = await poolFixture(`fence-${field}`);
+    try {
+      const before = f.home();
+      await before.recover();
+      await f.openSession(before);
+      before.close();
+      const first = await f.controller.status(`slot-fence-${field}`, 1);
+      // The durable row names another slot or term; the instance and epoch still match.
+      await f.database
+        .updateTable("browserPoolSlots")
+        .set(field === "slotId" ? { slotId: "slot-elsewhere" } : { term: 2 })
+        .where("runnerId", "=", f.task.runnerId)
+        .execute();
+      const home = f.home();
+      await home.recover();
+      // Not the controller's whole fence: never kept, the guest is replaced and named again.
+      const now = await f.controller.status(`slot-fence-${field}`, 1);
+      expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+      expect(now.instance).not.toBe(first.instance);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        slotId: `slot-fence-${field}`,
+        term: 1,
+        instanceId: now.instance,
+        epoch: now.epoch,
+      });
+      expect(f.runtime.poolState()?.fence).toEqual({
+        slot: `slot-fence-${field}`,
+        term: 1,
+        instance: now.instance,
+        epoch: now.epoch,
+      });
+      expect((await f.row())?.state).toBe("failed");
+      expect(home.gate.phase).toBe("open");
+    } finally {
+      await f.close();
+    }
+  });
+
+it("bootstraps a Home without its slot row by replacing whatever guest runs, with the controller's fence", async () => {
   const f = await poolFixture("bootstrap");
   try {
-    await f.home().recover();
-    const first = await f.controller.status("slot-bootstrap", 1);
+    const first = f.home();
+    await first.recover();
+    await f.openSession(first);
+    first.close();
     const dropRow = () =>
       f.database.deleteFrom("browserPoolSlots").where("runnerId", "=", f.task.runnerId).execute();
-    // The row is gone and the guest still runs under the controller's fence: it is kept as is.
+    const installed = async () => {
+      const now = await f.controller.status("slot-bootstrap", 1);
+      const fence = { slot: "slot-bootstrap", term: 1, instance: now.instance, epoch: now.epoch };
+      expect(f.runtime.poolState()?.fence).toEqual(fence);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        slotId: "slot-bootstrap",
+        term: 1,
+        instanceId: now.instance,
+        epoch: now.epoch,
+      });
+      return now.instance;
+    };
+    const before = (await f.controller.status("slot-bootstrap", 1)).instance;
+    // Without a row nothing could own a page in the running guest, even one whose whole fence is
+    // the controller's: it is stopped and a fresh one started.
     await dropRow();
     await f.home().recover();
-    expect(f.controller.effects).toEqual(["start"]);
-    expect(await f.slot()).toMatchObject({
-      phase: "running",
-      slotId: "slot-bootstrap",
-      term: 1,
-      instanceId: first.instance,
-      epoch: first.epoch,
-    });
-    // The row is gone again and the controller reports an epoch the guest's fence does not
-    // carry: the guest's own fence is not trusted; it is replaced and the controller's installed.
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    const second = await installed();
+    expect(second).not.toBe(before);
+    expect(f.page.isClosed()).toBe(true);
+    // The same with a controller on an epoch the guest does not carry.
     await dropRow();
     f.controller.observe({ epoch: 5 });
     await f.home().recover();
-    const now = await f.controller.status("slot-bootstrap", 1);
-    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
-    expect(now.instance).not.toBe(first.instance);
-    const fence = { slot: "slot-bootstrap", term: 1, instance: now.instance, epoch: now.epoch };
-    expect(f.runtime.poolState()?.fence).toEqual(fence);
-    expect(await f.slot()).toMatchObject({
-      phase: "running",
-      instanceId: now.instance,
-      epoch: now.epoch,
-    });
+    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    expect(await installed()).not.toBe(second);
     await f.admitted();
   } finally {
     await f.close();

@@ -351,7 +351,7 @@ export class BrowserPoolCoordinator {
       !signed.signature ||
       !issued ||
       issued.kind !== kind ||
-      !sameRuntimeFence(issued.fence, fence) ||
+      !sameFence(issued.fence, fence) ||
       issued.intent?.id !== control.intent?.id ||
       issued.attempt !== control.attempt
     )
@@ -503,7 +503,7 @@ export class BrowserPoolCoordinator {
       state.phase === "retired";
     if (pending && state.phase !== "uninstalled")
       state = await this.#control(slot, "release", fenceOf(slot));
-    if (state.phase === "uninstalled" || state.fence?.instance !== slot.instanceId) {
+    if (state.phase === "uninstalled" || !sameFence(state.fence, fenceOf(slot))) {
       await this.#discard(slot, "guest-restarted");
       return "vetoed";
     }
@@ -582,8 +582,7 @@ export class BrowserPoolCoordinator {
     if (!resumed) {
       if (
         status.phase !== "paused" ||
-        status.instance !== slot.instanceId ||
-        status.epoch !== slot.epoch ||
+        !sameFence(statusFence(status), fenceOf(slot)) ||
         !saved?.id ||
         status.savedState?.id !== saved.id
       )
@@ -594,10 +593,10 @@ export class BrowserPoolCoordinator {
       status = result.status;
     }
     const adopt = resumed.control!;
+    // The resume moves the epoch on; slot, term and instance stay the slot's.
     if (
-      status.instance !== slot.instanceId ||
-      adopt.fence.instance !== slot.instanceId ||
-      (status.epoch !== adopt.fence.epoch && status.phase === "running")
+      !sameFence(adopt.fence, { ...fenceOf(slot), epoch: adopt.fence.epoch }) ||
+      (status.phase === "running" && !sameFence(statusFence(status), adopt.fence))
     )
       return this.#discard(slot, "guest-changed");
     if (slot.epoch !== adopt.fence.epoch)
@@ -607,7 +606,15 @@ export class BrowserPoolCoordinator {
       });
     let state = this.#state();
     if (state.phase === "sealed") state = (await this.#deliver(adopt, resumed.signature!)).state;
-    if (state.fence?.instance !== slot.instanceId) return this.#discard(slot, "guest-changed");
+    // An adopt that did not arrive leaves the runtime sealed under the epoch before it: the
+    // next attempt sends it again.
+    if (
+      state.phase === "sealed" &&
+      state.fence &&
+      sameFence(state.fence, { ...fenceOf(slot), epoch: state.fence.epoch })
+    )
+      throw new Error("The runtime has not adopted yet.");
+    if (!sameFence(state.fence, fenceOf(slot))) return this.#discard(slot, "guest-changed");
     if (sameIntent(state, slot) && (state.phase === "adopting" || state.adoption?.outcome))
       return this.#readopt(slot, state);
     throw new Error(`The runtime did not adopt: ${state.phase}.`);
@@ -718,7 +725,7 @@ export class BrowserPoolCoordinator {
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
     const { state } = await this.#deliver(started.control, started.signature);
-    if (state.phase !== "running" || state.fence?.instance !== started.control.fence.instance)
+    if (state.phase !== "running" || !sameFence(state.fence, started.control.fence))
       throw new Error("The fresh guest was not installed.");
     const sessions = await listBrowserPoolRuntimeSessions(
       this.#options.database,
@@ -732,7 +739,12 @@ export class BrowserPoolCoordinator {
       slot,
       {
         phase: "running",
-        fence: { instanceId: started.control.fence.instance, epoch: started.control.fence.epoch },
+        fence: {
+          slotId: started.control.fence.slot,
+          term: started.control.fence.term,
+          instanceId: started.control.fence.instance,
+          epoch: started.control.fence.epoch,
+        },
         savedState: null,
         outcome: { adopted: [], lost: losses.map(({ sessionId }) => ({ sessionId, reason })) },
         lastStart: {
@@ -809,8 +821,14 @@ export class BrowserPoolCoordinator {
     const slot = await this.#read();
     const status = await this.#status();
     const state = this.#state();
-    if (!slot) return this.#install(status, state);
-    if (status.instance !== slot.instanceId || state.fence?.instance !== slot.instanceId)
+    if (!slot) return this.#install(status);
+    // The whole fence, the controller's and the runtime's. Only waking may find the epoch moved
+    // on by a resume that applied; its own check compares it with that resume.
+    const expected = (fence: BrowserPoolRuntimeFence | null) =>
+      slot.phase === "waking" && fence
+        ? sameFence(fence, { ...fenceOf(slot), epoch: fence.epoch }) && fence.epoch >= slot.epoch
+        : sameFence(fence, fenceOf(slot));
+    if (!expected(statusFence(status)) || !expected(state.fence))
       return this.#discard(slot, "guest-restarted");
     switch (slot.phase) {
       case "running":
@@ -843,20 +861,11 @@ export class BrowserPoolCoordinator {
     this.gate.settle(outcome === "parked" ? "parked" : "open");
   }
 
-  async #install(status: BrowserPoolPhysicalStatus, state: BrowserPoolRuntimeState) {
-    // Without its row, the Home takes the fence from the controller; a running guest is kept
-    // only when its whole fence is the one the controller reports, and is replaced otherwise.
-    const controllerFence =
-      status.phase === "running" && status.instance !== null && status.epoch !== null
-        ? { slot: status.slotId, term: status.term, instance: status.instance, epoch: status.epoch }
-        : undefined;
-    if (controllerFence && state.phase === "running" && sameFence(state.fence, controllerFence)) {
-      this.#slot = await installBrowserPoolSlot(
-        this.#options.database,
-        this.#target(controllerFence),
-      );
-      return this.gate.settle("open");
-    }
+  /**
+   * Without its row the Home has no session that could own a page in a guest, so whatever guest
+   * the controller reports is stopped and a fresh one started; its fence is the controller's.
+   */
+  async #install(status: BrowserPoolPhysicalStatus) {
     if (status.phase !== "stopped") {
       const stopped = await this.#call(undefined, "stop", status);
       if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
@@ -898,12 +907,22 @@ function startReason(reason: string): "expired" | "host" | "person" {
 }
 const defaultCallTimeoutMs = 10_000;
 
+/** Every fence comparison: slot, term, instance and epoch alike. */
 function sameFence(a: BrowserPoolRuntimeFence | null, b: BrowserPoolRuntimeFence): boolean {
-  return !!a && sameRuntimeFence(a, b);
+  return (
+    !!a &&
+    a.slot === b.slot &&
+    a.term === b.term &&
+    a.instance === b.instance &&
+    a.epoch === b.epoch
+  );
 }
 
-function sameRuntimeFence(a: BrowserPoolRuntimeFence, b: BrowserPoolRuntimeFence): boolean {
-  return a.slot === b.slot && a.term === b.term && a.instance === b.instance && a.epoch === b.epoch;
+/** The controller's fence, when its guest has one. */
+function statusFence(status: BrowserPoolPhysicalStatus): BrowserPoolRuntimeFence | null {
+  return status.instance !== null && status.epoch !== null
+    ? { slot: status.slotId, term: status.term, instance: status.instance, epoch: status.epoch }
+    : null;
 }
 
 function fenceOf(slot: BrowserPoolSlot): BrowserPoolRuntimeFence {
