@@ -134,6 +134,9 @@ export class PoolAgent {
       const slot = this.#load(record);
       this.#slots.set(record.slotId, slot);
     }
+    // A host restart removed every namespace: each slot's network is made again first.
+    for (const slot of this.#slots.values())
+      await this.#driver.prepareSlot(slot.record.slotId, slot.record.guest.egress);
     for (const slot of this.#slots.values()) await slot.lane.run(() => this.#settle(slot));
     const swept = await this.#driver.sweep(
       new Map(

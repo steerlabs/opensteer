@@ -92,5 +92,7 @@ export interface HypervisorDriver {
 
 export interface SlotEgress {
   readonly upstreamUrl: string;
-  readonly credentialFile?: string;
+  readonly usernameFile: string;
+  readonly passwordFile: string;
+  readonly caFile?: string;
 }

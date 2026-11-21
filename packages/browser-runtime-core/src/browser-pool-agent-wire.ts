@@ -111,8 +111,16 @@ export interface BrowserPoolAgentGuestSpec {
   readonly memoryMib: number;
   /** The slot's durable profile disk on the host (a file or a block device). */
   readonly profilePath: string;
-  /** Egress upstream for the slot's host-side proxy; absent means direct public egress. */
-  readonly egress?: { readonly upstreamUrl: string; readonly credentialFile?: string };
+  /**
+   * The upstream HTTPS proxy of the slot's host-side egress proxy, with root-only files on the
+   * host holding its credentials; absent means direct public egress from the pool host.
+   */
+  readonly egress?: {
+    readonly upstreamUrl: string;
+    readonly usernameFile: string;
+    readonly passwordFile: string;
+    readonly caFile?: string;
+  };
 }
 
 export interface BrowserPoolAgentAdminEnvelope {

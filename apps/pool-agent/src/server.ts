@@ -71,6 +71,7 @@ const envelopeSchema = z.strictObject({
 });
 
 const spki = z.string().min(40).max(200);
+const hostFile = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u);
 const adminSchema = z.strictObject({
   v: z.literal(1),
   issuedAt: z.string().datetime(),
@@ -87,8 +88,10 @@ const adminSchema = z.strictObject({
         profilePath: z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u),
         egress: z
           .strictObject({
-            upstreamUrl: z.string().max(512),
-            credentialFile: z.string().max(255).optional(),
+            upstreamUrl: z.string().regex(/^https:\/\/[^\s/?#@]+:[0-9]{1,5}$/u),
+            usernameFile: hostFile,
+            passwordFile: hostFile,
+            caFile: hostFile.optional(),
           })
           .optional(),
       }),
