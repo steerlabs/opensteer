@@ -478,6 +478,29 @@ it("keeps admission closed from a park's commit until its abort is confirmed, fo
   }
 });
 
+it("gives a holder that never lets go its recorded outcome before a restart stops the guest", async () => {
+  const f = await poolFixture("restart-stuck-holder");
+  try {
+    const home = f.home(undefined, f.controller, { quiesceMs: 300 });
+    await home.recover();
+    const order: string[] = [];
+    const held = await home.gate.reserve(AbortSignal.timeout(10_000));
+    // A holder that ignores its abort; it can still say what it did.
+    held.onForcedEnd?.(async () => {
+      order.push(`settled with ${f.controller.effects.join(",")}`);
+    });
+    await withTimeout(home.restart({ key: "stuck" }), 10_000, {
+      timeoutError: () => new Error("The restart waited forever for the holder."),
+    });
+    expect(order).toEqual(["settled with start"]);
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    held.release();
+    expect(home.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
   try {

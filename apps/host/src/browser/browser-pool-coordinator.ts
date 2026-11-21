@@ -86,6 +86,8 @@ export interface BrowserPoolCoordinatorOptions {
   readonly retryMs?: number;
   /** How long a lost Runner channel may take to come back before its sessions end. */
   readonly channelDeadlineMs?: number;
+  /** How long a restart waits for every holder to let go before it settles them itself. */
+  readonly quiesceMs?: number;
   /** Every controller call and runtime control has this deadline; then its outcome is read. */
   readonly callTimeoutMs?: number;
   /** How often finished bookkeeping past its retention is removed, idle or not. */
@@ -551,10 +553,17 @@ export class BrowserPoolCoordinator {
         if (wanted.keys.size)
           slot = await this.#advance(slot, { phase: slot.phase, restartWanted: [...wanted.keys] });
         await this.#adopter?.quiesce();
-        await withTimeout(this.gate.idle(), quiesceMs, {
+        const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
           ...(this.#signal ? { signal: this.#signal } : {}),
           timeoutError: () => new Error("A send still holds the browser."),
-        }).catch((error: unknown) => this.#options.onError?.(error));
+        }).then(
+          () => true,
+          () => false,
+        );
+        this.#signal?.throwIfAborted();
+        // A holder still here (a script that ignores its abort) gets its recorded outcome first,
+        // unknown when it sent something and refused when it sent nothing: never a guess.
+        if (!idle) await this.gate.settleHolders();
         // The live set: a restart that joins while this one runs is answered by the same start.
         await this.#discard(slot, "person", wanted.keys);
         this.#discardWanted = undefined;
