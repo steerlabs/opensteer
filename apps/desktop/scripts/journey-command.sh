@@ -37,7 +37,7 @@ journey() {
       export OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR="$out/cookies"
       export OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR="$out/passkeys"
       export OPENSTEER_USB_E2E_ARTIFACT_DIR="$out/usb"
-      for smoke in cdp-boundary passwords attachments downloads profile-restore focus host-transport browser idle quit menu-bar cookies passkeys usb; do
+      for smoke in cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies; do
         mkdir -p "$out/$smoke"
         smoke_start=$SECONDS
         smoke_code=0
