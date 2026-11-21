@@ -3619,6 +3619,74 @@ describe("native Chromium profiles", () => {
     }
   });
 
+  it.each([
+    ["map-absent", null, ["https://a.test/", "https://b.test/"]],
+    ["chromium-restored-nothing", ["https://a.test/", "https://b.test/"], []],
+    [
+      "no-position-or-address-match",
+      ["https://same.test/", "https://same.test/"],
+      ["https://other.test/", "https://same.test/", "https://same.test/"],
+    ],
+  ] as const)(
+    "names why a cold start matched nothing: %s",
+    async (reason, mapUrls, restoredUrls) => {
+      const f = await nativeCloseFixture();
+      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+      if (mapUrls) {
+        await writeTabRestoreSidecar(
+          f.directory,
+          mapUrls.map((url, index) => ({
+            index,
+            surfaceId: `srf_00000000-0000-4000-8000-0000000d900${index}`,
+            url,
+          })),
+        );
+      }
+      let tabs: ChromiumTabEntry[] = restoredUrls.map((url, index) => ({
+        tabId: 900 + index,
+        windowId: 1,
+        index,
+        url,
+        title: "",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: null,
+      }));
+      Object.assign(f.context, { serviceWorkers: () => [], pages: () => [] });
+      const invSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+        .mockImplementation(async () => [...tabs]);
+      const remSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+        .mockImplementation(async (tabId) => {
+          tabs = tabs.filter((t) => t.tabId !== tabId);
+          return true;
+        });
+      const diagnostic = vi.spyOn(process.stderr, "write");
+      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+      try {
+        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        const line = diagnostic.mock.calls
+          .map(([text]) => String(text))
+          .find((text) => text.includes('"event":"browser-runtime.tab-restore-launch"'));
+        expect(JSON.parse(line!)).toMatchObject({
+          matched: 0,
+          restored: restoredUrls.length,
+          mapSaved: mapUrls?.length ?? 0,
+          matchedNothing: reason,
+        });
+      } finally {
+        invSpy.mockRestore();
+        remSpy.mockRestore();
+        diagnostic.mockRestore();
+        f.exit();
+        await launched?.close();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");

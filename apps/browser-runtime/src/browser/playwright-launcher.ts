@@ -75,7 +75,7 @@ import {
   flushNativeCookies,
   initializeNativePreferences,
   matchRestoredTabs,
-  readTabRestoreSidecar,
+  readTabRestoreSidecarState,
   writeTabRestoreSidecar,
   type MatchedRestoredTab,
   type TabRestoreSidecarEntry,
@@ -910,22 +910,21 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             }
             rawRestored.push(tab);
           }
-          if (rawRestored.length > 0) {
-            const sidecar = await readTabRestoreSidecar(directory);
-            const { matched, orphans } = matchRestoredTabs(rawRestored, sidecar);
-            for (const orphan of orphans) {
-              const confirmed = await removeLaunchTabWithEvidence(
-                lifecycle,
-                orphan.tabId,
-                orphan.targetId,
-              );
-              if (!confirmed) {
-                throw new Error("Chromium restored unauthorized tabs that could not be removed.");
-              }
+          const map = await readTabRestoreSidecarState(directory);
+          const { matched, orphans } = matchRestoredTabs(rawRestored, map.tabs);
+          reportRestoreLaunch(map, rawRestored, matched.size, orphans.length);
+          for (const orphan of orphans) {
+            const confirmed = await removeLaunchTabWithEvidence(
+              lifecycle,
+              orphan.tabId,
+              orphan.targetId,
+            );
+            if (!confirmed) {
+              throw new Error("Chromium restored unauthorized tabs that could not be removed.");
             }
-            for (const [surfaceId, entry] of matched) {
-              matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
-            }
+          }
+          for (const [surfaceId, entry] of matched) {
+            matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
           }
         } else {
           // Fail closed when launch inventory fails: never leave unowned restored tabs alive.
@@ -933,9 +932,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
           );
           // This run cannot keep the map current, so no later start may bind by it.
-          await deleteTabRestoreSidecar(directory).catch(() => {
-            process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n');
-          });
+          await deleteTabRestoreSidecar(directory).then(
+            () => reportMapDeleted("launch-inventory-unavailable"),
+            () => process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n'),
+          );
           for (const page of context.pages()) {
             if (page === helper || page.isClosed()) continue;
             await page.close({ runBeforeUnload: false }).catch(() => undefined);
@@ -1230,6 +1230,54 @@ function locateTab(
   );
   if (row) return { status: "found", row };
   return inventory[0]?.helperEpoch === epoch ? { status: "gone" } : { status: "unknown" };
+}
+
+/** Why a map was deleted, so a later start that matches nothing can be read against it. */
+function reportMapDeleted(
+  reason: "write-failures" | "flush-not-current" | "close-not-current" | "launch-inventory-unavailable",
+): void {
+  process.stderr.write(`${JSON.stringify({ event: "browser-runtime.tab-map-deleted", reason })}\n`);
+}
+
+/**
+ * One line per native launch: what Chromium restored, what the map held, what matched, and when
+ * nothing of a saved map matched, which of the reasons it was.
+ */
+function reportRestoreLaunch(
+  map: { readonly state: "absent" | "unreadable" | "present"; readonly tabs: readonly { readonly surfaceId: string | null; readonly url: string }[] },
+  restored: readonly ChromiumTabEntry[],
+  matched: number,
+  orphans: number,
+): void {
+  const saved = map.tabs.filter((tab) => tab.surfaceId !== null).length;
+  const stripEqual =
+    restored.length === map.tabs.length &&
+    [...restored]
+      .sort((a, b) => a.windowId - b.windowId || a.index - b.index)
+      .every((tab, index) => tab.url === map.tabs[index]!.url);
+  const nothing =
+    matched > 0 || (restored.length === 0 && saved === 0)
+      ? undefined
+      : map.state !== "present"
+        ? `map-${map.state}`
+        : saved === 0
+          ? "map-has-no-saved-tabs"
+          : restored.length === 0
+            ? "chromium-restored-nothing"
+            : "no-position-or-address-match";
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "browser-runtime.tab-restore-launch",
+      map: map.state,
+      mapTabs: map.tabs.length,
+      mapSaved: saved,
+      restored: restored.length,
+      matched,
+      orphans,
+      stripEqual,
+      ...(nothing ? { matchedNothing: nothing } : {}),
+    })}\n`,
+  );
 }
 
 /** Background removal attempts per tab, since it was last queued, before it is reported. */
@@ -2582,11 +2630,14 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /** The map is gone, so nothing stale is on disk; a later change makes it dirty again. */
-  private async deleteSidecarMap(): Promise<void> {
+  private async deleteSidecarMap(
+    reason: "write-failures" | "flush-not-current" | "close-not-current",
+  ): Promise<void> {
     if (!this.profileDirectory) return;
     try {
       await deleteTabRestoreSidecar(this.profileDirectory);
       this.sidecarDirty = false;
+      reportMapDeleted(reason);
     } catch {
       process.stderr.write('{"event":"browser-runtime.tab-map-delete-failed"}\n');
     }
@@ -2601,7 +2652,7 @@ class PlaywrightContextHandle implements BrowserContext {
     for (let attempt = 0; attempt < 2 && this.sidecarDirty && !this.closed; attempt++) {
       await this.flushSavedTabs().catch(() => undefined);
     }
-    if (this.sidecarDirty && !this.closed) await this.deleteSidecarMap();
+    if (this.sidecarDirty && !this.closed) await this.deleteSidecarMap("flush-not-current");
   }
 
   /**
@@ -2621,12 +2672,12 @@ class PlaywrightContextHandle implements BrowserContext {
       return true;
     });
     if (!dirty) return;
-    await this.deleteSidecarMap();
+    await this.deleteSidecarMap("close-not-current");
     if (!writeInFlight) return;
     // The late write clears this only if it succeeds, and versions no longer move once closed.
     this.sidecarDirty = true;
     this.sidecarTail = this.sidecarTail.then(async () => {
-      if (this.sidecarDirty) await this.deleteSidecarMap();
+      if (this.sidecarDirty) await this.deleteSidecarMap("close-not-current");
     });
   }
 
@@ -2668,7 +2719,7 @@ class PlaywrightContextHandle implements BrowserContext {
         // Cannot bring the sidecar current: delete the stale map so a later cold start matches
         // nothing and opens by address instead of binding a stale slot. The count stays until a
         // write succeeds, so every further failure deletes again (an absent map stays absent).
-        await this.deleteSidecarMap();
+        await this.deleteSidecarMap("write-failures");
       };
       const inventory = await this.lifecycle.inventory().catch(() => null);
       if (this.closed) return;

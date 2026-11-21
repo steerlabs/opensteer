@@ -94,20 +94,29 @@ export async function initializeNativePreferences(directory: string): Promise<vo
 export async function readTabRestoreSidecar(
   directory: string,
 ): Promise<readonly TabRestoreSidecarEntry[]> {
+  return (await readTabRestoreSidecarState(directory)).tabs;
+}
+
+/** The map and why it holds nothing, when it does: no file, or a file that does not parse. */
+export async function readTabRestoreSidecarState(directory: string): Promise<{
+  readonly state: "absent" | "unreadable" | "present";
+  readonly tabs: readonly TabRestoreSidecarEntry[];
+}> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
   const sidecarPath = path.join(directory, tabRestoreSidecarFilename);
   let raw: string;
   try {
     raw = await readFile(sidecarPath, "utf8");
-  } catch {
-    return [];
+  } catch (error) {
+    const absent = error instanceof Error && "code" in error && error.code === "ENOENT";
+    return { state: absent ? "absent" : "unreadable", tabs: [] };
   }
   try {
     const parsed = tabRestoreSidecarSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return [];
-    return [...parsed.data.tabs].sort((a, b) => a.index - b.index);
+    if (!parsed.success) return { state: "unreadable", tabs: [] };
+    return { state: "present", tabs: [...parsed.data.tabs].sort((a, b) => a.index - b.index) };
   } catch {
-    return [];
+    return { state: "unreadable", tabs: [] };
   }
 }
 
