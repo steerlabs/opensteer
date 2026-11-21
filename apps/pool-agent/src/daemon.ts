@@ -3,7 +3,7 @@
  * request is ever answered from a state it has not checked.
  */
 import { createPrivateKey, type KeyObject } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { chmod, chown, mkdir, rm } from "node:fs/promises";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname } from "node:path";
@@ -13,6 +13,7 @@ import { readAgentConfig, refuseUnsupportedMode } from "./config.js";
 import { FirecrackerDriver } from "./firecracker/driver.js";
 import { SlotJournal } from "./journal.js";
 import { createAdminServer, createHomeServer, listen, parseProvisionerKey } from "./server.js";
+import { createRelayAuthServer } from "./relay.js";
 
 export function log(event: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -62,6 +63,23 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
     await listen(server, target);
     if ("path" in target) await setPrivateFileMode(target.path);
     servers.push(server);
+  }
+  // The relay's question, on a socket only the relay's user (and root) may open.
+  const relayUid = config.driver.network.relayUid;
+  if (relayUid !== null) {
+    const path = "/run/opensteer-pool/relay.sock";
+    await mkdir(dirname(path), { recursive: true, mode: 0o711 });
+    await rm(path, { force: true });
+    const relayAuth = createRelayAuthServer((hello, clientKey) =>
+      agent.authorizeRelay(hello, clientKey),
+    );
+    await new Promise<void>((resolve, reject) => {
+      relayAuth.once("error", reject);
+      relayAuth.listen(path, () => resolve());
+    });
+    await chown(path, relayUid, 0);
+    await chmod(path, 0o600);
+    servers.push(relayAuth as unknown as Server);
   }
   log({ event: "agent.ready", slots: agent.slotIds().length });
   const stop = () => {

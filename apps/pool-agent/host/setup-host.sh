@@ -30,6 +30,7 @@ readonly MAPPER=osp-saved
 : "${OSP_PROVISIONER_CIDR:=127.0.0.1/32}"     # who may reach its administration interface
 : "${OSP_AGENT_PORT:=7310}"
 : "${OSP_ADMIN_PORT:=7311}"
+: "${OSP_RELAY_PORT:=7312}"
 
 log() { printf 'setup-host: %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
@@ -112,6 +113,13 @@ host_key() {
     fi
     openssl pkey -in /etc/opensteer-pool/host-key.pem -pubout -out /etc/opensteer-pool/host-key.pub
     chmod 0644 /etc/opensteer-pool/host-key.pub
+    # The relay presents a certificate for the same key; a Home checks the key, not the
+    # certificate's issuer (there is none): pool-runtime-in-guest.md, decision 4.
+    if [[ ! -f /etc/opensteer-pool/host-cert.pem ]]; then
+        openssl req -x509 -new -key /etc/opensteer-pool/host-key.pem -subj /CN=opensteer-pool-host \
+            -days 3650 -out /etc/opensteer-pool/host-cert.pem
+    fi
+    chmod 0644 /etc/opensteer-pool/host-cert.pem
 }
 
 install_users() {
@@ -180,6 +188,48 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+    # The relay (pool-runtime-in-guest.md, decisions 4 and 5): its own user, the only one the
+    # host's rules let reach a guest's bridge port. The host key reaches it as a credential.
+    cat > /etc/opensteer-pool/relay.json <<EOF
+{ "listen": { "host": "0.0.0.0", "port": $OSP_RELAY_PORT },
+  "certificate": "/etc/opensteer-pool/host-cert.pem",
+  "authSocket": "/run/opensteer-pool/relay.sock" }
+EOF
+    chmod 0644 /etc/opensteer-pool/relay.json
+    cat > /etc/systemd/system/opensteer-pool-relay.service <<EOF
+[Unit]
+Description=Opensteer pool relay
+After=opensteer-pool-agent.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=opensteer-pool-relay
+Group=opensteer-pool-relay
+LoadCredential=host-key:/etc/opensteer-pool/host-key.pem
+ExecStart=$OPT/node/bin/node $OPT/agent/relay.mjs /etc/opensteer-pool/relay.json
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
+EOF
     systemctl daemon-reload
     systemctl enable opensteer-pool-host.service >/dev/null
 }
@@ -223,9 +273,9 @@ delete table inet opensteer_pool_host
 table inet opensteer_pool_host {
   chain input {
     type filter hook input priority -20; policy accept;
-    iifname "ospv*" tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } drop
-    tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } meta nfproto ipv6 drop
-    tcp dport $OSP_AGENT_PORT ip saddr != { 127.0.0.0/8, $OSP_HOME_CIDR } drop
+    iifname "ospv*" tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT, $OSP_RELAY_PORT } drop
+    tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT, $OSP_RELAY_PORT } meta nfproto ipv6 drop
+    tcp dport { $OSP_AGENT_PORT, $OSP_RELAY_PORT } ip saddr != { 127.0.0.0/8, $OSP_HOME_CIDR } drop
     tcp dport $OSP_ADMIN_PORT ip saddr != { 127.0.0.0/8, $OSP_PROVISIONER_CIDR } drop
   }
 }
