@@ -11,7 +11,8 @@ Hetzner computers.
 Set `PROJECT` to the Compute project, `REGION` to the zone's region, and
 `NETWORK` and `SUBNET` to the names you will use below. Set `PROVISIONER_SA`
 to the Google service account email that Account already accepts. Its project
-is `IDENTITY_PROJECT`.
+is `IDENTITY_PROJECT`. Set `CLUSTER_PROJECT` to the project that owns the GKE
+cluster.
 
 1. Enable Compute in the VM project. For a GKE KSA that impersonates the
    provisioner service account, enable the IAM Service Account Credentials API
