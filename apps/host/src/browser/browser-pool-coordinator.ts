@@ -1078,7 +1078,9 @@ export class BrowserPoolCoordinator {
     sessions: readonly BrowserSessionId[],
     reason: string,
   ): Promise<BrowserPoolSessionLoss[]> {
-    const retained = retainedOf(slot);
+    // A running browser was woken or started since its last park: that park's documents and
+    // what was typed in them are no longer what is so.
+    const retained = slot.phase === "running" ? undefined : retainedOf(slot);
     const rows = await listBrowserPoolSessionTabs(this.#options.database, sessions);
     return Promise.all(
       sessions.map(async (sessionId) => {
@@ -1299,5 +1301,5 @@ function retainedOf(slot: BrowserPoolSlot | undefined): Retained | undefined {
 function surfacesOf(retained: Retained, sessionId: BrowserSessionId) {
   return retained.documents
     .filter((document) => document.sessionId === sessionId)
-    .map(({ surfaceId, documentId }) => ({ surfaceId, documentId }));
+    .map(({ surfaceId, documentId, typed }) => ({ surfaceId, documentId, typed: typed === true }));
 }

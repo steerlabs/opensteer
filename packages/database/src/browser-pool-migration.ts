@@ -55,6 +55,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       surface_id text not null,
       document_id text,
       reason text not null,
+      typed boolean not null default false,
       lost_at timestamptz not null default now(),
       noticed_at timestamptz,
       primary key (intent_id, surface_id)

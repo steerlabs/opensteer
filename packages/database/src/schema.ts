@@ -2428,6 +2428,8 @@ export interface DatabaseSchema {
     surfaceId: BrowserSurfaceId;
     documentId: string | null;
     reason: string;
+    /** The page held typed text that was not sent, as known when the loss was written. */
+    typed: Generated<boolean>;
     lostAt: Generated<Timestamp>;
     noticedAt: Timestamp | null;
   };

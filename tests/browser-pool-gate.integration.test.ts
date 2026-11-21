@@ -221,6 +221,54 @@ it("lets a lost relay reply veto only until the relay deadline, and prunes it th
   }
 });
 
+it("prunes a pooled browser's notes after seven days, seen or not, and keeps a newer unseen one", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("notes-retention");
+    const target = {
+      runnerId: task.runnerId,
+      runtimeId: "runtime",
+      slotId: "slot",
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    const slot = await installBrowserPoolSlot(fixture.database, target);
+    const note = (surfaceId: string, days: number, seen: boolean) => {
+      const at = new Date(Date.now() - days * 24 * 60 * 60_000);
+      return {
+        intentId: randomUUID(),
+        runnerId: task.runnerId,
+        ownerId: task.userId,
+        sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+        surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+        documentId: null,
+        reason: "person",
+        lostAt: at,
+        noticedAt: seen ? at : null,
+      };
+    };
+    await fixture.database
+      .insertInto("browserPoolDocumentLosses")
+      .values([
+        note("srf_unseen_old", 8, false),
+        note("srf_seen_old", 8, true),
+        note("srf_unseen_new", 1, false),
+        note("srf_seen_new", 1, true),
+      ])
+      .execute();
+    await pruneBrowserPoolBookkeeping(fixture.database, slot);
+    const kept = await fixture.database
+      .selectFrom("browserPoolDocumentLosses")
+      .select("surfaceId")
+      .orderBy("surfaceId")
+      .execute();
+    expect(kept.map(({ surfaceId }) => surfaceId)).toEqual(["srf_seen_new", "srf_unseen_new"]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 it("keeps lost pooled relay replies in D after the transport ends", async () => {
   const fixture = await createStoreFixture();
   try {

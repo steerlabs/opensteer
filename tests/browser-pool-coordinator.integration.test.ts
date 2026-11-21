@@ -934,6 +934,64 @@ it("discards live state and opens when the saved state expired, and says what wa
   }
 });
 
+/** The park's manifest says each page held typed text that was not sent. */
+async function parkedTyped(f: Awaited<ReturnType<typeof poolFixture>>) {
+  const parked = (await f.slot())!;
+  const documents = (parked.retained as { documents: { surfaceId: string }[] }).documents;
+  await f.database
+    .updateTable("browserPoolSlots")
+    .set({
+      retained: {
+        ...(parked.retained as object),
+        documents: documents.map((document) => ({ ...document, typed: true })),
+      },
+    })
+    .where("runnerId", "=", parked.runnerId)
+    .execute();
+  return documents[0]!.surfaceId as never;
+}
+
+it("records with each loss whether its page held unsent typed text, as known when the loss is written", async () => {
+  const f = await poolFixture("typed-loss");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const surfaceId = await parkedTyped(f);
+    // The saved state expired: the page is lost, and its note says typed text went with it.
+    f.controller.observe({ phase: "stopped", savedState: null, epoch: null });
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect(f.controller.effects).toEqual(["start", "pause", "start"]);
+    expect(await listBrowserPoolDocumentLosses(f.database, f.task.userId, surfaceId)).toEqual([
+      expect.objectContaining({ reason: "live-state-unavailable", typed: true }),
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
+it("claims nothing typed for a page a restart of the running browser loses after an earlier park", async () => {
+  const f = await poolFixture("typed-stale");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const surfaceId = await parkedTyped(f);
+    // Woken and adopted: that park's manifest is no longer what is so.
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect((await f.row())?.state).toBe("ready");
+    await home.restart();
+    expect((await f.row())?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(f.database, f.task.userId, surfaceId)).toEqual([
+      expect.objectContaining({ reason: "person", typed: false }),
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
 it("refuses a late retire after an abort and parks on the next attempt", async () => {
   const f = await poolFixture("late-retire");
   try {

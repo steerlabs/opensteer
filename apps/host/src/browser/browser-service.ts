@@ -6429,16 +6429,13 @@ export class BrowserService {
     // A removed device's slot waits only for its guest to stop: there is no browser to show.
     if (!slot || slot.phase === "releasing") return [];
     const shown = this.#pool(runnerId)?.report();
-    const retained =
-      (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
-
     const start = slot.lastStart as { reason?: string; id?: string } | null;
     // The newest unseen notice of each tab, bounded well under the protocol's limit; older
     // unseen ones fall to retention.
     const losses = await listBrowserPoolReportedNotices(database, runnerId);
     const owner = await readBrowserPoolOwner(database);
     const pages = await Promise.all(
-      losses.map(async ({ surfaceId, sessionId, intentId }) => {
+      losses.map(async ({ surfaceId, sessionId, intentId, typed }) => {
         const tab = owner ? await this.#workspaceTabs?.get(owner, surfaceId) : null;
         // Reopened in another session: it came back by reloading. Otherwise it is lost.
         const reloaded =
@@ -6447,9 +6444,7 @@ export class BrowserService {
           surfaceId,
           noticeId: intentId,
           outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
-          typed: retained.some(
-            (document) => document.surfaceId === surfaceId && document.typed === true,
-          ),
+          typed,
         };
       }),
     );

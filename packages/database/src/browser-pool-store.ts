@@ -27,7 +27,12 @@ export type BrowserPoolControllerCallRow = Selectable<DatabaseSchema["browserPoo
 export interface BrowserPoolSessionLoss {
   readonly sessionId: BrowserSessionId;
   readonly reason: string;
-  readonly surfaces: readonly { readonly surfaceId: string; readonly documentId: string | null }[];
+  readonly surfaces: readonly {
+    readonly surfaceId: string;
+    readonly documentId: string | null;
+    /** Known typed text that was not sent; written with the loss. */
+    readonly typed?: boolean;
+  }[];
   /** False for a tab lost inside a session that was otherwise adopted. */
   readonly endSession?: boolean;
 }
@@ -307,7 +312,7 @@ async function recordBrowserPoolLosses(
     const noteId = randomUUID();
     const notes = losses.flatMap(({ sessionId, reason, surfaces }) => {
       return ownerId && known.has(sessionId)
-        ? surfaces.map(({ surfaceId, documentId }) => ({
+        ? surfaces.map(({ surfaceId, documentId, typed }) => ({
             intentId: noteId,
             runnerId: slot.runnerId,
             ownerId,
@@ -315,6 +320,7 @@ async function recordBrowserPoolLosses(
             surfaceId: surfaceId as BrowserSurfaceId,
             documentId,
             reason,
+            typed: typed === true,
           }))
         : [];
     });
@@ -706,7 +712,7 @@ export async function listBrowserPoolReportedNotices(
 ) {
   const newest = database
     .selectFrom("browserPoolDocumentLosses")
-    .select(["surfaceId", "sessionId", "intentId", "lostAt"])
+    .select(["surfaceId", "sessionId", "intentId", "typed", "lostAt"])
     .distinctOn("surfaceId")
     .where("runnerId", "=", runnerId)
     .where("noticedAt", "is", null)
@@ -752,10 +758,16 @@ export async function pruneBrowserPoolBookkeeping(
       ]),
     )
     .execute();
+  // A seen note ages out from when it was seen; one never seen, from when it was written.
   await database
     .deleteFrom("browserPoolDocumentLosses")
     .where("runnerId", "=", slot.runnerId)
-    .where("noticedAt", "<", before)
+    .where((eb) =>
+      eb.or([
+        eb("noticedAt", "<", before),
+        eb.and([eb("noticedAt", "is", null), eb("lostAt", "<", before)]),
+      ]),
+    )
     .execute();
 }
 
