@@ -1,6 +1,7 @@
 import type { DeploymentId } from "@opensteer/core";
 import { HostTransportError } from "@opensteer/client/connections";
 import { fileTransferHeadersTimeoutMs } from "@opensteer/protocol";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import {
   DesktopHostTransportErrorCodeSchema,
   type DesktopHostTransportErrorCode,
@@ -141,7 +142,7 @@ function streamWithTransportErrors(
     release?.();
   };
   signal.addEventListener("abort", finish, { once: true });
-  const reader = response.body.getReader();
+  const reader = responseChunkReader(response.body);
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
