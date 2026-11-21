@@ -108,6 +108,7 @@ export interface BrowserControllerSink extends BrowserFrameSink {
 
 interface BrowserControllerOptions {
   sessionState?: (state: import("@opensteer/protocol/browser").BrowserSessionState) => void;
+  onSavedTabs?: (savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>;
   loginAuthority?: BrowserLoginAuthority | undefined;
   nativePresentation?:
     ((surfaceId: BrowserSurfaceId, consumerToken: string) => boolean) | undefined;
@@ -381,6 +382,10 @@ export class BrowserController {
     { id: BrowserSurfaceId },
     Record<string, never>
   >();
+  private readonly onSavedTabs:
+    | ((savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>)
+    | undefined;
+  private savedTabsReconcile: Promise<void> | null = null;
   private readonly tabPublisher = new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
     ids: () => this.tabRows.keys(),
     read: (id) => this.tabRows.get(id),
@@ -442,6 +447,7 @@ export class BrowserController {
   }
   constructor(options: BrowserControllerOptions) {
     this.sessionState = options.sessionState;
+    this.onSavedTabs = options.onSavedTabs;
     this.personAuthority =
       options.claims.personFillVersion &&
       options.loginAuthority?.personFillAccounts &&
@@ -936,7 +942,18 @@ export class BrowserController {
       return this.drainTabs();
     }
     if (message.type === "session.saved") {
-      this.savedTabs.apply(message.stream);
+      const applied = this.savedTabs.apply(message.stream);
+      if (applied === "applied" && this.savedTabs.state === "committed" && this.onSavedTabs) {
+        const savedIds = new Set<BrowserSurfaceId>();
+        for (const id of this.savedTabs.rows.keys()) {
+          savedIds.add(BrowserSurfaceIdSchema.parse(id));
+        }
+        const reconciling = Promise.resolve(this.onSavedTabs(savedIds)).finally(() => {
+          if (this.savedTabsReconcile === reconciling) this.savedTabsReconcile = null;
+        });
+        this.savedTabsReconcile = reconciling;
+        return reconciling;
+      }
       return Promise.resolve();
     }
 
@@ -3771,6 +3788,7 @@ export class BrowserController {
       return;
     }
     if (message.command.method === browserHostMethods.listTabs) {
+      if (this.savedTabsReconcile) await this.savedTabsReconcile;
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
@@ -3861,6 +3879,7 @@ export class BrowserController {
     )
       throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
+      if (this.savedTabsReconcile) await this.savedTabsReconcile;
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
         sessionId: true,

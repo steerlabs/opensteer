@@ -534,6 +534,8 @@ export async function startBrowserRuntime(
             }
           } else if (command.method === "Opensteer.closeTab") {
             result = { outcome: "tab-closed" };
+          } else if (command.method === "Opensteer.listTabs") {
+            result = { tabs: [], nextCursor: null };
           }
           if (result) {
             const sessionId = [...sessionChannels].find(([, id]) => id === message.channelId)?.[0];

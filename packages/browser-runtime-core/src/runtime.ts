@@ -165,6 +165,8 @@ export interface BrowserHost {
    */
   stateImports: AsyncMutex;
   readonly stateMutations: Map<Promise<void>, AbortSignal>;
+  restoreReconcileTimer?: ReturnType<typeof setTimeout> | undefined;
+  restoredReconciled?: boolean;
 }
 
 /**
@@ -941,16 +943,51 @@ export class BrowserRuntime implements NativePresentationSource {
               "This browser profile has a whole-context CDP attachment.",
             );
           stage = "page-create";
+          const savedLineageId =
+            claims.tabRestoreVersion === 1 &&
+            claims.identity.kind === "profile-local" &&
+            (claims.initialSurfaceId !== undefined ||
+              (claims.actor !== "agent" && claims.creationOrigin !== "agent"))
+              ? claims.identity.binding.profileId
+              : undefined;
           // A new host's launch page is this session's root unless another already owns it.
           const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
           if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
           else {
             // Owned by this session from its handle on; rollback ends it.
             const context = host.browser.context;
-            const creation = this.pages.create(claims.sessionId, null, "open-failed", (own) =>
-              context.createPage({ own }),
+            const restoreSurfaceId =
+              claims.tabRestoreVersion === 1 ? claims.initialSurfaceId : undefined;
+            const creation = this.pages.create(
+              claims.sessionId,
+              restoreSurfaceId ?? null,
+              "open-failed",
+              (own) =>
+                restoreSurfaceId && context.sessionRestore
+                  ? context.sessionRestore
+                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own)
+                      .then((restored) => restored ?? context.createPage({ own }))
+                  : context.createPage({ own }),
             );
             rootPage = await wait(creation.page);
+          }
+
+          if (createdHost && host.browser.context.sessionRestore) {
+            const sessionRestore = host.browser.context.sessionRestore;
+            const targetHost = host;
+            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId) {
+              const fallbackKeep = new Set<BrowserSurfaceId>([claims.initialSurfaceId]);
+              targetHost.restoreReconcileTimer = setTimeout(() => {
+                targetHost.restoreReconcileTimer = undefined;
+                if (targetHost.restoredReconciled) return;
+                targetHost.restoredReconciled = true;
+                void sessionRestore.reconcile(fallbackKeep).catch(() => undefined);
+              }, 5_000);
+              targetHost.restoreReconcileTimer.unref?.();
+            } else {
+              targetHost.restoredReconciled = true;
+              await wait(sessionRestore.reconcile(new Set()));
+            }
           }
 
           signal.throwIfAborted();
@@ -979,6 +1016,7 @@ export class BrowserRuntime implements NativePresentationSource {
             ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),
+            ...(savedLineageId ? { savedLineageId } : {}),
           });
           sessionRouter.registerSession(
             claims.sessionId,
@@ -1078,6 +1116,16 @@ export class BrowserRuntime implements NativePresentationSource {
     const stateHost = host;
     return new BrowserController({
       sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
+      onSavedTabs: async (savedTabIds) => {
+        if (stateHost.restoreReconcileTimer) {
+          clearTimeout(stateHost.restoreReconcileTimer);
+          stateHost.restoreReconcileTimer = undefined;
+        }
+        if (!stateHost.restoredReconciled) {
+          stateHost.restoredReconciled = true;
+          await hostBrowser.context.sessionRestore?.reconcile(savedTabIds);
+        }
+      },
       loginAuthority: this.loginAuthority,
       nativePresentation: (surfaceId, consumerToken) => {
         const live = [...this.nativePresentations].filter(
@@ -1488,6 +1536,10 @@ export class BrowserRuntime implements NativePresentationSource {
     if (host.cleanup) return host.cleanup.result;
     const result = (async () => {
       host.acceptingSessions = false;
+      if (host.restoreReconcileTimer) {
+        clearTimeout(host.restoreReconcileTimer);
+        host.restoreReconcileTimer = undefined;
+      }
       host.passkeys?.close();
       host.signIns.close();
       host.helperCancellation.abort();
@@ -1496,6 +1548,15 @@ export class BrowserRuntime implements NativePresentationSource {
         host.stateImports.run(async () => {}),
         "cookie import drain",
       );
+      if (host.browser.context.sessionRestore && reason === "runtime-shutdown") {
+        // Orderly runtime shutdown closes non-durable agent tabs and flushes the
+        // saved-tab sidecar BEFORE closing Chromium so Default/Sessions matches.
+        await quiesced.catch(() => undefined);
+        await boundedCleanup(
+          Promise.resolve(host.browser.context.sessionRestore.flush?.()),
+          "saved tab map flush",
+        ).catch(() => undefined);
+      }
       if (!host.disposal) {
         host.disposal = this.disposeHost(host);
         void host.disposal.catch((error: unknown) =>

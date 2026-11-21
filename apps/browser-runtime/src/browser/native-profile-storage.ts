@@ -13,10 +13,11 @@ const tabRestoreSidecarEntrySchema = z.object({
   index: z.number().int().nonnegative(),
   surfaceId: z.string().min(1),
   url: z.string(),
+  lineageId: z.string().min(1),
 });
 
 const tabRestoreSidecarSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   tabs: z.array(tabRestoreSidecarEntrySchema),
 });
 
@@ -123,81 +124,119 @@ export async function writeTabRestoreSidecar(
       index,
       surfaceId: entry.surfaceId,
       url: entry.url,
+      lineageId: entry.lineageId,
     }));
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFileAtomic(sidecarPath, JSON.stringify({ version: 1, tabs: normalized }));
+  await writeFileAtomic(sidecarPath, JSON.stringify({ version: 2, tabs: normalized }));
+}
+
+export interface MatchedRestoredTab {
+  readonly tab: ChromiumTabEntry;
+  readonly lineageId: string;
 }
 
 export interface RestoredTabMatchResult {
-  readonly matched: ReadonlyMap<string, ChromiumTabEntry>;
+  readonly matched: ReadonlyMap<string, MatchedRestoredTab>;
   readonly orphans: readonly ChromiumTabEntry[];
-  readonly missingSurfaceIds: readonly string[];
 }
 
 /**
- * Matches Chromium's restored TabStripModel tabs against the Home's authoritative
- * tab list using the profile's strip-order sidecar. Disambiguates duplicate URLs
- * by relative strip index first, then falls back to URL order if a hard crash
- * shifted indices. Any restored tab not owned by a Home tab is returned as an orphan.
+ * Exact-or-none matching between Chromium's restored TabStripModel tabs and the
+ * profile's unfiltered `opensteer-tabs.json` sidecar:
+ * 1. Positional match on the UNFILTERED sidecar at the same index and address.
+ *    Duplicate addresses match positionally only when the full strip has the
+ *    exact same length and URL sequence up to that index (never after a shift).
+ * 2. Unique-address fallback: only when an address occurs exactly once in the
+ *    unfiltered sidecar AND exactly once among the restored tabs.
+ * Never crosses lineages; every unmatched or excluded restored tab is an orphan.
  */
 export function matchRestoredTabs(
   restoredTabs: readonly ChromiumTabEntry[],
   sidecarTabs: readonly TabRestoreSidecarEntry[],
-  homeTabs: readonly { readonly surfaceId: string; readonly url: string }[],
+  options: {
+    readonly savedTabIds?: ReadonlySet<string>;
+    readonly lineageId?: string;
+  } = {},
 ): RestoredTabMatchResult {
-  const homeById = new Map(homeTabs.map((tab) => [tab.surfaceId, tab]));
   const orderedRestored = [...restoredTabs].sort(
     (a, b) => a.windowId - b.windowId || a.index - b.index,
   );
-  const eligibleSidecar = [...sidecarTabs]
-    .filter((entry) => homeById.has(entry.surfaceId))
-    .sort((a, b) => a.index - b.index);
+  const orderedSidecar = [...sidecarTabs].sort((a, b) => a.index - b.index);
 
-  const matched = new Map<string, ChromiumTabEntry>();
+  const sidecarUrlCounts = new Map<string, number>();
+  for (const entry of orderedSidecar) {
+    sidecarUrlCounts.set(entry.url, (sidecarUrlCounts.get(entry.url) ?? 0) + 1);
+  }
+  const restoredUrlCounts = new Map<string, number>();
+  for (const tab of orderedRestored) {
+    restoredUrlCounts.set(tab.url, (restoredUrlCounts.get(tab.url) ?? 0) + 1);
+  }
+
+  const matched = new Map<string, MatchedRestoredTab>();
   const usedTabIds = new Set<number>();
+  const excludedTabIds = new Set<number>();
+  const consumedSidecarIndices = new Set<number>();
+  const sameLength = orderedRestored.length === orderedSidecar.length;
 
-  // Pass 1: exact relative strip position + URL match (disambiguates duplicate URLs).
-  const minLength = Math.min(orderedRestored.length, eligibleSidecar.length);
+  // Pass 1: exact strip position + URL match on the UNFILTERED sidecar.
+  const minLength = Math.min(orderedRestored.length, orderedSidecar.length);
+  let prefixAligned = true;
   for (let i = 0; i < minLength; i++) {
     const restored = orderedRestored[i]!;
-    const sidecar = eligibleSidecar[i]!;
-    if (matched.has(sidecar.surfaceId) || usedTabIds.has(restored.tabId)) continue;
-    if (restored.url === sidecar.url) {
-      matched.set(sidecar.surfaceId, restored);
+    const sidecar = orderedSidecar[i]!;
+    if (restored.url !== sidecar.url) {
+      prefixAligned = false;
+      continue;
+    }
+    const isDuplicateUrl =
+      (sidecarUrlCounts.get(sidecar.url) ?? 0) > 1 ||
+      (restoredUrlCounts.get(restored.url) ?? 0) > 1;
+    // Duplicate URLs require an unshifted strip so a SIGKILL insertion cannot swap tabs.
+    if (isDuplicateUrl && (!sameLength || !prefixAligned)) continue;
+    consumedSidecarIndices.add(i);
+    const eligible =
+      (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&
+      (!options.lineageId || sidecar.lineageId === options.lineageId);
+    if (eligible && !matched.has(sidecar.surfaceId)) {
+      matched.set(sidecar.surfaceId, { tab: restored, lineageId: sidecar.lineageId });
       usedTabIds.add(restored.tabId);
+    } else {
+      // This restored slot belonged to a deleted or other-lineage tab: never reuse it.
+      excludedTabIds.add(restored.tabId);
     }
   }
 
-  // Pass 2: URL fallback for remaining sidecar entries (handles index shift after SIGKILL).
-  for (const sidecar of eligibleSidecar) {
+  // Pass 2: unique-address fallback (strictly 1 occurrence in sidecar AND 1 in restored).
+  for (let i = 0; i < orderedSidecar.length; i++) {
+    if (consumedSidecarIndices.has(i)) continue;
+    const sidecar = orderedSidecar[i]!;
     if (matched.has(sidecar.surfaceId)) continue;
-    const candidate = orderedRestored.find(
-      (restored) => !usedTabIds.has(restored.tabId) && restored.url === sidecar.url,
-    );
-    if (candidate) {
-      matched.set(sidecar.surfaceId, candidate);
-      usedTabIds.add(candidate.tabId);
+    if (
+      sidecarUrlCounts.get(sidecar.url) !== 1 ||
+      restoredUrlCounts.get(sidecar.url) !== 1
+    ) {
+      continue;
     }
-  }
-
-  // Pass 3: URL fallback for Home tabs absent from the sidecar.
-  for (const home of homeTabs) {
-    if (matched.has(home.surfaceId)) continue;
     const candidate = orderedRestored.find(
-      (restored) => !usedTabIds.has(restored.tabId) && restored.url === home.url,
+      (restored) =>
+        !usedTabIds.has(restored.tabId) &&
+        !excludedTabIds.has(restored.tabId) &&
+        restored.url === sidecar.url,
     );
-    if (candidate) {
-      matched.set(home.surfaceId, candidate);
+    if (!candidate) continue;
+    const eligible =
+      (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&
+      (!options.lineageId || sidecar.lineageId === options.lineageId);
+    if (eligible) {
+      matched.set(sidecar.surfaceId, { tab: candidate, lineageId: sidecar.lineageId });
       usedTabIds.add(candidate.tabId);
+    } else {
+      excludedTabIds.add(candidate.tabId);
     }
   }
 
   const orphans = orderedRestored.filter((restored) => !usedTabIds.has(restored.tabId));
-  const missingSurfaceIds = homeTabs
-    .filter((home) => !matched.has(home.surfaceId))
-    .map((home) => home.surfaceId);
-
-  return { matched, orphans, missingSurfaceIds };
+  return { matched, orphans };
 }
 
 export function assertImportedCookies(

@@ -213,7 +213,6 @@ async function populateTabs(
     expect(await ledger.sleep(id, () => null)).toBe(true);
   }
   await ledger.closeSurface(surfClosedAsleep);
-  await ledger.persistRestoredTabMap();
 
   return { dupUrl, formUrl, spaFinalUrl, ssUrl, closedUrl, orphanUrl };
 }
@@ -231,9 +230,10 @@ it("restores duplicate-URL tabs, slept tabs, session cookies, closes orphans, an
   const request = nativeProfileRequest(directory);
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context);
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-test" });
   await ledger1.start();
   const urls = await populateTabs(ledger1, server, true);
+  await browser1.context.sessionRestore!.flush!();
 
   // Verify session cookies survive alongside session restore!
   await browser1.replaceSiteCookies(
@@ -298,23 +298,22 @@ it("restores duplicate-URL tabs, slept tabs, session cookies, closes orphans, an
   // - surfClosedAsleep was closed while asleep -> must NOT be in Chromium!
   // - surfMissing is in Home with no restored tab -> must open by address!
   const freshHomeUrl = `${server.originForSite(7)}/fresh-home`;
-  const homeTabs = [
-    { surfaceId: surfDupA, url: urls.dupUrl },
-    { surfaceId: surfDupB, url: urls.dupUrl },
-    { surfaceId: surfForm, url: urls.formUrl },
-    { surfaceId: surfSpa, url: urls.spaFinalUrl },
-    { surfaceId: surfSs, url: urls.ssUrl },
-    { surfaceId: surfMissing, url: freshHomeUrl },
-  ];
-  const matched = await browser2.context.reconcileRestoredTabs!(homeTabs);
-  expect([...matched].sort()).toEqual([surfDupA, surfDupB, surfForm, surfSpa, surfSs].sort());
+  const savedTabIds = new Set<BrowserSurfaceId>([
+    surfDupA,
+    surfDupB,
+    surfForm,
+    surfSpa,
+    surfSs,
+    surfMissing,
+  ]);
+  await browser2.context.sessionRestore!.reconcile(savedTabIds);
 
   // Orphan tab and tab closed while asleep must be absent from Chromium!
   const invAfterReconcile = await internal2.contextHandle.lifecycle.inventory();
   expect(invAfterReconcile.some((t) => t.url === urls.orphanUrl)).toBe(false);
   expect(invAfterReconcile.some((t) => t.url === urls.closedUrl)).toBe(false);
 
-  const ledger2 = new SurfaceLedger(browser2.context);
+  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-test" });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
 
@@ -387,9 +386,10 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
   const request = nativeProfileRequest(directory);
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context);
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-test" });
   await ledger1.start();
   const urls = await populateTabs(ledger1, server, false);
+  await browser1.context.sessionRestore!.flush!();
 
   // Wait for Chromium to flush Session_* (2.5 s) and Preferences exit_type="Crashed" (up to 10 s)
   // before hard-killing with SIGKILL.
@@ -428,17 +428,11 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
   // Relaunch through PlaywrightChromiumLauncher -> must normalize exit_type and auto-restore!
   const browser2 = await launcher.launch(request);
   cleanup.push(() => browser2.close());
-  const homeTabs = [
-    { surfaceId: surfDupA, url: urls.dupUrl },
-    { surfaceId: surfDupB, url: urls.dupUrl },
-    { surfaceId: surfForm, url: urls.formUrl },
-    { surfaceId: surfSpa, url: urls.spaFinalUrl },
-    { surfaceId: surfSs, url: urls.ssUrl },
-  ];
-  const matched = await browser2.context.reconcileRestoredTabs!(homeTabs);
-  expect([...matched].sort()).toEqual([surfDupA, surfDupB, surfForm, surfSpa, surfSs].sort());
+  await browser2.context.sessionRestore!.reconcile(
+    new Set<BrowserSurfaceId>([surfDupA, surfDupB, surfForm, surfSpa, surfSs]),
+  );
 
-  const ledger2 = new SurfaceLedger(browser2.context);
+  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-test" });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
 

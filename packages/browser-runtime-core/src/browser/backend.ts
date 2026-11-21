@@ -137,6 +137,24 @@ export interface BrowserPage {
   url(): string;
 }
 
+export interface BrowserSessionRestore {
+  /** Claims a Chromium-restored tab for `surfaceId` (verifying `url` when given), or returns null. */
+  claim(
+    surfaceId: BrowserSurfaceId,
+    url?: string,
+    own?: (page: BrowserPage) => void,
+  ): Promise<BrowserPage | null>;
+  /**
+   * Reconciles restored tabs against the Home's authoritative saved-tab list,
+   * closing every restored tab not named in `savedTabIds` with evidence.
+   */
+  reconcile(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void>;
+  /** Associates a saved-lineage page with its durable Home `surfaceId`, or clears it on `null`. */
+  trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null, lineageId: string): void;
+  /** Flushes any pending profile tab-map write before an orderly browser close. */
+  flush?(): Promise<void>;
+}
+
 export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
@@ -147,27 +165,15 @@ export interface BrowserContext {
    */
   createPage(options?: {
     readonly restore?: unknown;
-    readonly surfaceId?: BrowserSurfaceId;
     readonly own?: (page: BrowserPage) => void;
   }): Promise<BrowserPage>;
-  /** Releases engine-held resources for a sleeping tab that will not be woken (e.g. closed while asleep). */
-  releaseRestore?(restore: unknown): Promise<void> | void;
   /**
-   * Matches the engine's restored tabs against the Home's authoritative tab list,
-   * closing any restored tab no Home tab owns. Returns matched surface ids.
+   * Releases engine-held resources for a sleeping tab that will not be woken.
+   * Returns true only when the tab is confirmed gone from the browser.
    */
-  reconcileRestoredTabs?(
-    homeTabs: readonly { readonly surfaceId: BrowserSurfaceId; readonly url: string }[],
-  ): Promise<ReadonlySet<BrowserSurfaceId>>;
-  /** Persists the current surfaceId/address mapping for strip-order session restore. */
-  persistRestoredTabMap?(
-    tabs: readonly {
-      readonly surfaceId: BrowserSurfaceId;
-      readonly url: string;
-      readonly targetId: string | null;
-      readonly restore: unknown;
-    }[],
-  ): Promise<void>;
+  releaseRestore?(restore: unknown): Promise<boolean> | boolean;
+  /** Present only on engines that persist and reconcile native session restore. */
+  readonly sessionRestore?: BrowserSessionRestore;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the
