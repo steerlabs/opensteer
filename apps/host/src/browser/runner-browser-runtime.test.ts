@@ -1,9 +1,20 @@
 import { createId } from "@opensteer/core";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
-import { RunnerBootIdSchema } from "@opensteer/protocol";
-import type { RoutedHostToBrowserRelayMessage } from "@opensteer/protocol/browser-relay";
+import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
+import { RunnerAuxiliaryFrameFenceSchema, RunnerBootIdSchema } from "@opensteer/protocol";
+import {
+  BrowserRelayFrameHeaderSchema,
+  encodeBrowserRelayFrame,
+  type RoutedHostToBrowserRelayMessage,
+} from "@opensteer/protocol/browser-relay";
 import { afterEach, expect, it, vi } from "vitest";
-import type { RunnerBrowserHooks, RunnerBrowserRegistry } from "./runner-browser-hub.js";
+import type { BrowserRuntimeConnection } from "./browser-service.js";
+import {
+  RunnerBrowserHub,
+  type BrowserRelayEvent,
+  type RunnerBrowserHooks,
+  type RunnerBrowserPeer,
+  type RunnerBrowserRegistry,
+} from "./runner-browser-hub.js";
 import {
   RunnerBrowserRuntimeRouter,
   type BrowserRuntimeRelayRequest,
@@ -109,182 +120,768 @@ async function maintenanceFixture() {
     router,
     reply,
     fixture,
-    restart: async () => {
-      hooks.onLost?.(stream, "device-restarting");
-      stream = {
-        ...stream,
-        fence: { ...stream.fence, connectionGeneration: stream.fence.connectionGeneration + 1 },
-        identity: {
-          ...stream.identity,
-          bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
-        },
-      };
-      hooks.onAttached?.(stream);
-      await inventory();
-    },
     target: router.resolve({ kind: "runner", runnerId })!,
   };
 }
 
-it("uses fresh attachment authority on the replacement boot only for the person's channel", async () => {
-  const f = await maintenanceFixture();
-  const prepare = vi.fn(async () => {});
-  const ticket = vi.fn(() => "fresh-person-ticket");
-  const person = f.target.connect("old-person-ticket", { prepare, ticket });
-  const agent = f.target.connect("old-agent-ticket");
-  const personClosed = vi.fn();
-  person.once("close", personClosed);
-  person.on("error", () => {});
-  agent.on("error", () => {});
-  try {
-    await vi.waitFor(() => {
-      expect(person.readyState).toBe(1);
-      expect(agent.readyState).toBe(1);
+/**
+ * A Runner's browser stream as the real hub carries it: a loss removes the
+ * Runner's entry before observers hear of it, a replacement attaches later as
+ * its own boot, and a heartbeat swaps the entry's object for a new one with
+ * the same fence (`server.ts` → `RunnerBrowserHub.renew`).
+ */
+interface Boot {
+  readonly generation: number;
+  readonly held: BrowserRuntimeRelayRequest[];
+  readonly peer: RunnerBrowserPeer;
+  stream: RunnerAuxiliaryStream;
+}
+
+interface BootOptions {
+  /** Messages the Runner receives but does not answer yet. */
+  readonly hold?: (message: BrowserRuntimeRelayRequest) => boolean;
+  /** The Runner refuses every browser attach with this error. */
+  readonly refuseAttach?: { code: string; message: string; retryable: boolean };
+  readonly runtimeId?: string;
+  /**
+   * Booted by "Stop everything on this Mac": answers as `BrowserModuleRelay`
+   * does in stopped mode (`packages/runner-client/src/browser-relay.ts`, the
+   * `browser.attach` and `browser.client-message` cases).
+   */
+  readonly stopped?: boolean;
+}
+
+const stoppedError = {
+  code: "forbidden",
+  message: "Agents are stopped on this computer. Resume them on this computer to continue.",
+  reason: "device-stopped",
+  retryable: false,
+};
+
+function restartFixture(options: { readonly copyOnRead?: boolean } = {}) {
+  const runnerId = createId("runner");
+  const hub = new RunnerBrowserHub();
+  const sent: { generation: number; message: BrowserRuntimeRelayRequest }[] = [];
+  const relayFailures: unknown[] = [];
+  let generation = 0;
+  // A registry that never hands out the same object twice, as one whose
+  // snapshots are rebuilt on every read would.
+  const registry: RunnerBrowserRegistry = options.copyOnRead
+    ? {
+        browserStreams: () => hub.browserStreams().map((stream) => ({ ...stream })),
+        stream: (id) => {
+          const stream = hub.stream(id);
+          return stream ? { ...stream } : null;
+        },
+        send: (id, message) => hub.send(id, message),
+        subscribe: (hooks) => hub.subscribe(hooks),
+      }
+    : hub;
+  const router = new RunnerBrowserRuntimeRouter({ registry });
+  const later = (boot: Boot, event: Record<string, unknown>) =>
+    setImmediate(() => {
+      hub.handleMessage(boot.peer, event as BrowserRelayEvent).catch((error: unknown) => {
+        relayFailures.push(error);
+      });
     });
-    await f.restart();
-    await vi.waitFor(() => expect(person.readyState).toBe(1));
-    expect(personClosed).not.toHaveBeenCalled();
-    expect(agent.readyState).toBe(3);
-    expect(prepare).toHaveBeenCalledOnce();
-    expect(ticket).toHaveBeenCalledOnce();
-    expect(f.sent.filter((message) => message.type === "browser.attach")).toMatchObject([
-      { attachTicket: "old-person-ticket", connectionGeneration: 1 },
-      { attachTicket: "old-agent-ticket", connectionGeneration: 1 },
-      { attachTicket: "fresh-person-ticket", connectionGeneration: 2 },
+  const answer = (boot: Boot, bootOptions: BootOptions, message: BrowserRuntimeRelayRequest) => {
+    const fence = boot.stream.fence;
+    switch (message.type) {
+      case "capability.grant":
+        return later(boot, {
+          ...fence,
+          type: "capability.accepted",
+          requestId: message.requestId,
+          capability: {
+            capabilityGeneration: message.lease.capabilityGeneration,
+            capabilityLeaseId: message.lease.capabilityLeaseId,
+            runtimeId: message.lease.runtimeId,
+          },
+        });
+      case "capability.revoke":
+        return later(boot, { ...message, type: "capability.revoked" });
+      case "browser.close":
+        return later(boot, {
+          ...fence,
+          capability: message.capability,
+          channelId: message.channelId,
+          code: 1000,
+          reason: "closed",
+          requestId: message.requestId,
+          type: "browser.closed",
+        });
+      case "browser.attach": {
+        const refusal =
+          bootOptions.refuseAttach ??
+          (bootOptions.stopped &&
+          (message.standardCdp || !String(message.attachTicket).startsWith("person:"))
+            ? stoppedError
+            : undefined);
+        if (refusal)
+          return later(boot, {
+            ...fence,
+            channelId: message.channelId,
+            error: refusal,
+            requestId: message.requestId,
+            type: "browser.command-error",
+          });
+        return later(boot, {
+          ...fence,
+          capability: message.capability,
+          channelId: message.channelId,
+          requestId: message.requestId,
+          type: "browser.attached",
+        });
+      }
+      case "browser.client-message": {
+        const frame = message.message as {
+          type?: unknown;
+          requestId?: unknown;
+          actorToken?: unknown;
+        };
+        if (bootOptions.stopped && frame.type === "cdp.command" && frame.actorToken)
+          return later(boot, {
+            ...fence,
+            capability: message.capability,
+            channelId: message.channelId,
+            message: { type: "cdp.error", requestId: frame.requestId, error: stoppedError },
+            type: "browser.server-message",
+          });
+        return;
+      }
+      default:
+        return;
+    }
+  };
+  const fixture = {
+    hub,
+    router,
+    runnerId,
+    sent,
+    relayFailures,
+    boot(bootOptions: BootOptions = {}): Boot {
+      generation += 1;
+      const bootId = `rbt_${crypto.randomUUID()}`;
+      const fence = RunnerAuxiliaryFrameFenceSchema.parse({
+        auxiliaryStreamId: `rax_${crypto.randomUUID()}`,
+        bootId,
+        connectionGeneration: generation,
+        connectionId: `rcn_${crypto.randomUUID()}`,
+        connectionLeaseId: `rls_${crypto.randomUUID()}`,
+        module: "browser",
+        runnerId,
+      });
+      const boot: Boot = {
+        generation,
+        held: [],
+        peer: {
+          id: crypto.randomUUID(),
+          close: () => {},
+          send: async (message) => {
+            sent.push({ generation: boot.generation, message });
+            if (bootOptions.hold?.(message)) boot.held.push(message);
+            else answer(boot, bootOptions, message);
+          },
+        },
+        stream: {
+          auxiliaryStreamId: fence.auxiliaryStreamId,
+          fence,
+          identity: {
+            runnerId,
+            bootId,
+            environmentIds: [],
+            name: "This Mac",
+            runnerKind: "main",
+            modules: {
+              browser: { runtimeId: bootOptions.runtimeId ?? "browser", wireVersion: 2 },
+            },
+          },
+          streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        } as unknown as RunnerAuxiliaryStream,
+      };
+      hub.attach(boot.peer, boot.stream);
+      return boot;
+    },
+    /** Answers what this boot was holding, as if its Runner had been slow. */
+    release(boot: Boot, bootOptions: BootOptions = {}) {
+      for (const message of boot.held.splice(0)) answer(boot, bootOptions, message);
+    },
+    heartbeat(boot: Boot) {
+      boot.stream = {
+        ...boot.stream,
+        streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      };
+      hub.renew(boot.peer, boot.stream);
+    },
+    restart: (boot: Boot) => hub.detach(boot.peer, "device-restarting"),
+    lose: (boot: Boot, reason: RunnerStreamLossReason) => hub.detach(boot.peer, reason),
+    /** Sends a runtime message on a channel this boot is still attaching. */
+    serverMessage(boot: Boot, attach: BrowserRuntimeRelayRequest, message: unknown) {
+      if (attach.type !== "browser.attach") throw new Error("expected an attach");
+      later(boot, {
+        ...boot.stream.fence,
+        capability: attach.capability,
+        channelId: attach.channelId,
+        message,
+        type: "browser.server-message",
+      });
+    },
+    frame(boot: Boot, attach: BrowserRuntimeRelayRequest, sequence: number) {
+      if (attach.type !== "browser.attach") throw new Error("expected an attach");
+      const frame = encodeBrowserRelayFrame(
+        BrowserRelayFrameHeaderSchema.parse({
+          ...boot.stream.fence,
+          capability: attach.capability,
+          channelId: attach.channelId,
+          sequence,
+          type: "browser.frame",
+        }),
+        browserFrame(),
+      );
+      setImmediate(() => {
+        hub.handleBinary(boot.peer, frame).catch((error: unknown) => relayFailures.push(error));
+      });
+    },
+    target: () => router.resolve({ kind: "runner", runnerId })!,
+    /** A person's own tab, with the reconnect only a person's tab is given. */
+    person(ticket = "person:old-person-ticket") {
+      let issued = 0;
+      const prepare = vi.fn(async () => {});
+      const reissue = vi.fn(() => `person:fresh-person-ticket-${++issued}`);
+      const connection = fixture.target().connect(ticket, { prepare, ticket: reissue });
+      return { connection, prepare, ticket: reissue, ...observe(connection) };
+    },
+    agent(ticket = "agent:old-agent-ticket") {
+      const connection = fixture.target().connect(ticket);
+      return { connection, ...observe(connection) };
+    },
+    of: (boot: Boot, type: BrowserRuntimeRelayRequest["type"]) =>
+      sent
+        .filter((entry) => entry.generation === boot.generation && entry.message.type === type)
+        .map((entry) => entry.message),
+    attaches: () =>
+      sent.filter((entry) => entry.message.type === "browser.attach").map((entry) => entry.message),
+    close() {
+      router.close();
+      hub.close();
+    },
+  };
+  return fixture;
+}
+
+function observe(connection: BrowserRuntimeConnection) {
+  const errors: string[] = [];
+  const closes: [number, string][] = [];
+  const messages: unknown[] = [];
+  connection.on("error", (error) => errors.push(error.message));
+  connection.once("close", (code, reason) => closes.push([code, reason.toString()]));
+  connection.on("message", (data, isBinary) =>
+    messages.push(isBinary ? "frame" : JSON.parse(String(data))),
+  );
+  return { errors, closes, messages };
+}
+
+function browserFrame(): Buffer {
+  const header = Buffer.from(
+    JSON.stringify({
+      encoding: "jpeg",
+      geometryRevision: 0,
+      frameId: 1,
+      rasterHeight: 1,
+      rasterWidth: 1,
+      surfaceId: "page-1",
+      viewportHeight: 720,
+      viewportWidth: 1_280,
+    }),
+  );
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const frame = Buffer.alloc(4 + header.byteLength + image.byteLength);
+  frame.writeUInt32BE(header.byteLength, 0);
+  header.copy(frame, 4);
+  image.copy(frame, 4 + header.byteLength);
+  return frame;
+}
+
+function sendOn(connection: BrowserRuntimeConnection, message: unknown): Promise<void> {
+  return new Promise((resolve, reject) =>
+    connection.send(JSON.stringify(message), { binary: false }, (error) =>
+      error ? reject(error) : resolve(),
+    ),
+  );
+}
+
+/** Lets every reply already sent arrive, as the next turns of the event loop would. */
+async function turns(count = 5): Promise<void> {
+  for (let index = 0; index < count; index++)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+const couldNotReconnect = "The browser computer could not reconnect the page.";
+
+/** Fakes only the clock the reconnect deadline runs on; the Runner's replies still arrive. */
+function useDeadlineClock(): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+}
+
+async function elapse(ms: number): Promise<void> {
+  await turns();
+  await vi.advanceTimersByTimeAsync(ms);
+  await turns();
+}
+
+it("reattaches only the person's channel on the replacement boot, with fresh authority", async () => {
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    const agent = f.agent();
+    await vi.waitFor(() => {
+      expect(person.connection.readyState).toBe(1);
+      expect(agent.connection.readyState).toBe(1);
+    });
+    f.restart(first);
+    expect(agent.connection.readyState).toBe(3);
+    expect(agent.errors).toEqual(["The computer's browser stream went away."]);
+    await turns();
+    f.boot();
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    expect(person.closes).toEqual([]);
+    expect(person.errors).toEqual([]);
+    expect(person.prepare).toHaveBeenCalledOnce();
+    expect(person.ticket).toHaveBeenCalledOnce();
+    expect(f.attaches()).toMatchObject([
+      { attachTicket: "person:old-person-ticket", connectionGeneration: 1 },
+      { attachTicket: "agent:old-agent-ticket", connectionGeneration: 1 },
+      { attachTicket: "person:fresh-person-ticket-1", connectionGeneration: 2 },
     ]);
   } finally {
-    f.router.close();
+    f.close();
   }
 });
 
-it.each(["capability.grant", "browser.attach"] as const)(
-  "keeps the person's channel alive when a second device-restarting arrives mid-%s",
-  async (interceptType) => {
-    const f = await maintenanceFixture();
-    let issued = 0;
-    const prepare = vi.fn(async () => {});
-    const ticket = vi.fn(() => `fresh-person-ticket-${++issued}`);
-    const person = f.target.connect("old-person-ticket", { prepare, ticket });
-    const personClosed = vi.fn();
-    const personErrors: Error[] = [];
-    person.once("close", personClosed);
-    person.on("error", (error: Error) => personErrors.push(error));
+it.each([
+  ["capability.grant", "the same object"],
+  ["browser.attach", "the same object"],
+  ["capability.grant", "a copy on every read"],
+  ["browser.attach", "a copy on every read"],
+  ["capability.grant", "a heartbeat's new object"],
+  ["browser.attach", "a heartbeat's new object"],
+] as const)(
+  "keeps the person's tab when its replacement restarts mid-%s and the registry hands out %s",
+  async (phase, registry) => {
+    const f = restartFixture({ copyOnRead: registry === "a copy on every read" });
     try {
-      await vi.waitFor(() => expect(person.readyState).toBe(1));
-      // Hold the replacement boot's handshake at the requested step, then restart again.
-      f.fixture.intercept = (message) =>
-        message.connectionGeneration === 2 && message.type === interceptType;
-      await f.restart();
-      await vi.waitFor(() =>
-        expect(
-          f.sent.some(
-            (message) => message.connectionGeneration === 2 && message.type === interceptType,
-          ),
-        ).toBe(true),
-      );
-      f.fixture.intercept = undefined;
-      await f.restart();
-      await vi.waitFor(() => expect(person.readyState).toBe(1));
-      expect(personClosed).not.toHaveBeenCalled();
-      expect(personErrors).toEqual([]);
-      expect(prepare).toHaveBeenCalledOnce();
-      expect(ticket).toHaveBeenCalledTimes(2);
-      expect(f.sent.filter((message) => message.type === "browser.attach")).toMatchObject(
-        interceptType === "browser.attach"
+      const first = f.boot();
+      const person = f.person();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      f.restart(first);
+      await turns();
+      const second = f.boot({ hold: (message) => message.type === phase });
+      await vi.waitFor(() => expect(second.held.map((message) => message.type)).toEqual([phase]));
+      // The replacement's heartbeat lands after the router read it and before it restarts.
+      if (registry === "a heartbeat's new object") f.heartbeat(second);
+      f.restart(second);
+      await turns();
+      f.boot();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      expect(person.closes).toEqual([]);
+      expect(person.errors).toEqual([]);
+      expect(person.prepare).toHaveBeenCalledOnce();
+      expect(person.ticket).toHaveBeenCalledTimes(2);
+      expect(f.attaches()).toMatchObject(
+        phase === "browser.attach"
           ? [
-              { attachTicket: "old-person-ticket", connectionGeneration: 1 },
-              { attachTicket: "fresh-person-ticket-1", connectionGeneration: 2 },
-              { attachTicket: "fresh-person-ticket-2", connectionGeneration: 3 },
+              { attachTicket: "person:old-person-ticket", connectionGeneration: 1 },
+              { attachTicket: "person:fresh-person-ticket-1", connectionGeneration: 2 },
+              { attachTicket: "person:fresh-person-ticket-2", connectionGeneration: 3 },
             ]
           : [
-              { attachTicket: "old-person-ticket", connectionGeneration: 1 },
-              { attachTicket: "fresh-person-ticket-2", connectionGeneration: 3 },
+              { attachTicket: "person:old-person-ticket", connectionGeneration: 1 },
+              { attachTicket: "person:fresh-person-ticket-2", connectionGeneration: 3 },
             ],
       );
     } finally {
-      f.router.close();
+      f.close();
     }
   },
 );
 
-it("still closes the person's channel on a non-restart disconnect during reconnect", async () => {
-  const runnerId = createId("runner");
-  let stream: RunnerAuxiliaryStream | null = {
-    fence: { runnerId, connectionId: "restart-loss", connectionGeneration: 1 },
-    identity: {
-      runnerId,
-      bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
-      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
-    },
-    streamLeaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
-  } as unknown as RunnerAuxiliaryStream;
-  let hooks: RunnerBrowserHooks = {};
-  const sent: BrowserRuntimeRelayRequest[] = [];
-  const router = new RunnerBrowserRuntimeRouter({
-    registry: {
-      browserStreams: () => (stream ? [stream] : []),
-      stream: () => stream,
-      subscribe: (value) => {
-        hooks = value;
-        return () => {};
-      },
-      send: async (_id, message) => {
-        sent.push(message);
-        const current = stream;
-        if (!current) return;
-        if (message.type === "capability.grant")
-          await hooks.onMessage?.(current, {
-            ...current.fence,
-            type: "capability.accepted",
-            requestId: message.requestId,
-            capability: {
-              capabilityGeneration: message.lease.capabilityGeneration,
-              capabilityLeaseId: message.lease.capabilityLeaseId,
-              runtimeId: message.lease.runtimeId,
-            },
-          });
-        if (message.type === "browser.attach" && message.connectionGeneration === 1)
-          await hooks.onMessage?.(current, { ...message, type: "browser.attached" });
-      },
-    },
-  });
+it("waits quietly for a replacement that boots seconds later", async () => {
+  useDeadlineClock();
+  const f = restartFixture();
   try {
-    const target = router.resolve({ kind: "runner", runnerId })!;
-    const person = target.connect("old-person-ticket", {
-      prepare: async () => {},
-      ticket: () => "fresh-person-ticket",
-    });
-    const errors: string[] = [];
-    person.on("error", (error: Error) => errors.push(error.message));
-    const closed = new Promise<void>((resolve) => person.once("close", () => resolve()));
-    await vi.waitFor(() => expect(person.readyState).toBe(1));
-    const first = stream!;
-    stream = null;
-    hooks.onLost?.(first, "device-restarting");
-    const second = {
-      ...first,
-      fence: { ...first.fence, connectionGeneration: 2 },
-      identity: {
-        ...first.identity,
-        bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
-      },
-    } as unknown as RunnerAuxiliaryStream;
-    stream = second;
-    hooks.onAttached?.(second);
-    await vi.waitFor(() =>
-      expect(
-        sent.some(
-          (message) => message.connectionGeneration === 2 && message.type === "browser.attach",
-        ),
-      ).toBe(true),
-    );
-    stream = null;
-    hooks.onLost?.(second, "transport-disconnected");
-    await closed;
-    expect(person.readyState).toBe(3);
-    expect(errors).toEqual(["The computer's browser stream went away."]);
+    const first = f.boot();
+    const person = f.person();
+    await elapse(0);
+    expect(person.connection.readyState).toBe(1);
+    f.restart(first);
+    await elapse(10_000);
+    expect(person.connection.readyState).toBe(0);
+    expect(person.errors).toEqual([]);
+    expect(person.closes).toEqual([]);
+    expect(f.attaches()).toHaveLength(1);
+    f.boot();
+    await elapse(0);
+    expect(person.connection.readyState).toBe(1);
+    expect(person.errors).toEqual([]);
+    expect(f.attaches()).toMatchObject([
+      { connectionGeneration: 1 },
+      { attachTicket: "person:fresh-person-ticket-1", connectionGeneration: 2 },
+    ]);
   } finally {
-    router.close();
+    f.close();
+  }
+});
+
+it.each(["device-restarting", "transport-disconnected"] as const)(
+  "handles a replacement lost (%s) before the reconnect could read it",
+  async (reason) => {
+    const f = restartFixture();
+    try {
+      const first = f.boot();
+      const person = f.person();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      f.restart(first);
+      await turns();
+      // It attaches and is gone in the same turn: the wait ends, the stream is already gone.
+      f.lose(f.boot(), reason);
+      await turns();
+      if (reason === "transport-disconnected") {
+        expect(person.errors).toEqual([couldNotReconnect]);
+        expect(person.closes).toEqual([[1011, "Browser stream could not reconnect"]]);
+        expect(f.attaches()).toHaveLength(1);
+        return;
+      }
+      expect(person.connection.readyState).toBe(0);
+      f.boot();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      expect(person.errors).toEqual([]);
+      expect(f.attaches()).toMatchObject([
+        { connectionGeneration: 1 },
+        { attachTicket: "person:fresh-person-ticket-1", connectionGeneration: 3 },
+      ]);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+it.each([
+  [
+    "refuses the reattach",
+    {
+      refuseAttach: {
+        code: "not_found",
+        message: "The browser session has ended.",
+        retryable: false,
+      },
+    },
+    "The browser session has ended.",
+    "Browser Runtime attach failed",
+  ],
+  ["serves another browser", { runtimeId: "another-browser" }, couldNotReconnect, undefined],
+] as const)(
+  "closes the person's tab at once when the replacement %s",
+  async (_case, bootOptions, message, closeReason) => {
+    const f = restartFixture();
+    try {
+      const first = f.boot();
+      const person = f.person();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      f.restart(first);
+      await turns();
+      f.boot(bootOptions);
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(3));
+      expect(person.errors).toEqual([message]);
+      expect(person.closes).toEqual([[1011, closeReason ?? "Browser stream could not reconnect"]]);
+      // A refusal is the answer: nothing is tried again on a later boot.
+      const attempts = f.attaches().length;
+      f.boot();
+      await turns();
+      expect(f.attaches()).toHaveLength(attempts);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+it("closes the person's tab with the reason when its Runner does not return within the deadline", async () => {
+  useDeadlineClock();
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    await elapse(0);
+    f.restart(first);
+    await elapse(14_999);
+    expect(person.connection.readyState).toBe(0);
+    expect(person.errors).toEqual([]);
+    expect(person.closes).toEqual([]);
+    await elapse(1);
+    expect(person.errors).toEqual([couldNotReconnect]);
+    expect(person.closes).toEqual([[1011, "Browser stream could not reconnect"]]);
+    f.boot();
+    await elapse(0);
+    expect(f.attaches()).toHaveLength(1);
+  } finally {
+    f.close();
+  }
+});
+
+it("reopens the person's tab after three restarts in a row inside one deadline", async () => {
+  useDeadlineClock();
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    await elapse(0);
+    f.restart(first);
+    for (const phase of ["browser.attach", "capability.grant", "browser.attach"] as const) {
+      await elapse(3_000);
+      const replacement = f.boot({ hold: (message) => message.type === phase });
+      await elapse(0);
+      expect(replacement.held.map((message) => message.type)).toEqual([phase]);
+      f.restart(replacement);
+    }
+    await elapse(3_000);
+    f.boot();
+    await elapse(0);
+    expect(person.connection.readyState).toBe(1);
+    expect(person.errors).toEqual([]);
+    expect(person.closes).toEqual([]);
+    expect(person.prepare).toHaveBeenCalledOnce();
+    expect(f.attaches()).toMatchObject([
+      { attachTicket: "person:old-person-ticket", connectionGeneration: 1 },
+      { attachTicket: "person:fresh-person-ticket-1", connectionGeneration: 2 },
+      { attachTicket: "person:fresh-person-ticket-3", connectionGeneration: 4 },
+      { attachTicket: "person:fresh-person-ticket-4", connectionGeneration: 5 },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+it("closes the person's tab at the deadline from the first loss, though restarts keep coming", async () => {
+  useDeadlineClock();
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    await elapse(0);
+    f.restart(first);
+    let replacement = first;
+    for (let index = 0; index < 3; index++) {
+      await elapse(4_000);
+      replacement = f.boot({ hold: (message) => message.type === "browser.attach" });
+      await elapse(0);
+      if (index < 2) f.restart(replacement);
+    }
+    // 12 s after the first loss the last replacement is still attaching.
+    expect(replacement.held.map((message) => message.type)).toEqual(["browser.attach"]);
+    await elapse(2_999);
+    expect(person.connection.readyState).toBe(0);
+    expect(person.errors).toEqual([]);
+    await elapse(1);
+    expect(person.errors).toEqual([couldNotReconnect]);
+    expect(person.closes).toEqual([[1011, "Browser stream could not reconnect"]]);
+    // The attach that arrives late is closed on the runtime and its capability given back.
+    const [attach] = replacement.held;
+    f.release(replacement);
+    await elapse(0);
+    expect(person.connection.readyState).toBe(3);
+    expect(f.of(replacement, "browser.close")).toMatchObject([
+      { channelId: attach!.type === "browser.attach" ? attach!.channelId : "" },
+    ]);
+    expect(f.of(replacement, "capability.revoke")).toHaveLength(1);
+  } finally {
+    f.close();
+  }
+});
+
+it("never hands the person what a boot that restarted had queued for them", async () => {
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    f.restart(first);
+    await turns();
+    const second = f.boot({ hold: (message) => message.type === "browser.attach" });
+    await vi.waitFor(() => expect(second.held).toHaveLength(1));
+    // The dying boot's runtime speaks on the channel before it acknowledges it.
+    f.serverMessage(second, second.held[0]!, { type: "tabs.snapshot", from: "dead boot" });
+    f.frame(second, second.held[0]!, 1);
+    await turns();
+    f.restart(second);
+    await turns();
+    const third = f.boot();
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    await turns();
+    expect(person.messages).toEqual([]);
+    const [attach] = f.of(third, "browser.attach");
+    f.serverMessage(third, attach!, { type: "tabs.snapshot", from: "live boot" });
+    await vi.waitFor(() =>
+      expect(person.messages).toEqual([{ type: "tabs.snapshot", from: "live boot" }]),
+    );
+    expect(person.errors).toEqual([]);
+    expect(f.relayFailures).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+it("keeps a newer stream's restart and lease through late losses of older streams", async () => {
+  const f = restartFixture();
+  try {
+    // A stream whose socket closes only much later: the registry admitted a newer one first.
+    const stale = f.boot();
+    const first = f.boot();
+    const person = f.person();
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    f.restart(first);
+    await turns();
+    const older = f.boot();
+    const newer = f.boot({ hold: (message) => message.type === "capability.grant" });
+    await vi.waitFor(() => expect(newer.held).toHaveLength(1));
+    // The newer stream restarts, and in the same turn the older socket's loss arrives late.
+    f.restart(newer);
+    f.lose(older, "transport-disconnected");
+    await turns();
+    expect(person.errors).toEqual([]);
+    expect(person.connection.readyState).toBe(0);
+    const live = f.boot();
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    // The stalest stream's loss arrives last, as a restart: the live lease stays.
+    f.lose(stale, "device-restarting");
+    await turns();
+    expect(person.connection.readyState).toBe(1);
+    await sendOn(person.connection, { type: "tabs.resync" });
+    const tab = f.person("person:another-tab");
+    await vi.waitFor(() => expect(tab.connection.readyState).toBe(1));
+    expect(f.of(live, "capability.grant")).toHaveLength(1);
+    expect(f.of(live, "browser.client-message")).toHaveLength(1);
+    expect([...person.errors, ...tab.errors]).toEqual([]);
+    // And the live stream's own restart is still recognised as one.
+    f.restart(live);
+    await turns();
+    f.boot();
+    await vi.waitFor(() => {
+      expect(person.connection.readyState).toBe(1);
+      expect(tab.connection.readyState).toBe(1);
+    });
+    expect([...person.errors, ...tab.errors]).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+it("shares one capability lease per placement between person tabs across restarts", async () => {
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const one = f.person("person:one");
+    const two = f.person("person:two");
+    await vi.waitFor(() => {
+      expect(one.connection.readyState).toBe(1);
+      expect(two.connection.readyState).toBe(1);
+    });
+    expect(f.of(first, "capability.grant")).toHaveLength(1);
+    f.restart(first);
+    await turns();
+    // Both tabs restart in the middle of acquiring the replacement's lease.
+    const second = f.boot({ hold: (message) => message.type === "capability.grant" });
+    await vi.waitFor(() => expect(second.held).toHaveLength(1));
+    f.restart(second);
+    await turns();
+    const third = f.boot();
+    await vi.waitFor(() => {
+      expect(one.connection.readyState).toBe(1);
+      expect(two.connection.readyState).toBe(1);
+    });
+    const grants = f.of(third, "capability.grant");
+    expect(grants).toHaveLength(1);
+    const attaches = f.of(third, "browser.attach");
+    expect(attaches).toHaveLength(2);
+    const [lease] = grants;
+    if (lease?.type !== "capability.grant") throw new Error("expected a grant");
+    for (const attach of attaches)
+      expect(attach).toMatchObject({
+        capability: { capabilityLeaseId: lease.lease.capabilityLeaseId },
+      });
+    expect(
+      new Set(attaches.map((attach) => attach.type === "browser.attach" && attach.channelId)).size,
+    ).toBe(2);
+    await sendOn(one.connection, { type: "tabs.resync" });
+    await sendOn(two.connection, { type: "tabs.resync" });
+    expect(f.of(third, "browser.client-message")).toHaveLength(2);
+    expect([...one.errors, ...two.errors]).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+it("keeps only the person's own tab across a restart into Stop, and relays the stopped Runner's refusals", async () => {
+  const f = restartFixture();
+  try {
+    const first = f.boot();
+    const person = f.person();
+    const agent = f.agent();
+    await vi.waitFor(() => {
+      expect(person.connection.readyState).toBe(1);
+      expect(agent.connection.readyState).toBe(1);
+    });
+    // An agent's command through the person's tab, in flight when the Mac stops.
+    await sendOn(person.connection, {
+      type: "cdp.command",
+      requestId: "before-stop",
+      actorToken: "agent-token",
+      command: { method: "Runtime.evaluate", parameters: { expression: "1" } },
+    });
+    f.restart(first);
+    expect(agent.connection.readyState).toBe(3);
+    await turns();
+    const stopped = f.boot({ stopped: true });
+    await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+    // Only the person's channel came back, with a person ticket, and nothing was sent again.
+    expect(f.of(stopped, "browser.attach")).toMatchObject([
+      { attachTicket: "person:fresh-person-ticket-1" },
+    ]);
+    expect(f.of(stopped, "browser.client-message")).toEqual([]);
+
+    // A new agent attach on the stopped boot is refused, once, and not tried again.
+    const late = f.agent("agent:after-stop");
+    await vi.waitFor(() => expect(late.connection.readyState).toBe(3));
+    expect(late.errors).toEqual([stoppedError.message]);
+    expect(f.of(stopped, "browser.attach")).toHaveLength(2);
+
+    // An agent's command on the kept channel comes back refused to the person's broker.
+    await sendOn(person.connection, {
+      type: "cdp.command",
+      requestId: "after-stop",
+      actorToken: "agent-token",
+      command: { method: "Runtime.evaluate", parameters: { expression: "1" } },
+    });
+    await vi.waitFor(() =>
+      expect(person.messages).toContainEqual({
+        type: "cdp.error",
+        requestId: "after-stop",
+        error: stoppedError,
+      }),
+    );
+    expect(person.connection.readyState).toBe(1);
+    expect(person.errors).toEqual([]);
+    expect(
+      f
+        .attaches()
+        .filter(
+          (attach) => attach.type === "browser.attach" && attach.attachTicket.startsWith("agent:"),
+        ),
+    ).toMatchObject([
+      { attachTicket: "agent:old-agent-ticket", connectionGeneration: 1 },
+      { attachTicket: "agent:after-stop", connectionGeneration: 2 },
+    ]);
+  } finally {
+    f.close();
   }
 });
 

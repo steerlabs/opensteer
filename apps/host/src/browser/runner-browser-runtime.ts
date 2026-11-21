@@ -82,6 +82,26 @@ const maxQueuedControlBytes = 2 * 1_024 * 1_024;
 const maxQueuedControlItems = 256;
 const maxQueuedFrameBytes = 32 * 1_024 * 1_024;
 const maxQueuedFrameSurfaces = 128;
+/**
+ * How long a person's own tab keeps reconnecting after its Runner restarts:
+ * once, from the first loss, however many restarts follow inside it.
+ *
+ * It is the browser runtime's promise that bounds it. When the old Runner's
+ * bridge closes during a restart, the runtime keeps the person's detached tab
+ * for 20 s and then ends it (`reattachUntil`,
+ * `packages/browser-runtime-core/src/runtime.ts`). A reattach that lands
+ * earlier finds the tab, and a later one is told it has ended. The Runner
+ * sends its restart close to the Host before it closes that bridge
+ * (`opened.close` before `handler.detach`,
+ * `apps/runner/src/host/host-connection.ts`), and the runtime arms its timer
+ * only after the tab's teardown. So the runtime's 20 s cannot start more than
+ * one Runner-to-Host hop before this Host sees the loss. A reattach the router
+ * has not sent within 15 s is abandoned, so one it does send reaches the
+ * runtime within 20 s, provided the hop there and back takes under 5 s. A
+ * restart whose reattach had already reached the runtime arms a new 20 s at the
+ * next detach, so later restarts only add time.
+ */
+const personReconnectDeadlineMs = 15_000;
 
 interface PendingRequest {
   readonly erasure?: { binding: LocalProfileBinding; deletionId: string };
@@ -167,14 +187,19 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     RunnerId,
     { fence: RunnerAuxiliaryFrameFence; complete: boolean; failed: boolean; profiles: Set<string> }
   >();
-  readonly #lastLoss = new Map<
+  /**
+   * Each Runner's newest browser stream, by fence value, as `onAttached` reported
+   * it, and whether it ended in a restart. A person's reconnect reads it to tell
+   * a restart from any other loss. The registry hands out a new object for the
+   * same stream on every heartbeat, so this never compares objects. The entry
+   * goes when another kind of loss ends that stream, and is replaced when the
+   * Runner's next stream attaches. A late loss of an older stream leaves it as
+   * it is.
+   */
+  readonly #newestStream = new Map<
     RunnerId,
-    {
-      readonly bootId: RunnerAuxiliaryStream["identity"]["bootId"];
-      readonly reason: RunnerStreamLossReason;
-    }
+    { readonly fence: RunnerAuxiliaryFrameFence; restarted: boolean }
   >();
-  readonly #restartingStreams = new WeakSet<RunnerAuxiliaryStream>();
   readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
   readonly #onPlacementChanged: RunnerBrowserRuntimeRouterOptions["onPlacementChanged"];
@@ -189,7 +214,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
     const hooks: RunnerBrowserHooks = {
-      onAttached: (stream) => this.#notifyAdmission(stream.identity.runnerId),
+      onAttached: (stream) => {
+        this.#newestStream.set(stream.identity.runnerId, { fence: stream.fence, restarted: false });
+        this.#notifyAdmission(stream.identity.runnerId);
+      },
       onFrame: (stream, frame) => this.#handleFrame(stream, frame.header, frame.frame),
       onLost: (stream, reason) => this.#handleDisconnect(stream, reason),
       onMessage: (stream, message) => this.#handleMessage(stream, message),
@@ -420,6 +448,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
     this.#pending.clear();
     this.#lateErasures.clear();
+    this.#newestStream.clear();
     for (const channel of this.#channels.values()) {
       this.#dropChannel(channel, 1001, "Host browser router shutting down");
     }
@@ -466,7 +495,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     runtimeId: string,
     expectedFence: RunnerAuxiliaryFrameFence,
     ticket: string,
-    reconnectContext?: { readonly stream: RunnerAuxiliaryStream },
+    reconnecting = false,
   ): Promise<"opened" | "restarting" | "closed"> {
     let placementLease: PlacementCapabilityLease | undefined;
     let channel: RoutedChannel | undefined;
@@ -494,7 +523,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         connection,
         lastSequence: -1,
         placementLease: activePlacementLease,
-        reconnecting: reconnectContext !== undefined,
+        reconnecting,
       };
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
@@ -533,11 +562,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     } catch (error) {
       const normalized = normalizeError(error);
       if (
-        reconnectContext &&
-        this.#restartingStreams.has(reconnectContext.stream) &&
+        reconnecting &&
+        this.#restartedStream(runnerId, expectedFence) &&
         !protocolRejection.has(normalized) &&
         connection.readyState === WebSocket.CONNECTING
       ) {
+        // #handleDisconnect already forgot the channel and dropped what it queued.
         if (channel) this.#forgetChannel(channel);
         if (placementLease)
           await this.#releasePlacementLease(placementLease).catch(() => undefined);
@@ -909,11 +939,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #handleDisconnect(stream: RunnerAuxiliaryStream, reason: RunnerStreamLossReason): void {
-    if (reason === "device-restarting") this.#restartingStreams.add(stream);
-    this.#lastLoss.set(stream.identity.runnerId, {
-      bootId: stream.identity.bootId,
-      reason,
-    });
+    const runnerId = stream.identity.runnerId;
+    const newest = this.#newestStream.get(runnerId);
+    if (newest && sameRunnerAuxiliaryFence(newest.fence, stream.fence)) {
+      if (reason === "device-restarting") newest.restarted = true;
+      else this.#newestStream.delete(runnerId);
+    }
     for (const [id, late] of this.#lateErasures)
       if (sameRunnerAuxiliaryFence(late.fence, stream.fence)) this.#lateErasures.delete(id);
     if (
@@ -949,6 +980,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         channel.connection.readyState === WebSocket.CONNECTING
       ) {
         // #reconnectPerson owns this connection and will retry on the next boot.
+        // Nothing this boot sent may reach the person once a later boot opens.
+        channel.connection.discardQueued();
         this.#forgetChannel(channel);
       } else if (
         reason === "device-restarting" &&
@@ -972,30 +1005,31 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     lease: PlacementCapabilityLease,
     oldStream: RunnerAuxiliaryStream,
   ): Promise<void> {
-    let prepared = false;
+    // One deadline from the first loss, for every boot that follows it.
+    const expired = new AbortController();
+    const timer = setTimeout(() => expired.abort(), personReconnectDeadlineMs);
+    timer.unref();
+    // Registered before the deadline signal below, so the person is told why
+    // before anything waiting on that signal gives up.
+    const expire = () =>
+      this.#failReconnect(
+        connection,
+        relayError("The browser computer could not reconnect the page."),
+      );
+    expired.signal.addEventListener("abort", expire, { once: true });
+    const deadline = AbortSignal.any([connection.lifetime, expired.signal]);
     let previousBootId = oldStream.identity.bootId;
-    while (true) {
-      const timeout = AbortSignal.timeout(12_000);
-      const expire = () => connection.terminate();
-      timeout.addEventListener("abort", expire, { once: true });
-      const deadline = AbortSignal.any([connection.lifetime, timeout]);
-      try {
-        if (!prepared) {
-          await reconnect.prepare();
-          prepared = true;
-        }
+    try {
+      await reconnect.prepare();
+      while (true) {
         deadline.throwIfAborted();
         await this.waitForTarget(lease.runnerId, deadline, previousBootId);
         const stream = this.#registry.stream(lease.runnerId);
         if (!stream) {
-          const lastLoss = this.#lastLoss.get(lease.runnerId);
-          if (
-            lastLoss?.reason === "device-restarting" &&
-            lastLoss.bootId !== previousBootId &&
-            connection.readyState === WebSocket.CONNECTING &&
-            !deadline.aborted
-          ) {
-            previousBootId = lastLoss.bootId;
+          // The boot that ended the wait is already gone again.
+          const newest = this.#newestStream.get(lease.runnerId);
+          if (newest?.restarted && newest.fence.bootId !== previousBootId) {
+            previousBootId = newest.fence.bootId;
             continue;
           }
           throw relayError("The browser computer could not reconnect the page.");
@@ -1011,21 +1045,31 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
           lease.runtimeId,
           stream.fence,
           reconnect.ticket(),
-          { stream },
+          true,
         );
-        if (outcome === "restarting" && !connection.lifetime.aborted) {
-          previousBootId = stream.identity.bootId;
-          continue;
-        }
-        return;
-      } catch (error) {
-        connection.acceptError(normalizeError(error));
-        connection.acceptClose(1011, "Browser stream could not reconnect");
-        return;
-      } finally {
-        timeout.removeEventListener("abort", expire);
+        if (outcome !== "restarting") return;
+        previousBootId = stream.identity.bootId;
       }
+    } catch (error) {
+      this.#failReconnect(connection, normalizeError(error));
+    } finally {
+      clearTimeout(timer);
+      expired.signal.removeEventListener("abort", expire);
     }
+  }
+
+  /** Ends a person's reconnect with its reason; an attach still in flight cleans up after itself. */
+  #failReconnect(connection: RunnerBrowserConnection, error: Error): void {
+    connection.acceptError(error);
+    const channel = [...this.#channels.values()].find((entry) => entry.connection === connection);
+    if (channel) this.#dropChannel(channel, 1011, "Browser stream could not reconnect");
+    else connection.acceptClose(1011, "Browser stream could not reconnect");
+  }
+
+  /** Whether the stream with this fence was its Runner's newest and ended in a restart. */
+  #restartedStream(runnerId: RunnerId, fence: RunnerAuxiliaryFrameFence): boolean {
+    const newest = this.#newestStream.get(runnerId);
+    return newest?.restarted === true && sameRunnerAuxiliaryFence(newest.fence, fence);
   }
 
   async #closeChannel(channel: RoutedChannel, code: number, reason: string): Promise<void> {
@@ -1417,6 +1461,11 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
     this.readyState = WebSocket.CONNECTING;
     this.#clearQueues();
     return true;
+  }
+
+  /** Drops what a boot that has since restarted queued before this connection opened. */
+  discardQueued(): void {
+    if (this.readyState === WebSocket.CONNECTING) this.#clearQueues();
   }
 
   acceptOpen(): void {
