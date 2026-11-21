@@ -288,10 +288,17 @@ export interface BrowserRendererUsage {
   readonly unassignedProcesses?: number;
 }
 
+export interface BrowserMemoryPressure {
+  readonly usedBytes: number;
+  readonly limitBytes: number;
+}
+
 export interface BrowserLauncher {
   readonly hostCost?: "process" | "partition";
   /** Deduplicated renderer census for this runtime, including its subframes. */
   rendererUsage?(): BrowserRendererUsage | Promise<BrowserRendererUsage>;
+  /** Linux memory-pressure reading (container working set or host MemTotal - MemAvailable). */
+  memoryPressure?(): BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

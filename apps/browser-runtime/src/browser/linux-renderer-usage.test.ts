@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectLinuxMemoryPressure,
   collectLinuxRendererUsage,
   isChromiumRendererCmdline,
+  parseProcMeminfoBytes,
   parseProcSmapsRollupPssBytes,
   parseProcStatPpid,
   parseProcStatusRssAnonBytes,
@@ -128,5 +130,71 @@ describe("linux-renderer-usage", () => {
       processes: 0,
       bytes: null,
     });
+  });
+
+  it("caps /proc read concurrency and returns null bytes on read errors instead of undercounting (R3)", async () => {
+    let active = 0;
+    let peakActive = 0;
+    const pids = Array.from({ length: 80 }, (_, i) => 1000 + i);
+    const proc: LinuxProcFs = {
+      listPids: async () => pids,
+      readText: async () => null,
+      readTextStatus: async (filePath) => {
+        active++;
+        peakActive = Math.max(peakActive, active);
+        await new Promise((r) => setTimeout(r, 1));
+        active--;
+        if (filePath === "/proc/1000/stat") {
+          return { status: "ok", text: "1000 (chrome) S 1 1000 1000" };
+        }
+        if (filePath === "/proc/1001/stat") {
+          return { status: "ok", text: "1001 (chrome) S 1000 1000 1000" };
+        }
+        if (filePath === "/proc/1001/cmdline") {
+          return { status: "ok", text: "/opt/chrome\0--type=renderer\0" };
+        }
+        if (filePath === "/proc/1001/smaps_rollup") {
+          return { status: "ok", text: "Pss: 40000 kB\n" };
+        }
+        // Simulate EMFILE/EIO on one live pid stat -> must return bytes: null (never undercount!)
+        if (filePath === "/proc/1002/stat") {
+          return { status: "error" };
+        }
+        return { status: "missing" };
+      },
+    };
+    const result = await collectLinuxRendererUsage([1000], proc);
+    expect(peakActive).toBeLessThanOrEqual(24);
+    expect(result).toEqual({ processes: 1, bytes: null });
+  });
+
+  it("reads Linux memory pressure from cgroup v2 working set or bare /proc/meminfo and returns null on failure", async () => {
+    // 1. Cgroup v2 with finite memory.max subtracts inactive_file from memory.current.
+    const cg2 = fakeProc({
+      "/sys/fs/cgroup/memory.max": "4294967296\n",
+      "/sys/fs/cgroup/memory.current": "3200000000\n",
+      "/sys/fs/cgroup/memory.stat": "anon 2500000000\ninactive_file 400000000\n",
+    });
+    await expect(collectLinuxMemoryPressure(cg2)).resolves.toEqual({
+      usedBytes: 2_800_000_000,
+      limitBytes: 4_294_967_296,
+    });
+
+    // 2. Bare Linux (memory.max === "max"): uses MemTotal - MemAvailable from /proc/meminfo.
+    const bare = fakeProc({
+      "/sys/fs/cgroup/memory.max": "max\n",
+      "/proc/meminfo": "MemTotal:       16000000 kB\nMemFree:         2000000 kB\nMemAvailable:    6000000 kB\n",
+    });
+    expect(parseProcMeminfoBytes("MemTotal: 16000000 kB\nMemAvailable: 6000000 kB\n")).toEqual({
+      totalBytes: 16_000_000 * 1024,
+      availableBytes: 6_000_000 * 1024,
+    });
+    await expect(collectLinuxMemoryPressure(bare)).resolves.toEqual({
+      usedBytes: 10_000_000 * 1024,
+      limitBytes: 16_000_000 * 1024,
+    });
+
+    // 3. Unreadable / missing memory files -> returns null so sleeper falls back to page estimate.
+    await expect(collectLinuxMemoryPressure(fakeProc({}))).resolves.toBeNull();
   });
 });

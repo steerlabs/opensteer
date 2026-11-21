@@ -333,6 +333,7 @@ export class BrowserRuntime implements NativePresentationSource {
       memoryBudgetBytes: options.memoryBudgetBytes,
       hostCost: this.launcher.hostCost,
       rendererUsage: this.launcher.rendererUsage?.bind(this.launcher),
+      memoryPressure: this.launcher.memoryPressure?.bind(this.launcher),
       onPass: options.onSleepPass,
       pageCounts: () => this.pages.counts(),
       untabbedPages: () => {

@@ -1,6 +1,6 @@
 import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
-import type { BrowserRendererUsage } from "./backend.js";
+import type { BrowserMemoryPressure, BrowserRendererUsage } from "./backend.js";
 import type { PageCounts, SleepBlocker } from "./page-ownership.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
@@ -14,6 +14,17 @@ const budgetFloorBytes = 2 * 1024 ** 3;
 const budgetCeilingBytes = 8 * 1024 ** 3;
 const budgetShare = 0.25;
 const budgetReleaseShare = 0.85;
+/**
+ * Linux memory-pressure thresholds (container working set `memory.current - inactive_file`
+ * against `memory.max`, or bare-Linux `MemTotal - MemAvailable` against `MemTotal`).
+ * Run 2 on 4 GiB Linux hit 3,247 MiB (79.3%) peak and 2,650 MiB (64.7%) settled across 70
+ * live tabs; starting at 70% and stopping at 60% leaves headroom for a sudden 500 MiB spike
+ * and scales down cleanly to 2 GiB pooled guests without premature sleeping.
+ */
+export const linuxMemorySleepStartRatio = 0.7;
+export const linuxMemorySleepStopRatio = 0.6;
+const linuxPressureSampleMs = 2_000;
+const linuxPressureSettleMs = 500;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
@@ -53,6 +64,9 @@ interface TabSleeperOptions {
   readonly hosts?: () => readonly SleepHost[];
   readonly retireHost?: (key: string) => Promise<void>;
   readonly rendererUsage?: (() => BrowserRendererUsage | Promise<BrowserRendererUsage>) | undefined;
+  readonly memoryPressure?:
+    | (() => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>)
+    | undefined;
   readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
   readonly pageCounts?: (() => PageCounts) | undefined;
   /** Native pages with no live tab across the runtime, those of ended sessions included. */
@@ -80,10 +94,17 @@ export class TabSleeper {
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
   private samplingRenderers = false;
+  private memoryPressureState: { readonly known: boolean; readonly reading: BrowserMemoryPressure | null } = {
+    known: false,
+    reading: null,
+  };
+  private nextPressureSample = 0;
+  private samplingPressure = false;
   private pendingAsyncPressurePass = false;
   private declined = new WeakSet<TabRecord>();
   private reclaimFrom: {
-    usage: BrowserRendererUsage;
+    usage: BrowserRendererUsage | null;
+    pressureUsedBytes: number | null;
     settledAt: number;
     /** Its sample waits once, for the slept pages' confirmation or a cutoff. */
     waiting: boolean;
@@ -131,7 +152,25 @@ export class TabSleeper {
         : 0)
     );
   }
+  private usesLinuxMemoryPressure(): boolean {
+    return this.options.memoryBudgetBytes === undefined && this.options.memoryPressure !== undefined;
+  }
   private overBudget(pendingPages = 0): boolean {
+    if (this.usesLinuxMemoryPressure()) {
+      const pressure = this.memoryPressureState.reading;
+      if (pressure && pressure.limitBytes > 0) {
+        const ratio = pressure.usedBytes / pressure.limitBytes;
+        if (ratio > linuxMemorySleepStartRatio) this.releasing = true;
+        if (ratio <= linuxMemorySleepStopRatio) this.releasing = false;
+        return this.releasing;
+      }
+      // Memory pressure reading is unknown/unavailable: fall back to the page estimate for this pass.
+      const estimate = this.estimate() - pendingPages * pageEstimateBytes;
+      const budget = this.budget();
+      if (estimate > budget) this.releasing = true;
+      if (estimate <= budget * budgetReleaseShare) this.releasing = false;
+      return this.releasing;
+    }
     const estimate =
       this.rendererUsage?.bytes ?? this.estimate() - pendingPages * pageEstimateBytes;
     const budget = this.budget();
@@ -318,9 +357,11 @@ export class TabSleeper {
     if (this.reclaimFrom?.waiting && this.untabbedPages() === 0) {
       this.reclaimFrom.settledAt = Math.min(this.reclaimFrom.settledAt, now);
       this.nextRendererSample = Math.min(this.nextRendererSample, now);
+      this.nextPressureSample = Math.min(this.nextPressureSample, now);
     }
+    const pressureDriven = this.usesLinuxMemoryPressure();
     const budget =
-      (!this.options.rendererUsage && this.overBudget()) ||
+      (!this.options.rendererUsage && !pressureDriven && this.overBudget()) ||
       (this.pendingAsyncPressurePass &&
         this.releasing &&
         now >= Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0));
@@ -331,6 +372,7 @@ export class TabSleeper {
       for (const record of session.ledger.policyRecords()) {
         if (!record.live) continue;
         if (this.options.rendererUsage) earliest = Math.min(earliest, this.nextRendererSample);
+        if (pressureDriven) earliest = Math.min(earliest, this.nextPressureSample);
         const reason = this.blocked(id, record, now, links);
         // Explains a page that is due, or that Host facts keep from ever coming due.
         session.ledger.noteSleepBlocker(
@@ -368,7 +410,74 @@ export class TabSleeper {
     );
     this.timer.unref();
   }
+  private sampleMemoryPressure(): void {
+    if (!this.usesLinuxMemoryPressure() || this.samplingPressure) return;
+    const measure = this.options.memoryPressure;
+    if (!measure) return;
+    const now = Date.now();
+    if (now < this.nextPressureSample) return;
+    this.nextPressureSample = now + (this.releasing ? linuxPressureSettleMs : linuxPressureSampleMs);
+    const result = measure();
+    if (
+      result &&
+      typeof (result as PromiseLike<BrowserMemoryPressure | null>).then === "function"
+    ) {
+      this.samplingPressure = true;
+      void Promise.resolve(result).then(
+        (reading) => {
+          this.samplingPressure = false;
+          if (this.closed) return;
+          this.applyMemoryPressureSample(reading, Date.now());
+          if (this.releasing) this.pendingAsyncPressurePass = true;
+          this.poke();
+        },
+        () => {
+          this.samplingPressure = false;
+          if (this.closed) return;
+          this.applyMemoryPressureSample(null, Date.now());
+          if (this.releasing) this.pendingAsyncPressurePass = true;
+          this.poke();
+        },
+      );
+      return;
+    }
+    this.applyMemoryPressureSample(result as BrowserMemoryPressure | null, now);
+  }
+
+  private applyMemoryPressureSample(reading: BrowserMemoryPressure | null, now: number): void {
+    this.memoryPressureState = { known: reading !== null, reading };
+    if (!this.overBudget()) {
+      this.reclaimFrom = null;
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = 0;
+      return;
+    }
+    this.nextPressureSample = Math.min(this.nextPressureSample, now + linuxPressureSettleMs);
+    const reclaim = this.reclaimFrom;
+    if (!reclaim || now < reclaim.settledAt) return;
+    if (!reclaim.waiting && this.untabbedPages() > 0) {
+      reclaim.waiting = true;
+      reclaim.settledAt = now + linuxPressureSampleMs;
+      return;
+    }
+    this.reclaimFrom = null;
+    if (
+      reading !== null &&
+      reclaim.pressureUsedBytes !== null &&
+      reclaim.pressureUsedBytes - reading.usedBytes >= minimumReclaimBytes
+    ) {
+      this.ineffectiveReclaims = 0;
+    } else if (reading === null) {
+      // Unknown reading falls back to estimate; do not penalize backoff on transient read failure.
+      this.ineffectiveReclaims = 0;
+    } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
+      this.ineffectiveReclaims = 0;
+      this.pressureBackoffUntil = now + rendererSampleMs;
+    }
+  }
+
   private sampleRenderers(): void {
+    this.sampleMemoryPressure();
     const measure = this.options.rendererUsage;
     if (!measure || this.samplingRenderers) return;
     const now = Date.now();
@@ -382,7 +491,7 @@ export class TabSleeper {
           this.samplingRenderers = false;
           if (this.closed) return;
           this.applyRendererSample(usage, Date.now());
-          if (this.releasing) this.pendingAsyncPressurePass = true;
+          if (this.releasing && !this.usesLinuxMemoryPressure()) this.pendingAsyncPressurePass = true;
           this.poke();
         },
         () => {
@@ -396,6 +505,10 @@ export class TabSleeper {
 
   private applyRendererSample(usage: BrowserRendererUsage, now: number): void {
     this.rendererUsage = usage;
+    if (this.usesLinuxMemoryPressure()) {
+      // Under Linux memory-pressure mode, rendererUsage is kept for reporting only.
+      return;
+    }
     if (!this.overBudget()) {
       this.reclaimFrom = null;
       this.ineffectiveReclaims = 0;
@@ -412,9 +525,10 @@ export class TabSleeper {
     }
     this.reclaimFrom = null;
     if (
-      usage.processes < reclaim.usage.processes ||
+      (reclaim.usage && usage.processes < reclaim.usage.processes) ||
       (usage.bytes !== null &&
-        reclaim.usage.bytes !== null &&
+        reclaim.usage?.bytes !== null &&
+        reclaim.usage !== null &&
         reclaim.usage.bytes - usage.bytes >= minimumReclaimBytes)
     ) {
       this.ineffectiveReclaims = 0;
@@ -502,14 +616,18 @@ export class TabSleeper {
         if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
         const deadline = this.deadline(session, record);
-        if (this.rendererUsage && deadline > Date.now()) {
+        const pressureDriven = this.usesLinuxMemoryPressure();
+        const measuredPressure = pressureDriven
+          ? this.memoryPressureState.known
+          : this.rendererUsage !== null;
+        if (measuredPressure && deadline > Date.now()) {
           if (
             !this.releasing ||
             Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
           )
             continue;
-          // Only a successful sleep can change the measured pressure.
-          if (pending.size) await Promise.all(pending);
+          // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
+          if (!pressureDriven && pending.size) await Promise.all(pending);
           if (this.closed) break;
         }
         if (
@@ -520,9 +638,13 @@ export class TabSleeper {
           continue;
         if (
           deadline > Date.now() &&
-          // A page can share its process, so measure again before asking another
-          // page to sleep under pressure.
-          ((this.rendererUsage && slept > 0) || !this.overBudget(pending.size))
+          // Electron pages can share a process, so measure again after 1 sleep; Linux pressure
+          // mode sheds up to concurrentSleeps site-isolated tabs per fast settle cycle.
+          ((!pressureDriven && this.rendererUsage && slept > 0) ||
+            (pressureDriven &&
+              this.memoryPressureState.known &&
+              slept + pending.size >= concurrentSleeps) ||
+            !this.overBudget(pending.size))
         )
           continue;
         const sleeping = session.ledger
@@ -549,21 +671,39 @@ export class TabSleeper {
     } finally {
       this.running = false;
       if (attempted < sleepsPerPass) this.declined = new WeakSet();
-      if (this.rendererUsage && this.releasing) {
+      const pressureDriven = this.usesLinuxMemoryPressure();
+      if ((pressureDriven || this.rendererUsage) && this.releasing) {
         const now = Date.now();
+        const settleMs = pressureDriven ? linuxPressureSettleMs : rendererSettleMs;
         if (slept > 0) {
           this.reclaimFrom ??= {
             usage: this.rendererUsage,
-            settledAt: now + rendererSettleMs,
+            pressureUsedBytes: this.memoryPressureState.reading?.usedBytes ?? null,
+            settledAt: now + settleMs,
             waiting: false,
           };
-          this.reclaimFrom.settledAt = now + rendererSettleMs;
+          this.reclaimFrom.settledAt = now + settleMs;
           this.reclaimFrom.waiting = false;
         }
-        if (attempted >= sleepsPerPass)
+        if (attempted >= sleepsPerPass) {
           this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
-        if (this.reclaimFrom)
-          this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
+          if (pressureDriven) {
+            this.nextPressureSample = Math.min(this.nextPressureSample, now + settleMs);
+          }
+        }
+        if (this.reclaimFrom) {
+          if (pressureDriven) {
+            this.nextPressureSample = Math.min(
+              this.nextPressureSample,
+              this.reclaimFrom.settledAt,
+            );
+          } else {
+            this.nextRendererSample = Math.min(
+              this.nextRendererSample,
+              this.reclaimFrom.settledAt,
+            );
+          }
+        }
       }
       this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
       if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });

@@ -18,6 +18,7 @@ import {
   type BrowserLaunchRequest,
   type BrowserLauncher,
   type BrowserPage,
+  type BrowserMemoryPressure,
   type BrowserRendererUsage,
   type BrowserSessionRestore,
   type CdpSession,
@@ -57,7 +58,11 @@ import {
 } from "playwright-core";
 import { z } from "zod";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
-import { collectLinuxRendererUsage, type LinuxProcFs } from "./linux-renderer-usage.js";
+import {
+  collectLinuxMemoryPressure,
+  collectLinuxRendererUsage,
+  type LinuxProcFs,
+} from "./linux-renderer-usage.js";
 import {
   ChromiumTabLifecycleBridge,
   ensureTabLifecycleExtension,
@@ -223,6 +228,7 @@ export async function probePasskeySecurityState(
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
   readonly hostCost = "process" as const;
   readonly rendererUsage?: () => BrowserRendererUsage | Promise<BrowserRendererUsage>;
+  readonly memoryPressure?: () => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
   private preparation: Promise<void> | undefined;
   private readonly ownedBrowserPids = new Set<number>();
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
@@ -279,6 +285,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     if (platform === "linux") {
       const proc = options.linuxProcFs;
       this.rendererUsage = () => collectLinuxRendererUsage(this.ownedBrowserPids, proc);
+      this.memoryPressure = () => collectLinuxMemoryPressure(proc);
     }
   }
 

@@ -529,4 +529,91 @@ describe("TabSleeper", () => {
       }
     },
   );
+
+  it("uses Linux memoryPressure with 70%/60% hysteresis, falls back to page estimate on null, and respects memoryBudgetBytes override", async () => {
+    const limit = 2 * 1024 ** 3; // 2 GiB
+    let pressure: { usedBytes: number; limitBytes: number } | null = {
+      usedBytes: Math.round(limit * 0.65), // 65% -> below 70% start, must NOT sleep
+      limitBytes: limit,
+    };
+    const f = await fixture({
+      rendererUsage: () => Promise.resolve({ processes: 6, bytes: 300 * 1024 ** 2 }),
+      memoryPressure: () => Promise.resolve(pressure),
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 5; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(ids.filter((id) => f.ledger.stateOf(id) === "suspended")).toHaveLength(0);
+
+      // Jump above 70% (75%) -> starts sleeping tabs!
+      pressure = { usedBytes: Math.round(limit * 0.75), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(2_500);
+      const sleptAt75 = ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(sleptAt75).toBeGreaterThan(0);
+
+      // Drop to 65% (inside hysteresis band between 60% and 70%) -> stays releasing!
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+      const sleptAt65 = ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(sleptAt65).toBeGreaterThanOrEqual(sleptAt75);
+
+      // Drop to 58% (below 60% stop threshold) -> stops sleeping!
+      const extra = await f.ledger.openSurface();
+      ids.push(extra.id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      pressure = { usedBytes: Math.round(limit * 0.58), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.ledger.stateOf(extra.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+
+    // Explicit OPENSTEER_BROWSER_MEMORY_BUDGET_MB override takes precedence over memoryPressure!
+    const fOverride = await fixture({
+      memoryBudgetBytes: 50 * 1024 ** 2,
+      rendererUsage: () => Promise.resolve({ processes: 4, bytes: 200 * 1024 ** 2 }),
+      memoryPressure: () => Promise.resolve({ usedBytes: Math.round(limit * 0.2), limitBytes: limit }),
+    });
+    try {
+      const p = await fOverride.ledger.openSurface();
+      fOverride.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [fOverride.record.id, p.id],
+        viewed: [],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      // Even though memoryPressure is 20%, explicit memoryBudgetBytes=50 MiB forces sleeping!
+      expect(
+        [fOverride.record.id, p.id].filter((id) => fOverride.ledger.stateOf(id) === "suspended")
+          .length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await fOverride.close();
+    }
+
+    // When memoryPressure returns null ("not known"), falls back to page estimate against budget!
+    const fFallback = await fixture({
+      memory: () => ({ total: 8 * 1024 ** 3, available: 1 * 1024 ** 3 }), // budget = 2 GiB (20 pages @ 100 MiB)
+      memoryPressure: () => Promise.resolve(null),
+    });
+    try {
+      const ids = [fFallback.record.id];
+      for (let i = 0; i < 22; i++) ids.push((await fFallback.ledger.openSurface()).id);
+      fFallback.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: ids,
+        viewed: [],
+        pinned: [],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(ids.filter((id) => fFallback.ledger.stateOf(id) === "suspended").length).toBeGreaterThan(
+        0,
+      );
+    } finally {
+      await fFallback.close();
+    }
+  });
 });
