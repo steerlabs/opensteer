@@ -15,6 +15,7 @@ import { browserGuestLibrary } from "../../browser-use/browser-guest-library.js"
 import { browserGuestModules } from "../../browser-use/browser-guest-source.js";
 import { browserReplLimits } from "../../browser-use/browser-repl-messages.js";
 import { computerGuestLibrary } from "./guest-library.js";
+import { guestStringFits, guestStringUnits, readGuestString } from "./guest-strings.js";
 import {
   computerReplLimits as limits,
   boundedReplFailure,
@@ -78,6 +79,10 @@ const failure = (message: string, code = "failed"): ReplFailure => ({
   message,
   performed: [],
 });
+function outputExceeded(call: Call): void {
+  call.failure ??= failure(`${label} output exceeded its byte limit.`, "output-limit");
+  call.poisoned = true;
+}
 function emitText(key: string, call: Call, text: string): void {
   if (call.poisoned) return;
   const textBytes = Buffer.byteLength(text);
@@ -90,11 +95,8 @@ function emitText(key: string, call: Call, text: string): void {
   if (
     call.textBytes + textBytes > limits.textBytes ||
     call.messageBytes + messageBytes > limits.bridgeBytes
-  ) {
-    call.failure ??= failure(`${label} output exceeded its byte limit.`, "output-limit");
-    call.poisoned = true;
-    return;
-  }
+  )
+    return outputExceeded(call);
   call.textBytes += textBytes;
   call.messageBytes += messageBytes;
   send(message);
@@ -207,7 +209,7 @@ async function create(key: string, connection: boolean): Promise<Context> {
         limits.bridgeBytes,
         browserReplLimits.requestBytes - call.requestBytes,
       );
-      const input = readBrowserString(context, json, remaining);
+      const input = readGuestString(context.vm, json, remaining);
       if (input === undefined) {
         call.requestBytes = browserReplLimits.requestBytes;
         return bridgeLimit(vm, "Browser request byte budget exceeded.");
@@ -219,6 +221,8 @@ async function create(key: string, connection: boolean): Promise<Context> {
       send({ type: "browser-request", context: key, callId: call.id, id, json: input });
       return promise.handle;
     }
+    if ((guestStringUnits(vm, json) ?? 0) > limits.bridgeBytes)
+      throw new Error(`${label} arguments exceed 1 MiB.`);
     const input = vm.getString(json);
     if (Buffer.byteLength(input) > limits.bridgeBytes)
       throw new Error(`${label} arguments exceed 1 MiB.`);
@@ -232,6 +236,8 @@ async function create(key: string, connection: boolean): Promise<Context> {
     if (!call || call.settled) throw new Error(ended);
     if (!call.poisoned) {
       if (browser) emitBrowserText(key, context, call, value, encoded);
+      else if ((guestStringUnits(vm, value) ?? 0) > limits.textBytes - call.textBytes)
+        outputExceeded(call);
       else emitText(key, call, vm.getString(value));
     }
     return vm.undefined;
@@ -376,34 +382,6 @@ function bridgeLimit(vm: QuickJSContext, message: string): QuickJSHandle {
   return vm.newString(JSON.stringify({ error: { code: "bridge-limit", message } }));
 }
 
-function browserStringFits(context: Context, value: QuickJSHandle, limit: number): boolean {
-  const { vm } = context;
-  if (vm.typeof(value) !== "string") return false;
-  using length = vm.getProp(value, "length");
-  const units = vm.getNumber(length);
-  if (units > limit) return false;
-  if (units * 9 > limit) {
-    using budget = vm.newNumber(limit);
-    const fit = vm.callFunction(context.browserCodec!, vm.undefined, budget, value);
-    if (fit.error) {
-      fit.error.dispose();
-      return false;
-    }
-    using fits = fit.value;
-    const bytes = vm.getNumber(fits);
-    if (!bytes && units) return false;
-  }
-  return true;
-}
-
-function readBrowserString(
-  context: Context,
-  value: QuickJSHandle,
-  limit: number,
-): string | undefined {
-  return browserStringFits(context, value, limit) ? context.vm.getString(value) : undefined;
-}
-
 function emitBrowserText(
   key: string,
   context: Context,
@@ -411,8 +389,8 @@ function emitBrowserText(
   value: QuickJSHandle,
   json: QuickJSHandle,
 ): void {
-  const encoded = browserStringFits(context, value, limits.textBytes - call.textBytes)
-    ? readBrowserString(context, json, limits.bridgeBytes - call.messageBytes)
+  const encoded = guestStringFits(context.vm, value, limits.textBytes - call.textBytes)
+    ? readGuestString(context.vm, json, limits.bridgeBytes - call.messageBytes)
     : undefined;
   if (encoded === undefined) {
     call.failure ??= failure("Browser output exceeded its byte limit.", "output-limit");
@@ -433,11 +411,11 @@ function readBrowserFailure(context: Context, error: QuickJSHandle): ReplFailure
   using next = vm.getProp(fields, 2);
   using cdp = vm.getProp(fields, 3);
   const cdpCode = vm.typeof(cdp) === "number" ? vm.getNumber(cdp) : undefined;
-  const nextText = readBrowserString(context, next, 2000);
+  const nextText = readGuestString(context.vm, next, 2000);
   return {
     ...failure(
-      readBrowserString(context, message, 8192) ?? "Browser script failed.",
-      readBrowserString(context, code, 128) ?? "failed",
+      readGuestString(context.vm, message, 8192) ?? "Browser script failed.",
+      readGuestString(context.vm, code, 128) ?? "failed",
     ),
     ...(nextText === undefined ? {} : { next: nextText }),
     ...(cdpCode === undefined ? {} : { cdpCode }),
@@ -552,7 +530,7 @@ async function pump(key: string, context: Context) {
               } else {
                 if (vm.typeof(encoded.value) !== "undefined") {
                   call.returned = slice(context, () =>
-                    readBrowserString(context, encoded.value, limits.textBytes - call.textBytes),
+                    readGuestString(context.vm, encoded.value, limits.textBytes - call.textBytes),
                   );
                   if (call.returned === undefined)
                     call.failure ??= failure(
@@ -562,7 +540,12 @@ async function pump(key: string, context: Context) {
                 }
                 encoded.value.dispose();
               }
-            } else call.returned = context.vm.getString(state.value);
+            } else if (
+              (guestStringUnits(context.vm, state.value) ?? 0) >
+              limits.textBytes - call.textBytes
+            )
+              outputExceeded(call);
+            else call.returned = context.vm.getString(state.value);
           }
           state.value.dispose();
         }

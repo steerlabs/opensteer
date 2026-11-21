@@ -539,6 +539,31 @@ describe("browser REPL", () => {
     expect(port.command).toHaveBeenCalledTimes(8);
   });
 
+  it("measures a request on the Host, so one inside the byte limit is never refused for CPU", async () => {
+    const { run, port } = setup();
+    expect(
+      await run(`${bind} const payload = "x".repeat(1_000_000);
+      await page.cdp("Runtime.evaluate", { payload }); return "sent";`),
+    ).toEqual({ content: [text("sent")] });
+    expect(port.command).toHaveBeenCalledOnce();
+    expect(JSON.stringify(vi.mocked(port.command).mock.calls[0])).toContain("x".repeat(1_000_000));
+    for (const code of [
+      // Over the limit in UTF-8 bytes, under it in UTF-16 units: measured exactly.
+      `${bind} await page.cdp("Runtime.evaluate", { value: "é".repeat(600_000) });`,
+      // Far over the limit in units: refused before the Host copies it.
+      `${bind} await page.cdp("Runtime.evaluate", { value: "x".repeat(4 * 1024 * 1024) });`,
+    ]) {
+      const refused = await run(code);
+      expect(refused).toMatchObject({
+        structuredContent: {
+          error: { code: "bridge-limit", message: expect.stringContaining("byte") },
+        },
+      });
+      expect(JSON.stringify(refused)).not.toContain("slice-limit");
+    }
+    expect(port.command).toHaveBeenCalledOnce();
+  });
+
   it("reserves capture slots and producer credit before dispatch", async () => {
     const held = Promise.withResolvers<string>();
     const captures = vi.fn<BrowserUsePort["command"]>(() => held.promise);

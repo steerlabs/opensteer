@@ -545,4 +545,10 @@ describe("computer REPL worker boundary", () => {
     const { run } = setup(async () => ({ value: "x".repeat(1048577) }));
     expect((await run("await apps()")).isError).toBe(true);
   });
+  it("refuses oversized arguments by their length, before the Host copies them", async () => {
+    const { run } = setup();
+    expect(output(await run('await sleep("x".repeat(4 * 1024 * 1024))'))).toBe(
+      "failed: Computer arguments exceed 1 MiB.",
+    );
+  });
 });
