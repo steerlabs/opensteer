@@ -16,8 +16,9 @@ experiments, not kept: `run4-experiments-not-kept.patch`), `-run4-proof.jsonl` (
 | From disk, cache dropped   | 602 / 672       | 910 / 1,058   | 603 / 909             | 704 / 1,029   | 627 / 937     |
 | Three wakes while two save | 2,185 / 3,401   | 3,625 / 3,897 | 3,062 / 3,764         | 2,441 / 3,364 | 1,492 / 2,657 |
 
-**HTTPS after every wake: 57 of 57** (30 wake samples, 2 clock, 9 concurrent, 6 after a
-concurrent save, 10 cold have no check). Before the fix in the same run: 0 of 30. Cause: each slot
+**HTTPS after every wake: 47 of 47** (30 wake samples, 2 clock, 9 concurrent, 6 after a
+concurrent save). Before the fix in the same run: 30 of 32 failed, and the 2 that passed were the
+clock samples. Cause: each slot
 proxy's service is started at the guest's first connection and stopped with every kill; the cold
 series did that more than five times in ten seconds, systemd's default start limit failed the
 service and its socket with it, and nothing listened on the proxy port any more. Run 3's clock

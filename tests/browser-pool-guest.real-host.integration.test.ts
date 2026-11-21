@@ -372,13 +372,23 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         homeRunnerId: task.runnerId,
         idempotencyKey: "proof-profile",
       });
-      // A person's tab with a form, typed into and not sent.
+      // A person's tab with a form, typed into and not sent. It is a guest identity: the form
+      // is served over plain HTTP, which a persistent profile upgrades to HTTPS (and the run
+      // has no HTTPS page of its own).
       const person = await service.openTab(task.userId, {
         type: "browser.tab.open",
-        identity: { kind: "profile", profileId: profile.id },
+        identity: { kind: "guest" },
         placement: { kind: "runner", runnerId: task.runnerId },
         url: r.formUrl,
         idempotencyKey: "proof-person",
+      } as never);
+      // A person's tab from a local profile on the guest's profile disk.
+      const saved = await service.openTab(task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: task.runnerId },
+        url: "https://example.com/?profile",
+        idempotencyKey: "proof-profile-tab",
       } as never);
       const agentRun = {
         agentBindingId: `run:${task.runId}`,
@@ -401,12 +411,15 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
             ?.records.get(tabId as never) ?? null,
         );
       // Each tab is on its own page (not the blank document before it) before anything is kept.
-      await vi.waitFor(
-        () => expect(recordOf(person.sessionId, person.tabId)).toContain("Pool proof form"),
-        {
-          timeout: 60_000,
-        },
-      );
+      await vi
+        .waitFor(
+          () => expect(recordOf(person.sessionId, person.tabId)).toContain("Pool proof form"),
+          { timeout: 60_000 },
+        )
+        .catch((error: unknown) => {
+          emit({ kind: "proof-person-page", record: recordOf(person.sessionId, person.tabId) });
+          throw error;
+        });
       await vi.waitFor(
         () => expect(recordOf(agent.sessionId, agent.tabId)).toContain("Example Domain"),
         {
@@ -424,9 +437,14 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       emit({ kind: "proof-sandbox", status: sandbox.status, report: JSON.parse(sandbox.text) });
       expect(JSON.parse(sandbox.text)).toMatchObject({ sandboxed: true });
       emit({ kind: "proof-pages", person: recordOf(person.sessionId, person.tabId).slice(0, 300) });
+      await vi.waitFor(
+        () => expect(recordOf(saved.sessionId, saved.tabId)).toContain("Example Domain"),
+        { timeout: 60_000 },
+      );
       const before = {
         person: documentOf(person.sessionId, person.tabId),
         agent: documentOf(agent.sessionId, agent.tabId),
+        profile: documentOf(saved.sessionId, saved.tabId),
       };
       // A viewer that gives each frame's credit back, so frames follow the page's changes, and
       // that never leaves a stream with keys in flight (leaving cancels unapplied input).
@@ -537,6 +555,7 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       // The same documents were adopted.
       expect(documentOf(person.sessionId, person.tabId)).toBe(before.person);
       expect(documentOf(agent.sessionId, agent.tabId)).toBe(before.agent);
+      expect(documentOf(saved.sessionId, saved.tabId)).toBe(before.profile);
       // The draft came back as it was: the woken page is blue.
       await vi.waitFor(async () => expect(await latestColour(second.frames)).toBe("blue"), {
         timeout: 30_000,
