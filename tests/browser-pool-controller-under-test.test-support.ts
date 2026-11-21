@@ -22,6 +22,7 @@ import {
   testGuest,
   type TestPoolAgent,
 } from "../apps/pool-agent/src/test-support.js";
+import { FakeHypervisorDriver } from "../apps/pool-agent/src/fake-driver.test-support.js";
 
 export interface PoolControllerUnderTest extends BrowserPoolPhysicalController {
   readonly publicKey: KeyObject;
@@ -42,6 +43,8 @@ export async function createPoolController(options: {
   slotId: string;
   term: number;
   now?: () => number;
+  /** Each start is a new guest with an empty runtime, as on a real host. */
+  freshGuests?: boolean;
 }): Promise<PoolControllerUnderTest> {
   if (poolControllerKind() === "fake") return new FakeBrowserPoolController(options);
   return AgentPoolController.create(options);
@@ -73,8 +76,16 @@ export class AgentPoolController implements PoolControllerUnderTest {
     this.#slotId = slotId;
   }
 
-  static async create(options: { slotId: string; term: number; now?: () => number }) {
-    const agent = await startTestPoolAgent(options.now ? { now: options.now } : {});
+  static async create(options: {
+    slotId: string;
+    term: number;
+    now?: () => number;
+    freshGuests?: boolean;
+  }) {
+    const agent = await startTestPoolAgent({
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.freshGuests ? { driver: new FakeHypervisorDriver({ startsEmpty: true }) } : {}),
+    });
     const home = homeKeyPair();
     const summary = await agent.agent.createSlot({
       slotId: options.slotId,
@@ -108,7 +119,13 @@ export class AgentPoolController implements PoolControllerUnderTest {
     this.#holds.set(kind, until);
   }
 
-  /** Only physical facts the agent can find on its own: a guest and its saved state gone. */
+  /**
+   * Only physical facts the agent can find on its own: a guest and its saved state gone. A
+   * controller on an epoch the guest does not carry is not one: the agent's epoch moves only by
+   * a resume, and the adoption it signs is then the fence it expects the next start's install
+   * to replace. The in-process runtime this suite keeps across starts never received it, so it
+   * refuses that install for good; a real guest starts empty (`expect: null`) and has no such case.
+   */
   observe(change: Partial<BrowserPoolPhysicalStatus>): void {
     if (change.phase === "stopped" && change.savedState === null) {
       this.#agent.driver.loseGuest(this.#slotId);
