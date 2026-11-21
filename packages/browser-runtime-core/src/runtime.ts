@@ -180,8 +180,6 @@ export interface BrowserHost {
    */
   stateImports: AsyncMutex;
   readonly stateMutations: Map<Promise<void>, AbortSignal>;
-  restoreReconcileTimer?: ReturnType<typeof setTimeout> | undefined;
-  restoredReconciled?: boolean;
 }
 
 /**
@@ -1301,18 +1299,12 @@ export class BrowserRuntime implements NativePresentationSource {
 
           if (createdHost && host.browser.context.sessionRestore) {
             const sessionRestore = host.browser.context.sessionRestore;
-            const targetHost = host;
             if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId && savedLineageId) {
-              const fallbackKeep = new Set<BrowserSurfaceId>([claims.initialSurfaceId]);
-              targetHost.restoreReconcileTimer = setTimeout(() => {
-                targetHost.restoreReconcileTimer = undefined;
-                if (targetHost.restoredReconciled) return;
-                targetHost.restoredReconciled = true;
-                void sessionRestore.reconcile(fallbackKeep, savedLineageId).catch(() => undefined);
-              }, 5_000);
-              targetHost.restoreReconcileTimer.unref?.();
+              sessionRestore.armFallbackReconcile?.(
+                new Set<BrowserSurfaceId>([claims.initialSurfaceId]),
+                savedLineageId,
+              );
             } else {
-              targetHost.restoredReconciled = true;
               await wait(sessionRestore.reconcile(new Set()));
             }
           }
@@ -1539,18 +1531,11 @@ export class BrowserRuntime implements NativePresentationSource {
     return new BrowserController({
       sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
       onSavedTabs: async (savedTabIds) => {
-        if (stateHost.restoreReconcileTimer) {
-          clearTimeout(stateHost.restoreReconcileTimer);
-          stateHost.restoreReconcileTimer = undefined;
-        }
-        if (!stateHost.restoredReconciled) {
-          stateHost.restoredReconciled = true;
-          const lineageId =
-            claims.tabRestoreVersion === 1 && claims.identity.kind === "profile-local"
-              ? (claims.tabGroupId ?? claims.sessionId)
-              : undefined;
-          await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
-        }
+        const lineageId =
+          claims.tabRestoreVersion === 1 && claims.identity.kind === "profile-local"
+            ? (claims.tabGroupId ?? claims.sessionId)
+            : undefined;
+        await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
       },
       loginAuthority: this.loginAuthority,
       nativePresentation: (surfaceId, consumerToken) => {
@@ -2001,10 +1986,6 @@ export class BrowserRuntime implements NativePresentationSource {
     if (host.cleanup) return host.cleanup.result;
     const result = (async () => {
       host.acceptingSessions = false;
-      if (host.restoreReconcileTimer) {
-        clearTimeout(host.restoreReconcileTimer);
-        host.restoreReconcileTimer = undefined;
-      }
       host.passkeys?.close();
       host.signIns.close();
       host.helperCancellation.abort();

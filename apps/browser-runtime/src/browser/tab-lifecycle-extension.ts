@@ -134,6 +134,7 @@ export async function ensureTabLifecycleExtension(profileDirectory: string): Pro
 
 const workerWaitMs = 5_000;
 const workerCallMs = 5_000;
+const cdpStepMs = 1_500;
 
 /**
  * Private runtime bridge to the bundled MV3 lifecycle extension.
@@ -156,8 +157,10 @@ export class ChromiumTabLifecycleBridge {
     this.privatePage = privatePage;
   }
 
-  private async runningServiceWorkerTarget(): Promise<string | null> {
-    const response = (await this.browserCdp.send("Target.getTargets")) as {
+  private async runningServiceWorkerTarget(timeoutMs = cdpStepMs): Promise<string | null> {
+    const response = (await withTimeout(this.browserCdp.send("Target.getTargets"), timeoutMs, {
+      timeoutError: () => new Error("Helper Target.getTargets timed out."),
+    })) as {
       targetInfos?: readonly { type?: string; url?: string }[];
     };
     const match = (response.targetInfos ?? []).find(
@@ -175,8 +178,9 @@ export class ChromiumTabLifecycleBridge {
     return null;
   }
 
-  private async wakeServiceWorker(): Promise<void> {
-    if (!this.privatePage || this.privatePage.isClosed()) return;
+  private async wakeServiceWorker(remainingMs: number): Promise<void> {
+    if (!this.privatePage || this.privatePage.isClosed() || remainingMs <= 0) return;
+    const stepMs = Math.max(100, Math.min(cdpStepMs, remainingMs));
     const origin =
       extensionOriginFromUrl(this.serviceWorkerUrl) ??
       extensionOriginFromUrl(
@@ -186,21 +190,35 @@ export class ChromiumTabLifecycleBridge {
           ?.url(),
       );
     if (!origin) {
-      await this.privatePage.goto("about:blank").catch(() => undefined);
+      await withTimeout(this.privatePage.goto("about:blank"), stepMs, {
+        timeoutError: () => new Error("Helper blank anchor navigation timed out."),
+      }).catch(() => undefined);
       return;
     }
     let session: PlaywrightCdpSession | undefined;
     try {
-      await this.privatePage.goto(`${origin}/manifest.json`).catch(() => undefined);
-      session = await this.context.newCDPSession(this.privatePage);
-      await session.send("ServiceWorker.enable");
-      await session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` });
+      await withTimeout(this.privatePage.goto(`${origin}/manifest.json`), stepMs, {
+        timeoutError: () => new Error("Helper manifest navigation timed out."),
+      }).catch(() => undefined);
+      session = await withTimeout(this.context.newCDPSession(this.privatePage), stepMs, {
+        timeoutError: () => new Error("Helper CDP attach timed out."),
+      });
+      await withTimeout(session.send("ServiceWorker.enable"), stepMs, {
+        timeoutError: () => new Error("Helper ServiceWorker.enable timed out."),
+      });
+      await withTimeout(session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` }), stepMs, {
+        timeoutError: () => new Error("Helper ServiceWorker.startWorker timed out."),
+      });
     } catch {
       // Best effort: ensureWorker continues polling until deadline.
     } finally {
-      await session?.detach().catch(() => undefined);
+      await withTimeout(session?.detach() ?? Promise.resolve(), 500, {
+        timeoutError: () => new Error("Helper CDP detach timed out."),
+      }).catch(() => undefined);
       if (!this.privatePage.isClosed()) {
-        await this.privatePage.goto("about:blank").catch(() => undefined);
+        await withTimeout(this.privatePage.goto("about:blank"), 500, {
+          timeoutError: () => new Error("Helper anchor reset timed out."),
+        }).catch(() => undefined);
       }
     }
   }
@@ -209,11 +227,15 @@ export class ChromiumTabLifecycleBridge {
     const deadline = Date.now() + workerWaitMs;
     let woke = false;
     while (Date.now() < deadline) {
-      const runningUrl = await this.runningServiceWorkerTarget().catch(() => null);
+      const remaining = deadline - Date.now();
+      const runningUrl = await this.runningServiceWorkerTarget(
+        Math.max(100, Math.min(cdpStepMs, remaining)),
+      ).catch(() => null);
       if (!runningUrl && !woke) {
         woke = true;
-        await this.wakeServiceWorker();
+        await this.wakeServiceWorker(deadline - Date.now());
       }
+      if (Date.now() >= deadline) break;
       const worker = this.context
         .serviceWorkers()
         .find((candidate) =>
@@ -231,7 +253,7 @@ export class ChromiumTabLifecycleBridge {
               typeof (globalThis as { __opensteer?: unknown }).__opensteer === "object" &&
               (globalThis as { __opensteer?: unknown }).__opensteer !== null,
           ),
-          1_000,
+          Math.max(100, Math.min(1_000, deadline - Date.now())),
           { timeoutError: () => new Error("Helper worker readiness timed out.") },
         ).catch(() => false);
         if (ready) {

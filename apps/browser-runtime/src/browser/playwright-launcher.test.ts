@@ -1432,6 +1432,80 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("serializes reconcile behind an in-flight fallback reconcile so callers never pass while removals run (R5)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const sidecarUrl = "https://stale-tab.test/";
+    await writeTabRestoreSidecar(f.directory, [
+      {
+        index: 0,
+        surfaceId: "surface_00000000-0000-4000-8000-00000000r501",
+        url: sidecarUrl,
+        lineageId: "lin-r5",
+      },
+    ]);
+    let tabPresent = true;
+    const restoredTab = {
+      tabId: 91,
+      windowId: 1,
+      index: 0,
+      url: sidecarUrl,
+      title: "Stale",
+      active: false,
+      discarded: true,
+      status: "unloaded",
+      targetId: "target-r5-91",
+    };
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+    });
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => (tabPresent ? [restoredTab] : []));
+    let releaseRemoval: (() => void) | undefined;
+    const removalStarted = new Promise<void>((resolve) => {
+      vi.spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId").mockImplementation(
+        async () => {
+          resolve();
+          await new Promise<void>((done) => {
+            releaseRemoval = done;
+          });
+          tabPresent = false;
+          return true;
+        },
+      );
+    });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      // Fallback timer triggers a reconcile first.
+      launched.context.sessionRestore!.armFallbackReconcile!(new Set(), "lin-r5", 10);
+      await removalStarted;
+
+      // Now Home's session.saved arrives while the fallback removal is STILL in flight.
+      let secondResolved = false;
+      const second = launched.context.sessionRestore!.reconcile(new Set(), "lin-r5").then(() => {
+        secondResolved = true;
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(secondResolved).toBe(false);
+
+      // Once the in-flight removal finishes, the second reconcile resolves cleanly.
+      releaseRemoval!();
+      await second;
+      expect(secondResolved).toBe(true);
+      expect(tabPresent).toBe(false);
+    } finally {
+      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
+      invSpy.mockRestore();
+      vi.restoreAllMocks();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(

@@ -150,6 +150,12 @@ export interface BrowserSessionRestore {
    * closing every restored tab not named in `savedTabIds` (or outside `lineageId`) with evidence.
    */
   reconcile(savedTabIds: ReadonlySet<BrowserSurfaceId>, lineageId?: string): Promise<void>;
+  /** Arms a bounded fallback reconcile if the Home never sends `session.saved`. */
+  armFallbackReconcile?(
+    keepIds: ReadonlySet<BrowserSurfaceId>,
+    lineageId: string,
+    delayMs?: number,
+  ): void;
   /** Associates a saved-lineage page with its durable Home `surfaceId`, or clears it on `null`. */
   trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null, lineageId: string): void;
   /** Flushes any pending profile tab-map write before an orderly browser close. */

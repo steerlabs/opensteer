@@ -1240,6 +1240,8 @@ class PlaywrightContextHandle implements BrowserContext {
   >();
   private readonly trackedNavigationPages = new WeakSet<Page>();
   private readonly inFlightDiscards = new Set<Promise<void>>();
+  private reconcileTail: Promise<void> = Promise.resolve();
+  private reconcileFallbackTimer: ReturnType<typeof setTimeout> | undefined;
   private sidecarTail: Promise<void> = Promise.resolve();
   private sidecarDirty = false;
   private sidecarScheduled = false;
@@ -1290,6 +1292,8 @@ class PlaywrightContextHandle implements BrowserContext {
         claim: (surfaceId, url, own, lineageId) =>
           this.claimSavedRestoredTab(surfaceId, url, own, lineageId),
         reconcile: (savedTabIds, lineageId) => this.reconcileSavedTabs(savedTabIds, lineageId),
+        armFallbackReconcile: (keepIds, lineageId, delayMs = 5_000) =>
+          this.armFallbackReconcile(keepIds, lineageId, delayMs),
         trackSavedTab: (surfaceId, page, lineageId) =>
           this.trackSavedTab(surfaceId, page, lineageId),
         flush: () => this.flushSavedTabs(),
@@ -1297,6 +1301,10 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     context.on("close", () => {
       this.closed = true;
+      if (this.reconcileFallbackTimer) {
+        clearTimeout(this.reconcileFallbackTimer);
+        this.reconcileFallbackTimer = undefined;
+      }
       this.sleepingTabs.clear();
       this.unclaimedRestoredTabs.clear();
       this.unclaimedRestoredTargetIds.clear();
@@ -1429,7 +1437,43 @@ class PlaywrightContextHandle implements BrowserContext {
     return false;
   }
 
-  private async reconcileSavedTabs(
+  private armFallbackReconcile(
+    keepIds: ReadonlySet<BrowserSurfaceId>,
+    lineageId: string,
+    delayMs: number,
+  ): void {
+    if (this.closed || this.restoredBySurfaceId.size === 0) return;
+    if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
+    this.reconcileFallbackTimer = setTimeout(() => {
+      this.reconcileFallbackTimer = undefined;
+      if (this.closed) return;
+      void this.reconcileSavedTabs(keepIds, lineageId).catch(() => undefined);
+    }, delayMs);
+    this.reconcileFallbackTimer.unref?.();
+  }
+
+  private reconcileSavedTabs(
+    savedTabIds: ReadonlySet<BrowserSurfaceId>,
+    lineageId?: string,
+  ): Promise<void> {
+    if (this.reconcileFallbackTimer) {
+      clearTimeout(this.reconcileFallbackTimer);
+      this.reconcileFallbackTimer = undefined;
+    }
+    const run = this.reconcileTail.then(() =>
+      withTimeout(this.reconcileSavedTabsOnce(savedTabIds, lineageId), 6_000, {
+        timeoutError: () =>
+          new Error("Saved-tab reconciliation exceeded the runtime deadline."),
+      }),
+    );
+    this.reconcileTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async reconcileSavedTabsOnce(
     savedTabIds: ReadonlySet<BrowserSurfaceId>,
     lineageId?: string,
   ): Promise<void> {
