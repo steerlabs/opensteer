@@ -17,8 +17,21 @@ import {
   type ManagedBrowserPoolTarget,
 } from "./browser-pool-agent-client.js";
 import type { BrowserPoolRuntimeChannel } from "./browser-pool-coordinator.js";
+import type { BrowserPoolPhysicalStatus } from "./browser-pool-controller.js";
 
 type Transport = ReturnType<typeof poolRelayTransport>;
+
+/** A runtime no guest holds: nothing installed. */
+const emptyRuntime: BrowserPoolRuntimeState = {
+  fence: null,
+  revision: 0,
+  phase: "uninstalled",
+  intent: null,
+  cancelled: false,
+  retired: null,
+  blockers: [],
+  adoption: null,
+};
 
 /**
  * The runtime's pool control in the guest, reached through the relay. The coordinator reads its
@@ -36,6 +49,19 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
 
   poolState(): BrowserPoolRuntimeState | undefined {
     return this.#state;
+  }
+
+  /**
+   * What the agent's signed status says of the guest, before anything is read from the runtime:
+   * a stopped guest has no runtime and so no fence (the next one starts empty); a running one is
+   * read through the relay; any other is unknown until the runtime answers.
+   */
+  async observeGuest(status: BrowserPoolPhysicalStatus): Promise<void> {
+    if (status.phase === "stopped") {
+      this.#state = emptyRuntime;
+      return;
+    }
+    if (status.phase === "running") await this.refresh(AbortSignal.timeout(60_000));
   }
 
   /** Reads the runtime's state now. */

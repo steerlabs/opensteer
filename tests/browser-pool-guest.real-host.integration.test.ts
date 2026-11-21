@@ -94,7 +94,9 @@ function relayIdentity(directory: string, name: string) {
 }
 
 const spkiOf = (key: KeyObject) =>
-  createPublicKey(key).export({ format: "der", type: "spki" }).toString("base64");
+  (key.type === "public" ? key : createPublicKey(key))
+    .export({ format: "der", type: "spki" })
+    .toString("base64");
 
 describe.skipIf(!real)("our runtime in a real pool guest", () => {
   it("adopts a person's draft and an agent's page after a wake from disk, and refuses what it must", async () => {
@@ -176,6 +178,11 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       .where("id", "=", task.runnerId)
       .execute();
     const errors: string[] = [];
+    const report = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message);
+      process.stderr.write(`POOLPROOF ${message}\n`);
+    };
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,
@@ -186,11 +193,15 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       controller: parts.controller,
       retryMs: 500,
       callTimeoutMs: 60_000,
-      onError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+      onError: (error) => report(error),
     });
     // The guest starts (our runtime and Chromium boot) and the Home installs its fence.
     let mark = performance.now();
+    // The coordinator reads the runtime's state at once; the agent's status says what it is.
+    await parts.runtime.observeGuest(await parts.controller.status(slotId, term));
+    process.stderr.write("POOLPROOF recover\n");
     await coordinator.recover();
+    process.stderr.write("POOLPROOF recovered\n");
     emit({
       kind: "proof-start",
       ms: Math.round(performance.now() - mark),
@@ -276,7 +287,7 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: tickets.privateKey }),
-      onError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+      onError: (error) => report(error),
       onSessionsChanged: () => {},
       targetResolver: targetResolver as never,
     });
