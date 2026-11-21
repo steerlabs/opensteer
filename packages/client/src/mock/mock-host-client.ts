@@ -62,6 +62,7 @@ import {
 } from "@opensteer/protocol";
 import { clearRunPageViews } from "../host/run-page-memory.js";
 import { BrowserRestartUnavailable, type BrowserPoolReport } from "../host/browser-sleep.js";
+import { mockBrowserPoolReport, type BrowserSleepScene } from "./browser-sleep-fixtures.js";
 import { clearRunPlacePictures } from "../host/run-place-picture.js";
 import { localReference } from "../references/local.js";
 import type { IdReference } from "../references/links.js";
@@ -4434,6 +4435,15 @@ export class MockHostClient implements HostClient {
     const snapshot = this.#state.getSnapshot();
     const { browserPools: _held, ...rest } = snapshot;
     this.#state.updatePlaces(reports ? { ...rest, browserPools: reports } : rest);
+  }
+
+  /** For journeys: one of `browserSleepScenes` for the browser holding this page tab. */
+  showBrowserSleepScene(tabId: string, scene: BrowserSleepScene | null): void {
+    const tab = this.getSnapshot().tabs.get(tabId as TabId);
+    if (tab?.kind !== "page") throw new Error("That is not a page tab.");
+    this.setBrowserPools(
+      scene ? [mockBrowserPoolReport(scene, tab.computer.computerId, tabId)] : undefined,
+    );
   }
 
   /** As every Home today: refused, and nothing changes. */
