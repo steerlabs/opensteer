@@ -417,31 +417,43 @@ export function createPersonalReads(
     },
     "personal.readiness.get": async (input, context) => {
       const viewerId = requireSession(context).user.id;
-      const ready = await withPersonalSyncRead(database, async (tx) => {
-        await resources.authorize(tx, viewerId);
-        const environment = await tx
-          .selectFrom("executionEnvironments")
-          .select("runnerId")
-          .where("id", "=", input.environmentId)
-          .executeTakeFirst();
-        const runnerId = environment?.runnerId;
-        if (!runnerId) return false;
-        if (input.kind === "runner")
-          return (
-            input.runnerId === runnerId &&
-            dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId === runnerId
-          );
-        return (
-          (await isEligibleBrowserRunner(tx, viewerId, runnerId)) &&
-          dependencies.browser.isPlacementReady(runnerId, input.runtimeId)
-        );
-      });
+      const answer = await withPersonalSyncRead(
+        database,
+        async (tx): Promise<{ ready: boolean; pending?: "agent-home" }> => {
+          await resources.authorize(tx, viewerId);
+          // A Home still waiting for its hosting computer's Agent home is not ready, never
+          // refused: the owner's reads need the Personal settings it has yet to create.
+          if (!dependencies.execution.initialized())
+            return dependencies.runners.identityForEnvironment(input.environmentId)
+              ? { ready: false, pending: "agent-home" }
+              : { ready: false };
+          const environment = await tx
+            .selectFrom("executionEnvironments")
+            .select("runnerId")
+            .where("id", "=", input.environmentId)
+            .executeTakeFirst();
+          const runnerId = environment?.runnerId;
+          if (!runnerId) return { ready: false };
+          if (input.kind === "runner")
+            return {
+              ready:
+                input.runnerId === runnerId &&
+                dependencies.runners.identityForEnvironment(input.environmentId)?.runnerId ===
+                  runnerId,
+            };
+          return {
+            ready:
+              (await isEligibleBrowserRunner(tx, viewerId, runnerId)) &&
+              dependencies.browser.isPlacementReady(runnerId, input.runtimeId),
+          };
+        },
+      );
       const pluginAgentWorkStoppedSince =
-        ready && input.kind === "runner"
+        answer.ready && input.kind === "runner"
           ? dependencies.pluginAgentWorkStoppedSince?.(input.runnerId)
           : undefined;
       return rpcSuccess({
-        ready,
+        ...answer,
         ...(pluginAgentWorkStoppedSince ? { pluginAgentWorkStoppedSince } : {}),
       });
     },

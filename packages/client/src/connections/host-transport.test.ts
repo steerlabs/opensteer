@@ -2,6 +2,7 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { testDiscoveryEnvelope } from "../test-support/host-authority.js";
 import { DeploymentCatalogSchema } from "./deployment-catalog.js";
+import { hostResponseStallTimeoutMs } from "./host-response-deadline.js";
 import { HostTransport } from "./host-transport.js";
 
 function fixture(response: Response) {
@@ -143,5 +144,50 @@ describe("Host transport handling of a 401 response", () => {
     await failure;
     expect(sessions.sessionEnded).toHaveBeenCalledOnce();
     expect(sessions.recoverUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("reports a stalled 401 body as timed-out instead of unreachable", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn();
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+          },
+          cancel,
+        }),
+        { status: 401 },
+      );
+      const { exchange, sessions } = fixture(response);
+      const read = vi.fn((response: Response) => response.text());
+
+      const outcome = exchange(read).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(hostResponseStallTimeoutMs);
+
+      const settled = await outcome;
+      expect(settled.ok).toBe(false);
+      if (!settled.ok) {
+        expect(settled.error).toMatchObject({
+          code: "timed-out",
+          failure: {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            kind: "session",
+            provenance: "host",
+            retryable: false,
+          },
+        });
+      }
+      expect(sessions.sessionEnded).toHaveBeenCalledOnce();
+      expect(sessions.recoverUnauthorized).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

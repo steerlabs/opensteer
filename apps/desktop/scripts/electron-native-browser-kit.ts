@@ -340,7 +340,9 @@ export function createNativeBrowserE2EKit(options: {
         }
         const snapshot = client?.getSnapshot();
         const selected = document.querySelector('.side-tab.is-active')?.getAttribute('data-place-key');
-        const [, selectedSession, selectedSurface] = selected?.split(':') ?? [];
+        const tabViewer = selected ? client?.tabViewer(selected) : null;
+        const selectedSession = tabViewer?.kind === 'page' ? tabViewer.sessionId : null;
+        const selectedSurface = tabViewer?.kind === 'page' ? tabViewer.surfaceId : null;
         const session = snapshot?.browserSessions.find(s => s.id === selectedSession);
         const viewer = selectedSession && selectedSurface ? client?.browserViewerState(selectedSession,selectedSurface) : null;
         return {stageText: document.querySelector('.browser-stage')?.textContent,
@@ -443,7 +445,7 @@ export function createNativeBrowserE2EKit(options: {
   async function selectBrowserTab(sessionId: string, surfaceId: string): Promise<void> {
     if (!process.argv.includes("--no-serial")) await foregroundApp();
     await openSidebar();
-    const selector = `[data-place-key="browser:${sessionId}:${surfaceId}"] .side-tab__main`;
+    const selector = `[data-place-key="${surfaceId}"] .side-tab__main`;
     await until(
       async () =>
         (await evaluateApp(`!!document.querySelector(${JSON.stringify(selector)})`)) === true,

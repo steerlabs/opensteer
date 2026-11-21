@@ -873,6 +873,9 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           () => this.#onUncontainedBoot?.(stoppedMode),
         );
       }
+      // A Runner that never reports Agent home leaves a fresh Home not ready; the
+      // start-up deadline still ends the wait, and the failure says what was missing.
+      let agentHomePending = false;
       await this.#startupStep("runner", () =>
         this.#raceChild(
           runner,
@@ -882,9 +885,17 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             manifest.environmentId as EnvironmentId,
             manifest.runnerId,
             signal,
+            (pending) => {
+              agentHomePending = pending === "agent-home";
+            },
           ),
           signal,
           "Runner",
+          undefined,
+          () =>
+            agentHomePending
+              ? "This computer did not finish preparing its Agent home folder."
+              : undefined,
         ),
       );
       if (enrolled) this.#setStatus({ step: "preparing-agent-home" });
@@ -1593,6 +1604,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     signal: AbortSignal,
     label: string,
     refreshOn?: (refresh: () => void) => () => void,
+    /** Says what the child was still waiting for when the start-up deadline passed. */
+    timeoutDetail?: () => string | undefined,
   ): Promise<T> {
     this.#assertExpectedStack(target.component);
     let result: T;
@@ -1606,7 +1619,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             new Error(
               label === "Host" && this.#status.step === "upgrading-database"
                 ? "The Personal database upgrade stopped making progress."
-                : `${label} did not become ready.`,
+                : [`${label} did not become ready.`, timeoutDetail?.()].filter(Boolean).join(" "),
             ),
         }),
         // Messaging is still running during a Host-only restart, but nothing

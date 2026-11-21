@@ -324,16 +324,11 @@ async function main(): Promise<void> {
       stagedHarnesses.push({ entry, program });
     }
 
-    const nativeFsHelper = `${layout.nativeFsHelper}${executableSuffix}`;
-    await timePhase("runtime.native-fs", () =>
-      buildGo({
-        output: path.join(staging, nativeFsHelper),
-        sourceDirectory: path.join(repositoryRoot, "apps/runner/native-fs-helper"),
-        targetArch,
-        targetOs,
-      }),
+    const nativeFsArtifact = await timePhase("runtime.native-fs", () =>
+      stageNativeFsHelper(staging, targetOs, targetArch),
     );
-    artifacts.push({ mode: "executable", path: nativeFsHelper });
+    const nativeFsHelper = nativeFsArtifact.path;
+    artifacts.push(nativeFsArtifact);
 
     // The computer-use helper is built here, beside the other native helper,
     // so one command produces both. It is not staged into this bundle: it is
@@ -488,6 +483,21 @@ async function main(): Promise<void> {
     await removeDirectory(webBuildDirectory).catch(() => undefined);
     throw error;
   }
+}
+
+export async function stageNativeFsHelper(
+  staging: string,
+  targetOs: TargetOperatingSystem,
+  targetArch: TargetArchitecture,
+): Promise<StagedArtifact> {
+  const nativeFsHelper = `${layout.nativeFsHelper}${targetOs === "win32" ? ".exe" : ""}`;
+  await buildGo({
+    output: path.join(staging, ...nativeFsHelper.split("/")),
+    sourceDirectory: path.join(repositoryRoot, "apps/runner/native-fs-helper"),
+    targetArch,
+    targetOs,
+  });
+  return { mode: "executable", path: nativeFsHelper };
 }
 
 export async function stageDataTree(
