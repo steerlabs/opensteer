@@ -302,6 +302,45 @@ it("installs the controller's fence before any traffic and never reads it from t
   }
 });
 
+it("bootstraps a Home without its slot row from the controller's fence, never the guest's", async () => {
+  const f = await poolFixture("bootstrap");
+  try {
+    await f.home().recover();
+    const first = await f.controller.status("slot-bootstrap", 1);
+    const dropRow = () =>
+      f.database.deleteFrom("browserPoolSlots").where("runnerId", "=", f.task.runnerId).execute();
+    // The row is gone and the guest still runs under the controller's fence: it is kept as is.
+    await dropRow();
+    await f.home().recover();
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(await f.slot()).toMatchObject({
+      phase: "running",
+      slotId: "slot-bootstrap",
+      term: 1,
+      instanceId: first.instance,
+      epoch: first.epoch,
+    });
+    // The row is gone again and the controller reports an epoch the guest's fence does not
+    // carry: the guest's own fence is not trusted; it is replaced and the controller's installed.
+    await dropRow();
+    f.controller.observe({ epoch: 5 });
+    await f.home().recover();
+    const now = await f.controller.status("slot-bootstrap", 1);
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(now.instance).not.toBe(first.instance);
+    const fence = { slot: "slot-bootstrap", term: 1, instance: now.instance, epoch: now.epoch };
+    expect(f.runtime.poolState()?.fence).toEqual(fence);
+    expect(await f.slot()).toMatchObject({
+      phase: "running",
+      instanceId: now.instance,
+      epoch: now.epoch,
+    });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
 for (const kind of ["sign:retire", "sign:seal", "pause", "resume", "sign:complete"] as const)
   for (const fault of ["request", "reply", "duplicate"] as const)
     it(`parks and wakes once when the controller's ${kind} suffers a ${fault} loss`, async () => {

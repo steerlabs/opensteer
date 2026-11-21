@@ -844,21 +844,16 @@ export class BrowserPoolCoordinator {
   }
 
   async #install(status: BrowserPoolPhysicalStatus, state: BrowserPoolRuntimeState) {
-    if (
-      state.fence &&
-      state.phase === "running" &&
-      status.phase === "running" &&
-      status.instance === state.fence.instance &&
-      status.epoch === state.fence.epoch
-    ) {
+    // Without its row, the Home takes the fence from the controller; a running guest is kept
+    // only when its whole fence is the one the controller reports, and is replaced otherwise.
+    const controllerFence =
+      status.phase === "running" && status.instance !== null && status.epoch !== null
+        ? { slot: status.slotId, term: status.term, instance: status.instance, epoch: status.epoch }
+        : undefined;
+    if (controllerFence && state.phase === "running" && sameFence(state.fence, controllerFence)) {
       this.#slot = await installBrowserPoolSlot(
         this.#options.database,
-        this.#target({
-          slot: status.slotId,
-          term: status.term,
-          instance: status.instance,
-          epoch: status.epoch,
-        }),
+        this.#target(controllerFence),
       );
       return this.gate.settle("open");
     }
