@@ -1029,6 +1029,47 @@ describe("Opensteer MCP spine", () => {
     }
   });
 
+  it("keeps both plugin input IDs when waiting or replaying plugin_resume", async () => {
+    const f = fixture();
+    const tool = "plugin_resume";
+    const args = { taskId: f.thread.id, executionId: "pending-provider" };
+    const operationId = createId("agentOperation");
+    const pending = { ...args, status: "pending" as const, next: "Call plugin_resume." };
+    f.handlers.plugin_resume = async () => pending;
+    const query = {
+      innerJoin: vi.fn().mockReturnThis(),
+      selectAll: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      executeTakeFirst: vi.fn(async () => ({
+        id: operationId,
+        argumentDigest: operationArgumentDigest(tool, args),
+        taskId: args.taskId,
+        state: "completed",
+      })),
+    };
+    const replay = new OpensteerMcpService({
+      ...f.options,
+      store: { ...f.options.store, database: { selectFrom: vi.fn(() => query) } as never },
+      pluginExecutions: { hold: vi.fn(), replayOperation: vi.fn(async () => pending) },
+    });
+    try {
+      const identity = { operationKey: "plugin-wait" };
+      const live = await f.service.callToolResult("connection", tool, args, identity);
+      const saved = await replay.callToolResult(
+        "connection",
+        tool,
+        { ...args, operationId },
+        identity,
+      );
+      expect(live.structuredContent).toEqual(pending);
+      expect(saved.structuredContent).toEqual(pending);
+    } finally {
+      await replay.close();
+      await f.service.close();
+    }
+  });
+
   it("keeps safe image metadata and sends each image once", async () => {
     const f = await httpFixture();
     const image = {

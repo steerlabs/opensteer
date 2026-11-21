@@ -149,7 +149,7 @@ built from the same list and name only what the connection holds.
 
 Sizes are pinned in `tests/agent-context-budget.json`: an `everything` connection at Full access
 gets 52 tools in under 25 KB of tool JSON; one browser profile with tasks off gets 7 tools in
-about 4.4 KB. `apps/host/src/mcp/connection-contract.test.ts` checks eight grant shapes: no tool
+about 4.5 KB. `apps/host/src/mcp/connection-contract.test.ts` checks eight grant shapes: no tool
 is mentioned that is not offered, and no parameter shape is listed that the handler refuses.
 
 **Outside the grant reads exactly like non-existent.** A refusal about a target the connection
@@ -266,8 +266,10 @@ activations, queued inputs, Requests, steering commands, active automations (pau
 sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
-a CDP attempt before the ticket is issued; a plugin execution before the call reaches the plugin
-engine. The worker stops each attempt through its own stop command and accepts only an answer for
+a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
+call reaches the plugin engine. The one-use `browser_connect` address an agent receives is not a
+handoff: it does nothing until redeemed, and redemption checks authority again and writes the
+attempt first. The worker stops each attempt through its own stop command and accepts only an answer for
 that exact attempt, generation, Runner and Runner boot.
 
 What the person sees follows evidence:
@@ -309,7 +311,7 @@ engine whose child ignores SIGTERM, a live shell and an owner view.
 
 Two ways onto the same granted profile, both direct operations:
 
-- **`browser_use`** runs one script (up to 20,000 characters) in a QuickJS sandbox in the Host,
+- **`browser_use`** runs one script (up to 18,956 characters) in a QuickJS sandbox in the Host,
   with the same page API the person's own agents use (`apps/runner/browser-harness/page.mjs`).
   `help()` prints the API. `newPage` and `page.close()` work only in the profile the operation was
   approved for.
@@ -317,15 +319,27 @@ Two ways onto the same granted profile, both direct operations:
   `wss:` on an HTTPS Home) for stock Playwright `connectOverCDP()` or Puppeteer. The ticket is
   random, stored only as a digest, used once and valid for a minute. It is bound to the session,
   profile, runtime, grant revision, mode and task. The OAuth token is never in the address. One
-  approval covers one interval of up to 10 minutes of full control of the profile.
+  approval covers one interval of up to 10 minutes. The Request says what that is: the agent
+  controls its own pages and can reach every cookie and signed-in site in the profile.
 
-The connection is confined (`packages/browser-core/src/portable-session-cdp-router.ts`): it sees
-only that profile's pages; browser-wide commands are refused; `context.newCDPSession(page)` works
-as an alias of the confined root. It closes on Stop, Disconnect, expiry, a lowered mode or any
-grant change. See [browser-sessions.md](browser-sessions.md).
+The connection is confined (`packages/browser-core/src/portable-session-cdp-router.ts`):
 
-The isolation boundary is the browser profile. A connected agent works only in profiles granted
-to it, never in Guest. Two agents granted the same profile share its signed-in state.
+- **It sees only the agent's own pages:** the tab it was issued, pages it creates, and their
+  popups. The person's tabs and another agent's tabs in the same profile are not listed and cannot
+  be attached to, by target id, by auto-attach or through an opener.
+- **Every page it creates is an open tab of its task**, so the person can watch it. A page the
+  Home cannot record is closed. Closing an agent's tab really closes the page.
+- Browser-wide commands are refused. `context.newCDPSession(page)` works as an alias of the
+  confined root.
+- A runtime that does not report lineage support refuses a connected agent's `browser_connect`
+  (update Opensteer on that device; `browser_use` still works).
+- It closes on Stop, Disconnect, expiry, a lowered mode or any grant change.
+
+See [browser-sessions.md](browser-sessions.md).
+
+Pages are separated by lineage; signed-in state is not. The isolation boundary for cookies and
+sign-ins is the browser profile. A connected agent works only in profiles granted to it, never in
+Guest. Two agents granted the same profile share its signed-in state.
 
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
@@ -367,9 +381,8 @@ approval for one merchant site each time, with one 30-minute deadline for approv
 approval protects which login or card is released, to which site, each time.
 
 Where fills work: only in the browser of the person's own Mac that hosts the Home. The standard
-CDP endpoint refuses both fill commands. An Opensteer Cloud Computer has no Passwords broker and
-does not list the two tools; a self-hosted Linux Home lists them and answers that they are
-unavailable.
+CDP endpoint refuses both fill commands. A Home whose hosting device has no Passwords broker (an
+Opensteer Cloud Computer, a self-hosted Linux Home) does not list the two tools.
 
 ## Organizations and work Homes
 
@@ -444,7 +457,8 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
   bootstrap.
 - **Backup and restore.** Encrypted restic backups to S3-compatible storage. A restore goes into
   new volumes; the old set stays until the new one is healthy, and a claimed Home is not restored
-  over without `--replace`. Recovery journals are renamed out of the way before removal;
+  over without `--replace`. The check is made once: an operator must prevent claims during a manual
+  cutover, because a claim that lands between the check and the swap is lost. Recovery journals are renamed out of the way before removal;
   conflicting evidence stops for an operator.
 - **Update and rollback.** An update saves a database dump first. Migrations only add, so a
   rollback restarts the previous images and keeps the data. A managed Home accepts only
@@ -480,20 +494,22 @@ install or a VM reboot.
 - **Two unmodified agents on one Home** (`tests/second-agent.integration.test.ts`). A real Home,
   Runner and Chromium. Both agents use the official MCP TypeScript SDK client and the Home's real
   OAuth flow. Agent A has profile A in Supervised and uses `browser_use`. Agent B has profile B in
-  Full access and uses stock Playwright over `browser_connect`. Eight claims: each works signed in
+  Full access and uses stock Playwright over `browser_connect`. Nine claims: each works signed in
   only in its own profile; each has its own task and tab; neither can list, read, open, attach to
   or learn of the other's (refusals match a non-existent item, and `Target.getTargets` shows only
   its own pages); Supervised holds the effect, Allow once finishes it and Don't allow returns
-  `declined_by_person`; the Request wording names the agent; Stop ends A's work in flight while B
-  carries on; Disconnect closes A's socket, its old token gets 401, it reaches Disconnected, and B
-  finishes; neither receives the other's data or any secret.
+  `declined_by_person`; the Request wording names the agent; the person watches both agents' exact
+  pages without interrupting either; Stop ends A's work in flight while B carries on; Disconnect
+  closes A's socket, its old token gets 401, it reaches Disconnected, and B finishes; neither
+  receives the other's data or any secret.
 - **Your own agents do no more database work than on `main`.** Fifteen hot paths of the person's
   own agents were measured against `main`: task read, tab open and close, input to dispatch,
   Runner events, shell read, tab projection, task and Request lists, Runner attach, page commands,
   a plugin call, keystrokes and frames. None issues more statements; several issue fewer (a Run's
   tab open 312 against 344, a Run's plugin call 197 against 210). Wall times show no consistent
   slowdown. `apps/host/src/runtime/personal-hot-paths.integration.test.ts` pins the shell read at 18
-  statements and the warm tab projection at 1, with no organization query on a personal Home.
+  database round trips and the warm tab projection at 1, with no organization query on a personal
+  Home.
 
 ## Known limits
 
@@ -511,18 +527,18 @@ install or a VM reboot.
 - **Disconnected can include an uncertain end.** "Check its last action" marks it.
 - **Opensteer can stop what happens next, not undo what was done.** That includes everything the
   person's own agents did for a connected agent with `tasks`, and anything an agent copied out.
-- **Two agents granted the same profile share its signed-in state.**
+- **Two agents granted the same profile share its signed-in state.** Each sees only its own pages
+  over `browser_connect`, but cookies and sign-ins belong to the profile. Give each agent its own
+  profile to keep accounts apart.
+- **An older runtime refuses a connected agent's `browser_connect`** until Opensteer on that
+  device is updated. `browser_use` is not affected.
 - **The egress proxy is a browser setting**, not a boundary against an agent that controls the
   browser.
 - **A connection lasts 30 days** and then needs a new sign-in; there are no refresh tokens.
 - **An `everything` connection lists 52 tools.** Narrower grants list far fewer.
-- **Lowering a task's mode does not close its open Request**; the person's answer to it is then
-  refused.
 - **Stop while watching** interrupts the picture until the viewer reconnects.
 - **A Mac's sleep notice** reaches the device Runners it serves, not the Runner of a Home on the
   same Mac, and ends only connected agents' computer-use scripts.
-- **A Mac app is named in a Request by its bundle id**, because the friendly name comes from the
-  app itself.
 - **Backups and the old VM.** "Last backup" is what the Cloud Computer reported. A replaced VM is
   deleted once the account issued the owner a sign-in to the new one, not once a session there is
   proved.

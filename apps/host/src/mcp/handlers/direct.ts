@@ -1,4 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
+import { boundedReplFailure, type ReplFailure } from "../../computer-use/computer-repl/messages.js";
+import type { ReplResult } from "../../computer-use/computer-repl/computer-repl-service.js";
 import {
   OperationOutcomeUnknown,
   type AgentSessionService,
@@ -33,6 +35,37 @@ export async function browserEffect<Result>(run: () => Promise<Result>): Promise
       throw new OperationOutcomeUnknown(error.message);
     throw error;
   }
+}
+
+export function scriptFailure(result: ReplResult): ReplFailure | undefined {
+  if (!result.isError) return undefined;
+  const text = result.content.find((item) => item.type === "text");
+  return (
+    result.structuredContent?.error ??
+    boundedReplFailure({
+      code: "failed",
+      message: text?.text ?? "The script failed.",
+      performed: [],
+    })
+  );
+}
+
+export function failedScriptOutput(
+  receipt: {
+    status: "failed";
+    next: string;
+    taskId: string;
+    operationId: string;
+    profileId?: string;
+  },
+  error: ReplFailure,
+  content?: ReplResult["content"],
+) {
+  return {
+    isError: true as const,
+    content: content ?? [{ type: "text" as const, text: `${error.code}: ${error.message}` }],
+    structuredContent: { ...receipt, error },
+  };
 }
 
 /** The session pipeline, or a refusal on a Home that was started without it. */

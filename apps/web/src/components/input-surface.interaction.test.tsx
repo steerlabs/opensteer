@@ -14,7 +14,12 @@ import { controlledClientSession, testHostConnection } from "@opensteer/client/t
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createId, WaitingRequestSchema, type Request } from "@opensteer/core";
+import {
+  createId,
+  formatRequestOperationDetail,
+  WaitingRequestSchema,
+  type Request,
+} from "@opensteer/core";
 import { MemoryRouter } from "react-router";
 import { deriveSurface, TabStore } from "@opensteer/client/host";
 import { InputSurface, RequestStack } from "./input-surface.js";
@@ -676,6 +681,22 @@ describe("answering a question", () => {
     ]);
     expect(node.querySelector(".request-detail__text")?.textContent).toBe(detail);
     expect(node.querySelector(".request-detail a")).toBeNull();
+  });
+
+  it("shows every character of a managed browser script in the shared Request panel", () => {
+    const asked = question([field("decision")], "person.question");
+    if (asked.presentation.kind !== "form") throw new Error("Expected a form.");
+    const calls = "print(`\n# Heading\n**bold** _emphasis_ <tag>\n`)";
+    const detail = formatRequestOperationDetail({
+      summary: "Run a script in Work?",
+      titleLine: "",
+      calls,
+      reason: "",
+    });
+    const node = mount([
+      { ...asked, presentation: { ...asked.presentation, detail, detailFormat: "plain" } },
+    ]);
+    expect(node.querySelector(".request-detail__text")?.textContent).toBe(detail);
   });
 
   it("dismisses an agent's ask as a no, and offers no Dismiss on an engine's own question", async () => {

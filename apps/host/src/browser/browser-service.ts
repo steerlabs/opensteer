@@ -1,6 +1,7 @@
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import type { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import type {
+  StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
   StandardCdpMode,
 } from "@opensteer/protocol/standard-cdp";
@@ -163,6 +164,7 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
@@ -509,6 +511,11 @@ export interface BrowserRuntimeConnection {
   terminate(): void;
 }
 
+export interface PersonBrowserReconnect {
+  prepare(): Promise<void>;
+  ticket(): string;
+}
+
 export interface BrowserRuntimeTarget {
   /** The person fill version the runtime advertises (`person-fill.ts`). */
   readonly personFill?: PersonFillVersion | undefined;
@@ -545,7 +552,7 @@ export interface BrowserRuntimeTarget {
   readonly clipboard?: boolean | undefined;
   /** The computer whose Runner relays this Runtime, as this Deployment names it. */
   readonly computer?: { readonly name: string; readonly runnerId: RunnerId };
-  connect(ticket: string): BrowserRuntimeConnection;
+  connect(ticket: string, reconnect?: PersonBrowserReconnect): BrowserRuntimeConnection;
   readonly wholeContextCdp?: boolean;
   readonly standardCdpLineage?: boolean;
   readonly standardCdpRecovery?: {
@@ -553,6 +560,7 @@ export interface BrowserRuntimeTarget {
     boot(): Promise<string>;
     assertCurrent(): void;
   };
+  reconcileStandardCdpAttempt?(attempt: StandardCdpAttemptReconciliation): Promise<string>;
   readonly standardRuntime?: Pick<BrowserRuntime, "attachStandardCdp">;
   connectStandard?(
     ticket: string,
@@ -835,6 +843,10 @@ export class BrowserService {
   readonly #runPlaces: RunPlaceRecorder;
 
   readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
+  readonly #pendingPageCloses = new Map<
+    BrowserSessionId,
+    Map<BrowserSurfaceId, { fence?: Promise<void>; initial: Promise<void> }>
+  >();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   readonly #personUseGroups = new Map<
     BrowserSessionId,
@@ -2125,6 +2137,82 @@ export class BrowserService {
     });
   }
 
+  #queuePhysicalPageClose(
+    sessionId: BrowserSessionId,
+    surfaceId: BrowserSurfaceId,
+    onFailure?: () => void,
+  ): Promise<void> {
+    const broker = this.#brokers.get(sessionId);
+    if (!broker?.live) return Promise.resolve();
+    let pending = this.#pendingPageCloses.get(sessionId);
+    if (!pending) {
+      pending = new Map();
+      this.#pendingPageCloses.set(sessionId, pending);
+    }
+    const existing = pending.get(surfaceId);
+    if (existing) return existing.initial;
+    const fence = Promise.withResolvers<void>();
+    const initial = Promise.withResolvers<void>();
+    const entry: { fence?: Promise<void>; initial: Promise<void> } = {
+      fence: fence.promise,
+      initial: initial.promise,
+    };
+    pending.set(surfaceId, entry);
+    const releaseFence = () => {
+      delete entry.fence;
+      fence.resolve();
+    };
+    const close = async () => {
+      let backoff = 250;
+      let reported = false;
+      const failed = (error: unknown) => {
+        if (reported) return;
+        reported = true;
+        onFailure?.();
+        this.#onError(error);
+      };
+      while (!this.#closed && broker.live) {
+        try {
+          if (entry.fence) {
+            try {
+              await broker.requestCdp({
+                type: "cdp.command",
+                requestId: randomUUID(),
+                command: { method: browserHostMethods.fenceTab, parameters: { surfaceId } },
+              });
+              releaseFence();
+            } catch (error) {
+              // A runtime without the separate fence can still close the page. Keep
+              // the forwarding barrier up until one of those operations succeeds.
+              failed(error);
+            }
+          }
+          const response = await this.#requestPhysicalTabClose(broker, surfaceId, true);
+          z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(response.result);
+          releaseFence();
+          return;
+        } catch (error) {
+          failed(error);
+        } finally {
+          initial.resolve();
+        }
+        await delay(backoff, undefined, { signal: this.#closing.signal, ref: false });
+        backoff = Math.min(backoff * 2, 5_000);
+      }
+    };
+    void close()
+      .finally(() => {
+        pending.delete(surfaceId);
+        if (!pending.size) this.#pendingPageCloses.delete(sessionId);
+        initial.resolve();
+        releaseFence();
+      })
+      .catch((error: unknown) => {
+        if (!this.#closed) this.#onError(error);
+      });
+    return initial.promise;
+  }
+
   async closeEngineSignInPage(
     ownerId: UserId,
     tabId: TabId,
@@ -3048,24 +3136,14 @@ export class BrowserService {
         });
       return this.#bindWorkspacePage(actor.authority, row, actor.signal);
     },
-    closeViewers: async (ownerId, row) => {
-      if (row.pageBinding)
-        this.#brokers.get(row.pageBinding.sessionId)?.removePersonTab(row.id, row.generation);
-      if (
-        !row.pageBinding ||
-        !row.openedBy ||
-        row.openedBy === "person" ||
-        !(this.#repository instanceof OpensteerStore)
-      )
-        return;
-      const task = await this.#repository.database
-        .selectFrom("threads")
-        .select("originConnectionId")
-        .where("id", "=", row.openedBy.taskId)
-        .where("createdBy", "=", ownerId)
-        .executeTakeFirst();
-      if (task?.originConnectionId)
-        await this.#closeDurablePage(ownerId, row, `task-page:${row.id}:${row.generation}`);
+    closeViewers: async (_ownerId, row, closePage) => {
+      const binding = row.pageBinding;
+      if (!binding) return;
+      const closing = closePage
+        ? this.#queuePhysicalPageClose(binding.sessionId, binding.surfaceId)
+        : undefined;
+      this.#brokers.get(binding.sessionId)?.removePersonTab(row.id, row.generation);
+      await closing;
     },
   };
 
@@ -3244,6 +3322,11 @@ export class BrowserService {
             code: "conflict",
             message: "This page has no restorable browser identity.",
           });
+        if (this.#pendingPageCloses.get(binding.sessionId)?.has(binding.surfaceId))
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This browser tab is still closing.",
+          });
         const previous = await this.#repository.getBrowserSessionForOwner(
           binding.sessionId,
           ownerId,
@@ -3349,6 +3432,7 @@ export class BrowserService {
     if (!tabs || record.origin === "trigger" || record.opener?.kind === "automation")
       return pending;
     for (const descriptor of descriptors) {
+      if (this.#pendingPageCloses.get(record.id)?.has(descriptor.id)) continue;
       const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
       let row: TabRecord | null;
       if (descriptor.creatorAttachmentId) {
@@ -3542,15 +3626,10 @@ export class BrowserService {
     sessionId: BrowserSessionId,
     descriptor: PageDescriptor,
   ): Promise<void> {
-    const broker = this.#brokers.get(sessionId);
-    if (!broker?.live || !broker.pageOf(descriptor.id)) return;
-    try {
-      await this.#requestPhysicalTabClose(broker, descriptor.id, broker.tabRestoreVersion === 1);
-    } catch (error) {
+    await this.#queuePhysicalPageClose(sessionId, descriptor.id, () => {
       const creator = this.#standardCdpAttachments.get(descriptor.creatorAttachmentId!);
       creator?.close("A page could not be added to Tabs.");
-      throw error;
-    }
+    });
   }
 
   async #recordAgentTabPlace(
@@ -3988,8 +4067,23 @@ export class BrowserService {
     readonly mode: StandardCdpMode;
     readonly ttl?: number;
     readonly seedTabId?: TabId;
+    readonly operationWitness?: {
+      readonly grantRevision: number;
+      readonly mode: NonNullable<StandardCdpFacts["accessMode"]>;
+      readonly targetGeneration: number | null;
+    };
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: StandardCdpMode }> {
     const { facts, mode } = await this.#standardCdpAdmission(input, input.seedTabId);
+    const witness = input.operationWitness;
+    if (
+      witness &&
+      (facts.grantRevision !== witness.grantRevision ||
+        facts.accessMode !== witness.mode ||
+        (witness.targetGeneration !== null && facts.seed?.generation !== witness.targetGeneration))
+    )
+      throw new BrowserCdpConnectionEnded(
+        "This browser authority changed. Request a new attachment.",
+      );
     if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
       throw new BrowserCdpConnectionEnded("This browser authority has ended.");
     const ticket = this.standardCdpTickets.issue({ ...input, facts, mode });
@@ -4115,6 +4209,22 @@ export class BrowserService {
       if (life.aborted) removeSubscriptions();
       else life.addEventListener("abort", removeSubscriptions, { once: true });
       const authority = admitted.authorityDetails;
+      const operationExpiresAt = new Date(expiresAt).toISOString();
+      let attemptRecovery: StandardCdpAttemptReconciliation | undefined;
+      if (attempts && claims.mode === "session") {
+        if (!target.reconcileStandardCdpAttempt || !target.standardCdpRecovery)
+          throw new BrowserCdpConnectionEnded(
+            "This computer needs a newer version of Opensteer for a direct browser connection. You can still use browser_use.",
+          );
+        const runtimeBootId = await target.standardCdpRecovery.boot();
+        deadline.throwIfAborted();
+        attemptRecovery = {
+          attachmentId: id,
+          sessionId: record.id,
+          runtimeBootId,
+          operationExpiresAt,
+        };
+      }
       if (attempts) {
         if (!authority?.agentConnectionId || authority.grantRevision === null)
           throw new BrowserCdpConnectionEnded("This browser authority has ended.");
@@ -4126,6 +4236,7 @@ export class BrowserService {
             grantRevision,
             mode,
             threadId,
+            ...(attemptRecovery ? { recovery: attemptRecovery } : {}),
           }),
         );
         deadline.throwIfAborted();
@@ -4146,6 +4257,14 @@ export class BrowserService {
           creationOrigin: "agent",
           ...(target.actorClaim ? { actor: "agent" } : {}),
           standardCdp: mode,
+          ...(attemptRecovery
+            ? {
+                standardCdpAttempt: {
+                  attachmentId: id,
+                  runtimeBootId: attemptRecovery.runtimeBootId,
+                },
+              }
+            : {}),
           ...(claims.facts.seed
             ? {
                 standardCdpLineage: {
@@ -4159,9 +4278,9 @@ export class BrowserService {
           runtimeId: target.runtimeId,
           sessionId: record.id,
           subject: claims.authority.ownerId,
-          operationExpiresAt: new Date(expiresAt).toISOString(),
+          operationExpiresAt,
         });
-        if (lease) target.standardCdpRecovery?.assertCurrent();
+        if (lease || attemptRecovery) target.standardCdpRecovery?.assertCurrent();
         handedOff = true;
         return {
           opening: target.standardRuntime
@@ -4216,12 +4335,21 @@ export class BrowserService {
           await verify(signal, Date.now() + 1_000);
         },
         send: async (frame: Buffer) => {
-          await verify(AbortSignal.timeout(1_000), Date.now() + 1_000);
-          const { work } = await this.withRunnerAdmission(record.runnerId, async () => {
-            life.throwIfAborted();
-            return { work: transport.send(frame) };
-          });
-          await work;
+          for (;;) {
+            await verify(AbortSignal.timeout(1_000), Date.now() + 1_000);
+            const next = await this.withRunnerAdmission(record.runnerId, async () => {
+              life.throwIfAborted();
+              const fences = [...(this.#pendingPageCloses.get(record.id)?.values() ?? [])].flatMap(
+                ({ fence }) => (fence ? [fence] : []),
+              );
+              return fences.length ? { fences } : { work: transport.send(frame) };
+            });
+            if (next.work) return next.work;
+            await withTimeout(Promise.all(next.fences), agentRequestTimeoutMs, {
+              signal: life,
+              timeoutError: () => new BrowserCdpConnectionEnded("A browser tab is still closing."),
+            });
+          }
         },
       };
     } catch (error) {
@@ -4244,6 +4372,16 @@ export class BrowserService {
 
   stopStandardCdpAttempt(id: string): void {
     this.#standardCdpAttachments.get(id)?.close("Agent connection authority ended.");
+  }
+
+  async reconcileConfinedStandardCdpAttempt(
+    runnerId: RunnerId,
+    attempt: StandardCdpAttemptReconciliation,
+  ): Promise<"ended" | "contact-lost" | undefined> {
+    const target = this.#resolveTarget({ kind: "runner", runnerId });
+    if (!target?.reconcileStandardCdpAttempt) return;
+    const bootId = await target.reconcileStandardCdpAttempt(attempt);
+    return bootId === attempt.runtimeBootId ? "ended" : "contact-lost";
   }
 
   lowerStandardCdpTaskMode(threadId: ThreadId, accessMode: StandardCdpAuthority["mode"]): void {
@@ -5503,16 +5641,10 @@ export class BrowserService {
         origin !== "trigger" &&
         !input.agentBindingId?.startsWith("trigger:") &&
         !input.agentBindingId?.startsWith("watch:");
-      const ticket = this.#signer.issue({
+      const attachAuthority: Parameters<BrowserAttachTicketSigner["issue"]>[0] = {
         creationOrigin:
           origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
         ...(target.actorClaim ? { actor: origin === "person" ? "person" : "agent" } : {}),
-        ...(input.operationBudget
-          ? {
-              operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
-              remainingBudgetMs: Math.max(1, input.operationBudget.expiresAt - Date.now()),
-            }
-          : {}),
         access: "read-write",
         ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
         ...(target.personFill && target.main === true && this.#personal
@@ -5549,6 +5681,15 @@ export class BrowserService {
         // The first page opens at the person's view before anything loads in
         // it. An older browser computer refuses a ticket field it does not know.
         ...(input.viewport && target.sharedControl === true ? { viewport: input.viewport } : {}),
+      };
+      const ticket = this.#signer.issue({
+        ...attachAuthority,
+        ...(input.operationBudget
+          ? {
+              operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
+              remainingBudgetMs: Math.max(1, input.operationBudget.expiresAt - Date.now()),
+            }
+          : {}),
       });
       const correlationId = sessionId;
       let stage = "runtime-connection";
@@ -5558,7 +5699,18 @@ export class BrowserService {
       let socket: BrowserRuntimeConnection;
       try {
         input.operationBudget?.signal.throwIfAborted();
-        socket = withoutDatabaseOperationSignal(() => target.connect(ticket));
+        const reconnect =
+          attachAuthority.actor === "person"
+            ? {
+                prepare: async () => {
+                  const broker = this.#brokers.get(sessionId);
+                  if (!broker) throw new Error("The browser session has ended.");
+                  await broker.prepareRuntimeReconnect();
+                },
+                ticket: () => this.#signer.issue({ ...attachAuthority, reattach: true }),
+              }
+            : undefined;
+        socket = withoutDatabaseOperationSignal(() => target.connect(ticket, reconnect));
       } catch (error) {
         await this.#transitionBrowserSession({
           from: ["starting"],
@@ -6619,6 +6771,8 @@ export class HostedBrowserBroker {
   #stateImportTail = Promise.resolve();
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
+  #reconnecting = false;
+  #runtimeConnectionGeneration = 0;
   #protocolFailed = false;
   /** The first thing that broke this session's runtime connection. */
   #failure: string | null = null;
@@ -7355,6 +7509,47 @@ export class HostedBrowserBroker {
     });
   }
 
+  async prepareRuntimeReconnect(): Promise<void> {
+    await this.#runtimeFrameTail;
+    if (!this.live || this.#stopping) throw new Error("The browser session has ended.");
+    this.#runtimeReady = false;
+    this.#reconnecting = true;
+    this.#lastSessionState = undefined;
+    ++this.#runtimeConnectionGeneration;
+    this.#snapshot = null;
+    this.#dialogs.clear();
+    this.#latestFrames.clear();
+    this.#frameIds.clear();
+    this.#editingContexts.clear();
+    for (const listener of this.#cdpTerminalListeners) {
+      try {
+        listener();
+      } catch {
+        // One agent's transport cannot prevent the person's reconnect.
+      }
+    }
+    this.#cdpTerminalListeners.clear();
+    this.#cdpListeners.clear();
+    for (const attachmentId of this.#actionListeners.keys()) this.detachActions(attachmentId);
+    for (const pending of this.#pendingCdpRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.removeAbort();
+      pending.reject(browserCommandOutcomeUnknown());
+    }
+    this.#pendingCdpRequests.clear();
+    for (const pending of this.#pendingStateImports.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(
+        new OpensteerError({ code: "conflict", message: "The device is restarting." }),
+      );
+    }
+    this.#pendingStateImports.clear();
+    await this.#streamReconcileTail;
+    this.#runtimeTargets.clear();
+    for (const raster of this.#runtimeRaster.values()) if (raster.timer) clearTimeout(raster.timer);
+    this.#runtimeRaster.clear();
+  }
+
   async stop(): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#stopping = true;
@@ -7728,8 +7923,11 @@ export class HostedBrowserBroker {
       assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
       this.#reconcileHistory(this.#surfaces);
       if (!this.#runtimeReady) {
-        await this.#sendSavedTabs();
-        await this.#onState("ready");
+        if (!this.#reconnecting) {
+          await this.#sendSavedTabs();
+          await this.#onState("ready");
+        }
+        this.#reconnecting = false;
         this.#runtimeReady = true;
         await this.#sendSessionState();
       }
@@ -8605,11 +8803,13 @@ export class HostedBrowserBroker {
           message: "Update the browser computer to reload without cache.",
         }),
       );
+    const generation = this.#runtimeConnectionGeneration;
     const operation = this.#commandTail.then(
       () =>
         new Promise<void>((resolve, reject) => {
           signal?.throwIfAborted();
           if (
+            generation !== this.#runtimeConnectionGeneration ||
             this.#settled ||
             this.#protocolFailed ||
             (!this.#runtimeReady &&

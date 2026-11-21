@@ -1,4 +1,4 @@
-import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
+import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import type {
   DesktopUseComputerViewInput,
   DesktopUseComputerViewResult,
@@ -185,7 +185,7 @@ export class ComputerUseService {
   async startForSlot(
     deploymentIdInput: string,
     passwords?: PasswordsAuthorityPort,
-    iphone?: IphoneRunnerPort,
+    iphone?: DesktopIphoneRunnerPort,
   ): Promise<ComputerUseBridgeHandle | null> {
     if (!this.supported || this.#stopped) return null;
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);

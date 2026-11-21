@@ -74,11 +74,17 @@ export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
 export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
 
+interface ConnectionTargetCheck {
+  readonly grantTarget?: AgentGrantTarget | undefined;
+  readonly writeTargetName?: string | undefined;
+}
+
 export async function readLiveAgentConnectionRow(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
   lock = false,
+  { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -98,17 +104,24 @@ export async function readLiveAgentConnectionRow(
     .where("tokenHash", "is not", null)
     .where("expiresAt", ">", new Date());
   const authority = lock ? query.forShare("agentConnections") : query;
-  if (!isWorkHomeDatabase(database)) return authority.executeTakeFirst();
-  const row = await authority
-    .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
-    .select(["workHomePolicy.policy", "workHomePolicy.state"])
-    .executeTakeFirst();
+  const workHome = isWorkHomeDatabase(database);
+  const work = workHome
+    ? await authority
+        .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
+        .select(["workHomePolicy.policy", "workHomePolicy.state"])
+        .executeTakeFirst()
+    : undefined;
+  const row = workHome ? work : await authority.executeTakeFirst();
   if (!row) return undefined;
-  const { policy, state, ...connection } = row;
-  return {
-    ...connection,
-    accessMode: applyConnectionPolicy({ policy, state }, row.grant, row.accessMode),
-  };
+  const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
+  if (access === null)
+    throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
+  const accessMode = applyConnectionPolicy(work ?? null, row.grant, row.accessMode);
+  if (access === "read" && writeTargetName !== undefined)
+    throw forbidden(`${writeTargetName} is shared for reading only.`);
+  if (!work) return row;
+  const { policy: _policy, state: _state, ...connection } = work;
+  return { ...connection, accessMode };
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -116,13 +129,20 @@ export async function liveAgentConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
+  target?: ConnectionTargetCheck,
 ): Promise<
   AgentConnectionAuthority & {
     readonly cleanupMinimumGrantRevision: number | null;
     readonly cleanupMaximumMode: ThreadAccessMode | null;
   }
 > {
-  const row = await readLiveAgentConnectionRow(database, ownerUserId, agentConnectionId);
+  const row = await readLiveAgentConnectionRow(
+    database,
+    ownerUserId,
+    agentConnectionId,
+    false,
+    target,
+  );
   if (!row) throw forbidden(lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
   return {
@@ -141,8 +161,9 @@ export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
+  target?: ConnectionTargetCheck,
 ) {
-  const connection = await liveAgentConnection(database, ownerUserId, agentConnectionId);
+  const connection = await liveAgentConnection(database, ownerUserId, agentConnectionId, target);
   if (!agentGrantAllowsTasks(connection.grant)) throw forbidden(tasksWithdrawnMessage);
   return connection;
 }
@@ -360,12 +381,12 @@ async function bindingFacts(
 /**
  * Is this execution still allowed at all? Resolves the subject server-side and intersects every
  * live mode in its lineage; when nothing resolves the answer is a refusal, never `full-access`.
- * A supplied thread must be the binding's own. It says nothing about any concrete resource:
- * ask `authorizeTarget` for that.
+ * A supplied thread must be the binding's own. A supplied target must be in the live grant
+ * before organization policy can refuse it.
  */
 export async function admitExecution(
   database: Kysely<DatabaseSchema>,
-  input: {
+  input: ConnectionTargetCheck & {
     readonly ownerUserId: UserId;
     readonly subject: AuthoritySubject;
     readonly threadId?: ThreadId | undefined;
@@ -386,7 +407,12 @@ export async function admitExecution(
     };
   }
   if (subject.kind === "connection") {
-    const connection = await liveAgentConnection(database, ownerUserId, subject.agentConnectionId);
+    const connection = await liveAgentConnection(
+      database,
+      ownerUserId,
+      subject.agentConnectionId,
+      input,
+    );
     let taskMode: ThreadAccessMode | null = null;
     if (input.threadId) {
       const thread = await ownedThread(database, input.threadId, ownerUserId);
@@ -433,8 +459,8 @@ export async function admitExecution(
   // A session acts directly and needs no Tasks switch; delegated work needs it.
   const session = subject.bindingId.startsWith("session:");
   const connection = session
-    ? await liveAgentConnection(database, ownerUserId, facts.agentConnectionId)
-    : await liveDelegatingConnection(database, ownerUserId, facts.agentConnectionId);
+    ? await liveAgentConnection(database, ownerUserId, facts.agentConnectionId, input)
+    : await liveDelegatingConnection(database, ownerUserId, facts.agentConnectionId, input);
   if (session && !directOperationsAllowed(connection))
     throw forbidden("This connected agent was approved before direct work.");
   return {

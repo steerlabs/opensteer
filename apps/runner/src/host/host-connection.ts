@@ -1,4 +1,4 @@
-import { announceEnrollmentPreview } from "./enrollment-preview.js";
+import { announceEnrollmentPreview, WorkHomeEnrollmentRefused } from "./enrollment-preview.js";
 import type { ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
@@ -31,6 +31,7 @@ import {
   runnerRestartingCloseCode,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
+  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
@@ -463,10 +464,10 @@ export class ReconnectingHostConnection {
       if (
         !previewChecked &&
         this.#enrollmentNotice &&
+        this.#config.runnerKind === "local" &&
         this.#enrollmentCredential &&
         (this.#identity.lastConnectionGeneration === 0 || this.#reenroll)
       ) {
-        previewChecked = true;
         await announceEnrollmentPreview(
           {
             hostOrigin: this.#config.hostUrl,
@@ -478,6 +479,7 @@ export class ReconnectingHostConnection {
           this.#enrollmentNotice,
         );
         if (signal.aborted) break;
+        previewChecked = true;
       }
       try {
         await this.#connectOnce(signal);
@@ -485,6 +487,7 @@ export class ReconnectingHostConnection {
         reportedUnenrollable = false;
       } catch (error) {
         if (signal.aborted) break;
+        if (error instanceof WorkHomeEnrollmentRefused) throw error;
         // Removal is the one refusal that retrying can never fix: this identity
         // is gone from the Deployment, and reconnecting would only ask a Host
         // that has already answered. Stop, and say so once.
@@ -776,6 +779,8 @@ export class ReconnectingHostConnection {
       "Host did not acknowledge the Runner identity proof",
     );
     if (response.type === "host.error") {
+      if (response.error.reason === workHomeEnrollmentPreviewRequiredReason)
+        throw new WorkHomeEnrollmentRefused(response.error.message);
       // The Host deliberately does not say whether the identity is unknown or
       // the signature is wrong, because that would let an unauthenticated peer
       // enumerate enrolled Runners. It does not need to: this Runner knows
@@ -1971,6 +1976,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
       if (!fileOptions) throw new Error("Update this Runner to move files.");
       const files = new RunFiles({
         ...fileOptions,
+        proof: (id, method) =>
+          this.#options.signFileTransfer?.(runFileTransferProofPayload(request, id, method)),
         transport: {
           hostOrigin: config.hostUrl,
           mode: config.mode,

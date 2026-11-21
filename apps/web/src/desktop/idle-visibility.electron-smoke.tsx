@@ -74,10 +74,14 @@ const smoke = {
       runId: createId("run"),
       threadId: finderThread.id,
     };
+    const finderOrigin =
+      finderPlace.tab.kind === "page" && finderPlace.tab.url
+        ? new URL(finderPlace.tab.url).origin
+        : null;
     owner.enterPlace(finder.runId, finder.threadId, {
       place: { kind: "browser", sessionId: pageViewer.sessionId, surfaceId: finderPlace.tab.tabId },
       title: finderPlace.title,
-      site: finderPlace.site,
+      site: finderOrigin,
     });
     const retainWatch = owner.retainBrowserWatch;
     Object.defineProperty(owner, "retainBrowserWatch", {

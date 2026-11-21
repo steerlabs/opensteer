@@ -2,8 +2,10 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  AgentOperationIdSchema,
   AgentSessionIdSchema,
   agentGrantAccess,
+  agentOperationHoldMs,
   OpensteerError,
   type ThreadId,
   threadAccessModeAtMost,
@@ -15,6 +17,7 @@ import {
 } from "@opensteer/core";
 import {
   PluginAgentStore,
+  settleAgentOperation,
   type AgentOperationRow,
   type OpensteerStore,
   type PluginExecutionRecord,
@@ -35,6 +38,7 @@ import {
   type PluginCaller,
   type PluginExecution,
   PluginServiceError,
+  pluginComputerStoppedReason,
   operations,
 } from "./engine-protocol.js";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
@@ -46,6 +50,11 @@ export const pluginInterruptedReason =
 const terminal = new Set(["completed", "cancelled", "expired", "interrupted", "failed"]);
 const interactionEnded = new Error("Plugin execution changed before attaching its Request");
 const object = z.record(z.string(), z.json());
+
+export function pluginInputNext(executionId: string, taskId: ThreadId) {
+  return `Waiting for the person's input in Needs you. Call plugin_resume(${JSON.stringify({ executionId, taskId })}) to wait up to ${agentOperationHoldMs / 1_000} seconds. Avoid polling in a tight loop.`;
+}
+
 export class PluginExecutions {
   readonly #changes = new EventEmitter();
   readonly #drivers = new Set<string>();
@@ -77,13 +86,14 @@ export class PluginExecutions {
   settled(): Promise<void> {
     return this.#reports;
   }
-  async #record(execution: PluginExecution) {
+  async #record(execution: PluginExecution, contactLost = false) {
     const row = await this.options.records.execution(execution.id);
     if (!row || row.caller !== execution.caller) return;
-    if (row.connectionId && execution.drained && !row.terminalEvidenceAt) {
+    if ((execution.drained || contactLost) && !row.terminalEvidenceAt) {
+      const now = new Date();
       await this.options.store.database
         .updateTable("pluginExecutions")
-        .set({ terminalEvidenceAt: new Date(), contactLostAt: null })
+        .set({ terminalEvidenceAt: now, contactLostAt: contactLost ? now : null })
         .where("id", "=", row.id)
         .where("terminalEvidenceAt", "is", null)
         .execute();
@@ -119,10 +129,60 @@ export class PluginExecutions {
   }
   async recover() {
     await this.#reports;
-    await this.options.store.database
+    const database = this.options.store.database;
+    const unsent = await database
+      .selectFrom("pluginExecutions")
+      .select(["id", "caller", "agentSessionId", "connectionId"])
+      .where("engineUnsent", "=", true)
+      .where("terminalEvidenceAt", "is", null)
+      .execute();
+    for (const row of unsent) {
+      if (this.#submissions.has(row.id)) continue;
+      const ended = await database.transaction().execute(async (tx) => {
+        // A direct plugin's scoped caller key ends with its operation id.
+        const operationId = AgentOperationIdSchema.safeParse(
+          row.caller.slice(row.caller.lastIndexOf(":") + 1),
+        ).data;
+        const operation =
+          row.agentSessionId && row.connectionId && operationId
+            ? await tx
+                .selectFrom("agentOperations")
+                .select("id")
+                .where("id", "=", operationId)
+                .where("sessionId", "=", row.agentSessionId)
+                .where("connectionId", "=", row.connectionId)
+                .where("tool", "in", ["plugin_call", "plugin_execute"])
+                .where("state", "=", "handed-off")
+                .forNoKeyUpdate()
+                .executeTakeFirst()
+            : undefined;
+        const now = new Date();
+        const reason = "The plugin call never left the Home.";
+        const settled = await tx
+          .updateTable("pluginExecutions")
+          .set({
+            state: "cancelled",
+            reason,
+            result: null,
+            terminalEvidenceAt: now,
+            contactLostAt: null,
+            updatedAt: now,
+          })
+          .where("id", "=", row.id)
+          .where("engineUnsent", "=", true)
+          .where("terminalEvidenceAt", "is", null)
+          .executeTakeFirst();
+        if (settled.numUpdatedRows !== 1n) return false;
+        if (operation) await settleAgentOperation(tx, operation.id, "failed", { reason });
+        return true;
+      });
+      if (ended) this.#changes.emit(row.id);
+    }
+    await database
       .updateTable("pluginExecutions")
       .set({ contactLostAt: new Date() })
       .where("connectionId", "is not", null)
+      .where("engineUnsent", "is distinct from", true)
       .where("terminalEvidenceAt", "is", null)
       .where("contactLostAt", "is", null)
       .execute();
@@ -192,6 +252,7 @@ export class PluginExecutions {
           message: "Plugin authority ended before execution.",
         });
     };
+    this.options.authority.assertCallComputerRunning();
     const submission = new AbortController();
     this.#submissions.set(id, submission);
     try {
@@ -225,6 +286,7 @@ export class PluginExecutions {
           requestId: null,
           interactionId: null,
           handoff: false,
+          engineUnsent: true,
           result: null,
           reason: null,
         });
@@ -232,20 +294,19 @@ export class PluginExecutions {
       const lifetime = signal ? AbortSignal.any([submission.signal, signal]) : submission.signal;
       const beforeSend = async (engineProcess: EngineProcess | null) => {
         const database = this.options.store.database;
-        if (engineProcess) {
-          const reserved = await database
-            .updateTable("pluginExecutions")
-            .set({ engineProcess })
-            .where("id", "=", id)
-            .where("state", "=", "running")
-            .where("terminalEvidenceAt", "is", null)
-            .executeTakeFirst();
-          if (reserved.numUpdatedRows !== 1n)
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Plugin authority ended before execution.",
-            });
-        }
+        const reserved = await database
+          .updateTable("pluginExecutions")
+          .set({ engineProcess, engineUnsent: null })
+          .where("id", "=", id)
+          .where("state", "=", "running")
+          .where("engineUnsent", "=", true)
+          .where("terminalEvidenceAt", "is", null)
+          .executeTakeFirst();
+        if (reserved.numUpdatedRows !== 1n)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Plugin authority ended before execution.",
+          });
         await assertConnection(database, false);
       };
       try {
@@ -274,6 +335,20 @@ export class PluginExecutions {
     try {
       execution = await work();
     } catch (error) {
+      const stop = this.#submissions.get(id)?.signal.reason;
+      if (
+        caller.kind === "connection" &&
+        stop instanceof OperationOutcomeUnknown &&
+        this.options.service.executionWasSent(id)
+      )
+        throw stop;
+      if (error instanceof PluginServiceError && error.tag === pluginComputerStoppedReason)
+        throw new OpensteerError({
+          code: "conflict",
+          message: error.message,
+          reason: "computer-stopped",
+          retryable: true,
+        });
       await this.#reports;
       const row = await this.options.records.execution(id);
       const lost = error instanceof PluginServiceError && error.code === "interrupted";
@@ -457,9 +532,11 @@ export class PluginExecutions {
       pluginCallerSubject(row.caller) !== context.caller
     )
       throw new OpensteerError({
-        code: "forbidden",
+        code: caller.kind === "connection" ? "not_found" : "forbidden",
         message: "Plugin execution is unavailable to this caller.",
-        next: "Use only an executionId returned to this task or program.",
+        ...(caller.kind === "connection"
+          ? {}
+          : { next: "Use only an executionId returned to this task or program." }),
       });
     return row;
   }
@@ -541,14 +618,17 @@ export class PluginExecutions {
       return;
     const row = await this.sessionExecution(caller, executionId, operation.taskId);
     if (row.agentSessionId !== operation.sessionId) return;
-    return this.terminalResult(caller, row, signal);
+    const result = await this.terminalResult(caller, row, signal);
+    return result.status === "pending"
+      ? { ...result, next: pluginInputNext(row.id, operation.taskId) }
+      : result;
   }
   async sessionExecution(caller: ConnectionCaller, id: string, taskId: ThreadId) {
     const row = await this.#owned(caller, id);
     const agentSessionId = row.agentSessionId;
     if (!agentSessionId || row.threadId !== taskId || row.connectionId !== caller.connectionId)
       throw new OpensteerError({
-        code: "forbidden",
+        code: "not_found",
         message: "Plugin execution is unavailable to this caller.",
       });
     return { ...row, agentSessionId };
@@ -875,6 +955,51 @@ export class PluginExecutions {
             `Plugin authority changed. ${pluginInterruptedReason}`,
           );
   }
+  async stopAgentWork(): Promise<boolean> {
+    // A submission still in its database handoff must not send to the engine.
+    for (const submission of this.#submissions.values())
+      submission.abort(new OperationOutcomeUnknown());
+    await this.#reports;
+    const rows = await this.options.store.database
+      .selectFrom("pluginExecutions")
+      .selectAll()
+      .where("terminalEvidenceAt", "is", null)
+      .where((query) =>
+        query.or([
+          query("engineProcess", "is not", null),
+          query("engineUnsent", "=", true),
+          query("state", "in", ["running", "waiting", "answered"]),
+        ]),
+      )
+      .execute();
+    const stopped = await Promise.allSettled(
+      rows.map(async (row) => {
+        const proof = await this.#stopExecution(row);
+        if (proof) {
+          await this.#record(proof);
+          return true;
+        }
+        const gone =
+          row.engineProcess !== null &&
+          (await this.options.service.executionContactLost(row.id, row.engineProcess));
+        if (!row.engineUnsent && !gone) return false;
+        await this.#record(
+          {
+            id: row.id,
+            caller: row.caller,
+            interaction: null,
+            ...(gone
+              ? { state: "interrupted", reason: pluginInterruptedReason }
+              : { state: "cancelled", drained: true }),
+          },
+          gone,
+        );
+        return true;
+      }),
+    );
+    return stopped.every((result) => result.status === "fulfilled" && result.value);
+  }
+
   async stopConnectionExecution(
     id: string,
     connectionId: string,

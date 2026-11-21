@@ -241,8 +241,112 @@ import Darwin
     do {
       _ = try await request("session.observe", ["sessionId": session, "app": target, "window": ref, "includeScreenshot": false])
       throw JourneyFailure.failed("An ended session's ref revived")
-    } catch let error as HelperError { try require(error.code == .staleObservation && error.message == "That window is closed.", "Wrong ended-ref refusal") }
+    } catch let error as HelperError { try require(error.code == .staleObservation && error.message == "Window closed", "Wrong ended-ref refusal") }
     _ = try await request("session.close", ["sessionId": session])
+  }
+
+  /// Read-only app access (`session.windowsExisting`, `session.bindExisting`) and
+  /// cross-process window-id refusal against a second real macOS app bundle:
+  /// - a closed app is never launched by observing it;
+  /// - a windowId belonging to another real process is refused identically to a missing one;
+  /// - a running app with zero windows is reported as an empty list and refuses bindExisting.
+  func readOnlyAndForeignWindow(app: AppIdentity, peerBundle: URL) async throws {
+    let primaryIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(app))
+    let peerRecord = try AppResolver.record(forBundleAtPath: peerBundle.path).unwrap("peer fixture identity")
+    let peerIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(peerRecord.identity))
+    let peerBundleId = peerRecord.identity.bundleId
+    let session = "cus_33333333-3333-4333-8333-333333333333"
+    let primaryTarget: [String: Any] = ["identity": primaryIdentity, "access": "read-only"]
+    let peerTarget: [String: Any] = ["identity": peerIdentity, "access": "read-only"]
+    let peerOut = out.appendingPathComponent("peer-app")
+    try FileManager.default.createDirectory(at: peerOut, withIntermediateDirectories: true)
+
+    try await hello()
+    _ = try await request("session.open", ["sessionId": session, "threadTitle": "Read-only and foreign window journey"])
+    defer { Task { _ = try? await self.request("session.close", ["sessionId": session]) } }
+
+    // 1. Truly closed app must not be launched by read-only observe/bind.
+    let beforeRunning = NSRunningApplication.runningApplications(withBundleIdentifier: peerBundleId)
+      .filter { !$0.isTerminated }
+    try require(beforeRunning.isEmpty, "Peer fixture was already running before closed-app check")
+
+    do {
+      _ = try await request("session.windowsExisting", ["sessionId": session, "app": peerTarget])
+      throw JourneyFailure.failed("session.windowsExisting succeeded on a closed app")
+    } catch let error as HelperError {
+      try require(error.code == .appNotRunning, "Wrong closed-app windowsExisting error: \(error.code)")
+    }
+    do {
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      throw JourneyFailure.failed("session.bindExisting succeeded on a closed app")
+    } catch let error as HelperError {
+      try require(error.code == .appNotRunning, "Wrong closed-app bindExisting error: \(error.code)")
+    }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    let afterClosedCheck = NSRunningApplication.runningApplications(withBundleIdentifier: peerBundleId)
+      .filter { !$0.isTerminated }
+    try require(afterClosedCheck.isEmpty, "Read-only observation launched a closed app")
+
+    // 2. Launch the second real process and obtain a real windowId belonging to it.
+    let peerProcess = try await launchFixture(peerBundle, arguments: [peerOut.path])
+    defer {
+      if !peerProcess.isTerminated { peerProcess.forceTerminate() }
+    }
+    let peerReadyDeadline = Date().addingTimeInterval(10)
+    while !FileManager.default.fileExists(atPath: peerOut.appendingPathComponent("windows.json").path),
+      Date() < peerReadyDeadline
+    {
+      try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    try require(
+      FileManager.default.fileExists(atPath: peerOut.appendingPathComponent("windows.json").path),
+      "Peer fixture did not publish its windows")
+
+    let peerListed = try await request("session.windowsExisting", ["sessionId": session, "app": peerTarget])
+    let peerWindows = (peerListed["windows"] as? [[String: Any]]) ?? []
+    let foreignWindowId = try (peerWindows.first?["windowId"] as? String).unwrap("foreign windowId")
+
+    // 3. A windowId belonging to another real process must be refused identically to a missing one.
+    let missingWindowId = "win_00000000-0000-4000-8000-000000000000"
+    for method in ["session.bindExisting", "session.bind"] {
+      var foreignError: HelperError?
+      do {
+        _ = try await request(method, ["sessionId": session, "app": primaryTarget, "windowId": foreignWindowId])
+        throw JourneyFailure.failed("\(method) accepted a windowId belonging to another real process")
+      } catch let error as HelperError {
+        foreignError = error
+      }
+      var missingError: HelperError?
+      do {
+        _ = try await request(method, ["sessionId": session, "app": primaryTarget, "windowId": missingWindowId])
+        throw JourneyFailure.failed("\(method) accepted a missing windowId")
+      } catch let error as HelperError {
+        missingError = error
+      }
+      let f = try foreignError.unwrap("foreign window error")
+      let m = try missingError.unwrap("missing window error")
+      try require(
+        f.code == .staleObservation && f.code == m.code && f.message == m.message,
+        "\(method) foreign refusal (\(f.code): \(f.message)) differed from missing (\(m.code): \(m.message))")
+    }
+
+    // 4. Running app with zero windows must be reported as empty (and refuse bindExisting).
+    try await Contracts.command(peerOut, "close-all")
+    try require(!peerProcess.isTerminated, "Peer fixture exited instead of staying running with no windows")
+    let emptyListed = try await request("session.windowsExisting", ["sessionId": session, "app": peerTarget])
+    let emptyWindows = (emptyListed["windows"] as? [[String: Any]]) ?? []
+    try require(emptyWindows.isEmpty, "Running app with no windows reported \(emptyWindows.count) windows")
+    do {
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      throw JourneyFailure.failed("session.bindExisting succeeded on a running app with no windows")
+    } catch let error as HelperError {
+      try require(
+        error.code == .staleObservation && error.message == "Window closed",
+        "Wrong zero-window bindExisting error: \(error.code) \(error.message)")
+    }
+
+    try Data("Read-only app access and foreign window refusal passed\n".utf8)
+      .write(to: out.appendingPathComponent("read-only-passed.txt"))
   }
 }
 

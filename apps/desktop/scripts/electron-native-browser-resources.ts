@@ -8,8 +8,9 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { personalWebBuildId } from "@opensteer/protocol";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import { stageDataTree, stageNodeService } from "./build-personal-runtime.js";
+import { stageDataTree, stageNodeService, stagePluginRuntime } from "./build-personal-runtime.js";
 import { personalRuntimeLayout } from "./personal-runtime-layout.js";
+import { hostProcessEntries } from "../../host/src/process-entries.js";
 import {
   readPersonalRuntimeRelease,
   PersonalRuntimeReleaseManifestSchema,
@@ -63,6 +64,26 @@ for (const entry of await readdir(web, { recursive: true, withFileTypes: true })
   await setFileMode(absolute, 0o444);
   rebuilt.push(relative);
 }
+const upsertArtifact = async (artifact: {
+  readonly mode: "code" | "data" | "executable";
+  readonly path: string;
+}) => {
+  const absolute = path.join(release, ...artifact.path.split("/"));
+  const sha256 = createHash("sha256")
+    .update(await readFile(absolute))
+    .digest("hex");
+  await setFileMode(absolute, artifact.mode === "executable" ? 0o555 : 0o444);
+  manifest.files = manifest.files.filter((entry) => entry.path !== artifact.path);
+  manifest.files.push({ mode: artifact.mode, path: artifact.path, sha256 });
+  rebuilt.push(artifact.path);
+};
+
+const hostWorkers = Object.fromEntries(
+  Object.entries({ ...hostProcessEntries.workers, ...hostProcessEntries.processes }).map(
+    ([worker, entry]) => [worker, path.join(repository, "apps/host", entry)],
+  ),
+);
+
 for (const service of ["host", "runner", "channel-runtime", "browser-harness"] as const) {
   const script = `services/${service}.mjs`;
   const launcher =
@@ -72,6 +93,10 @@ for (const service of ["host", "runner", "channel-runtime", "browser-harness"] a
         ? manifest.entrypoints.channelRuntime
         : manifest.entrypoints[service];
   for (const name of [script, launcher]) await setFileMode(path.join(release, name), 0o700);
+  if (service === "host") {
+    for (const worker of Object.keys(hostWorkers))
+      await rm(path.join(release, "services", `${worker}.mjs`), { force: true });
+  }
   const artifacts = await stageNodeService(
     release,
     service,
@@ -79,20 +104,47 @@ for (const service of ["host", "runner", "channel-runtime", "browser-harness"] a
       repository,
       service === "browser-harness"
         ? "apps/runner/browser-harness/browser-harness.mjs"
-        : `apps/${service}/src/main.ts`,
+        : service === "host"
+          ? path.join("apps/host", hostProcessEntries.main)
+          : `apps/${service}/src/main.ts`,
     ),
     { script, launcher },
+    service === "host" ? hostWorkers : {},
   );
-  for (const artifact of artifacts) {
-    const file = manifest.files.find((entry) => entry.path === artifact.path);
-    assert(file, `Missing manifest entry ${artifact.path}`);
-    file.sha256 = createHash("sha256")
-      .update(await readFile(path.join(release, file.path)))
-      .digest("hex");
-    await setFileMode(path.join(release, file.path), file.mode === "executable" ? 0o555 : 0o444);
-    rebuilt.push(file.path);
-  }
+  for (const artifact of artifacts) await upsertArtifact(artifact);
 }
+
+// Stage the plugin runtime externals (`ws`, `workerd`, `typescript-5`, `@alchemy.run/cloudflare-runtime`)
+// and the Host's plugin framework bridge so an older native seed can boot the current Host.
+const pluginModuleRoots = ["workerd", "@cloudflare", "typescript-5", "ws", "@alchemy.run"];
+for (const pkg of pluginModuleRoots) {
+  const prefix = `${personalRuntimeLayout.serviceModules}/${pkg}`;
+  await rm(path.join(release, ...prefix.split("/")), { recursive: true, force: true });
+  manifest.files = manifest.files.filter(
+    (file) => file.path !== prefix && !file.path.startsWith(`${prefix}/`),
+  );
+}
+for (const artifact of await stagePluginRuntime(
+  release,
+  manifest.operatingSystem,
+  manifest.architecture,
+)) {
+  await upsertArtifact(artifact);
+}
+const pluginBridgePath = path.join(release, ...personalRuntimeLayout.pluginBridge.split("/"));
+await rm(pluginBridgePath, { force: true });
+await promisify(execFile)("pnpm", ["--filter", "apps", "build"], {
+  cwd: repository,
+  timeout: 120_000,
+  maxBuffer: 8 * 1024 * 1024,
+});
+await promisify(execFile)(
+  "pnpm",
+  ["exec", "tsx", "scripts/plugin-engine/prepare-host.ts", pluginBridgePath],
+  { cwd: repository, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 },
+);
+await rm(`${pluginBridgePath}.map`, { force: true });
+await upsertArtifact({ mode: "data", path: personalRuntimeLayout.pluginBridge });
 // Agents read the shipped skills from the release, so a seed's copy would test old guidance.
 const skills = path.join(release, personalRuntimeLayout.agentSkills);
 await rm(skills, { recursive: true, force: true });

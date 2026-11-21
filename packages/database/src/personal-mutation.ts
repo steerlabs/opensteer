@@ -239,6 +239,7 @@ class Mutation {
     { kind: PersonalAttentionTable["kind"] | null; write: ProjectionWrite }
   >();
   readonly #receipts: ((head: string) => Promise<void>)[] = [];
+  #afterProjectionWrites?: ProjectionWrite[];
   readonly touchedThreads = new Set<ThreadId>();
   readonly #summaries = new Set<ThreadId>();
   readonly #queues = new Map<ThreadId, Set<MessageId>>();
@@ -425,6 +426,10 @@ class Mutation {
   receipt(write: (head: string) => Promise<void>) {
     this.#receipts.push(write);
   }
+  /** Stage a write whose lock ranks after the Personal projections. */
+  afterProjectionWrites(write: ProjectionWrite) {
+    (this.#afterProjectionWrites ??= []).push(write);
+  }
   /** A Request or approval-gated input of this task changed; its pending count is recounted. */
   deferQueue(threadId: ThreadId, left: readonly MessageId[]) {
     const staged = this.#queues.get(threadId);
@@ -561,6 +566,9 @@ class Mutation {
         .where("deploymentId", "=", deploymentId)
         .execute();
     }
+    if (this.#afterProjectionWrites) {
+      for (const write of this.#afterProjectionWrites) await write();
+    }
     return {
       deploymentId,
       head,
@@ -609,6 +617,7 @@ export type PersonalMutation = Pick<
   | "purge"
   | "fence"
   | "receipt"
+  | "afterProjectionWrites"
   | "touchThread"
   | "deferSummary"
   | "deferQueue"
@@ -702,11 +711,15 @@ export async function commitPersonalMutation<Result>(
 }
 
 /** Requests and approval-gated inputs both wait on the person. */
-async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {
-  const pending = sql<number>`(select count(*) from requests
+export const threadPendingRequestsCount = sql<number>`(
+    (select count(*) from requests
       where originating_thread_id = threads.id and status = 'pending')
     + (select count(*) from thread_inputs
-      where thread_id = threads.id and state = 'awaiting-approval')`;
+      where thread_id = threads.id and state = 'awaiting-approval')
+  )::integer`;
+
+async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {
+  const pending = threadPendingRequestsCount;
   const changed = await tx
     .updateTable("threads")
     .set({ pendingRequestCount: pending })

@@ -455,6 +455,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
     standardCdpLineage: 1,
     wholeContextCdp: 1,
     standardCdpLeaseRecovery: 1,
+    standardCdpAttemptRecovery: 1,
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
   });
   await vi.waitFor(

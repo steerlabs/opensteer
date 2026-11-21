@@ -2371,7 +2371,7 @@ const workspaceHostApi = defineRpc({
         runtimeId: z.string().trim().min(1).max(255),
       }),
     ]),
-    z.object({ ready: z.boolean() }),
+    z.object({ ready: z.boolean(), pluginAgentWorkStoppedSince: IsoDateTimeSchema.optional() }),
   ),
   "thread.snapshot.get": declaration(
     "GET",

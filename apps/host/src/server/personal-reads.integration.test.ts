@@ -1,19 +1,25 @@
 import { createId } from "@opensteer/core";
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import {
   defaultWorkPolicy,
   OrganizationIdSchema,
   WorkAssignmentIdSchema,
 } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { deviceEnrollmentPreviewPath } from "@opensteer/protocol";
+import {
+  deviceEnrollmentPreviewPath,
+  workHomeEnrollmentPreviewRequiredReason,
+} from "@opensteer/protocol";
+import { hashRunnerEnrollmentToken } from "@opensteer/runner-auth";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import WebSocket from "ws";
 import { OpensteerStore, republishThreads, WorkHomeStore } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
+import { fingerprint, testRunnerDescriptor } from "@opensteer/database/test-support/store";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
 import { expect, it } from "vitest";
 import type { HostServerDependencies } from "../server.js";
@@ -73,6 +79,159 @@ it("does not read work policy or emit policy data on the personal shell stream",
     expect(replay.shellProgress).not.toHaveProperty("effectiveWorkPolicy");
     expect(queries.length).toBeGreaterThan(0);
     expect(queries.join(" ")).not.toMatch(/work(HomePolicy|Audit)|work_(home_policy|audit)/u);
+  } finally {
+    await host?.close();
+    await database.drop();
+  }
+});
+
+it("consumes a work Home device code only after a successful preview", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  try {
+    const f = (host = await startPrivateMachineHost(database.url, {
+      logger: false,
+      remoteAccess: true,
+    }));
+    const { deploymentId } = await f.store.database
+      .selectFrom("clientSyncState")
+      .select("deploymentId")
+      .executeTakeFirstOrThrow();
+    const home = new WorkHomeStore(f.store.database);
+    const marker = {
+      organizationId: OrganizationIdSchema.parse(`org_${randomUUID()}`),
+      organizationName: "Workshop",
+      assignmentId: WorkAssignmentIdSchema.parse(`was_${randomUUID()}`),
+    };
+    await home.initialize(marker, deploymentId);
+    const policy = (revision: number, devices: "assignee-may-enroll" | "cloud-computer-only") =>
+      home.apply({
+        assignmentId: marker.assignmentId,
+        deploymentId,
+        state: "active",
+        revision,
+        policy: { ...defaultWorkPolicy, devices },
+      });
+    await policy(1, "assignee-may-enroll");
+    const response = await f.api["commands.dispatch"]({
+      type: "runner.enrollment.createLocal",
+      name: "Joining Mac",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      idempotencyKey: "requires-preview",
+    });
+    if (!response.ok || response.data.type !== "runner.enrollment.createLocal")
+      throw new Error("Expected an owner-issued device setup code");
+    const { enrollmentId, token } = response.data;
+    const preview = (enrollmentToken: string, remoteAddress: string) =>
+      f.runtime.app.inject({
+        method: "POST",
+        url: deviceEnrollmentPreviewPath,
+        payload: { enrollmentToken },
+        remoteAddress,
+      });
+    const limitedSource = "192.0.2.1";
+    for (let attempt = 0; attempt < 30; attempt++)
+      expect((await preview("x".repeat(48), limitedSource)).statusCode).toBe(403);
+    expect((await preview(token, limitedSource)).statusCode).toBe(429);
+    const enrollment = () =>
+      f.store.database
+        .selectFrom("runnerEnrollments")
+        .select(["consumedAt", "runnerId", "workEnrollmentPreviewedAt"])
+        .where("id", "=", enrollmentId)
+        .executeTakeFirstOrThrow();
+
+    const descriptor = testRunnerDescriptor({
+      environmentId: f.ownerEnvironmentId,
+      name: "Messaging service",
+      runnerId: createId("runner"),
+      runnerKind: "managed",
+      modules: {
+        integrations: { platform: "linux" },
+        messaging: {
+          capabilities: [
+            {
+              manifest: slackChannelProviderManifest,
+              provider: "slack",
+              transportKinds: ["socket"],
+            },
+          ],
+        },
+      },
+    });
+    const enrollmentProof = (enrollmentTokenHash: string) => {
+      const { publicKey } = generateKeyPairSync("ed25519");
+      return {
+        enrollmentTokenHash,
+        publicKeyFingerprint: fingerprint(publicKey),
+        publicKeyPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
+      };
+    };
+    const proof = enrollmentProof(hashRunnerEnrollmentToken(token));
+    await expect(f.store.enrollRunnerConnection({ ...proof, descriptor })).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Runner enrollment failed",
+    });
+    const enroll = () =>
+      f.store.enrollRunnerConnection({
+        ...proof,
+        descriptor: { ...descriptor, runnerKind: "local" },
+      });
+    await expect(enroll()).rejects.toMatchObject({
+      code: "forbidden",
+      reason: workHomeEnrollmentPreviewRequiredReason,
+      message: "Read what this work Home shares first, then try again.",
+    });
+    expect(await enrollment()).toEqual({
+      consumedAt: null,
+      runnerId: null,
+      workEnrollmentPreviewedAt: null,
+    });
+    await expect(f.store.runnerForAuthentication(descriptor.runnerId)).resolves.toBeNull();
+
+    const view = await preview(token, "192.0.2.2");
+    expect(view.statusCode, view.body).toBe(200);
+    expect(view.json()).toEqual({ organizationName: "Workshop", devices: "assignee-may-enroll" });
+    expect(await enrollment()).toMatchObject({
+      consumedAt: null,
+      runnerId: null,
+      workEnrollmentPreviewedAt: expect.any(Date),
+    });
+    await enroll();
+    expect(await enrollment()).toMatchObject({
+      consumedAt: expect.any(Date),
+      runnerId: descriptor.runnerId,
+    });
+
+    await policy(2, "cloud-computer-only");
+    const serviceTokenHash = hashRunnerEnrollmentToken(randomUUID());
+    await f.store.createRunnerEnrollment({
+      allowedModules: ["integrations", "messaging"],
+      configuredInitial: true,
+      createdBy: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      id: `ren_${randomUUID()}`,
+      idempotencyKey: "configured-messaging",
+      name: "Messaging service",
+      requestFingerprint: serviceTokenHash,
+      runnerKind: "managed",
+      tokenHash: serviceTokenHash,
+    });
+    const serviceRunnerId = createId("runner");
+    await f.store.enrollRunnerConnection({
+      ...enrollmentProof(serviceTokenHash),
+      descriptor: { ...descriptor, runnerId: serviceRunnerId },
+    });
+    const serviceEnrollment = await f.store.database
+      .selectFrom("runnerEnrollments")
+      .select(["ownerKind", "consumedAt", "runnerId", "workEnrollmentPreviewedAt"])
+      .where("tokenHash", "=", serviceTokenHash)
+      .executeTakeFirstOrThrow();
+    expect(serviceEnrollment).toEqual({
+      ownerKind: "deployment",
+      consumedAt: expect.any(Date),
+      runnerId: serviceRunnerId,
+      workEnrollmentPreviewedAt: null,
+    });
   } finally {
     await host?.close();
     await database.drop();

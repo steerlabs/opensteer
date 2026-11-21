@@ -1,4 +1,3 @@
-import { isLoopbackHostname } from "@opensteer/core";
 import {
   DeviceEnrollmentPreviewRequestSchema,
   DeviceEnrollmentPreviewResponseSchema,
@@ -19,16 +18,14 @@ export async function announceEnrollmentPreview(
   signal: AbortSignal,
   print: (message: string) => void,
 ): Promise<void> {
-  if (
-    transport.hostOrigin.protocol !== "https:" &&
-    !isLoopbackHostname(transport.hostOrigin.hostname)
-  )
-    return;
   const preview = await readPreview(
     transport,
     enrollmentToken,
     AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
-  ).catch(() => null);
+  ).catch(() => {
+    if (signal.aborted) return null;
+    throw new WorkHomeEnrollmentRefused("Couldn’t check what this Home shares. Try again.");
+  });
   if (!preview?.organizationName || !preview.devices) return;
 
   const organization = preview.organizationName.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ");
@@ -66,18 +63,22 @@ async function readPreview(
   });
 
   try {
-    if (response.statusCode !== 200) return null;
+    if (response.statusCode === 404) return null;
+    if (response.statusCode !== 200) throw new Error("Home did not return an enrollment preview");
     const chunks: Buffer[] = [];
     let total = 0;
     for await (const chunk of response) {
       const bytes = Buffer.from(chunk);
       total += bytes.length;
-      if (total > maximumPreviewBytes) return null;
+      if (total > maximumPreviewBytes) throw new Error("Enrollment preview is too large");
       chunks.push(bytes);
     }
-    return DeviceEnrollmentPreviewResponseSchema.parse(
+    const preview = DeviceEnrollmentPreviewResponseSchema.parse(
       JSON.parse(Buffer.concat(chunks).toString("utf8")),
     );
+    if ((preview.organizationName === undefined) !== (preview.devices === undefined))
+      throw new Error("Incomplete enrollment preview");
+    return preview;
   } finally {
     response.destroy();
   }

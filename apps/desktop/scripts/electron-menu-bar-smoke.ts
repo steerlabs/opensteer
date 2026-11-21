@@ -8,6 +8,7 @@
  */
 import { DeploymentCatalogSchema, DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { menuBarWords } from "@opensteer/client/computers";
+import { HttpHostClient, placeList, type WebSocketClient } from "@opensteer/client/host";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
@@ -552,27 +553,44 @@ exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stre
       localRunners.dispose();
     },
   });
-  return { host, localRunners, manifest, network, origin, rpc, supervisor };
+  return { fetch, host, localRunners, manifest, network, origin, rpc, supervisor };
 }
 
 /**
- * Stop everything with this Mac's own Home and a Device Runner here: the Home
- * shows both computers as stopped and the popover says the Home confirms it;
- * the person's tab in the Device's browser stays open through Stop and Resume
- * and can be watched again after Resume; Resume clears the Home's line.
+ * Stop everything with this Mac's own Home and a Device Runner here:
+ * - an active Run and agent browser tab both stop;
+ * - the confirmed Stop time appears only after the Runners finish restarting;
+ * - the person's own tab keeps its exact page instance and form text across Stop and Resume;
+ * - an open live Watch view reconnects by itself across Stop;
+ * - Resume continues held work while a manually paused queue stays paused;
+ * - double Stop and rapid Stop-then-Resume settle cleanly.
  */
 async function homeStop(): Promise<void> {
   const gate = new AgentBrowserGate();
   const stopFile = path.join(root, "local-stop.json");
+  let restartInFlight = false;
+  let restartCompleted = 0;
+  let prematureConfirmedStop = false;
   const localStop = new DesktopLocalStop({
     restart: async () => {
-      await Promise.all([
-        home.supervisor.restartForAgentMode(),
-        home.localRunners.restartForAgentMode(),
-      ]);
+      restartInFlight = true;
+      try {
+        await Promise.all([
+          home.supervisor.restartForAgentMode(),
+          home.localRunners.restartForAgentMode(),
+        ]);
+        restartCompleted += 1;
+      } finally {
+        restartInFlight = false;
+      }
     },
     store: localStopFileStore(stopFile),
     log,
+  });
+  localStop.subscribe(() => {
+    if (restartInFlight && (localStop.stoppedAt !== null || localStop.phase === "stopped")) {
+      prematureConfirmedStop = true;
+    }
   });
   await localStop.restore();
   const home = await startHome({ agentsStoppedSince: () => localStop.agentsStoppedSince, gate });
@@ -596,12 +614,20 @@ async function homeStop(): Promise<void> {
     .string()
     .parse((await home.localRunners.status(home.manifest.deploymentId)).runner.runnerId);
 
-  // The person's own tab, in the Device's browser.
-  const pages = createServer((_request, response) =>
+  // The person's own tab (with a form input and page-instance nonce), and an agent page URL.
+  const pages = createServer((request, response) => {
+    if (request.url === "/agent") {
+      response
+        .writeHead(200, { "content-type": "text/html" })
+        .end("<!doctype html><title>Agent tab</title><p>Agent work</p>");
+      return;
+    }
     response
       .writeHead(200, { "content-type": "text/html" })
-      .end("<!doctype html><title>Person's tab</title><p>Kept through Stop</p>"),
-  );
+      .end(
+        '<!doctype html><title>Person\'s tab</title><p>Kept through Stop</p><input id="person-note" type="text" value="" /><script>window.__personPageId = Math.random().toString(36).slice(2);</script>',
+      );
+  });
   await new Promise<void>((resolve) => pages.listen(0, "127.0.0.1", resolve));
   shutdown.add({
     component: "test-page",
@@ -616,6 +642,7 @@ async function homeStop(): Promise<void> {
   const address = pages.address();
   assert(address && typeof address !== "string");
   const pageUrl = `http://127.0.0.1:${address.port}/person`;
+  const agentPageUrl = `http://127.0.0.1:${address.port}/agent`;
   const session = z.object({ session: z.object({ id: z.string() }) }).parse(
     await home.rpc("commands.dispatch", {
       type: "browser.session.start",
@@ -634,31 +661,146 @@ async function homeStop(): Promise<void> {
   const personTab = webContents
     .getAllWebContents()
     .find((contents) => contents.getURL() === pageUrl)!;
-  const watched = () =>
-    new Promise<void>((resolve, reject) => {
+  const typedNote = "kept-across-stop";
+  const initialPageId = z
+    .string()
+    .min(1)
+    .parse(
+      await personTab.executeJavaScript(
+        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
+      ),
+    );
+  const assertPersonTabIntact = async (stage: string) => {
+    assert(
+      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
+      `The person's tab closed (${stage})`,
+    );
+    const state = z
+      .object({ pageId: z.string(), value: z.string() })
+      .parse(
+        await personTab.executeJavaScript(
+          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
+        ),
+      );
+    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
+    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
+  };
+
+  // Real HttpHostClient live view kept open across Stop to verify self-reconnection.
+  let liveViewSocketsOpened = 0;
+  let liveViewSnapshots = 0;
+  const liveClient = new HttpHostClient({
+    baseUrl: home.origin,
+    fetch: (input, init) => home.fetch(input, init ?? {}),
+    reconnectBaseDelayMs: 100,
+    reconnectMaxDelayMs: 500,
+    webSocketFactory: (url): WebSocketClient => {
+      const isBrowserWatch = url.includes(`/v1/browser-sessions/${session.id}/connect`);
+      if (isBrowserWatch) liveViewSocketsOpened += 1;
+      let readyState = 0;
+      const listeners = new Map<string, Set<(event: unknown) => void>>();
+      const emit = (type: string, event: unknown) => {
+        for (const listener of Array.from(listeners.get(type) ?? [])) listener(event);
+      };
       const socket = home.network.openWebSocket(
         {
           canonicalOrigin: home.origin,
           deploymentId: home.manifest.deploymentId,
-          url: `ws://127.0.0.1:${home.manifest.hostPort}/v1/browser-sessions/${session.id}/connect`,
+          url,
           authorization: null,
           requestOrigin: home.origin,
         },
         {
-          open: () => undefined,
-          message: (message) => {
-            if (typeof message === "string" && JSON.parse(message).type === "browser.snapshot") {
-              socket.close(1000, "watched");
-              resolve();
-            }
+          open: () => {
+            readyState = 1;
+            emit("open", {});
           },
-          error: reject,
-          close: () => undefined,
+          message: (data) => {
+            if (isBrowserWatch && typeof data === "string") {
+              try {
+                if ((JSON.parse(data) as { type?: string }).type === "browser.snapshot") {
+                  liveViewSnapshots += 1;
+                }
+              } catch {
+                // Ignore malformed non-JSON frame here; client validates it.
+              }
+            }
+            const payload =
+              typeof data === "string"
+                ? data
+                : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            emit("message", { data: payload });
+          },
+          error: () => {
+            emit("error", {});
+          },
+          close: (code, reason) => {
+            readyState = 3;
+            emit("close", { code, reason });
+          },
         },
       );
-    });
-  await watched();
-  held("person-tab-watched-before-stop");
+      return {
+        binaryType: "arraybuffer",
+        get readyState() {
+          return readyState;
+        },
+        addEventListener(type, listener, options) {
+          let set = listeners.get(type);
+          if (!set) {
+            set = new Set();
+            listeners.set(type, set);
+          }
+          const wrapped = options?.once
+            ? (event: unknown) => {
+                set!.delete(wrapped);
+                (listener as (event: unknown) => void)(event);
+              }
+            : (listener as (event: unknown) => void);
+          set.add(wrapped);
+        },
+        close(code, reason) {
+          readyState = 3;
+          socket.close(code, reason);
+        },
+        send(data) {
+          if (typeof data === "string") socket.send(data);
+          else if (ArrayBuffer.isView(data))
+            socket.send(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          else if (data instanceof ArrayBuffer) socket.send(new Uint8Array(data));
+        },
+      };
+    },
+  });
+  await liveClient.load();
+  const findPersonTab = () =>
+    placeList(liveClient.getSnapshot()).find(
+      (place) => place.tab.kind === "page" && place.tab.url === pageUrl,
+    );
+  await waitFor("person tab in live client snapshot", () => Boolean(findPersonTab()));
+  const personSurfaceId = findPersonTab()!.tab.tabId;
+  const releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
+  shutdown.add({
+    component: "live-watch",
+    step: "close",
+    order: 20,
+    timeoutMs: 2_000,
+    stop: () => {
+      releaseLiveView();
+      liveClient.dispose();
+    },
+  });
+  await waitFor(
+    "live view admitted before Stop",
+    () =>
+      liveClient.browserWatchState(session.id, personSurfaceId).admitted === true &&
+      liveViewSnapshots >= 1,
+    30_000,
+  );
+  held("person-tab-live-view-open-before-stop", {
+    socketsOpened: liveViewSocketsOpened,
+    snapshots: liveViewSnapshots,
+  });
 
   const harnesses = z
     .object({
@@ -672,25 +814,32 @@ async function homeStop(): Promise<void> {
       harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
   );
   assert(codex, "The Home did not expose the fixture engine");
-  const task = z.object({ thread: z.object({ id: z.string() }) }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "thread.create",
-      idempotencyKey: randomUUID(),
-      environmentId: home.manifest.environmentId,
-      harnessInstanceId: codex.id,
-      modelSelection: { modelId: "gpt-5.6-sol", providerId: "openai", options: { effort: "low" } },
-      title: "Stop journey task",
-    }),
-  ).thread;
-  const send = (text: string) =>
-    home.rpc("commands.dispatch", {
-      type: "thread.sendMessage",
-      idempotencyKey: randomUUID(),
-      delivery: "queue",
-      threadId: task.id,
-      content: [{ type: "text", text }],
-    });
-  const taskState = async () =>
+  const createTask = async (title: string) =>
+    z.object({ thread: z.object({ id: z.string() }) }).parse(
+      await home.rpc("commands.dispatch", {
+        type: "thread.create",
+        idempotencyKey: randomUUID(),
+        environmentId: home.manifest.environmentId,
+        harnessInstanceId: codex.id,
+        modelSelection: {
+          modelId: "gpt-5.6-sol",
+          providerId: "openai",
+          options: { effort: "low" },
+        },
+        title,
+      }),
+    ).thread;
+  const sendTo = async (threadId: string, text: string) =>
+    z.object({ run: z.object({ id: z.string() }).nullable() }).parse(
+      await home.rpc("commands.dispatch", {
+        type: "thread.sendMessage",
+        idempotencyKey: randomUUID(),
+        delivery: "queue",
+        threadId,
+        content: [{ type: "text", text }],
+      }),
+    );
+  const taskStateFor = async (threadId: string) =>
     z
       .object({
         tasks: z.array(
@@ -698,14 +847,40 @@ async function homeStop(): Promise<void> {
         ),
       })
       .parse(await home.rpc("personal.shell.get"))
-      .tasks.find((entry) => entry.id === task.id);
-  await send("Keep working until Stop");
+      .tasks.find((entry) => entry.id === threadId);
+
+  // Task 1: active Run + agent browser tab in use + follow-up queued to resume after Stop.
+  const task = await createTask("Stop journey task");
+  const taskState = () => taskStateFor(task.id);
+  await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
   await waitFor(
     "the task running before Stop",
     async () => (await taskState())?.status === "running",
   );
-  await send("Continue once this Mac resumes");
-  held("task-and-person-tab-in-use-before-stop");
+  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000);
+  await sendTo(task.id, "Continue once this Mac resumes");
+  held("task-and-agent-browser-tab-in-use-before-stop", { agentTabs: gate.agentTabs });
+
+  // Task 2: a queue the person manually paused before Stop must stay paused after Resume.
+  const pausedTask = await createTask("Manually paused queue task");
+  const pausedFirst = await sendTo(pausedTask.id, "Pause this task before Stop");
+  assert(pausedFirst.run, "Paused task did not start an initial run");
+  await waitFor(
+    "paused task running before manual interrupt",
+    async () => (await taskStateFor(pausedTask.id))?.status === "running",
+  );
+  await sendTo(pausedTask.id, "Stay paused after Resume");
+  await home.rpc("commands.dispatch", {
+    type: "run.interrupt",
+    idempotencyKey: randomUUID(),
+    threadId: pausedTask.id,
+    runId: pausedFirst.run.id,
+  });
+  await waitFor(
+    "manually paused task interrupted before Stop",
+    async () => (await taskStateFor(pausedTask.id))?.status !== "running",
+  );
+  held("manually-paused-queue-ready-before-stop");
 
   const service = new DesktopMenuBarService({
     hostedHome: async () => ({
@@ -744,6 +919,7 @@ async function homeStop(): Promise<void> {
   await waitFor("Stop everything", async () =>
     (await item.text()).includes(menuBarWords("menubar.stopAll")),
   );
+  const restartsBeforeStop = restartCompleted;
   const stopStarted = performance.now();
   await item.click(".menu-bar__stop-all");
   await waitFor(
@@ -751,10 +927,20 @@ async function homeStop(): Promise<void> {
     async () => (await item.text()).includes("Stopped everything on this Mac at"),
     60_000,
   );
-  held("stop-everything-confirmed", {
+  assert(
+    !prematureConfirmedStop,
+    "Confirmed Stop time appeared before Runners finished restarting",
+  );
+  assert(
+    restartCompleted > restartsBeforeStop && localStop.stoppedAt !== null,
+    "Confirmed Stop time appeared without restart proof",
+  );
+  held("stop-everything-confirmed-after-proof", {
     phase: localStop.phase,
     elapsedMs: performance.now() - stopStarted,
   });
+  await waitFor("agent browser tabs cleared after Stop", () => gate.agentTabs === 0, 15_000);
+  held("agent-browser-tab-stopped");
 
   const machines = async () =>
     z
@@ -802,10 +988,21 @@ async function homeStop(): Promise<void> {
   );
   await item.capture("stopped-confirmed");
   held("popover-says-the-home-confirms");
-  assert(!personTab.isDestroyed() && personTab.getURL() === pageUrl, "The person's tab closed");
-  held("person-tab-kept-through-stop");
-  await watched();
-  held("person-tab-watched-while-stopped");
+  await assertPersonTabIntact("after-stop");
+  held("person-tab-form-kept-through-stop");
+  // Kept-open live view must recover/stay live on its own without manual reopen.
+  await waitFor(
+    "live view self-reconnected while stopped",
+    () => {
+      const state = liveClient.browserWatchState(session.id, personSurfaceId);
+      return state.admitted === true && state.error === null;
+    },
+    30_000,
+  );
+  held("live-view-reconnected-across-stop", {
+    socketsOpened: liveViewSocketsOpened,
+    snapshots: liveViewSnapshots,
+  });
 
   await item.click(".menu-bar__resume");
   await waitFor(
@@ -827,9 +1024,78 @@ async function homeStop(): Promise<void> {
     async () => (await taskState())?.status === "running",
   );
   held("queued-task-runs-after-resume");
-  assert(!personTab.isDestroyed() && personTab.getURL() === pageUrl, "The person's tab closed");
-  await watched();
+  await delay(1_500);
+  assert.notEqual(
+    (await taskStateFor(pausedTask.id))?.status,
+    "running",
+    "A queue the person paused resumed automatically after Stop/Resume",
+  );
+  held("manually-paused-queue-stays-paused");
+  await assertPersonTabIntact("after-resume");
+  await waitFor(
+    "live view admitted after Resume",
+    () => {
+      const state = liveClient.browserWatchState(session.id, personSurfaceId);
+      return state.admitted === true && state.error === null;
+    },
+    30_000,
+  );
   held("person-tab-watched-after-resume");
+
+  // Rapid Stop pressed twice must settle cleanly as stopped with no error.
+  await Promise.all([localStop.stop(), localStop.stop()]);
+  assert.equal(localStop.phase, "stopped", "Double Stop did not settle as stopped");
+  assert.equal(localStop.stopped, true);
+  assert(localStop.stoppedAt !== null, "Double Stop lost confirmed stoppedAt");
+  assert.equal(localStop.problem, null, `Double Stop reported a problem: ${localStop.problem}`);
+  await waitFor(
+    "Home confirming double Stop",
+    async () => Boolean((await row(home.manifest.runnerId))?.agentsStoppedSince),
+    30_000,
+  );
+  await assertPersonTabIntact("after-double-stop");
+  held("double-stop-idempotent");
+
+  // Resume cleanly, then trigger Stop and Resume quickly without awaiting Stop.
+  await localStop.resume();
+  await waitFor(
+    "Home clearing Stop before rapid Stop+Resume",
+    async () => !(await row(home.manifest.runnerId))?.agentsStoppedSince,
+    30_000,
+  );
+  const rapidStop = localStop.stop();
+  const rapidResume = localStop.resume();
+  await Promise.all([rapidStop, rapidResume]);
+  assert.equal(localStop.phase, "running", "Rapid Stop then Resume did not settle as running");
+  assert.equal(localStop.stopped, false);
+  assert.equal(
+    localStop.problem,
+    null,
+    `Rapid Stop then Resume reported a problem: ${localStop.problem}`,
+  );
+  await waitFor(
+    "Home clearing rapid Stop+Resume",
+    async () => !(await row(home.manifest.runnerId))?.agentsStoppedSince,
+    30_000,
+  );
+  await waitFor(
+    "Device online after rapid Stop+Resume",
+    async () => {
+      const device = await row(deviceRunnerId);
+      return !device?.agentsStoppedSince && device?.status === "online";
+    },
+    60_000,
+  );
+  await assertPersonTabIntact("after-rapid-stop-resume");
+  await waitFor(
+    "live view admitted after rapid Stop+Resume",
+    () => {
+      const state = liveClient.browserWatchState(session.id, personSurfaceId);
+      return state.admitted === true && state.error === null;
+    },
+    30_000,
+  );
+  held("stop-then-resume-quickly");
   passed({ deviceRunnerId });
 }
 
@@ -859,7 +1125,7 @@ async function quitQuestion(): Promise<void> {
   });
   quitRouting.attach(background);
   if (trial === "quit-logout") process.once("SIGUSR2", () => powerMonitor.emit("shutdown"));
-  process.once("SIGHUP", () => menuItem("quit-completely").click());
+  process.once("SIGUSR1", () => menuItem("quit-completely").click());
   clearTimeout(watchdog);
   log("test.ready");
 }

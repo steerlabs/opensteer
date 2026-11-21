@@ -18,6 +18,7 @@ import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 const root = await mkdtemp(path.join(tmpdir(), "opensteer-cdp-boundary-"));
 app.setPath("userData", root);
 app.commandLine.appendSwitch("headless");
+app.on("window-all-closed", () => undefined);
 const artifactDirectory =
   process.argv.find((value) => value.startsWith("--artifact-dir="))?.slice(15) ??
   process.env.OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR ??

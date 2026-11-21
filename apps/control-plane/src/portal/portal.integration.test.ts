@@ -14,6 +14,11 @@ import {
   HostDiscoveryEnvelopeSchema,
   hostDiscoverySigningBytes,
 } from "@opensteer/deployment-authority";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  type TestDatabase,
+} from "@opensteer/database/test-support/database";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -70,25 +75,30 @@ const config: ControlPlaneConfig = {
 };
 
 integration("Opensteer web portal", () => {
-  const database = createControlPlaneDatabase({
-    connectionString: databaseUrl ?? "postgresql://unconfigured",
-    maxConnections: 4,
-  });
-  const store = new ControlPlaneStore(database, publicOrigin, {
-    portalOrigin: new URL(`https://${testDomain}`),
-  });
-  const portalSessions = new PortalSessionStore(database);
-  const connectLifecycle = new ConnectLifecycleService(database, {
-    delete: async () => undefined,
-    ensure: async () => Promise.reject(new Error("Connect is not used by this test")),
-    readConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
-    rotateConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
-  });
+  let clone: TestDatabase | undefined;
+  let database: ReturnType<typeof createControlPlaneDatabase>;
+  let store: ControlPlaneStore;
+  let portalSessions: PortalSessionStore;
   let auth: ControlPlaneAuth;
   let server: Awaited<ReturnType<typeof createControlPlaneServer>>;
 
   beforeAll(async () => {
+    clone = await cloneTestDatabase("controlPlane");
+    const connectionString = clone.url;
+    ({ database } = await ownTestDatabaseProducer(connectionString, async () => {
+      const database = createControlPlaneDatabase({ connectionString, maxConnections: 4 });
+      return { database, close: () => database.destroy() };
+    }));
     await migrateControlPlaneToLatest(database);
+    store = new ControlPlaneStore(database, publicOrigin, { portalOrigin: config.portalOrigin });
+    portalSessions = new PortalSessionStore(database);
+    const connectLifecycle = new ConnectLifecycleService(database, {
+      delete: async () => undefined,
+      ensure: async () => Promise.reject(new Error("Connect is not used by this test")),
+      readConnectorToken: async () => Promise.reject(new Error("Connect is not used by this test")),
+      rotateConnectorToken: async () =>
+        Promise.reject(new Error("Connect is not used by this test")),
+    });
     auth = createControlPlaneAuth(database, config);
     server = await createControlPlaneServer({
       auth,
@@ -127,8 +137,11 @@ integration("Opensteer web portal", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await database.destroy();
+    try {
+      await server?.close();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("updates the official portal callback and presentation on startup", async () => {

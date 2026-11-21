@@ -25,6 +25,7 @@ import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
 import { ControlPlaneStore } from "../database/store.js";
 import { ControlPlaneError } from "./errors.js";
+import { resetAccountSigningKeys } from "../auth/signing-keys.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -87,6 +88,7 @@ integration("Opensteer Account host", () => {
   });
 
   beforeEach(async () => {
+    await resetAccountSigningKeys(database);
     await sql`truncate table users cascade`.execute(database);
     const now = new Date();
     await database

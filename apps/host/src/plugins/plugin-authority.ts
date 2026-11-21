@@ -22,7 +22,12 @@ import {
 import type { Transaction } from "kysely";
 import { callerLineage, type AgentCaller } from "../mcp/agent-caller.js";
 import type { DirectOperationContext } from "../agent-sessions/agent-session-service.js";
-import type { PluginAuthorization, PluginCaller } from "./engine-protocol.js";
+import {
+  pluginComputerStoppedMessage,
+  pluginComputerStoppedReason,
+  type PluginAuthorization,
+  type PluginCaller,
+} from "./engine-protocol.js";
 
 const discovery = new Set([
   "catalogList",
@@ -110,6 +115,7 @@ export class PluginAuthority {
     settings: PluginAgentStore;
     owner: () => Promise<UserId>;
     beforeAuthorize?: () => Promise<void>;
+    computerStopped?: () => boolean;
   };
   constructor(options: PluginAuthority["options"]) {
     this.options = options;
@@ -286,9 +292,14 @@ export class PluginAuthority {
       return { allowed: false, grants };
     if (input.caller === pluginOwnerId) {
       const access = input.plugin ? (grants[input.plugin] ?? "all") : "all";
+      if (
+        (input.operation === "background" || input.operation === "webhook") &&
+        this.options.computerStopped?.()
+      )
+        return { allowed: false, reason: pluginComputerStoppedReason };
       return {
         allowed:
-          input.operation === "background"
+          input.operation === "background" || input.operation === "personWorkflow"
             ? access === "all"
             : !["resolve", "page", "webhook"].includes(input.operation) || access !== "off",
         ...(input.operation === "background" ? { grants } : {}),
@@ -400,6 +411,12 @@ export class PluginAuthority {
     )
       return { allowed: false, grants };
     signal?.throwIfAborted();
+    if (
+      this.options.computerStopped?.() &&
+      !discovery.has(input.operation) &&
+      !["cancel", "resultAccess", "resourcesStop"].includes(input.operation)
+    )
+      return { allowed: false, reason: pluginComputerStoppedReason };
     return {
       allowed: true,
       grants,
@@ -428,23 +445,35 @@ export class PluginAuthority {
         : await this.#mode(this.options.store, caller).catch(() => null);
     return current !== null && threadAccessModeAtMost(mode, current);
   }
+  /** Recheck at the synchronous submission boundary after the caller was authorized. */
+  assertCallComputerRunning(): void {
+    if (this.options.computerStopped?.()) throw stoppedComputer();
+  }
+
   async assert(context: PluginCaller, operation: string, plugin?: string, execution?: string) {
-    if (
-      !(
-        await this.authorize({
-          ...context,
-          operation,
-          ...(plugin ? { plugin } : {}),
-          ...(execution ? { execution } : {}),
-        })
-      ).allowed
-    )
+    const result = await this.authorize({
+      ...context,
+      operation,
+      ...(plugin ? { plugin } : {}),
+      ...(execution ? { execution } : {}),
+    });
+    if (result.reason === pluginComputerStoppedReason) throw stoppedComputer();
+    if (!result.allowed)
       throw new OpensteerError({
         code: "forbidden",
         message: "Plugin operation is unavailable to this caller.",
         next: "Continue with the access currently available; the person controls plugin access.",
       });
   }
+}
+
+function stoppedComputer(): OpensteerError {
+  return new OpensteerError({
+    code: "conflict",
+    reason: "computer-stopped",
+    message: pluginComputerStoppedMessage,
+    retryable: true,
+  });
 }
 
 /** The grant identity of an engine app id: a local server, a device account, or a plugin. */

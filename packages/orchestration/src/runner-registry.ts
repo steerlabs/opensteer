@@ -34,6 +34,7 @@ import {
   type RunnerAppResult,
   type RunnerHomeFileResult,
   type RunnerOutputImagePublish,
+  type RunFileTransfer,
   type RunFileTransferBinding,
   type RunnerRunFileResult,
   type RunnerVoiceCommand,
@@ -197,6 +198,12 @@ type RunnerHarnessInstallation = Extract<
   }
 >;
 export interface RunnerRegistryHooks {
+  bindRunFileTransfer?(
+    transfer: RunFileTransfer,
+    method: "GET" | "PUT",
+    binding: RunFileTransferBinding,
+    signal: AbortSignal,
+  ): void;
   onAppState?(identity: RunnerIdentity, state: RunnerAppState): void;
   /**
    * The person stopped agents on this Runner's computer (`stoppedSince`), or
@@ -799,10 +806,7 @@ export class RunnerRegistry {
         ...(identity.capabilities.includes(attemptStopStateCapability)
           ? { acceptsAttemptStopState: true as const }
           : {}),
-        ...(identity.capabilities.includes(agentHomeFilesCapability) &&
-        this.#hooks.onAgentHomeReport
-          ? { acceptsHomeFiles: true as const }
-          : {}),
+        ...(this.#acceptsHomeFiles(identity) ? { acceptsHomeFiles: true as const } : {}),
         ...agentHome,
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
@@ -1885,6 +1889,13 @@ export class RunnerRegistry {
     return { ...connection.identity.fence, environmentId, bindingGeneration };
   }
 
+  #acceptsHomeFiles(identity: RunnerIdentity): boolean {
+    return (
+      identity.capabilities.includes(agentHomeFilesCapability) &&
+      this.#hooks.onAgentHomeReport !== undefined
+    );
+  }
+
   /**
    * Asks the Runner holding a Run to move files for it, inside one live tool
    * call. Fenced to that connection and never queued or replayed: a call that
@@ -1940,6 +1951,22 @@ export class RunnerRegistry {
     });
     try {
       signal.throwIfAborted();
+      if (this.#acceptsHomeFiles(connection.identity)) {
+        const bind = this.#hooks.bindRunFileTransfer;
+        if (!bind)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Run file transfers are unavailable",
+          });
+        const binding = { ...fence, requestId };
+        const connectionSignal = connection.disconnected.controller.signal;
+        if (request.type === "host.run-file.receive")
+          for (const transfer of request.transfers)
+            bind(transfer, "GET", binding, connectionSignal);
+        else
+          for (const { transfer } of request.files)
+            bind(transfer, "PUT", binding, connectionSignal);
+      }
       await connection.peer.send({
         ...fence,
         ...request,

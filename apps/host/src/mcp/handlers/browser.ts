@@ -26,7 +26,7 @@ import type { CdpAuthority } from "../../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor, TabServicePort } from "../../tabs/ports.js";
 import type { TabService } from "../../tabs/tab-service.js";
 import type { ConnectionCaller } from "../agent-caller.js";
-import { browserEffect, requireDirectWork } from "./direct.js";
+import { browserEffect, failedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 /** How long one reviewed attachment may hold full control of a profile. */
@@ -169,6 +169,18 @@ function scriptOutput(
   readonly structuredContent: Readonly<Record<string, unknown>>;
 } {
   const { status, taskId, operationId } = outcome;
+  if (outcome.status === "failed" && outcome.scriptError)
+    return failedScriptOutput(
+      {
+        status: outcome.status,
+        taskId,
+        operationId,
+        ...(profileId ? { profileId } : {}),
+        next: outcome.next,
+      },
+      outcome.scriptError,
+      outcome.result?.content,
+    );
   const receipt = {
     status,
     taskId,
@@ -248,6 +260,7 @@ export class BrowserToolHandlers {
         if (failure?.code === "outcome-unknown") throw new OperationOutcomeUnknown(failure.message);
         return result;
       },
+      scriptFailure,
       summarize: (result) => ({
         texts: result.content.filter(({ type }) => type === "text").length,
         images: result.content.filter(({ type }) => type === "image").length,
@@ -333,7 +346,11 @@ export class BrowserToolHandlers {
     try {
       if (target.profileId === null) {
         if (!this.#ports.sharedChromeTabs) throw tabNotFound();
-        issued = await this.#ports.sharedChromeTabs.issueStandardCdpTicket({ authority, tabId });
+        issued = await this.#ports.sharedChromeTabs.issueStandardCdpTicket({
+          authority,
+          tabId,
+          expectedAccess: { accessMode: context.mode, grantRevision: context.grantRevision },
+        });
       } else {
         if (target.tabId) {
           const tab = await this.#ports.tabs.connectionTab(actor, tabId);
@@ -350,6 +367,11 @@ export class BrowserToolHandlers {
           browserSessionId: page.sessionId,
           seedTabId: page.tabId,
           mode: "whole-context",
+          operationWitness: {
+            grantRevision: context.grantRevision,
+            mode: context.mode,
+            targetGeneration: target.generation,
+          },
         });
       }
     } catch (error) {

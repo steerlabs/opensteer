@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { Readable } from "node:stream";
 import { z } from "zod";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
+import { PluginServiceError, pluginComputerStoppedReason } from "./engine-protocol.js";
 import type { PluginService } from "./plugin-service.js";
 
 const params = z.strictObject({
@@ -91,7 +92,9 @@ export function registerPluginWebhookRoutes(
               )
             : Buffer.from(result.body, "base64");
           return reply.code(result.status).send(Buffer.from(body));
-        } catch {
+        } catch (error) {
+          if (error instanceof PluginServiceError && error.tag === pluginComputerStoppedReason)
+            return reply.code(503).send({ error: { code: pluginComputerStoppedReason } });
           return reply.code(503).send();
         } finally {
           reply.raw.off("close", disconnected);

@@ -143,12 +143,7 @@ let nativeWrites = 0;
 let inspectTarget: (() => Promise<unknown>) | undefined;
 let peer: WebSocket | undefined;
 const mock = new MockHostClient({ latencyMs: 0 });
-const launcher = new ElectronBrowserLauncher({
-  downloads: {
-    accept: () => undefined,
-  },
-  pagePolicyPreloadPath: path.resolve("dist/browser-page-preload.cjs"),
-});
+let launcher: ElectronBrowserLauncher | undefined;
 const token = "baseline-viewer-smoke-capability-0000000000000000";
 let fixtureOrigin = "";
 const hostSockets = new Map<string, { owner: number; socket: WebSocket }>();
@@ -313,6 +308,13 @@ async function main() {
   }, 120000);
   try {
     await app.whenReady();
+    launcher = new ElectronBrowserLauncher({
+      downloads: {
+        accept: () => undefined,
+      },
+      pagePolicyPreloadPath: path.resolve("dist/browser-page-preload.cjs"),
+    });
+    const browserLauncher = launcher;
     await mock.load();
     const session = mock.getSnapshot().browserSessions[0];
     assert(session);
@@ -334,7 +336,7 @@ async function main() {
       runtimeId: claims.runtimeId,
       launcher: {
         launch: async (request) => {
-          browser = await launcher.launch(request);
+          browser = await browserLauncher.launch(request);
           return browser;
         },
       },
@@ -813,7 +815,7 @@ async function main() {
     for (const held of hostSockets.values()) held.socket.terminate();
     await attachment?.close();
     await runtime?.shutdown();
-    launcher.close();
+    launcher?.close();
     mock.dispose();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     server.closeAllConnections();

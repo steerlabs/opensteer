@@ -2,13 +2,15 @@ import { RunnerIdSchema } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import {
   createId,
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   TabGroupIdSchema,
   TabIdSchema,
   WindowIdSchema,
   type TabLayout,
 } from "@opensteer/core";
 import type { ComputerView } from "@opensteer/protocol";
-import type { TabRecord, TabStore } from "@opensteer/database";
+import type { TabAuthorization, TabRecord, TabStore } from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -121,6 +123,58 @@ function fixture(rows: TabRecord[]) {
   };
 }
 describe("tab projection and viewer admission", () => {
+  it("requests a physical close only for direct work and keeps a Run's page in the same lineage", async () => {
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    const page = (id: typeof taskId): TabRecord => ({
+      ...row(),
+      kind: "page",
+      openedBy: { taskId: id },
+      pageBinding: {
+        lineageId: sessionId,
+        sessionId,
+        surfaceId: BrowserSurfaceIdSchema.parse(`bsf_${randomUUID()}`),
+      },
+    });
+    const direct = page(taskId),
+      run = page(hiddenTask);
+    const f = fixture([direct, run]);
+    const originConnectionId = randomUUID();
+    const closes = vi.spyOn(f.options.pages, "closeViewers");
+    const selectFrom = vi.fn(() => {
+      const where = vi.fn((_column: string, _op: string, value: string) => {
+        return {
+          where: () => ({
+            executeTakeFirst: async () => ({
+              originConnectionId,
+              worker: value === taskId ? "external" : "native",
+            }),
+          }),
+        };
+      });
+      return { select: () => ({ where }) };
+    });
+    f.options.store.close = async (_owner, ids, _key, authorize, include) => {
+      const rows = [direct, run];
+      const layout: TabLayout = { revision: 2, items: [] };
+      await authorize?.({ selectFrom } as unknown as Parameters<TabAuthorization>[0], rows, layout);
+      const closed = rows.filter((row) => ids.includes(row.id) && (!include || include(row)));
+      for (const row of closed) row.closedAt = new Date();
+      return { tabIds: closed.map(({ id }) => id), layout };
+    };
+    try {
+      expect(await f.service.close(actor, [direct.id, run.id], "same-lineage-close")).toEqual({
+        closed: [direct.id, run.id],
+        failed: [],
+      });
+      expect(closes.mock.calls).toEqual([
+        [ownerId, direct, true],
+        [ownerId, run, false],
+      ]);
+    } finally {
+      f.service.dispose();
+    }
+  });
+
   it("hides the entire partial-reach group and unauthorized holders without hiding offline tabs", async () => {
     const a = row("window"),
       b = row();

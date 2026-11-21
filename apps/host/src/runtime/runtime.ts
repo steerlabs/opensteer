@@ -37,6 +37,7 @@ import { LocalProviders } from "../plugins/local-providers.js";
 import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
 import { PluginService, PluginServiceError } from "../plugins/plugin-service.js";
+import { hasUnfinishedPluginWorkflows } from "../plugins/engine-storage.js";
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
@@ -496,6 +497,7 @@ export interface HostRuntimeOptions {
     identity: RunnerIdentity,
     environmentId: EnvironmentId,
     catalogs: readonly HarnessInstanceCatalog[],
+    registrationMayResetCatalogs: boolean,
   ) => void;
   readonly phoneUpdateRelease?: () => AgentPhoneUpdateRelease | null;
   readonly accountControlFetch?: typeof globalThis.fetch;
@@ -1257,8 +1259,10 @@ export async function createHostRuntime(
         browser
           .reconcileStandardCdpLeases(runnerId, relayId, reconcile)
           .catch(reportBrowserUsageError),
-      onPlacementChanged: () =>
-        announceResources("browser-placement", "browser-availability", "tab"),
+      onPlacementChanged: () => {
+        connectionMaintenance?.wake();
+        announceResources("browser-placement", "browser-availability", "tab");
+      },
     });
     let reportBrowserUsageError: (error: unknown) => void = (error) => {
       console.warn("Browser usage recording failed", error);
@@ -1483,17 +1487,64 @@ export async function createHostRuntime(
     );
     const credentials = new CredentialService({ key: credentialKey, store });
     const pluginAgentStore = new PluginAgentStore(database);
+    let hostingPluginRunner: RunnerId | undefined;
+    let pluginStopProof: string | undefined;
+    let lastPluginMode: string | null = null;
+    let pluginStopTail: Promise<void> = Promise.resolve();
+    const hostingComputerStopped = () => {
+      const current = runnerRegistry?.identityForEnvironment(personalConfig.environmentId);
+      const hosting = current?.runnerKind === "main" ? current.runnerId : hostingPluginRunner;
+      return hosting !== undefined && !!runnerRegistry?.agentsStoppedSince(hosting);
+    };
+    const pluginWorkMode = (identity: RunnerIdentity) => {
+      if (
+        identity.runnerKind !== "main" ||
+        !identity.environmentIds.includes(personalConfig.environmentId)
+      )
+        return;
+      hostingPluginRunner = identity.runnerId;
+      const mode = identity.agentsStoppedSince;
+      if (mode === undefined || (mode === null && lastPluginMode === null)) return;
+      lastPluginMode = mode;
+      pluginStopProof = undefined;
+      pluginStopTail = pluginStopTail
+        .then(async () => {
+          if (!runnerRegistry?.isCurrentConnection(identity) || !pluginService || !pluginExecutions)
+            return;
+          const control = { caller: "personal", mode: "automatic" } as const;
+          const background = pluginService.agentWork(
+            { stopped: mode !== null },
+            control,
+            AbortSignal.timeout(5_000),
+          );
+          if (!mode) {
+            await background;
+            return;
+          }
+          const drained = await Promise.allSettled([background, pluginExecutions.stopAgentWork()]);
+          // Workerd workflows can outlive the plugin execution that started them.
+          if (
+            drained.every((result) => result.status === "fulfilled" && result.value) &&
+            !(await hasUnfinishedPluginWorkflows(database)) &&
+            runnerRegistry.isCurrentConnection(identity)
+          )
+            pluginStopProof = mode;
+        })
+        .catch((error: unknown) => app.log.warn({ err: error }, "Plugin Stop proof unavailable"));
+    };
     const pluginAuthority = new PluginAuthority({
       store,
       settings: pluginAgentStore,
       owner: async () => (await personalSettings(database)).ownerId,
       beforeAuthorize: () => pluginExecutions?.settled() ?? Promise.resolve(),
+      computerStopped: hostingComputerStopped,
     });
     let lastEngineStatus: string | undefined;
     pluginService = new PluginService({
       databaseUrl: config.databaseUrl,
       dataDirectory,
       owner: "personal",
+      agentWorkStopped: hostingComputerStopped,
       authorize: (input, signal) => pluginAuthority.authorize(input, signal),
       oauthConfiguration: (linked) =>
         pluginOAuth ? pluginOAuth.configuration(linked) : Promise.resolve({ clients: [] }),
@@ -2414,6 +2465,8 @@ export async function createHostRuntime(
           );
           if (owner) pluginsChanged(owner);
         },
+        bindRunFileTransfer: (transfer, method, binding, signal) =>
+          runFileRelay.bind(transfer, method, binding, signal, { allowHttpPeer: true }),
         onAgentHomeReport: async (identity, report, signal) => {
           if (report.environmentId !== personalConfig.environmentId) return false;
           const hosting = await database
@@ -2639,6 +2692,7 @@ export async function createHostRuntime(
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
+            pluginWorkMode(identity);
             if (await initializePersonal()) await ensureLinks();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
@@ -2706,7 +2760,7 @@ export async function createHostRuntime(
                   connectionGeneration: identity.connectionGeneration,
                   signal: AbortSignal.timeout(harnessCatalogCaptureTimeoutMs),
                 });
-                observeRunnerCatalogs(identity, environmentId, captured);
+                observeRunnerCatalogs(identity, environmentId, captured, true);
               }
               void naming?.reconcile().catch(reportThreadNamingError);
             } finally {
@@ -2750,6 +2804,7 @@ export async function createHostRuntime(
       identity: RunnerIdentity,
       environmentId: EnvironmentId,
       catalogs: readonly HarnessInstanceCatalog[],
+      afterRegistrationReset = false,
     ): void {
       if (
         !options.onRunnerCatalogsCommitted ||
@@ -2758,7 +2813,12 @@ export async function createHostRuntime(
         return;
       try {
         void Promise.resolve(
-          options.onRunnerCatalogsCommitted?.(identity, environmentId, catalogs),
+          options.onRunnerCatalogsCommitted(
+            identity,
+            environmentId,
+            catalogs,
+            !afterRegistrationReset && registeringRunners.has(identity.connectionId),
+          ),
         ).catch(() => undefined);
       } catch {
         // Observation cannot fail registration or convergence after its commit.
@@ -3561,6 +3621,11 @@ export async function createHostRuntime(
           }
           if (attempt.kind === "standard-cdp") {
             browser.stopStandardCdpAttempt(attempt.id);
+            if (attempt.runnerId && attempt.standardCdpRecovery)
+              return browser.reconcileConfinedStandardCdpAttempt(
+                attempt.runnerId,
+                attempt.standardCdpRecovery,
+              );
             return;
           }
           if (attempt.kind === "plugin") {
@@ -3731,6 +3796,10 @@ export async function createHostRuntime(
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         pluginRequests: pluginExecutions,
+        pluginAgentWorkStoppedSince: (runnerId) =>
+          runnerId === hostingPluginRunner && hostingComputerStopped()
+            ? pluginStopProof
+            : undefined,
         plugins: pluginOwnerApi,
         pluginOAuth,
         integrations: {

@@ -17,8 +17,10 @@ const present =
 // The engine's own wake sources (`scheduler.nextWake`, `events.nextWake`, webhook source retries)
 // plus work that needs a live process: open workflows keep their timers in workerd, and claimed
 // scheduled runs finish only in the process that claimed them. Timestamps are naive UTC.
+const unfinishedWorkflows =
+  "EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_workflow_runs WHERE status IN ('queued', 'running'))";
 const demand = `SELECT
-  EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_workflow_runs WHERE status IN ('queued', 'running'))
+  ${unfinishedWorkflows}
   OR EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_schedules WHERE active_run IS NOT NULL)
   OR EXISTS (SELECT 1 FROM plugin_engine.plugin_engine_scheduled_runs WHERE status IN ('running', 'ready'))
   AS busy,
@@ -52,6 +54,15 @@ export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
       dueInMs: row?.due_in_ms == null ? null : Number(row.due_in_ms),
     };
   });
+}
+
+export async function hasUnfinishedPluginWorkflows(
+  database: Kysely<DatabaseSchema>,
+): Promise<boolean> {
+  const result = await sql<{ unfinished: boolean }>`
+    SELECT ${sql.raw(unfinishedWorkflows)} AS unfinished
+  `.execute(database);
+  return result.rows[0]?.unfinished !== false;
 }
 
 /** The database, rather than a cache commit, decides which skill version a Run may pin. */

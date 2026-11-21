@@ -21,7 +21,11 @@ interface OpenTransfer {
   finish(failure?: Error): void;
   readonly finished: Promise<void>;
   readonly maxBytes: number;
-  binding?: { readonly scope: RunFileTransferBinding; readonly method: "PUT" | "GET" };
+  binding?: {
+    readonly scope: RunFileTransferBinding;
+    readonly method: "PUT" | "GET";
+    readonly allowHttpPeer: boolean;
+  };
   unlink?: () => void;
   close(failure?: Error): void;
   /** Rejects when the transfer closes before an upload arrives. */
@@ -81,6 +85,7 @@ export class RunFileRelay {
     method: "PUT" | "GET",
     scope: RunFileTransferBinding,
     signal: AbortSignal,
+    options?: { readonly allowHttpPeer: boolean },
   ): void {
     signal.throwIfAborted();
     const entry = this.#open.get(transfer.id);
@@ -90,7 +95,7 @@ export class RunFileRelay {
       !matches(method === "PUT" ? entry.uploadToken : entry.downloadToken, transfer.token)
     )
       throw refusedTransfer();
-    entry.binding = { method, scope };
+    entry.binding = { method, scope, allowHttpPeer: options?.allowHttpPeer ?? false };
     const disconnected = () => entry.close(new Error("The device's file connection ended."));
     signal.addEventListener("abort", disconnected, { once: true });
     entry.unlink = () => signal.removeEventListener("abort", disconnected);
@@ -106,7 +111,7 @@ export class RunFileRelay {
     if (!entry || !matches(method === "PUT" ? entry.uploadToken : entry.downloadToken, token))
       throw refusedTransfer();
     const bound = entry.binding;
-    if (!bound) return;
+    if (!bound || (bound.allowHttpPeer && bound.method !== method)) return;
     if (
       bound.method !== method ||
       typeof signature !== "string" ||

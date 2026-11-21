@@ -1,5 +1,6 @@
 import { createId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import { RunnerBootIdSchema } from "@opensteer/protocol";
 import type { RoutedHostToBrowserRelayMessage } from "@opensteer/protocol/browser-relay";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RunnerBrowserHooks, RunnerBrowserRegistry } from "./runner-browser-hub.js";
@@ -13,10 +14,11 @@ afterEach(() => vi.useRealTimers());
 async function maintenanceFixture() {
   const runnerId = createId("runner");
   const storageInstanceId = crypto.randomUUID();
-  const stream = {
+  let stream = {
     fence: { runnerId, connectionId: "maintenance", connectionGeneration: 1 },
     identity: {
       runnerId,
+      bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
       modules: {
         browser: {
           runtimeId: "browser",
@@ -90,24 +92,70 @@ async function maintenanceFixture() {
       },
     },
   });
-  await reply({
-    ...stream.fence,
-    type: "browser.profile.inventory",
-    module: "browser",
-    storageInstanceId,
-    engine: "chromium",
-    profiles: [],
-    complete: true,
-  });
+  const inventory = () =>
+    reply({
+      ...stream.fence,
+      type: "browser.profile.inventory",
+      module: "browser",
+      storageInstanceId,
+      engine: "chromium",
+      profiles: [],
+      complete: true,
+    });
+  await inventory();
   await router.resumeDeletions(runnerId);
   return {
     ...fixture,
     router,
     reply,
     fixture,
+    restart: async () => {
+      hooks.onLost?.(stream, "device-restarting");
+      stream = {
+        ...stream,
+        fence: { ...stream.fence, connectionGeneration: stream.fence.connectionGeneration + 1 },
+        identity: {
+          ...stream.identity,
+          bootId: RunnerBootIdSchema.parse("rbt_" + crypto.randomUUID()),
+        },
+      };
+      hooks.onAttached?.(stream);
+      await inventory();
+    },
     target: router.resolve({ kind: "runner", runnerId })!,
   };
 }
+
+it("uses fresh attachment authority on the replacement boot only for the person's channel", async () => {
+  const f = await maintenanceFixture();
+  const prepare = vi.fn(async () => {});
+  const ticket = vi.fn(() => "fresh-person-ticket");
+  const person = f.target.connect("old-person-ticket", { prepare, ticket });
+  const agent = f.target.connect("old-agent-ticket");
+  const personClosed = vi.fn();
+  person.once("close", personClosed);
+  person.on("error", () => {});
+  agent.on("error", () => {});
+  try {
+    await vi.waitFor(() => {
+      expect(person.readyState).toBe(1);
+      expect(agent.readyState).toBe(1);
+    });
+    await f.restart();
+    await vi.waitFor(() => expect(person.readyState).toBe(1));
+    expect(personClosed).not.toHaveBeenCalled();
+    expect(agent.readyState).toBe(3);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(ticket).toHaveBeenCalledOnce();
+    expect(f.sent.filter((message) => message.type === "browser.attach")).toMatchObject([
+      { attachTicket: "old-person-ticket", connectionGeneration: 1 },
+      { attachTicket: "old-agent-ticket", connectionGeneration: 1 },
+      { attachTicket: "fresh-person-ticket", connectionGeneration: 2 },
+    ]);
+  } finally {
+    f.router.close();
+  }
+});
 
 it("opens Host relay channel 33 on one runtime", async () => {
   const f = await maintenanceFixture();

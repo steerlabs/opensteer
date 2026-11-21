@@ -12,6 +12,7 @@ const ticketType = "opensteer-browser-attach+jwt";
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
   readonly standardCdp?: BrowserAttachTicketClaims["standardCdp"];
+  readonly standardCdpAttempt?: BrowserAttachTicketClaims["standardCdpAttempt"];
   readonly standardCdpLineage?: BrowserAttachTicketClaims["standardCdpLineage"];
   readonly standardCdpLease?: BrowserAttachTicketClaims["standardCdpLease"];
   readonly creationOrigin: "agent" | "person";
@@ -23,6 +24,7 @@ interface IssueBrowserAttachTicketInput {
   readonly personFillVersion?: PersonFillVersion | undefined;
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
+  readonly reattach?: true;
   readonly navigationAttributionVersion?: 1;
   readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
@@ -82,6 +84,7 @@ export class BrowserAttachTicketSigner {
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
+      ...(input.standardCdpAttempt ? { standardCdpAttempt: input.standardCdpAttempt } : {}),
       ...(input.standardCdpLineage ? { standardCdpLineage: input.standardCdpLineage } : {}),
       ...(input.standardCdpLease ? { standardCdpLease: input.standardCdpLease } : {}),
       creationOrigin: input.creationOrigin,
@@ -102,6 +105,7 @@ export class BrowserAttachTicketSigner {
             initialNavigation: input.initialNavigation,
           }
         : {}),
+      ...(input.reattach ? { reattach: true } : {}),
       ...(input.navigationAttributionVersion === 1 ? { navigationAttributionVersion: 1 } : {}),
       ...(input.popupFollowVersion === 1 ? { popupFollowVersion: 1 } : {}),
       ...(input.tabRestoreVersion

@@ -1,10 +1,12 @@
+import type {
+  DesktopIphoneRunnerPort,
+  DesktopIphoneRunnerConnection,
+} from "../iphone/iphone-service.js";
 import {
   iphoneRunnerBridgeHeader,
   iphoneRunnerMethodSchema,
   iphoneRunnerResults,
   iphoneRunnerParams,
-  type IphoneRunnerPort,
-  type IphoneRunnerConnection,
 } from "@opensteer/protocol/iphone-bridge";
 import { IphoneServiceError } from "../iphone/iphone-store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -274,7 +276,7 @@ export interface PasswordsAuthorityPort {
 
 export interface ComputerUseBridgeServerOptions {
   /** The menu bar's Stop; an agent's work is refused while it is closed. */
-  readonly iphone?: IphoneRunnerPort;
+  readonly iphone?: DesktopIphoneRunnerPort;
   readonly passwords?: PasswordsAuthorityPort;
   /** How long past a deadline to wait; `computerUseBridgeGraceMs` unless a test shortens it. */
   readonly graceMs?: number;
@@ -318,7 +320,7 @@ interface BridgeOwner {
   readonly videoProfile: 1 | undefined;
   readonly opening: Set<ComputerUseSessionId>;
   readonly passwords: Set<string>;
-  iphone?: IphoneRunnerConnection | undefined;
+  iphone?: DesktopIphoneRunnerConnection | undefined;
 }
 
 /** The slot's one authenticated connection, held from the upgrade on. */
@@ -350,8 +352,9 @@ type Outcome<Value> =
  */
 export class ComputerUseBridgeServer {
   readonly #connections = new Set<BridgeConnection>();
+  #cleanupUnconfirmed = false;
   readonly #passwords: PasswordsAuthorityPort | undefined;
-  readonly #iphone: IphoneRunnerPort | undefined;
+  readonly #iphone: DesktopIphoneRunnerPort | undefined;
   readonly #graceMs: number;
   readonly #helper: ComputerUseBridgeHelperPort;
   readonly #httpServer: HttpServer;
@@ -774,7 +777,7 @@ export class ComputerUseBridgeServer {
     socket.once("close", () => {
       owner.alive = false;
       owner.lifetime.abort();
-      owner.iphone?.close();
+      const iphoneClosed = Promise.resolve(owner.iphone?.close()).catch(() => false);
       for (const id of owner.passwords) {
         this.#ownership.releasePassword(id, owner);
         void this.#passwords?.end(id).catch(() => undefined);
@@ -787,9 +790,11 @@ export class ComputerUseBridgeServer {
         .releaseAll(owner)
         .filter((sessionId) => !owner.opening.has(sessionId))
         .map((sessionId) => this.#endSession(sessionId, "runner-left"));
-      void Promise.all([...closes, ...requests]).then((results) => {
+      void Promise.all([iphoneClosed, ...closes, ...requests]).then((results) => {
+        const confirmed = !owner.cleanupUnconfirmed && results.every((result) => result !== false);
+        if (!confirmed) this.#cleanupUnconfirmed = true;
         this.#connections.delete(connection);
-        drained.resolve(!owner.cleanupUnconfirmed && results.every((result) => result !== false));
+        drained.resolve(confirmed);
       });
     });
     socket.once("error", () => socket.close());
@@ -800,7 +805,7 @@ export class ComputerUseBridgeServer {
       Promise.all([...this.#connections].map((connection) => connection.drained)),
       this.#now() + sessionCloseTimeoutMs,
     );
-    return outcome.kind === "answer" && outcome.value.every(Boolean);
+    return !this.#cleanupUnconfirmed && outcome.kind === "answer" && outcome.value.every(Boolean);
   }
 
   async #handle(socket: WebSocket, owner: BridgeOwner, data: RawData): Promise<void> {

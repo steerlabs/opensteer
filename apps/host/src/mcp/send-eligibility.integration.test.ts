@@ -1,13 +1,7 @@
 import { AgentConnectionStore } from "@opensteer/database";
 import { describeStore, pendingEvent } from "@opensteer/database/test-support/store";
 import { expect } from "vitest";
-import {
-  connection,
-  errorText,
-  ownerTask,
-  send,
-  serveMcp,
-} from "./connection-caller.test-support.js";
+import { connection, ownerTask, send, serveMcp } from "./connection-caller.test-support.js";
 
 describeStore("one send rule, at send, at dequeue and at the start of a Run", (it) => {
   it("cancels a follow-up waiting on the person's task once its connection is narrowed to selected", async ({
@@ -152,6 +146,11 @@ describeStore("one send rule, at send, at dequeue and at the start of a Run", (i
       .set({ connectionId: other.id })
       .where("id", "=", f.run.id)
       .execute();
-    expect(errorText(await read())).toBe("Request is unavailable");
+    expect(await read()).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "not_found", message: "That item is unavailable.", next: null },
+      },
+    });
   });
 });

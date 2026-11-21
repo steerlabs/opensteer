@@ -77,14 +77,29 @@ it.skipIf(databaseMissing)(
   () => proveChromeShares("connected agents"),
 );
 
-it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
-  "settles a shared Chrome Disconnect from a matching late receipt on the %s",
+it.skipIf(databaseMissing)(
+  "ends shared Chrome browser_connect and in-flight browser_use when the task mode is lowered",
+  () => proveChromeShares("mode downgrade"),
+);
+
+it
+  .skipIf(databaseMissing)
+  .each([
+    "same Home",
+    "restarted Home",
+    "connected wire 7",
+    "connected wire 7 with a popup",
+    "reconnected wire 7",
+  ] as const)(
+  "checks shared Chrome Disconnect evidence from a late receipt on the %s",
   async (home) => {
     const fixture = await createStoreFixture();
     const { userId: ownerId, runnerId } = await fixture.createRunFixture("chrome-detach-receipt");
     const deviceId = await fixture.store.requireSelfDeviceId(runnerId);
     const sourceId = createId("browserSource");
     const shareId = crypto.randomUUID();
+    const replay = home === "same Home" || home === "restarted Home";
+    const popupId = home === "connected wire 7 with a popup" ? crypto.randomUUID() : undefined;
     const connections = new AgentConnectionStore(fixture.database);
     const connection = await connections.create({
       userId: ownerId,
@@ -118,7 +133,7 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
         deviceId,
         name: "Chrome",
         detachReceipts: true,
-        detachReplay: true,
+        detachReplay: replay,
         write: () => true,
         fail: () => {},
       });
@@ -144,6 +159,15 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
         title: "Fixture",
         url: "https://fixture.test/",
       });
+      if (popupId)
+        await chrome.receive({
+          type: "tab.shared",
+          shareId: popupId,
+          targetId: "fixture-popup",
+          title: "Popup",
+          url: "https://fixture.test/popup",
+          openerShareId: shareId,
+        });
       const port = homeTabs.browserUsePort(async () => authority, shareId);
       await port.openPage(shareId, {
         contextKey: "fixture",
@@ -157,7 +181,7 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
       const attempt = (await attempts()).find(({ kind }) => kind === "shared-chrome");
       expect(attempt?.terminalEvidenceAt).toBeNull();
       if (!attempt) throw new Error("Expected a shared Chrome attempt");
-      if (home === "same Home") {
+      if (home !== "restarted Home") {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
           const stopped = homeTabs.stopAttempt(attempt.id);
@@ -170,6 +194,11 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
         homeTabs.close();
         await sharedChromeAttempts(fixture.database).recover();
         homeTabs = newHome();
+        chrome = connectChrome();
+      }
+
+      if (home === "reconnected wire 7") {
+        chrome.close();
         chrome = connectChrome();
       }
 
@@ -187,6 +216,20 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
       );
 
       await chrome.receive({ type: "tab.detached", shareId });
+      if (home === "reconnected wire 7") {
+        expect(await attempts()).toContainEqual(
+          expect.objectContaining({ id: attempt.id, terminalEvidenceAt: null }),
+        );
+        expect((await drive()).settled).not.toContain(connection.id);
+        expect(await state()).toBe("stopping");
+        return;
+      }
+      if (popupId) {
+        expect(await attempts()).toContainEqual(
+          expect.objectContaining({ id: attempt.id, terminalEvidenceAt: null }),
+        );
+        await chrome.receive({ type: "tab.detached", shareId: popupId });
+      }
       const ended = (await attempts()).find(({ id }) => id === attempt.id);
       expect(ended?.terminalEvidenceAt).toBeInstanceOf(Date);
       await chrome.receive({ type: "tab.detached", shareId });
@@ -199,11 +242,18 @@ it.skipIf(databaseMissing).each(["same Home", "restarted Home"] as const)(
   },
 );
 
-async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "connected agents") {
-  execFileSync("pnpm", ["--filter", "@opensteer/browser-extension", "build:live-tabs"], {
-    cwd: repository,
-    stdio: "pipe",
-  });
+let companionBuilt = false;
+
+async function proveChromeShares(
+  scenario: "lifecycle" | "popup isolation" | "connected agents" | "mode downgrade",
+) {
+  if (!companionBuilt) {
+    execFileSync("pnpm", ["--filter", "@opensteer/browser-extension", "build:live-tabs"], {
+      cwd: repository,
+      stdio: "pipe",
+    });
+    companionBuilt = true;
+  }
   const directory = join(repository, "apps/browser-extension/dist-live-tabs");
   const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as {
     permissions: string[];
@@ -366,14 +416,34 @@ async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "co
       async (message) => {
         const api = (
           globalThis as typeof globalThis & {
-            chrome: { runtime: { sendMessage(message: unknown): Promise<{ ok: boolean }> } };
+            chrome: {
+              runtime: {
+                sendMessage(message: unknown): Promise<{ ok: boolean; tabShareReason?: string }>;
+              };
+            };
           }
         ).chrome;
         return api.runtime.sendMessage(message);
       },
       { type: "ui.tab.share", sourceId, tabId },
     );
-    expect(result.ok).toBe(true);
+    if (result.ok !== true) {
+      const target = await companion.evaluate(async (id) => {
+        const api = (
+          globalThis as typeof globalThis & {
+            chrome: { debugger: { getTargets(): Promise<{ tabId?: number; type: string }[]> } };
+          }
+        ).chrome;
+        return (await api.debugger.getTargets()).find((target) => target.tabId === id)?.type;
+      }, tabId);
+      const paired = (await sources.listState({ ownerId: run.userId })).sources.find(
+        (source) => source.id === sourceId,
+      );
+      expect(
+        result.ok,
+        `Share ${page.url()}: ${result.tabShareReason ?? "no reason"}, companion connected=${paired?.connected}, Chrome target=${target}`,
+      ).toBe(true);
+    }
     await expect
       .poll(async () =>
         (await liveTabs.listForBinding(authority)).some((tab) => tab.url === page.url()),
@@ -394,7 +464,7 @@ async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "co
   await other.goto(`${origin}/test-tab/Other`);
   const firstId = await share(chrome, popup, first);
   const otherId = await share(chrome, popup, other);
-  if (scenario === "connected agents") {
+  if (scenario === "connected agents" || scenario === "mode downgrade") {
     const ownerId = run.userId;
     const connections = new AgentConnectionStore(fixture.database);
     const unexpected = async (): Promise<never> => {
@@ -543,6 +613,89 @@ async function proveChromeShares(scenario: "lifecycle" | "popup isolation" | "co
         subject,
       };
     };
+    if (scenario === "mode downgrade") {
+      const agent = await session("Chrome task whose mode is lowered", true);
+      const taskId = agent.session.threadId;
+      const input = { taskId, tabId: TabIdSchema.parse(firstId) };
+      const connect = (operationKey: string) =>
+        browserTools.browser_connect({ caller: agent.caller, input, operationKey });
+      const ticket = await connect("full-access-cdp");
+      expect(ticket).toMatchObject({ status: "completed", mode: "session" });
+      const client = await chromium.connectOverCDP(ticket.endpoint!, { noDefaults: true });
+      clients.push(client);
+      const cdp = await client.contexts()[0]!.newCDPSession(client.contexts()[0]!.pages()[0]!);
+      await expect(
+        cdp.send("Runtime.evaluate", { expression: "document.title" }),
+      ).resolves.toMatchObject({ result: { value: "First" } });
+      const attempts = async () => {
+        const row = await fixture.database
+          .selectFrom("agentConnections")
+          .select("sharedChromeAttempts")
+          .where("id", "=", agent.connectionId)
+          .executeTakeFirstOrThrow();
+        return Object.values(row.sharedChromeAttempts);
+      };
+      expect(await attempts()).toEqual([
+        expect.objectContaining({
+          shareId: firstId,
+          sourceId,
+          threadId: taskId,
+          mode: "full-access",
+        }),
+      ]);
+
+      const script = browserTools
+        .browser_use({
+          caller: agent.caller,
+          operationKey: "full-access-script",
+          input: {
+            ...input,
+            code: `await (await openPage(${JSON.stringify(firstId)})).js("new Promise(resolve => { window.finishScript = resolve; })");`,
+          },
+        })
+        .catch((error: unknown) => error);
+      await first.waitForFunction(() => typeof Reflect.get(window, "finishScript") === "function");
+      const disconnected = disconnectedFrom(client);
+      const { thread } = await fixture.store.updateThreadAccessMode({
+        threadId: taskId,
+        requestedBy: ownerId,
+        accessMode: "approval-required",
+      });
+      await sessions.lowerTaskMode(taskId, thread.accessMode);
+      expect(await script).toMatchObject({
+        blocked: { code: "access_changed" },
+        receipt: { status: "unknown" },
+      });
+      await expect(
+        fixture.database
+          .selectFrom("agentOperations")
+          .select("outcome")
+          .where("sessionId", "=", agent.session.id)
+          .where("operationKey", "=", "full-access-script")
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ outcome: "unknown" });
+      await disconnected;
+      await expect(
+        cdp.send("Runtime.evaluate", {
+          expression: "document.getElementById('change').click()",
+        }),
+      ).rejects.toThrow(/closed/i);
+      await first.evaluate(() => {
+        Reflect.get(window, "finishScript")("finished");
+      });
+      await expect.poll(attempts).toEqual([]);
+      await expect(first.locator("#change").textContent()).resolves.toBe("Click");
+      expect(await liveTabs.listForBinding(agent.authority)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ tabId: firstId })]),
+      );
+
+      expect(await share(chrome, popup, first)).toBe(firstId);
+
+      const fresh = await connect("approval-required-cdp");
+      expect(fresh).toMatchObject({ status: "pending", requestId: expect.any(String) });
+      expect(fresh.endpoint).toBeUndefined();
+      return;
+    }
     expect(await sources.grantableChromeTabs(ownerId)).toEqual([
       { sourceId, computerName: "Hosting computer", paired: true },
     ]);

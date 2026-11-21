@@ -98,14 +98,42 @@ export const ConnectResultSchema = z.object({
 });
 export type ConnectResult = z.infer<typeof ConnectResultSchema>;
 
+const TabShareProblemCodeSchema = z.enum([
+  "untrusted-request",
+  "invalid-request",
+  "worker-unavailable",
+  "invalid-response",
+  "unsupported",
+  "home-offline",
+  "tab-unavailable",
+  "unsupported-page",
+  "shared-elsewhere",
+  "detach-unconfirmed",
+  "capacity",
+  "target-unavailable",
+  "unexpected",
+]);
+export type TabShareProblemCode = z.infer<typeof TabShareProblemCodeSchema>;
+
 const ProblemSchema = z.object({
   code: ConnectProblemCodeSchema,
+  tabShareReason: TabShareProblemCodeSchema.optional(),
   deploymentName: z.string().nullable(),
   ok: z.literal(false),
   origin: z.string().nullable(),
 });
 export type UiProblem = z.infer<typeof ProblemSchema>;
 export type UiResponse<T> = { ok: true; value: T } | UiProblem;
+
+export function uiFailure(tabShareReason?: TabShareProblemCode): UiProblem {
+  return {
+    code: "failed",
+    deploymentName: null,
+    ok: false,
+    origin: null,
+    ...(tabShareReason ? { tabShareReason } : {}),
+  };
+}
 
 /** Asks the service worker and validates its answer against the expected shape. */
 export async function askWorker<T>(
@@ -116,12 +144,12 @@ export async function askWorker<T>(
   try {
     raw = await chrome.runtime.sendMessage(request);
   } catch {
-    return { code: "failed", deploymentName: null, ok: false, origin: null };
+    return uiFailure(request.type === "ui.tab.share" ? "worker-unavailable" : undefined);
   }
   const problem = ProblemSchema.safeParse(raw);
   if (problem.success) return problem.data;
   const answer = z.object({ ok: z.literal(true), value: schema }).safeParse(raw);
   return answer.success
     ? { ok: true, value: answer.data.value }
-    : { code: "failed", deploymentName: null, ok: false, origin: null };
+    : uiFailure(request.type === "ui.tab.share" ? "invalid-response" : undefined);
 }

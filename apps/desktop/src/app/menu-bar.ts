@@ -145,6 +145,7 @@ export class DesktopMenuBar {
   readonly #options: DesktopMenuBarOptions;
   #tray: Tray | null = null;
   #popover: BrowserWindow | null = null;
+  #refreshTimer: ReturnType<typeof setInterval> | undefined;
   #loaded: Promise<void> | null = null;
   #glyph = "";
   #detach: (() => void) | null = null;
@@ -193,11 +194,15 @@ export class DesktopMenuBar {
     if (popover.isDestroyed()) return;
     popover.show();
     popover.focus();
-    this.#redraw();
-    void this.#options.service.refresh().catch(() => undefined);
+  }
+
+  #stopRefreshing(): void {
+    clearInterval(this.#refreshTimer);
+    this.#refreshTimer = undefined;
   }
 
   dispose(): void {
+    this.#stopRefreshing();
     this.#detach?.();
     this.#detach = null;
     for (const channel of Object.values(menuBarChannels))
@@ -237,10 +242,22 @@ export class DesktopMenuBar {
       webPreferences: this.#options.webPreferences,
     });
     lockMenuBarNavigation(popover.webContents);
+    popover.on("show", () => {
+      if (this.#popover !== popover || popover.isDestroyed()) return;
+      this.#pushStatus();
+      if (!popover.isVisible()) return;
+      void this.#options.service.refresh().catch(() => undefined);
+      this.#refreshTimer ??= setInterval(() => {
+        void this.#options.service.refresh().catch(() => undefined);
+      }, 15_000);
+      this.#refreshTimer.unref();
+    });
     popover.on("blur", () => {
       if (!popover.isDestroyed() && !popover.webContents.isDevToolsOpened()) popover.hide();
     });
+    popover.on("hide", () => this.#stopRefreshing());
     popover.once("closed", () => {
+      this.#stopRefreshing();
       if (this.#popover === popover) {
         this.#popover = null;
         this.#loaded = null;
@@ -265,7 +282,10 @@ export class DesktopMenuBar {
   #redraw(): void {
     this.#drawIcon(this.#options.service.icon());
     const popover = this.#popover;
-    if (!popover || popover.isDestroyed() || !popover.isVisible()) return;
+    if (popover && !popover.isDestroyed() && popover.isVisible()) this.#pushStatus();
+  }
+
+  #pushStatus(): void {
     if (this.#pushing) {
       this.#pushAgain = true;
       return;
@@ -274,11 +294,13 @@ export class DesktopMenuBar {
     void (async () => {
       do {
         this.#pushAgain = false;
+        const popover = this.#popover;
+        if (!popover || popover.isDestroyed()) return;
         const status = MenuBarStatusSchema.parse(await this.#options.service.status());
-        this.#drawIcon(status.icon);
-        const shown = this.#popover;
-        if (shown && !shown.isDestroyed() && shown.isVisible())
-          shown.webContents.send(menuBarChannels.statusChanged, status);
+        if (this.#popover === popover && !popover.isDestroyed()) {
+          this.#drawIcon(status.icon);
+          popover.webContents.send(menuBarChannels.statusChanged, status);
+        }
       } while (this.#pushAgain);
     })()
       .catch((error: unknown) =>
@@ -291,7 +313,7 @@ export class DesktopMenuBar {
         // A change that landed after the last look still gets its push.
         if (this.#pushAgain) {
           this.#pushAgain = false;
-          this.#redraw();
+          this.#pushStatus();
         }
       });
   }

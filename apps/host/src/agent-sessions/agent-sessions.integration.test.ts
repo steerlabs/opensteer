@@ -9,6 +9,7 @@ import {
   ToolBlockedError,
   agentSessionIdleMs,
   createId,
+  ThreadIdSchema,
   type AgentGrant,
   type AgentOperationTarget,
   type BrowserProfileId,
@@ -20,6 +21,8 @@ import {
   NotificationStore,
   agentOperationRequestLifetimeMs,
   decideAgentOperation,
+  listAgentOperations,
+  needsYouPage,
   readTranscriptItem,
   reopenAgentOperation,
 } from "@opensteer/database";
@@ -29,6 +32,7 @@ import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
+import { BrowserReplService } from "../browser-use/browser-repl-service.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -598,12 +602,139 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(s.runBrowserScript).not.toHaveBeenCalled();
   });
 
+  it("closes a Request on a lowered task mode and does not revive it on restore", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const s = await setUp(storeFixture, "session-mode-requests", { accessMode: "auto" });
+    const pending = await s.ok("browser_use", script);
+    const taskId = ThreadIdSchema.parse(pending.taskId);
+    const requestId = pending.requestId as RequestId;
+    const attention = async () =>
+      (await needsYouPage(store.database, { userId: s.f.userId })).entries.flatMap((entry) =>
+        entry.kind === "request" ? [entry.request.id] : [],
+      );
+    const accessMode = (mode: ThreadAccessMode) =>
+      store.updateThreadAccessMode({ threadId: taskId, requestedBy: s.f.userId, accessMode: mode });
+    const resume = () => s.call("browser_use", { ...script, operationId: pending.operationId });
+    expect(await attention()).toContain(requestId);
+    const lowered = await accessMode("approval-required");
+    expect(lowered.thread.pendingRequests).toBe(0);
+    expect(await store.requests.get(requestId)).toMatchObject({ status: "cancelled" });
+    expect(await attention()).not.toContain(requestId);
+    const refused = await resume();
+    expect(refused).toMatchObject({
+      isError: true,
+      structuredContent: {
+        status: "refused",
+        operationId: pending.operationId,
+        error: { code: "access_changed" },
+      },
+    });
+    await accessMode("auto");
+    expect(await resume()).toEqual(refused);
+    expect(await attention()).not.toContain(requestId);
+    expect(s.runBrowserScript).not.toHaveBeenCalled();
+  });
+
+  it("hides a completed operation when narrowing removes its tool", async ({ storeFixture }) => {
+    const s = await setUp(storeFixture, "session-unlisted-receipt");
+    const completed = await s.ok("browser_use", script);
+    expect(completed.status).toBe("completed");
+    await commands(storeFixture, s.f.userId).update(s.agent.id, {
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const client = new Client({ name: "Narrowed agent", version: "1" });
+    clients.push(client);
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(s.url), {
+        requestInit: { headers: { authorization: `Bearer ${s.agent.token}` } },
+      }) as unknown as Transport,
+    );
+    expect((await client.listTools()).tools.map(({ name }) => name)).not.toContain("browser_use");
+    const missing = await s.call(
+      "browser_use",
+      {
+        ...script,
+        operationId: createId("agentOperation"),
+      },
+      client,
+    );
+    expect(missing).toMatchObject({ isError: true });
+    expect(missing.content).toEqual([
+      { type: "text", text: "MCP error -32602: Tool browser_use not found" },
+    ]);
+    expect(
+      await s.call("browser_use", { ...script, operationId: completed.operationId }, client),
+    ).toEqual(missing);
+    expect(s.runBrowserScript).toHaveBeenCalledOnce();
+  });
+
+  it("records a throwing browser script as failed and replays the same error receipt", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-browser-script-failed");
+    const repl = new BrowserReplService({
+      port: {
+        listPages: async () => [],
+        openPage: async () => {
+          throw new Error("No page was requested");
+        },
+        newPage: async () => {
+          throw new Error("No page was requested");
+        },
+        command: async () => {
+          throw new Error("No command was requested");
+        },
+        subscribe: () => () => {},
+      },
+    });
+    try {
+      s.runBrowserScript.mockImplementation(({ code, signal }) =>
+        repl.execute("failure", code, signal),
+      );
+      const args = { ...script, code: 'throw new Error("Browser script failed here")' };
+      const first = await s.call("browser_use", args);
+      const receipt = first.structuredContent as Record<string, unknown>;
+      expect(first).toMatchObject({
+        isError: true,
+        structuredContent: {
+          taskId: expect.any(String),
+          operationId: expect.any(String),
+          status: "failed",
+          profileId: profile,
+          next: expect.stringContaining("Earlier steps may have taken effect"),
+          error: { message: expect.stringContaining("Browser script failed here") },
+        },
+      });
+      const activity = await listAgentOperations(storeFixture.database, {
+        userId: s.f.userId,
+        connectionId: s.agent.id,
+        limit: 10,
+      });
+      expect(activity.operations).toContainEqual(
+        expect.objectContaining({
+          id: receipt.operationId,
+          state: "failed",
+          outcome: "failed",
+        }),
+      );
+      const replay = await s.call("browser_use", { ...args, operationId: receipt.operationId });
+      expect(replay).toMatchObject({ isError: true, structuredContent: receipt });
+      expect(s.runBrowserScript).toHaveBeenCalledOnce();
+    } finally {
+      await repl.close();
+    }
+  });
+
   it("asks the person in approval-required, executes an approval exactly once under two resumes, and refuses a denial", async ({
     storeFixture,
   }) => {
     const { database } = storeFixture;
     const s = await setUp(storeFixture, "session-approval", { accessMode: "approval-required" });
-    const pending = await s.ok("browser_use", { ...script, operationKey: "open-1" });
+    const code = "print(`\n# Heading\n**bold** _emphasis_ <tag>\n`)";
+    const reviewedScript = { ...script, code, operationKey: "open-1" };
+    const pending = await s.ok("browser_use", reviewedScript);
     expect(pending).toMatchObject({ status: "pending", requestId: expect.any(String) });
     expect(s.runBrowserScript).not.toHaveBeenCalled();
     const opened = storeFixture.reactions.find(
@@ -656,7 +787,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
       agentOperation: {
         connectionId: s.agent.id,
         target: { name: "Work" },
-        calls: script.code,
+        calls: code,
         agentReason: null,
         decisionFieldId: "decision",
       },
@@ -691,6 +822,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(request.originatingAgentSessionId).toBeTruthy();
     expect(request.presentation).toMatchObject({
       title: "Run a script in Work?",
+      detailFormat: "plain",
+      detail: `Work · Mac\nTest agent wants to run a script in Work.\n\nWhat it will run:\n${code}`,
       fields: [{ choices: [{ label: "Allow once" }, { label: "Don't allow" }] }],
     });
     expect(request.agentOperation).toMatchObject({
@@ -704,7 +837,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "waiting" });
     // A repeat before the answer is still pending, and a different call cannot take its key.
-    expect(await s.ok("browser_use", { ...script, operationKey: "open-1" })).toMatchObject({
+    expect(await s.ok("browser_use", reviewedScript)).toMatchObject({
       status: "pending",
     });
     expect(
@@ -728,10 +861,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
     });
     expect(s.runBrowserScript).not.toHaveBeenCalled();
     const held = s.holdNext();
-    const resumes = [
-      s.ok("browser_use", { ...script, operationKey: "open-1" }),
-      s.ok("browser_use", { ...script, operationKey: "open-1" }),
-    ];
+    const resumes = [s.ok("browser_use", reviewedScript), s.ok("browser_use", reviewedScript)];
     await held.started;
     held.release();
     const both = await Promise.all(resumes);
@@ -743,7 +873,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
           ownerId: s.f.userId,
         },
         contextKey: profile,
-        code: script.code,
+        code,
       }),
     );
     // The person declines the second: resuming it is refused and nothing runs.
@@ -798,8 +928,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(request.presentation).toMatchObject({
       title: "Act on Work?",
       detail: "Test agent wants to act on Work.\n\nWhat it will run:\nApply the change",
+      detailFormat: "plain",
     });
-    expect(request.presentation).not.toHaveProperty("detailFormat");
     expect(request.agentOperation).toMatchObject({ summary: "Test agent wants to act on Work." });
   });
 
@@ -943,7 +1073,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
           throw new Error("An unshared target must not execute.");
         },
       }),
-    ).rejects.toMatchObject({ message: "This resource is not shared with this connected agent." });
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "That item is unavailable.",
+      next: undefined,
+    });
     const pending = await s.ok("browser_use", { ...script, operationKey: "regrant" });
     const request = await database
       .selectFrom("requests")

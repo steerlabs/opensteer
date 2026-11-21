@@ -122,6 +122,7 @@ interface PersonalDeploymentSupervisorOptions {
    * says stopped, and the Home keeps that work queued until Resume.
    */
   readonly agentsStoppedSince?: () => string | null;
+  readonly onUncontainedBoot?: (mode: string) => void;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -245,6 +246,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #onUncontainedBoot: PersonalDeploymentSupervisorOptions["onUncontainedBoot"];
   #runnerSpec: PersonalProcessSpec | null = null;
   #runnerShutdownUnconfirmed = false;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -310,6 +312,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
     this.#agentsStoppedSince = options.agentsStoppedSince;
+    this.#onUncontainedBoot = options.onUncontainedBoot;
     this.#userEnvironment =
       options.userEnvironment ??
       (options.baseEnvironment
@@ -861,6 +864,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         computerUse,
       );
       const runner = this.#spawn(this.#runnerSpec);
+      const stoppedMode = this.#agentsStoppedSince?.();
+      if (stoppedMode && runner.runnerReceipt && this.#onUncontainedBoot) {
+        void waitForRunnerBoot(runner.runnerReceipt.file).then(
+          (contained) => {
+            if (!contained) this.#onUncontainedBoot?.(stoppedMode);
+          },
+          () => this.#onUncontainedBoot?.(stoppedMode),
+        );
+      }
       await this.#startupStep("runner", () =>
         this.#raceChild(
           runner,
@@ -1413,15 +1425,27 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     });
   }
 
-  async holdIdleForUpdate(): Promise<(() => Promise<void>) | null> {
+  async holdIdleForUpdate() {
     if (this.#runnerShutdownUnconfirmed) return null;
-    if (!this.#desiredRunning && this.#children.size === 0) return async () => {};
-    const receipt = this.#children.get("runner")?.runnerReceipt;
-    if (!receipt) return null;
+    const vacant = () => !this.#desiredRunning && this.#children.size === 0;
+    if (vacant()) return { current: vacant, release: async () => {} };
+    const runner = this.#children.get("runner");
+    const receipt = runner?.runnerReceipt;
+    if (!runner || !receipt) return null;
     const control = await readFile(receipt.file, "utf8")
       .then((raw) => DesktopRunnerReadySchema.parse(JSON.parse(raw)))
       .catch(() => null);
-    return control ? holdDesktopRunnerIdle(control) : null;
+    const hold = control && (await holdDesktopRunnerIdle(control));
+    return (
+      hold && {
+        release: hold.release,
+        current: () =>
+          this.#children.get("runner") === runner &&
+          !runner.expectedExit &&
+          !this.#runnerShutdownUnconfirmed &&
+          hold.current(),
+      }
+    );
   }
 
   restartForAgentMode(): Promise<void> {
@@ -1437,9 +1461,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         await replacePrivateFileAtomically(receipt.file, "restarting").catch((error: unknown) =>
           errors.push(error),
         );
+      this.#browser?.prepareRunnerRestart?.();
       await this.#stopProcesses(["runner"], errors);
       if (bridgeDrained && !(await bridgeDrained)) errors.push(new Error(hostedStopProblem));
       if (this.#children.has("runner")) throw new AggregateError(errors, hostedStopProblem);
+      if (this.#browser?.drainRunnerAttachments && !(await this.#browser.drainRunnerAttachments()))
+        errors.push(new Error(hostedStopProblem));
       const child = this.#spawn(spec);
       if (child.runnerReceipt) {
         const { file } = child.runnerReceipt;
@@ -1450,6 +1477,30 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           "Runner",
         );
         if (!earlierBootsContained) errors.push(new Error(hostedStopProblem));
+      }
+      const mode = this.#agentsStoppedSince?.();
+      const waitForPlugins = this.#host.waitForPluginAgentWorkStopped;
+      if (mode && waitForPlugins) {
+        const runtime = this.#runtime;
+        const manifest = await this.#files.load();
+        if (!runtime || !manifest) errors.push(new Error(hostedStopProblem));
+        else {
+          const deadline = AbortSignal.timeout(8_000);
+          await this.#raceChild(
+            child,
+            waitForPlugins.call(
+              this.#host,
+              runtime.localOrigin,
+              manifest.deploymentId,
+              manifest.environmentId as EnvironmentId,
+              manifest.runnerId,
+              mode,
+              deadline,
+            ),
+            deadline,
+            "Runner",
+          ).catch((error: unknown) => errors.push(error));
+        }
       }
       this.#setStatus({
         components: componentState(this.#status.components, "runner", "ready"),
@@ -1736,8 +1787,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       });
     }
     // Keep the relay and Host alive until the browser's final profile commit.
-    await this.#stopProcesses(["runner"], errors);
     const computerUseSlotId = this.#computerUseSlotId;
+    const bridgeDrained = computerUseSlotId
+      ? this.#computerUse?.workerDisconnected?.(computerUseSlotId)
+      : undefined;
+    await this.#stopProcesses(["runner"], errors);
+    if (bridgeDrained && !(await bridgeDrained)) errors.push(new Error(hostedStopProblem));
     this.#computerUseSlotId = null;
     if (computerUseSlotId) {
       try {

@@ -24,7 +24,7 @@ import { requireRun } from "../operations.js";
 import { callerLineage, type AgentCaller, type ConnectionCaller } from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
-import type { PluginExecutions } from "../../plugins/plugin-executions.js";
+import { pluginInputNext, type PluginExecutions } from "../../plugins/plugin-executions.js";
 import type { LocalProviders } from "../../plugins/local-providers.js";
 import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
 import { keysetPage } from "../../plugins/keyset-page.js";
@@ -36,10 +36,6 @@ import { directResult, requireDirectWork } from "./direct.js";
 import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
-
-function pluginInputNext(executionId: string, taskId: ThreadId) {
-  return `Waiting for the person's input in Needs you. Call plugin_resume(${JSON.stringify({ executionId, taskId })}) to wait up to ${agentOperationHoldMs / 1_000} seconds. Avoid polling in a tight loop.`;
-}
 
 /** The catalog's feed could not be read; a later call may list it. */
 export const catalogUnavailable: Blocked = {
@@ -278,7 +274,6 @@ export class PluginToolHandlers {
       | {
           taskId: ThreadId;
           row: Awaited<ReturnType<PluginExecutions["sessionExecution"]>>;
-          originId: z.infer<typeof AgentOperationIdSchema>;
         }
       | undefined;
     if ("calls" in call.input) {
@@ -346,7 +341,7 @@ export class PluginToolHandlers {
         (item) => canonicalJson(pluginGrantTarget(item.id)) === originTarget,
       );
       if (provider?.version !== receipt.targetGeneration) throw unavailable();
-      continuation = { taskId, row, originId: origin.data };
+      continuation = { taskId, row };
       continuationWrites = receipt.effect === "write";
       continuationMode = row.admittedAccessMode;
       target = {
@@ -374,7 +369,7 @@ export class PluginToolHandlers {
     )
       throw unavailable();
     if (continuation) {
-      const { taskId, originId } = continuation;
+      const { taskId } = continuation;
       let { row } = continuation;
       const deadline = Date.now() + agentOperationHoldMs;
       while ((row.state === "waiting" || row.state === "answered") && row.requestId) {
@@ -395,7 +390,6 @@ export class PluginToolHandlers {
           return {
             status: "pending",
             taskId,
-            operationId: originId,
             executionId: row.id,
             requestId: row.requestId,
             next: pluginInputNext(row.id, taskId),
@@ -464,8 +458,10 @@ export class PluginToolHandlers {
       };
     if (outcome.status === "completed" && outcome.result) {
       const { status, executionId } = outcome.result;
+      const { operationId, ...execution } = result;
       return {
-        ...result,
+        ...execution,
+        ...(tool === "plugin_resume" && status === "pending" ? {} : { operationId }),
         status,
         ...(status === "pending" ? { next: pluginInputNext(executionId, outcome.taskId) } : {}),
       };

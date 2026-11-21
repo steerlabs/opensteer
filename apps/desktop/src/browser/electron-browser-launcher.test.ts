@@ -64,7 +64,13 @@ const electron = vi.hoisted(() => ({
         isAttached: ReturnType<typeof vi.fn<() => boolean>>;
         on: ReturnType<typeof vi.fn>;
         sendCommand: ReturnType<
-          typeof vi.fn<(method: string, parameters?: Record<string, unknown>) => Promise<unknown>>
+          typeof vi.fn<
+            (
+              method: string,
+              parameters?: Record<string, unknown>,
+              sessionId?: string,
+            ) => Promise<unknown>
+          >
         >;
       };
     };
@@ -920,9 +926,9 @@ async function hubPage(session: string) {
   debug.detach.mockImplementation(() => {
     attached = false;
   });
-  const deliver = (method: string, parameters: unknown) => {
+  const deliver = (method: string, parameters: unknown, sessionId?: string) => {
     for (const [event, listener] of debug.on.mock.calls)
-      if (event === "message") listener({}, method, parameters);
+      if (event === "message") listener({}, method, parameters, sessionId);
   };
   const holds = new Map<string, PromiseWithResolvers<unknown>[]>();
   let worlds = 0;
@@ -979,6 +985,117 @@ function within(promise: Promise<unknown>): Promise<"fulfilled" | "rejected" | "
     new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 1_000)),
   ]);
 }
+
+describe.each([
+  {
+    method: "Browser.setDownloadBehavior",
+    parameters: { behavior: "allow", downloadPath: "/fixture" },
+  },
+  { method: "Browser.cancelDownload", parameters: { guid: "fixture-download" } },
+])("Electron $method profile scoping", ({ method, parameters }) => {
+  it.each([
+    { contextId: undefined, errorMessage: undefined, forbidden: true },
+    { contextId: "native-profile", errorMessage: `'${method}' wasn't found`, forbidden: true },
+    { contextId: "native-profile", errorMessage: "Not allowed", forbidden: true },
+    {
+      contextId: "native-profile",
+      errorMessage: "Browser context management is not supported.",
+      forbidden: true,
+    },
+    { contextId: "native-profile", errorMessage: "Invalid parameters", forbidden: false },
+  ])(
+    "handles context $contextId and debugger error $errorMessage",
+    async ({ contextId, errorMessage, forbidden }) => {
+      const hub = await hubPage("92");
+      const debug = hub.contents.debugger;
+      const answer = debug.sendCommand.getMockImplementation()!;
+      const debuggerError = new Error(errorMessage);
+      debug.sendCommand.mockImplementation(async (command, params) => {
+        if (command === "Target.getTargetInfo")
+          return { targetInfo: { targetId: "target-1", browserContextId: contextId } };
+        if (command === method) throw debuggerError;
+        return answer(command, params);
+      });
+
+      try {
+        const result = hub.browser.cdp.send(method, parameters);
+        if (forbidden) {
+          await expect(result).rejects.toMatchObject({
+            code: "forbidden",
+            message: `${method} cannot be scoped to this browser profile by this Electron version.`,
+          });
+        } else {
+          await expect(result).rejects.toBe(debuggerError);
+        }
+        expect(hub.sent(method)).toEqual(
+          contextId === undefined ? [] : [[method, { ...parameters, browserContextId: contextId }]],
+        );
+      } finally {
+        await hub.browser.close();
+      }
+    },
+  );
+});
+
+it("inspects profiler scripts on a private Electron session and refuses a renderer change", async () => {
+  const hub = await hubPage("91");
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const inventorySessionId = "agent-native-session";
+  const result = {
+    profile: {
+      nodes: [
+        {
+          id: 1,
+          callFrame: {
+            scriptId: "17",
+            functionName: "pageWork",
+            url: "https://page.test/work.js",
+            lineNumber: 4,
+            columnNumber: 2,
+          },
+        },
+      ],
+    },
+  };
+  let rendererChanges = false;
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Profiler.stop") return result;
+    if (sessionId === inventorySessionId) {
+      if (method === "Runtime.enable")
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+      if (method === "Debugger.enable") {
+        hub.deliver("Debugger.scriptParsed", { scriptId: "17", executionContextId: 17 }, sessionId);
+        if (rendererChanges) hub.deliver("Runtime.executionContextsCleared", {});
+      }
+      return {};
+    }
+    return answer(method, parameters);
+  });
+  try {
+    const agent = await hub.page.agentCdp();
+    const events = vi.fn();
+    agent.on("Debugger.scriptParsed", events);
+    await agent.send("Profiler.enable");
+    await agent.send("Profiler.start");
+    await expect(agent.send("Profiler.stop")).resolves.toEqual(result);
+    expect(events).not.toHaveBeenCalled();
+    expect(hub.sent("Debugger.enable")).toEqual([
+      ["Debugger.enable", { maxScriptsCacheSize: 0 }, inventorySessionId],
+    ]);
+    expect(hub.sent("Target.detachFromTarget")).toEqual([
+      ["Target.detachFromTarget", { sessionId: inventorySessionId }],
+    ]);
+
+    rendererChanges = true;
+    await agent.send("Profiler.start");
+    await expect(agent.send("Profiler.stop")).rejects.toMatchObject({ code: "forbidden" });
+    expect(hub.sent("Target.detachFromTarget")).toHaveLength(2);
+  } finally {
+    await hub.browser.close();
+  }
+});
 
 describe("Electron debugger teardown", () => {
   it("waits for the native page to be destroyed even when no CDP input is pending", async () => {

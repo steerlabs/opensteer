@@ -1821,7 +1821,7 @@ function handleTurnStart(message) {
     return;
   }
   if (scenario === "long-stream" || scenario === "long-stream-held") {
-    void longStreamTurn(scenario === "long-stream-held");
+    void longStreamTurn(scenario === "long-stream-held", message.params?.input);
     return;
   }
   if (scenario === "event-overflow") {
@@ -2649,8 +2649,15 @@ function longStreamDelta(messageIndex, index) {
  * three reasoning blocks and twenty-one commands with streamed output. A held turn
  * stops after its first answer has begun and waits for the release file.
  */
-async function longStreamTurn(held) {
+async function longStreamTurn(held, input) {
   const { id: threadId, turnId } = current();
+  const text = Array.isArray(input)
+    ? input
+        .filter((part) => part && part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("\n")
+    : "";
+  const agentTabUrl = /AGENT_TAB_URL=(\S+)/u.exec(text)?.[1];
   for (let message = 0; message < longStreamMessages; message += 1) {
     const reasoningId = `long-reasoning-${message}`;
     send({
@@ -2684,7 +2691,15 @@ async function longStreamTurn(held) {
         method: "item/agentMessage/delta",
         params: { delta: longStreamDelta(message, index), itemId: messageId, threadId, turnId },
       });
-      if (held && message === 0 && index === 199) await waitForRelease();
+      if (held && message === 0 && index === 199) {
+        if (agentTabUrl) {
+          void browserJourneyHarness(
+            undefined,
+            `await newTab(${JSON.stringify(agentTabUrl)}, { guest: true }); await new Promise(() => {});`,
+          ).catch(() => undefined);
+        }
+        await waitForRelease();
+      }
     }
     send({
       method: "item/completed",
@@ -2871,9 +2886,11 @@ async function browserJourneyHarness(tabId, program) {
       turnId: thread.turnId,
     },
   });
+  const harnessExecutable = process.env.OPENSTEER_BROWSER_HARNESS;
+  const isNodeScript = /\.[cm]?js$/u.test(harnessExecutable ?? "");
   const child = spawn(
-    process.execPath,
-    [process.env.OPENSTEER_BROWSER_HARNESS, ...(tabId ? ["--tab", tabId] : [])],
+    isNodeScript ? process.execPath : harnessExecutable,
+    [...(isNodeScript ? [harnessExecutable] : []), ...(tabId ? ["--tab", tabId] : [])],
     { env: threadEnvironment(), timeout: 60_000 },
   );
   const stdout = [];

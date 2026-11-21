@@ -366,6 +366,11 @@ export class SurfaceLedger {
   private started = false;
   private readonly viewportMutex = new AsyncMutex();
   private readonly onPage = (page: BrowserPage) => {
+    if (this.tearingDown) {
+      if (this.pages.sessionOf(page) === this.session && !this.pageIds.has(page))
+        this.pages.destroy(page, "session-ended");
+      return;
+    }
     this.discoveries++;
     void this.registerDiscovered(page)
       .finally(() => {
@@ -1308,17 +1313,35 @@ export class SurfaceLedger {
     return record.geometryRevision;
   }
 
-  sealLastSurface(surfaceId: BrowserSurfaceId): boolean {
+  sealLastSurface(surfaceId?: BrowserSurfaceId): boolean {
     if (
       this.inventorySealed ||
-      this.records.size !== 1 ||
-      !this.records.has(surfaceId) ||
+      this.records.size !== (surfaceId === undefined ? 0 : 1) ||
+      (surfaceId !== undefined && !this.records.has(surfaceId)) ||
       this.discoveries > 0 ||
       this.registrations.size > 0
     )
       return false;
     this.inventorySealed = true;
     return true;
+  }
+
+  fenceDurableClose(surfaceId: BrowserSurfaceId): void {
+    this.pages.retainTabClose(this.session, surfaceId);
+    const record = this.records.get(surfaceId);
+    if (!record) return;
+    record.lease.close();
+    this.releaseTarget?.(record.lastTargetId);
+  }
+
+  async closeDurableSurface(surfaceId: BrowserSurfaceId): Promise<void> {
+    const record = this.records.get(surfaceId);
+    this.fenceDurableClose(surfaceId);
+    if (
+      !(await this.pages.tabSettled(this.session, surfaceId, "host-closed", tabCloseWaitMs, true))
+    )
+      throw stillClosing("This tab is still closing.");
+    if (record) await this.remove(record);
   }
 
   /**
@@ -1394,11 +1417,39 @@ export class SurfaceLedger {
    * Ends every page this session holds, tabs and pages not yet admitted alike;
    * pages the engine has not confirmed by the bound stay owned and retried.
    */
-  async closeOwnedPages(reason: PageEndReason = "session-ended"): Promise<void> {
+  async closeOwnedPages(reason: PageEndReason = "session-ended", confirm = false): Promise<void> {
     this.tearingDown = true;
-    await withTimeout(this.pages.endSession(this.session, reason), pageCloseWaitMs, {
+    const ended = withTimeout(this.pages.endSession(this.session, reason), pageCloseWaitMs, {
       timeoutError: () => new Error("Pages are still closing."),
-    }).catch(() => undefined);
+    });
+    if (confirm) {
+      const [_, confirmed] = await Promise.all([
+        ended,
+        this.pages.endOtherPages(this.session, new Set(), pageCloseWaitMs, reason),
+      ]);
+      if (!confirmed) throw new Error("Pages are still closing.");
+    } else await ended.catch(() => undefined);
+  }
+
+  async suspendForRelayRestart(): Promise<void> {
+    this.tearingDown = true;
+    const keep = new Set(
+      [...this.records.values()]
+        .filter((record): record is SurfaceRecord => isLive(record) && record.origin === "person")
+        .map((record) => record.live.page),
+    );
+    if (!(await this.pages.endOtherPages(this.session, keep, pageCloseWaitMs)))
+      throw new Error("Agent pages are still closing.");
+    // A copy: removing a record awaits, and records can be added meanwhile.
+    const records = [...this.records.values()];
+    for (const record of records) if (record.origin === "agent") await this.remove(record);
+  }
+
+  resumeAfterRelayRestart(): string[] {
+    this.tearingDown = false;
+    return [...this.records.values()]
+      .filter(isLive)
+      .flatMap(({ live }) => (live.page.isClosed() ? [] : [live.targetId]));
   }
 
   private liveRecord(id: BrowserSurfaceId): SurfaceRecord | undefined {

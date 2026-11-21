@@ -28,6 +28,11 @@ const callbacks = new Map<
 >();
 const elicitations = new Map<string, AbortController>();
 const requests = new Map<string, AbortController>();
+const webhookWork = new Map<
+  string,
+  { readonly ended: Promise<void>; readonly controller: AbortController }
+>();
+const webhookStreams = new Set<string>();
 const streams = new Map<string, ReadableStreamDefaultReader<Uint8Array>>();
 let engine: Awaited<ReturnType<typeof startEngine>> | undefined;
 let initializing: Promise<void> | undefined;
@@ -160,6 +165,7 @@ process.on("message", (raw: unknown) => {
         ?.cancel()
         .catch(() => {});
       streams.delete(message.id);
+      webhookStreams.delete(message.id);
       return;
     }
     if (message.type === "callbackResult" || message.type === "callbackError") {
@@ -229,9 +235,13 @@ process.on("message", (raw: unknown) => {
           done: chunk.done === true,
           ...(chunk.done ? {} : { chunk: Buffer.from(chunk.value).toString("base64") }),
         });
-        if (chunk.done) streams.delete(message.id);
+        if (chunk.done) {
+          streams.delete(message.id);
+          webhookStreams.delete(message.id);
+        }
       } catch {
         streams.delete(message.id);
+        webhookStreams.delete(message.id);
         send({
           type: "streamChunk",
           id: message.id,
@@ -249,10 +259,24 @@ process.on("message", (raw: unknown) => {
       });
       return;
     }
+    const operation = message.operation as PluginOperation;
     const controller = new AbortController();
     requests.set(message.id, controller);
+    const webhookDone = operation === "webhook" ? Promise.withResolvers<void>() : undefined;
+    if (webhookDone) webhookWork.set(message.id, { controller, ended: webhookDone.promise });
     try {
-      const operation = message.operation as PluginOperation;
+      if (operation === "agentWork" && operations.agentWork.input.parse(message.input).stopped) {
+        const pending = [...webhookWork.values()];
+        for (const work of pending) work.controller.abort();
+        await Promise.all(pending.map((work) => work.ended));
+        await Promise.all(
+          [...webhookStreams].map(async (id) => {
+            await streams.get(id)?.cancel();
+            streams.delete(id);
+            webhookStreams.delete(id);
+          }),
+        );
+      }
       const result = await engine.request(
         operation,
         operations[operation].input.parse(message.input),
@@ -260,7 +284,10 @@ process.on("message", (raw: unknown) => {
         controller.signal,
       );
       if (result instanceof Response) {
-        if (result.body) streams.set(message.id, responseChunkReader(result.body));
+        if (result.body) {
+          streams.set(message.id, responseChunkReader(result.body));
+          if (operation === "webhook") webhookStreams.add(message.id);
+        }
         send({
           type: "result",
           id: message.id,
@@ -287,6 +314,10 @@ process.on("message", (raw: unknown) => {
       send({ type: "error", id: message.id, error: errorData(error) });
     } finally {
       requests.delete(message.id);
+      if (webhookDone) {
+        webhookWork.delete(message.id);
+        webhookDone.resolve();
+      }
     }
   })().catch(() => {
     send({

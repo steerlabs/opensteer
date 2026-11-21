@@ -1618,6 +1618,7 @@ export class DeviceService {
     const placement = await this.#store.getDeviceComputerConnectionForCall({
       connectionId: id,
       ownerUserId: requester.ownerUserId,
+      includeRecordedAppName: app !== undefined,
     });
     if (!placement || placement.deviceId !== computerId) notThisSessionsTarget();
     const computer = placement.connection.computer;
@@ -1631,6 +1632,14 @@ export class DeviceService {
     if (grant.kind !== "computer-app" || !currentGrant || !agentGrantAccess(currentGrant, grant))
       notThisSessionsTarget();
     const driver = await this.#sessionDeviceDriver(placement, true);
+    const bundleId = computer?.app?.bundleId;
+    const recordedName = placement.recordedAppName
+      ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+      .trim();
+    const appName = recordedName
+      ? Array.from(recordedName).slice(0, 60).join("").trimEnd()
+      : undefined;
+    const appTarget = bundleId && appName ? `${appName} (${bundleId})` : undefined;
     return {
       connectionId: id,
       deviceId: placement.deviceId,
@@ -1638,7 +1647,7 @@ export class DeviceService {
       access: placement.access,
       target: AgentOperationTargetSchema.parse({
         grant,
-        name: computer?.app?.bundleId ?? placement.runnerName,
+        name: appTarget && appTarget.length <= 255 ? appTarget : (bundleId ?? placement.runnerName),
         ...(computer?.app ? { untrustedTitle: computer.app.displayName } : {}),
         device: { id: placement.deviceId, name: placement.runnerName },
       }),

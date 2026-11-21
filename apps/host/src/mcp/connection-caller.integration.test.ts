@@ -1059,7 +1059,7 @@ describeStore("connection grants and lineage", (it) => {
           arguments: { requestId: owners.request.id },
         }),
       ),
-    ).toContain("Request is unavailable");
+    ).toBe("That item is unavailable.");
 
     const triggers = new TriggerStore(database);
     const lineage = await triggers.create({
@@ -2185,6 +2185,7 @@ describeStore("connection grants and lineage", (it) => {
           checked.resolve();
           await continueSubmission.promise;
         },
+        assertCallComputerRunning: () => {},
         session: () => undefined,
       },
     } as unknown as ConstructorParameters<typeof PluginExecutions>[0]);
@@ -2246,7 +2247,12 @@ describeStore("connection grants and lineage", (it) => {
       service: { execute, executionWasSent: () => false },
       store,
       records: new PluginAgentStore(database),
-      authority: { admit: pluginCaller, assert: async () => {}, session: () => undefined },
+      authority: {
+        admit: pluginCaller,
+        assert: async () => {},
+        assertCallComputerRunning: () => {},
+        session: () => undefined,
+      },
     } as unknown as ConstructorParameters<typeof PluginExecutions>[0]);
     const caller = {
       kind: "run",

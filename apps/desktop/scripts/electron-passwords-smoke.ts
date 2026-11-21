@@ -402,7 +402,7 @@ async function harness(options: { profile?: string; personalLease?: boolean } = 
       "Personal consent carries no browser identity",
       !Object.hasOwn(request.params, "sessionId") &&
         !Object.hasOwn(request.params, "runtimeId") &&
-        request.params.permissionVersion === 5,
+        request.params.permissionVersion === 6,
     );
     broker.answer("signin.request", {
       decision: "authorized",

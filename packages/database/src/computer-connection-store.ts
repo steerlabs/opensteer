@@ -787,9 +787,11 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
   async getDeviceComputerConnectionForCall(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
+    readonly includeRecordedAppName?: boolean;
   }): Promise<{
     readonly access: IntegrationAccess;
     readonly connection: IntegrationConnectionSummary;
+    readonly recordedAppName?: string | null;
     readonly deviceId: DeviceId;
     readonly deviceName: string;
     readonly deviceAddedAt: Date;
@@ -817,6 +819,18 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         "runners.updateRequired",
         "devices.removedAt as runnerRevokedAt",
       ])
+      .$if(input.includeRecordedAppName === true, (query) =>
+        query.select((eb) =>
+          eb
+            .selectFrom("integrationGrants")
+            .select("alias")
+            .whereRef("integrationGrants.connectionId", "=", "integrationConnections.id")
+            .whereRef("integrationGrants.ownerUserId", "=", "integrationConnections.ownerUserId")
+            .where("integrationGrants.revokedAt", "is", null)
+            .limit(1)
+            .as("recordedAppName"),
+        ),
+      )
       .where("integrationConnections.id", "=", input.connectionId)
       .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
       .where("integrationConnections.connectionKind", "=", "computer")
@@ -826,6 +840,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     return {
       access: row.computerAccess,
       connection: integrationConnectionFromRow(row),
+      ...(input.includeRecordedAppName ? { recordedAppName: row.recordedAppName ?? null } : {}),
       deviceId: row.deviceId,
       deviceName: row.runnerName,
       deviceAddedAt: row.deviceAddedAt,

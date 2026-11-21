@@ -3593,13 +3593,7 @@ integration("Cloud Computer Account service", () => {
     expect([one.computers[0]?.id, two.computers[0]?.id]).toEqual([first.id, second.id].sort());
   });
 
-  it("keeps the predecessor off until Account issues the owner a sign-in to the claimed replacement", async () => {
-    const { id, account } = await buy();
-    const first = (await getDesired(id))!;
-    await bootable(first);
-    expect((await complete(first)).statusCode).toBe(200);
-    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
-    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+  async function bootReplacement(id: CloudComputerDesired["id"], first: CloudComputerDesired) {
     const restored = (await getDesired(id))!;
     const current = vm(restored.generation, "running");
     expect(
@@ -3627,6 +3621,24 @@ integration("Cloud Computer Account service", () => {
     await harness.pass();
     expect(harness.provider.delete).not.toHaveBeenCalled();
 
+    return { restored, install, harness };
+  }
+
+  async function claimedReplacement() {
+    const { id, account } = await buy();
+    const first = (await getDesired(id))!;
+    await bootable(first);
+    expect((await complete(first)).statusCode).toBe(200);
+    expect((await report((await getDesired(id))!)).json()).toEqual({ recorded: true });
+    await cloud.mutate(id, "replace", undefined, "aabbccdd");
+    return { id, account, first, ...(await bootReplacement(id, first)) };
+  }
+
+  async function ownerExchange({
+    account,
+    restored,
+    install,
+  }: Awaited<ReturnType<typeof claimedReplacement>>) {
     const oidc = install.managedHome!.oidc;
     const redirect = `https://${restored.hostname}/v1/auth/oidc/callback`;
     const verifier = "x".repeat(43);
@@ -3643,23 +3655,83 @@ integration("Cloud Computer Account service", () => {
     expect(authorized.statusCode).toBe(200);
     const code = new URL(authorized.json().url).searchParams.get("code");
     expect(code).toBeTruthy();
-    const token = await http({
-      method: "POST",
-      url: "/api/auth/oauth2/token",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        host: publicOrigin.host,
-        authorization:
-          "Basic " + Buffer.from(`${oidc.clientId}:${oidc.clientSecret}`).toString("base64"),
-      },
-      payload: new URLSearchParams({
-        grant_type: "authorization_code",
-        code: code!,
-        code_verifier: verifier,
-        redirect_uri: redirect,
-      }).toString(),
+    return () =>
+      http({
+        method: "POST",
+        url: "/api/auth/oauth2/token",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          host: publicOrigin.host,
+          authorization:
+            "Basic " + Buffer.from(`${oidc.clientId}:${oidc.clientSecret}`).toString("base64"),
+        },
+        payload: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code!,
+          code_verifier: verifier,
+          redirect_uri: redirect,
+        }).toString(),
+      });
+  }
+
+  function accessMarker(id: CloudComputerDesired["id"]) {
+    return database
+      .selectFrom("cloudComputers")
+      .select(["generation", "ownerAccessAt"])
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+  }
+
+  it("resets signing keys left by a fixture that used another Account secret", async () => {
+    const other = createControlPlaneAuth(database, {
+      publicOrigin,
+      authSecret: "different-fixture-secret-with-at-least-32-bytes",
     });
+    await other.api.signJWT({ body: { payload: { sub: "other-fixture" } } });
+    await resetManagedCloudTables(database);
+    const { token } = await auth.api.signJWT({ body: { payload: { sub: "current-fixture" } } });
+    const jwks = createLocalJWKSet((await http({ method: "GET", url: "/api/auth/jwks" })).json());
+    await expect(jwtVerify(token, jwks, { issuer: publicOrigin.origin })).resolves.toMatchObject({
+      payload: { sub: "current-fixture" },
+    });
+  });
+
+  async function reissueFromStagedSnapshot(id: CloudComputerDesired["id"]) {
+    const targetId = await cloud.addBackupTarget({
+      endpoint: "https://s3.example.test",
+      bucket: "test-backups",
+      prefix: "owner-sign-in-restore",
+      accessKeyId: "access-owner-sign-in",
+      secretAccessKey: "secret-owner-sign-in",
+    });
+    await cloud.mutate(
+      id,
+      "reissue",
+      undefined,
+      JSON.stringify({ targetId, password: "owner-sign-in-restore-password" }),
+    );
+  }
+
+  it("keeps the predecessor off until Account issues the owner a sign-in to the claimed replacement", async () => {
+    const replacement = await claimedReplacement();
+    const { id, first, restored, harness } = replacement;
+    const redeem = await ownerExchange(replacement);
+    const token = await redeem();
     expect(token.statusCode).toBe(200);
+    const jwks = createLocalJWKSet((await http({ method: "GET", url: "/api/auth/jwks" })).json());
+    await expect(
+      jwtVerify(token.json().id_token, jwks, {
+        issuer: publicOrigin.origin,
+        audience: replacement.install.managedHome!.oidc.clientId,
+        algorithms: ["EdDSA"],
+      }),
+    ).resolves.toMatchObject({ payload: { sub: replacement.account.id } });
+    const marked = await accessMarker(id);
+    expect(marked).toEqual({ generation: restored.generation, ownerAccessAt: expect.any(Date) });
+    now = new Date(now.getTime() + 1_000);
+    const next = await ownerExchange(replacement);
+    expect((await next()).statusCode).toBe(200);
+    expect(await accessMarker(id)).toEqual(marked);
     expect((await getDesired(id))?.replacementVerified).toBe(true);
     await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
     await harness.pass();
@@ -3669,6 +3741,91 @@ integration("Cloud Computer Account service", () => {
       expect.any(Function),
     );
     expect(harness.machine.previous).toBeUndefined();
+  });
+
+  it("keeps the predecessor and permits staged reissue when ID token signing fails", async () => {
+    const replacement = await claimedReplacement();
+    const { id, restored, harness } = replacement;
+    const redeem = await ownerExchange(replacement);
+    const poisoned = await database
+      .updateTable("authJwks")
+      .set({ privateKey: JSON.stringify("an-invalid-test-encrypted-key") })
+      .executeTakeFirst();
+    expect(poisoned.numUpdatedRows).toBeGreaterThan(0n);
+    const response = await redeem();
+    expect(response.statusCode).toBe(500);
+    expect(response.body).not.toContain("id_token");
+    expect(await accessMarker(id)).toEqual({
+      generation: restored.generation,
+      ownerAccessAt: null,
+    });
+    expect((await getDesired(id))?.replacementVerified).toBe(false);
+    await harness.pass();
+    expect(harness.provider.delete).not.toHaveBeenCalled();
+    expect(harness.machine.previous?.status).toBe("off");
+    await reissueFromStagedSnapshot(id);
+    expect((await getDesired(id))?.generation).toBe(restored.generation + 1);
+  });
+
+  it("does not credit a signed response for a superseded replacement generation", async () => {
+    const replacement = await claimedReplacement();
+    const { id, restored, account } = replacement;
+    const redeem = await ownerExchange(replacement);
+    const prepared = Promise.withResolvers<Response>();
+    const release = Promise.withResolvers<void>();
+    const handler = auth.handler.bind(auth);
+    const spy = vi.spyOn(auth, "handler").mockImplementation(async (request) => {
+      try {
+        const response = await handler(request);
+        if (new URL(request.url).pathname === "/api/auth/oauth2/token") {
+          prepared.resolve(response);
+          await release.promise;
+        }
+        return response;
+      } catch (error) {
+        prepared.reject(error);
+        throw error;
+      }
+    });
+    const pending = redeem();
+    let current: Awaited<ReturnType<typeof claimedReplacement>>;
+    try {
+      const response = await Promise.race([
+        prepared.promise,
+        pending.then(({ statusCode }) => {
+          throw new Error(`Token endpoint returned HTTP ${statusCode} before preparing a response`);
+        }),
+      ]);
+      expect(response.status).toBe(200);
+      expect(await response.clone().json()).toMatchObject({ id_token: expect.any(String) });
+      expect(await accessMarker(id)).toEqual({
+        generation: restored.generation,
+        ownerAccessAt: null,
+      });
+      await reissueFromStagedSnapshot(id);
+      current = { id, account, first: restored, ...(await bootReplacement(id, restored)) };
+      expect(current.restored.generation).toBe(restored.generation + 1);
+      expect(current.install.managedHome!.oidc.clientId).toBe(
+        replacement.install.managedHome!.oidc.clientId,
+      );
+    } finally {
+      release.resolve();
+      await pending.finally(() => spy.mockRestore());
+    }
+    expect((await pending).statusCode).toBe(200);
+    expect(await accessMarker(id)).toEqual({
+      generation: current.restored.generation,
+      ownerAccessAt: null,
+    });
+    expect((await getDesired(id))?.replacementVerified).toBe(false);
+    await current.harness.pass();
+    expect(current.harness.provider.delete).not.toHaveBeenCalled();
+    const currentRedeem = await ownerExchange(current);
+    expect((await currentRedeem()).statusCode).toBe(200);
+    expect(await accessMarker(id)).toEqual({
+      generation: current.restored.generation,
+      ownerAccessAt: expect.any(Date),
+    });
   });
 
   it("renews an unused token in place when only the create fence was checked", async () => {

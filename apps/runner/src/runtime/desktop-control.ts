@@ -10,10 +10,11 @@ export const DesktopRunnerReadySchema = z.strictObject({
 });
 export type DesktopRunnerReady = z.infer<typeof DesktopRunnerReadySchema>;
 
+// Covers the desktop’s final activity read and its 30-second shutdown deadline.
+const holdMs = 40_000;
+
 export async function startDesktopRunnerControl(idle: () => boolean, earlierBootsContained = true) {
   const token = randomUUID();
-  // Covers the desktop’s final activity read and its 30-second shutdown deadline.
-  const holdMs = 40_000;
   let until = 0;
   const held = () => performance.now() < until;
   const server = createServer((request, response) => {
@@ -50,7 +51,8 @@ export async function startDesktopRunnerControl(idle: () => boolean, earlierBoot
 
 export async function holdDesktopRunnerIdle(
   ready: DesktopRunnerReady,
-): Promise<(() => Promise<void>) | null> {
+): Promise<{ current(): boolean; release(): Promise<void> } | null> {
+  const until = performance.now() + holdMs;
   const ask = (path: string) =>
     fetch(`http://127.0.0.1:${ready.port}/${path}`, {
       headers: { authorization: `Bearer ${ready.token}` },
@@ -60,7 +62,10 @@ export async function holdDesktopRunnerIdle(
     });
   const response = await ask("hold").catch(() => null);
   if (response?.status !== 204) return null;
-  return async () => {
-    await ask("release").catch(() => undefined);
+  return {
+    current: () => performance.now() < until,
+    release: async () => {
+      if (performance.now() < until) await ask("release").catch(() => undefined);
+    },
   };
 }

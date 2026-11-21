@@ -125,7 +125,8 @@ function Shell({ setup }: { readonly setup: Awaited<ReturnType<typeof attach>> }
         unconfirmed={status?.membership?.leaveUnconfirmed === true}
       />
     );
-  if (device.step) return <SetUpThisMac bridge={setup.bridge} device={device} />;
+  if (device.step)
+    return <SetUpThisMac bridge={setup.bridge} device={device} hostClient={setup.host} />;
   return (
     <div>
       <FinishSetupBar device={device} homeId={null} onNavigate={() => undefined} />

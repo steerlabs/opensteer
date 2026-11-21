@@ -174,7 +174,7 @@ for (const { trial, needsHome, drive } of plan) {
       case "quit-question": {
         await waitForEvent("test.ready");
         tree = descendants(pid);
-        child.kill("SIGHUP");
+        child.kill("SIGUSR1");
         await waitForEvent("test.question-shown", 30_000);
         await delay(500);
         capture(path.join(data, "question.png"));

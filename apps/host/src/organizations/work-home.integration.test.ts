@@ -1,3 +1,4 @@
+import { normalizeToolError } from "@opensteer/agent-tools";
 import {
   canonicalWorkAuditRecord,
   defaultWorkPolicy,
@@ -28,6 +29,7 @@ import { expect, vi } from "vitest";
 import Fastify from "fastify";
 import { registerWorkHomeRoutes, WorkHomeService } from "./work-home.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { agentToolFailure } from "../mcp/agent-tool-failure.js";
 import { ConnectionOAuth } from "../mcp/connections/connection-oauth.js";
 
 const marker = {
@@ -210,6 +212,161 @@ describeStore("work Home", (it) => {
     });
   });
 
+  it("checks the target grant and Work policy from the same connection statement", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const removed = { kind: "browser-profile", profileId: createId("browserProfile") } as const;
+    const held = { kind: "browser-profile", profileId: createId("browserProfile") } as const;
+    const connection = await f.connect({ ...selected, resources: [removed, held] });
+    const statements: string[] = [];
+    let cutAfterRead = false;
+    const observed = f.database.withPlugin({
+      transformQuery({ node }) {
+        statements.push(JSON.stringify(node));
+        return node;
+      },
+      async transformResult({ result }) {
+        if (cutAfterRead && statements.at(-1)?.includes('"name":"agent_connections"')) {
+          cutAfterRead = false;
+          await f.connections.update(f.task.userId, {
+            connectionId: connection.id,
+            expectedRevision: 1,
+            grant: { ...selected, resources: [held] },
+          });
+          await f.home.offboard();
+        }
+        return result;
+      },
+    });
+    await new WorkHomeStore(observed).initialize(marker, f.task.deploymentId);
+    const read = (grantTarget: typeof removed) => {
+      statements.length = 0;
+      return liveAgentConnection(observed, f.task.userId, connection.id, { grantTarget });
+    };
+    const expectOneStatement = () => {
+      expect(statements).toEqual([expect.stringContaining('"name":"work_home_policy"')]);
+      expect(statements[0]).toContain('"name":"agent_connections"');
+    };
+
+    cutAfterRead = true;
+    await expect(read(removed)).resolves.toMatchObject({
+      grantRevision: 1,
+      accessMode: "full-access",
+    });
+    expect(cutAfterRead).toBe(false);
+    expectOneStatement();
+    await expect(read(removed)).rejects.toMatchObject({
+      code: "not_found",
+      message: "That item is unavailable.",
+      next: undefined,
+    });
+    expectOneStatement();
+    await expect(read(held)).rejects.toMatchObject({ code: "forbidden", reason: "work-policy" });
+    expectOneStatement();
+  });
+
+  it("hides a target removed after resolution even when Work policy refuses admission", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const resolved = { kind: "browser-profile", profileId: createId("browserProfile") } as const;
+    const held = { kind: "browser-profile", profileId: createId("browserProfile") } as const;
+    const connection = await f.connect({ ...selected, resources: [resolved, held] });
+    const caller = await liveAgentConnection(f.database, f.task.userId, connection.id);
+    expect(caller.grant).toMatchObject({ resources: expect.arrayContaining([resolved, held]) });
+    await f.connections.update(f.task.userId, {
+      connectionId: connection.id,
+      expectedRevision: caller.grantRevision,
+      grant: { ...selected, resources: [held] },
+    });
+    await f.home.offboard();
+
+    const sessions = new AgentSessionService({ store: f.store });
+    const execute = vi.fn(async () => undefined);
+    const admit = (grant: typeof resolved) =>
+      sessions.run({
+        ownerUserId: f.task.userId,
+        agentConnectionId: connection.id,
+        operationKey: "direct-after-cut",
+        tool: "tab_open",
+        input: {},
+        target: { grant, name: "Private profile", device: null },
+        effect: "write",
+        calls: "Open a tab",
+        execute,
+      });
+    const refusal = async (target: typeof resolved) => {
+      const error: unknown = await admit(target).then(
+        () => {
+          throw new Error("Expected direct admission to be refused");
+        },
+        (error: unknown) => error,
+      );
+      return normalizeToolError(agentToolFailure(error, "write", undefined, true), {
+        tools: new Set(),
+      });
+    };
+    try {
+      expect(await refusal(resolved)).toEqual({
+        code: "not_found",
+        message: "That item is unavailable.",
+        next: null,
+      });
+      expect(await refusal(held)).toEqual({
+        code: "organization_not_allowed",
+        message: "Your organization doesn't allow this",
+        next: null,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(
+        await f.database
+          .selectFrom("agentSessions")
+          .select("id")
+          .where("connectionId", "=", connection.id)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      sessions.stop();
+    }
+  });
+
+  it("checks an own Run’s Work assignment in the existing binding round trips", async () => {
+    const f = await fixture();
+    const statements: string[] = [];
+    const observed = f.database.withPlugin({
+      transformQuery({ node }) {
+        statements.push(JSON.stringify(node));
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
+    });
+    await new WorkHomeStore(observed).initialize(marker, f.task.deploymentId);
+    statements.length = 0;
+    const store = new OpensteerStore(observed);
+    const { bindingGeneration, environmentId, runId, runnerBootId, runnerId, threadId, userId } =
+      f.task;
+    const binding = {
+      bindingGeneration,
+      environmentId,
+      requestedBy: userId,
+      runId,
+      runnerBootId,
+      runnerId,
+      threadId,
+    };
+    await expect(store.assertActiveExecutionBinding(binding)).resolves.toBeUndefined();
+    expect(statements).toHaveLength(3);
+    expect(
+      statements.filter((statement) => statement.includes('"name":"work_home_policy"')),
+    ).toEqual([expect.stringContaining('"name":"threads"')]);
+
+    await f.home.apply({ ...f.document(1, permissive), state: "offboarding" });
+    await expect(store.assertActiveExecutionBinding(binding)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  });
+
   it("externalMaxMode caps a connection's Run and its direct operation but not the person's own agent", async () => {
     const f = await fixture();
     await f.home.apply(f.document(1, { ...permissive, externalMaxMode: "approval-required" }));
@@ -249,7 +406,15 @@ describeStore("work Home", (it) => {
       target: null,
       effect: "read",
       calls: "Private script",
-      execute: async ({ mode }) => mode,
+      execute: async ({ mode }) => {
+        const committed = await f.database.selectFrom("workAuditOutbox").select("record").execute();
+        expect(
+          committed.map(({ record }) => record).filter(({ kind }) => kind === "operation.direct"),
+        ).toMatchObject([
+          { effectiveMode: "approval-required", policyRevision: 1, outcome: "allowed" },
+        ]);
+        return mode;
+      },
       summarize: () => ({ title: "Private title" }),
     });
     expect(operation).toMatchObject({ status: "completed", result: "approval-required" });
@@ -382,6 +547,100 @@ describeStore("work Home", (it) => {
         .where("id", "=", scoped.id)
         .executeTakeFirst(),
     ).toMatchObject({ grant: { tasks: false }, accessMode: "approval-required" });
+  });
+
+  it("narrows two connections and closes their pending direct Requests in one policy cut", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connections = [await f.connect(selected), await f.connect(selected)].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    const sessions = new AgentSessionService({ store: f.store, holdMs: 0 });
+    const execute = vi.fn(async () => undefined);
+    try {
+      const requests = [];
+      for (const connection of connections) {
+        expect(connection.grantRevision).toBe(1);
+        const pending = await sessions.run({
+          ownerUserId: f.task.userId,
+          agentConnectionId: connection.id,
+          operationKey: "ask-before-cut",
+          tool: "ask_person",
+          input: {},
+          target: null,
+          effect: "read",
+          calls: "Confirm the page is ready",
+          question: async () => ({
+            kind: "form",
+            title: "Is the page ready?",
+            fields: [
+              {
+                id: "ready",
+                prompt: "Ready?",
+                choices: [{ label: "Yes", value: "yes" }],
+                custom: false,
+                multiSelect: false,
+                secret: false,
+              },
+            ],
+          }),
+          execute,
+        });
+        if (pending.status !== "pending" || pending.requestId === null)
+          throw new Error("Expected a pending direct-operation Request");
+        expect(await f.store.requests.get(pending.requestId)).toMatchObject({ status: "pending" });
+        requests.push({
+          connection,
+          requestId: pending.requestId,
+          operationId: pending.operationId,
+        });
+      }
+
+      await expect(f.home.apply(f.document(2, defaultWorkPolicy))).resolves.toEqual({
+        revision: 2,
+        changed: true,
+      });
+      expect(await f.home.applied()).toMatchObject({ appliedRevision: 2 });
+      for (const { connection, requestId, operationId } of requests) {
+        expect(
+          await f.database
+            .selectFrom("agentConnections")
+            .selectAll()
+            .where("id", "=", connection.id)
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({
+          grantRevision: 2,
+          accessMode: "approval-required",
+          cleanupReason: "narrowed",
+          revokedAt: null,
+        });
+        expect(await f.store.requests.get(requestId)).toMatchObject({
+          status: "cancelled",
+          cancellationReason: "authority-revoked",
+        });
+        expect(
+          await f.database
+            .selectFrom("agentOperations")
+            .select(["state", "terminalEvidenceAt"])
+            .where("id", "=", operationId)
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({ state: "refused", terminalEvidenceAt: expect.any(Date) });
+      }
+      expect(
+        await f.database
+          .selectFrom("personalAttention")
+          .select("id")
+          .where(
+            "requestId",
+            "in",
+            requests.map(({ requestId }) => requestId),
+          )
+          .execute(),
+      ).toEqual([]);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      sessions.stop();
+    }
   });
 
   it("an owner Stop is audited once when the command is retried", async () => {

@@ -12,7 +12,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { liveDelegatingConnection } from "./resource-access.js";
-import { workPolicyFor } from "./work-policy.js";
+import { isWorkHomeDatabase } from "./work-home-context.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -257,12 +257,17 @@ export async function admitThreadExecution(
 ): Promise<{
   readonly environmentId: EnvironmentId;
 } | null> {
-  const work = await workPolicyFor(database);
-  if (work && work.state !== "active") return null;
   const row = await database
     .selectFrom("threads")
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
+    .$if(isWorkHomeDatabase(database), (query) =>
+      query.where((eb) =>
+        eb.exists(
+          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
+        ),
+      ),
+    )
     .executeTakeFirst();
   return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
     ? row

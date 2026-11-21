@@ -25,7 +25,6 @@ import {
   admitAgentOperation,
   admitExecution,
   askForAgentOperation,
-  authorizeTarget,
   beginAgentSession,
   decideAgentOperation,
   endAgentSessions,
@@ -45,6 +44,7 @@ import {
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
+import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
 
 /**
  * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
@@ -188,6 +188,7 @@ export interface DirectOperation<Result> {
   readonly execute: (context: DirectOperationContext) => Promise<Result>;
   /** A bounded, redacted record of the result, for the activity list. */
   readonly summarize?: (result: Result) => Readonly<Record<string, unknown>> | null;
+  readonly scriptFailure?: (result: Result) => ReplFailure | undefined;
 }
 
 export type DirectOperationResult<Result> =
@@ -207,7 +208,15 @@ export type DirectOperationResult<Result> =
       readonly next: string;
     }
   | {
-      readonly status: "failed" | "unknown";
+      readonly status: "failed";
+      readonly taskId: ThreadId;
+      readonly operationId: AgentOperationId;
+      readonly next: string;
+      readonly scriptError?: ReplFailure;
+      readonly result?: Result;
+    }
+  | {
+      readonly status: "unknown";
       readonly taskId: ThreadId;
       readonly operationId: AgentOperationId;
       readonly next: string;
@@ -216,6 +225,12 @@ export type DirectOperationResult<Result> =
 export const pendingNext = `Call the same tool again with the same arguments and this operationId to wait up to ${agentOperationHoldMs / 1_000} seconds for the person. If it is still pending, call again, but not in a tight loop.`;
 export const unknownNext =
   "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.";
+export const scriptFailedNext =
+  "Earlier steps may have taken effect. Check the current state before trying again.";
+
+export function storedScriptError(summary: AgentOperationRow["resultSummary"]) {
+  return ReplFailureSchema.safeParse(summary?.scriptError).data;
+}
 const interruptedNext =
   "Part of it may have happened. Check the current state before doing anything else.";
 
@@ -357,6 +372,7 @@ export class AgentSessionService {
       agentConnectionId: operation.agentConnectionId,
       taskId: operation.taskId,
       purpose: operation.purpose,
+      grantTarget: operation.target?.grant,
     });
     if (created && this.#sweeping) this.#sweeper.wake();
     const bindingId = `session:${session.id}` as const;
@@ -374,6 +390,7 @@ export class AgentSessionService {
       tool: operation.tool,
       argumentDigest,
       target,
+      grantTarget: operation.target?.grant,
       targetGeneration: operation.targetGeneration ?? null,
       grantRevision: execution.agentConnection!.grantRevision,
       mode: execution.mode,
@@ -500,22 +517,12 @@ export class AgentSessionService {
     operation: Pick<DirectOperation<unknown>, "ownerUserId" | "target" | "effect">,
     bindingId: string,
   ): Promise<ExecutionAuthority> {
-    const execution = await admitExecution(this.#store.database, {
+    return admitExecution(this.#store.database, {
       ownerUserId: operation.ownerUserId,
       subject: { kind: "binding", bindingId },
+      grantTarget: operation.target?.grant,
+      writeTargetName: operation.effect === "write" ? operation.target?.name : undefined,
     });
-    if (operation.target) {
-      const access = authorizeTarget(execution, operation.target.grant);
-      if (!access)
-        throw refused(
-          "forbidden",
-          "This resource is not shared with this connected agent.",
-          "Ask the person to share it from Connected agents.",
-        );
-      if (operation.effect === "write" && access !== "read-write")
-        throw refused("forbidden", `${operation.target.name} is shared for reading only.`);
-    }
-    return execution;
   }
 
   async #advance<Result>(
@@ -537,8 +544,12 @@ export class AgentSessionService {
             ...(result === undefined ? {} : { result }),
           };
         }
-        case "failed":
-          return { status: "failed", ...base, next: "It failed. Check the current state." };
+        case "failed": {
+          const scriptError = storedScriptError(row.resultSummary);
+          return scriptError
+            ? { status: "failed", ...base, scriptError, next: scriptFailedNext }
+            : { status: "failed", ...base, next: "It failed. Check the current state." };
+        }
         case "unknown":
           return { status: "unknown", ...base, next: unknownNext };
         case "refused":
@@ -590,6 +601,7 @@ export class AgentSessionService {
     return askForAgentOperation(this.#store.database, this.#store.requests, {
       operation: row,
       threadId: taskId,
+      grantTarget: operation.target?.grant,
       ...(operation.question ? { presentation: await operation.question(taskId) } : {}),
       copy: (agent) => directOperationCopy(row.tool, row.target, agent),
     });
@@ -686,6 +698,7 @@ export class AgentSessionService {
       userId: operation.ownerUserId,
       agentConnectionId: operation.agentConnectionId,
       reviewed: row,
+      grantTarget: operation.target?.grant,
     });
     if (!handed)
       return this.#advance(
@@ -817,13 +830,16 @@ export class AgentSessionService {
       } catch (error) {
         this.#onError(error);
       }
+      const scriptError = operation.scriptFailure?.(result);
       const settled = await settleAgentOperation(
         this.#store.database,
         row.id,
-        "completed",
-        summary,
+        scriptError ? "failed" : "completed",
+        scriptError ? { ...summary, scriptError } : summary,
       );
       if (!settled) return { status: "unknown", ...base, next: unknownNext };
+      if (scriptError)
+        return { status: "failed", ...base, result, scriptError, next: scriptFailedNext };
       return { status: "completed", ...base, result, summary };
     } finally {
       if (--entry.work === 0 && this.#sessions.get(row.sessionId) === entry)

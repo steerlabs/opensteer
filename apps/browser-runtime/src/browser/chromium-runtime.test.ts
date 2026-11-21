@@ -65,6 +65,83 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+it("keeps the person's live page state through Stop and Resume", async () => {
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const launch = vi.spyOn(launcher, "launch");
+  const claims = validClaims({
+    actor: "person",
+    creationOrigin: "person",
+    initialNavigation: { operationKey: "person-restart" },
+  });
+  const verifier = new FakeTicketVerifier(claims);
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  cleanup.push(() => runtime.shutdown());
+  const first = await runtime.attach("before-stop", new FakeSink());
+  const browser = await launch.mock.results[0]?.value;
+  const page = browser?.context.pages()[0];
+  expect(page).toBeDefined();
+  if (!page) throw new Error("Missing initial page");
+  const target = await page.targetId();
+  const cdp = await page.cdp();
+  await cdp.send("Runtime.evaluate", {
+    expression: `document.body.innerHTML = '<input><div style="height:4000px"></div>';
+      document.querySelector('input').focus(); window.draft = 73;`,
+  });
+  await cdp.send("Input.insertText", { text: "unsent draft" });
+  await cdp.send("Runtime.evaluate", {
+    expression: "document.activeElement.blur(); window.scrollTo(0, 400);",
+  });
+  const read = async () =>
+    (await cdp.send("Runtime.evaluate", {
+      expression:
+        "JSON.stringify([document.querySelector('input').value, window.scrollY, window.draft])",
+      returnByValue: true,
+    })) as { result: { value: string } };
+  const value = (await read()).result.value;
+  expect(JSON.parse(value)).toEqual(["unsent draft", 400, 73]);
+
+  const agentClaims = validClaims({
+    actor: "agent",
+    creationOrigin: "agent",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000078"),
+  });
+  verifier.setClaims("agent", agentClaims);
+  const agent = await runtime.attach("agent", new FakeSink());
+  const agentPage = (await launch.mock.results[1]?.value)?.context.pages()[0];
+  expect(agentPage?.isClosed()).toBe(false);
+  await agent.close(true, true);
+  expect(agentPage?.isClosed()).toBe(true);
+
+  let attachment = first;
+  for (const ticket of ["after-stop", "after-resume"]) {
+    await attachment.close(true, true);
+    expect(page.isClosed()).toBe(false);
+    verifier.setClaims("agent-reconnect", { ...claims, actor: "agent" });
+    await expect(runtime.attach("agent-reconnect", new FakeSink())).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    const sink = new FakeSink();
+    attachment = await runtime.attach(ticket, sink);
+    expect(attachment.initialPage?.surfaceId).toBe(first.initialPage?.surfaceId);
+    expect(await page.targetId()).toBe(target);
+    expect((await read()).result.value).toBe(value);
+    expect(launch).toHaveBeenCalledTimes(2);
+  }
+  // An unplanned loss still closes the physical page.
+  await cdp.close();
+  await attachment.close(true);
+  expect(page.isClosed()).toBe(true);
+});
+
 it("keeps a 64 MiB upload alive through completion and the final sleep recheck", async () => {
   const uploads: import("node:http").IncomingMessage[] = [];
   let arrived = Promise.withResolvers<void>();

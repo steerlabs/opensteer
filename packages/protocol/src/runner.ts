@@ -1258,6 +1258,7 @@ export const RunnerBrowserModuleSchema = z
     standardCdpLineage: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
     standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
+    standardCdpAttemptRecovery: z.literal(1).optional().catch(undefined),
     cardFill: z
       .number()
       .int()

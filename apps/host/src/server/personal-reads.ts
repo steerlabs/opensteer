@@ -436,7 +436,14 @@ export function createPersonalReads(
           dependencies.browser.isPlacementReady(runnerId, input.runtimeId)
         );
       });
-      return rpcSuccess({ ready });
+      const pluginAgentWorkStoppedSince =
+        ready && input.kind === "runner"
+          ? dependencies.pluginAgentWorkStoppedSince?.(input.runnerId)
+          : undefined;
+      return rpcSuccess({
+        ready,
+        ...(pluginAgentWorkStoppedSince ? { pluginAgentWorkStoppedSince } : {}),
+      });
     },
     "tasks.page": async (input, context) => {
       const viewerId = requireSession(context).user.id;

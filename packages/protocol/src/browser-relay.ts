@@ -1,4 +1,5 @@
 import {
+  StandardCdpAttemptReconciliationSchema,
   StandardCdpChunkSchema,
   StandardCdpLeaseEvidenceSchema,
   StandardCdpLeaseReconciliationSchema,
@@ -130,6 +131,7 @@ const HostToBrowserRelayWireSchema = z.discriminatedUnion("type", [
     ...relayRequestBase,
     type: z.literal("browser.standard-cdp.reconcile"),
     lease: StandardCdpLeaseReconciliationSchema.optional(),
+    attempt: StandardCdpAttemptReconciliationSchema.optional(),
   }),
   z.strictObject({
     ...relayRequestBase,

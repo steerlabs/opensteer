@@ -1,6 +1,8 @@
 import { defaultBrowserViewport } from "@opensteer/browser-core";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { BrowserController } from "./browser/controller.js";
 import type { BrowserLauncher } from "./browser/backend.js";
 import type { BrowserPageDiagnostic } from "./browser/page-ownership.js";
 import { BrowserRuntimeError } from "./errors.js";
@@ -19,6 +21,79 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntime", () => {
+  it("waits for the exact confined CDP attachment and fences a late attach", async () => {
+    const verifier = new FakeTicketVerifier(freshClaims());
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+    });
+    const seed = freshClaims();
+    const attempt = {
+      attachmentId: randomUUID(),
+      sessionId: seed.sessionId,
+      runtimeBootId: runtime.standardCdpBootId,
+      operationExpiresAt: seed.operationExpiresAt,
+    };
+    verifier.setClaims(
+      "standard",
+      freshClaims({
+        standardCdp: "session",
+        standardCdpAttempt: {
+          attachmentId: attempt.attachmentId,
+          runtimeBootId: attempt.runtimeBootId,
+        },
+      }),
+    );
+    const pending = Promise.withResolvers<void>();
+    const open = BrowserController.prototype.openStandardCdp;
+    const holdSettlement = vi
+      .spyOn(BrowserController.prototype, "openStandardCdp")
+      .mockImplementationOnce(function (this: BrowserController, ...args) {
+        const client = open.call(this, ...args);
+        return {
+          ...client,
+          settled: Promise.all([client.settled, pending.promise]).then(() => {}),
+        };
+      });
+    try {
+      await runtime.attach("seed", new FakeSink());
+      const raw = await runtime.attachStandardCdp(
+        "standard",
+        () => {},
+        new AbortController().signal,
+      );
+      await expect(
+        runtime.reconcileStandardCdpAttempt({
+          ...attempt,
+          sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
+        }),
+      ).rejects.toThrow("belongs to another session");
+      expect(raw.signal.aborted).toBe(false);
+      let proved = false;
+      const proof = runtime.reconcileStandardCdpAttempt(attempt).then((evidence) => {
+        proved = true;
+        return evidence;
+      });
+      expect(raw.signal.aborted).toBe(true);
+      await flushMicrotasks();
+      expect(proved).toBe(false);
+      pending.resolve();
+      expect(await proof).toEqual({
+        runtimeBootId: attempt.runtimeBootId,
+        attachmentId: attempt.attachmentId,
+      });
+      await expect(
+        runtime.attachStandardCdp("standard", () => {}, new AbortController().signal),
+      ).rejects.toThrow("This browser attachment has ended.");
+    } finally {
+      pending.resolve();
+      holdSettlement.mockRestore();
+      await runtime.shutdown();
+    }
+  });
+
   it("retires an idle Guest process with a reason and preserves suspended tab records", async () => {
     vi.useFakeTimers();
     vi.spyOn(process, "availableMemory").mockReturnValue(0);

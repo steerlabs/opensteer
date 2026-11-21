@@ -71,7 +71,7 @@ export interface PageTabsPort {
   ): Promise<Extract<TabViewer, { kind: "page" }>>;
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
   bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
-  closeViewers(ownerId: UserId, row: TabRecord): Promise<void>;
+  closeViewers(ownerId: UserId, row: TabRecord, closePage?: boolean): Promise<void>;
 }
 export interface TabServiceOptions {
   store: TabStore;
@@ -730,7 +730,7 @@ export class TabService implements TabServicePort {
     TabCloseInputSchema.parse({ tabIds });
     const failed: TabCloseResult["failed"] = [],
       permitted = new Set<TabId>(),
-      cleanup: TabRecord[] = [];
+      cleanup: { row: TabRecord; closePage: boolean }[] = [];
     const result = await this.options.store.close(
       owner(actor),
       tabIds,
@@ -744,8 +744,20 @@ export class TabService implements TabServicePort {
             if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
               conflict();
             await this.options.authorizeMembership(actor, tx);
+            const task =
+              row.pageBinding && row.openedBy && row.openedBy !== "person"
+                ? await tx
+                    .selectFrom("threads")
+                    .select(["originConnectionId", "worker"])
+                    .where("id", "=", row.openedBy.taskId)
+                    .where("createdBy", "=", owner(actor))
+                    .executeTakeFirst()
+                : undefined;
             permitted.add(tabId);
-            cleanup.push(row);
+            cleanup.push({
+              row,
+              closePage: Boolean(task?.originConnectionId && task.worker === "external"),
+            });
           } catch (error) {
             if (expectedGeneration !== undefined) throw error;
             failed.push({
@@ -761,17 +773,17 @@ export class TabService implements TabServicePort {
       },
       (row) => permitted.has(row.id),
     );
+    const ending = cleanup
+      .filter(({ row }) => result.tabIds.includes(row.id))
+      .map(async ({ row, closePage }) => {
+        if (row.kind === "page")
+          await this.options.pages.closeViewers(owner(actor), row, closePage);
+        else if (row.kind === "phone" || row.kind === "window")
+          await this.options.nativeTargets.closeOwnerViews(owner(actor), row.id, row.generation);
+      });
     this.changed(owner(actor));
-    for (const row of cleanup)
-      if (result.tabIds.includes(row.id)) {
-        try {
-          if (row.kind === "page") await this.options.pages.closeViewers(owner(actor), row);
-          else if (row.kind === "phone" || row.kind === "window")
-            await this.options.nativeTargets.closeOwnerViews(owner(actor), row.id, row.generation);
-        } catch (error) {
-          this.options.onError(error);
-        }
-      }
+    for (const outcome of await Promise.allSettled(ending))
+      if (outcome.status === "rejected") this.options.onError(outcome.reason);
     return { closed: result.tabIds.filter((id) => permitted.has(id)), failed };
   }
 

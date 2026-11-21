@@ -156,7 +156,12 @@ export function connectionInstructionsFor(
     ...(hasDirectWork
       ? [
           "The person can watch your direct-work task. Omit taskId to start or continue it, or pass the returned taskId to keep working there.",
-          "Pending means the person was asked. Read taskId, operationId and status in structuredContent. After the person has time to answer, call the same tool with identical arguments and the returned operationId. Do not poll in a loop.",
+          "When the person's reply is pending, read taskId, operationId and status in structuredContent. After the person has time to answer, call the same tool with identical arguments and the returned operationId. Each call waits up to 25 seconds; if it is still pending, call again, but not in a tight loop.",
+          ...(names.has("plugin_resume")
+            ? [
+                "For pending plugin input, use plugin_resume with the returned executionId and taskId instead.",
+              ]
+            : []),
           "Unknown means it may have happened. Check the current state before acting again.",
           "stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.",
         ]

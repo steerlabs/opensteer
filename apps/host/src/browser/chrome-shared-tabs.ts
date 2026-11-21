@@ -11,6 +11,7 @@ import {
 import {
   authorizeTarget,
   executionAccess,
+  withDatabaseOperationSignal,
   type ExecutionAuthority,
   type OpensteerStore,
   type sharedChromeAttempts,
@@ -35,14 +36,18 @@ import {
   type BrowserUsePort,
   type BrowserUseTarget,
 } from "../browser-use/browser-repl-service.js";
+import { BrowserCdpConnectionEnded } from "./browser-service.js";
 import { ChromeTabBackend, ChromeTabReplyLost } from "./chrome-tab-backend.js";
 import {
   StandardCdpTickets,
   standardCdpConnectPrefix,
   type CdpAuthority,
+  type StandardCdpFacts,
   type StandardCdpTicketClaims,
 } from "./standard-cdp-tickets.js";
-import { routerStandardTransport } from "./standard-cdp-transport.js";
+import { routerStandardTransport, standardCdpAdmissionMs } from "./standard-cdp-transport.js";
+
+type ChromeAccessWitness = Pick<StandardCdpFacts, "accessMode" | "grantRevision">;
 
 type SourceFrame =
   | BrowserSourceTabPart<"tab.event" | "tab.result">
@@ -61,7 +66,7 @@ type ChromeSource = {
     {
       evidence: PromiseWithResolvers<boolean>;
       finished: Promise<void>;
-      root: boolean;
+      group: Group;
     }
   >;
   readonly backend: ChromeTabBackend;
@@ -88,7 +93,9 @@ type Group = {
   closing: Set<Promise<void>>;
   opening: number;
   readonly detaching: Set<Promise<void>>;
-  detachUnconfirmed: boolean;
+  readonly pendingDetach: Set<string>;
+  rootDetachIncomplete: boolean;
+  popupDetachUnconfirmed: boolean;
 };
 
 type ChromeAttempt = {
@@ -281,9 +288,10 @@ export class ChromeSharedTabs {
     readonly authority: CdpAuthority;
     readonly tabId: string;
     readonly ttl?: number;
+    readonly expectedAccess?: ChromeAccessWitness;
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: "session" }> {
     const share = this.#shares.get(input.tabId);
-    const execution = await this.#requireAccess(input.authority, share);
+    const execution = await this.#requireAccess(input.authority, share, input.expectedAccess);
     const { source, info, group } = share!;
     const ticket = this.standardCdpTickets.issue({
       ...input,
@@ -297,6 +305,7 @@ export class ChromeSharedTabs {
         placementKey: info.shareId,
         grantRevision: execution.agentConnection?.grantRevision ?? null,
         agentConnectionId: execution.agentConnection?.agentConnectionId ?? null,
+        ...(execution.agentConnection ? { accessMode: execution.mode } : {}),
       },
     });
     return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode: "session" };
@@ -315,19 +324,21 @@ export class ChromeSharedTabs {
       share.group.sessionId !== claims.browserSessionId
     )
       throw unavailable();
-    const verify = async () => {
-      const execution = await this.#requireAccess(claims.authority, share);
-      if (
-        (execution.agentConnection?.grantRevision ?? null) !== claims.facts.grantRevision ||
-        (execution.agentConnection?.agentConnectionId ?? null) !== claims.facts.agentConnectionId
-      )
+    const verify = async (check: AbortSignal, expiresAt: number) => {
+      check.throwIfAborted();
+      const execution = await withDatabaseOperationSignal(check, expiresAt, () =>
+        this.#requireAccess(claims.authority, share, claims.facts),
+      );
+      if ((execution.agentConnection?.agentConnectionId ?? null) !== claims.facts.agentConnectionId)
         throw unavailable();
+      check.throwIfAborted();
       return execution;
     };
-    const admitting = admissionSignal ? AbortSignal.any([signal, admissionSignal]) : signal;
-    admitting.throwIfAborted();
-    const execution = await verify();
-    admitting.throwIfAborted();
+    const admitting = AbortSignal.any([
+      signal,
+      admissionSignal ?? AbortSignal.timeout(standardCdpAdmissionMs),
+    ]);
+    const execution = await verify(admitting, Date.now() + standardCdpAdmissionMs);
     const overflow = new AbortController();
     const client = await this.#open(
       share,
@@ -340,10 +351,17 @@ export class ChromeSharedTabs {
     const close = () => client.close();
     life.addEventListener("abort", close, { once: true });
     if (life.aborted) close();
+    const transport = routerStandardTransport(client, "session", life);
+    const reauthorize = async (check = AbortSignal.timeout(1_000)) => {
+      await verify(AbortSignal.any([life, check]), Date.now() + 1_000);
+    };
     return {
-      ...routerStandardTransport(client, "session", life),
-      reauthorize: async () => {
-        await verify();
+      ...transport,
+      reauthorize,
+      send: async (frame: Buffer) => {
+        await reauthorize();
+        life.throwIfAborted();
+        await transport.send(frame);
       },
     };
   }
@@ -529,6 +547,7 @@ export class ChromeSharedTabs {
     for (const receipt of source.detaching.values()) receipt.evidence.resolve(false);
     for (const share of source.shares.values())
       if (share.info.shareId === share.group.root) void this.#unshare(source, share.info.shareId);
+    source.detaching.clear();
     source.backend.close();
     void source.router.close();
   }
@@ -541,9 +560,21 @@ export class ChromeSharedTabs {
     if (source.shares.has(shareId)) return;
     const waiting = source.detaching.get(shareId);
     if (waiting) {
-      waiting.evidence.resolve(true);
-      await waiting.finished;
-      if (!waiting.root || (await waiting.evidence.promise)) return;
+      const { group, evidence, finished } = waiting;
+      const last = group.pendingDetach.delete(shareId) && group.pendingDetach.size === 0;
+      evidence.resolve(true);
+      await finished;
+      if (!source.detachReplay) {
+        source.detaching.delete(shareId);
+        const attempt = group.attempt;
+        if (last && attempt?.finishing && !source.shares.has(group.root)) {
+          await attempt.finishing;
+          if (group.rootDetachIncomplete)
+            await this.#receipts!.finish(attempt.connectionId, attempt.id, true);
+        }
+        return;
+      }
+      if (shareId !== group.root || (await evidence.promise)) return;
     }
     if (!source.detachReplay) return;
     await this.#receipts?.recordDetach({
@@ -586,12 +617,21 @@ export class ChromeSharedTabs {
   async #requireAccess(
     authority: CdpAuthority,
     expected: Share | undefined,
+    witness?: ChromeAccessWitness,
   ): Promise<ExecutionAuthority> {
     if (!expected || expected.source.ownerId !== authority.ownerId) throw unavailable();
     const execution = await this.#store.admitExecution({
       ownerUserId: authority.ownerId,
       subject: this.#subject(authority),
     });
+    if (
+      witness &&
+      ((witness.accessMode !== undefined && execution.mode !== witness.accessMode) ||
+        (execution.agentConnection?.grantRevision ?? null) !== witness.grantRevision)
+    )
+      throw new BrowserCdpConnectionEnded(
+        "This browser authority changed. Request a new attachment.",
+      );
     await this.#authorizeSource(execution, expected.source, false);
     if (this.#shares.get(expected.info.shareId) !== expected) throw unavailable();
     if (expected.group.binding && expected.group.binding !== authority.agentBindingId)
@@ -692,7 +732,8 @@ export class ChromeSharedTabs {
       return;
     if (group.attempt) {
       const detached =
-        !group.detachUnconfirmed &&
+        !group.popupDetachUnconfirmed &&
+        !group.pendingDetach.size &&
         [...source.shares.values()]
           .filter((share) => share.group === group)
           .map((share) => source.backend.detachedCleanly(share.info.shareId))
@@ -740,7 +781,12 @@ export class ChromeSharedTabs {
       source.backend.update(info);
       return;
     }
-    if (source.shares.size >= maxSharesPerChrome) throw forbidden("Too many shared Chrome tabs.");
+    if (source.detaching.has(info.shareId)) throw unavailable();
+    if (
+      source.shares.size >= maxSharesPerChrome ||
+      (!source.detachReplay && source.shares.size + source.detaching.size >= 2 * maxSharesPerChrome)
+    )
+      throw forbidden("Too many shared Chrome tabs.");
     const opener = info.openerShareId ? source.shares.get(info.openerShareId) : undefined;
     if (info.openerShareId && !opener) return;
     const group = opener?.group ?? {
@@ -750,7 +796,9 @@ export class ChromeSharedTabs {
       closing: new Set<Promise<void>>(),
       opening: 0,
       detaching: new Set<Promise<void>>(),
-      detachUnconfirmed: false,
+      pendingDetach: new Set<string>(),
+      rootDetachIncomplete: false,
+      popupDetachUnconfirmed: false,
     };
     if (!opener)
       source.router.registerSession(group.sessionId, info.targetId, async () => false, "/");
@@ -787,26 +835,34 @@ export class ChromeSharedTabs {
     source.backend.remove(tabId);
     this.#changed(source.ownerId);
     if (!attempt || !evidence) return Promise.resolve();
+    const legacy = !source.detachReplay;
+    if (legacy) group.pendingDetach.add(tabId);
     const timer = setTimeout(() => evidence.resolve(false), 10_000);
     timer.unref();
     if (this.#sources.get(source.sourceId) !== source) evidence.resolve(false);
     const observed = evidence.promise.finally(() => clearTimeout(timer));
     // Replay-capable companions include previously unshared popups in the root receipt.
-    const rootEvidence = source.detachReplay
-      ? observed
-      : Promise.all([observed, ...group.detaching]).then(
-          ([detached]) => detached === true && !group.detachUnconfirmed,
-        );
+    const rootEvidence = legacy
+      ? Promise.all([observed, ...group.detaching]).then(([detached]) => {
+          const confirmed = detached === true && !group.pendingDetach.size;
+          group.rootDetachIncomplete = !confirmed;
+          return confirmed;
+        })
+      : observed;
     const settled = root
       ? this.#finish(attempt, rootEvidence)
       : observed.then((detached) => {
-          group.detachUnconfirmed ||= !detached;
+          if (!legacy && !detached) group.popupDetachUnconfirmed = true;
           group.detaching.delete(settled);
           void this.#releaseGroup(source, group).catch(this.#onError);
         });
-    source.detaching.set(tabId, { evidence, finished: settled, root });
+    source.detaching.set(tabId, { evidence, finished: settled, group });
     if (!root) group.detaching.add(settled);
-    void settled.finally(() => source.detaching.delete(tabId)).catch(this.#onError);
+    void settled
+      .finally(() => {
+        if (!legacy || !group.pendingDetach.has(tabId)) source.detaching.delete(tabId);
+      })
+      .catch(this.#onError);
     return settled;
   }
 

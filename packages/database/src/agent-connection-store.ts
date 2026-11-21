@@ -24,7 +24,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { sql, type Kysely, type Selectable } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { isIdentityStillVerified } from "./agent-directory-verification.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -37,6 +37,19 @@ import {
 import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
+
+interface AgentConnectionEdit {
+  readonly connectionId: string;
+  readonly expectedRevision: number;
+  readonly label?: string;
+  readonly accessMode?: AgentConnection["accessMode"];
+  readonly grant?: AgentGrant;
+}
+
+export type WorkPolicyConnectionChange = { readonly userId: UserId } & (
+  | { readonly kind: "revoke"; readonly connectionId: string }
+  | ({ readonly kind: "update" } & AgentConnectionEdit)
+);
 
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -317,69 +330,84 @@ export class AgentConnectionStore {
   /** Revision-checked; returns whether the edit withdrew authority that live work may hold. */
   async update(
     userId: UserId,
-    input: {
-      readonly connectionId: string;
-      readonly expectedRevision: number;
-      readonly label?: string;
-      readonly accessMode?: AgentConnection["accessMode"];
-      readonly grant?: AgentGrant;
-    },
+    input: AgentConnectionEdit,
   ): Promise<{ readonly connection: AgentConnection; readonly narrowed: boolean }> {
     return commitPersonalMutation(this.database, async (tx) => {
-      await requirePersonalOwner(tx, userId);
-      const current = await tx
-        .selectFrom("agentConnections")
-        .selectAll()
-        .where("id", "=", input.connectionId)
-        .where("userId", "=", userId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!current || current.revokedAt !== null || current.expiresAt <= this.now())
-        throw new OpensteerError({
-          code: "not_found",
-          message: "This connected agent is no longer connected.",
-        });
-      if (current.grantRevision !== input.expectedRevision)
-        throw new OpensteerError({
-          code: "conflict",
-          reason: "revision-changed",
-          message: "This connected agent changed since you opened it. Review it and try again.",
-        });
-      const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
-      if (input.grant) await assertGrantable(tx, userId, grant);
-      const accessMode = await connectionPolicyMode(
-        tx,
-        grant,
-        input.accessMode ?? current.accessMode,
-      );
-      const narrowed =
-        agentGrantNarrowed(current.grant, grant) ||
-        !threadAccessModeAtMost(current.accessMode, accessMode);
-      const changed = !isDeepStrictEqual(current.grant, grant) || current.accessMode !== accessMode;
-      const row = await tx
-        .updateTable("agentConnections")
-        .set({
-          label: input.label ?? current.label,
-          accessMode,
-          grant: jsonValue(grant),
-          grantRevision: current.grantRevision + Number(changed),
-          ...(narrowed
-            ? {
-                cleanupReason: "narrowed" as const,
-                cleanupRequestedAt: this.now(),
-                cleanupMinimumGrantRevision: current.grantRevision + 1,
-                cleanupMaximumMode: accessMode,
-                cleanupCompletedAt: null,
-              }
-            : {}),
-        })
-        .where("id", "=", current.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (changed)
-        await closeObsoleteAgentOperationRequests(tx, current.id, row.grantRevision, this.now());
-      return { connection: view(row, "active"), narrowed };
+      const { changed, ...result } = await this.#writeUpdate(tx, userId, input);
+      if (changed) await closeObsoleteAgentOperationRequests(tx, [input.connectionId], this.now());
+      return result;
     });
+  }
+
+  async applyWorkPolicyChanges(changes: readonly WorkPolicyConnectionChange[]): Promise<void> {
+    await commitPersonalMutation(this.database, async (tx) => {
+      const store = new AgentConnectionStore(tx, this.now);
+      const changedIds: string[] = [];
+      for (const change of changes.toSorted((a, b) =>
+        a.connectionId.localeCompare(b.connectionId),
+      )) {
+        const changed =
+          change.kind === "revoke"
+            ? await store.revoke(change.userId, change.connectionId)
+            : (await this.#writeUpdate(tx, change.userId, change)).changed;
+        if (changed) changedIds.push(change.connectionId);
+      }
+      await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
+    });
+  }
+
+  async #writeUpdate(tx: Transaction<DatabaseSchema>, userId: UserId, input: AgentConnectionEdit) {
+    await requirePersonalOwner(tx, userId);
+    const current = await tx
+      .selectFrom("agentConnections")
+      .selectAll()
+      .where("id", "=", input.connectionId)
+      .where("userId", "=", userId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (!current || current.revokedAt !== null || current.expiresAt <= this.now())
+      throw new OpensteerError({
+        code: "not_found",
+        message: "This connected agent is no longer connected.",
+      });
+    if (current.grantRevision !== input.expectedRevision)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "revision-changed",
+        message: "This connected agent changed since you opened it. Review it and try again.",
+      });
+    const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
+    if (input.grant) await assertGrantable(tx, userId, grant);
+    const accessMode = await connectionPolicyMode(
+      tx,
+      grant,
+      input.accessMode ?? current.accessMode,
+    );
+    const narrowed =
+      agentGrantNarrowed(current.grant, grant) ||
+      !threadAccessModeAtMost(current.accessMode, accessMode);
+    const changed = !isDeepStrictEqual(current.grant, grant) || current.accessMode !== accessMode;
+    const row = await tx
+      .updateTable("agentConnections")
+      .set({
+        label: input.label ?? current.label,
+        accessMode,
+        grant: jsonValue(grant),
+        grantRevision: current.grantRevision + Number(changed),
+        ...(narrowed
+          ? {
+              cleanupReason: "narrowed" as const,
+              cleanupRequestedAt: this.now(),
+              cleanupMinimumGrantRevision: current.grantRevision + 1,
+              cleanupMaximumMode: accessMode,
+              cleanupCompletedAt: null,
+            }
+          : {}),
+      })
+      .where("id", "=", current.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return { connection: view(row, "active"), narrowed, changed };
   }
   /**
    * Disconnect's durable decision. Inside the personal fence the owner-filtered row is locked

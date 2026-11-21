@@ -14,8 +14,10 @@ import { ownTestDatabaseProducer } from "@opensteer/database/test-support/databa
 import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import {
+  agentHomeFilesCapability,
   HarnessInstanceCatalogSchema,
   hostApiVersionHeader,
+  RunnerAgentHomeReportSchema,
   RunnerAuxiliaryChallengeSchema,
   RunnerAuxiliaryWelcomeSchema,
   RunnerBootIdSchema,
@@ -740,6 +742,7 @@ export async function connectCallerMachine(
     readonly computerTool?: 1;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
+    readonly runFileProof?: boolean;
     readonly runnerKind?: "local" | "main";
     /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
     readonly triggerPrograms?: boolean;
@@ -769,6 +772,7 @@ export async function connectCallerMachine(
       "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.runFileProof ? [agentHomeFilesCapability] : []),
       ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
     ],
     modules: {
@@ -813,6 +817,19 @@ export async function connectCallerMachine(
     ? { privateKey: input.previous.primary.privateKey }
     : { token: input.token };
   const primary = await connectPrimary(host.hostPort, descriptor, credentials, socket);
+  if (input.runFileProof) {
+    primary.socket.send(
+      JSON.stringify(
+        RunnerAgentHomeReportSchema.parse({
+          ...primary.fence,
+          environmentId,
+          path: host.agentHome.path,
+          rootIdentity: { kind: "posix", fileId: "1", volumeId: "1" },
+          type: "runner.agent-home.report",
+        }),
+      ),
+    );
+  }
   // Every dispatched command is acknowledged, including the ones this Runner
   // has nothing to do about: a command the Host waits on and never hears back
   // ejects the whole connection fifteen seconds later.

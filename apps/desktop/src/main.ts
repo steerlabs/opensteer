@@ -662,6 +662,7 @@ async function runDesktop(
   const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
     agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     catalog: deploymentCatalog,
@@ -883,6 +884,7 @@ async function runDesktop(
   });
   const localRunner = new LocalRunnerService(loaded.config, {
     agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     assertAccountSource: (source) => nativeAuth.assertAccountSource(source),
     fenceDeployment: (deploymentId) => {
       for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
@@ -924,6 +926,7 @@ async function runDesktop(
     }),
     userEnvironment: personalUserEnvironment,
   });
+  shutdown.signal.addEventListener("abort", () => localRunner.quiesce(), { once: true });
   deviceLifecycle = localRunner;
   shutdown.add({
     component: "local-runners",
@@ -1562,13 +1565,16 @@ async function runDesktop(
   const hiddenRelaunchPath = path.join(loaded.config.dataDirectory, "relaunch-hidden.json");
   // The new version comes back the way this one was left: in the menu bar, or showing.
   // `stillDue` is the background install's last look, right before the handoff.
-  const requestInstall = async (stillDue?: () => Promise<boolean>) => {
+  const requestInstall = async (
+    stillDue?: () => Promise<boolean>,
+    holdsCurrent?: () => boolean,
+  ) => {
     const hidden = !windowVisible();
     if (hidden)
       await rememberHiddenRelaunch(hiddenRelaunchPath).catch((error: unknown) =>
         reportNonFatal("desktop.update.hidden-relaunch-failed", error),
       );
-    if (stillDue && !(await stillDue())) {
+    if (stillDue && (!(await stillDue()) || !holdsCurrent?.())) {
       if (hidden) await forgetHiddenRelaunch(hiddenRelaunchPath).catch(() => undefined);
       throw new Error("Agent work started before the update could install.");
     }
@@ -1796,23 +1802,27 @@ async function runDesktop(
   shutdown.signal.throwIfAborted();
   backgroundUpdate = new DesktopBackgroundUpdate({
     updater,
-    install: async (stillDue) => {
-      const held: (() => Promise<void>)[] = [];
-      try {
-        await requestInstall(async () => {
-          const results = await Promise.allSettled([
-            personal.holdIdleForUpdate(),
-            localRunner.holdIdleForUpdate(),
-          ]);
-          for (const result of results)
-            if (result.status === "fulfilled" && result.value) held.push(result.value);
-          return held.length === results.length && (await stillDue());
-        });
-      } catch (error) {
-        await Promise.allSettled(held.map((release) => release()));
-        throw error;
-      }
-    },
+    install: (stillDue) =>
+      localStop.whileModeStable(async () => {
+        const held: { current(): boolean; release(): Promise<void> }[] = [];
+        try {
+          await requestInstall(
+            async () => {
+              const results = await Promise.allSettled([
+                personal.holdIdleForUpdate(),
+                localRunner.holdIdleForUpdate(),
+              ]);
+              for (const result of results)
+                if (result.status === "fulfilled" && result.value) held.push(result.value);
+              return held.length === results.length && (await stillDue());
+            },
+            () => held.every((hold) => hold.current()),
+          );
+        } catch (error) {
+          await Promise.allSettled(held.map((hold) => hold.release()));
+          throw error;
+        }
+      }),
     windowVisible,
     idle: async () => activityIdle(await activity.snapshot()),
     stopping: () => shutdown.requested,

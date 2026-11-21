@@ -44,7 +44,7 @@ export function SetUpPhoneScreen({ route }: SetupProps): ReactNode {
 function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient: HostClient }) {
   const navigation = useNavigation();
   // A work Home says whose it is before this phone joins, or that its organization keeps it out.
-  const workPolicy = useWorkPolicy(props.hostClient);
+  const work = joinWorkLine(useWorkPolicy(props.hostClient));
   const controller = useIphoneApps();
   const { registration } = useMobileNotifications();
   const { rows } = useMobileState();
@@ -80,7 +80,7 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
   );
 
   const run = (): void => {
-    if (busy || draft.name.trim() === "") return;
+    if (busy || work.blocked || draft.name.trim() === "") return;
     void setup
       .current!.run({
         controller,
@@ -122,7 +122,7 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
         busy,
         continueLabel: failed ? "Try again" : "Continue",
         disclosure: setupDisclosure(opensteer, companies, thisPhoneNoun),
-        ...joinWorkLine(workPolicy),
+        ...work,
         failure: setupFailureText(state, opensteer, thisPhoneNoun),
         name: draft.name,
         notifications: switches.notifications,

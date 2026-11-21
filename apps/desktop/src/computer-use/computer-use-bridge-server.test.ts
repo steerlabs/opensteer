@@ -1,5 +1,5 @@
-import type { IphoneRunnerPort } from "@opensteer/protocol/iphone-bridge";
 import { createId } from "@opensteer/core";
+import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
 import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
 import type {
@@ -1050,7 +1050,7 @@ function openAnswer(params: unknown): unknown {
 
 async function bridgeHarness(
   options: {
-    readonly iphone?: IphoneRunnerPort;
+    readonly iphone?: DesktopIphoneRunnerPort;
     readonly graceMs?: number;
     readonly ownerInputVersion?: 2 | undefined;
     readonly passwords?: PasswordsAuthorityPort;
@@ -1263,6 +1263,29 @@ it("waits for the worker's agent sessions to close before confirming its disconn
   await expect(confirmed).resolves.toBe(true);
   expect(h.calls).toContainEqual(["session.close", { sessionId }]);
 });
+
+it.each([true, false])(
+  "includes the iPhone close result (%s) in worker disconnect proof",
+  async (success) => {
+    const nativeClosed = Promise.withResolvers<boolean>();
+    const close = vi.fn(() => nativeClosed.promise);
+    const h = await bridgeHarness({
+      iphone: {
+        connect: () => ({ request: vi.fn(), close }),
+      },
+    });
+    const runner = await h.connect(h.token, undefined, undefined, true);
+    const confirmed = vi.fn();
+    const drained = h.server.workerDisconnected().then(confirmed);
+    runner.close();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(confirmed).not.toHaveBeenCalled();
+    nativeClosed.resolve(success);
+    await drained;
+    expect(confirmed).toHaveBeenCalledWith(success);
+    await expect(h.server.workerDisconnected()).resolves.toBe(success);
+  },
+);
 
 it("requires iPhone opt-in and fences slot and generation on the shared bridge", async () => {
   const phone = await iphoneFixture();
