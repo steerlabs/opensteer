@@ -133,6 +133,8 @@ function retryAt(headers: Headers): number {
 }
 
 export function provisionerFailure(error: unknown) {
+  if (error instanceof ProviderOutcomeUnknown)
+    return { event: "home-provisioner.provider.outcome-unknown" };
   if (!(error instanceof RemoteRequestError)) return { event: "home-provisioner.pass.failed" };
   const { service, status, retryAt } = error;
   const event =

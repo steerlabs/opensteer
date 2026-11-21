@@ -7,13 +7,13 @@ const envSchema = z.object({
   OPENSTEER_ACCOUNT_URL: z.url({ protocol: /^https$/u }).refine(isBareOrigin),
   OPENSTEER_HOME_PROVIDER: z.enum(["hetzner", "google"]).default("hetzner"),
   OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: z.string().regex(/^[a-f0-9]{32}$/u),
-  OPENSTEER_HOME_INTERVAL_MS: milliseconds(1_000, 300_000).default(10_000),
-  OPENSTEER_HOME_REQUEST_TIMEOUT_MS: milliseconds(100, 60_000).default(15_000),
-  OPENSTEER_HOME_ACTION_TIMEOUT_MS: milliseconds(1_000, 600_000).default(90_000),
-  OPENSTEER_HOME_READINESS_TIMEOUT_MS: milliseconds(1_000, 3_600_000).default(600_000),
+  OPENSTEER_HOME_INTERVAL_MS: integer(1_000, 300_000).default(10_000),
+  OPENSTEER_HOME_REQUEST_TIMEOUT_MS: integer(100, 60_000).default(15_000),
+  OPENSTEER_HOME_ACTION_TIMEOUT_MS: integer(1_000, 600_000).default(90_000),
+  OPENSTEER_HOME_READINESS_TIMEOUT_MS: integer(1_000, 3_600_000).default(600_000),
   OPENSTEER_HOME_PROVISIONER_REPLICAS: z.literal("1").default("1"),
-  OPENSTEER_HOME_ORPHAN_GRACE_MS: milliseconds(60_000, 86_400_000).default(300_000),
-  OPENSTEER_HOME_CONCURRENCY: milliseconds(1, 16).default(4),
+  OPENSTEER_HOME_ORPHAN_GRACE_MS: integer(60_000, 86_400_000).default(300_000),
+  OPENSTEER_HOME_CONCURRENCY: integer(1, 16).default(4),
 });
 
 const hetznerSchema = z.object({
@@ -44,10 +44,6 @@ const googleSchema = z.object({
   OPENSTEER_HOME_GCP_DISK_SIZE_GB: integer(10, 65_536).default(30),
 });
 
-function milliseconds(min: number, max: number) {
-  return integer(min, max);
-}
-
 function integer(min: number, max: number) {
   return z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
 }
@@ -62,11 +58,10 @@ function readConfig<T>(schema: z.ZodType<T>, env: NodeJS.ProcessEnv) {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv) {
-  const parsed = readConfig(envSchema, env);
-  if (parsed.OPENSTEER_HOME_PROVIDER === "google") {
-    const google = readConfig(googleSchema, env);
+  if (env.OPENSTEER_HOME_PROVIDER === "google") {
+    const google = readConfig(envSchema.extend(googleSchema.shape), env);
     return {
-      ...sharedConfig(parsed, env),
+      ...sharedConfig(google, env),
       provider: "google" as const,
       project: google.OPENSTEER_HOME_GCP_PROJECT,
       zone: google.OPENSTEER_HOME_GCP_ZONE,
@@ -79,11 +74,11 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
       image: google.OPENSTEER_HOME_GCP_IMAGE,
     };
   }
-  const hetzner = readConfig(hetznerSchema, env);
+  const hetzner = readConfig(envSchema.extend(hetznerSchema.shape), env);
   const imageId = z.coerce.number().int().positive().safeParse(hetzner.OPENSTEER_HOME_IMAGE);
   const hetznerToken = readSecret(env, "OPENSTEER_HOME_HETZNER_TOKEN");
   return {
-    ...sharedConfig(parsed, env),
+    ...sharedConfig(hetzner, env),
     provider: "hetzner" as const,
     hetznerToken,
     region: hetzner.OPENSTEER_HOME_DEFAULT_REGION,

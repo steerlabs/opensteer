@@ -32,7 +32,16 @@ async function main(): Promise<void> {
     orphanGraceMs: config.orphanGraceMs,
     provider:
       config.provider === "google"
-        ? new GoogleCompute({ ...config, ...http })
+        ? new GoogleCompute({
+            ...http,
+            project: config.project,
+            zone: config.zone,
+            network: config.network,
+            subnet: config.subnet,
+            diskType: config.diskType,
+            diskSizeGb: config.diskSizeGb,
+            actionTimeoutMs: config.actionTimeoutMs,
+          })
         : new HetznerCloud({
             ...http,
             token: config.hetznerToken,

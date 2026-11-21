@@ -11,6 +11,8 @@ import { RemoteRequestError } from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
+import { ComputeFake, zonePath } from "./google-compute.test-support.js";
+import { fakeHetzner } from "./hetzner.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
   id: "cc_00000000-0000-4000-8000-000000000001",
@@ -42,7 +44,11 @@ const changed = CloudComputerIdentitySchema.parse({
   hostKeyFingerprint: `sha256:${"b".repeat(43)}`,
 });
 
-function harness({ concurrency = 2 } = {}) {
+function harness({
+  concurrency = 2,
+  compute,
+  adapter,
+}: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider } = {}) {
   const reports: CloudComputerReport[] = [];
   const calls: string[] = [];
   const servers = new Map<number, VmServer & { home: CloudComputerId }>();
@@ -98,6 +104,7 @@ function harness({ concurrency = 2 } = {}) {
       servers.delete(id);
     }),
   } satisfies VmProvider;
+  const vmProvider = adapter ?? compute?.adapter() ?? provider;
   const dns = {
     listManaged: vi.fn(async () =>
       [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
@@ -121,16 +128,42 @@ function harness({ concurrency = 2 } = {}) {
     check: vi.fn<AccountApi["check"]>(async (id, check) => {
       const row = status.desired.find((computer) => computer.id === id);
       if (check.operation === "orphan") return !row;
+      if (compute && row) {
+        const writes = row.pendingProviderWrites ?? [];
+        if ("revision" in check && check.revision !== row.revision) return false;
+        if (check.operation === "begin-provider-write") {
+          row.pendingProviderWrites = [
+            ...writes,
+            { ...check.write, recoverAfter: new Date(status.now + 1000).toISOString() },
+          ];
+        }
+        if (check.operation === "send-provider-write") {
+          row.pendingProviderWrites = writes.map((write) =>
+            write.token === check.token ? { ...write, dispatched: true } : write,
+          );
+        }
+        if (
+          check.operation === "finish-provider-write" ||
+          check.operation === "recover-provider-write"
+        )
+          row.pendingProviderWrites = writes.filter(({ token }) => token !== check.token);
+      }
       if (check.operation === "finish-provider-write") return Boolean(row);
       return check.revision === row?.revision;
     }),
     desired: vi.fn(async () => status.desired),
     report: vi.fn<AccountApi["report"]>(async (report) => {
       reports.push(CloudComputerReportSchema.parse(report));
-      if (report.providerServerId) {
+      if (report.providerServerId || report.providerServerRef) {
         status.desired = status.desired.map((row) =>
           row.id === report.id && row.revision === report.revision
-            ? { ...row, providerServerId: report.providerServerId! }
+            ? {
+                ...row,
+                ...(report.providerServerId ? { providerServerId: report.providerServerId } : {}),
+                ...(report.providerServerRef
+                  ? { providerServerRef: report.providerServerRef }
+                  : {}),
+              }
             : row,
         );
       }
@@ -140,13 +173,15 @@ function harness({ concurrency = 2 } = {}) {
   const setup = (client: AccountApi = account) =>
     new Reconciler({
       account: client,
-      provider,
+      provider: vmProvider,
       dns,
       discover: async () => status.identity,
       accountOrigin: new URL("https://account.example.com"),
-      image: "ubuntu-24.04",
-      defaultRegion: "ash",
-      defaultServerType: "cpx22",
+      image: compute
+        ? "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+        : "ubuntu-24.04",
+      defaultRegion: compute ? "us-central1" : "ash",
+      defaultServerType: compute ? "e2-medium" : "cpx22",
       concurrency,
       readinessTimeoutMs: 1000,
       orphanGraceMs: 60_000,
@@ -158,6 +193,7 @@ function harness({ concurrency = 2 } = {}) {
     calls,
     put,
     provider,
+    vmProvider,
     dns,
     records,
     servers,
@@ -439,6 +475,133 @@ describe("Cloud Computer reconciliation", () => {
     },
   ];
   it.each(cases)("$name", ({ run }) => run(harness()));
+
+  it.each(["Hetzner", "Google"])(
+    "reconciles the VM, DNS and Home identity through its lifecycle on %s",
+    async (provider) => {
+      const google = provider === "Google";
+      const compute = google ? new ComputeFake() : undefined;
+      const h = harness(compute ? { compute } : { adapter: fakeHetzner() });
+      h.status.desired = [{ ...home, region: null, serverType: null }];
+      await h.pass();
+      expect(h.last()?.phase).toBe("booting");
+      const initial = (await h.vmProvider.find(home.id, new AbortController().signal))[0]!;
+      expect(initial.ipv4).toBe(h.records.get(home.hostname)?.ipv4);
+      h.pin();
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "ready", observedIdentity: identity });
+      const active = h.status.desired[0]!;
+      h.status.desired = [
+        { ...active, revision: active.revision + 1, state: "suspended", bootstrapToken: undefined },
+      ];
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "suspended", ipv4: initial.ipv4 });
+      expect(h.records.has(home.hostname)).toBe(false);
+      h.status.desired = [{ ...active, revision: active.revision + 2, bootstrapToken: undefined }];
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "ready", ipv4: initial.ipv4 });
+      expect(h.last()?.providerServerRef ?? h.last()?.providerServerId).toBe(initial.id);
+      h.status.desired = [
+        { ...h.status.desired[0]!, revision: active.revision + 3, state: "deleted" },
+      ];
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "deleted", providerServerId: null, ipv4: null });
+      expect(h.records.size).toBe(0);
+      expect(await h.vmProvider.listManaged(new AbortController().signal)).toEqual([]);
+      if (compute) expect(compute.addresses.size).toBe(0);
+    },
+  );
+
+  it("records the Google insert before dispatch and scrubs metadata after the Account receipt", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home, region: null, serverType: null }];
+    await h.pass();
+    const [instance] = compute.instances.values();
+    const [insert] = compute.requests.filter(
+      ({ method, path }) => method === "POST" && path === `${zonePath}/instances`,
+    );
+    const checks = vi.mocked(h.account.check).mock.calls.map(([, check]) => check);
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        operation: "begin-provider-write",
+        write: expect.objectContaining({ kind: "create", token: insert?.query.get("requestId") }),
+      }),
+    );
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        operation: "send-provider-write",
+        token: insert?.query.get("requestId"),
+      }),
+    );
+    expect(h.reports.map(({ phase }) => phase)).toEqual(["provisioning", "booting"]);
+    expect(instance?.metadata.items).toContainEqual({
+      key: "opensteer-bootstrap-ready",
+      value: "1",
+    });
+    expect(instance?.metadata.items.find(({ key }) => key === "user-data")?.value).toContain(
+      "/instance/attributes/opensteer-bootstrap-ready",
+    );
+    h.pin();
+    await h.pass();
+    expect(instance?.metadata.items.some(({ key }) => key === "user-data")).toBe(true);
+    h.status.desired = [{ ...h.status.desired[0]!, bootstrapReceiptRecorded: true }];
+    await h.pass();
+    expect(instance?.metadata.items.map(({ key }) => key)).toEqual([
+      "enable-oslogin",
+      "block-project-ssh-keys",
+      "disable-legacy-endpoints",
+    ]);
+  });
+
+  it("keeps a lost Google insert unknown and deletes its late VM and reservation", async () => {
+    const compute = new ComputeFake();
+    compute.nextInsert = "late";
+    const h = harness({ compute });
+    h.status.desired = [{ ...home, region: null, serverType: null }];
+    await h.pass();
+    expect(h.reports).toEqual([]);
+    const write = h.status.desired[0]?.pendingProviderWrites?.[0];
+    expect(write).toMatchObject({ kind: "create", dispatched: true });
+    const [operationPath] = [...compute.operations.entries()].find(
+      ([, { operation }]) => operation.clientOperationId === write?.token,
+    )!;
+    h.status.desired = [
+      { ...h.status.desired[0]!, revision: 2, state: "deleted", bootstrapToken: undefined },
+    ];
+    h.status.now += 2000;
+    await h.restart();
+    expect(h.last()?.phase).toBe("deleting");
+    expect(compute.addresses.size).toBe(1);
+    compute.complete(operationPath);
+    await h.pass();
+    expect(h.last()?.phase).toBe("deleted");
+    expect(compute.instances.size).toBe(0);
+    expect(compute.addresses.size).toBe(0);
+    expect(h.dns.ensureRecords).not.toHaveBeenCalled();
+  });
+
+  it("sweeps an address-only Google orphan after the grace period and a fresh Account check", async () => {
+    const compute = new ComputeFake();
+    compute.nextInsert = "quota";
+    const h = harness({ compute });
+    h.status.desired = [{ ...home, region: null, serverType: null }];
+    await h.pass();
+    expect(h.last()?.phase).toBe("failed");
+    expect(compute.addresses.size).toBe(1);
+    h.status.desired = [];
+    h.status.now += 60_000;
+    await h.pass();
+    expect(compute.addresses.size).toBe(1);
+    h.status.now += 60_000;
+    await h.pass();
+    expect(compute.addresses.size).toBe(0);
+    expect(h.account.check).toHaveBeenCalledWith(
+      home.id,
+      { operation: "orphan" },
+      expect.any(AbortSignal),
+    );
+  });
 
   it("refuses a second reconciler while a stale pass is blocked before creating a VM", async () => {
     const h = harness({ concurrency: 1 });

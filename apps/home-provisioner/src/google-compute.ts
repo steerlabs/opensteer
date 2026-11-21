@@ -55,6 +55,7 @@ const instance = z.object({
   name: resourceName,
   labels: labels.default({}),
   status: z.string(),
+  lastStartTimestamp: z.string().optional(),
   tags: z
     .object({
       items: z.array(z.string()).default([]),
@@ -129,7 +130,9 @@ type Write = {
   requestId?: string | undefined;
   query?: Record<string, string>;
   check?: Check | undefined;
+  observedVersion?: string | undefined;
 };
+type PendingOperation = { requestId: string; initial?: Operation };
 
 export class GoogleCompute implements VmProvider {
   readonly #options: GoogleComputeOptions;
@@ -141,6 +144,7 @@ export class GoogleCompute implements VmProvider {
   readonly #network: string;
   readonly #subnet: string;
   readonly #zone: string;
+  readonly #pendingOperations = new Map<string, PendingOperation>();
 
   constructor(options: GoogleComputeOptions) {
     this.#options = options;
@@ -259,7 +263,7 @@ export class GoogleCompute implements VmProvider {
       const identity = managedInstance(vm);
       if (identity && identity.id !== id)
         throw refused("conflict", "The Google VM belongs to a different Cloud Computer");
-      const observed = googleVm(vm, generation ?? identity?.generation);
+      const observed = googleVm(vm, identity?.generation ?? generation);
       found.set(observed.id, observed);
     };
     const listed = await this.#instances(signal, `labels.${homeLabel} = ${id}`);
@@ -530,7 +534,12 @@ export class GoogleCompute implements VmProvider {
 
   async describe(id: GoogleComputeServerRef, signal: AbortSignal, knownGeneration?: number) {
     const vm = await this.#readRef(id, signal);
-    return vm ? googleVm(vm, knownGeneration ?? managedInstance(vm)?.generation) : undefined;
+    return vm
+      ? googleVm(
+          vm,
+          managedInstance(vm)?.generation ?? knownGeneration ?? namedIdentity(vm.name)?.generation,
+        )
+      : undefined;
   }
 
   async #readRef(ref: GoogleComputeServerRef, signal: AbortSignal) {
@@ -562,11 +571,12 @@ export class GoogleCompute implements VmProvider {
 
   async powerOff(id: GoogleComputeServerRef, signal: AbortSignal, check?: Check) {
     const current = await this.#readRef(id, signal);
-    if (!current || current.status === "TERMINATED" || current.status === "STOPPING") return;
+    if (!current || ["TERMINATED", "STOPPING", "PENDING_STOP"].includes(current.status)) return;
     try {
       await this.#write(`${this.#zone}/instances/${current.name}/stop`, "zone", signal, {
         method: "POST",
         check,
+        observedVersion: `${id}/${current.lastStartTimestamp ?? ""}`,
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
@@ -580,6 +590,7 @@ export class GoogleCompute implements VmProvider {
       await this.#write(`${this.#zone}/instances/${current.name}`, "zone", signal, {
         method: "DELETE",
         check,
+        observedVersion: id,
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
@@ -619,6 +630,7 @@ export class GoogleCompute implements VmProvider {
       await this.#write(`${this.#zone}/instances/${vm.name}/setMetadata`, "zone", signal, {
         method: "POST",
         check,
+        observedVersion: `${id}/${vm.metadata.fingerprint}`,
         body: {
           fingerprint: vm.metadata.fingerprint,
           items: receiptRecorded
@@ -648,33 +660,17 @@ export class GoogleCompute implements VmProvider {
 
   async #write(path: string, scope: Scope, shutdown: AbortSignal, write: Write) {
     const signal = AbortSignal.any([shutdown, AbortSignal.timeout(this.#options.actionTimeoutMs)]);
-    let token: string;
-    try {
-      token = await this.#authenticate(signal);
-    } catch (error) {
-      throw new ProviderWriteRejected(
-        error instanceof Error ? error : new Error("Google authentication failed"),
-      );
-    }
-    await write.check?.();
-    signal.throwIfAborted();
-    const query = new URLSearchParams({
-      ...write.query,
-      requestId: write.requestId ?? randomUUID(),
-    });
-    let initial: Operation;
-    try {
-      initial = await this.#request(`${path}?${query}`, operation, signal, write, token);
-    } catch (error) {
-      if (
-        error instanceof RemoteRequestError &&
-        error.status >= 400 &&
-        error.status < 500 &&
-        error.status !== 408
-      )
-        throw new ProviderWriteRejected(error);
-      throw new ProviderOutcomeUnknown(error);
-    }
+    const query = new URLSearchParams(write.query);
+    const key = JSON.stringify([
+      path,
+      write.method,
+      query.toString(),
+      write.requestId ?? write.observedVersion,
+    ]);
+    const prior = this.#pendingOperations.get(key);
+    const pending: PendingOperation = prior ?? { requestId: write.requestId ?? randomUUID() };
+    const initial =
+      pending.initial ?? (await this.#dispatch(path, query, write, pending, key, signal));
     let current = initial;
     try {
       while (current.status !== "DONE") {
@@ -686,11 +682,51 @@ export class GoogleCompute implements VmProvider {
     } catch (error) {
       throw new ProviderOutcomeUnknown(error);
     }
+    this.#pendingOperations.delete(key);
     if (current.error || current.httpErrorStatusCode)
       throw new ProviderWriteRejected(
         new RemoteRequestError(compute, current.httpErrorStatusCode ?? 500),
       );
     return { ...current, targetId: current.targetId ?? initial.targetId };
+  }
+
+  async #dispatch(
+    path: string,
+    query: URLSearchParams,
+    write: Write,
+    pending: PendingOperation,
+    key: string,
+    signal: AbortSignal,
+  ) {
+    let token: string;
+    try {
+      token = await this.#authenticate(signal);
+    } catch (error) {
+      throw new ProviderWriteRejected(
+        error instanceof Error ? error : new Error("Google authentication failed"),
+      );
+    }
+    await write.check?.();
+    signal.throwIfAborted();
+    // Compute deduplicates a repeated requestId when the original response was lost.
+    // https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
+    query.set("requestId", pending.requestId);
+    this.#pendingOperations.set(key, pending);
+    try {
+      pending.initial = await this.#request(`${path}?${query}`, operation, signal, write, token);
+      return pending.initial;
+    } catch (error) {
+      if (
+        error instanceof RemoteRequestError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408
+      ) {
+        this.#pendingOperations.delete(key);
+        throw new ProviderWriteRejected(error);
+      }
+      throw new ProviderOutcomeUnknown(error);
+    }
   }
 
   #operationPath(scope: Scope, name: string) {
