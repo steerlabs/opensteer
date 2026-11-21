@@ -380,12 +380,19 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem,local-images,backup.resume,runner-apparmor.name}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
 uses_local_images() {
   if [[ -f "$home_dir/local-images" ]]; then echo true; else echo false; fi
+}
+
+# The units this Home was installed under, as its install recorded them.
+installed_unit_prefix() {
+  local unit=opensteer-home
+  if [[ -s "$home_dir/unit-prefix" ]]; then unit=$(cat "$home_dir/unit-prefix"); fi
+  printf '%s\n' "$unit"
 }
 
 # Only the Home in the default directory, with the default units, owns the command on the path.

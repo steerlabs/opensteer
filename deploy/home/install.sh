@@ -145,6 +145,8 @@ trap 'rm -rf -- "$staging"' EXIT
 # The recipe and its command are in place before the configuration is written, so an install
 # that fails from here on is removed with `opensteer-home uninstall --purge`.
 install_recipe "$source_dir" "$home_dir"
+# The units this Home is installed under, so its own command finds them to remove them.
+printf '%s\n' "$unit_prefix" > "$home_dir/unit-prefix"
 if ! $prepare && owns_operator_command; then
   install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi

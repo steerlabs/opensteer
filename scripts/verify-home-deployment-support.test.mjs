@@ -542,11 +542,17 @@ await test("only the default Home owns the command on the path, and purge remove
   const purged = runHome(`
     mkdir -p "$home_dir/"{secrets,boot,backup.abc123,install.def456,update.ghi789,restore.pending.retired}
     touch "$home_dir/"{config.env,backup.resume,local-images,runner-apparmor.name,images.env.Xy12Ab} "$home_dir/someone-else.txt"
+    printf 'opensteer-home-proof\n' > "$home_dir/unit-prefix"
+    installed_unit_prefix
     remove_home_files
     remove_home_files
+    installed_unit_prefix
     (cd "$home_dir" && find . -mindepth 1 | LC_ALL=C sort)`);
   assert.equal(purged.status, 0, purged.stderr);
-  assert.equal(purged.stdout, "./images.env.Xy12Ab\n./someone-else.txt\n");
+  assert.equal(
+    purged.stdout,
+    "opensteer-home-proof\nopensteer-home\n./images.env.Xy12Ab\n./someone-else.txt\n",
+  );
   const stopped = runHome(`
     compose() { echo "compose $* with $(sed -n 's/^OPENSTEER_HOME_HOST_IMAGE=//p' "$release_env")"; }
     compose_down_home --volumes

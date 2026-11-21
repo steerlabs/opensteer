@@ -107,7 +107,8 @@ case "${1:-}" in
     ;;
   uninstall)
     [[ $# == 1 || ( $# == 2 && $2 == --purge ) ]] || fail "Usage: opensteer-home uninstall [--purge]"
-    unit=${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home}
+    unit=${OPENSTEER_HOME_UNIT_PREFIX:-$(installed_unit_prefix)}
+    export OPENSTEER_HOME_UNIT_PREFIX=$unit
     [[ $unit =~ ^opensteer-home(-[a-z0-9-]+)?$ ]] || fail "Invalid Home systemd unit prefix."
     system_files="/etc/systemd/system/$unit"
     if [[ -f "$system_files-managed.service" ]] &&
