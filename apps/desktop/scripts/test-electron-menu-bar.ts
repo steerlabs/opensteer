@@ -45,6 +45,13 @@ if (plan.some((trial) => trial.needsHome)) {
     path.resolve(import.meta.dirname, "../../../packages/harness-codex/src/test-fixtures"),
     path.join(resources, "codex-fixture"),
   ]);
+  const harnessCodexRequire = createRequire(
+    path.resolve(import.meta.dirname, "../../../packages/harness-codex/package.json"),
+  );
+  const codexVersion = z
+    .object({ version: z.string().min(1) })
+    .parse(harnessCodexRequire("@openai/codex/package.json")).version;
+  writeFileSync(path.join(resources, "codex-fixture", "codex-version.txt"), `${codexVersion}\n`);
 }
 
 const require = createRequire(import.meta.url);

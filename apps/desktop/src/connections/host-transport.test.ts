@@ -20,10 +20,12 @@ import {
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { HttpHostClient } from "@opensteer/client/host";
 import {
+  classifyClientFailure,
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
   type DeploymentCatalog,
@@ -1877,6 +1879,443 @@ describe("DesktopHostTransport", () => {
       unsubscribe();
       host.dispose();
       transport.dispose();
+    }
+  });
+
+  it("rejects as cancelled deployment-changed when selection moves mid-body across the protocol stream", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const stalled = Promise.withResolvers<void>();
+    let upstreamSignal: AbortSignal | undefined;
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async (input) => {
+          upstreamSignal = input.signal;
+          stalled.resolve();
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          );
+        },
+      },
+    });
+    // Electron's protocol.handle strips JS error types when a streamed body aborts across IPC.
+    const route = routeFetch(transport);
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const response = await route(input, init);
+      if (!response.body) return response;
+      const reader = responseChunkReader(response.body);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+            } catch {
+              controller.error(new TypeError("network error"));
+            }
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const pending = client["auth.config"]({});
+      await stalled.promise;
+      await catalog.select(other.authority.document.deploymentId);
+      await transport.selection();
+      const rejection = await pending.then(
+        (result) => {
+          throw new Error(`Expected rejection, got result: ${JSON.stringify(result)}`);
+        },
+        (error: unknown) => classifyClientFailure(error),
+      );
+      expect(rejection).toMatchObject({ kind: "cancelled", reason: "deployment-changed" });
+      expect(upstreamSignal?.aborted).toBe(true);
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("waits in takeStreamError when the renderer asks before main records the mid-body failure", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          ),
+      },
+    });
+    const route = routeFetch(transport);
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith("app://opensteer/host/error/")) {
+        // Trigger the selection move only AFTER takeStreamError has been invoked while main's
+        // exchange is still in flight and nothing has been recorded in #streamErrors yet.
+        const lookup = route(input, init);
+        setTimeout(() => {
+          void catalog
+            .select(other.authority.document.deploymentId)
+            .then(() => transport.selection());
+        }, 15);
+        return lookup;
+      }
+      const response = await route(input, init);
+      if (!response.body) return response;
+      const reader = responseChunkReader(response.body);
+      let sentFirst = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sentFirst) {
+              sentFirst = true;
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+              return;
+            }
+            // Renderer sees the stream break before main's fence has fired.
+            controller.error(new TypeError("network error"));
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const rejection = await client["auth.config"]({}).then(
+        (result) => {
+          throw new Error(`Expected rejection, got result: ${JSON.stringify(result)}`);
+        },
+        (error: unknown) => classifyClientFailure(error),
+      );
+      expect(rejection).toMatchObject({ kind: "cancelled", reason: "deployment-changed" });
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("times out takeStreamError and falls back to pre-commit transport-unreachable when main stays in flight", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal], deploymentId);
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          ),
+      },
+    });
+    const route = routeFetch(transport);
+    let errorLookupStatus: number | null = null;
+    let errorLookupHeader: string | null = "unset";
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const response = await route(input, init);
+      if (url.startsWith("app://opensteer/host/error/")) {
+        errorLookupStatus = response.status;
+        errorLookupHeader = response.headers.get("x-opensteer-desktop-transport-error");
+        return response;
+      }
+      if (!response.body) return response;
+      const reader = responseChunkReader(response.body);
+      let sentFirst = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sentFirst) {
+              sentFirst = true;
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+              return;
+            }
+            // Renderer stream breaks while main's exchange never settles.
+            controller.error(new TypeError("network error"));
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const result = await Promise.race([
+        client["auth.config"]({}),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("takeStreamError did not time out while exchange stayed open")),
+            1_500,
+          ),
+        ),
+      ]);
+      expect(errorLookupStatus).toBe(204);
+      expect(errorLookupHeader).toBeNull();
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          provenance: "transport",
+          code: "internal",
+          reason: "transport-unreachable",
+          retryable: true,
+        },
+      });
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("records stream errors only for app-origin streams that fail before their body ends", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const mode: { current: "stall" | "complete-body" } = { current: "stall" };
+    const started = Promise.withResolvers<void>();
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () => {
+          if (mode.current === "complete-body") {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode("{}"));
+                  controller.close();
+                },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+          started.resolve();
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          );
+        },
+      },
+    });
+    try {
+      // 1. Main's own caller (no initiatorOrigin) failing mid-body leaves nothing in #streamErrors.
+      const mainRequestId = "00000000-0000-4000-8000-000000000101";
+      const mainResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": mainRequestId },
+        }),
+      );
+      await started.promise;
+      await catalog.select(other.authority.document.deploymentId);
+      await transport.selection();
+      await expect(mainResponse.text()).rejects.toThrow();
+      expect(await transport.takeStreamError(mainRequestId)).toBeNull();
+
+      // Re-select personal for the next two checks.
+      await catalog.select(deploymentId);
+      await transport.selection();
+
+      // 2. App-origin stream cancelled by cancelForwardedRequests leaves nothing in #streamErrors.
+      const cancelledId = "00000000-0000-4000-8000-000000000102";
+      const cancelledRequest = Object.assign(
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": cancelledId },
+        }),
+        { initiatorOrigin: "app://opensteer" },
+      );
+      const cancelledResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        cancelledRequest,
+      );
+      transport.cancelForwardedRequests();
+      await expect(cancelledResponse.text()).rejects.toThrow();
+      expect(await transport.takeStreamError(cancelledId)).toBeNull();
+
+      // 3. App-origin stream whose body already ended before post-body assertCurrent throws leaves nothing.
+      mode.current = "complete-body";
+      const finishedId = "00000000-0000-4000-8000-000000000103";
+      const finishedRequest = Object.assign(
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": finishedId },
+        }),
+        { initiatorOrigin: "app://opensteer" },
+      );
+      const finishedResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        finishedRequest,
+      );
+      const reader = finishedResponse.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toBe("{}");
+      const end = await reader.read();
+      expect(end.done).toBe(true);
+      // Close deployment connections right as the body ends so post-body assertCurrent throws.
+      transport.closeDeploymentConnections(deploymentId);
+      expect(await transport.takeStreamError(finishedId)).toBeNull();
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("reports a mid-body stall across the protocol stream as timed-out and retryable", async () => {
+    vi.useFakeTimers();
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal], deploymentId);
+    const stalled = Promise.withResolvers<void>();
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () => {
+          stalled.resolve();
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          );
+        },
+      },
+    });
+    const route = routeFetch(transport);
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const response = await route(input, init);
+      if (!response.body) return response;
+      const reader = responseChunkReader(response.body);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+            } catch {
+              controller.error(new TypeError("network error"));
+            }
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const pending = client["auth.config"]({});
+      await stalled.promise;
+      await vi.advanceTimersByTimeAsync(20_000);
+      const result = await pending;
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          provenance: "transport",
+          code: "internal",
+          reason: "transport-timed-out",
+          retryable: true,
+        },
+      });
+    } finally {
+      transport.dispose();
+      vi.useRealTimers();
     }
   });
 

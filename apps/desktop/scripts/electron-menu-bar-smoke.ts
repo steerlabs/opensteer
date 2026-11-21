@@ -8,7 +8,7 @@
  */
 import { DeploymentCatalogSchema, DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { menuBarWords } from "@opensteer/client/computers";
-import { HttpHostClient, placeList, type WebSocketClient } from "@opensteer/client/host";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -365,6 +365,7 @@ async function startHome(input: {
   const engineFixture = path.join(resources, "codex-fixture", "fake-codex-app-server.mjs");
   const engineWrapper = path.join(root, "codex-fixture");
   const engineRelease = path.join(root, "release-fixture-turn");
+  const engineHarnessLog = path.join(root, "logs", "codex-browser-harness.jsonl");
   const shellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const supervisor = new PersonalDeploymentSupervisor({
     agentsStoppedSince: input.agentsStoppedSince,
@@ -430,7 +431,8 @@ async function startHome(input: {
         writeFileSync(
           engineWrapper,
           `#!/bin/sh
-exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} "$@"
+export FAKE_CODEX_HARNESS_LOG=${shellArgument(engineHarnessLog)}
+exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held --unique-threads ${shellArgument(`--release-file=${engineRelease}`)} "$@"
 `,
           { mode: 0o700 },
         );
@@ -554,59 +556,23 @@ async function homeStop(): Promise<void> {
   assert(address && typeof address !== "string");
   const pageUrl = `http://127.0.0.1:${address.port}/person`;
   const agentPageUrl = `http://127.0.0.1:${address.port}/agent`;
-  const session = z.object({ session: z.object({ id: z.string() }) }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "browser.session.start",
-      idempotencyKey: randomUUID(),
-      input: {
-        fresh: true,
-        initialUrl: pageUrl,
-        reuseExisting: false,
-        placement: { kind: "runner", runnerId: homeRunnerId },
-      },
-    }),
-  ).session;
-  await waitFor("the person's tab", () =>
-    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
-  );
-  const personTab = webContents
-    .getAllWebContents()
-    .find((contents) => contents.getURL() === pageUrl)!;
-  const typedNote = "kept-across-stop";
-  const initialPageId = z
-    .string()
-    .min(1)
-    .parse(
-      await personTab.executeJavaScript(
-        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
-      ),
-    );
-  const assertPersonTabIntact = async (stage: string) => {
-    assert(
-      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
-      `The person's tab closed (${stage})`,
-    );
-    const state = z
-      .object({ pageId: z.string(), value: z.string() })
-      .parse(
-        await personTab.executeJavaScript(
-          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
-        ),
-      );
-    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
-    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
-  };
 
-  // Real HttpHostClient live view kept open across Stop to verify self-reconnection.
+  // Real HttpHostClient opens, activates and watches the person's tab the way the product does.
+  let personSessionId: string | null = null;
   let liveViewSocketsOpened = 0;
   let liveViewSnapshots = 0;
   const liveClient = new HttpHostClient({
     baseUrl: home.origin,
-    fetch: (input, init) => home.fetch(input, init ?? {}),
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", home.origin);
+      return home.fetch(input, { ...init, headers });
+    },
     reconnectBaseDelayMs: 100,
     reconnectMaxDelayMs: 500,
     webSocketFactory: (url): WebSocketClient => {
-      const isBrowserWatch = url.includes(`/v1/browser-sessions/${session.id}/connect`);
+      const isBrowserWatch =
+        personSessionId !== null && url.includes(`/v1/browser-sessions/${personSessionId}/connect`);
       if (isBrowserWatch) liveViewSocketsOpened += 1;
       let readyState = 0;
       const listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -683,24 +649,59 @@ async function homeStop(): Promise<void> {
       };
     },
   });
-  await liveClient.load();
-  const findPersonTab = () =>
-    placeList(liveClient.getSnapshot()).find(
-      (place) => place.tab.kind === "page" && place.tab.url === pageUrl,
-    );
-  await waitFor("person tab in live client snapshot", () => Boolean(findPersonTab()));
-  const personSurfaceId = findPersonTab()!.tab.tabId;
-  const releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
+  let releaseLiveView: (() => void) | null = null;
   shutdown.add({
     component: "live-watch",
     step: "close",
     order: 20,
     timeoutMs: 2_000,
     stop: () => {
-      releaseLiveView();
+      releaseLiveView?.();
       liveClient.dispose();
     },
   });
+  await liveClient.load();
+  const openedTab = await liveClient.openTab({
+    kind: "page",
+    url: pageUrl,
+    guest: true,
+  });
+  const viewer = await liveClient.activateTab(openedTab.tabId);
+  assert.equal(viewer.kind, "page", "Person tab did not activate as a page viewer");
+  const session = { id: viewer.sessionId };
+  personSessionId = session.id;
+  const personSurfaceId = openedTab.tabId;
+  await waitFor("the person's tab", () =>
+    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
+  );
+  const personTab = webContents
+    .getAllWebContents()
+    .find((contents) => contents.getURL() === pageUrl)!;
+  const typedNote = "kept-across-stop";
+  const initialPageId = z
+    .string()
+    .min(1)
+    .parse(
+      await personTab.executeJavaScript(
+        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
+      ),
+    );
+  const assertPersonTabIntact = async (stage: string) => {
+    assert(
+      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
+      `The person's tab closed (${stage})`,
+    );
+    const state = z
+      .object({ pageId: z.string(), value: z.string() })
+      .parse(
+        await personTab.executeJavaScript(
+          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
+        ),
+      );
+    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
+    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
+  };
+  releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
   await waitFor(
     "live view admitted before Stop",
     () =>
@@ -713,25 +714,62 @@ async function homeStop(): Promise<void> {
     snapshots: liveViewSnapshots,
   });
 
-  const harnesses = z
-    .object({
+  const harnessDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness"),
       harnesses: z.array(
         z.object({ id: z.string(), driverKind: z.string(), environmentId: z.string() }),
       ),
-    })
-    .parse(await home.rpc("resources.detail.get", { kind: "harness" }));
-  const codex = harnesses.harnesses.find(
-    (harness) =>
-      harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+    }),
+  });
+  const harnessCatalogDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness-catalog"),
+      environments: z.array(
+        z.object({
+          id: z.string(),
+          harnessCatalogs: z.array(z.object({ harnessInstanceId: z.string(), status: z.string() })),
+        }),
+      ),
+    }),
+  });
+  let codex:
+    | { readonly id: string; readonly driverKind: string; readonly environmentId: string }
+    | undefined;
+  await waitFor(
+    "the fixture engine and its model catalog",
+    async () => {
+      const harnesses = harnessDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness" }),
+      );
+      codex = harnesses.data.harnesses.find(
+        (harness) =>
+          harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+      );
+      if (!codex) return false;
+      const catalogs = harnessCatalogDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness-catalog" }),
+      );
+      const environment = catalogs.data.environments.find(
+        (entry) => entry.id === home.manifest.environmentId,
+      );
+      return (
+        environment?.harnessCatalogs.some(
+          (entry) => entry.harnessInstanceId === codex!.id && entry.status === "ready",
+        ) === true
+      );
+    },
+    30_000,
   );
   assert(codex, "The Home did not expose the fixture engine");
+  const fixtureHarness = codex;
   const createTask = async (title: string) =>
     z.object({ thread: z.object({ id: z.string() }) }).parse(
       await home.rpc("commands.dispatch", {
         type: "thread.create",
         idempotencyKey: randomUUID(),
         environmentId: home.manifest.environmentId,
-        harnessInstanceId: codex.id,
+        harnessInstanceId: fixtureHarness.id,
         modelSelection: {
           modelId: "gpt-5.6-sol",
           providerId: "openai",
@@ -759,16 +797,44 @@ async function homeStop(): Promise<void> {
       })
       .parse(await home.rpc("personal.shell.get"))
       .tasks.find((entry) => entry.id === threadId);
+  const runItemFor = async (threadId: string, runId: string) =>
+    z
+      .object({
+        items: z.array(
+          z
+            .object({
+              kind: z.string(),
+              runId: z.string().nullable().optional(),
+              view: z.object({ status: z.string().optional() }).passthrough().optional(),
+              failure: z.object({ code: z.string(), message: z.string() }).passthrough().optional(),
+            })
+            .passthrough(),
+        ),
+      })
+      .parse(await home.rpc("thread.snapshot.get", { threadId }))
+      .items.find((entry) => entry.kind === "run" && entry.runId === runId);
 
   // Task 1: active Run + agent browser tab in use + follow-up queued to resume after Stop.
   const task = await createTask("Stop journey task");
   const taskState = () => taskStateFor(task.id);
-  await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  const firstRun = await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  assert(firstRun.run, "Stop journey task did not start an initial run");
+  const stoppedRunId = firstRun.run.id;
   await waitFor(
     "the task running before Stop",
     async () => (await taskState())?.status === "running",
   );
-  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000);
+  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000).catch(
+    (error: unknown) => {
+      const harnessLogPath = path.join(root, "logs", "codex-browser-harness.jsonl");
+      if (existsSync(harnessLogPath)) {
+        log("test.agent-tab-diagnostic", {
+          harnessLog: readFileSync(harnessLogPath, "utf8").trim(),
+        });
+      }
+      throw error;
+    },
+  );
   await sendTo(task.id, "Continue once this Mac resumes");
   held("task-and-agent-browser-tab-in-use-before-stop", { agentTabs: gate.agentTabs });
 
@@ -872,10 +938,14 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("home-shows-its-own-mac-stopped");
-  await waitFor(
-    "the Home identifying the old Run as stopped",
-    async () => (await taskState())?.failurePreview?.includes("Stopped on") === true,
-  );
+  await waitFor("the Home identifying the old Run as stopped", async () => {
+    const run = await runItemFor(task.id, stoppedRunId);
+    return (
+      run?.view?.status === "failed" &&
+      run.failure?.code === "computer_stopped" &&
+      run.failure.message.includes("Stopped on")
+    );
+  });
   await waitFor(
     "the Home showing this Mac stopped while its Runner stays online",
     async () => {
@@ -885,6 +955,7 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("home-shows-the-device-stopped-not-offline");
+  if (item.window().isVisible()) item.window().hide();
   await item.menuBar.open();
   await waitFor(
     "the Home's confirmation",
