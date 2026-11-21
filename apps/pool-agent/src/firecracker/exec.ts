@@ -32,37 +32,49 @@ export function run(
   });
 }
 
-/** Starts a long-lived child detached from the agent, so an agent restart does not end it. */
-export function launch(file: string, args: readonly string[]): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { detached: true, stdio: "ignore", env: { PATH: hostPath } });
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve(child.pid!);
-    });
-  });
-}
-
-/** Waits for a child we started to exit, with its code. */
-export function runToExit(
+/**
+ * Starts a child and resolves once it exited cleanly or `ready` holds, whichever is first; a
+ * failed exit rejects with the start of its error output (the jailer's, never a guest's).
+ */
+export function runUntil(
   file: string,
   args: readonly string[],
+  ready: () => Promise<boolean>,
   timeoutMs: number,
-): Promise<number> {
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: "ignore", env: { PATH: hostPath } });
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`${file} did not exit within ${timeoutMs} ms.`));
-    }, timeoutMs);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+    const child = spawn(file, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { PATH: hostPath },
     });
-    child.once("exit", (code) => {
+    let errors = "";
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve(code ?? -1);
+      clearInterval(poll);
+      child.stderr?.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (errors.length < 4096) errors += chunk.toString("utf8");
+    });
+    const timer = setTimeout(
+      () => finish(new Error(`${file} did not start within ${timeoutMs} ms.`)),
+      timeoutMs,
+    );
+    const poll = setInterval(() => {
+      void ready().then(
+        (done) => done && finish(),
+        () => undefined,
+      );
+    }, 5);
+    child.once("error", (error) => finish(error));
+    child.once("exit", (code) => {
+      if (code === 0) finish();
+      else finish(new Error(`${file} exited with ${code}: ${errors.trim().slice(0, 1000)}`));
     });
   });
 }

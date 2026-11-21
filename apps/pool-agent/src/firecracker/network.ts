@@ -114,7 +114,7 @@ export async function prepareNamespace(
   await inNs(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"]);
   await inNs(["ip", "link", "set", "lo", "up"]);
   const links = await inNs(["ip", "-o", "link", "show"]);
-  if (!links.includes(` ${tapName}:`)) {
+  if (!new RegExp(` ${tapName}[:@]`, "u").test(links)) {
     await inNs(["ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", String(tapOwner)]);
     await inNs(["ip", "addr", "add", `${proxyAddress}/30`, "dev", tapName]);
   }

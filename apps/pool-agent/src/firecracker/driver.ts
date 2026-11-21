@@ -44,7 +44,7 @@ import {
   waitForEgress,
   type EgressProgram,
 } from "./egress.js";
-import { run, runToExit } from "./exec.js";
+import { run, runUntil } from "./exec.js";
 import {
   applyHostTable,
   guestMac,
@@ -443,7 +443,8 @@ export class FirecrackerDriver implements HypervisorDriver {
     const parent = await this.#cgroups.slotParent(slotKey(boot.slotId));
     // Guest memory plus the VMM's own; a restored guest's file pages count against it too.
     const memoryBytes = (boot.memoryMib + 512) * 1024 * 1024;
-    const code = await runToExit(
+    const pidFile = join(this.#root(boot.jailId), `${execName}.pid`);
+    await runUntil(
       this.#config.jailer,
       [
         "--id",
@@ -478,9 +479,13 @@ export class FirecrackerDriver implements HypervisorDriver {
         "--level",
         "Warning",
       ],
+      () =>
+        stat(pidFile).then(
+          () => true,
+          () => false,
+        ),
       15_000,
     );
-    if (code !== 0) throw new Error(`The jailer exited with ${code}.`);
     if (signal.aborted) throw new Error("The guest start ran out of time.");
   }
 

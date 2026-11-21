@@ -120,7 +120,6 @@ EOF
 }
 
 run_bench() {
-    local out=$bench/results.jsonl
     systemctl stop pool-bench-helper.service 2>/dev/null || true
     systemd-run --unit=pool-bench-helper.service --collect \
         /opt/opensteer-pool/node/bin/node "$agent_dir/bench/root-helper.mjs" \

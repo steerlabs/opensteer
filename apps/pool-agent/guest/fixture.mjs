@@ -123,6 +123,8 @@ bridge.on("upgrade", (request, client, head) => {
     const lines = [`${request.method} ${request.url} HTTP/1.1`];
     for (let i = 0; i < request.rawHeaders.length; i += 2) {
       const name = request.rawHeaders[i];
+      // CDP refuses a WebSocket that names an Origin it was not told to allow.
+      if (name.toLowerCase() === "origin") continue;
       lines.push(
         `${name}: ${name.toLowerCase() === "host" ? "localhost:9222" : request.rawHeaders[i + 1]}`,
       );
