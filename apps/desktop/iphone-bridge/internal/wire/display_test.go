@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,8 +32,12 @@ func TestDisplayFixtures(t *testing.T) {
 	if err := json.Unmarshal(fixtures[7], &event); err != nil || event.DisplayState == nil || event.Roster != nil {
 		t.Fatal("invalid display state fixture")
 	}
+	var want bytes.Buffer
+	if err := json.Compact(&want, fixtures[7]); err != nil {
+		t.Fatal(err)
+	}
 	data, err = json.Marshal(event)
-	if err != nil || string(data) != string(fixtures[7]) {
+	if err != nil || string(data) != want.String() {
 		t.Fatalf("display state shape differs: %s", data)
 	}
 }
