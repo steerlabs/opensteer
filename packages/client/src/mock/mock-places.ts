@@ -1677,8 +1677,7 @@ export class MockPlaceWorld {
       const pool = snapshot.browserPools?.find(
         (report) => report.runnerId === session?.placement.runnerId,
       );
-      const waking =
-        pool !== undefined && !["running", "preparing", "parked"].includes(pool.phase);
+      const waking = pool !== undefined && !["running", "preparing", "parked"].includes(pool.phase);
       if (
         !tab ||
         waking ||

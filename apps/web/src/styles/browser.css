@@ -1474,3 +1474,41 @@ button.browser-download__file:hover {
     transition: none;
   }
 }
+
+/* ---- A Cloud Computer's browser waking ---- */
+
+/* A fresh start's pages will not match the old picture, so it dims at once. */
+.browser-frame > .browser-stale.browser-stale--now {
+  animation-delay: 0ms;
+}
+
+/* What a page that came back by reloading, or not at all, says once. Calm, not an error. */
+.browser-return-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-8) var(--space-12) 0;
+  padding: var(--space-6) var(--space-6) var(--space-6) var(--space-12);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.browser-return-note__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.browser-return-note__close {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-frame > .browser-stale.browser-stale--now {
+    animation: none;
+  }
+}

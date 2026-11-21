@@ -21,6 +21,8 @@ export interface BrowserSleepState {
   readonly elapsedMs: number;
   /** The note this tab shows now, until the person has seen it. */
   readonly note: BrowserTabNote | null;
+  /** Names the note shown, so a view can tell when the person moved on from it. */
+  readonly noteKey: string | null;
   /** The person has seen the note: it leaves and does not come back. */
   readonly seen: () => void;
 }
@@ -44,10 +46,12 @@ export function useBrowserSleep(hostClient: HostClient, tabId: string | null): B
   useSyncExternalStore(notes.subscribe, notes.version, notes.version);
   const note = computerId && tabId ? notes.note(computerId, tabId, view.tab) : null;
   const tab = view.tab;
+  const noteKey =
+    note && tab.kind !== "kept" ? JSON.stringify([computerId, tabId, tab.kind, tab.startAt]) : null;
   const seen = useCallback(() => {
     if (computerId && tabId) notes.seen(computerId, tabId, tab);
   }, [computerId, notes, tab, tabId]);
-  return { browser: view.browser, tab, elapsedMs, note, seen };
+  return { browser: view.browser, tab, elapsedMs, note, noteKey, seen };
 }
 
 /**

@@ -86,7 +86,13 @@ export function mockBrowserPoolReport(
         pages: page("reloaded", true),
       };
     case "lost":
-      return { runnerId, phase: "running", since, start: start("host"), pages: page("lost", false) };
+      return {
+        runnerId,
+        phase: "running",
+        since,
+        start: start("host"),
+        pages: page("lost", false),
+      };
     case "lost-typed":
       return { runnerId, phase: "running", since, start: start("host"), pages: page("lost", true) };
   }

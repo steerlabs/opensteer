@@ -47,13 +47,7 @@ export interface BrowserPoolReport {
    * person asked) and "failed" (neither the saved state nor a fresh start came up in time).
    */
   readonly phase:
-    | "running"
-    | "preparing"
-    | "parked"
-    | "waking"
-    | "starting"
-    | "restarting"
-    | "failed";
+    "running" | "preparing" | "parked" | "waking" | "starting" | "restarting" | "failed";
   /** When the phase began, as the Home's clock reads it. Kept for the record; see `since`. */
   readonly since: string;
   /** Why the last fresh start happened. Absent when the browser has only ever woken as it was. */
@@ -284,7 +278,8 @@ export const browserSleepWords = {
 
   failedTitle: "Your browser couldn’t start",
   failedDetail: "Your tabs and sign-ins are kept. Try again in a moment.",
-  failedRepeatedDetail: "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
+  failedRepeatedDetail:
+    "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
   tryAgain: "Try again",
   trying: "Trying…",
   contactSupport: "Contact support",
