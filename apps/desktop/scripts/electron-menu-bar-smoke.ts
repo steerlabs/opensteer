@@ -797,11 +797,29 @@ async function homeStop(): Promise<void> {
       })
       .parse(await home.rpc("personal.shell.get"))
       .tasks.find((entry) => entry.id === threadId);
+  const runItemFor = async (threadId: string, runId: string) =>
+    z
+      .object({
+        items: z.array(
+          z
+            .object({
+              kind: z.string(),
+              runId: z.string().nullable().optional(),
+              view: z.object({ status: z.string().optional() }).passthrough().optional(),
+              failure: z.object({ code: z.string(), message: z.string() }).passthrough().optional(),
+            })
+            .passthrough(),
+        ),
+      })
+      .parse(await home.rpc("thread.snapshot.get", { threadId }))
+      .items.find((entry) => entry.kind === "run" && entry.runId === runId);
 
   // Task 1: active Run + agent browser tab in use + follow-up queued to resume after Stop.
   const task = await createTask("Stop journey task");
   const taskState = () => taskStateFor(task.id);
-  await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  const firstRun = await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  assert(firstRun.run, "Stop journey task did not start an initial run");
+  const stoppedRunId = firstRun.run.id;
   await waitFor(
     "the task running before Stop",
     async () => (await taskState())?.status === "running",
@@ -920,10 +938,14 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("home-shows-its-own-mac-stopped");
-  await waitFor(
-    "the Home identifying the old Run as stopped",
-    async () => (await taskState())?.failurePreview?.includes("Stopped on") === true,
-  );
+  await waitFor("the Home identifying the old Run as stopped", async () => {
+    const run = await runItemFor(task.id, stoppedRunId);
+    return (
+      run?.view?.status === "failed" &&
+      run.failure?.code === "computer_stopped" &&
+      run.failure.message.includes("Stopped on")
+    );
+  });
   await waitFor(
     "the Home showing this Mac stopped while its Runner stays online",
     async () => {
