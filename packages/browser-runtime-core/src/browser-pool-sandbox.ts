@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 export interface BrowserRendererSandbox {
   readonly pid: number;
+  /** Chromium's own process type (`--type=`), such as renderer, zygote or gpu-process. */
+  readonly type: string;
   /** 2 is a seccomp-bpf filter. */
   readonly seccomp: number | null;
   readonly noNewPrivs: boolean | null;
@@ -16,17 +18,25 @@ export interface BrowserRendererSandbox {
 }
 
 export interface BrowserSandboxReport {
+  /** The renderers, and every other Chromium child process (`others`). */
   readonly renderers: readonly BrowserRendererSandbox[];
+  readonly others: readonly BrowserRendererSandbox[];
   /** Every renderer has a seccomp filter, no_new_privs and its own pid namespace. */
   readonly sandboxed: boolean;
 }
 
 export async function readBrowserSandbox(procRoot = "/proc"): Promise<BrowserSandboxReport> {
   const renderers: BrowserRendererSandbox[] = [];
+  const others: BrowserRendererSandbox[] = [];
   for (const entry of await readdir(procRoot)) {
     if (!/^\d+$/u.test(entry)) continue;
     const cmdline = await readFile(join(procRoot, entry, "cmdline"), "utf8").catch(() => "");
-    if (!cmdline.split("\0").includes("--type=renderer")) continue;
+    // Chromium rewrites its process title, so its arguments may be one space-separated string.
+    const type = cmdline
+      .split(/[\0 ]/u)
+      .find((argument) => argument.startsWith("--type="))
+      ?.slice("--type=".length);
+    if (!type) continue;
     const status = await readFile(join(procRoot, entry, "status"), "utf8").catch(() => "");
     const field = (name: string) =>
       status
@@ -36,8 +46,9 @@ export async function readBrowserSandbox(procRoot = "/proc"): Promise<BrowserSan
         .trim();
     const seccomp = field("Seccomp");
     const noNewPrivs = field("NoNewPrivs");
-    renderers.push({
+    (type === "renderer" ? renderers : others).push({
       pid: Number(entry),
+      type,
       seccomp: seccomp === undefined ? null : Number(seccomp),
       noNewPrivs: noNewPrivs === undefined ? null : noNewPrivs === "1",
       nspid: (field("NSpid") ?? "").split(/\s+/u).filter(Boolean).map(Number),
@@ -45,6 +56,7 @@ export async function readBrowserSandbox(procRoot = "/proc"): Promise<BrowserSan
   }
   return {
     renderers,
+    others,
     sandboxed:
       renderers.length > 0 &&
       renderers.every(
