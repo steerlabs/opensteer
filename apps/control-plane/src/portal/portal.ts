@@ -38,7 +38,10 @@ import {
 import type { BrowserPageFonts } from "@opensteer/shared/browserPage";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
-import type { AccountDeletionService } from "../account/account-deletion.js";
+import {
+  accountDeletionOverdueMilliseconds,
+  type AccountDeletionService,
+} from "../account/account-deletion.js";
 import {
   controlPlaneAuthPath,
   isRecentAccountAuthentication,
@@ -296,6 +299,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
       return sendBrowserPage(reply, {
         body: accountDeletionPendingBody({
           billingCanceled: ending.every((computer) => computer.billingCanceled),
+          overdue: Date.now() - requestedAt.getTime() > accountDeletionOverdueMilliseconds,
         }),
         fonts,
         layout: "plain",
@@ -667,13 +671,22 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
             error.reason !== "hosted-teams-remain",
           );
         }
-        if (outcome.status === "pending")
+        if (outcome.status === "pending") {
+          const requestedAt = await dependencies.store.accountDeletionRequestedAt(
+            ControlPlaneAccountIdSchema.parse(session.accountId),
+          );
           return sendBrowserPage(reply.code(202), {
-            body: accountDeletionPendingBody({ billingCanceled: outcome.billingCanceled }),
+            body: accountDeletionPendingBody({
+              billingCanceled: outcome.billingCanceled,
+              overdue:
+                requestedAt !== null &&
+                Date.now() - requestedAt.getTime() > accountDeletionOverdueMilliseconds,
+            }),
             fonts,
             layout: "plain",
             title: "Account being deleted · Opensteer",
           });
+        }
         // Reading the session refreshed its cookie; only the expiry may reach the browser.
         void reply.removeHeader("set-cookie");
         appendSetCookie(reply, clearSessionCookie());

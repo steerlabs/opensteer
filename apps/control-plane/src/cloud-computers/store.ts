@@ -2301,6 +2301,63 @@ export class CloudComputerStore {
     }));
   }
 
+  /**
+   * Closes the person's open checkouts at once, where Stripe answers: an open session is
+   * expired, and one already paid is refunded. What Stripe can't answer now, the billing pass
+   * closes on its next run.
+   */
+  async closeAccountCheckouts(accountId: ControlPlaneAccountId): Promise<void> {
+    const open = await this.#db
+      .selectFrom("cloudComputerCheckouts")
+      .select("requestId")
+      .where("accountId", "=", accountId)
+      .where("status", "=", "open")
+      .execute();
+    for (const { requestId } of open)
+      await this.#recoverCheckout(accountId, requestId).catch(() =>
+        this.#billingAttention(
+          "Closing a Cloud Computer Checkout for a deleted Account is pending.",
+        ),
+      );
+  }
+
+  /**
+   * Settles what the person paid after asking to delete their Account (`since`): every payment
+   * Stripe took on their own subscriptions from then on is refunded in full, and no paid
+   * checkout waits unrefunded. Once that holds, their Stripe customers, with the cards saved
+   * on them, are deleted. False while anything still waits.
+   */
+  async settleAccountBilling(accountId: ControlPlaneAccountId, since: Date): Promise<boolean> {
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .select(["stripeSubscriptionId", "stripeCustomerId"])
+      .where("accountId", "=", accountId)
+      .where("workAssignmentId", "is", null)
+      .execute();
+    let settled = true;
+    for (const subscription of new Set(rows.map((row) => row.stripeSubscriptionId)))
+      settled =
+        (await this.#options.stripe.refundSubscriptionPaymentsSince(subscription, since)) &&
+        settled;
+    const unrefunded = await this.#db
+      .selectFrom("cloudComputerCheckouts")
+      .select("requestId")
+      .where("accountId", "=", accountId)
+      .where("paidAt", "is not", null)
+      .where("status", "not in", ["completed", "refunded"])
+      .executeTakeFirst();
+    const deferred = await this.#db
+      .selectFrom("cloudComputerStripeEvents")
+      .select("id")
+      .where("deferredCheckout", "is not", null)
+      .where(sql<boolean>`deferred_checkout->>'client_reference_id' = ${accountId}`)
+      .executeTakeFirst();
+    if (!settled || unrefunded || deferred) return false;
+    for (const customer of new Set(rows.map((row) => row.stripeCustomerId)))
+      await this.#options.stripe.deleteCustomer(customer);
+    return true;
+  }
+
   async mutate(
     id: CloudComputerId,
     action: Mutation,

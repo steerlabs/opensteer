@@ -323,12 +323,16 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     backupTimer?.unref();
     runBackupErasure();
 
-    let deletionPass: Promise<void> | undefined;
+    let deletionPass: Promise<unknown> | undefined;
     const deletionError = (error: unknown) =>
       server.log.error({ err: error }, "Account deletion is pending");
+    // Taking longer than it should: an operator sees why (a machine not destroyed, Stripe not
+    // confirming a cancellation, a refund not settled) while the person's page says so too.
+    const deletionOverdue = (accountId: string, reason: string) =>
+      server.log.error({ accountId, reason }, "Account deletion is taking longer than it should");
     const runDeletion = () => {
       deletionPass ??= accountDeletion
-        .finishPending(deletionError)
+        .finishPending(deletionError, deletionOverdue)
         .catch(deletionError)
         .finally(() => {
           deletionPass = undefined;

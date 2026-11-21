@@ -242,7 +242,7 @@ export function deleteAccountBody(input: {
       <a class="btn btn--block" href="/">Back</a>`,
     });
   const cloud = input.cloudComputer
-    ? `<p class="lead">Your Cloud Computer is deleted with it. Opensteer cancels its subscription first, so nothing more is charged; the rest of the period already paid isn’t refunded. Then Opensteer destroys the computer and its disk, including its browser profiles and tasks, makes its backups unreadable and removes them. Your account goes once the computer is gone.</p>`
+    ? `<p class="lead">Your Cloud Computer is deleted with it. Opensteer cancels its subscription first, so it won’t renew; the rest of the period already paid isn’t refunded. If Stripe takes any payment after you confirm, Opensteer refunds it in full. Then Opensteer destroys the computer and its disk, including its browser profiles and tasks, makes its backups unreadable and removes them, and deletes the card saved with Stripe. Your account goes once all of this is done.</p>`
     : "";
   const computers = input.computers.length
     ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
@@ -273,14 +273,24 @@ export function deleteAccountBody(input: {
  * Asked and under way: the Account waits for its Cloud Computer to be gone, and says whether
  * its subscription is cancelled yet.
  */
-export function accountDeletionPendingBody(input: { readonly billingCanceled: boolean }): string {
+export function accountDeletionPendingBody(input: {
+  readonly billingCanceled: boolean;
+  /** Waiting longer than it should: says so, and how to reach a person. */
+  readonly overdue?: boolean;
+}): string {
+  const now = input.billingCanceled
+    ? "Your Cloud Computer’s subscription is cancelled, so it won’t renew. Opensteer is destroying the computer and its disk, then removes its backups."
+    : "Opensteer is cancelling your Cloud Computer’s subscription with Stripe and keeps trying until Stripe confirms it. Then it destroys the computer and its disk and removes its backups.";
+  const money =
+    "Any payment Stripe takes after you asked is refunded in full, and the card saved with Stripe is deleted. Your account goes once all of this is done.";
+  const late = input.overdue
+    ? " This is taking longer than it should. You won’t pay for anything after you asked: any payment is refunded in full. Email tim@opensteer.com and we’ll see it through."
+    : " You can close this window.";
   return statusPageBody({
-    detail: input.billingCanceled
-      ? "Your Cloud Computer’s subscription is cancelled, so nothing more is charged. Opensteer is destroying the computer and its disk, then removes its backups. Your account goes once the computer is gone. You can close this window."
-      : "Opensteer is cancelling your Cloud Computer’s subscription with Stripe and keeps trying until Stripe confirms it. Then it destroys the computer and its disk and removes its backups. Your account goes once the computer is gone. You can close this window.",
+    detail: `${now} ${money}${late}`,
     mark: "clock",
     title: "Your Opensteer account is being deleted",
-    tone: "ok",
+    tone: input.overdue ? "warn" : "ok",
   });
 }
 

@@ -1561,16 +1561,46 @@ export class ControlPlaneStore {
       .execute();
   }
 
-  /** Accounts whose person asked to delete them and that still wait on something to end. */
-  async accountsAwaitingDeletion(limit = 20): Promise<readonly ControlPlaneAccountId[]> {
-    const rows = await this.#database
+  /**
+   * One page of the Accounts whose person asked to delete them, by id after `after`, so a pass
+   * walks every one of them however many never finish.
+   */
+  async accountsAwaitingDeletion(
+    after: ControlPlaneAccountId | null,
+    limit = 100,
+  ): Promise<readonly { readonly id: ControlPlaneAccountId; readonly requestedAt: Date }[]> {
+    let query = this.#database
       .selectFrom("users")
-      .select("id")
+      .select(["id", "deletionRequestedAt"])
       .where("deletionRequestedAt", "is not", null)
-      .orderBy("deletionRequestedAt", "asc")
-      .limit(limit)
-      .execute();
-    return rows.map(({ id }) => ControlPlaneAccountIdSchema.parse(id));
+      .orderBy("id", "asc")
+      .limit(limit);
+    if (after !== null) query = query.where("id", ">", after);
+    const rows = await query.execute();
+    return rows.map((row) => ({
+      id: ControlPlaneAccountIdSchema.parse(row.id),
+      requestedAt: row.deletionRequestedAt!,
+    }));
+  }
+
+  /**
+   * Runs `pass` only where no other replica runs it now, as the billing pass does. False when
+   * another holds it.
+   */
+  async withAccountDeletionPass(pass: () => Promise<void>): Promise<boolean> {
+    return this.#database.connection().execute(async (connection) => {
+      const acquired = await sql<{ locked: boolean }>`select pg_try_advisory_lock(
+        hashtextextended('account-deletion-pass',0)) as locked`.execute(connection);
+      if (!acquired.rows[0]?.locked) return false;
+      try {
+        await pass();
+        return true;
+      } finally {
+        await sql`select pg_advisory_unlock(hashtextextended('account-deletion-pass',0))`.execute(
+          connection,
+        );
+      }
+    });
   }
 
   /** When the person asked to delete this Account, or null when nobody has. */

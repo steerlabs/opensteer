@@ -47,14 +47,17 @@ describe("the page that deletes an Account", () => {
     const body = deleteAccountBody({ ...base, cloudComputer: true });
     for (const words of [
       "Your Cloud Computer is deleted with it.",
-      "Opensteer cancels its subscription first, so nothing more is charged",
+      "Opensteer cancels its subscription first, so it won’t renew",
       "the rest of the period already paid isn’t refunded",
+      "If Stripe takes any payment after you confirm, Opensteer refunds it in full.",
       "destroys the computer and its disk",
-      "makes its backups unreadable and removes them",
-      "Your account goes once the computer is gone.",
+      "makes its backups unreadable and removes them, and deletes the card saved with Stripe",
+      "Your account goes once all of this is done.",
     ])
       expect(body).toContain(escapeHtml(words));
     expect(body).toContain('<form method="post"');
+    // Never the promise the code can't keep when Stripe charges during an outage.
+    expect(body).not.toContain("nothing more is charged");
   });
 
   it("keeps an Account whose work Home its organization hasn't offboarded, with no Delete", () => {
@@ -68,8 +71,17 @@ describe("the page that deletes an Account", () => {
 
   it("says a deletion that waits on its Cloud Computer is under way, and whether billing stopped", () => {
     expect(accountDeletionPendingBody({ billingCanceled: true })).toContain(
-      escapeHtml("subscription is cancelled, so nothing more is charged"),
+      escapeHtml("subscription is cancelled, so it won’t renew"),
     );
+    expect(accountDeletionPendingBody({ billingCanceled: true })).toContain(
+      escapeHtml("Any payment Stripe takes after you asked is refunded in full"),
+    );
+    expect(accountDeletionPendingBody({ billingCanceled: true })).not.toContain(
+      "longer than it should",
+    );
+    const late = accountDeletionPendingBody({ billingCanceled: true, overdue: true });
+    expect(late).toContain(escapeHtml("This is taking longer than it should."));
+    expect(late).toContain("tim@opensteer.com");
     expect(accountDeletionPendingBody({ billingCanceled: false })).toContain(
       escapeHtml("keeps trying until Stripe confirms it"),
     );

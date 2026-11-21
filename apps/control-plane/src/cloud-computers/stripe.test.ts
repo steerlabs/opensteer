@@ -642,3 +642,99 @@ it("finds an ambiguous Checkout beyond the first twenty pages", async () => {
     provider.mockRestore();
   }
 });
+
+it("refunds every payment a subscription took after the decision, and none before it", async () => {
+  const since = new Date("2026-11-21T12:00:00.000Z");
+  const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
+  const refunded: Record<string, string>[] = [];
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/invoices") {
+      expect(url.searchParams.get("subscription")).toBe("sub_closing");
+      expect(url.searchParams.get("status")).toBe("paid");
+      return Response.json({
+        has_more: false,
+        data: [
+          // The renewal Stripe charged after the person asked: refunded.
+          {
+            id: "in_renewal",
+            amount_paid: 2900,
+            status_transitions: { paid_at: at("2026-11-21T13:00:00Z") },
+          },
+          // The period paid before the decision: kept, as the pages say.
+          {
+            id: "in_first",
+            amount_paid: 2900,
+            status_transitions: { paid_at: at("2026-10-21T12:00:00Z") },
+          },
+          {
+            id: "in_zero",
+            amount_paid: 0,
+            status_transitions: { paid_at: at("2026-11-21T14:00:00Z") },
+          },
+        ],
+      });
+    }
+    if (url.pathname === "/v1/invoice_payments")
+      return Response.json({
+        has_more: false,
+        data: [
+          {
+            id: `inpay_${url.searchParams.get("invoice")}`,
+            status: "paid",
+            amount_paid: 2900,
+            payment: { type: "payment_intent", payment_intent: "pi_renewal" },
+          },
+        ],
+      });
+    if (url.pathname === "/v1/refunds" && init?.method === "GET")
+      return Response.json({ has_more: false, data: [] });
+    expect(url.pathname).toBe("/v1/refunds");
+    refunded.push(Object.fromEntries(new URLSearchParams(String(init?.body))));
+    return Response.json({
+      id: "re_renewal",
+      amount: 2900,
+      status: "succeeded",
+      metadata: { opensteer_invoice_payment: "inpay_in_renewal" },
+    });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await expect(stripe.refundSubscriptionPaymentsSince("sub_closing", since)).resolves.toBe(true);
+    expect(refunded).toEqual([
+      {
+        payment_intent: "pi_renewal",
+        amount: "2900",
+        "metadata[opensteer_invoice_payment]": "inpay_in_renewal",
+      },
+    ]);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+it("deletes a customer with its saved card once, and treats one already deleted as done", async () => {
+  let deleted = false;
+  const calls: string[] = [];
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    expect(url.pathname).toBe("/v1/customers/cus_closing");
+    calls.push(init?.method ?? "GET");
+    if (init?.method === "DELETE") deleted = true;
+    return Response.json({ id: "cus_closing", ...(deleted ? { deleted: true } : {}) });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await stripe.deleteCustomer("cus_closing");
+    await stripe.deleteCustomer("cus_closing");
+    expect(calls).toEqual(["GET", "DELETE", "GET"]);
+  } finally {
+    provider.mockRestore();
+  }
+});

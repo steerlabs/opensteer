@@ -162,6 +162,17 @@ const refundRecord = z.object({
   metadata: z.record(z.string(), z.string()),
 });
 const refundList = z.object({ has_more: z.boolean(), data: z.array(refundRecord) });
+const paidInvoiceList = z.object({
+  has_more: z.boolean(),
+  data: z.array(
+    z.object({
+      id: stripeToken("in"),
+      amount_paid: z.number().int().nonnegative(),
+      status_transitions: z.object({ paid_at: z.number().int().positive().nullish() }).nullish(),
+    }),
+  ),
+});
+const customerRecord = z.object({ id: z.string(), deleted: z.boolean().optional() });
 const hostedSession = z.object({ url: z.url({ protocol: /^https$/u }) });
 const createdSession = hostedSession.extend({ id: sessionId });
 const checkoutRecord = z
@@ -468,6 +479,52 @@ export class CloudComputerStripe {
         )
       ).invoice;
     if (!invoice) throw new ControlPlaneError("unavailable", "Paid Stripe Checkout has no invoice");
+    return this.#refundInvoice(invoice);
+  }
+
+  /**
+   * Refunds in full every payment of this subscription that Stripe took at or after `since`,
+   * whatever invoice it paid. True once each such payment is refunded; false while one waits.
+   */
+  async refundSubscriptionPaymentsSince(subscription: string, since: Date): Promise<boolean> {
+    const query = new URLSearchParams({
+      subscription: subscriptionId.parse(subscription),
+      status: "paid",
+      limit: "100",
+    });
+    const invoices = await this.#request(`invoices?${query}`, paidInvoiceList);
+    if (invoices.has_more)
+      throw new ControlPlaneError("unavailable", "Stripe invoices could not be established");
+    const after = Math.floor(since.getTime() / 1000);
+    let settled = true;
+    for (const invoice of invoices.data) {
+      const paidAt = invoice.status_transitions?.paid_at ?? null;
+      if (invoice.amount_paid === 0 || paidAt === null || paidAt < after) continue;
+      settled = (await this.#refundInvoice(invoice.id)) && settled;
+    }
+    return settled;
+  }
+
+  /**
+   * Deletes a customer, with its saved payment methods. Stripe keeps its own records of past
+   * payments. A customer already deleted is done.
+   */
+  async deleteCustomer(id: string): Promise<void> {
+    const customer = customerId.parse(id);
+    const current = await this.#request(`customers/${customer}`, customerRecord);
+    if (current.deleted === true) return;
+    const deleted = await this.#request(
+      `customers/${customer}`,
+      customerRecord,
+      undefined,
+      undefined,
+      "DELETE",
+    );
+    if (deleted.id !== customer || deleted.deleted !== true)
+      throw new ControlPlaneError("unavailable", "Stripe did not delete the customer");
+  }
+
+  async #refundInvoice(invoice: string): Promise<boolean> {
     const query = new URLSearchParams({ invoice, limit: "100" });
     const payments = await this.#request(`invoice_payments?${query}`, invoicePayments);
     const paid = payments.data.filter((item) => item.status === "paid" && item.amount_paid > 0);
@@ -637,6 +694,8 @@ export type StripeBilling = Pick<
   | "validateOffer"
   | "expireCheckout"
   | "refundCheckout"
+  | "refundSubscriptionPaymentsSince"
+  | "deleteCustomer"
   | "validatePortal"
 >;
 

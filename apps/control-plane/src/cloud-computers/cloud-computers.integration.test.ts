@@ -201,6 +201,10 @@ integration("Cloud Computer Account service", () => {
       payment: undefined,
     })),
     refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
+    refundSubscriptionPaymentsSince: vi.fn<StripeBilling["refundSubscriptionPaymentsSince"]>(
+      async () => true,
+    ),
+    deleteCustomer: vi.fn<StripeBilling["deleteCustomer"]>(async () => {}),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
@@ -4027,9 +4031,8 @@ integration("Cloud Computer Account service", () => {
         await database.selectFrom("users").select("id").where("id", "=", id).executeTakeFirst(),
       );
     // The pass the account service runs every minute, over the same stores.
-    const finishPending = async () => {
-      const errors: unknown[] = [];
-      await new AccountDeletionService({
+    const deletionService = (pendingPageSize?: number) =>
+      new AccountDeletionService({
         auth,
         cloudComputers: cloud,
         connectLifecycle: new ConnectLifecycleService(database, {
@@ -4038,9 +4041,46 @@ integration("Cloud Computer Account service", () => {
           readConnectorToken: async () => undefined as never,
           rotateConnectorToken: async () => undefined as never,
         }),
+        ...(pendingPageSize ? { pendingPageSize } : {}),
         store: directory,
-      }).finishPending((error) => errors.push(error));
+      });
+    const finishPending = async (pendingPageSize?: number) => {
+      const errors: unknown[] = [];
+      const ran = await deletionService(pendingPageSize).finishPending((error) =>
+        errors.push(error),
+      );
       expect(errors).toEqual([]);
+      return ran;
+    };
+    // The same person signing in again, as from another device.
+    const signIn = async (id: ControlPlaneAccountId) => {
+      const context = await auth.$context;
+      const session = await context.internalAdapter.createSession(id);
+      const signature = createHmac("sha256", authSecret).update(session.token).digest("base64");
+      return {
+        id,
+        headers: {
+          cookie: `${context.authCookies.sessionToken.name}=${encodeURIComponent(`${session.token}.${signature}`)}`,
+          origin: publicOrigin.origin,
+          host: publicOrigin.host,
+        },
+      };
+    };
+    const requestedAt = async (id: ControlPlaneAccountId) =>
+      (
+        await database
+          .selectFrom("users")
+          .select("deletionRequestedAt")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).deletionRequestedAt!;
+    /** A person whose deletion is asked for and waits on their running Cloud Computer. */
+    const pending = async () => {
+      const bought = await buy();
+      await bootable((await getDesired(bought.id))!);
+      const asked = await deleteAccount(bought.account);
+      expect(asked.statusCode, asked.body).toBe(202);
+      return bought;
     };
     const tearDown = async (id: CloudComputerDesired["id"]) => {
       const deleting = (await getDesired(id))!;
@@ -4129,6 +4169,184 @@ integration("Cloud Computer Account service", () => {
             .executeTakeFirstOrThrow()
         ).deletionRequestedAt,
       ).toBeNull();
+    });
+
+    it("admits nothing new that bills or binds a closing Account, even signed in again", async () => {
+      const admin = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      const { account } = await pending();
+      // Invited before the decision, accepting after it.
+      const email = `${account.id}@example.test`;
+      const invited = await requestAs(admin, "POST", `${org.path}/invitations`, {
+        email,
+        role: "member",
+      });
+      expect(invited.statusCode, invited.body).toBe(200);
+      const again = await signIn(account.id);
+      const accept = await requestAs(
+        again,
+        "POST",
+        `${accountOrganizationsPath}/invitations/${invited.json().id}/accept`,
+      );
+      expect(accept.statusCode).toBe(403);
+      // No organization of their own either.
+      const order = purchase(account.id);
+      const bought = await requestAs(again, "POST", `${accountOrganizationsPath}/checkout`, {
+        requestId: order.requestId,
+        name: "Second thoughts",
+        seats: 1,
+      });
+      expect(bought.statusCode).not.toBe(200);
+      // And no personal Cloud Computer.
+      const personal = await requestAs(again, "POST", accountCloudComputerCheckoutPath, {
+        requestId: purchase(account.id).requestId,
+      });
+      expect(personal.statusCode).not.toBe(200);
+    });
+
+    it("assigns no work Home to a member whose Account is closing", async () => {
+      const admin = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      const { account, id } = await buy();
+      await bootable((await getDesired(id))!);
+      await invite(org.path, admin, account);
+      expect((await deleteAccount(account)).statusCode).toBe(202);
+      const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        requestId: randomUUID(),
+        accountId: account.id,
+      });
+      expect(assigned.statusCode).toBe(404);
+      // The deletion still finishes once the machine is gone.
+      await tearDown(id);
+      await finishPending();
+      expect(await exists(account.id)).toBe(false);
+    });
+
+    it("answers a second press while a pass works on it with the pending answer, not an error", async () => {
+      const { account } = await pending();
+      // Another attempt holds the fence, as a pass does while it works.
+      await directory.beginAccountDeletion(account.id);
+      const pressed = await deleteAccount(account);
+      expect(pressed.statusCode, pressed.body).toBe(202);
+      expect(pressed.json()).toEqual({ deleted: false, pending: true });
+    });
+
+    it("finishes every pending Account, however many wait, and one replica at a time", async () => {
+      // Two pending Accounts, read one per page: the pass still reaches the second.
+      const waiting = [await pending(), await pending()];
+      for (const { id } of waiting) await tearDown(id);
+      // Two passes at the same moment: one runs, the other stands down.
+      const [first, second] = await Promise.all([finishPending(1), finishPending(1)]);
+      expect([first, second].sort()).toEqual([false, true]);
+      for (const { account } of waiting) expect(await exists(account.id)).toBe(false);
+    });
+
+    it("keeps the Account while a payment Stripe took after the decision is unrefunded, then deletes the customer", async () => {
+      const { id, account, order } = await pending();
+      await tearDown(id);
+      // A renewal Stripe took while the cancel was failing: its refund still pending.
+      stripe.refundSubscriptionPaymentsSince.mockResolvedValueOnce(false);
+      stripe.deleteCustomer.mockClear();
+      await finishPending();
+      expect(stripe.refundSubscriptionPaymentsSince).toHaveBeenLastCalledWith(
+        order.subscription,
+        await requestedAt(account.id),
+      );
+      expect(await exists(account.id)).toBe(true);
+      expect(stripe.deleteCustomer).not.toHaveBeenCalled();
+      // Refunded: the card saved with Stripe goes, then the Account.
+      await finishPending();
+      expect(stripe.deleteCustomer).toHaveBeenCalledExactlyOnceWith(order.customer);
+      expect(await exists(account.id)).toBe(false);
+    });
+
+    it("refunds a late payment for a checkout opened before the decision, and waits for it", async () => {
+      const { id, account } = await pending();
+      // A checkout opened in another tab before the decision, paid only now.
+      const late = purchase(account.id);
+      await database
+        .insertInto("cloudComputerCheckouts")
+        .values({
+          accountId: account.id,
+          requestId: late.requestId,
+          expiresAt: new Date(Date.now() + 3_600_000),
+          createdAt: new Date(),
+          lastStripeAttemptAt: null,
+          targetComputerId: null,
+          stripeSessionId: late.session.id,
+          url: null,
+          stripePriceId: "price_1",
+          currency: "usd",
+          status: "open",
+        })
+        .execute();
+      stripe.refundCheckout.mockResolvedValueOnce(false);
+      expect((await webhook("checkout.session.completed", late.session)).statusCode).toBe(200);
+      expect(stripe.refundCheckout).toHaveBeenCalled();
+      await tearDown(id);
+      await finishPending();
+      expect(await exists(account.id)).toBe(true);
+      // The billing pass retries the refund; then the deletion finishes.
+      await cloud.reconcileBilling(() => undefined);
+      await finishPending();
+      expect(await exists(account.id)).toBe(false);
+      // Never fulfilled as a second Cloud Computer.
+      expect(
+        await database
+          .selectFrom("cloudComputers")
+          .select("id")
+          .where("stripeSubscriptionId", "=", late.subscription)
+          .execute(),
+      ).toEqual([]);
+    });
+
+    it("expires a checkout open in another tab at the decision, and refunds a payment in the window", async () => {
+      const account = await createAccount();
+      const order = purchase(account.id);
+      const started = await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+        requestId: order.requestId,
+      });
+      expect(started.statusCode, started.body).toBe(200);
+      stripe.expireCheckout.mockClear();
+      stripe.findCheckout.mockResolvedValue({
+        id: order.session.id,
+        status: "open",
+        url: checkoutUrl,
+        payment: undefined,
+      });
+      try {
+        const deleted = await deleteAccount(account);
+        expect(deleted.statusCode, deleted.body).toBe(200);
+        // At once, not on the next billing pass.
+        expect(stripe.expireCheckout).toHaveBeenCalledWith(order.session.id);
+      } finally {
+        stripe.findCheckout.mockResolvedValue(undefined);
+      }
+      // A payment that still lands is refunded.
+      stripe.refundCheckout.mockClear();
+      expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
+      expect(stripe.refundCheckout).toHaveBeenCalled();
+    });
+
+    it("cancels once when Stripe cancelled but the reply was lost", async () => {
+      const { id, account } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      // Stripe cancels, then the answer never arrives: the row can't say so yet.
+      stripe.cancel.mockImplementationOnce(async (subscription) => {
+        subscriptions.set(subscription, {
+          ...subscriptions.get(subscription)!,
+          status: "canceled",
+        });
+        throw new Error("reply lost");
+      });
+      const asked = await deleteAccount(account);
+      expect(asked.statusCode, asked.body).toBe(202);
+      expect((await getDesired(id))?.state).toBe("active");
+      await cloud.reconcileBilling(() => undefined);
+      // Stripe already says cancelled: the pass marks the row and never cancels again.
+      expect(stripe.cancel).toHaveBeenCalledTimes(1);
+      expect((await getDesired(id))?.state).toBe("deleted");
     });
 
     it("deletes an Account with no Cloud Computer at once, as before", async () => {

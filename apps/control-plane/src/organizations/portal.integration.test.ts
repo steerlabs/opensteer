@@ -95,6 +95,10 @@ integration("Organization website pages", () => {
       payment: undefined,
     })),
     refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
+    refundSubscriptionPaymentsSince: vi.fn<StripeBilling["refundSubscriptionPaymentsSince"]>(
+      async () => true,
+    ),
+    deleteCustomer: vi.fn<StripeBilling["deleteCustomer"]>(async () => {}),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       const row = subscriptions.get(id);
