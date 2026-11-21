@@ -30,4 +30,31 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       armed_at timestamptz
     )
   `.execute(database);
+  await sql`
+    create table browser_pool_document_losses (
+      intent_id uuid not null,
+      runner_id text not null,
+      owner_id text not null,
+      session_id text not null,
+      surface_id text not null,
+      document_id text not null,
+      lost_at timestamptz not null default now(),
+      primary key (intent_id, surface_id)
+    )
+  `.execute(database);
+  await sql`
+    create index browser_pool_document_losses_owner_tab
+      on browser_pool_document_losses (owner_id, surface_id, lost_at desc)
+  `.execute(database);
+  await sql`
+    create table browser_pool_relays (
+      id uuid primary key,
+      runner_id text not null,
+      runtime_id text not null,
+      slot_id text not null,
+      term integer not null,
+      instance_id uuid not null,
+      epoch integer not null
+    )
+  `.execute(database);
 }

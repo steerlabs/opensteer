@@ -383,7 +383,7 @@ export class BrowserToolHandlers {
       target.tabId ??
       (
         await this.#ports.tabs.open(
-          actor,
+          context.browserSend ? { ...actor, browserSend: context.browserSend } : actor,
           { kind: "page", profileId: target.profileId!, url: "about:blank" },
           `operation:${context.operationId}`,
         )

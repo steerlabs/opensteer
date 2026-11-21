@@ -7,6 +7,7 @@ import {
   BrowserPoolAdmissionClosed,
   decideAgentOperation,
   handOffAgentOperation,
+  listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
   requireBrowserPoolAdmission,
   TabStore,
@@ -37,6 +38,7 @@ import { createId } from "../packages/core/src/index.js";
 import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
+import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import {
   createLoopbackBrowserPool,
   type LoopbackPoolPhysicalState,
@@ -46,6 +48,7 @@ import {
   type BrowserRuntimeConnection,
 } from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
+import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 
 it("orders park intent against demand and wakes once without dispatching a cancelled waiter", async () => {
   const fixture = await createStoreFixture();
@@ -250,6 +253,44 @@ it("keeps outstanding Shared Chrome and plugin handoffs outside D", async () => 
     await fixture.close();
   }
 });
+
+it("keeps lost pooled relay replies in D after the transport ends", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("relay-lost-reply");
+    const target = {
+      runnerId: task.runnerId,
+      runtimeId: "runtime",
+      slotId: "slot",
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    const release = vi.fn();
+    const relay = await PooledBrowserRelay.open(fixture.database, target, { release });
+    relay.submitted();
+    relay.track("Runtime.evaluate", undefined, Promise.reject(new Error("Reply lost")));
+    await relay.close();
+    expect(release).toHaveBeenCalledOnce();
+    expect(
+      await beginBrowserPoolPark(fixture.database, target, randomUUID(), () => false),
+    ).toBeUndefined();
+    expect(
+      await beginBrowserPoolPark(
+        fixture.database,
+        {
+          ...target,
+          instanceId: randomUUID(),
+          term: 2,
+        },
+        randomUUID(),
+        () => false,
+      ),
+    ).toMatchObject({ phase: "preparing" });
+  } finally {
+    await fixture.close();
+  }
+});
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
@@ -335,6 +376,14 @@ it("reconciles an interrupted adoption with the original epoch and one physical 
 it("waits for pooled admission before a Run opens its own page", () => ownerTabJourney("run-open"));
 it("waits for pooled admission before a Run binds and joins a retained page", () =>
   ownerTabJourney("run-bind"));
+it("starts a person session on the pooled device and adopts its saved profile after restart", () =>
+  ownerTabJourney("saved-profile"));
+it("restores a lost pooled page with its original tab ID and a durable loss notice", () =>
+  ownerTabJourney("lost-page"));
+it("holds the gate until an awake physical close has a matching terminal receipt", () =>
+  ownerTabJourney("close-awake"));
+it("holds the gate for a live Watch viewer before its first retained-page frame", () =>
+  ownerTabJourney("live-watch"));
 
 async function ownerTabJourney(
   mode:
@@ -347,7 +396,11 @@ async function ownerTabJourney(
     | "context"
     | "recover-adoption"
     | "run-open"
-    | "run-bind",
+    | "run-bind"
+    | "saved-profile"
+    | "lost-page"
+    | "close-awake"
+    | "live-watch",
 ) {
   const restart = mode !== "empty";
   const fixture = await createStoreFixture();
@@ -386,6 +439,7 @@ async function ownerTabJourney(
       runtimeId: "pool-runtime",
       launcher,
       sessionFilesRoot: join(root, "sessions"),
+      ...(mode === "saved-profile" ? { localProfiles: { root: join(root, "profiles") } } : {}),
       ticketVerifier: await Ed25519AttachTicketVerifier.create({
         pooled: true,
         replayLedgerPath: join(root, "private", "tickets.json"),
@@ -470,6 +524,7 @@ async function ownerTabJourney(
       ...(restart
         ? {
             adopt: async (documents, fence, attachment) => {
+              if (mode === "lost-page") return [];
               if (interruptAdoption) {
                 interruptAdoption = false;
                 throw new Error("The Home disappeared after M10");
@@ -494,6 +549,15 @@ async function ownerTabJourney(
       available: true,
     };
     const tabs = new TabStore(database);
+    const profile =
+      mode === "saved-profile"
+        ? await store.createBrowserProfile({
+            name: "Saved browser",
+            ownerId: task.userId,
+            homeRunnerId: task.runnerId,
+            idempotencyKey: "saved-profile",
+          })
+        : null;
     const startHome = async () => {
       const negotiated = await createLoopbackBrowserPool(poolOptions);
       const service = new BrowserService({
@@ -504,6 +568,15 @@ async function ownerTabJourney(
         tabs,
         tabPlaces: { write: async () => false, notice: () => {} },
         repository: personalBrowserRepository(store),
+        ...(profile
+          ? {
+              localProfiles: new BrowserLocalProfiles({
+                deploymentId: task.deploymentId,
+                repository: store,
+                baseUrl: new URL("http://127.0.0.1"),
+              }),
+            }
+          : {}),
         signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: tickets.privateKey }),
         onSessionsChanged: () => {},
         targetResolver: {
@@ -516,6 +589,9 @@ async function ownerTabJourney(
             tabRestoreVersion: true,
             sharedControl: true,
             cdpBoundary: true,
+            ...(guest.localProfileStorage
+              ? { localProfileStorage: guest.localProfileStorage }
+              : {}),
             loopbackPool: negotiated,
             connect: (ticket) => {
               calls.push("attach");
@@ -556,7 +632,13 @@ async function ownerTabJourney(
     }
     const { service, negotiated } = await startHome();
     if (restart) {
-      const { sessionId, tabId } = await service.openTab(task.userId, command);
+      const { sessionId, tabId } = await (async () => {
+        if (!profile) return service.openTab(task.userId, command);
+        const { session } = await service.start({ ownerId: task.userId, profileId: profile.id });
+        const [tab] = await service.savedPages(task.userId, session.id);
+        if (!tab || !tab.pageBinding) throw new Error("The saved profile has no durable tab.");
+        return { sessionId: session.id, tabId: tab.id };
+      })();
       const document = launched?.context.pages()[0];
       if (!document) throw new Error("The test runtime did not launch a page.");
       const cdp = await document.cdp();
@@ -577,6 +659,19 @@ async function ownerTabJourney(
       const tab = await tabs.get(task.userId, tabId);
       expect(tab?.pageBinding?.sessionId).toBe(sessionId);
       expect(original?.documentId).toEqual(expect.any(String));
+      if (mode === "close-awake") {
+        const closed = Promise.withResolvers<void>();
+        document.onClose(() => closed.resolve());
+        const closing = await tabs.close(task.userId, [tabId], "close-awake");
+        expect(closing.tabIds).toEqual([tabId]);
+        await service.pageTabs.closeViewers(task.userId, tab!, true);
+        await closed.promise;
+        await vi.waitFor(async () =>
+          expect(await database.selectFrom("browserPoolRelays").selectAll().execute()).toEqual([]),
+        );
+        expect(calls).toEqual(["attach"]);
+        return;
+      }
       const early = negotiated.gate.holdOpen();
       try {
         expect(await negotiated.gate.tryPark()).toBe("vetoed");
@@ -653,7 +748,7 @@ async function ownerTabJourney(
         });
         return;
       }
-      if (mode === "activate") {
+      if (mode === "activate" || mode === "saved-profile" || mode === "lost-page") {
         const activating = restarted.service.pageTabs.activate(
           task.userId,
           tab!,
@@ -667,10 +762,36 @@ async function ownerTabJourney(
         ]);
         expect(calls).toEqual(["attach", "pause", "resume"]);
         allowResume.resolve();
+        if (mode === "lost-page") {
+          const restored = await activating;
+          expect(restored).toMatchObject({
+            kind: "page",
+            surfaceId: tabId,
+            recoveryNotice: "This page was reloaded because its live state could not be kept.",
+          });
+          expect(restored.sessionId).not.toBe(sessionId);
+          expect(
+            restarted.service.pageInventory(restored.sessionId)?.records.get(tabId)?.documentId,
+          ).not.toBe(original?.documentId);
+          expect(await listBrowserPoolDocumentLosses(database, task.userId, tabId)).toMatchObject([
+            { sessionId, surfaceId: tabId, documentId: original?.documentId },
+          ]);
+          expect(document.isClosed()).toBe(true);
+          return;
+        }
         await expect(activating).resolves.toEqual({ kind: "page", sessionId, surfaceId: tabId });
         expect(restarted.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
           original?.documentId,
         );
+        if (profile) {
+          const storage = await store.getBrowserProfileStorage(profile.id);
+          expect(storage).toMatchObject({ kind: "local", initialized: true });
+          expect((await store.getBrowserSessionForOwner(sessionId, task.userId))?.profileId).toBe(
+            profile.id,
+          );
+          const marker = await cdp.send("Runtime.evaluate", { expression: "window.marker" });
+          expect(marker).toMatchObject({ result: { value: 99 } });
+        }
         return;
       }
       if (mode === "run-open" || mode === "run-bind") {
@@ -732,6 +853,26 @@ async function ownerTabJourney(
             run.agentBindingId,
           ]);
           expect(await restarted.negotiated.gate.tryPark()).toBe("vetoed");
+          const cdp = await restarted.service.attachCdpForAgent(
+            { ...run, sessionId: bound.sessionId },
+            () => {},
+          );
+          try {
+            await store.detachBrowserSessionAttachments(run.agentBindingId);
+            expect(await restarted.negotiated.gate.tryPark()).toBe("vetoed");
+            expect(await cdp.request({ method: "Target.getTargets" })).toMatchObject({
+              targetInfos: expect.any(Array),
+            });
+            await expect(
+              restarted.service.attachActionsForAgent(
+                { ...run, sessionId: bound.sessionId },
+                () => {},
+              ),
+            ).rejects.toThrow("no detach receipt");
+          } finally {
+            await cdp.pooledClose!();
+          }
+          expect(await database.selectFrom("browserPoolRelays").selectAll().execute()).toEqual([]);
         } finally {
           allowResume.resolve();
           await result.catch(() => undefined);
@@ -754,7 +895,11 @@ async function ownerTabJourney(
               if (binary && Buffer.isBuffer(data)) frames.push(data);
             },
           },
-          { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
+          {
+            authSessionId: createId("authSession"),
+            mode: mode === "live-watch" ? "watch" : "control",
+            signedIn: async () => true,
+          },
         );
       let attaching = attachViewer();
       void attaching.catch(() => undefined);
@@ -810,6 +955,7 @@ async function ownerTabJourney(
           original?.documentId,
         );
         expect(await restarted.negotiated.gate.tryPark()).toBe("vetoed");
+        if (mode === "live-watch") return;
         const key = {
           type: "input.key",
           surfaceId: tabId,

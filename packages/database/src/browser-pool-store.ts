@@ -1,4 +1,4 @@
-import type { RunnerId } from "@opensteer/core";
+import type { BrowserSurfaceId, RunnerId, UserId } from "@opensteer/core";
 import { sql, type Kysely, type Selectable } from "kysely";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -13,10 +13,14 @@ export interface BrowserPoolTargetIdentity {
 }
 
 export type BrowserPoolSlot = Selectable<DatabaseSchema["browserPoolSlots"]>;
+type LostBrowserDocument = Pick<
+  DatabaseSchema["browserPoolDocumentLosses"],
+  "sessionId" | "surfaceId" | "documentId"
+>;
 
 export class BrowserPoolAdmissionClosed extends Error {
-  constructor() {
-    super("The pooled browser is waiting for recovery.");
+  constructor(cause?: unknown) {
+    super("The pooled browser is waiting for recovery.", { cause });
     this.name = "BrowserPoolAdmissionClosed";
   }
 }
@@ -93,6 +97,12 @@ export async function beginBrowserPoolPark(
         select 1 from browser_profile_deletions
         where runner_id = ${runnerId} and state <> 'deleted'
         union all
+        select 1 from browser_pool_relays relay
+        where (relay.runner_id, relay.runtime_id, relay.slot_id, relay.term,
+               relay.instance_id, relay.epoch) =
+              (${runnerId}, ${runtimeId}, ${target.slotId}, ${target.term},
+               ${target.instanceId}::uuid, ${target.epoch})
+        union all
         select 1 from agent_operations operation
         left join browser_pool_agent_operations runtime on runtime.operation_id = operation.id
         where operation.handed_off_at is not null and operation.terminal_evidence_at is null
@@ -133,6 +143,7 @@ export async function advanceBrowserPoolSlot(
   slot: BrowserPoolSlot,
   next: Pick<BrowserPoolSlot, "phase" | "epoch" | "retained"> &
     Partial<Pick<BrowserPoolSlot, "attachmentGeneration">>,
+  losses?: readonly LostBrowserDocument[],
 ): Promise<BrowserPoolSlot> {
   return commitPersonalMutation(
     database,
@@ -148,14 +159,78 @@ export async function advanceBrowserPoolSlot(
       )
         throw new BrowserPoolAdmissionClosed();
       const { phase, epoch, retained, attachmentGeneration = slot.attachmentGeneration } = next;
-      return tx
+      const advanced = await tx
         .updateTable("browserPoolSlots")
         .set({ phase, epoch, retained, attachmentGeneration })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (losses?.length) {
+        const { ownerId } = await tx
+          .selectFrom("personalSettings")
+          .select("ownerId")
+          .executeTakeFirstOrThrow();
+        const sessions = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("id", "in", [...new Set(losses.map(({ sessionId }) => sessionId))])
+          .where("runnerId", "=", slot.runnerId)
+          .where("runtimeId", "=", slot.runtimeId)
+          .execute();
+        const owned = new Set(sessions.map(({ id }) => id));
+        const notices = losses
+          .filter(({ sessionId }) => owned.has(sessionId))
+          .map(({ sessionId, surfaceId, documentId }) => ({
+            sessionId,
+            surfaceId,
+            documentId,
+            ownerId,
+            intentId: slot.intentId,
+            runnerId: slot.runnerId,
+          }));
+        if (notices.length) {
+          await tx
+            .insertInto("browserPoolDocumentLosses")
+            .values(notices)
+            .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
+            .execute();
+        }
+      }
+      return advanced;
     },
     undefined,
     "non-retrying",
   );
+}
+
+export function listBrowserPoolDocumentLosses(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  surfaceId: BrowserSurfaceId,
+) {
+  return database
+    .selectFrom("browserPoolDocumentLosses")
+    .selectAll()
+    .where("ownerId", "=", ownerId)
+    .where("surfaceId", "=", surfaceId)
+    .orderBy("lostAt", "desc")
+    .execute();
+}
+
+export async function openBrowserPoolRelay(
+  database: Kysely<DatabaseSchema>,
+  id: string,
+  target: BrowserPoolTargetIdentity,
+) {
+  await commitPersonalMutation(database, async (tx) => {
+    await requireBrowserPoolAdmission(tx, target.runnerId, target);
+    await tx
+      .insertInto("browserPoolRelays")
+      .values({ id, ...target })
+      .execute();
+  });
+}
+
+export async function settleBrowserPoolRelay(database: Kysely<DatabaseSchema>, id: string) {
+  await database.deleteFrom("browserPoolRelays").where("id", "=", id).execute();
 }

@@ -88,6 +88,7 @@ export const TabViewerSchema = z.discriminatedUnion("kind", [
     kind: z.literal("page"),
     sessionId: BrowserSessionIdSchema,
     surfaceId: BrowserSurfaceIdSchema,
+    recoveryNotice: z.string().min(1).max(1000).optional(),
   }),
   z.object({ kind: z.literal("window"), view: ComputerViewSchema }),
   z.object({ kind: z.literal("phone"), view: ComputerViewSchema }),

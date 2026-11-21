@@ -26,6 +26,7 @@ export class BrowserPoolGate {
   private changed = new AbortController();
   private active = 0;
   private demanded = false;
+  private failure?: unknown;
 
   constructor(options: BrowserPoolGateOptions) {
     this.options = options;
@@ -56,14 +57,23 @@ export class BrowserPoolGate {
     };
   }
 
-  async reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
+  reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
+    return this.wait(signal, true);
+  }
+
+  /** Maintenance before D vetoes it. Maintenance after D waits for ordinary demand to wake. */
+  maintenance(signal: AbortSignal): Promise<BrowserPoolReservation> {
+    return this.wait(signal, false);
+  }
+
+  private async wait(signal: AbortSignal, wake: boolean): Promise<BrowserPoolReservation> {
     for (;;) {
       signal.throwIfAborted();
       const phase = this.phase;
-      if (phase === "closed") throw new BrowserPoolAdmissionClosed();
+      if (phase === "closed") throw new BrowserPoolAdmissionClosed(this.failure);
       if (phase === "open") return this.holdOpen();
       if (phase === "preparing") this.demanded = true;
-      if (phase === "parked") this.wake();
+      if (phase === "parked" && wake) this.wake();
       await waitForChange(this.changed.signal, signal);
     }
   }
@@ -95,6 +105,7 @@ export class BrowserPoolGate {
       this.install(settled);
       return settled.phase === "parked" ? "parked" : "vetoed";
     } catch (error) {
+      this.failure = error;
       this.setPhase("closed");
       throw error;
     }
@@ -105,7 +116,10 @@ export class BrowserPoolGate {
     this.setPhase("waking");
     void this.options.wake(slot).then(
       (settled) => this.install(settled),
-      () => this.setPhase("closed"),
+      (error: unknown) => {
+        this.failure = error;
+        this.setPhase("closed");
+      },
     );
   }
 

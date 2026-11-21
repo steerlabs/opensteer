@@ -63,6 +63,7 @@ import type {
   AuthSessionId,
   AuthVerificationId,
   BrowserProfileId,
+  BrowserSurfaceId,
   BrowserSourceId,
   CausalChainId,
   CommandId,
@@ -2407,6 +2408,24 @@ export interface DatabaseSchema {
     instanceId: string;
     epoch: number;
     armedAt: Timestamp | null;
+  };
+  browserPoolDocumentLosses: {
+    intentId: string;
+    runnerId: RunnerId;
+    ownerId: UserId;
+    sessionId: BrowserSessionId;
+    surfaceId: BrowserSurfaceId;
+    documentId: string;
+    lostAt: Generated<Timestamp>;
+  };
+  browserPoolRelays: {
+    id: string;
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
   };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;

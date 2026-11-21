@@ -122,17 +122,18 @@ export async function createLoopbackBrowserPool(input: {
     if (!input.adopt && runtime.health().sessionCount !== 0) return abortPark(slot);
     const retired = await driveRuntime(slot, "retire");
     if (retired.phase === "running") return abortPark(slot);
-    if (
-      (retired.phase !== "retired" && retired.phase !== "sealed") ||
-      !retired.result ||
-      retired.result.dropped.length
-    )
+    if ((retired.phase !== "retired" && retired.phase !== "sealed") || !retired.result)
       throw new BrowserPoolAdmissionClosed();
-    const recorded = await advanceBrowserPoolSlot(database, slot, {
-      phase: "preparing",
-      epoch: slot.epoch,
-      retained: { ...retired.result },
-    });
+    const recorded = await advanceBrowserPoolSlot(
+      database,
+      slot,
+      {
+        phase: "preparing",
+        epoch: slot.epoch,
+        retained: { ...retired.result },
+      },
+      retired.result.dropped,
+    );
     await driveRuntime(recorded, "seal");
     await drivePhysical(recorded, "pause");
     return advance(recorded, "parked");
@@ -170,11 +171,16 @@ export async function createLoopbackBrowserPool(input: {
       const completed = await driveRuntime(waking, "complete", admitted, adoption.fence.epoch);
       if (completed.phase !== "running" || !completed.adoption?.outcome)
         throw new BrowserPoolAdmissionClosed();
-      return advanceBrowserPoolSlot(database, attaching, {
-        phase: "running",
-        epoch: completed.fence.epoch,
-        retained: { ...waking.retained, ...completed.adoption.outcome },
-      });
+      return advanceBrowserPoolSlot(
+        database,
+        attaching,
+        {
+          phase: "running",
+          epoch: completed.fence.epoch,
+          retained: { ...waking.retained, ...completed.adoption.outcome },
+        },
+        completed.adoption.outcome.lost,
+      );
     },
   });
   let slot = await read();

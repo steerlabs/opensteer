@@ -604,20 +604,27 @@ export class BrowserRuntime implements NativePresentationSource {
           .filter((record) => record.live && !record.live.page.isClosed())
           .map((record) => [record.id, record]),
       );
-      if (
-        session &&
-        !session.poolDetached &&
-        expected.length === records.size &&
-        expected.every((document) => {
-          const record = records.get(document.surfaceId);
-          return (
-            allowed.has(document.surfaceId) &&
-            record?.documentId === document.documentId &&
-            record.live?.commitSequence === document.pageRevision
-          );
-        })
-      ) {
-        adopted.push(...expected);
+      const known = new Set(expected.map(({ surfaceId }) => surfaceId));
+      const accepted =
+        session && !session.poolDetached && [...records.keys()].every((id) => known.has(id))
+          ? expected.filter((document) => {
+              const record = records.get(document.surfaceId);
+              return (
+                allowed.has(document.surfaceId) &&
+                record?.documentId === document.documentId &&
+                record.live?.commitSequence === document.pageRevision
+              );
+            })
+          : [];
+      if (session && accepted.length) {
+        const surviving = new Set(accepted.map(({ surfaceId }) => surfaceId));
+        for (const document of expected) {
+          if (surviving.has(document.surfaceId)) continue;
+          if (records.has(document.surfaceId))
+            await session.ledger.closeSurface(document.surfaceId);
+          lost.push(document);
+        }
+        adopted.push(...accepted);
       } else {
         if (session) {
           session.poolDetached = true;
