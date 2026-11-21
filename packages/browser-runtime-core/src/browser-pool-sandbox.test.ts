@@ -10,10 +10,14 @@ async function proc(processes: Record<string, { cmdline: string[]; status: strin
     await mkdir(join(root, pid));
     await writeFile(join(root, pid, "cmdline"), `${cmdline.join("\0")}\0`);
     await writeFile(join(root, pid, "status"), status);
+    await writeFile(join(root, pid, "stat"), launched(pid));
   }
-  await mkdir(join(root, "self"));
   return root;
 }
+
+/** A process the runtime (pid 1 here) launched. */
+const launched = (pid: string) =>
+  `${pid} (chrome) S 1 ${Array.from({ length: 17 }, () => "0").join(" ")} 100 0`;
 
 const sandboxed = "Name:\tchrome\nNoNewPrivs:\t1\nSeccomp:\t2\nNSpid:\t812\t3\n";
 
@@ -24,7 +28,7 @@ describe("Chromium's sandbox read from /proc", () => {
       "11": { cmdline: ["chrome", "--type=gpu-process"], status: "Seccomp:\t0\n" },
       "12": { cmdline: ["node", "dist/main.js"], status: "Seccomp:\t0\n" },
     });
-    expect(await readBrowserSandbox(root)).toEqual({
+    expect(await readBrowserSandbox(root, 1)).toEqual({
       renderers: [{ pid: 10, type: "renderer", seccomp: 2, noNewPrivs: true, nspid: [812, 3] }],
       others: [{ pid: 11, type: "gpu-process", seccomp: 0, noNewPrivs: null, nspid: [] }],
       sandboxed: true,
@@ -38,8 +42,8 @@ describe("Chromium's sandbox read from /proc", () => {
         status: "NoNewPrivs:\t1\nSeccomp:\t0\nNSpid:\t10\n",
       },
     });
-    expect((await readBrowserSandbox(plain)).sandboxed).toBe(false);
-    expect((await readBrowserSandbox(await proc({}))).sandboxed).toBe(false);
+    expect((await readBrowserSandbox(plain, 1)).sandboxed).toBe(false);
+    expect((await readBrowserSandbox(await proc({}), 1)).sandboxed).toBe(false);
   });
 });
 
@@ -51,6 +55,47 @@ describe("a renderer whose process title Chromium rewrote", () => {
     await mkdir(join(root, "20"));
     await writeFile(join(root, "20", "cmdline"), "/chrome --type=renderer --lang=en\0");
     await writeFile(join(root, "20", "status"), sandboxed);
-    expect((await readBrowserSandbox(root)).renderers).toHaveLength(1);
+    await writeFile(join(root, "20", "stat"), launched("20"));
+    expect((await readBrowserSandbox(root, 1)).renderers).toHaveLength(1);
+  });
+});
+
+describe("round D, D4: the Chromium the runtime launched, and nothing else", () => {
+  const stat = (pid: number, ppid: number, start = 100) =>
+    `${pid} (chrome) S ${ppid} ${Array.from({ length: 17 }, () => "0").join(" ")} ${start} 0`;
+  async function tree(
+    processes: Record<string, { ppid: number; cmdline?: string; status?: string }>,
+  ) {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-proc-"));
+    for (const [pid, entry] of Object.entries(processes)) {
+      await mkdir(join(root, pid));
+      await writeFile(join(root, pid, "stat"), stat(Number(pid), entry.ppid));
+      if (entry.cmdline !== undefined) await writeFile(join(root, pid, "cmdline"), entry.cmdline);
+      if (entry.status !== undefined) await writeFile(join(root, pid, "status"), entry.status);
+    }
+    return root;
+  }
+
+  it("leaves out a process outside the runtime's tree that claims to be a renderer", async () => {
+    const root = await tree({
+      "100": { ppid: 1, cmdline: "node\0dist/main.js\0", status: "Seccomp:\t0\n" },
+      "101": { ppid: 100, cmdline: "/chrome --headless\0", status: "Seccomp:\t0\n" },
+      "102": { ppid: 101, cmdline: "/chrome --type=renderer\0", status: sandboxed },
+      "300": { ppid: 1, cmdline: "/decoy --type=renderer\0", status: sandboxed },
+    });
+    const report = await readBrowserSandbox(root, 100);
+    expect(report.renderers.map((renderer) => renderer.pid)).toEqual([102]);
+  });
+
+  it("leaves out a renderer that exited during the read", async () => {
+    const root = await tree({
+      "100": { ppid: 1, cmdline: "node\0dist/main.js\0", status: "Seccomp:\t0\n" },
+      "102": { ppid: 100, cmdline: "/chrome --type=renderer\0", status: sandboxed },
+      // Its cmdline was read, then it was gone: no status.
+      "103": { ppid: 100, cmdline: "/chrome --type=renderer\0" },
+    });
+    const report = await readBrowserSandbox(root, 100);
+    expect(report.renderers.map((renderer) => renderer.pid)).toEqual([102]);
+    expect(report.sandboxed).toBe(true);
   });
 });

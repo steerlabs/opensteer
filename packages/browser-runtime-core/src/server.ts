@@ -216,7 +216,8 @@ export class BrowserRuntimeServer {
     };
     if (request.method === "GET" && request.url === "/v1/pool/state")
       return reply(200, { state: this.runtime.poolState() });
-    // Decision 8: the sandbox as the running browser has it, read from its renderers.
+    // Decision 8: the sandbox as the running browser has it, read from its renderers. Evidence,
+    // never a gate (round D, D4): a compromised guest can make it say anything.
     if (request.method === "GET" && request.url === "/v1/pool/sandbox")
       return reply(200, await readBrowserSandbox());
     if (request.method !== "POST" || request.url !== "/v1/pool/control") return reply(404, {});
