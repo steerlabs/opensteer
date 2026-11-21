@@ -1134,11 +1134,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
       }),
-      withTimeout(this.contextHandle.drainSidecar(), 500, {
-        timeoutError: () => new Error("Sidecar flush did not finish."),
-      }),
     ]);
     const stopped = await Promise.allSettled([this.owner.close()]);
+    // Best-effort drain of any in-flight sidecar write after the browser stops so
+    // temp-dir cleanup never races a write, without failing close on a crashed helper.
+    await withTimeout(this.contextHandle.drainSidecar(), 500, {
+      timeoutError: () => new Error("Sidecar flush did not finish."),
+    }).catch(() => undefined);
     const results = [...detached, ...stopped];
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -2678,7 +2680,10 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!this.lifecycle) return { status: "unknown" };
     const after = await this.lifecycle.inventory().catch(() => null);
     if (!after) return { status: "unknown" };
-    const sameId = after.find((entry) => entry.tabId === probe.originalTabId);
+    const sameId = after.find(
+      (entry) =>
+        entry.tabId === probe.originalTabId || entry.replacedFromTabId === probe.originalTabId,
+    );
     return sameId ? { status: "found", tabId: sameId.tabId } : { status: "absent" };
   }
 
@@ -3358,9 +3363,12 @@ class PlaywrightPageHandle implements BrowserPage {
                 newTabId = await this.contextHandle.lifecycle.discardByTabId(tab.tabId);
               } catch {
                 discardThrew = true;
-                // Unknown outcome: match by exact tabId only, never by another tab's URL.
+                // Unknown outcome: match strictly by tabId (including Chromium's recorded
+                // tab-replacement lineage), never by another tab's URL.
                 const after = await this.contextHandle.lifecycle.inventory().catch(() => null);
-                const sameId = after?.find((entry) => entry.tabId === tab.tabId);
+                const sameId = after?.find(
+                  (entry) => entry.tabId === tab.tabId || entry.replacedFromTabId === tab.tabId,
+                );
                 if (sameId?.discarded) {
                   newTabId = sameId.tabId;
                 }

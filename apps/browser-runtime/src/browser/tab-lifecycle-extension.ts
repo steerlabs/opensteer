@@ -31,6 +31,21 @@ const extensionManifestJson = JSON.stringify(
 );
 
 const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
+const replacedFromByTabId = new Map();
+function recordReplacement(addedTabId, removedTabId) {
+  if (typeof addedTabId !== "number" || typeof removedTabId !== "number" || addedTabId === removedTabId) {
+    return;
+  }
+  const rootId = replacedFromByTabId.get(removedTabId) ?? removedTabId;
+  replacedFromByTabId.delete(removedTabId);
+  replacedFromByTabId.set(addedTabId, rootId);
+}
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  recordReplacement(addedTabId, removedTabId);
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  replacedFromByTabId.delete(tabId);
+});
 globalThis.__opensteer = {
   async inventory() {
     const [tabs, targets] = await Promise.all([
@@ -55,11 +70,15 @@ globalThis.__opensteer = {
         discarded: Boolean(tab.discarded),
         status: tab.status || "",
         targetId: targetByTabId.get(tab.id) ?? null,
+        replacedFromTabId: replacedFromByTabId.get(tab.id) ?? null,
       }));
   },
   async discardByTabId(tabId) {
     const updated = await chrome.tabs.discard(tabId);
     const newTabId = typeof updated?.id === "number" ? updated.id : null;
+    if (newTabId !== null && newTabId !== tabId) {
+      recordReplacement(newTabId, tabId);
+    }
     let newTargetId = null;
     if (newTabId !== null) {
       const targets = await chrome.debugger.getTargets();
@@ -105,6 +124,7 @@ const tabEntrySchema = z.object({
   discarded: z.boolean(),
   status: z.string(),
   targetId: z.string().nullable(),
+  replacedFromTabId: z.number().int().nullable().optional(),
 });
 
 export type ChromiumTabEntry = z.infer<typeof tabEntrySchema>;
