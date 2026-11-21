@@ -23,7 +23,7 @@ type Home = Awaited<ReturnType<Journey["startHome"]>>;
  * real script service. The tab list is the Home's own rows; authority stays in the database.
  */
 async function directWork(j: Journey, home: () => Home) {
-  let tabChange: ((tab: TabRecord) => TabRecord) | undefined;
+  let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
   const refuse = async (): Promise<never> => {
     throw new Error("Unexpected tab operation in this fixture.");
   };
@@ -64,7 +64,7 @@ async function directWork(j: Journey, home: () => Home) {
   /** The tab row a connection reads; a test can make the next reads see a changed tab. */
   const tabRow = async (tabId: string) => {
     const tab = await row(tabId);
-    return tabChange ? tabChange(tab) : tab;
+    return tabChange ? await tabChange(tab) : tab;
   };
   const handlers = new BrowserToolHandlers({
     sessions,
@@ -126,7 +126,7 @@ async function directWork(j: Journey, home: () => Home) {
       arguments: { tabId, reason: "Drive the page" },
     });
   /** From now on, reads of a tab see it changed by `change`; undefined restores them. */
-  const changeTabs = (change: ((tab: TabRecord) => TabRecord) | undefined) => {
+  const changeTabs = (change: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined) => {
     tabChange = change;
   };
   return { sessions, scripts, agent, use, resume, connect, useTab, connectTab, changeTabs };
@@ -517,6 +517,34 @@ it("never wakes a parked browser for a tab-targeted call whose tab changed befor
         .orderBy("createdAt", "desc")
         .executeTakeFirstOrThrow(),
     ).toMatchObject({ state: "refused", handedOffAt: null });
+  } finally {
+    p.work.changeTabs(undefined);
+    await p.j.close();
+  }
+});
+
+it("records refused a tab-targeted call the Home refused after its hand-off, before any command", async () => {
+  const p = await parkedAfterWork("handed-off-refused");
+  try {
+    // Every check up to the hand-off reads the tab as it was; the execute's own check after it
+    // sees the tab changed, so nothing is sent.
+    p.work.changeTabs(async (tab) => {
+      const latest = await p.j.database
+        .selectFrom("agentOperations")
+        .select("handedOffAt")
+        .where("tool", "=", "browser_connect")
+        .executeTakeFirst();
+      return latest?.handedOffAt ? { ...tab, generation: tab.generation + 1 } : tab;
+    });
+    const result = await p.work.connectTab(p.tab.id);
+    expect(text(result)).toContain("not_found");
+    expect(
+      await p.j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "handedOffAt"])
+        .where("tool", "=", "browser_connect")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused", handedOffAt: expect.any(Date) });
   } finally {
     p.work.changeTabs(undefined);
     await p.j.close();
