@@ -2,7 +2,7 @@
  * The Home's real controller: the pool agent on the slot's pool host, over a signed request and
  * a signed reply. Used only for a managed pooled target; a Home without one never builds it.
  */
-import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
+import { createPublicKey, type KeyObject } from "node:crypto";
 import {
   callBrowserPoolAgent,
   type BrowserPoolAgentRequest,
@@ -85,14 +85,15 @@ export class BrowserPoolAgentClient implements BrowserPoolPhysicalController {
   }
 }
 
-/** How a Home is told about a managed pooled target; absent for every other Home. */
+/**
+ * What a provisioner hands a Home for a managed pooled target: public material only (round D,
+ * D2). Absent for every other Home.
+ */
 export interface ManagedBrowserPoolTarget {
   readonly kind: "managed-pool";
   readonly agentUrl: string;
   readonly slotId: string;
   readonly term: number;
-  /** PKCS#8 DER, base64, of the Home's slot key. */
-  readonly homeKey: string;
   /** SPKI DER, base64, of the slot's control key, as the provisioner received it. */
   readonly agentKey: string;
   /** SPKI DER, base64, of the pool host's key, which the provisioner pinned at enrolment. */
@@ -105,16 +106,14 @@ export interface ManagedBrowserPoolTarget {
  */
 export function managedBrowserPoolController(
   target: ManagedBrowserPoolTarget,
+  /** The Home's own slot key: generated on the Home, never handed to or from a provisioner. */
+  homeKey: KeyObject,
   options: Pick<BrowserPoolAgentClientOptions, "timeoutMs" | "fetch" | "now"> = {},
 ): BrowserPoolAgentClient {
   if (target.kind !== "managed-pool") throw new TypeError("Not a managed pooled target.");
   return new BrowserPoolAgentClient({
     url: target.agentUrl,
-    homeKey: createPrivateKey({
-      key: Buffer.from(target.homeKey, "base64"),
-      format: "der",
-      type: "pkcs8",
-    }),
+    homeKey,
     agentKey: createPublicKey({
       key: Buffer.from(target.agentKey, "base64"),
       format: "der",

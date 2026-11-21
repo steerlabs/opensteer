@@ -41,6 +41,7 @@ import {
 import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import {
   managedBrowserPool,
+  managedBrowserPoolRegistration,
   RelayBrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/managed-pool.js";
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
@@ -150,10 +151,18 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         { url: r.adminUrl, provisionerKey, host: r.hostId, hostKey, timeoutMs: 120_000 },
         request,
       );
-    // The provisioner's part: the Home's keys, then the slot.
+    // This script plays both parts (round D, D2). The Home's part: it makes its three keys,
+    // which never leave it, and hands the provisioner their public halves.
     const home = generateKeyPairSync("ed25519");
     const tickets = generateKeyPairSync("ed25519");
     const relayKey = relayIdentity(directory, "home-relay");
+    const homeKeys = {
+      homeKey: home.privateKey,
+      relayKey: relayKey.key,
+      relayCertificate: relayKey.certificate,
+      ticketKey: { keyId: "host-v1", key: tickets.privateKey },
+    };
+    const registration = managedBrowserPoolRegistration(homeKeys);
     const otherHome = relayIdentity(directory, "other-relay");
     const slotId = `proof-${Date.now()}`;
     const term = Math.floor(Date.now() / 1000);
@@ -161,28 +170,25 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       op: "create",
       slotId,
       term,
-      homeKey: spkiOf(home.privateKey),
-      relayKey: relayKey.spki,
-      ticketKey: { keyId: "host-v1", spki: spkiOf(tickets.privateKey) },
+      // The provisioner's part: the slot, from the Home's public keys.
+      ...registration,
       guest: { vcpus: 2, memoryMib: 2048, profilePath: r.profilePath, egress: r.egress as never },
     });
     if (created.op !== "create")
       throw new Error(`The slot was not created: ${JSON.stringify(created)}`);
-    const parts = managedBrowserPool({
-      kind: "managed-pool",
-      agentUrl: r.agentUrl,
-      slotId,
-      term,
-      homeKey: home.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
-      agentKey: created.slot.controlKey,
-      hostKey: spkiOf(hostKey),
-      relay: {
-        ...r.relay,
-        relayHostKey: spkiOf(relayHostKey),
-        relayKey: relayKey.key,
-        relayCertificate: relayKey.certificate,
+    // What the provisioner hands the Home: public material only.
+    const parts = managedBrowserPool(
+      {
+        kind: "managed-pool",
+        agentUrl: r.agentUrl,
+        slotId,
+        term,
+        agentKey: created.slot.controlKey,
+        hostKey: spkiOf(hostKey),
+        relay: { ...r.relay, relayHostKey: spkiOf(relayHostKey) },
       },
-    });
+      homeKeys,
+    );
     const endpoint = (overrides: Partial<Parameters<typeof openPoolRelay>[0]> = {}) => ({
       host: r.relay.host,
       port: r.relay.port,

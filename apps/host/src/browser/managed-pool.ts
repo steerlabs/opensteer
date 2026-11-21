@@ -5,7 +5,7 @@
  * released Home has; nothing here runs for any other Home.
  */
 import type { BrowserPoolControl, BrowserPoolRuntimeState } from "@opensteer/browser-runtime-core";
-import { createPublicKey } from "node:crypto";
+import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import {
   PoolRelayRefused,
   poolRelayTransport,
@@ -138,22 +138,55 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
   }
 }
 
-/** A managed pooled target's relay, as the provisioner hands it to the Home. */
+/** A managed pooled target's relay, as the provisioner hands it to the Home: public only. */
 export interface ManagedBrowserPoolRelay {
   readonly host: string;
   readonly port: number;
   /** SPKI DER, base64, of the relay's own TLS key, pinned at enrolment (not the host key). */
   readonly relayHostKey: string;
-  /** PKCS#8 PEM of this Home's relay key for the slot, and a certificate for it. */
-  readonly relayKey: string;
-  readonly relayCertificate: string;
 }
 
+/**
+ * The Home's own keys for one slot (round D, D2): generated on the Home, they never leave it.
+ * The provisioner receives only their public halves (`managedBrowserPoolRegistration`).
+ */
+export interface ManagedBrowserPoolHomeKeys {
+  /** Signs the Home's calls to the agent. */
+  readonly homeKey: KeyObject;
+  /** Opens the relay's tunnels: the key (PKCS#8 PEM) and a self-signed certificate for it. */
+  readonly relayKey: string;
+  readonly relayCertificate: string;
+  /** Signs the Home's attach tickets, which the guest's runtime alone trusts. */
+  readonly ticketKey: { readonly keyId: string; readonly key: KeyObject };
+}
+
+/** What the Home hands the provisioner for a slot: the public halves of its three keys. */
+export function managedBrowserPoolRegistration(keys: ManagedBrowserPoolHomeKeys): {
+  readonly homeKey: string;
+  readonly relayKey: string;
+  readonly ticketKey: { readonly keyId: string; readonly spki: string };
+} {
+  const spkiOf = (key: KeyObject | string) =>
+    (typeof key === "string" ? createPublicKey(createPrivateKey(key)) : createPublicKey(key))
+      .export({ format: "der", type: "spki" })
+      .toString("base64");
+  return {
+    homeKey: spkiOf(keys.homeKey),
+    relayKey: spkiOf(keys.relayKey),
+    ticketKey: { keyId: keys.ticketKey.keyId, spki: spkiOf(keys.ticketKey.key) },
+  };
+}
+
+/**
+ * A managed pooled target's parts, from what the provisioner handed the Home (public only) and
+ * the Home's own keys.
+ */
 export function managedBrowserPool(
   target: ManagedBrowserPoolTarget & {
     readonly hostKey: string;
     readonly relay: ManagedBrowserPoolRelay;
   },
+  keys: ManagedBrowserPoolHomeKeys,
 ) {
   const spki = (value: string) =>
     createPublicKey({ key: Buffer.from(value, "base64"), format: "der", type: "spki" });
@@ -162,14 +195,14 @@ export function managedBrowserPool(
     port: target.relay.port,
     relayHostKey: spki(target.relay.relayHostKey),
     controlKey: spki(target.agentKey),
-    relayKey: target.relay.relayKey,
-    relayCertificate: target.relay.relayCertificate,
+    relayKey: keys.relayKey,
+    relayCertificate: keys.relayCertificate,
     slot: target.slotId,
     term: target.term,
   };
   const transport = poolRelayTransport(endpoint);
   return {
-    controller: managedBrowserPoolController(target),
+    controller: managedBrowserPoolController(target, keys.homeKey),
     runtime: new RelayBrowserPoolRuntimeChannel(transport),
     /** For the Runner's `LocalBrowserRuntimeBridge` (`transport`). */
     transport,

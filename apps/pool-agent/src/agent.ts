@@ -597,23 +597,52 @@ export class PoolAgent {
     }
   }
 
-  /** A new Home key and a higher term: every call of the previous term is fenced from now on. */
+  /**
+   * Round D, D2: a new Home for the slot, at a higher term. Its three public keys (slot key,
+   * relay key, ticket key) replace the old set together, in one journal write, and the old set
+   * is refused from that write on: knowing the next term is never enough. The guest does not
+   * survive it (its ticket key is fixed at boot): it is ended and its saved state discarded, in
+   * that same write, and the next start is cold.
+   */
   async replaceKey(input: {
     readonly slotId: string;
     readonly term: number;
     readonly homeKey: string;
+    readonly relayKey?: string;
+    readonly ticketKey?: { readonly keyId: string; readonly spki: string };
   }): Promise<BrowserPoolAgentSlotSummary> {
     const slot = this.#require(input.slotId);
+    const relayKey = input.relayKey ?? null;
+    const ticketKey = input.ticketKey ? `${input.ticketKey.keyId}:${input.ticketKey.spki}` : null;
     return this.#run(slot, async () => {
       this.#admit(slot, undefined);
-      if (input.term === slot.record.term && input.homeKey === slot.record.homeKey)
+      const record = slot.record;
+      if (
+        input.term === record.term &&
+        input.homeKey === record.homeKey &&
+        relayKey === (record.relayKey ?? null) &&
+        ticketKey === (record.ticketKey ?? null)
+      )
         return this.#summary(slot);
-      if (!Number.isSafeInteger(input.term) || input.term <= slot.record.term)
+      if (!Number.isSafeInteger(input.term) || input.term <= record.term)
         throw new SlotConflict("A replaced key needs a higher term.");
       const homeKey = parsePublicKey(input.homeKey);
-      await this.#commit(slot, { ...slot.record, term: input.term, homeKey: input.homeKey });
-      slot.homeKey = homeKey;
+      if (input.relayKey) parsePublicKey(input.relayKey);
+      if (input.ticketKey) parsePublicKey(input.ticketKey.spki);
+      // The old Home's queued calls are fenced before anything is ended.
       slot.keyGeneration += 1;
+      await this.#settle(slot);
+      await this.#lose(slot, {
+        extra: {
+          term: input.term,
+          homeKey: input.homeKey,
+          relayKey,
+          ticketKey,
+          bridgeToken: null,
+          results: [],
+        },
+      });
+      slot.homeKey = homeKey;
       this.#log({ event: "slot.key-replaced", slotId: input.slotId, term: input.term });
       return this.#summary(slot);
     });

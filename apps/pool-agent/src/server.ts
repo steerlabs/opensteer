@@ -118,6 +118,10 @@ const adminSchema = z.strictObject({
       slotId: z.string().min(1).max(128),
       term: z.number().int().positive(),
       homeKey: spki,
+      relayKey: spki.optional(),
+      ticketKey: z
+        .strictObject({ keyId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/u), spki })
+        .optional(),
     }),
     z.strictObject({
       op: z.literal("delete"),

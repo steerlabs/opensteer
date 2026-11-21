@@ -146,3 +146,18 @@ parallel with the restore, and a connection that arrives first waits in the sock
 - Cloud firewall rules and the host's placement: the provisioner's.
 - Host kernel and microcode updates: the image's update policy (Firecracker: patch regularly).
 - Rate limiters on the guests' block and network devices: not set yet.
+
+## What passes between a provisioner and a Home
+
+A Home's private keys are made on the Home and never leave it (round D, D2). Only public
+material passes either way.
+
+| From        | To          | What                                                                                                                                                                                                             |
+| ----------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Home        | provisioner | the public halves of its three keys for the slot: the slot key (signs its calls to the agent), the relay key (opens the relay's tunnels) and the ticket key (signs attach tickets, which the guest alone trusts) |
+| provisioner | Home        | the agent's URL, the slot id and term, the slot's control key, the host key, the relay key, and the relay's host and port                                                                                        |
+
+`replace-key` gives a slot a new Home: its three public keys replace the old set together, in
+one journal write, at a higher term, and the old set is refused from that write on. The guest
+does not survive it (its ticket key is fixed at boot): it is ended and its saved state
+discarded, and the next start is cold; tabs come back by address.

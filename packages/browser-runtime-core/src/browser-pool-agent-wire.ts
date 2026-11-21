@@ -116,7 +116,13 @@ export type BrowserPoolAgentAdminRequest =
       readonly slotId: string;
       /** Must be above the slot's current term: the previous Home is fenced from here on. */
       readonly term: number;
+      /**
+       * The new Home's three public keys, replacing the old set together (round D, D2). The
+       * guest is ended and its saved state discarded; the next start is cold.
+       */
       readonly homeKey: string;
+      readonly relayKey?: string;
+      readonly ticketKey?: { readonly keyId: string; readonly spki: string };
     }
   /** Names the term it deletes: a replay after the slot was recreated at a higher term is refused. */
   | { readonly op: "delete"; readonly slotId: string; readonly term: number }

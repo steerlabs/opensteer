@@ -46,9 +46,9 @@ describe("finding 2: authentication and the term refer to one Home key", () => {
     (f.agent.journal as FaultyJournal).holdWrites(undefined);
     await replacing;
     expect(await sent).toBeInstanceOf(Error);
-    expect(f.driver.processes.size).toBe(1);
-    expect([...f.driver.processes.values()][0]!.state).toBe("running");
-    expect(f.agent.agent.effects(slotId)).toEqual(["start"]);
+    // The old key's pause never applied. Round D (D2): the replacement itself ends the guest.
+    expect(f.driver.processes.size).toBe(0);
+    expect(f.agent.agent.effects(slotId)).toEqual(["start", "lost"]);
   });
 });
 
