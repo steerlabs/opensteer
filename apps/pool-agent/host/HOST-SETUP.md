@@ -57,6 +57,10 @@ CAP_DAC_READ_SEARCH CAP_MKNOD CAP_SYS_CHROOT CAP_KILL CAP_SYS_RESOURCE`), `NoNew
   `SystemCallArchitectures=native`.
 - `Delegate=yes`, `KillMode=process`: guests live in the agent's delegated cgroup subtree and
   outlive an agent restart; the next agent reconciles with them.
+- `Restart=always`, `RestartSec=1`: a journal write that fails (a full or failing disk, a
+  failed directory sync) ends the agent with status 70, and the restarted agent's recovery
+  reads the disk. If writes keep failing, systemd's default start limit (5 starts in 10 s)
+  stops restarting it: the guests keep running with no agent until an operator fixes the disk.
 - No mount-namespace options (`ProtectSystem`, `PrivateTmp`): the agent creates network
   namespaces and bind mounts the host must see. This is the one place the unit is wider than a
   typical service; the jailer confines each VMM instead.
