@@ -109,9 +109,15 @@ interface Retained {
 }
 
 /**
- * The Home's half of the pool for one target: the owner of intent. It drives every state,
- * including one found after a restart, to an open or parked gate. The ladder ends in a discard
- * of live state and an open gate, never in a closed one.
+ * The Home's half of the pool for one target: the owner of intent. One loop drives every state,
+ * including one found after a Home restart, to an open or parked gate; a step that keeps failing
+ * may give live state up for a fresh guest, chosen like any other step, and never ends closed.
+ *
+ * Not wired yet (the next piece, with the provisioner): the Home selects a coordinator for a
+ * managed pooled target and passes it to `BrowserService` by Runner id. Its idle rule calls
+ * `tryPark()` when the browser is open and nobody holds it (no reservation, no viewer, no
+ * connected agent's work) for the idle period; a park any send vetoes is simply asked again at
+ * the next idle period. Until then only tests construct one and call `tryPark()`.
  */
 export class BrowserPoolCoordinator {
   readonly gate = new BrowserPoolGate();
