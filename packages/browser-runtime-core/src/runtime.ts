@@ -1280,13 +1280,11 @@ export class BrowserRuntime implements NativePresentationSource {
               "This browser profile has a whole-context CDP attachment.",
             );
           stage = "page-create";
-          const savedLineageId =
+          const saveTabs =
             claims.tabRestoreVersion === 1 &&
             claims.identity.kind === "profile-local" &&
             (claims.initialSurfaceId !== undefined ||
-              (claims.actor !== "agent" && claims.creationOrigin !== "agent"))
-              ? (claims.tabGroupId ?? claims.sessionId)
-              : undefined;
+              (claims.actor !== "agent" && claims.creationOrigin !== "agent"));
           // A new host's launch page is this session's root unless another already owns it.
           const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
           if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
@@ -1300,9 +1298,9 @@ export class BrowserRuntime implements NativePresentationSource {
               restoreSurfaceId ?? null,
               "open-failed",
               (own) =>
-                restoreSurfaceId && savedLineageId && context.sessionRestore
+                restoreSurfaceId && saveTabs && context.sessionRestore
                   ? context.sessionRestore
-                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own, savedLineageId)
+                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own)
                       .then((restored) => restored ?? context.createPage({ own }))
                   : context.createPage({ own }),
             );
@@ -1311,10 +1309,9 @@ export class BrowserRuntime implements NativePresentationSource {
 
           if (createdHost && host.browser.context.sessionRestore) {
             const sessionRestore = host.browser.context.sessionRestore;
-            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId && savedLineageId) {
+            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId && saveTabs) {
               sessionRestore.armFallbackReconcile?.(
                 new Set<BrowserSurfaceId>([claims.initialSurfaceId]),
-                savedLineageId,
               );
             } else {
               await wait(sessionRestore.reconcile(new Set()));
@@ -1347,7 +1344,7 @@ export class BrowserRuntime implements NativePresentationSource {
             ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),
-            ...(savedLineageId ? { savedLineageId } : {}),
+            ...(saveTabs ? { saveTabs: true } : {}),
           });
           sessionRouter.registerSession(
             claims.sessionId,
@@ -1543,11 +1540,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return new BrowserController({
       sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
       onSavedTabs: async (savedTabIds) => {
-        const lineageId =
-          claims.tabRestoreVersion === 1 && claims.identity.kind === "profile-local"
-            ? (claims.tabGroupId ?? claims.sessionId)
-            : undefined;
-        await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
+        await hostBrowser.context.sessionRestore?.reconcile(savedTabIds);
       },
       loginAuthority: this.loginAuthority,
       nativePresentation: (surfaceId, consumerToken) => {

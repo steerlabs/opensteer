@@ -34,7 +34,6 @@ interface IssueBrowserAttachTicketInput {
   readonly surfaceState?: 1;
   readonly clipboard?: boolean;
   readonly tabRestoreVersion?: 1;
-  readonly tabGroupId?: BrowserSessionId;
   readonly initialSurfaceId?: RuntimeBrowserAttachTicketClaims["initialSurfaceId"];
   /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
@@ -118,7 +117,6 @@ export class BrowserAttachTicketSigner {
       ...(input.tabRestoreVersion
         ? {
             tabRestoreVersion: input.tabRestoreVersion,
-            ...(input.tabGroupId ? { tabGroupId: input.tabGroupId } : {}),
             initialSurfaceId: input.initialSurfaceId,
           }
         : {}),

@@ -9,20 +9,11 @@ import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 
 export const tabRestoreSidecarFilename = "opensteer-tabs.json";
 
-const tabRestoreSidecarEntrySchema = z.union([
-  z.object({
-    index: z.number().int().nonnegative(),
-    surfaceId: z.string().min(1),
-    url: z.string(),
-    lineageId: z.string().min(1),
-  }),
-  z.object({
-    index: z.number().int().nonnegative(),
-    surfaceId: z.null(),
-    url: z.string(),
-    lineageId: z.null(),
-  }),
-]);
+const tabRestoreSidecarEntrySchema = z.object({
+  index: z.number().int().nonnegative(),
+  surfaceId: z.string().min(1).nullable(),
+  url: z.string(),
+});
 
 const tabRestoreSidecarSchema = z.object({
   version: z.literal(3),
@@ -132,7 +123,6 @@ export async function writeTabRestoreSidecar(
       index,
       surfaceId: entry.surfaceId,
       url: entry.url,
-      lineageId: entry.lineageId,
     }));
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFileAtomic(sidecarPath, JSON.stringify({ version: 3, tabs: normalized }));
@@ -140,7 +130,6 @@ export async function writeTabRestoreSidecar(
 
 export interface MatchedRestoredTab {
   readonly tab: ChromiumTabEntry;
-  readonly lineageId: string;
 }
 
 export interface RestoredTabMatchResult {
@@ -156,14 +145,13 @@ export interface RestoredTabMatchResult {
  *    exact same length and URL sequence up to that index (never after a shift).
  * 2. Unique-address fallback: only when an address occurs exactly once in the
  *    unfiltered sidecar AND exactly once among the restored tabs.
- * Never crosses lineages; every unmatched or excluded restored tab is an orphan.
+ * Every unmatched or excluded restored tab is an orphan.
  */
 export function matchRestoredTabs(
   restoredTabs: readonly ChromiumTabEntry[],
   sidecarTabs: readonly TabRestoreSidecarEntry[],
   options: {
     readonly savedTabIds?: ReadonlySet<string>;
-    readonly lineageId?: string;
   } = {},
 ): RestoredTabMatchResult {
   const orderedRestored = [...restoredTabs].sort(
@@ -200,16 +188,14 @@ export function matchRestoredTabs(
     // Duplicate URLs require the entire strip to match URL-for-URL so a shift never swaps tabs.
     if (isDuplicateUrl && !stripUrlsEqual) continue;
     consumedSidecarIndices.add(i);
-    if (sidecar.surfaceId === null || sidecar.lineageId === null) {
+    if (sidecar.surfaceId === null) {
       // Placeholder for an unsaved/agent tab: never claim or reuse this restored slot.
       excludedTabIds.add(restored.tabId);
       continue;
     }
-    const eligible =
-      (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&
-      (!options.lineageId || sidecar.lineageId === options.lineageId);
+    const eligible = !options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId);
     if (eligible && !matched.has(sidecar.surfaceId)) {
-      matched.set(sidecar.surfaceId, { tab: restored, lineageId: sidecar.lineageId });
+      matched.set(sidecar.surfaceId, { tab: restored });
       usedTabIds.add(restored.tabId);
     } else {
       // This restored slot belonged to a deleted or other-lineage tab: never reuse it.
@@ -221,7 +207,7 @@ export function matchRestoredTabs(
   for (let i = 0; i < orderedSidecar.length; i++) {
     if (consumedSidecarIndices.has(i)) continue;
     const sidecar = orderedSidecar[i]!;
-    if (sidecar.surfaceId === null || sidecar.lineageId === null) continue;
+    if (sidecar.surfaceId === null) continue;
     if (matched.has(sidecar.surfaceId)) continue;
     if (sidecarUrlCounts.get(sidecar.url) !== 1 || restoredUrlCounts.get(sidecar.url) !== 1) {
       continue;
@@ -233,11 +219,9 @@ export function matchRestoredTabs(
         restored.url === sidecar.url,
     );
     if (!candidate) continue;
-    const eligible =
-      (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&
-      (!options.lineageId || sidecar.lineageId === options.lineageId);
+    const eligible = !options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId);
     if (eligible) {
-      matched.set(sidecar.surfaceId, { tab: candidate, lineageId: sidecar.lineageId });
+      matched.set(sidecar.surfaceId, { tab: candidate });
       usedTabIds.add(candidate.tabId);
     } else {
       excludedTabIds.add(candidate.tabId);

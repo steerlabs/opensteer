@@ -1254,13 +1254,11 @@ describe("native Chromium profiles", () => {
           index: 1,
           surfaceId: "surface_b",
           url: "https://example.test/doc",
-          lineageId: "profile-1",
         },
         {
           index: 0,
           surfaceId: "surface_a",
           url: "https://example.test/doc",
-          lineageId: "profile-1",
         },
       ]);
       const sidecar = await readTabRestoreSidecar(directory);
@@ -1269,13 +1267,11 @@ describe("native Chromium profiles", () => {
           index: 0,
           surfaceId: "surface_a",
           url: "https://example.test/doc",
-          lineageId: "profile-1",
         },
         {
           index: 1,
           surfaceId: "surface_b",
           url: "https://example.test/doc",
-          lineageId: "profile-1",
         },
       ]);
 
@@ -1295,7 +1291,6 @@ describe("native Chromium profiles", () => {
         sidecar,
         {
           savedTabIds: new Set(["surface_a", "surface_b", "surface_missing"]),
-          lineageId: "profile-1",
         },
       );
       expect(result.matched.get("surface_a")?.tab.tabId).toBe(10);
@@ -1373,7 +1368,6 @@ describe("native Chromium profiles", () => {
         index: 0,
         surfaceId: "surface_00000000-0000-4000-8000-00000000r201",
         url: sidecarUrl,
-        lineageId: "lin-1",
       },
     ]);
     const restoredTab = {
@@ -1447,7 +1441,6 @@ describe("native Chromium profiles", () => {
         index: 0,
         surfaceId: "surface_00000000-0000-4000-8000-00000000r501",
         url: sidecarUrl,
-        lineageId: "lin-r5",
       },
     ]);
     let tabPresent = true;
@@ -1486,12 +1479,12 @@ describe("native Chromium profiles", () => {
     try {
       launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       // Fallback timer triggers a reconcile first.
-      launched.context.sessionRestore!.armFallbackReconcile!(new Set(), "lin-r5", 10);
+      launched.context.sessionRestore!.armFallbackReconcile!(new Set(), 10);
       await removalStarted;
 
       // Now Home's session.saved arrives while the fallback removal is STILL in flight.
       let secondResolved = false;
-      const second = launched.context.sessionRestore!.reconcile(new Set(), "lin-r5").then(() => {
+      const second = launched.context.sessionRestore!.reconcile(new Set()).then(() => {
         secondResolved = true;
       });
       await Promise.resolve();
@@ -1795,7 +1788,6 @@ describe("native Chromium profiles", () => {
         index: 0,
         surfaceId: "surface_00000000-0000-4000-8000-00000000r901",
         url: "https://woken.test/",
-        lineageId: "lin-r9",
       },
     ]);
     tabs = [
@@ -1822,7 +1814,6 @@ describe("native Chromium profiles", () => {
         "surface_00000000-0000-4000-8000-00000000r901" as never,
         "https://woken.test/",
         undefined,
-        "lin-r9",
       );
       expect(claimed?.url()).toBe("https://woken.test/");
       await vi.waitFor(() => expect(handedOff).toContain("https://unrelated.test/"));
@@ -1879,8 +1870,8 @@ describe("native Chromium profiles", () => {
     const surfLoaded = "srf_00000000-0000-4000-8000-00000000a101" as BrowserSurfaceId;
     const surfUnloaded = "srf_00000000-0000-4000-8000-00000000a102" as BrowserSurfaceId;
     await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: surfLoaded, url: "https://loaded.test/", lineageId: "lin-1" },
-      { index: 1, surfaceId: surfUnloaded, url: "https://unloaded.test/", lineageId: "lin-1" },
+      { index: 0, surfaceId: surfLoaded, url: "https://loaded.test/" },
+      { index: 1, surfaceId: surfUnloaded, url: "https://unloaded.test/" },
     ]);
 
     let tabs: Array<{
@@ -1983,10 +1974,7 @@ describe("native Chromium profiles", () => {
       launched.context.handOff((p) => handedOff.push(p.url()));
 
       // Reconcile keeps both saved tabs: ONLY tab 10 (complete) is discarded; tab 11 (unloaded) is untouched!
-      await launched.context.sessionRestore!.reconcile(
-        new Set([surfLoaded, surfUnloaded]),
-        "lin-1",
-      );
+      await launched.context.sessionRestore!.reconcile(new Set([surfLoaded, surfUnloaded]));
       expect(discardedIds).toEqual([10]);
       expect(tabs.find((t) => t.tabId === 11)).toMatchObject({
         discarded: false,

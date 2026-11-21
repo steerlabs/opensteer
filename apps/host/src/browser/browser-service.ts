@@ -6798,7 +6798,6 @@ export class BrowserService {
         ...(tabRestore
           ? {
               tabRestoreVersion: 1,
-              ...(localIdentity?.binding.engine === "chromium" ? { tabGroupId: groupId } : {}),
               initialSurfaceId: input.initialSurfaceId,
             }
           : {}),

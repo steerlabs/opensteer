@@ -16,13 +16,8 @@ function restored(tabId: number, index: number, url: string, windowId = 1): Chro
   };
 }
 
-function sidecar(
-  index: number,
-  surfaceId: string,
-  url: string,
-  lineageId = "profile-1",
-): TabRestoreSidecarEntry {
-  return { index, surfaceId, url, lineageId };
+function sidecar(index: number, surfaceId: string, url: string): TabRestoreSidecarEntry {
+  return { index, surfaceId, url };
 }
 
 describe("matchRestoredTabs", () => {
@@ -30,11 +25,11 @@ describe("matchRestoredTabs", () => {
     const result = matchRestoredTabs(
       [restored(10, 0, "https://dup.test/a"), restored(11, 1, "https://dup.test/a")],
       [sidecar(0, "surf-A1", "https://dup.test/a"), sidecar(1, "surf-A2", "https://dup.test/a")],
-      { savedTabIds: new Set(["surf-A2"]), lineageId: "profile-1" },
+      { savedTabIds: new Set(["surf-A2"]) },
     );
 
     expect([...result.matched.entries()]).toEqual([
-      ["surf-A2", { tab: expect.objectContaining({ tabId: 11 }), lineageId: "profile-1" }],
+      ["surf-A2", { tab: expect.objectContaining({ tabId: 11 }) }],
     ]);
     expect(result.orphans.map((t) => t.tabId)).toEqual([10]);
   });
@@ -53,7 +48,7 @@ describe("matchRestoredTabs", () => {
         sidecar(1, "surf-A2", "https://dup.test/a"),
         sidecar(2, "surf-U", "https://unique.test/u"),
       ],
-      { savedTabIds: new Set(["surf-A1", "surf-A2", "surf-U"]), lineageId: "profile-1" },
+      { savedTabIds: new Set(["surf-A1", "surf-A2", "surf-U"]) },
     );
 
     expect([...shifted.matched.keys()]).toEqual(["surf-U"]);
@@ -72,7 +67,7 @@ describe("matchRestoredTabs", () => {
         sidecar(1, "surf-B", "https://original.test/"),
         sidecar(2, "surf-A2", "https://dup.test/a"),
       ],
-      { savedTabIds: new Set(["surf-A1", "surf-B", "surf-A2"]), lineageId: "profile-1" },
+      { savedTabIds: new Set(["surf-A1", "surf-B", "surf-A2"]) },
     );
 
     expect(middleMismatch.matched.size).toBe(0);
@@ -80,14 +75,12 @@ describe("matchRestoredTabs", () => {
   });
 
   it("never crosses lineages or confuses a person tab with an unrecorded agent tab on the same URL", () => {
-    // Two distinct lineages on the same URL in the sidecar: lineage-B must never claim lineage-A's tab.
+    // Two distinct lineages on the same URL in the sidecar: each lineage sends only its own
+    // savedTabIds, so lineage-person claims only surf-person and closes surf-other as an orphan.
     const crossLineage = matchRestoredTabs(
       [restored(40, 0, "https://same.test/"), restored(41, 1, "https://same.test/")],
-      [
-        sidecar(0, "surf-person", "https://same.test/", "lineage-person"),
-        sidecar(1, "surf-other", "https://same.test/", "lineage-other"),
-      ],
-      { savedTabIds: new Set(["surf-person", "surf-other"]), lineageId: "lineage-person" },
+      [sidecar(0, "surf-person", "https://same.test/"), sidecar(1, "surf-other", "https://same.test/")],
+      { savedTabIds: new Set(["surf-person"]) },
     );
 
     expect([...crossLineage.matched.keys()]).toEqual(["surf-person"]);
@@ -98,8 +91,8 @@ describe("matchRestoredTabs", () => {
     // ambiguous duplicate -> neither matches, both closed as orphans, never crosses lineages.
     const personPlusAgent = matchRestoredTabs(
       [restored(50, 0, "https://same.test/"), restored(51, 1, "https://same.test/")],
-      [sidecar(0, "surf-person", "https://same.test/", "lineage-person")],
-      { savedTabIds: new Set(["surf-person"]), lineageId: "lineage-person" },
+      [sidecar(0, "surf-person", "https://same.test/")],
+      { savedTabIds: new Set(["surf-person"]) },
     );
 
     expect(personPlusAgent.matched.size).toBe(0);
@@ -111,22 +104,15 @@ describe("matchRestoredTabs", () => {
       index,
       surfaceId: null,
       url,
-      lineageId: null,
     });
 
     // Subcase 4a: sidecar has [0: agent placeholder(X), 1: person(X)] after person navigated W->X,
     // while Chromium Session_* still has [0: agent(X), 1: person(W)].
     // Tested BOTH at launch (no savedTabIds) AND at reconcile: agent tab MUST be an orphan!
-    for (const opts of [
-      {},
-      { savedTabIds: new Set(["surf-person"]), lineageId: "bsn_lineage_1" },
-    ]) {
+    for (const opts of [{}, { savedTabIds: new Set(["surf-person"]) }]) {
       const crashNavDrift = matchRestoredTabs(
         [restored(60, 0, "https://shared.test/x"), restored(61, 1, "https://old.test/w")],
-        [
-          placeholder(0, "https://shared.test/x"),
-          sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
-        ],
+        [placeholder(0, "https://shared.test/x"), sidecar(1, "surf-person", "https://shared.test/x")],
         opts,
       );
       expect(crashNavDrift.matched.size).toBe(0);
@@ -136,10 +122,7 @@ describe("matchRestoredTabs", () => {
     // Subcase 4b: person tab opened at X never reached Session_*, only agent(X) is in Session_*.
     const crashUnflushedPerson = matchRestoredTabs(
       [restored(70, 0, "https://shared.test/x")],
-      [
-        placeholder(0, "https://shared.test/x"),
-        sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
-      ],
+      [placeholder(0, "https://shared.test/x"), sidecar(1, "surf-person", "https://shared.test/x")],
     );
     expect(crashUnflushedPerson.matched.size).toBe(0);
     expect(crashUnflushedPerson.orphans.map((t) => t.tabId)).toEqual([70]);
@@ -148,10 +131,7 @@ describe("matchRestoredTabs", () => {
     // person slot 1 restores cleanly as surf-person (even without savedTabIds at launch)!
     const bothFlushed = matchRestoredTabs(
       [restored(80, 0, "https://shared.test/x"), restored(81, 1, "https://shared.test/x")],
-      [
-        placeholder(0, "https://shared.test/x"),
-        sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
-      ],
+      [placeholder(0, "https://shared.test/x"), sidecar(1, "surf-person", "https://shared.test/x")],
     );
     expect([...bothFlushed.matched.keys()]).toEqual(["surf-person"]);
     expect(bothFlushed.matched.get("surf-person")?.tab.tabId).toBe(81);

@@ -1219,7 +1219,6 @@ class PlaywrightContextHandle implements BrowserContext {
         readonly state: "discarding";
         readonly url: string;
         readonly surfaceId?: BrowserSurfaceId;
-        readonly lineageId?: string;
         readonly settled: Promise<number | null>;
       }
     | {
@@ -1227,7 +1226,6 @@ class PlaywrightContextHandle implements BrowserContext {
         readonly tabId: number;
         readonly url: string;
         readonly surfaceId?: BrowserSurfaceId;
-        readonly lineageId?: string;
       }
     | {
         readonly state: "unknown";
@@ -1237,7 +1235,6 @@ class PlaywrightContextHandle implements BrowserContext {
         readonly index: number;
         readonly priorDiscardedIds: ReadonlySet<number>;
         readonly surfaceId?: BrowserSurfaceId;
-        readonly lineageId?: string;
       }
   >();
   private readonly pendingSleepingRemovals = new Map<string, { attempts: number }>();
@@ -1255,12 +1252,9 @@ class PlaywrightContextHandle implements BrowserContext {
   private parkedAutoDiscardArmed = false;
   private readonly savedTabsBySurfaceId = new Map<
     BrowserSurfaceId,
-    { page: PlaywrightPageHandle | null; lineageId: string; sleepingTokenId?: string }
+    { page: PlaywrightPageHandle | null; sleepingTokenId?: string }
   >();
-  private readonly savedSurfaceByPage = new WeakMap<
-    PlaywrightPageHandle,
-    { surfaceId: BrowserSurfaceId; lineageId: string }
-  >();
+  private readonly savedSurfaceByPage = new WeakMap<PlaywrightPageHandle, BrowserSurfaceId>();
   private readonly trackedNavigationPages = new WeakSet<Page>();
   private readonly inFlightDiscards = new Set<Promise<void>>();
   private reconcileTail: Promise<void> = Promise.resolve();
@@ -1312,13 +1306,11 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     if (lifecycle && profileDirectory) {
       this.sessionRestore = {
-        claim: (surfaceId, url, own, lineageId) =>
-          this.claimSavedRestoredTab(surfaceId, url, own, lineageId),
-        reconcile: (savedTabIds, lineageId) => this.reconcileSavedTabs(savedTabIds, lineageId),
-        armFallbackReconcile: (keepIds, lineageId, delayMs = 5_000) =>
-          this.armFallbackReconcile(keepIds, lineageId, delayMs),
-        trackSavedTab: (surfaceId, page, lineageId) =>
-          this.trackSavedTab(surfaceId, page, lineageId),
+        claim: (surfaceId, url, own) => this.claimSavedRestoredTab(surfaceId, url, own),
+        reconcile: (savedTabIds) => this.reconcileSavedTabs(savedTabIds),
+        armFallbackReconcile: (keepIds, delayMs = 5_000) =>
+          this.armFallbackReconcile(keepIds, delayMs),
+        trackSavedTab: (surfaceId, page) => this.trackSavedTab(surfaceId, page),
         flush: () => this.flushSavedTabs(),
       };
     }
@@ -1485,31 +1477,24 @@ class PlaywrightContextHandle implements BrowserContext {
     return false;
   }
 
-  private armFallbackReconcile(
-    keepIds: ReadonlySet<BrowserSurfaceId>,
-    lineageId: string,
-    delayMs: number,
-  ): void {
+  private armFallbackReconcile(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs: number): void {
     if (this.closed || this.restoredBySurfaceId.size === 0) return;
     if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
     this.reconcileFallbackTimer = setTimeout(() => {
       this.reconcileFallbackTimer = undefined;
       if (this.closed) return;
-      void this.reconcileSavedTabs(keepIds, lineageId).catch(() => undefined);
+      void this.reconcileSavedTabs(keepIds).catch(() => undefined);
     }, delayMs);
     this.reconcileFallbackTimer.unref?.();
   }
 
-  private reconcileSavedTabs(
-    savedTabIds: ReadonlySet<BrowserSurfaceId>,
-    lineageId?: string,
-  ): Promise<void> {
+  private reconcileSavedTabs(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void> {
     if (this.reconcileFallbackTimer) {
       clearTimeout(this.reconcileFallbackTimer);
       this.reconcileFallbackTimer = undefined;
     }
     const run = this.reconcileTail.then(() =>
-      withTimeout(this.reconcileSavedTabsOnce(savedTabIds, lineageId), 6_000, {
+      withTimeout(this.reconcileSavedTabsOnce(savedTabIds), 6_000, {
         timeoutError: () => new Error("Saved-tab reconciliation exceeded the runtime deadline."),
       }),
     );
@@ -1520,14 +1505,11 @@ class PlaywrightContextHandle implements BrowserContext {
     return run;
   }
 
-  private async reconcileSavedTabsOnce(
-    savedTabIds: ReadonlySet<BrowserSurfaceId>,
-    lineageId?: string,
-  ): Promise<void> {
+  private async reconcileSavedTabsOnce(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory) return;
     let failedRemovals = 0;
     for (const [surfaceId, entry] of this.restoredBySurfaceId) {
-      if (savedTabIds.has(surfaceId) && (!lineageId || entry.lineageId === lineageId)) continue;
+      if (savedTabIds.has(surfaceId)) continue;
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
@@ -1959,7 +1941,6 @@ class PlaywrightContextHandle implements BrowserContext {
     surfaceId: BrowserSurfaceId,
     url?: string,
     own?: (page: BrowserPage) => void,
-    lineageId?: string,
   ): Promise<BrowserPage | null> {
     if (!this.lifecycle || !this.restoredBySurfaceId.has(surfaceId)) return null;
     this.claimingSurfaceIds.add(surfaceId);
@@ -1971,10 +1952,7 @@ class PlaywrightContextHandle implements BrowserContext {
       const entry = this.restoredBySurfaceId.get(surfaceId);
       if (!entry) return null;
       this.restoredBySurfaceId.delete(surfaceId);
-      if (
-        (url !== undefined && entry.tab.url !== url) ||
-        (lineageId !== undefined && entry.lineageId !== lineageId)
-      ) {
+      if (url !== undefined && entry.tab.url !== url) {
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
         if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
         this.restoredPagesByTabId.delete(entry.tab.tabId);
@@ -1988,7 +1966,7 @@ class PlaywrightContextHandle implements BrowserContext {
         if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
         const handle = this.wrap(restoredPage);
         handle.restoredFromSession = true;
-        this.trackSavedTab(surfaceId, handle, entry.lineageId);
+        this.trackSavedTab(surfaceId, handle);
         own?.(handle);
         return handle;
       } catch {
@@ -2002,11 +1980,7 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
-  private trackSavedTab(
-    surfaceId: BrowserSurfaceId,
-    page: BrowserPage | null,
-    lineageId: string,
-  ): void {
+  private trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void {
     if (page === null) {
       const existing = this.savedTabsBySurfaceId.get(surfaceId);
       if (existing?.page) this.savedSurfaceByPage.delete(existing.page);
@@ -2020,8 +1994,8 @@ class PlaywrightContextHandle implements BrowserContext {
     if (existing?.page && existing.page !== page) {
       this.savedSurfaceByPage.delete(existing.page);
     }
-    this.savedTabsBySurfaceId.set(surfaceId, { page, lineageId });
-    this.savedSurfaceByPage.set(page, { surfaceId, lineageId });
+    this.savedTabsBySurfaceId.set(surfaceId, { page });
+    this.savedSurfaceByPage.set(page, surfaceId);
     const rawPage = page.rawPage;
     if (!this.trackedNavigationPages.has(rawPage)) {
       this.trackedNavigationPages.add(rawPage);
@@ -2061,15 +2035,14 @@ class PlaywrightContextHandle implements BrowserContext {
       this.sidecarDirty = false;
       const inventory = await this.lifecycle.inventory().catch(() => null);
       if (!inventory) return;
-      const byTargetId = new Map<string, { surfaceId: string; lineageId: string; url: string }>();
-      const byTabId = new Map<number, { surfaceId: string; lineageId: string; url: string }>();
+      const byTargetId = new Map<string, { surfaceId: string; url: string }>();
+      const byTabId = new Map<number, { surfaceId: string; url: string }>();
       for (const [surfaceId, saved] of this.savedTabsBySurfaceId) {
         if (saved.page && !saved.page.isClosed()) {
           const targetId = await saved.page.targetId().catch(() => null);
           if (targetId) {
             byTargetId.set(targetId, {
               surfaceId,
-              lineageId: saved.lineageId,
               url: saved.page.url() || "",
             });
           }
@@ -2078,7 +2051,6 @@ class PlaywrightContextHandle implements BrowserContext {
           if (sleeping?.state === "discarded") {
             byTabId.set(sleeping.tabId, {
               surfaceId,
-              lineageId: saved.lineageId,
               url: sleeping.url,
             });
           }
@@ -2088,7 +2060,6 @@ class PlaywrightContextHandle implements BrowserContext {
         if (!byTabId.has(parked.tab.tabId)) {
           byTabId.set(parked.tab.tabId, {
             surfaceId,
-            lineageId: parked.lineageId,
             url: parked.tab.url,
           });
         }
@@ -2110,7 +2081,6 @@ class PlaywrightContextHandle implements BrowserContext {
             index: entries.length,
             surfaceId: matched.surfaceId,
             url: tab.url || matched.url,
-            lineageId: matched.lineageId,
           });
         } else {
           // Record unsaved/agent tabs as strip-order placeholders so crash drift can never bind them to saved tabs.
@@ -2118,7 +2088,6 @@ class PlaywrightContextHandle implements BrowserContext {
             index: entries.length,
             surfaceId: null,
             url: tab.url,
-            lineageId: null,
           });
         }
       }
@@ -2197,12 +2166,12 @@ class PlaywrightContextHandle implements BrowserContext {
     pageHandle: PlaywrightPageHandle | undefined,
     settled: Promise<number | null>,
   ): void {
-    const saved = pageHandle ? this.savedSurfaceByPage.get(pageHandle) : undefined;
+    const surfaceId = pageHandle ? this.savedSurfaceByPage.get(pageHandle) : undefined;
     this.sleepingTabs.set(tokenId, {
       state: "discarding",
       url,
       settled,
-      ...(saved ? { surfaceId: saved.surfaceId, lineageId: saved.lineageId } : {}),
+      ...(surfaceId ? { surfaceId } : {}),
     });
     this.trackInFlightDiscard(
       settled.then(
@@ -2210,10 +2179,9 @@ class PlaywrightContextHandle implements BrowserContext {
         () => undefined,
       ),
     );
-    if (saved) {
-      this.savedTabsBySurfaceId.set(saved.surfaceId, {
+    if (surfaceId) {
+      this.savedTabsBySurfaceId.set(surfaceId, {
         page: null,
-        lineageId: saved.lineageId,
         sleepingTokenId: tokenId,
       });
       this.scheduleSidecarWrite();
@@ -2243,7 +2211,6 @@ class PlaywrightContextHandle implements BrowserContext {
           index: unknownOutcome.index,
           priorDiscardedIds: unknownOutcome.priorDiscardedIds,
           ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
-          ...(current.lineageId ? { lineageId: current.lineageId } : {}),
         });
         return;
       }
@@ -2255,7 +2222,6 @@ class PlaywrightContextHandle implements BrowserContext {
       tabId: newTabId,
       url: current.url,
       ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
-      ...(current.lineageId ? { lineageId: current.lineageId } : {}),
     });
     if (current.surfaceId) this.scheduleSidecarWrite();
   }
@@ -2502,8 +2468,8 @@ class PlaywrightContextHandle implements BrowserContext {
           try {
             const wokenPage = await this.wakeDiscardedTab(tabId);
             const handle = this.wrap(wokenPage);
-            if (currentSleeping.surfaceId && currentSleeping.lineageId) {
-              this.trackSavedTab(currentSleeping.surfaceId, handle, currentSleeping.lineageId);
+            if (currentSleeping.surfaceId) {
+              this.trackSavedTab(currentSleeping.surfaceId, handle);
             }
             options?.own?.(handle);
             return handle;
@@ -2523,8 +2489,8 @@ class PlaywrightContextHandle implements BrowserContext {
         }
       }
       const fallback = this.wrap(await this.openFreshPage());
-      if (sleeping?.surfaceId && sleeping.lineageId) {
-        this.trackSavedTab(sleeping.surfaceId, fallback, sleeping.lineageId);
+      if (sleeping?.surfaceId) {
+        this.trackSavedTab(sleeping.surfaceId, fallback);
       }
       options?.own?.(fallback);
       if (discardRestore.url && discardRestore.url !== "about:blank") {
@@ -2566,11 +2532,11 @@ class PlaywrightContextHandle implements BrowserContext {
       page.once("close", () => {
         this.pagesByPlaywrightPage.delete(page);
         if (this.lifecycle && this.profileDirectory) {
-          const saved = this.savedSurfaceByPage.get(handle!);
-          if (saved) {
-            const current = this.savedTabsBySurfaceId.get(saved.surfaceId);
+          const savedSurfaceId = this.savedSurfaceByPage.get(handle!);
+          if (savedSurfaceId) {
+            const current = this.savedTabsBySurfaceId.get(savedSurfaceId);
             if (current && current.page === handle) {
-              this.savedTabsBySurfaceId.delete(saved.surfaceId);
+              this.savedTabsBySurfaceId.delete(savedSurfaceId);
             }
           }
           this.scheduleSidecarWrite();

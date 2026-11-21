@@ -138,26 +138,21 @@ export interface BrowserPage {
 }
 
 export interface BrowserSessionRestore {
-  /** Claims a Chromium-restored tab for `surfaceId` (verifying `url` and `lineageId` when given), or returns null. */
+  /** Claims a Chromium-restored tab for `surfaceId` (verifying `url` when given), or returns null. */
   claim(
     surfaceId: BrowserSurfaceId,
     url?: string,
     own?: (page: BrowserPage) => void,
-    lineageId?: string,
   ): Promise<BrowserPage | null>;
   /**
    * Reconciles restored tabs against the Home's authoritative saved-tab list,
-   * closing every restored tab not named in `savedTabIds` (or outside `lineageId`) with evidence.
+   * closing every restored tab not named in `savedTabIds` with evidence.
    */
-  reconcile(savedTabIds: ReadonlySet<BrowserSurfaceId>, lineageId?: string): Promise<void>;
+  reconcile(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void>;
   /** Arms a bounded fallback reconcile if the Home never sends `session.saved`. */
-  armFallbackReconcile?(
-    keepIds: ReadonlySet<BrowserSurfaceId>,
-    lineageId: string,
-    delayMs?: number,
-  ): void;
+  armFallbackReconcile?(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs?: number): void;
   /** Associates a saved-lineage page with its durable Home `surfaceId`, or clears it on `null`. */
-  trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null, lineageId: string): void;
+  trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void;
   /** Flushes any pending profile tab-map write before an orderly browser close. */
   flush?(): Promise<void>;
 }

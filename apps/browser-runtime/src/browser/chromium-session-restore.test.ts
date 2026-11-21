@@ -271,7 +271,7 @@ it("restores duplicate-URL tabs, slept tabs, session cookies, closes orphans, an
   const request = nativeProfileRequest(directory);
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-test" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
   const urls = await populateTabs(ledger1, server, true);
   await browser1.context.sessionRestore!.flush!();
@@ -354,7 +354,7 @@ it("restores duplicate-URL tabs, slept tabs, session cookies, closes orphans, an
   expect(invAfterReconcile.some((t) => t.url === urls.orphanUrl)).toBe(false);
   expect(invAfterReconcile.some((t) => t.url === urls.closedUrl)).toBe(false);
 
-  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-test" });
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
 
@@ -427,7 +427,7 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
   const request = nativeProfileRequest(directory);
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-test" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
   await populateTabs(ledger1, server, false);
   await browser1.context.sessionRestore!.flush!();
@@ -473,7 +473,7 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
     new Set<BrowserSurfaceId>([surfDupA, surfDupB, surfForm, surfSpa, surfSs]),
   );
 
-  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-test" });
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
 
@@ -522,7 +522,7 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
   const dupUrl = `${server.originForSite(1)}/article`;
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-f5" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
 
   await ledger1.openSurface({ surfaceId: surfDupA });
@@ -567,7 +567,7 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
   const invAfter = await internal2.contextHandle.lifecycle.inventory();
   expect(invAfter.filter((t) => t.url === dupUrl)).toHaveLength(1);
 
-  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-f5" });
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
 
@@ -595,7 +595,7 @@ it("fails closed on launch inventory failure by closing every restored non-helpe
   const savedUrl = `${server.originForSite(1)}/article`;
 
   const browser1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-f9" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
   await ledger1.openSurface({ surfaceId: surfDupA });
   const live1 = ledger1.binding(surfDupA)!;
@@ -658,7 +658,7 @@ it("handles a fresh native launch with no restored tabs cleanly under the Playwr
   expect(browser.context.pages()).toHaveLength(0);
   await browser.context.sessionRestore!.reconcile(new Set());
 
-  const ledger = new SurfaceLedger(browser.context, { savedLineageId: "profile-fresh" });
+  const ledger = new SurfaceLedger(browser.context, { saveTabs: true });
   await ledger.start();
   cleanup.push(() => ledger.close());
 
@@ -690,7 +690,7 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
 
   const browser1 = await launcher.launch(request);
   cleanup.push(() => browser1.close());
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "lineage-r1" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
   for (let i = 0; i < surfaceIds.length; i++) {
     await ledger1.openSurface({ surfaceId: surfaceIds[i]! });
@@ -733,11 +733,11 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
   cleanup.push(() => browser2.close());
 
   // Claim ONLY tab 0, then reconcile all 6 saved tabs.
-  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "lineage-r1" });
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
   await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
-  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds), "lineage-r1");
+  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds));
 
   const lifecycle2 = (
     browser2 as unknown as {
@@ -824,7 +824,7 @@ it("leaves never-loaded parked tabs untouched with sessionStorage intact and aut
 
   const browser1 = await launcher.launch(request);
   cleanup.push(() => browser1.close());
-  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "lineage-r1-auto" });
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
   await ledger1.start();
   for (let i = 0; i < surfaceIds.length; i++) {
     await ledger1.openSurface({ surfaceId: surfaceIds[i]! });
@@ -872,11 +872,11 @@ it("leaves never-loaded parked tabs untouched with sessionStorage intact and aut
   const browser2 = await launcher.launch(request);
   cleanup.push(() => browser2.close());
 
-  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "lineage-r1-auto" });
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
   await ledger2.start();
   cleanup.push(() => ledger2.close());
   await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
-  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds), "lineage-r1-auto");
+  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds));
 
   const internal2 = browser2 as unknown as {
     playwrightContext: {

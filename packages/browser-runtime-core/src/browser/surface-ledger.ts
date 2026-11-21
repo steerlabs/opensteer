@@ -86,8 +86,8 @@ interface SurfaceLedgerOptions {
   initialViewport?: Viewport;
   rootPages?: readonly BrowserPage[];
   initialSurfaceId?: BrowserSurfaceId;
-  /** Durable lineage identifier when this session's person tabs participate in cold-start restore. */
-  savedLineageId?: string;
+  /** True when this session's person tabs participate in cold-start restore. */
+  saveTabs?: boolean;
   creationOrigin?: "agent" | "person";
   /** The runtime's page owner; a ledger made alone owns its pages itself. */
   pages?: PageOwnership;
@@ -347,7 +347,7 @@ export class SurfaceLedger {
   private readonly creationLock = new AsyncMutex();
   private readonly creationOrigin: "agent" | "person";
   private readonly initialSurfaceId: BrowserSurfaceId | undefined;
-  private readonly savedLineageId: string | undefined;
+  private readonly saveTabs: boolean;
   private readonly context: BrowserContext;
   readonly pages: PageOwnership;
   private readonly session: string;
@@ -389,7 +389,7 @@ export class SurfaceLedger {
     this.context = context;
     this.navigationVersion = options.navigationVersion;
     this.initialSurfaceId = options.initialSurfaceId;
-    this.savedLineageId = options.savedLineageId;
+    this.saveTabs = options.saveTabs === true;
     this.creationOrigin = options.creationOrigin ?? "person";
     this.claimTarget = options.claimTarget;
     this.releaseTarget = options.releaseTarget;
@@ -499,14 +499,14 @@ export class SurfaceLedger {
     void Promise.resolve(this.context.releaseRestore?.(engine)).catch(() => undefined);
   }
   private isSavedLineageTab(record: TabRecord): boolean {
-    if (!this.savedLineageId) return false;
+    if (!this.saveTabs) return false;
     return record.origin === "person" || record.id === this.initialSurfaceId;
   }
   private syncSavedTab(record: TabRecord): void {
-    if (!this.savedLineageId || !this.context.sessionRestore) return;
+    if (!this.saveTabs || !this.context.sessionRestore) return;
     if (!this.isSavedLineageTab(record)) return;
     if (record.live) {
-      this.context.sessionRestore.trackSavedTab(record.id, record.live.page, this.savedLineageId);
+      this.context.sessionRestore.trackSavedTab(record.id, record.live.page);
     }
   }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
@@ -1292,9 +1292,9 @@ export class SurfaceLedger {
       options.surfaceId ?? null,
       "open-failed",
       (own) =>
-        options.surfaceId && this.savedLineageId && this.context.sessionRestore
+        options.surfaceId && this.saveTabs && this.context.sessionRestore
           ? this.context.sessionRestore
-              .claim(options.surfaceId, undefined, own, this.savedLineageId)
+              .claim(options.surfaceId, undefined, own)
               .then((restored) => restored ?? this.context.createPage({ own }))
           : this.context.createPage({ own }),
     );
@@ -1332,11 +1332,11 @@ export class SurfaceLedger {
       throw new BrowserRuntimeError("conflict", "The browser could not open a new tab.");
     }
     record.origin = options.origin ?? "person";
-    if (this.savedLineageId && this.context.sessionRestore) {
+    if (this.saveTabs && this.context.sessionRestore) {
       if (this.isSavedLineageTab(record)) {
-        this.context.sessionRestore.trackSavedTab(record.id, record.live.page, this.savedLineageId);
+        this.context.sessionRestore.trackSavedTab(record.id, record.live.page);
       } else {
-        this.context.sessionRestore.trackSavedTab(record.id, null, this.savedLineageId);
+        this.context.sessionRestore.trackSavedTab(record.id, null);
       }
     }
     this.touch(record.id, record.origin === "person");
@@ -1504,7 +1504,7 @@ export class SurfaceLedger {
    */
   async closeOwnedPages(reason: PageEndReason = "session-ended", confirm = false): Promise<void> {
     this.tearingDown = true;
-    if (reason === "runtime-shutdown" && this.savedLineageId && this.context.sessionRestore) {
+    if (reason === "runtime-shutdown" && this.saveTabs && this.context.sessionRestore) {
       // Preserve durable saved-lineage tabs for Chromium's orderly session exit;
       // still end any non-durable (agent-origin) live or sleeping tabs before browser.close().
       const records = [...this.records.values()];
@@ -2254,8 +2254,8 @@ export class SurfaceLedger {
       this.adoptedTargetIds.delete(record.lastTargetId);
       this.releaseTarget?.(record.lastTargetId);
       if (record.live) this.pageIds.delete(record.live.page);
-      if (!this.tearingDown && this.savedLineageId && this.isSavedLineageTab(record)) {
-        this.context.sessionRestore?.trackSavedTab(record.id, null, this.savedLineageId);
+      if (!this.tearingDown && this.saveTabs && this.isSavedLineageTab(record)) {
+        this.context.sessionRestore?.trackSavedTab(record.id, null);
       }
       if (!this.tearingDown && record.restore?.engine != null) {
         releasedRestore = record.restore.engine;

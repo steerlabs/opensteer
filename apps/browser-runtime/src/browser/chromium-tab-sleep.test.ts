@@ -790,7 +790,7 @@ it("hands off new popups synchronously even while restored tabs are parked, with
 
   // Seed one saved tab so the next launch has a parked unclaimed restored tab.
   const b1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(b1.context, { savedLineageId: "profile-f6" });
+  const ledger1 = new SurfaceLedger(b1.context, { saveTabs: true });
   await ledger1.start();
   const saved = await ledger1.openSurface();
   const savedLive = ledger1.binding(saved.id)!;
@@ -877,7 +877,7 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   };
   const lifecycle = internal.contextHandle.lifecycle;
 
-  const ledger = new SurfaceLedger(launched.context, { savedLineageId: "profile-f7" });
+  const ledger = new SurfaceLedger(launched.context, { saveTabs: true });
   await ledger.start();
   cleanup.push(() => ledger.close());
 
