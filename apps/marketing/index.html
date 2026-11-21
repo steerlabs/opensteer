@@ -699,8 +699,10 @@
               <p class="homecard__who">
                 <svg aria-hidden="true"><use href="#i-cloud" /></svg>Opensteer Cloud Computer
               </p>
-              <!-- TODO(owner): the monthly price. Until it is set, the card says only "Paid monthly". -->
-              <p class="homecard__price">Paid monthly · cancel any time</p>
+              <!-- The price is the account service's own plan, read when the page loads. -->
+              <p class="homecard__price" data-offer="{{cloudComputerOffer}}" aria-live="polite">
+                Paid monthly · cancel any time
+              </p>
               <ul>
                 <li>
                   <svg aria-hidden="true"><use href="#i-check" /></svg>Always on: agents keep
@@ -718,12 +720,11 @@
                   of its devices
                 </li>
               </ul>
-              <a class="btn" href="{{cloudComputer}}">Set up on the web</a>
+              <a class="btn btn--accent" href="{{cloudComputer}}">Get a Cloud Computer</a>
               <p class="homecard__note">
                 Or set it up in the Opensteer app, under Settings, then Account. It starts as a new
                 Home, so connected agents connect again to its new address.
               </p>
-              <!-- TODO(owner): a direct "Get a Cloud Computer" link once the public checkout page is confirmed. -->
             </div>
           </div>
           <p class="row__facts reveal">
