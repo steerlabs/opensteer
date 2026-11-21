@@ -1,7 +1,8 @@
 # Opensteer Home on Linux
 
 A Home has one public HTTPS hostname. Point its DNS record at the VM and make TCP 80
-and 443 reachable. Ubuntu 24.04 LTS with systemd is the managed installation base.
+and 443 reachable from the internet: that is how the Home gets a certificate that
+phones and connected agents trust. Without both, the Home has no working HTTPS. Ubuntu 24.04 LTS with systemd is the managed installation base.
 Bring-your-own Linux hosts need Docker Engine, Compose v2, Bash, coreutils, curl,
 ca-certificates, jq, OpenSSL, util-linux and iptables with IPv4 and IPv6 support.
 On Ubuntu 24.04:
@@ -63,6 +64,19 @@ Use `logs <service>` for service logs and `update` for an on-demand update.
 Only bring-your-own Homes accept `update MANIFEST.json`. `uninstall` stops the
 Home and disables its timers. `uninstall --purge` also
 deletes its configuration and Docker volumes.
+
+## Trying it on a private network
+
+```bash
+sudo bash deploy/home/install.sh --local --manifest /root/opensteer-home-release.json home.example.com
+```
+
+`--local` makes the Home use Caddy's own certificate authority instead of a
+public certificate, for trying a Home on a network the internet cannot reach.
+Other devices do not trust that certificate: the phone app and connected agents
+will not connect, and browsers warn. The hostname still has to resolve to the
+server on each device that uses it, for example through `/etc/hosts`. An installed Home
+has no switch from `--local` to a public certificate.
 
 ## Network and storage
 
@@ -265,7 +279,7 @@ iptables, and AppArmor from the distribution packages. Other Linux images
 must preinstall the prerequisites. Publish the regular numeric Opensteer
 release version stamped into the immutable images.
 
-`--local` enables Caddy's internal CA. The Colima proof runs
+The verifier installs with `--local`. The Colima proof runs
 `pnpm exec tsx scripts/verify-home-deployment.mjs` from the worktree. The BYO
 path uses `--prepare`. The managed path uses the standalone installer, real
 Account HTTP route handlers, and Colima's systemd. The verifier checks for
