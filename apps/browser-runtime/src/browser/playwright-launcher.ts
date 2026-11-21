@@ -944,7 +944,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           );
           for (const page of context.pages()) {
             if (page === helper || page.isClosed()) continue;
-            await page.close({ runBeforeUnload: false }).catch(() => undefined);
+            await withTimeout(page.close({ runBeforeUnload: false }), 2_000, {
+              timeoutError: () => new Error("Launch page close timed out."),
+            }).catch(() => undefined);
           }
           let confirmedClean = false;
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -2175,9 +2177,12 @@ class PlaywrightContextHandle implements BrowserContext {
       this.sleepingByToken.delete(token.tokenId);
       if (this.sleepingTitles.get(title) === token.tokenId) this.sleepingTitles.delete(title);
     };
+    // Bounded like every other close: confirmed, or closed by its target, or reported.
     const closePlainly = async () => {
-      await detach().catch(() => undefined);
-      if (!page.isClosed()) await page.close({ runBeforeUnload: false });
+      await withTimeout(detach(), nameTargetMs, {
+        timeoutError: () => new Error("Sleep detach timed out."),
+      }).catch(() => undefined);
+      await this.closePageWithEvidence(page);
     };
     try {
       const inventory = await lifecycle.inventory().catch(() => null);
@@ -2217,7 +2222,7 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       // Still loaded, ambiguous or not known: the page closes; the name stays guarded until a
       // wake or release resolves it.
-      if (!page.isClosed()) await page.close({ runBeforeUnload: false }).catch(() => undefined);
+      await this.closePageWithEvidence(page);
     } finally {
       settled.resolve();
     }
