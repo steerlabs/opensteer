@@ -424,8 +424,15 @@ export class BrowserReturnNotes {
   }
 }
 
-function noteKey(computerId: string, tabId: string, tab: BrowserTabReturn): string {
-  return JSON.stringify([computerId, tabId, tab.kind, tab.kind === "kept" ? null : tab.startAt]);
+/** One note: a later loss of the same tab has its own notice id, so it is a new note. */
+export function noteKey(computerId: string, tabId: string, tab: BrowserTabReturn): string {
+  return JSON.stringify([
+    computerId,
+    tabId,
+    tab.kind,
+    tab.kind === "kept" ? null : tab.startAt,
+    tab.kind === "kept" ? null : (tab.noticeId ?? null),
+  ]);
 }
 
 const notesByClient = new WeakMap<object, BrowserReturnNotes>();
