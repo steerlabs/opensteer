@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ProviderWriteRejected } from "./http.js";
+import { ProviderOutcomeUnknown, ProviderWriteRejected } from "./http.js";
 import { refused } from "@opensteer/core";
 import type {
   CloudComputerCheck,
@@ -69,6 +69,7 @@ export class Reconciler {
                 (firewall ??= provider.ensureFirewall(operationSignal, check)),
               signal,
             );
+            if (!report) continue;
             const key = JSON.stringify(report);
             if (this.#reports.get(computer.id) === key) continue;
             this.#reports.delete(computer.id);
@@ -99,9 +100,10 @@ export class Reconciler {
 
   async #sweep(active: ReadonlySet<CloudComputerId>, signal: AbortSignal) {
     const { provider, dns, orphanGraceMs = 5 * 60_000 } = this.#options;
-    const [servers, records] = await Promise.all([
+    const [servers, records, addresses] = await Promise.all([
       provider.listManaged(signal),
       dns.listManaged(signal),
+      provider.listManagedAddresses?.(signal) ?? [],
     ]);
     const present = new Set<string>();
     const clean = async (
@@ -133,6 +135,13 @@ export class Reconciler {
           provider.delete(server.id, job, () => this.#check(id, { operation: "orphan" }, job)),
         );
     }
+    for (const id of addresses) {
+      await clean(`address:${id}`, id, async (job) => {
+        await provider.releaseAddress?.(id, job, () =>
+          this.#check(id, { operation: "orphan" }, job),
+        );
+      });
+    }
     for (const key of this.#orphanSeen.keys()) if (!present.has(key)) this.#orphanSeen.delete(key);
   }
 
@@ -140,7 +149,7 @@ export class Reconciler {
     computer: CloudComputerDesired,
     ensureFirewall: (signal: AbortSignal, check: () => Promise<void>) => Promise<number>,
     signal: AbortSignal,
-  ): Promise<CloudComputerReport> {
+  ): Promise<CloudComputerReport | undefined> {
     const { account, provider, dns, discover } = this.#options;
     const { id, generation, revision, state, hostname } = computer;
     let current: VmServer | undefined;
@@ -175,6 +184,12 @@ export class Reconciler {
     };
     const recover = async (write: CloudComputerProviderWrite) => {
       if (!write.recoverAfter || Date.parse(write.recoverAfter) > this.#now()) return;
+      if (
+        (write.kind === "create" || write.kind === "power-on") &&
+        provider.canRecoverWrite &&
+        !(await provider.canRecoverWrite(write, signal))
+      )
+        return;
       await this.#check(
         id,
         {
@@ -231,6 +246,15 @@ export class Reconciler {
       return action(job, check);
     };
     const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check, observe));
+    const receiptRecorded = computer.bootstrapReceiptRecorded === true;
+    const syncBootstrap = (server: VmServer) => {
+      const needsUpdate = receiptRecorded
+        ? server.bootstrapMetadata !== "absent"
+        : server.bootstrapMetadata === "pending";
+      return provider.updateBootstrap && needsUpdate
+        ? act((job, check) => provider.updateBootstrap!(server.id, receiptRecorded, job, check))
+        : true;
+    };
     let failure: Failure = "The Cloud Computer provider operation failed.";
 
     try {
@@ -260,6 +284,14 @@ export class Reconciler {
         const power = (async () => {
           let settled = true;
           for (const server of servers) {
+            if (
+              state === "suspended" &&
+              computer.bootstrapReceiptRecorded &&
+              server.id === current?.id &&
+              !(await syncBootstrap(server))
+            ) {
+              settled = false;
+            }
             if (state === "suspended" && server.status === "off") continue;
             if (server.status !== "deleting") {
               if (state === "deleted")
@@ -288,7 +320,10 @@ export class Reconciler {
         if (vmResult.value) {
           for (const write of pending.values()) await recover(write);
         }
-        const settled = vmResult.value && !pending.size;
+        let settled = vmResult.value && !pending.size;
+        if (settled && state === "deleted" && provider.releaseAddress) {
+          settled = await act((job, check) => provider.releaseAddress!(id, job, check));
+        }
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
         return report(settled ? "suspended" : "provisioning");
       }
@@ -306,8 +341,9 @@ export class Reconciler {
       for (const write of pending.values()) {
         if (write.kind === "create" || write.kind === "power-on") await recover(write);
       }
-      if ([...pending.values()].some(({ kind }) => kind === "create"))
-        return unready("provisioning");
+      if ([...pending.values()].some(({ kind }) => kind === "create")) {
+        return provider.canRecoverWrite ? undefined : unready("provisioning");
+      }
       if (matching.length > 1)
         return report("failed", "The Cloud Computer has more than one server for this generation.");
       if (current?.status === "deleting") return unready("provisioning");
@@ -328,17 +364,20 @@ export class Reconciler {
 
       const firewallId = await act((job, check) => ensureFirewall(job, check));
       if (!current && computer.bootstrapToken) {
-        const userData = renderUserData({
-          cloudComputerId: id,
-          hostname,
-          accountOrigin: this.#options.accountOrigin.origin,
-          installerUrl: computer.release.installerUrl,
-          installerSha256: computer.release.installerSha256,
-          bootstrapToken: computer.bootstrapToken,
-        });
+        const userData = renderUserData(
+          {
+            cloudComputerId: id,
+            hostname,
+            accountOrigin: this.#options.accountOrigin.origin,
+            installerUrl: computer.release.installerUrl,
+            installerSha256: computer.release.installerSha256,
+            bootstrapToken: computer.bootstrapToken,
+          },
+          provider.updateBootstrap !== undefined,
+        );
         current = await act(
           (job) =>
-            journal("create", (_token, send) =>
+            journal("create", (token, send) =>
               provider.create(
                 {
                   id,
@@ -348,6 +387,7 @@ export class Reconciler {
                   image: this.#options.image,
                   firewallId,
                   userData,
+                  requestId: token,
                 },
                 job,
                 () => send(job),
@@ -369,19 +409,27 @@ export class Reconciler {
         ))
       )
         return unready("provisioning");
+      if (!(await syncBootstrap(server))) return unready("provisioning");
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on"))
-          return unready("provisioning");
+          return provider.canRecoverWrite ? undefined : unready("provisioning");
         await act((job) =>
           journal(
             "power-on",
-            (_token, send) => provider.powerOn(server.id, job, () => send(job)),
+            (token, send) => provider.powerOn(server.id, job, () => send(job), token),
             server.id,
           ),
         );
         current = await provider.describe(server.id, signal, server.generation);
       }
-      if (current?.status !== "running") return unready("provisioning");
+      if (current?.status !== "running") {
+        if (
+          provider.canRecoverWrite &&
+          [...pending.values()].some(({ kind }) => kind === "power-on")
+        )
+          return undefined;
+        return unready("provisioning");
+      }
       const addresses = { ipv4: current.ipv4, ipv6: computer.ipv6Enabled ? current.ipv6 : null };
       if (!addresses.ipv4 && !addresses.ipv6) return unready("provisioning");
 
@@ -439,6 +487,7 @@ export class Reconciler {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
       this.#options.onError?.(error);
+      if (error instanceof ProviderOutcomeUnknown) return undefined;
       return report("failed", failure);
     }
   }

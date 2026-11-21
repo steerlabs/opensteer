@@ -177,7 +177,7 @@ export class HetznerCloud implements VmProvider {
   }
 
   async ensureFirewallAttached(
-    server: VmServer,
+    server: VmServer<number>,
     firewallId: number,
     signal: AbortSignal,
     check?: () => Promise<void>,

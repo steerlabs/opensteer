@@ -1236,6 +1236,7 @@ export class CloudComputerStore {
             ? {
                 providerServerRef: row.providerServerRef ?? undefined,
                 previousProviderServerRef: row.previousProviderServerRef ?? undefined,
+                bootstrapReceiptRecorded: row.bootstrapReceiptAt !== null,
               }
             : {}),
           ipv6Enabled: row.ipv6Enabled,

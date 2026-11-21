@@ -16,6 +16,7 @@ export interface VmServer<Id extends VmServerId = VmServerId> extends Addresses 
   readonly generation: number;
   readonly status: "running" | "off" | "transitioning" | "deleting";
   readonly firewalls: readonly { id: number; status: "applied" | "pending" }[];
+  readonly bootstrapMetadata?: "pending" | "enabled" | "absent";
 }
 
 export interface CreateVm {
@@ -26,6 +27,16 @@ export interface CreateVm {
   readonly image: string | number;
   readonly userData: string;
   readonly firewallId: number;
+  readonly requestId?: string;
+}
+
+export interface ExpectedVm {
+  generation: number;
+  providerServerId?: number | undefined;
+  previousProviderServerId?: number | undefined;
+  providerServerRef?: GoogleComputeServerRef | undefined;
+  previousProviderServerRef?: GoogleComputeServerRef | undefined;
+  pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
 }
 
 export interface VmProvider {
@@ -39,14 +50,7 @@ export interface VmProvider {
   find(
     id: CloudComputerId,
     signal: AbortSignal,
-    expected?: {
-      generation: number;
-      providerServerId?: number | undefined;
-      previousProviderServerId?: number | undefined;
-      providerServerRef?: GoogleComputeServerRef | undefined;
-      previousProviderServerRef?: GoogleComputeServerRef | undefined;
-      pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
-    },
+    expected?: ExpectedVm,
   ): Promise<readonly VmServer[]>;
   listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; server: VmServer }[]>;
   create(input: CreateVm, signal: AbortSignal, check?: () => Promise<void>): Promise<VmServer>;
@@ -55,9 +59,27 @@ export interface VmProvider {
     signal: AbortSignal,
     knownGeneration?: number,
   ): Promise<VmServer | undefined>;
-  powerOn(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  powerOn(
+    id: VmServerId,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+    requestId?: string,
+  ): Promise<void>;
   powerOff(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
   delete(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  listManagedAddresses?(signal: AbortSignal): Promise<readonly CloudComputerId[]>;
+  releaseAddress?(
+    id: CloudComputerId,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
+  canRecoverWrite?(write: CloudComputerProviderWrite, signal: AbortSignal): Promise<boolean>;
+  updateBootstrap?(
+    id: VmServerId,
+    receiptRecorded: boolean,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
 }
 
 export type PublishDnsWrite = (

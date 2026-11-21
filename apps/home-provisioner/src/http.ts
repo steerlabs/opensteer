@@ -2,7 +2,8 @@ import { OpensteerError, refused } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import type { z } from "zod";
 
-type Service = "Account" | "Hetzner" | "Cloudflare" | "Google metadata" | "Home";
+type Service =
+  "Account" | "Hetzner" | "Cloudflare" | "Google metadata" | "Google Compute Engine" | "Home";
 export interface HttpOptions {
   readonly timeoutMs: number;
   readonly fetch?: typeof fetch;
@@ -37,10 +38,16 @@ export class RemoteRequestError extends OpensteerError {
 }
 
 export class ProviderWriteRejected extends Error {
-  readonly original: RemoteRequestError;
-  constructor(original: RemoteRequestError) {
+  readonly original: Error;
+  constructor(original: Error) {
     super(original.message);
     this.original = original;
+  }
+}
+
+export class ProviderOutcomeUnknown extends Error {
+  constructor(cause?: unknown) {
+    super("The provider operation outcome is unknown", { cause });
   }
 }
 

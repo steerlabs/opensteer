@@ -52,7 +52,7 @@ export const CloudComputerDesiredRevisionSchema = z.number().int().positive();
 
 export const GoogleComputeServerRefSchema = z
   .string()
-  .regex(/^os-cc-[a-f0-9-]{36}-[1-9][0-9]{0,15}\/[1-9][0-9]{0,19}$/u)
+  .regex(/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?\/[1-9][0-9]{0,19}$/u)
   .pipe(
     z
       .string()
@@ -93,6 +93,7 @@ export const CloudComputerDesiredSchema = z
     ipv6Enabled: z.boolean().optional(),
     restoreSnapshot: CloudComputerSnapshotSchema.optional(),
     bootCompleted: z.boolean().optional(),
+    bootstrapReceiptRecorded: z.boolean().optional(),
     replacementVerified: z.boolean().optional(),
     dnsQuarantined: z.boolean().optional(),
     pendingProviderWrites: z.array(CloudComputerProviderWriteSchema).max(4).optional(),
