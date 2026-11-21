@@ -138,6 +138,45 @@ export class CloudComputerStore {
     return { ...this.#options.config.plan, interval: this.#options.config.interval };
   }
 
+  pendingReplacementOwnerAccess(clientId: string) {
+    return this.#db
+      .selectFrom("cloudComputers")
+      .select(["id", "generation", "accountId"])
+      .where("oidcClientId", "=", clientId)
+      .where("workAssignmentId", "is", null)
+      .where("state", "=", "active")
+      .where("phase", "=", "ready")
+      .where("restoreSnapshot", "is not", null)
+      .where("bootCompletedAt", "is not", null)
+      .where("bootstrapReceiptAt", "is not", null)
+      .where("deletionRequestedAt", "is", null)
+      .where("ownerAccessAt", "is", null)
+      .executeTakeFirst();
+  }
+
+  async recordReplacementOwnerAccess(
+    clientId: string,
+    target: Pick<Computer, "id" | "generation" | "accountId">,
+  ) {
+    if (!target.accountId) return;
+    await this.#db
+      .updateTable("cloudComputers")
+      .where("id", "=", target.id)
+      .where("generation", "=", target.generation)
+      .where("oidcClientId", "=", clientId)
+      .where("accountId", "=", target.accountId)
+      .where("workAssignmentId", "is", null)
+      .where("state", "=", "active")
+      .where("phase", "=", "ready")
+      .where("restoreSnapshot", "is not", null)
+      .where("bootCompletedAt", "is not", null)
+      .where("bootstrapReceiptAt", "is not", null)
+      .where("deletionRequestedAt", "is", null)
+      .where("ownerAccessAt", "is", null)
+      .set({ ownerAccessAt: this.#now() })
+      .executeTakeFirst();
+  }
+
   #vault(project = this.#options.config.backupKeyProject): BackupKeyVault {
     if (this.#options.backupKeyVault) return this.#options.backupKeyVault;
     if (!project)

@@ -247,6 +247,7 @@ export interface LocalRunnerServiceDependencies {
   readonly userEnvironment?: PersonalUserEnvironmentPort;
   /** The menu bar's Stop: closed, no Runner launches here, whoever asks. */
   readonly agentsStoppedSince?: () => string | null;
+  readonly onUncontainedBoot?: (mode: string) => void;
 }
 
 interface RunnerSlot {
@@ -355,6 +356,7 @@ export class LocalRunnerService {
   #reconcileTail: Promise<void> = Promise.resolve();
   #shuttingDown = false;
   readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #onUncontainedBoot: LocalRunnerServiceDependencies["onUncontainedBoot"];
 
   constructor(config: DesktopConfiguration, dependencies: LocalRunnerServiceDependencies) {
     this.#log =
@@ -403,6 +405,7 @@ export class LocalRunnerService {
     this.#targets = dependencies.targets;
     this.#userEnvironment = dependencies.userEnvironment ?? new NativePersonalUserEnvironment();
     this.#agentsStoppedSince = dependencies.agentsStoppedSince;
+    this.#onUncontainedBoot = dependencies.onUncontainedBoot;
     this.#unsubscribeTargets = this.#targets.subscribe(() => void this.reconcile());
   }
 
@@ -1307,8 +1310,12 @@ export class LocalRunnerService {
     );
   }
 
-  async shutdown(signal?: AbortSignal): Promise<void> {
+  quiesce(): void {
     this.#shuttingDown = true;
+  }
+
+  async shutdown(signal?: AbortSignal): Promise<void> {
+    this.quiesce();
     for (const timer of this.#leaveTimers.values()) clearTimeout(timer);
     this.#leaveTimers.clear();
     for (const deploymentId of this.#restartPolicies.keys()) this.#cancelRestart(deploymentId);
@@ -1333,25 +1340,71 @@ export class LocalRunnerService {
     }
   }
 
-  async holdIdleForUpdate(): Promise<(() => Promise<void>) | null> {
+  async holdIdleForUpdate() {
+    const membershipRevision = this.#membershipRevision;
     const ids = await this.joinedDeploymentIds();
-    const slots = [...ids].map((id) => this.#runners.get(DeploymentIdSchema.parse(id)));
-    if (slots.some((slot) => !slot?.child || !slot.control || !slot.shutdownConfirmed)) return null;
-    const holds = await Promise.all(slots.map((slot) => holdDesktopRunnerIdle(slot!.control!)));
+    const inventory = () =>
+      [...this.#runners.values()].filter(
+        (slot) => slot.desiredEnabled || slot.child || slot.pendingExits.size,
+      );
+    const slots = inventory();
+    if (
+      this.#starts.size ||
+      [...ids].some((id) => {
+        const slot = this.#runners.get(DeploymentIdSchema.parse(id));
+        return !slot || !slots.includes(slot);
+      })
+    )
+      return null;
+    const running = slots.map((slot) => ({ slot, child: slot.child, control: slot.control }));
+    if (
+      running.some(
+        ({ slot, child, control }) =>
+          !child ||
+          !control ||
+          !slot.shutdownConfirmed ||
+          slot.stopPromise !== undefined ||
+          slot.pendingExits.size !== 1,
+      )
+    )
+      return null;
+    const holds = await Promise.all(running.map(({ control }) => holdDesktopRunnerIdle(control!)));
     const release = async () => {
-      await Promise.all(holds.map((hold) => hold?.()));
+      await Promise.all(holds.map((hold) => hold?.release()));
     };
     if (holds.includes(null)) {
       await release();
       return null;
     }
-    return release;
+    return {
+      release,
+      current: () => {
+        const current = inventory();
+        return (
+          this.#starts.size === 0 &&
+          this.#membershipRevision === membershipRevision &&
+          current.length === running.length &&
+          running.every(
+            ({ slot, child, control }) =>
+              current.includes(slot) &&
+              slot.child === child &&
+              slot.control === control &&
+              slot.shutdownConfirmed &&
+              !slot.stopPromise &&
+              slot.pendingExits.size === 1,
+          ) &&
+          holds.every((hold) => hold?.current())
+        );
+      },
+    };
   }
 
   async restartForAgentMode(): Promise<void> {
     const mode = this.#agentsStoppedSince?.();
     const affected = [...this.#runners.values()].filter(
-      (slot) => slot.stoppedSince !== mode && (slot.child || slot.pendingExits.size > 0),
+      (slot) =>
+        (slot.desiredEnabled && !slot.shutdownConfirmed) ||
+        (slot.stoppedSince !== mode && (slot.child || slot.pendingExits.size > 0)),
     );
     const unconfirmed = new Set<RunnerSlot>();
     await Promise.all(
@@ -1361,7 +1414,7 @@ export class LocalRunnerService {
           await exitedWithin(Promise.all(slot.pendingExits), this.#stopTimeouts.forcedMs);
           return;
         }
-        await this.#stop(slot, { keepPersonal: true });
+        if (slot.stoppedSince !== mode) await this.#stop(slot, { keepPersonal: true });
         if (!slot.shutdownConfirmed) unconfirmed.add(slot);
       }),
     );
@@ -1829,6 +1882,8 @@ export class LocalRunnerService {
               if (!parsed.success || slot.child !== child) return;
               if (parsed.data.type === "runner.worker.ready") {
                 slot.control = parsed.data.control;
+                if (stoppedSince && !parsed.data.control.earlierBootsContained)
+                  this.#onUncontainedBoot?.(stoppedSince);
                 this.#emit();
                 return;
               }
@@ -2067,7 +2122,8 @@ export class LocalRunnerService {
       const bridgeDrained = slot.computerUseSlotId
         ? this.#computerUse?.workerDisconnected?.(slot.computerUseSlotId)
         : undefined;
-      if (!keep) await stopSlotBrowser(slot, this.#log);
+      if (keep) slot.browser?.prepareRunnerRestart?.();
+      else await stopSlotBrowser(slot, this.#log);
       let gone = false;
       try {
         child.postMessage({ type: "runner.worker.stop", restart: keep });
@@ -2093,6 +2149,13 @@ export class LocalRunnerService {
             ).catch(() => false))));
       if (!graceful && this.#agentsStoppedSince) slot.shutdownConfirmed = false;
       if (bridgeDrained && !(await bridgeDrained)) slot.shutdownConfirmed = false;
+      if (
+        keep &&
+        gone &&
+        slot.browser?.drainRunnerAttachments &&
+        !(await slot.browser.drainRunnerAttachments())
+      )
+        slot.shutdownConfirmed = false;
       if (gone) this.#dropChild(slot, child);
       if (!keep) {
         await stopSlotBrowser(slot, this.#log);
@@ -2633,6 +2696,8 @@ export class LocalRunnerService {
     this.#leaveTimers.set(deploymentId, timer);
   }
 
+  #membershipRevision = 0;
+
   async #mutatePreference(
     mutate: (preference: Preference) => Preference | Promise<Preference>,
   ): Promise<void> {
@@ -2640,6 +2705,7 @@ export class LocalRunnerService {
       const current = await readMemberships(this.#preferencePath);
       const next = DeviceMembershipsSchema.parse(await mutate(current));
       if (JSON.stringify(next) === JSON.stringify(current)) return;
+      this.#membershipRevision++;
       await writeMemberships(this.#preferencePath, next);
       this.#emit();
     });

@@ -145,6 +145,8 @@ export async function startLocalBrowserRuntime(
     const unregisterPresentation = options.registerPresentationSource?.(runtime);
     return {
       bridgeToken,
+      prepareRunnerRestart: () => server.prepareRunnerRestart(),
+      drainRunnerAttachments: () => server.drainRunnerAttachments(),
       runtimeId: options.runtimeId,
       signIn: options.loginAuthority !== undefined,
       personFill: !!(

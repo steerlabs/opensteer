@@ -13,7 +13,7 @@ journey() {
       OPENSTEER_RUN_CHROME_BACKGROUND_JOURNEYS=1 OPENSTEER_CHROME_JOURNEY="$selection" bash native/computer-use/Tests/Fixtures/ChromeBackgroundJourney/run-vm.sh ;;
     windows)
       true
-      OPENSTEER_WINDOW_GROUP_CASES=current,settle,cancellation,video,receipt-switch bash scripts/test-computer-use-window-groups.sh ;;
+      OPENSTEER_WINDOW_GROUP_CASES=current,settle,cancellation,video,receipt-switch,read-only bash scripts/test-computer-use-window-groups.sh ;;
     launch) pnpm -w test:gui ;;
     remote-input) bash scripts/test-viewer-clipboard.sh && pnpm test:electron-display:run && bash ../web/scripts/run-display-editing-viewer-checks.sh ;;
     # Its bundle is rebuilt here: the smoke bundle step above clears .electron-smoke.

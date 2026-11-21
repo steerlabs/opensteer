@@ -2,7 +2,7 @@
 import { controlledClientSession } from "@opensteer/client/test-support";
 
 import type { SurfaceModel } from "@opensteer/client/host";
-import type { Request, RequestFormField } from "@opensteer/core";
+import { formatRequestOperationDetail, type Request, type RequestFormField } from "@opensteer/core";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -371,6 +371,27 @@ describe("answering a question", () => {
     });
     expect(document.body.textContent).toContain(detail);
     expect(document.querySelector('a[href="https://example.test"]')).toBeNull();
+  });
+
+  it("shows every character of a managed browser script in the shared Request panel", async () => {
+    const surface = asking([refund], "person.question");
+    const { request } = surface;
+    if (request.presentation.kind !== "form") throw new Error("Expected a form.");
+    const calls = "print(`\n# Heading\n**bold** _emphasis_ <tag>\n`)";
+    const detail = formatRequestOperationDetail({
+      summary: "Run a script in Work?",
+      titleLine: "",
+      calls,
+      reason: "",
+    });
+    await render({
+      ...surface,
+      request: {
+        ...request,
+        presentation: { ...request.presentation, detail, detailFormat: "plain" },
+      },
+    });
+    expect(document.body.textContent).toContain(detail);
   });
 
   it("lets ask_person's question be dismissed, and not an engine's", async () => {

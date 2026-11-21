@@ -16,7 +16,7 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import { AgentConnectionStore } from "./agent-connection-store.js";
+import { AgentConnectionStore, type WorkPolicyConnectionChange } from "./agent-connection-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -80,7 +80,9 @@ export class WorkHomeStore {
   }
 
   previewDeviceEnrollment(tokenHash: string) {
-    return withPersonalReadTransaction(this.#db, async (tx) => {
+    const work = isWorkHomeDatabase(this.#db);
+    const transaction = work ? withPersonalTransaction : withPersonalReadTransaction;
+    return transaction(this.#db, async (tx) => {
       const enrollment = await tx
         .selectFrom("runnerEnrollments as enrollment")
         .innerJoin("personalSettings as home", "home.ownerId", "enrollment.ownerUserId")
@@ -101,12 +103,20 @@ export class WorkHomeStore {
           code: "forbidden",
           message: "This device setup code is invalid or expired.",
         });
-      if (!isWorkHomeDatabase(tx)) return {};
-      const { organizationName, policy } = await tx
+      if (!work) return {};
+      const { organizationName, policy, state } = await tx
         .selectFrom("workHomePolicy")
-        .select(["organizationName", "policy"])
+        .select(["organizationName", "policy", "state"])
         .executeTakeFirstOrThrow();
-      return { organizationName, devices: WorkPolicySchema.parse(policy).devices };
+      const { devices } = WorkPolicySchema.parse(policy);
+      if (state === "active" && devices === "assignee-may-enroll")
+        await tx
+          .updateTable("runnerEnrollments")
+          .set({ workEnrollmentPreviewedAt: sql`clock_timestamp()` })
+          .where("id", "=", enrollment.id)
+          .where("workEnrollmentPreviewedAt", "is", null)
+          .executeTakeFirst();
+      return { organizationName, devices };
     });
   }
 
@@ -135,15 +145,14 @@ export class WorkHomeStore {
         .selectFrom("agentConnections")
         .select(["id", "userId", "grant", "grantRevision", "accessMode"])
         .where("revokedAt", "is", null)
-        .orderBy("id")
         .execute();
-      const connections = new AgentConnectionStore(tx);
+      const changes: WorkPolicyConnectionChange[] = [];
       for (const row of rows) {
         if (
           state !== "active" ||
           (row.grant.scope === "everything" && !workPolicyAllowsGrant(policy, row.grant))
         ) {
-          await connections.revoke(row.userId, row.id);
+          changes.push({ kind: "revoke", userId: row.userId, connectionId: row.id });
           continue;
         }
         const grant: AgentGrant =
@@ -154,7 +163,9 @@ export class WorkHomeStore {
         const tasksRemoved =
           row.grant.scope === "selected" && row.grant.tasks && !policy.allowTasks;
         if (tasksRemoved || accessMode !== row.accessMode) {
-          await connections.update(row.userId, {
+          changes.push({
+            kind: "update",
+            userId: row.userId,
             connectionId: row.id,
             expectedRevision: row.grantRevision,
             grant,
@@ -162,11 +173,14 @@ export class WorkHomeStore {
           });
         }
       }
-      await tx
-        .updateTable("workHomePolicy")
-        .set({ revision: document.revision, state, policy: jsonValue(policy) })
-        .where("singleton", "=", true)
-        .execute();
+      await new AgentConnectionStore(tx).applyWorkPolicyChanges(changes);
+      mutation.afterProjectionWrites(async () => {
+        await tx
+          .updateTable("workHomePolicy")
+          .set({ revision: document.revision, state, policy: jsonValue(policy) })
+          .where("singleton", "=", true)
+          .execute();
+      });
       if (document.revision !== current.revision) mutation.resetScope("shell");
       return { revision: document.revision, changed: true };
     });

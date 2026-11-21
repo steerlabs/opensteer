@@ -1,4 +1,5 @@
 import type {
+  StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
   StandardCdpMode,
 } from "@opensteer/protocol/standard-cdp";
@@ -108,6 +109,7 @@ export interface BrowserRuntimeHealth {
   standardCdpLineage: 1;
   wholeContextCdp?: 1;
   standardCdpLeaseRecovery: 1;
+  standardCdpAttemptRecovery: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -124,6 +126,7 @@ interface ActiveSession {
   ledger: SurfaceLedger;
   sessionId: string;
   readonly presentations: Set<() => void>;
+  reattachUntil?: ReturnType<typeof setTimeout>;
 }
 
 interface FreshHostIdentity {
@@ -179,13 +182,13 @@ export class BrowserAttachment {
   readonly initialPage?: InitialPageReady;
   private closePromise: Promise<void> | null = null;
   private readonly controller: BrowserController;
-  private readonly detach: () => Promise<void>;
+  private readonly detach: (confirmPages: boolean, restarting: boolean) => Promise<void>;
   readonly sessionId: string;
 
   constructor(
     sessionId: string,
     controller: BrowserController,
-    detach: () => Promise<void>,
+    detach: (confirmPages: boolean, restarting: boolean) => Promise<void>,
     initialPage?: InitialPageReady,
   ) {
     if (initialPage) this.initialPage = initialPage;
@@ -198,8 +201,8 @@ export class BrowserAttachment {
     return this.controller.handleRaw(frame);
   }
 
-  close(): Promise<void> {
-    this.closePromise ??= this.detach();
+  close(confirmPages = false, restarting = false): Promise<void> {
+    this.closePromise ??= this.detach(confirmPages, restarting);
     return this.closePromise;
   }
 }
@@ -216,6 +219,11 @@ export class BrowserRuntime implements NativePresentationSource {
     BrowserPartitionKey,
     { generation: number; active?: { generation: number; client: StandardCdpAttachment } }
   >();
+  private readonly standardCdpAttempts = new Map<
+    string,
+    { sessionId: BrowserSessionId; client: StandardCdpAttachment }
+  >();
+  private readonly stoppedStandardCdpAttempts = new Map<string, number>();
   private readonly initialViewport: Viewport;
   private readonly launcher: BrowserLauncher;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
@@ -357,6 +365,7 @@ export class BrowserRuntime implements NativePresentationSource {
       standardCdp: 1,
       standardCdpLineage: 1,
       standardCdpLeaseRecovery: 1,
+      standardCdpAttemptRecovery: 1,
       ...(this.launcher.hostCost === "process" && this.localProfileStorage?.engine === "chromium"
         ? { wholeContextCdp: 1 as const }
         : {}),
@@ -612,6 +621,27 @@ export class BrowserRuntime implements NativePresentationSource {
     return { runtimeBootId: this.standardCdpBootId };
   }
 
+  async reconcileStandardCdpAttempt(attempt: StandardCdpAttemptReconciliation) {
+    if (attempt.runtimeBootId === this.standardCdpBootId) {
+      const active = this.standardCdpAttempts.get(attempt.attachmentId);
+      if (active && active.sessionId !== attempt.sessionId)
+        throw new BrowserRuntimeError(
+          "forbidden",
+          "The CDP attachment belongs to another session.",
+        );
+      const now = Date.now();
+      for (const [id, expiresAt] of this.stoppedStandardCdpAttempts)
+        if (expiresAt <= now) this.stoppedStandardCdpAttempts.delete(id);
+      const expiresAt = Date.parse(attempt.operationExpiresAt);
+      if (expiresAt > now) this.stoppedStandardCdpAttempts.set(attempt.attachmentId, expiresAt);
+      if (active) {
+        active.client.close();
+        await active.client.settled;
+      }
+    }
+    return { runtimeBootId: this.standardCdpBootId, attachmentId: attempt.attachmentId };
+  }
+
   /** A signed raw CDP ticket attaches to a live Browser Session without taking its lifecycle lease. */
   async attachStandardCdp(
     ticket: string,
@@ -645,6 +675,15 @@ export class BrowserRuntime implements NativePresentationSource {
           "forbidden",
           "This ticket does not authorize a live Browser Session.",
         );
+      const attempt = claims.standardCdpAttempt;
+      if (
+        attempt &&
+        (mode !== "session" ||
+          attempt.runtimeBootId !== this.standardCdpBootId ||
+          this.stoppedStandardCdpAttempts.has(attempt.attachmentId) ||
+          this.standardCdpAttempts.has(attempt.attachmentId))
+      )
+        throw new BrowserRuntimeError("forbidden", "This browser attachment has ended.");
       const wholeContext = claims.standardCdp === "whole-context";
       const exclusive = claims.standardCdpLease;
       const state = this.standardCdpLeases.get(hostKey);
@@ -665,6 +704,10 @@ export class BrowserRuntime implements NativePresentationSource {
         onOverflow,
         claims.standardCdpLineage,
       );
+      if (attempt) {
+        this.standardCdpAttempts.set(attempt.attachmentId, { sessionId: claims.sessionId, client });
+        void client.settled.then(() => this.standardCdpAttempts.delete(attempt.attachmentId));
+      }
       if (wholeContext && exclusive) {
         const entry = { generation: exclusive.generation, client };
         const lease = { generation: exclusive.generation, active: entry };
@@ -684,6 +727,7 @@ export class BrowserRuntime implements NativePresentationSource {
     options: {
       passkeys?: boolean;
       signal?: AbortSignal;
+      waitForCleanup?: boolean;
     } = {},
   ): Promise<BrowserAttachment> {
     const cancellation = new AbortController();
@@ -706,7 +750,8 @@ export class BrowserRuntime implements NativePresentationSource {
     const signal = cancellation.signal;
     const wait = <T>(operation: Promise<T>) => waitForAcquisition(operation, signal);
     try {
-      return await wait(this.attachAttempt(ticket, sink, options, signal));
+      const attempt = this.attachAttempt(ticket, sink, options, signal);
+      return await (options.waitForCleanup ? attempt : wait(attempt));
     } finally {
       clearTimeout(timer);
       this.attempts.delete(cancellation);
@@ -780,27 +825,64 @@ export class BrowserRuntime implements NativePresentationSource {
         identity: claims.identity.kind === "profile-local" ? claims.identity.binding : "fresh",
         navigation: claims.initialNavigation,
       });
+      const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
+      const active = previous && this.sessions.get(previous.sessionId);
+      if (claims.reattach && active?.sessionId !== claims.sessionId)
+        throw new BrowserRuntimeError("not_found", "The browser session has ended.");
       if (
         claims.identity.kind !== "fresh" &&
         this.deletedProfiles.has(hostKey.slice("profile:".length))
       )
         throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
-      const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
       if (previous) {
-        const active = this.sessions.get(previous.sessionId);
         if (previous.fingerprint !== fingerprint || !active || !previous.result)
           throw new BrowserRuntimeError(
             "conflict",
             "The initial browser operation already has an outcome; it cannot start another browser.",
           );
         this.sleeper.resetSessionState(active.sessionId);
-        await wait(active.controller.reattach(sink));
+        if (active.reattachUntil) {
+          if (claims.actor !== "person" || active.claims.actor !== "person")
+            throw new BrowserRuntimeError(
+              "forbidden",
+              "This browser is reconnecting for the person.",
+            );
+          const [root, ...others] = active.ledger.resumeAfterRelayRestart();
+          if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+          const router = active.host.router;
+          try {
+            router.registerSession(
+              active.sessionId,
+              root,
+              active.ledger.resolveTarget.bind(active.ledger),
+              active.files.root,
+            );
+            for (const target of others) router.claimTarget(active.sessionId, target);
+            const controller = this.createController(
+              active.host,
+              claims,
+              active.files,
+              active.ledger,
+              sink,
+            );
+            active.controller = controller;
+            await wait(controller.start());
+          } catch (error) {
+            await router.unregisterSession(active.sessionId);
+            throw error;
+          }
+          clearTimeout(active.reattachUntil);
+          delete active.reattachUntil;
+        } else {
+          await wait(active.controller.reattach(sink));
+        }
         active.generation = ++this.generation;
         const generation = active.generation;
         return new BrowserAttachment(
           active.sessionId,
           active.controller,
-          () => this.detach(active.sessionId, generation),
+          (confirmPages, restarting) =>
+            this.detach(active.sessionId, generation, confirmPages, restarting),
           previous.result,
         );
       }
@@ -879,7 +961,10 @@ export class BrowserRuntime implements NativePresentationSource {
             sessionId: claims.sessionId,
             creationOrigin: claims.creationOrigin,
             navigationVersion: claims.navigationVersion,
-            beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
+            beforeResize: async (surfaceId) =>
+              (this.sessions.get(claims.sessionId)?.controller ?? controller)?.prepareResize(
+                surfaceId,
+              ),
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
             claimTarget: (targetId, openerId) =>
@@ -902,48 +987,7 @@ export class BrowserRuntime implements NativePresentationSource {
             files.root,
           );
           await wait(ledger.start());
-          const hostBrowser = host.browser;
-          const stateImports = host.stateImports;
-          const stateHost = host;
-          controller = new BrowserController({
-            sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
-            loginAuthority: this.loginAuthority,
-            nativePresentation: (surfaceId, consumerToken) => {
-              const live = [...this.nativePresentations].filter(
-                (presentation) =>
-                  presentation.sessionId === claims.sessionId &&
-                  presentation.surfaceId === surfaceId,
-              );
-              return live.length === 1 && live[0]?.consumerToken === consumerToken;
-            },
-            passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
-            verifyOpenAuthority: (ticket) =>
-              this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }),
-            cdpRouter: host.router,
-            clipboard: hostBrowser.clipboard,
-            claims,
-            files,
-            ledger,
-            replaceSiteCookies: (site, cookies, deadline) => {
-              if (!stateHost.acceptingSessions) {
-                throw new BrowserRuntimeError("conflict", "The browser host is shutting down.", {
-                  retryable: true,
-                });
-              }
-              const mutation = stateImports.run(() => {
-                deadline.throwIfAborted();
-                return hostBrowser.replaceSiteCookies(site, cookies, deadline);
-              });
-              stateHost.stateMutations.set(mutation, deadline);
-              const finished = () => {
-                stateHost.stateMutations.delete(mutation);
-              };
-              void mutation.then(finished, finished);
-              return mutation;
-            },
-            signIns: host.signIns,
-            sink,
-          });
+          controller = this.createController(host, claims, files, ledger, sink);
           const active: ActiveSession = {
             claims,
             controller,
@@ -985,7 +1029,8 @@ export class BrowserRuntime implements NativePresentationSource {
           return new BrowserAttachment(
             claims.sessionId,
             controller,
-            () => this.detach(claims.sessionId, sessionGeneration),
+            (confirmPages, restarting) =>
+              this.detach(claims.sessionId, sessionGeneration, confirmPages, restarting),
             initialPage,
           );
         } catch (error) {
@@ -1021,6 +1066,56 @@ export class BrowserRuntime implements NativePresentationSource {
       }
     });
   }
+  private createController(
+    host: BrowserHost,
+    claims: BrowserAttachTicketClaims,
+    files: SessionFiles,
+    ledger: SurfaceLedger,
+    sink: BrowserControllerSink,
+  ): BrowserController {
+    const hostBrowser = host.browser;
+    const stateImports = host.stateImports;
+    const stateHost = host;
+    return new BrowserController({
+      sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
+      loginAuthority: this.loginAuthority,
+      nativePresentation: (surfaceId, consumerToken) => {
+        const live = [...this.nativePresentations].filter(
+          (presentation) =>
+            presentation.sessionId === claims.sessionId && presentation.surfaceId === surfaceId,
+        );
+        return live.length === 1 && live[0]?.consumerToken === consumerToken;
+      },
+      passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
+      verifyOpenAuthority: (ticket) =>
+        this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }),
+      cdpRouter: host.router,
+      clipboard: hostBrowser.clipboard,
+      claims,
+      files,
+      ledger,
+      replaceSiteCookies: (site, cookies, deadline) => {
+        if (!stateHost.acceptingSessions) {
+          throw new BrowserRuntimeError("conflict", "The browser host is shutting down.", {
+            retryable: true,
+          });
+        }
+        const mutation = stateImports.run(() => {
+          deadline.throwIfAborted();
+          return hostBrowser.replaceSiteCookies(site, cookies, deadline);
+        });
+        stateHost.stateMutations.set(mutation, deadline);
+        const finished = () => {
+          stateHost.stateMutations.delete(mutation);
+        };
+        void mutation.then(finished, finished);
+        return mutation;
+      },
+      signIns: host.signIns,
+      sink,
+    });
+  }
+
   private async acquireHost(
     claims: BrowserAttachTicketClaims,
     hostKey: BrowserPartitionKey,
@@ -1302,13 +1397,44 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.shutdownResult;
   }
 
-  private detach(sessionId: string, generation: number): Promise<void> {
+  private detach(
+    sessionId: string,
+    generation: number,
+    confirmPages: boolean,
+    restarting = false,
+  ): Promise<void> {
     const current = this.sessions.get(sessionId);
     if (current?.generation === generation) endPresentations(current);
     if (!current) return Promise.resolve();
     return this.lanes.run(current.host.identity.key, async () => {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
+      if (restarting && active.claims.actor === "person") {
+        active.controller.browserDisconnected();
+        const router = active.host.router.unregisterSession(sessionId, true);
+        void router.catch(() => undefined);
+        try {
+          await withTimeout(
+            settleCleanup([
+              () => active.controller.close(),
+              () => active.ledger.suspendForRelayRestart(),
+              () => router,
+            ]),
+            sessionTeardownMs,
+            { timeoutError: () => new Error("Browser session teardown did not finish.") },
+          );
+        } catch (error) {
+          void this.detach(sessionId, generation, false).catch(() => undefined);
+          throw error;
+        }
+        this.sleeper.resetSessionState(sessionId);
+        active.reattachUntil = setTimeout(() => {
+          void this.detach(sessionId, generation, false).catch(() => undefined);
+        }, 20_000);
+        active.reattachUntil.unref();
+        return;
+      }
+      clearTimeout(active.reattachUntil);
       this.sleeper.remove(sessionId);
       this.sessions.delete(sessionId);
       const host = active.host;
@@ -1318,9 +1444,13 @@ export class BrowserRuntime implements NativePresentationSource {
       try {
         await settleCleanup([
           () =>
-            withTimeout(settleCleanup(closeSession(active, "session-ended")), sessionTeardownMs, {
-              timeoutError: () => new Error("Browser session teardown did not finish."),
-            }),
+            withTimeout(
+              settleCleanup(closeSession(active, "session-ended", confirmPages)),
+              sessionTeardownMs,
+              {
+                timeoutError: () => new Error("Browser session teardown did not finish."),
+              },
+            ),
           () => active.files.dispose(),
           ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
             ? [() => this.cleanupHost(host)]
@@ -1449,12 +1579,23 @@ function endPresentations(session: ActiveSession): void {
   for (const close of session.presentations) close();
 }
 
-function closeSession(session: ActiveSession, reason: PageEndReason): Array<() => Promise<void>> {
+function closeSession(
+  session: ActiveSession,
+  reason: PageEndReason,
+  confirmPages = false,
+): Array<() => Promise<void>> {
+  let routing: Promise<void> | undefined;
   return [
-    () => session.host.router.unregisterSession(session.sessionId),
+    async () => {
+      routing = session.host.router.unregisterSession(session.sessionId, confirmPages);
+      void routing.catch(() => undefined);
+    },
     () => session.controller.close(),
-    () => session.ledger.closeOwnedPages(reason),
+    () => session.ledger.closeOwnedPages(reason, confirmPages),
     () => session.ledger.close(),
+    async () => {
+      await routing;
+    },
   ];
 }
 

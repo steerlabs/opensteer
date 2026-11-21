@@ -11,7 +11,7 @@ export interface AgentBrowserTab {
 
 export interface GatedAttachment {
   handle(frame: string | Buffer): Promise<void>;
-  close(): Promise<void>;
+  close(confirmPages?: boolean, restarting?: boolean): Promise<void>;
 }
 
 type Actor = "agent" | "person";
@@ -130,9 +130,9 @@ export class AgentBrowserGate {
   ): Attachment {
     const close = attachment.close.bind(attachment);
     if (agent) {
-      attachment.close = () => {
+      attachment.close = (confirmPages, restarting) => {
         if (this.#agentTabs.delete(attachment)) this.#emit();
-        return close();
+        return close(confirmPages, restarting);
       };
       this.#agentTabs.set(attachment, tab ?? { sessionId: "unknown", profile: false });
       this.#emit();
@@ -146,9 +146,9 @@ export class AgentBrowserGate {
       }
       return handle(frame);
     };
-    attachment.close = () => {
+    attachment.close = (confirmPages, restarting) => {
       if (this.#shared.delete(attachment)) this.#emit();
-      return close();
+      return close(confirmPages, restarting);
     };
     return attachment;
   }

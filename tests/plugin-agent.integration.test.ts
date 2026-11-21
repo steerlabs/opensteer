@@ -38,6 +38,8 @@ import {
   PluginAgentStore,
   TriggerStore,
   AgentConnectionStore,
+  beginAgentSession,
+  settleOrphanedAgentOperations,
 } from "../packages/database/src/index.js";
 import {
   cloneTestDatabase,
@@ -57,7 +59,8 @@ import {
 import { withFolderPluginPackage } from "../apps/host/src/local-servers/folder-plugin-package.js";
 import { PluginOwnerApi } from "../apps/host/src/plugins/plugin-owner-api.js";
 import { PluginService } from "../apps/host/src/plugins/plugin-service.js";
-import { engineProcessGroupGone } from "../apps/host/src/plugins/engine-process.js";
+import { hasUnfinishedPluginWorkflows } from "../apps/host/src/plugins/engine-storage.js";
+import * as engineProcess from "../apps/host/src/plugins/engine-process.js";
 import { PluginAuthority } from "../apps/host/src/plugins/plugin-authority.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { PluginExecutions } from "../apps/host/src/plugins/plugin-executions.js";
@@ -99,6 +102,8 @@ let effects = 0;
 let effectObserved: (() => void) | undefined;
 let discoveryWrites: Array<{ path: string; method: string }> = [];
 let waitingForPlugin: (() => void) | undefined;
+let hostingMacStopped = false;
+let holdWorkflowStep: ((respond: () => void) => void) | undefined;
 let sessionStop: Promise<void> | undefined;
 let exportWait: (() => Promise<void>) | undefined;
 let current: AgentCaller;
@@ -264,11 +269,20 @@ beforeAll(async () => {
     owner: async () => personal.userId,
     // Like the Host, wait for the execution report before checking its authority.
     beforeAuthorize: () => executions.settled(),
+    computerStopped: () => hostingMacStopped,
   });
   registry = await pluginFixtureRegistry(
     () => waitingForPlugin?.(),
     pluginFixtureFiles(1),
     (request, response) => {
+      if (request.url === "/workflow-stop-hold" && holdWorkflowStep) {
+        holdWorkflowStep(() => response.end("released"));
+        return true;
+      }
+      if (request.url?.startsWith("/workflow-stop-")) {
+        response.end("ok");
+        return true;
+      }
       if (request.url?.startsWith("/discover-")) {
         discoveryWrites.push({ path: request.url, method: request.method ?? "" });
         response.end("ok");
@@ -797,9 +811,8 @@ test("a connected plugin write is reviewed once, can be declined, and records th
 
 test("a connected plugin input Request continues the reviewed execution in the same task", async () => {
   const reader = await connect("full-access", "read");
-  const pending = await call(reader, "plugin_call", {
-    calls: { path: "tools.fixture.input", input: { label: "one" } },
-  });
+  const input = { calls: { path: "tools.fixture.input", input: { label: "one" } } };
+  const pending = await call(reader, "plugin_call", input);
   expect(pending).toMatchObject({
     status: "pending",
     executionId: expect.any(String),
@@ -813,6 +826,36 @@ test("a connected plugin input Request continues the reviewed execution in the s
   const args = { executionId: pending.executionId, taskId: pending.taskId };
   const next = expect.stringContaining(`Call plugin_resume(${JSON.stringify(args)})`);
   expect(pending).toMatchObject({ next });
+  expect(
+    await call(reader, "plugin_call", { ...input, operationId: pending.operationId }),
+  ).toMatchObject({
+    ...args,
+    operationId: pending.operationId,
+    status: "pending",
+    requestId: id,
+    next,
+  });
+
+  const stranger = await connect("full-access", "read");
+  const lookup = (executionId: string) =>
+    mcp.callToolResult(
+      "token",
+      "plugin_resume",
+      { ...args, executionId },
+      {
+        operationKey: randomUUID(),
+        caller: stranger,
+      },
+    );
+  const hidden = await lookup(String(pending.executionId));
+  const missing = await lookup(randomUUID());
+  expect(JSON.stringify(hidden)).toBe(JSON.stringify(missing));
+  expect(hidden).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: { code: "not_found", message: "That item is unavailable.", next: null },
+    },
+  });
 
   const resume = () => call(reader, "plugin_resume", args, false, "plugin-resume");
   const resumeWhilePending = async (settle?: () => Promise<unknown>) => {
@@ -852,13 +895,14 @@ test("a connected plugin input Request continues the reviewed execution in the s
       vi.useRealTimers();
     }
   };
-  await expect(resumeWhilePending()).resolves.toMatchObject({
+  const stillPending = await resumeWhilePending();
+  expect(stillPending).toMatchObject({
     ...args,
     status: "pending",
-    operationId: pending.operationId,
     requestId: id,
     next,
   });
+  expect(stillPending).not.toHaveProperty("operationId");
   const done = await resumeWhilePending(() => answer(id, true, { name: "Alice" }));
   expect(done).toMatchObject({
     status: "completed",
@@ -887,6 +931,38 @@ test("a connected plugin script allows the reviewable text limit and returns app
     ),
   });
   expect(pending).not.toHaveProperty("executionId");
+});
+
+test("a connected plugin call counts its exact canonical JSON toward the 18,956 limit", async () => {
+  const writer = await connect("approval-required", "read-write");
+  const input = (padding: string) => ({
+    calls: { ...writeCall.calls, input: { amount: 7, padding } },
+  });
+  const padding = "".padEnd(18_956 - canonicalJson(input("💡")).length, "x") + "💡";
+  const exact = input(padding);
+  const calls = canonicalJson(exact);
+  expect(calls).toHaveLength(18_956);
+  const rejectedKey = "over-limit-plugin-call";
+  await expect(
+    call(writer, "plugin_call", input(padding + "x"), false, rejectedKey),
+  ).rejects.toMatchObject({
+    code: "bad_request",
+    message: "Use at most 18,956 characters per connected plugin operation.",
+  });
+  expect(
+    await database
+      .selectFrom("agentOperations")
+      .select("id")
+      .where("connectionId", "=", writer.connectionId)
+      .where("operationKey", "=", rejectedKey)
+      .executeTakeFirst(),
+  ).toBeUndefined();
+  const pending = await call(writer, "plugin_call", exact);
+  expect(pending.status).toBe("pending");
+  expect(await store.requests.get(RequestIdSchema.parse(pending.requestId))).toMatchObject({
+    agentOperation: { calls },
+    presentation: { detail: expect.stringContaining(calls), detailFormat: "plain" },
+  });
 });
 
 test("a grant version change between approval and plugin dispatch prevents the write", async () => {
@@ -927,6 +1003,197 @@ test("a grant version change between approval and plugin dispatch prevents the w
   }
 });
 
+function disconnectPlugins(owner: PluginExecutions) {
+  return store.driveConnectionCleanups({
+    stopper: {
+      async stop(attempt, cleanup) {
+        if (attempt.kind === "plugin")
+          return owner.stopConnectionExecution(attempt.id, cleanup.connectionId);
+      },
+    },
+  });
+}
+
+test("Disconnect settles a plugin reservation the old Home never sent to its engine", async () => {
+  const caller = await connect("full-access", "read-write");
+  const connections = new AgentConnectionStore(database);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = service;
+  const send = original.call.bind(original);
+  const before = effects;
+  const waiting = vi.spyOn(original, "call").mockImplementationOnce(async (...args) => {
+    entered.resolve();
+    await release.promise;
+    return send(...args);
+  });
+  const work = call(caller, "plugin_call", writeCall).catch((error: unknown) => error);
+  try {
+    await deadline(
+      Promise.race([
+        entered.promise,
+        work.then(() => {
+          throw new Error("Plugin call ended before its reservation");
+        }),
+      ]),
+      "Plugin reservation did not reach its readiness wait",
+    );
+    const row = await database
+      .selectFrom("pluginExecutions")
+      .selectAll()
+      .where("connectionId", "=", caller.connectionId)
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({
+      state: "running",
+      engineUnsent: true,
+      engineProcess: null,
+      terminalEvidenceAt: null,
+    });
+    await original.close();
+    expect(original.state().status).toBe("stopped");
+    const replacement = createPluginService();
+    const recovered = createPluginExecutions(replacement);
+    try {
+      await recovered.recover();
+      await settleOrphanedAgentOperations(database, new Set());
+      await connections.revoke(caller.userId, caller.connectionId);
+      expect(await disconnectPlugins(recovered)).toMatchObject({
+        settled: expect.arrayContaining([caller.connectionId]),
+        failures: [],
+      });
+      const connection = (await connections.list(caller.userId, { includeRevoked: true })).find(
+        ({ id }) => id === caller.connectionId,
+      );
+      expect(connection).toMatchObject({ state: "stopped", lastActionUncertain: false });
+      expect(
+        await database
+          .selectFrom("agentOperations")
+          .select(["state", "contactLostAt"])
+          .where("connectionId", "=", caller.connectionId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ state: "failed", contactLostAt: null });
+      expect(await records.execution(row.id)).toMatchObject({
+        state: "cancelled",
+        reason: "The plugin call never left the Home.",
+        terminalEvidenceAt: expect.any(Date),
+        contactLostAt: null,
+      });
+      expect(effects).toBe(before);
+    } finally {
+      await recovered.close();
+      await replacement.close();
+    }
+  } finally {
+    release.resolve();
+    waiting.mockRestore();
+    await work;
+    if (original.state().status === "stopped") {
+      await mcp.close();
+      await executions.close();
+      service = createPluginService();
+      executions = createPluginExecutions(service);
+      mcp = createPluginMcp();
+    }
+  }
+});
+
+test("Disconnect settles after the same Mac reboots and keeps unverified plugin engines outstanding", async () => {
+  const connections = new AgentConnectionStore(database);
+  const attempts = await Promise.all(
+    [
+      { machineId: "this Mac", proof: true },
+      { machineId: "another Mac", proof: false },
+      { machineId: undefined, proof: false },
+      { legacy: true, proof: false },
+    ].map(async ({ machineId, legacy, proof }) => {
+      const caller = await connect("full-access", "read-write");
+      const { session } = await beginAgentSession(database, {
+        userId: caller.userId,
+        agentConnectionId: caller.connectionId,
+      });
+      const id = randomUUID();
+      await records.insert({
+        id,
+        ownerUserId: caller.userId,
+        threadId: session.threadId,
+        agentSessionId: session.id,
+        runId: null,
+        occurrenceId: null,
+        watchActivationId: null,
+        connectionId: caller.connectionId,
+        admittedGrantRevision: caller.grantRevision,
+        admittedAccessMode: caller.accessMode,
+        caller: caller.key,
+        mode: "automatic",
+        state: "running",
+        requestId: null,
+        interactionId: null,
+        handoff: false,
+        result: null,
+        reason: null,
+        ...(legacy
+          ? {}
+          : {
+              engineProcess: {
+                namespace: "previous boot",
+                launchId: randomUUID(),
+                pid: process.pid,
+                ...(machineId ? { machineId } : {}),
+              },
+            }),
+      });
+      return { caller, id, proof };
+    }),
+  );
+  const namespace = vi
+    .spyOn(engineProcess, "engineProcessNamespace")
+    .mockResolvedValue("this boot");
+  const machine = vi.spyOn(engineProcess, "engineProcessMachineId").mockResolvedValue(null);
+  const unidentified = createPluginService();
+  const unidentifiedHome = createPluginExecutions(unidentified);
+  const replacement = createPluginService();
+  const recovered = createPluginExecutions(replacement);
+  try {
+    await unidentifiedHome.recover();
+    for (const { caller } of attempts) await connections.revoke(caller.userId, caller.connectionId);
+    expect(await disconnectPlugins(unidentifiedHome)).toMatchObject({ failures: [], settled: [] });
+    for (const { id } of attempts)
+      expect(await records.execution(id)).toMatchObject({ terminalEvidenceAt: null });
+
+    machine.mockResolvedValue("this Mac");
+    const cleanup = await disconnectPlugins(recovered);
+    expect(cleanup.failures).toEqual([]);
+    const states = await connections.list(personal.userId, { includeRevoked: true });
+    for (const { caller, id, proof } of attempts) {
+      const connection = states.find((state) => state.id === caller.connectionId);
+      expect(connection).toMatchObject({
+        state: proof ? "stopped" : "stopping",
+        lastActionUncertain: true,
+      });
+      expect(await records.execution(id)).toMatchObject({
+        state: "interrupted",
+        terminalEvidenceAt: proof ? expect.any(Date) : null,
+        contactLostAt: expect.any(Date),
+      });
+    }
+  } finally {
+    namespace.mockRestore();
+    machine.mockRestore();
+    await unidentifiedHome.close();
+    await unidentified.close();
+    await recovered.close();
+    await replacement.close();
+    await database
+      .deleteFrom("pluginExecutions")
+      .where(
+        "id",
+        "in",
+        attempts.map(({ id }) => id),
+      )
+      .execute();
+  }
+});
+
 test("Disconnect waits for an exited plugin engine's Home callback and recovers the witness after restart", async () => {
   const caller = await connect("full-access", "read-write");
   const entered = Promise.withResolvers<void>();
@@ -959,6 +1226,7 @@ test("Disconnect waits for an exited plugin engine's Home callback and recovers 
       .selectAll()
       .where("connectionId", "=", caller.connectionId)
       .executeTakeFirstOrThrow();
+    expect(row.engineUnsent).toBeNull();
     expect(row.engineProcess).toMatchObject({
       pid: health.pid,
       namespace: expect.any(String),
@@ -970,7 +1238,9 @@ test("Disconnect waits for an exited plugin engine's Home callback and recovers 
     });
     const replacement = await service.health({}, ownerContext);
     expect(replacement.pid).not.toBe(health.pid);
-    expect(engineProcessGroupGone(row.engineProcess!, row.engineProcess!.namespace)).toBe(true);
+    expect(
+      engineProcess.engineProcessGroupGone(row.engineProcess!, row.engineProcess!.namespace),
+    ).toBe(true);
     await connections.revoke(caller.userId, caller.connectionId);
     const cleanup = (owner: PluginExecutions) =>
       store.driveConnectionCleanups({
@@ -1065,6 +1335,159 @@ test("a lost plugin reply after a provider write settles the first call and its 
     effectObserved = undefined;
     events.off("restarting", restarting);
     await observed;
+  }
+});
+
+test("a detached workflow keeps Mac Stop unconfirmed until its running step ends", async () => {
+  const files = pluginFixtureFiles(1).map((file) =>
+    file.path === "index.ts"
+      ? {
+          ...file,
+          content: `
+import { defineApp, object, workflow } from "apps";
+export default defineApp({}, {
+  workflows: {
+    hold: workflow({ input: object({}) }, async (ctx) => {
+      await ctx.step.do("held", async (step) => {
+        await (await step.fetch("https://api.fixture.invalid/workflow-stop-hold")).text();
+        return (await step.fetch("https://api.fixture.invalid/workflow-stop-same-step")).text();
+      });
+      return ctx.step.do("next", async (step) =>
+        (await step.fetch("https://api.fixture.invalid/workflow-stop-next-step")).text());
+    }),
+  },
+});
+`,
+        }
+      : file,
+  );
+  const installed = await service.install(
+    { kind: "files", name: "Detached workflow Stop fixture", files },
+    ownerContext,
+  );
+  if (installed.status !== "installed") throw new Error("Workflow Stop fixture did not install");
+  const { id } = installed.plugin;
+  const entered = Promise.withResolvers<void>();
+  let release: (() => void) | undefined;
+  let workflowId: string | undefined;
+  holdWorkflowStep = (respond) => {
+    release = respond;
+    entered.resolve();
+  };
+  const workflowStatus = (run: string) =>
+    service.manage({ operation: "workflowRuns.get", input: { app: id, run } }, ownerContext);
+  try {
+    const caller = await run("full-access");
+    const started = z.object({ id: z.string() }).parse(
+      await call(caller, "opensteer_plugin_resource_update", {
+        pluginId: id,
+        change: { action: "workflow.start", workflow: "hold", input: {}, key: randomUUID() },
+      }),
+    );
+    workflowId = started.id;
+    await deadline(entered.promise, "Detached workflow never entered its step");
+    hostingMacStopped = true;
+    expect(await service.agentWork({ stopped: true }, ownerContext)).toBe(true);
+    expect(await executions.stopAgentWork()).toBe(true);
+    expect(await hasUnfinishedPluginWorkflows(database)).toBe(true);
+
+    release?.();
+    release = undefined;
+    const refusedStep = {
+      status: "errored",
+      error: "credentials",
+      failure: { step: "next" },
+    };
+    await vi.waitFor(
+      async () => expect(await workflowStatus(started.id)).toMatchObject(refusedStep),
+      { timeout: 10_000 },
+    );
+    expect(registry.requests.some((request) => request.endsWith("/workflow-stop-same-step"))).toBe(
+      true,
+    );
+    expect(registry.requests.some((request) => request.endsWith("/workflow-stop-next-step"))).toBe(
+      false,
+    );
+    expect(await hasUnfinishedPluginWorkflows(database)).toBe(false);
+
+    hostingMacStopped = false;
+    expect(await service.agentWork({ stopped: false }, ownerContext)).toBe(true);
+    expect(await workflowStatus(started.id)).toMatchObject(refusedStep);
+  } finally {
+    release?.();
+    holdWorkflowStep = undefined;
+    if (hostingMacStopped) {
+      hostingMacStopped = false;
+      await service.agentWork({ stopped: false }, ownerContext);
+    }
+    if (workflowId)
+      await service.manage(
+        { operation: "workflowRuns.stop", input: { app: id, run: workflowId } },
+        ownerContext,
+      );
+    await service.remove({ plugin: id }, ownerContext);
+  }
+});
+
+test("the hosting Mac stops a plugin call in flight and refuses new agent work", async () => {
+  const caller = await connect("full-access", "read");
+  const entered = Promise.withResolvers<void>();
+  waitingForPlugin = entered.resolve;
+  const callInFlight = call(caller, "plugin_call", {
+    calls: { path: "tools.fixture.wait", input: {} },
+  });
+  const observed = callInFlight.catch((error: unknown) => error);
+  try {
+    await deadline(entered.promise, "Plugin call did not reach its provider");
+    hostingMacStopped = true;
+    const [background, executionsStopped] = await Promise.all([
+      service.agentWork({ stopped: true }, ownerContext),
+      executions.stopAgentWork(),
+    ]);
+    expect(background).toBe(true);
+    expect(executionsStopped).toBe(true);
+    const outcome = await deadline(observed, "Plugin call did not stop");
+    expect(outcome).toMatchObject({
+      status: "unknown",
+      operationId: expect.any(String),
+    });
+    const settled = await database
+      .selectFrom("agentOperations")
+      .select(["state", "resultSummary"])
+      .where("id", "=", AgentOperationIdSchema.parse(record.parse(outcome).operationId))
+      .executeTakeFirstOrThrow();
+    expect(settled).toEqual({ state: "unknown", resultSummary: null });
+    await sessions.drain();
+    const execution = await database
+      .selectFrom("pluginExecutions")
+      .select(["state", "terminalEvidenceAt"])
+      .where("connectionId", "=", caller.connectionId)
+      .executeTakeFirstOrThrow();
+    expect(execution).toMatchObject({
+      state: expect.stringMatching(/^(cancelled|interrupted)$/u),
+      terminalEvidenceAt: expect.any(Date),
+    });
+    expect(await call(caller, "plugin_call", readCall, true)).toMatchObject({
+      error: { code: "computer_stopped" },
+    });
+    await expect(service.call(readCall, ownerContext)).resolves.toMatchObject({
+      state: "completed",
+      result: expect.objectContaining({ status: "completed" }),
+    });
+    await expect(
+      service.webhook(
+        {
+          plugin,
+          subscription: "whk_stopped_fixture",
+          request: { url: "https://example.com/", method: "GET", headers: {}, body: "" },
+        },
+        ownerContext,
+      ),
+    ).rejects.toMatchObject({ tag: "computer_stopped" });
+  } finally {
+    waitingForPlugin = undefined;
+    hostingMacStopped = false;
+    await service.agentWork({ stopped: false }, ownerContext);
   }
 });
 
@@ -1364,6 +1787,16 @@ test("hold handoff wakes the task; a later Run can resume and another task canno
     code: "const first=await tools.fixture.reviewed({amount:1});return first+await tools.fixture.reviewed({amount:2});",
   });
   const id = z.string().parse(pending.executionId);
+  const requestFor = (run: RunCaller) =>
+    pendingRequest(run).catch(async (cause: unknown) => {
+      const execution = await records.execution(id);
+      const request = execution?.requestId ? await store.requests.get(execution.requestId) : null;
+      throw new Error(
+        `No pending Request for the ${run === caller ? "original" : "resumed"} Run. ` +
+          `Execution: ${execution?.state ?? "missing"}; Request: ${request?.status ?? "missing"}.`,
+        { cause },
+      );
+    });
   expect(
     await executions.hold({
       caller,
@@ -1374,7 +1807,7 @@ test("hold handoff wakes the task; a later Run can resume and another task canno
       signal: new AbortController().signal,
     }),
   ).toMatchObject({ status: "pending" });
-  const request = await pendingRequest(caller);
+  const request = await requestFor(caller);
   const original = await database
     .selectFrom("runs")
     .selectAll()
@@ -1434,7 +1867,7 @@ test("hold handoff wakes the task; a later Run can resume and another task canno
     },
   };
   const continuedWork = call(later, "plugin_resume", { executionId: id }, true);
-  const nextRequest = await pendingRequest(later);
+  const nextRequest = await requestFor(later);
   expect(nextRequest.originatingRunId).toBe(later.claims.runId);
   await answer(nextRequest.id);
   expect(

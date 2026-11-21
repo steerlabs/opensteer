@@ -1,4 +1,4 @@
-import { StandardCdpModeSchema } from "./standard-cdp.js";
+import { StandardCdpAttemptSchema, StandardCdpModeSchema } from "./standard-cdp.js";
 import {
   browserPersonalTabUrlMaxLength,
   BrowserFaviconSchema,
@@ -185,6 +185,7 @@ export const BrowserAttachTicketClaimsSchema = z
     actor: z.enum(["agent", "person"]).optional(),
     /** Authorizes an existing session on the runtime's raw CDP endpoint. */
     standardCdp: StandardCdpModeSchema.optional(),
+    standardCdpAttempt: StandardCdpAttemptSchema.optional(),
     standardCdpLineage: z
       .strictObject({ attachmentId: z.uuid(), seedSurfaceId: BrowserSurfaceIdSchema })
       .optional(),
@@ -202,6 +203,8 @@ export const BrowserAttachTicketClaimsSchema = z
     operationExpiresAt: IsoDateTimeSchema,
     remainingBudgetMs: z.number().int().positive().max(20_000),
     initialNavigation: InitialNavigationSchema.optional(),
+    /** May reconnect to the existing session, never create it. */
+    reattach: z.literal(true).optional(),
     /** Host opt-in to navigation IDs and committed-document reports. */
     navigationAttributionVersion: z.literal(1).optional(),
     /**
@@ -1356,6 +1359,7 @@ export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
+  fenceTab: "Opensteer.fenceTab",
   resumeTab: "Opensteer.resumeTab",
   listTabs: "Opensteer.listTabs",
   contextCandidate: "Opensteer.contextCandidate",

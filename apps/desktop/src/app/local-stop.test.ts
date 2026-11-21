@@ -72,7 +72,8 @@ it("offers Resume without claiming confirmed Stop after unproved shutdown", asyn
   await service.stop();
   expect(service.phase).toBe("stopped");
   expect(service.stoppedAt).toBeNull();
-  expect(service.problem).toMatch(/Couldn't confirm/);
+  expect(service.problem).toContain("Couldn’t confirm everything stopped");
+  expect(service.problem).toContain("Couldn't confirm that one device connection");
   await service.resume();
   expect(service.phase).toBe("running");
 });
@@ -98,4 +99,32 @@ it("restores each saved mode and fails closed on unreadable state", async () => 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("reports an uncontained earlier boot when restoring Stop", async () => {
+  const { service, store } = fixture();
+  store.load.mockResolvedValueOnce({ stopped: true, at });
+  await service.restore();
+  service.noteUncontainedBoot(at);
+  expect(service.phase).toBe("stopped");
+  expect(service.stoppedAt).toBeNull();
+  expect(service.problem).toBe("Couldn’t confirm everything stopped");
+});
+
+it("queues Stop behind the update handoff's final idle check", async () => {
+  const { service, store, restart } = fixture();
+  await service.restore();
+  const handoffEntered = Promise.withResolvers<void>();
+  const handoffFinished = Promise.withResolvers<void>();
+  const handoff = service.whileModeStable(async () => {
+    handoffEntered.resolve();
+    await handoffFinished.promise;
+  });
+  await handoffEntered.promise;
+  const stop = service.stop();
+  expect(store.save).not.toHaveBeenCalled();
+  expect(restart).not.toHaveBeenCalled();
+  handoffFinished.resolve();
+  await Promise.all([handoff, stop]);
+  expect(store.save).toHaveBeenCalledWith({ stopped: true, at });
 });

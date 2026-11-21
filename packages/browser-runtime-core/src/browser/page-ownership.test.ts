@@ -122,6 +122,39 @@ it.each(["resolves with no event", "hangs until the event", "rejects after the e
   },
 );
 
+it("keeps asking Chrome to close a durably closed tab after the ordinary retry cap", async () => {
+  const page = new FakePage({ url: "https://closing.test/" });
+  const f = await harness([page]);
+  const id = await f.idOf(page);
+  const nativeClose = page.close.bind(page);
+  let permitClose = false;
+  const close = vi.spyOn(page, "close").mockImplementation(async () => {
+    if (!permitClose) throw new Error("Chromium refused the close");
+    await nativeClose();
+  });
+  try {
+    f.ledger.fenceDurableClose(id);
+    expect(f.ledger.binding(id)).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    const pending = expect(f.ledger.closeDurableSurface(id)).rejects.toMatchObject({
+      reason: "tab-still-closing",
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(close.mock.calls.length).toBeGreaterThan(8);
+    expect(page.isClosed()).toBe(false);
+    permitClose = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(page.isClosed()).toBe(true);
+    expect(f.ledger.stateOf(id)).toBeUndefined();
+    await expect(f.ledger.closeDurableSurface(id)).resolves.toBeUndefined();
+  } finally {
+    permitClose = true;
+    await f.ledger.close();
+  }
+});
+
 it("answers a sleep once its page is confirmed gone, with the tab asleep from the request", async () => {
   const page = new FakePage({ url: "https://sleep.test/" });
   const f = await harness([page, new FakePage()]);

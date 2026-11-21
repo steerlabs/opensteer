@@ -36,6 +36,12 @@ if [[ "${OPENSTEER_MAC_OWNER_INPUT_JOURNEY:-}" == 1 ]]; then
   /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.opensteer.owner-other-fixture' "$other_fixture/Contents/Info.plist"
   export OPENSTEER_MAC_OWNER_OTHER_APP="$other_fixture"
 fi
+peer_fixture="$work/PeerFixture.app"
+ditto --norsrc --noextattr --noqtn "$fixture" "$peer_fixture"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.opensteer.window-group-peer-fixture' "$peer_fixture/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleName Window Group Peer Fixture' "$peer_fixture/Contents/Info.plist"
+codesign --force --sign - "$peer_fixture"
+export OPENSTEER_WINDOW_GROUP_PEER_APP="$peer_fixture"
 pnpm build:computer-use-helper --requirement-only
 bash scripts/test-support/build-apple-data-module.sh "$work"
 sources=()
@@ -47,13 +53,15 @@ if [[ "${OPENSTEER_MAC_OWNER_INPUT_JOURNEY:-}" == 1 ]]; then
   other_fixture="$work/OtherOwnerFixture.app"
   export OPENSTEER_MAC_OWNER_OTHER_APP="$other_fixture"
 fi
+peer_fixture="$work/PeerFixture.app"
+export OPENSTEER_WINDOW_GROUP_PEER_APP="$peer_fixture"
 suite_result=0
 base_out="$out"
-IFS=',' read -r -a cases <<< "${OPENSTEER_WINDOW_GROUP_CASES:-current,settle,cancellation,video,members,focus,receipt-switch}"
+IFS=',' read -r -a cases <<< "${OPENSTEER_WINDOW_GROUP_CASES:-current,settle,cancellation,video,members,focus,receipt-switch,read-only}"
 for selected in "${cases[@]}"; do
   unset OPENSTEER_WINDOW_GROUP_VIDEO_FIRST OPENSTEER_WINDOW_GROUP_VIDEO_ONLY OPENSTEER_WINDOW_GROUP_OVERLAY OPENSTEER_WINDOW_GROUP_CURRENT_ONLY
   case "$selected" in
-    cancellation|settle|focus|receipt-switch) ;;
+    cancellation|settle|focus|receipt-switch|read-only) ;;
     members) ;;
     video) export OPENSTEER_WINDOW_GROUP_VIDEO_FIRST=1 OPENSTEER_WINDOW_GROUP_VIDEO_ONLY=1 ;;
     current) export OPENSTEER_WINDOW_GROUP_OVERLAY=1 OPENSTEER_WINDOW_GROUP_CURRENT_ONLY=1 ;;
@@ -68,6 +76,11 @@ for selected in "${cases[@]}"; do
     mkdir -p "$out/other-app"
     /usr/libexec/PlistBuddy -c "Set :FixtureOutput $out/other-app" "$other_fixture/Contents/Info.plist"
     codesign --force --sign - "$other_fixture"
+  fi
+  if [[ "$selected" == "read-only" ]]; then
+    mkdir -p "$out/peer-app"
+    /usr/libexec/PlistBuddy -c "Set :FixtureOutput $out/peer-app" "$peer_fixture/Contents/Info.plist"
+    codesign --force --sign - "$peer_fixture"
   fi
   selection_start=$SECONDS
   "$work/Journey" "$out" "$fixture" &

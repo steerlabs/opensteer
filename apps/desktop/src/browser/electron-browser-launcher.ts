@@ -2413,6 +2413,11 @@ class ElectronDebuggerHub {
   readonly #channels = new Set<ElectronCdpChannel>();
   readonly #contexts = new ExecutionContextInventory();
   readonly #agentWorlds = new CdpProductIsolation();
+  readonly #profileInspections = new Map<
+    string,
+    (method: string, parameters: CdpParameters) => void
+  >();
+  #profileContextGeneration = 0;
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
@@ -2473,6 +2478,11 @@ class ElectronDebuggerHub {
     });
     this.#debugger.on("message", (_event, method, parameters, sessionId) => {
       if (sessionId) {
+        const inspectProfile = this.#profileInspections.get(sessionId);
+        if (inspectProfile) {
+          inspectProfile(method, asRecord(parameters));
+          return;
+        }
         if (!this.#agentWorlds.observe(method, asRecord(parameters))) {
           if (method === "Debugger.paused")
             void this.#debugger
@@ -2485,6 +2495,13 @@ class ElectronDebuggerHub {
         return;
       }
       const record = asRecord(parameters);
+      if (method === "Runtime.executionContextsCleared") this.#profileContextGeneration++;
+      if (
+        method === "Target.detachedFromTarget" &&
+        typeof record.sessionId === "string" &&
+        this.#profileInspections.has(record.sessionId)
+      )
+        return;
       this.#contexts.observe(method, record);
       const pageEvent = this.#agentWorlds.observe(method, record);
       if (method.startsWith("Runtime.executionContext"))
@@ -2664,7 +2681,9 @@ class ElectronDebuggerHub {
     )
       this.#agentWorlds.assertCommand(method, parameters);
     const send = (method: string, parameters?: Record<string, unknown>) =>
-      this.#command(method, parameters);
+      channel.role === "agent" && method === "Profiler.stop"
+        ? this.#stopAgentProfile(parameters)
+        : this.#command(method, parameters);
     if (channel.role === "agent" && method.startsWith("Target."))
       return this.#agentTargets(channel, method, parameters);
     if (this.#closed || !this.#channels.has(channel))
@@ -2844,6 +2863,43 @@ class ElectronDebuggerHub {
       if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
       return send(method, parameters);
     });
+  }
+
+  async #stopAgentProfile(parameters: CdpParameters | undefined): Promise<unknown> {
+    const renderer = this.#rendererGeneration;
+    const context = this.#profileContextGeneration;
+    const isolate = this.#dispatch("Runtime.getIsolateId").catch(() => undefined);
+    const result = await this.#dispatch("Profiler.stop", parameters);
+    await this.#agentWorlds.observeProfileResult(result, async (observe) => {
+      const isolateId = asRecord(await isolate).id;
+      if (typeof isolateId !== "string") return;
+      const info = asRecord(await this.#command("Target.getTargetInfo"));
+      const targetId = asRecord(info.targetInfo).targetId;
+      if (typeof targetId !== "string") return;
+      const { sessionId } = asRecord(
+        await this.#command("Target.attachToTarget", { targetId, flatten: true }),
+      );
+      if (typeof sessionId !== "string") return;
+
+      this.#profileInspections.set(sessionId, observe);
+      try {
+        const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
+        if (inspected.id !== isolateId) return;
+        await this.#dispatch("Runtime.enable", {}, sessionId);
+        await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+        await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
+        await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+        if (renderer !== this.#rendererGeneration || context !== this.#profileContextGeneration)
+          throw new SessionCdpRouterError(
+            "forbidden",
+            "The page changed while reading its profile.",
+          );
+      } finally {
+        await this.#command("Target.detachFromTarget", { sessionId }).catch(() => undefined);
+        this.#profileInspections.delete(sessionId);
+      }
+    });
+    return result;
   }
 
   async #agentTargets(
@@ -3274,7 +3330,8 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
         parameters = { ...parameters, executionContextName: "" };
     }
     return this.#hub.send(this, method, parameters).then((result) => {
-      if (this.role === "agent") this.#worlds.observeResult(method, parameters ?? {}, result);
+      if (this.role === "agent" && method !== "Profiler.stop")
+        this.#worlds.observeResult(method, parameters ?? {}, result);
       return result as Result;
     });
   }
@@ -3429,6 +3486,21 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     const channel = await page.agentCdp();
     try {
       return await channel.send(method, routed);
+    } catch (error) {
+      // Electron discards the CDP error code and rejects with only its message.
+      if (
+        (method === "Browser.setDownloadBehavior" || method === "Browser.cancelDownload") &&
+        error instanceof Error &&
+        (error.message === `'${method}' wasn't found` ||
+          error.message === "Not allowed" ||
+          error.message === "Browser context management is not supported.")
+      )
+        throw new SessionCdpRouterError(
+          "forbidden",
+          `${method} cannot be scoped to this browser profile by this Electron version.`,
+          { cause: error },
+        );
+      throw error;
     } finally {
       await channel.close();
     }

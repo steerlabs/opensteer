@@ -17,8 +17,8 @@ describe("a phone about to join", () => {
     });
   });
 
-  it("joins a personal Home with nothing new said, and never waits on a policy not known yet", () => {
+  it("joins a personal Home with nothing new said, and waits while policy is unknown", () => {
     expect(joinWorkLine(null)).toEqual({ work: null, blocked: false });
-    expect(joinWorkLine(undefined)).toEqual({ work: null, blocked: false });
+    expect(joinWorkLine(undefined)).toEqual({ work: null, blocked: true });
   });
 });

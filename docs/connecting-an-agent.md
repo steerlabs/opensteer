@@ -1,8 +1,8 @@
 # Connecting an Agent to Opensteer
 
-This guide explains how to connect an AI agent to a person's Opensteer Home over the Model Context Protocol (MCP), work inside what the person shared, and handle approval, refusal, and stop cleanly.
+This guide explains how to connect an AI agent to a person's Opensteer Home over the Model Context Protocol (MCP), act inside what the person shared, and handle approval, refusal, and stop cleanly.
 
-A Home runs on the person's own Mac or on an Opensteer Cloud Computer and holds their browser profiles, apps, phones, plugins, and tasks. A connected agent signs in over OAuth, receives a grant and safety mode, and can be watched or stopped at any time from the person's phone.
+A Home runs on the person's own Mac, on a Linux server, or on an Opensteer Cloud Computer, holding their browser profiles, apps, phones, plugins, and tasks. A connected agent signs in over OAuth, receives a grant and safety mode, and can be watched or stopped at any time from the person's phone.
 
 ---
 
@@ -16,78 +16,44 @@ A Home serves MCP over Streamable HTTP at one endpoint:
 
 For a Mac Home on loopback, `<home-origin>` is `http://127.0.0.1:<port>` (or `http://localhost:<port>`). For a remote Home or an Opensteer Cloud Computer, `<home-origin>` is its `https://` origin.
 
-### Discovery
+### Discovery and OAuth
 
-Send an unauthenticated `POST` to `<home-origin>/internal/v1/mcp`. The Home replies with HTTP `401` and a `WWW-Authenticate` header pointing to its protected-resource metadata:
+Send an unauthenticated `POST` to `<home-origin>/internal/v1/mcp`. The Home replies with HTTP `401` and:
 
 ```http
 WWW-Authenticate: Bearer resource_metadata="<home-origin>/.well-known/oauth-protected-resource/internal/v1/mcp"
 ```
 
-The Home serves standard OAuth metadata with `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`:
+Metadata endpoints (served with `Cache-Control: no-store` and `Access-Control-Allow-Origin: *`):
 
-- Protected-resource metadata: `GET /.well-known/oauth-protected-resource/internal/v1/mcp` (and `GET /.well-known/oauth-protected-resource`)
-  - `resource`: `<home-origin>/internal/v1/mcp`
-  - `authorization_servers`: `["<home-origin>/oauth/mcp"]`
-  - `bearer_methods_supported`: `["header"]`
-  - `scopes_supported`: `["opensteer"]`
-- Authorization-server metadata: `GET /.well-known/oauth-authorization-server/oauth/mcp` (and `GET /.well-known/oauth-authorization-server`)
-  - `issuer`: `<home-origin>/oauth/mcp`
-  - `authorization_endpoint`: `<home-origin>/oauth/mcp/authorize`
-  - `token_endpoint`: `<home-origin>/oauth/mcp/token`
-  - `registration_endpoint`: `<home-origin>/oauth/mcp/register`
-  - `response_types_supported`: `["code"]`
-  - `grant_types_supported`: `["authorization_code"]`
-  - `code_challenge_methods_supported`: `["S256"]`
-  - `token_endpoint_auth_methods_supported`: `["none"]`
-  - `scopes_supported`: `["opensteer"]`
-  - `authorization_response_iss_parameter_supported`: `true`
+- **Protected-resource metadata:** `GET /.well-known/oauth-protected-resource/internal/v1/mcp` (and `/.well-known/oauth-protected-resource`) — returns `resource` (`<home-origin>/internal/v1/mcp`), `authorization_servers` (`["<home-origin>/oauth/mcp"]`), `bearer_methods_supported` (`["header"]`), and `scopes_supported` (`["opensteer"]`).
+- **Authorization-server metadata:** `GET /.well-known/oauth-authorization-server/oauth/mcp` (and `/.well-known/oauth-authorization-server`) — `issuer` `<home-origin>/oauth/mcp`, endpoints `/authorize`, `/token`, `/register`, `response_types_supported: ["code"]`, `grant_types_supported: ["authorization_code"]`, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, `authorization_response_iss_parameter_supported: true`.
 
-### Dynamic client registration
+#### Registration (`POST <home-origin>/oauth/mcp/register`)
 
-Register with `POST <home-origin>/oauth/mcp/register` (JSON body, up to 16 KiB):
+JSON body up to 16 KiB:
 
 - `client_name`: 1–100 characters after control characters are stripped (defaults to `"MCP client"`).
-- `redirect_uris`: 1–5 callback URLs. Each must be `https://` or loopback `http://` (`localhost`, `127.0.0.1`, or `[::1]`) with no `#fragment` and no embedded username or password. Custom URL schemes are dropped; if no valid URI remains, registration returns `400` with `{"error":"invalid_client_metadata"}`.
+- `redirect_uris`: 1–5 callback URLs, each `https://` or loopback `http://` (`localhost`, `127.0.0.1`, `[::1]`) with no `#fragment` and no embedded credentials. Invalid or custom schemes are dropped; if none remain, registration returns `400` (`{"error":"invalid_client_metadata"}`).
 
-The Home returns `201 Created` with a signed, stateless `client_id` (up to 16 KiB — do not store it in a short fixed-width column) and `token_endpoint_auth_method: "none"`.
+Returns `201 Created` with a signed, stateless `client_id` (up to **16 KiB** — do not store it in a short fixed-width column) and `token_endpoint_auth_method: "none"`.
 
-### Authorization and PKCE
+#### Authorization (`GET <home-origin>/oauth/mcp/authorize`)
 
-Send the person's browser to `GET <home-origin>/oauth/mcp/authorize` with:
+Required query parameters: `response_type=code`, `client_id`, `redirect_uri` (exact match for `https://`; for loopback `http://`, port may differ), `code_challenge` (43-character base64url SHA-256), `code_challenge_method=S256`. Optional: `state` (up to 2,048 chars), `scope` (always granted `"opensteer"`), `resource` (must equal `<home-origin>/internal/v1/mcp` or with one trailing `/`). Consent requests expire in **10 minutes**.
 
-- `response_type=code`
-- `client_id`: from registration
-- `redirect_uri`: exact match for `https://`; for loopback `http://`, scheme, host, path, and query must match (port may differ)
-- `code_challenge`: 43-character base64url SHA-256 digest of your verifier
-- `code_challenge_method=S256` (`plain` is rejected)
-- `state` (optional, up to 2,048 characters)
-- `scope` (optional; the Home always grants `"opensteer"`)
-- `resource` (optional; if sent, must equal `<home-origin>/internal/v1/mcp` or with one trailing `/`)
+The browser redirects to `/mcp-authorization`, where the person sees:
 
-Consent requests expire after **10 minutes**.
+1. **Who is asking.** If your `redirect_uri` origin is in Opensteer's signed agent directory (from the Opensteer account service), it shows the verified name and origin (or verified embedder via platform with a verified `opensteer_embedder_assertion` JWS). Otherwise it shows your self-claimed `client_name`, your redirect origin (or `"an app on this computer"` for loopback), and `"Only allow this if you started it yourself."`
+2. **What it can use.** **Choose what it can use** (specific browser profiles, shared Chrome tabs, apps or phone screens, plugins, and/or Tasks) or **Everything my own agents can do**. On a work Home, organization policy may forbid `everything` or Tasks.
+3. **Safety mode** (capped by organization policy on a work Home) and connection **Name**.
+4. **Terms.** Access lasts 30 days and can be ended any time in **Settings → Connected agents**.
 
-### What the person sees at consent
+Approval redirects to `redirect_uri` with `code`, `iss`, and `state`; denial redirects with `error=access_denied`, `iss`, and `state`. Codes expire in **60 seconds**, are single-use, and are burned on any failed exchange.
 
-The Home redirects the browser to `/mcp-authorization`, showing:
+#### Token exchange (`POST <home-origin>/oauth/mcp/token`)
 
-1. **Who is asking.** If your `redirect_uri` origin is in Opensteer's signed agent directory (fetched from the Opensteer account service), the screen shows the verified platform name and origin (or verified embedder via platform when a signed `opensteer_embedder_assertion` JWS is verified). Otherwise, it shows your self-claimed `client_name`, your redirect origin (or `"an app on this computer"` for loopback), and `"Only allow this if you started it yourself."`
-2. **What it can use.** The person chooses **Choose what it can use** (specific browser profiles, shared Chrome tabs, apps or phone screens, plugins, and/or Tasks) or **Everything my own agents can do**. On a work Home, the organization's policy may forbid `everything` or Tasks.
-3. **Safety mode** (capped by organization policy on a work Home) and a connection **Name**.
-4. **Terms.** Access lasts 30 days, and the person can disconnect the agent at any time in **Settings → Connected agents**.
-
-If the person allows the connection, their browser redirects to your `redirect_uri` with `code`, `iss`, and `state`. If they deny, it redirects with `error=access_denied`, `iss`, and `state`. Authorization codes expire in **60 seconds**, are single-use, and are burned on any failed exchange.
-
-### Token exchange, transport, and server instructions
-
-Exchange the code with `POST <home-origin>/oauth/mcp/token` (`application/x-www-form-urlencoded` or `application/json`, up to 24 KiB):
-
-- `grant_type=authorization_code`
-- `code`, `client_id`, `redirect_uri`
-- `code_verifier` (43–128 characters matching `[A-Za-z0-9._~-]`)
-- `resource` (optional; must match `<home-origin>/internal/v1/mcp` or with one trailing `/`)
-
-The Home returns:
+Send `application/x-www-form-urlencoded` or `application/json` (up to 24 KiB) with `grant_type=authorization_code`, `code`, `client_id`, `redirect_uri`, `code_verifier` (43–128 characters matching `[A-Za-z0-9._~-]`), and optional `resource`. Returns:
 
 ```json
 {
@@ -100,18 +66,13 @@ The Home returns:
 
 Send `Authorization: Bearer <access_token>` on every request to `<home-origin>/internal/v1/mcp`. Access tokens expire after **30 days**.
 
-- **Server instructions:** During MCP `initialize`, the Home sends short `instructions` built from what this connection was offered. They name only the granted resource kinds and their entry points, how direct-work `taskId` and `operationId` work, and how to handle `pending`, `unknown`, and refusals. Forward them to your model.
-- **Transport limits:** Up to **8** concurrent MCP connections per connected agent (`mcp-session-id` is the MCP transport header; idle transports close after 30 minutes, and every request still authenticates the live bearer token). Requests with a browser `Origin` header other than `<home-origin>` are rejected (`403`).
-- **Deliberately not offered:** No refresh tokens (`grant_types_supported` is `["authorization_code"]` only; requesting `offline_access` still returns no `refresh_token`). No Client ID Metadata Documents (CIMD) — the Home never fetches a URL supplied by a connecting agent. When a token expires, run a new OAuth flow so the person re-consents.
+- **Server instructions:** During MCP `initialize`, the Home sends short `instructions` built from what this connection was offered (granted kinds, entry points, `taskId`, `operationId`, `pending`, `unknown`, and refusals). Pass them to your model.
+- **Transport limits:** Up to **8** concurrent MCP connections per connected agent (`mcp-session-id` is the MCP transport header; idle transports close after 30 minutes, and every request still checks the live bearer token). Browser `Origin` headers other than `<home-origin>` are rejected (`403`).
+- **Not offered:** No refresh tokens (requesting `offline_access` returns no `refresh_token`; re-run OAuth when the 30-day token expires) and no Client ID Metadata Documents (CIMD).
 
 ### Disconnect
 
-When the person clicks **Disconnect** in **Settings → Connected agents**:
-
-- The Home revokes the connection in one transaction and deletes its stored token hash.
-- Open MCP transports and browser WebSockets close, pending Requests are cancelled, and in-flight work is stopped.
-- The next MCP call or request with that bearer token gets HTTP `401` and `WWW-Authenticate: Bearer resource_metadata="..."`.
-- On the person's screen, the connection moves from **Stopping** to **Disconnected** once devices confirm in-flight work stopped. If contact was lost mid-effect, the person sees **Check its last action**.
+When the person clicks **Disconnect** in **Settings → Connected agents**, the Home revokes the connection in one transaction, deletes its token hash, closes open MCP transports and browser WebSockets, cancels pending Requests, and stops in-flight work. The next call gets HTTP `401` with `WWW-Authenticate`. On the person's screen, the connection moves from **Stopping** to **Disconnected** once devices confirm work stopped, or shows **Check its last action** if contact was lost mid-effect.
 
 ### Minimal working example (Node.js + official MCP SDK)
 
@@ -197,45 +158,40 @@ export async function connectToHome(openInBrowser: (url: URL) => Promise<string>
 
 ## 2. What a Grant Is
 
-A grant defines what a connected agent may reach on the person's Home. There are two scopes:
+A grant defines what a connected agent may reach on the person's Home:
 
-- **`everything`**: everything the person's own agents can do (all browser profiles, shared Chrome tabs, approved apps and phones, plugins, and Tasks). Settings tools also require `full-access`.
-- **`selected`**: a boolean `tasks` flag plus up to **64** resources, each of four kinds:
-  1. **Browser profile** (`browser-profile`, read-write): full control of that profile and every site signed in there. A dedicated sign-in profile used for AI accounts cannot be included.
-  2. **Shared Chrome tabs** (`chrome-tabs`, read-write): tabs the person shares one at a time from Chrome using the **Opensteer tab sharing** extension ("Share this tab with Opensteer").
-  3. **Mac app or phone screen** (`computer-app`, read-write): one already-approved Mac app (pinned to its device, approval record, bundle ID, and code-signing team) or one Android Agent Phone or iPhone screen. If an app's signer or approval changes, it falls out of the grant.
-  4. **Plugin** (`plugin`, `read` or `read-write`): an installed plugin, a local MCP server, or a device data account (Calendar, Contacts, Reminders, Messages, iPhone Photos, or Location).
+- **`everything`**: everything the person's own agents can do. Settings tools also require `full-access`.
+- **`selected`**: a boolean `tasks` flag plus up to **64** resources of four kinds:
+  1. **Browser profile** (`browser-profile`, read-write): full control of that profile's cookies and signed-in sites. Dedicated sign-in profiles for AI accounts cannot be selected.
+  2. **Shared Chrome tabs** (`chrome-tabs`, read-write): tabs shared one at a time from Chrome via the **Opensteer tab sharing** extension ("Share this tab with Opensteer").
+  3. **Mac app or phone screen** (`computer-app`, read-write): one approved Mac app (pinned to device, approval record, bundle ID, and signing team) or one Android Agent Phone or iPhone screen. If an app's signer or approval changes, it falls out of the grant.
+  4. **Plugin** (`plugin`, `read` or `read-write`): an installed plugin, local MCP server, or device data account (Calendar, Contacts, Reminders, Messages, iPhone Photos, or Location).
 
 ### Tools follow the grant
 
-A tool outside your grant is neither listed by `tools/list` nor callable. The listing carries **no `outputSchema`** (results still return `structuredContent`), and `tab_open` and `tab_close` are never listed for a connected agent — open and close pages inside `browser_use` (`newPage`, `page.close()`) or over `browser_connect`.
+Tools outside your grant are neither listed by `tools/list` nor callable. Connection listings omit `outputSchema` (results still return `structuredContent`), and `tab_open` and `tab_close` are never listed — open and close pages inside `browser_use` (`newPage`, `page.close()`) or over `browser_connect`.
 
-What `tools/list` returns depends on what is shared and where the Home runs:
+| Grant (`tasks: false` unless noted)                 | Tools listed                                                                                                                                                                                                                        |
+| :-------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browser profile(s)** (hosting device w/Passwords) | **7 tools** (~4.5 KB): `ask_person`, `browser_connect`, `browser_profile_list`, `browser_use`, `card_request`, `saved_login_request`, `tab_list`.                                                                                   |
+| **Shared Chrome tabs only**                         | **4 tools**: `ask_person`, `browser_connect`, `browser_use`, `tab_list` (`browser_use` and `browser_connect` omit `profileId` and require `tabId`).                                                                                 |
+| **Mac app or phone screen**                         | `ask_person`, `computer_apps`, `computer_list`, `computer_use` (`computer_use` omits `app` on phone-only grants and requires `app` on Mac-only grants).                                                                             |
+| **Plugin (`read`)**                                 | `ask_person`, `local_server_list`, `plugin_call`, `plugin_describe`, `plugin_resources`, `plugin_resume`, `plugin_search`, `plugin_skills`.                                                                                         |
+| **Plugin (`read-write`)**                           | Same as above, plus `plugin_execute`.                                                                                                                                                                                               |
+| **`tasks: true`**                                   | `ask_person`, `opensteer_ai_account_list`, `opensteer_task_*`, `opensteer_request_list`, `opensteer_request_read`, `opensteer_subagent_read`, `opensteer_delegation_status`, `opensteer_delegation_wait`, `opensteer_automation_*`. |
+| **`everything` + `full-access`**                    | **52 tools** (~25 KB): all of the above, plus Home settings tools.                                                                                                                                                                  |
 
-| Grant (with `tasks: false` unless noted) | Tools listed                                                                                                                                                                                                                        |
-| :--------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **One or more browser profiles** (Mac)   | 7 tools: `ask_person`, `browser_connect`, `browser_profile_list`, `browser_use`, `card_request`, `saved_login_request`, `tab_list`.                                                                                                 |
-| **Shared Chrome tabs only**              | 4 tools: `ask_person`, `browser_connect`, `browser_use`, `tab_list` (no `browser_profile_list`, no saved-fill tools; `browser_use` and `browser_connect` omit `profileId` and require `tabId`).                                     |
-| **Mac app or phone screen**              | `ask_person`, `computer_apps`, `computer_list`, `computer_use` (`computer_use` omits `app` on phone-only grants and requires `app` on Mac-only grants).                                                                             |
-| **Plugin (`read`)**                      | `ask_person`, `local_server_list`, `plugin_call`, `plugin_describe`, `plugin_resources`, `plugin_resume`, `plugin_search`, `plugin_skills`.                                                                                         |
-| **Plugin (`read-write`)**                | Same as above, plus `plugin_execute`.                                                                                                                                                                                               |
-| **`tasks: true`**                        | `ask_person`, `opensteer_ai_account_list`, `opensteer_task_*`, `opensteer_request_list`, `opensteer_request_read`, `opensteer_subagent_read`, `opensteer_delegation_status`, `opensteer_delegation_wait`, `opensteer_automation_*`. |
-| **`everything` + `full-access`**         | All of the above, plus Home settings tools.                                                                                                                                                                                         |
-
-Two rules apply across all grants:
-
-- **Opensteer Cloud Computer Homes:** `saved_login_request` and `card_request` are not offered. Saved logins and cards live on the person's own Mac.
-- **No access-widening tools:** Connected agents never receive `computer_access_request`, `app_access_request`, `browser_profile_request`, `chrome_cookies_request`, or `plugin_account_request`. Tell the person what you need so they can update your grant in **Settings → Connected agents**.
-
-If the person changes your grant or safety mode while you are connected, the Home closes your MCP transport; reconnecting gives you the updated tool list and instructions. Renaming the connection alone does not change its grant version or cancel open Requests.
+- **Passwords tools (`saved_login_request`, `card_request`):** Listed only when the hosting device supports Opensteer Passwords (a personal Mac Home). Omitted on Opensteer Cloud Computers and self-hosted Linux Homes.
+- **No access-widening tools:** Connected agents never receive `computer_access_request`, `app_access_request`, `browser_profile_request`, `chrome_cookies_request`, or `plugin_account_request`. Ask the person to adjust your grant in **Settings → Connected agents**.
+- **Live changes:** Editing your grant or safety mode closes your MCP transport; reconnecting returns the updated tool list and instructions. Renaming the connection alone does not change its grant version or cancel open Requests.
 
 ### Work Homes and organization policy
 
-On a **work Home**, the organization's policy caps the safety mode (`externalMaxMode`) and may forbid `everything`, `tasks`, or enrolling extra devices. A forbidden choice — or a work Home that is offboarding or ended — is refused with `code: "organization_not_allowed"`.
+On a **work Home**, organization policy caps the safety mode (`externalMaxMode`) and may forbid `everything`, `tasks`, or enrolling extra devices. A forbidden choice — or an offboarding/ended work Home — fails with `code: "organization_not_allowed"`.
 
 ### Unshared resources look nonexistent
 
-When a `selected` grant names a browser profile, tab, task, app, device, plugin, or `operationId` outside its grant, **the Home returns `code: "not_found"`, identical to an ID that does not exist**. Listings silently omit unshared items, `browser_profile_list` and `tab_list` omit the device's name and ID unless that device is also granted, and `computer_list` hides an iPhone's connected Mac unless that Mac is also granted.
+Naming a browser profile, tab, task, app, device, plugin, or `operationId` outside a `selected` grant returns `code: "not_found"`, identical to a nonexistent ID. Listings silently omit unshared items; `browser_profile_list` and `tab_list` omit the device's name and ID unless that device is also granted; `computer_list` hides an iPhone's connected Mac unless that Mac is also granted.
 
 ```ts
 const { tools } = await client.listTools();
@@ -249,7 +205,7 @@ if (names.has("browser_profile_list")) {
   console.log("Granted profiles:", profiles);
 }
 
-// Ungranted and nonexistent targets return the same not_found error
+// Ungranted and nonexistent targets return the exact same not_found error
 const probe = await client.callTool({
   name: "browser_use",
   arguments: { tabId: "tab_does_not_exist", code: "print(1)" },
@@ -268,18 +224,20 @@ const probe = await client.callTool({
 
 ## 3. Access Modes
 
-Every connected agent has an access mode ceiling chosen at consent (and editable later):
+Every connected agent has a mode ceiling chosen at consent (editable later):
 
-| Mode                | Tasks run by the person's own agents                                | Connected agent's direct tool calls                                                                                                                                                                                                                   |
-| :------------------ | :------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `approval-required` | Asks the person before actions with side effects.                   | Reads run directly. Every write asks the person first.                                                                                                                                                                                                |
-| `auto-accept-edits` | Edits files in its tasks without asking; asks before anything else. | Same as `approval-required`: reads run directly; every write asks the person first.                                                                                                                                                                   |
-| `auto`              | Automatic review; asks the person when unsure.                      | Reads run directly. On a write, if a review model is configured, it reviews the call within 15 seconds and allows it or asks the person. Without a review model — or on timeout, error, credential-like text, URL query/fragment, or doubt — it asks. |
-| `full-access`       | Never asks for routine actions.                                     | Reads and writes inside the grant run without asking.                                                                                                                                                                                                 |
+| Mode                | Tasks run by the person's own agents                                | Connected agent's direct tool calls                                                                                                                                                                                                   |
+| :------------------ | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `approval-required` | Asks the person before actions with side effects.                   | Reads run directly. Every write asks the person first.                                                                                                                                                                                |
+| `auto-accept-edits` | Edits files in its tasks without asking; asks before anything else. | Same as `approval-required`: reads run directly; every write asks the person first.                                                                                                                                                   |
+| `auto`              | Automatic review; asks the person when unsure.                      | Reads run directly. Writes ask the person unless the Home has a review model configured (`OPENSTEER_AGENT_REVIEW_MODEL`), which has 15 seconds to allow low-risk calls and asks on credential-like inputs, errors, timeout, or doubt. |
+| `full-access`       | Never asks for routine actions.                                     | Reads and writes inside the grant run without asking.                                                                                                                                                                                 |
+
+In `auto` mode with a review model, ordinary URL query strings (such as `?page=2`) are reviewed normally, while credential keywords, private keys, credential-named query/fragment parameters (`token`, `key`, `secret`, `password`, `auth`, `sig`, `session`, `code`, `otp`), or high-entropy opaque parameter values (24+ characters) always fall back to asking the person.
 
 Three rules always hold:
 
-1. **Lowest ceiling wins.** Effective mode is the lowest of the connection's mode, the task's mode, and (on a work Home) the organization's policy ceiling. Lowering a task's mode ends in-flight direct work and browser connections admitted under a higher mode.
+1. **Lowest ceiling wins.** Effective mode is the lowest of connection mode, task mode, and (on a work Home) organization policy. Lowering a task's mode ends in-flight direct work and browser connections admitted under a higher mode.
 2. **Person-only tools always ask.** Even in `full-access`, `ask_person`, `saved_login_request`, and `card_request` always ask the person in **Needs you**.
 3. **Settings tools** require both `everything` and `full-access`.
 
@@ -290,72 +248,38 @@ Three rules always hold:
 
 ### What "Allow once" means
 
-When a direct write asks the person, the Home creates a Request in **Needs you** showing the target, the full script or tool call (up to 20,000 characters), and — separately as your untrusted words — the `reason` you passed. Website titles and app labels are kept separate from the Home's verified target identity.
+When a direct write asks the person, the Request in **Needs you** shows the Home's verified target, the full script or tool call (**up to 18,956 characters** across connected script/call tools, leaving room for the Home's header lines so the person can always read the entire payload), and your `reason` separately as untrusted words. Page titles and app labels are kept separate from the verified target.
 
-- **Allow once** covers **only that single operation**, bound to its exact arguments, target (and its generation/route), grant version, and mode. It never widens your grant or pre-approves the next call. If the grant version, mode, or target changes before execution starts, the Home asks again.
-- **Don't allow** refuses the operation with `code: "declined_by_person"` (`"The person did not allow it."`), with `taskId`, `operationId`, and `status: "refused"` beside `error`.
-
-### Minimal working example
-
-```ts
-const args = {
-  reason: "Open the orders page so I can read the tracking number.",
-  code: `
-    const page = await newPage("https://shop.example/orders");
-    print(await page.title());
-  `,
-};
-
-// Under approval-required, the Home holds up to 25 seconds for Allow once.
-const first = await client.callTool({ name: "browser_use", arguments: args });
-const meta = first.structuredContent as {
-  status: string;
-  taskId: string;
-  operationId: string;
-  requestId?: string;
-};
-
-if (meta.status === "pending") {
-  // Tell the person a decision is waiting in Needs you, then call the same tool again
-  // with the exact same arguments and the returned operationId.
-  const resumed = await client.callTool({
-    name: "browser_use",
-    arguments: { ...args, operationId: meta.operationId },
-  });
-  console.log(resumed.content);
-}
-```
+- **Allow once** covers **only that single operation**, bound to its exact arguments, target (and generation/route), grant version, and mode. It never widens your grant or pre-approves the next call.
+- **Don't allow** refuses with `code: "declined_by_person"` (`"The person did not allow it."`), with `taskId`, `operationId`, and `status: "refused"` beside `error`.
 
 ---
 
 ## 4. Tasks
 
-Every piece of a connected agent's own direct work belongs to a listed task on the person's Home. That task is where the person watches tabs, answers **Needs you**, sees activity, and clicks **Stop**.
+Direct work belongs to a listed task on the person's Home where the person watches tabs, answers **Needs you**, sees activity, and clicks **Stop**.
 
 ### Direct-work `taskId`
 
-Direct tools (`browser_use`, `browser_connect`, `tab_list`, `computer_use`, `computer_apps`, `plugin_call`, `plugin_execute`, `plugin_resume`, `ask_person`, `saved_login_request`, `card_request`) return `taskId` (except `computer_apps({})` cached overview) and accept optional `taskId` (`plugin_resume` requires `taskId`):
+Direct tools (`tab_list`, `browser_use`, `browser_connect`, `computer_use`, `computer_apps` on live lookups, `plugin_call`, `plugin_execute`, `plugin_resume`, `ask_person`, `saved_login_request`, `card_request`) return `taskId` and accept optional `taskId` (`plugin_resume` requires `taskId`):
 
-- **Omit `taskId`** to continue your connection's active direct-work task, or start a new one titled after your connection's name.
-- **Pass `taskId`** from an earlier direct tool result to keep working inside that task.
+- **Omit `taskId`** to continue your active direct-work task or start one titled after your connection's name.
+- **Pass `taskId`** from an earlier direct result to keep working inside that task.
 - A direct-work task ends on **Stop**, **Disconnect**, grant narrowing, token expiry, or **15 minutes** idle with no open Request. Open Requests expire on their own **24-hour** deadline, settling the operation atomically.
 - Direct work runs even on a Home with none of the person's own agents installed.
 
-### Direct work vs tasks run by the person's own agents
+### Two kinds of `taskId`
 
-There are two kinds of task, and both use the parameter name `taskId`:
+Both direct-work tasks and tasks run by the person's own agents (`opensteer_task_create`, requiring `tasks: true` or `everything`) use the parameter name `taskId`. For `opensteer_task_create`, omit `aiAccountId` and `model` to use the person's defaults, or inspect choices with `opensteer_ai_account_list`; wait with `opensteer_task_wait` (up to 100 seconds per call) or read with `opensteer_task_read`, always passing `taskId`.
 
-1. **Direct-work task** (your model drives `browser_use`, `browser_connect`, `computer_use`, `plugin_call`, `ask_person`, etc.).
-2. **Person-agent task** (requires `tasks: true` or `everything`): call `opensteer_task_create` with a `message` (omit `aiAccountId` and `model` to use the person's defaults, or inspect choices with `opensteer_ai_account_list`). One of the person's own agents runs on their Home within your connection's mode ceiling and grant. Nothing returns automatically — wait with `opensteer_task_wait` (up to 100 seconds per call) or read with `opensteer_task_read`, always passing `taskId`.
+Each tool's description states which kind of `taskId` it takes. Crossing them returns `conflict`:
 
-Each tool's description says which kind of `taskId` it takes. Mixing them fails with `code: "conflict"` and explains what to pass instead:
-
-- Passing a direct-work `taskId` to a person-agent task tool (such as `opensteer_task_send` or `opensteer_task_read`) fails with `conflict` (`"That taskId is for work you do directly. Pass a taskId for work run by one of the person's agents, such as one returned by opensteer_task_create."`).
-- Passing an `opensteer_task_create` `taskId` to a direct tool (such as `browser_use`) fails with `conflict` (`"That taskId belongs to a task run by one of the person's agents. Pass a direct-work taskId returned by a direct tool, or omit taskId to start or continue direct work."`).
-- Passing a `taskId` outside your connection or grant returns `not_found` (`"Task is unavailable"`).
+- Direct-work `taskId` passed to a person-agent task tool (e.g. `opensteer_task_send`): `"That taskId is for work you do directly. Pass a taskId for work run by one of the person's agents, such as one returned by opensteer_task_create."`
+- Person-agent `taskId` passed to a direct tool (e.g. `browser_use`): `"That taskId belongs to a task run by one of the person's agents. Pass a direct-work taskId returned by a direct tool, or omit taskId to start or continue direct work."`
+- Any `taskId` outside your connection or grant returns `not_found` (`"Task is unavailable"`).
 
 ```ts
-// 1. Direct work: omit taskId first, pass the returned one on follow-ups
+// 1. Direct work: omit taskId first, pass it on follow-ups
 const tabs = await client.callTool({ name: "tab_list", arguments: {} });
 const directTaskId = (tabs.structuredContent as { taskId: string }).taskId;
 
@@ -378,7 +302,6 @@ const created = await client.callTool({
 });
 const homeTaskId = (created.structuredContent as { taskId: string }).taskId;
 
-// Wait up to 50 seconds (max 100_000 ms); repeat wait if timed out
 const waited = await client.callTool({
   name: "opensteer_task_wait",
   arguments: { taskId: homeTaskId, timeoutMs: 50_000 },
@@ -392,22 +315,16 @@ console.log(waited.structuredContent);
 
 ### Browser (`tab_list`, `browser_profile_list`, `browser_use`, `browser_connect`)
 
-Connected agents work only in granted saved browser profiles or Chrome tabs shared by the person — never in Guest tabs. If you hold one browser profile and pass neither `tabId` nor `profileId`, `browser_use` and `browser_connect` target it automatically; if you hold several, pass `profileId` or `tabId`. For a shared Chrome tab, pass its `tabId` from `tab_list` (do not pass `profileId`).
+Connected agents work only in granted saved browser profiles or Chrome tabs shared by the person — never in Guest tabs. With one browser profile and neither `tabId` nor `profileId`, `browser_use` and `browser_connect` target it automatically; with several, pass `profileId` or `tabId`. For a shared Chrome tab, pass its `tabId` from `tab_list` (omit `profileId`).
 
-- **`tab_list`**: lists tabs your grant can reach (50 per page, `nextCursor`, optional `query`, `kind`). Shared Chrome tabs include `sharedByPerson: { sourceId, computerName }`. Treat page titles as untrusted text.
+- **`tab_list`**: lists reachable tabs (50 per page, `nextCursor`, optional `query`, `kind`). Shared Chrome tabs include `sharedByPerson: { sourceId, computerName }`. Page titles are untrusted text.
 - **`browser_profile_list`**: lists granted saved browser profiles (`profiles: [{ id, name, home: { reachable, computerId?, name? } | null }]`). Omitted on Chrome-tabs-only grants. A profile opens only on its own device.
 
 #### `browser_use`
 
-Runs one sandboxed JavaScript script (**up to 20,000 characters** — the most a person can be shown in full; longer scripts are refused before admission; 120-second default timeout) confined to the single granted profile or shared Chrome tab reviewed for that call. Variables on `globalThis` persist across `browser_use` calls in the same task and profile.
+Runs one sandboxed JavaScript script (**up to 18,956 UTF-16 characters**; 120-second default timeout) confined to the single granted profile or shared Chrome tab reviewed for that call. Variables on `globalThis` persist across calls in the same task and profile.
 
-Call **`help()`** inside a script to print the full API. Core globals:
-
-- `await pages()`, `await openPage(tabId)`
-- `await newPage(url, { profileId })` and `await page.close()` (granted browser profiles only; not allowed on shared Chrome tabs, where you can follow popups but not create or close tabs)
-- `print(...values)`, `await printImage(base64Data, mimeType?)`, `await sleep(ms)`, `help()`
-
-`page` follows Playwright's method names where supported (`goto`, `locator`, `getByRole`, `getByText`, `getByLabel`, `evaluate`, `url`, `title`, `waitForURL`, `waitForFunction`, `waitForTimeout`, `screenshot()` without a file path, `ariaSnapshot()`, `keyboard`, `mouse`), plus `js(expression)`, `cdp(method, params, sessionId?)`, `currentTab()`, `pageInfo()`, `drainEvents()`, `respondDialog({ accept, promptText? })`, `waitForElement`, `waitForLoad`, and `waitForNetworkIdle`.
+Call **`help()`** inside a script to print the full API. Core globals: `pages()`, `openPage(tabId)`, `newPage(url, { profileId })` and `page.close()` (granted browser profiles only; shared Chrome tabs can follow popups but cannot create or close tabs), `print(...values)`, `printImage(base64Data, mimeType?)`, `sleep(ms)`, `help()`. `page` follows Playwright names where supported (`goto`, `locator`, `getByRole`, `getByText`, `getByLabel`, `evaluate`, `url`, `title`, `waitForURL`, `waitForFunction`, `waitForTimeout`, `screenshot()` without a path, `ariaSnapshot()`, `keyboard`, `mouse`), plus `js(expression)`, `cdp(method, params, sessionId?)`, `currentTab()`, `pageInfo()`, `drainEvents()`, `respondDialog({ accept, promptText? })`, `waitForElement`, `waitForLoad`, and `waitForNetworkIdle`.
 
 ```ts
 const res = await client.callTool({
@@ -423,13 +340,13 @@ const res = await client.callTool({
     `,
   },
 });
-// res.content holds printed text and the PNG image block.
+// res.content holds printed text, the PNG image block, and a trailing `Receipt: {...}` line.
 // res.structuredContent holds { status, taskId, operationId, profileId, summary }.
 ```
 
 #### `browser_connect`
 
-Returns a single-use WebSocket URL for stock Playwright, Puppeteer, or a raw Chrome DevTools Protocol (CDP) client:
+Returns a single-use WebSocket URL (`/v1/browser/connect/<43-char-ticket>`) for stock Playwright, Puppeteer, or a raw Chrome DevTools Protocol (CDP) client:
 
 ```json
 {
@@ -444,13 +361,15 @@ Returns a single-use WebSocket URL for stock Playwright, Puppeteer, or a raw Chr
 }
 ```
 
-- **Connect within 1 minute.** The single-use link in `endpoint` expires 60 seconds after issue.
-- **Modes.** Follow the returned `connect` line (or branch on `mode`):
+- **Connect within 1 minute.** The single-use link expires 60 seconds after issue.
+- **Lineage confinement (your own pages only):** Over `browser_connect`, a connected agent sees only the tab it was issued, pages it creates, and their popups. The person's tabs and another agent's tabs in the same profile are not listed and cannot be attached to (by target ID, auto-attach, or opener). Passing a saved-profile `tabId` to `browser_connect` works only for a tab opened by your task. Every page you create is recorded as an open tab of your task (or closed if the Home cannot record it), and closing an agent's tab really closes the page.
+- **Cookies and sign-ins belong to the whole profile.** Pages are separated by task, but signed-in state is profile-wide — give each agent its own profile to keep accounts apart.
+- **Modes:** Follow the returned `connect` line (or branch on `mode`):
   - `"whole-context"`: granted on a saved profile when your task is the sole live holder and the browser supports it; allows context-wide cookies, permissions, and workers. Connect with `chromium.connectOverCDP(endpoint)`.
-  - `"session"` (the tool's mode name for page-scoped access): used for shared Chrome tabs and shared profiles. Context-wide cookie/permission commands are refused; page-scoped commands work on owned pages and their popups. Connect with `chromium.connectOverCDP(endpoint, { noDefaults: true })`.
-- **Playwright and raw CDP:** Stock Playwright works, including `browser.newBrowserCDPSession()` and `context.newCDPSession(page)`, which open a confined alias of the connection's virtual root with the same mode, lease, target list, and command restrictions. Nested browser aliases, context creation/disposal, and browser shutdown are refused. Limits: 8 MiB per JSON frame, 128 in-flight messages, up to 4 live CDP connections per task.
-- **No saved-login or card fill over `browser_connect`:** `Opensteer.fillLogin` and `Opensteer.fillCard` are refused over `browser_connect` (including via `context.newCDPSession(page)`). Fill them inside `browser_use` instead.
-- **10-minute interval and renewal:** Each connection lasts up to **10 minutes** (`expiresAt`) and ends early on **Stop**, **Disconnect**, a narrowed grant, a lowered task mode, or when the person stops sharing the Chrome tab. To renew on the same tab, make a new `browser_connect` call (do not pass the old `operationId` or reuse an old `operationKey`) with the returned `tabId` — omitting `tabId` on a profile opens a new `about:blank` tab. Replaying a finished `browser_connect` returns the stored receipt and never issues a second endpoint.
+  - `"session"` (the tool's mode name for page-scoped access): used for shared Chrome tabs and shared profiles; context-wide cookie/permission commands are refused. Connect with `chromium.connectOverCDP(endpoint, { noDefaults: true })`.
+- **Playwright, CDP, and older devices:** Stock Playwright works, including `browser.newBrowserCDPSession()` and `context.newCDPSession(page)` as aliases of the confined root (nested browser aliases, context creation/disposal, and browser shutdown are refused). Limits: 8 MiB per frame, 128 in-flight messages, up to 4 live CDP connections per task. A device whose Opensteer is too old to report lineage support refuses `browser_connect` with `conflict` advising to update Opensteer and use `browser_use` instead.
+- **No saved-login or card fills over `browser_connect`:** `Opensteer.fillLogin` and `Opensteer.fillCard` are refused over `browser_connect` (including via `context.newCDPSession(page)`). Fill them inside `browser_use`.
+- **10-minute interval and renewal:** Ends after **10 minutes** (`expiresAt`), or sooner on **Stop**, **Disconnect**, grant change, lowered task mode, or when the person stops sharing the Chrome tab. To renew on the same tab, call `browser_connect` again without `operationId` (and with a new `operationKey` if you use one), passing the returned `tabId` (omitting `tabId` on a profile opens a new `about:blank` tab). Replaying a completed `browser_connect` returns the stored receipt with `next` and never issues a second endpoint.
 
 ```ts
 import { chromium } from "playwright-core";
@@ -479,17 +398,17 @@ try {
   await browser.close();
 }
 
-// To renew on the same tab, call browser_connect again with { taskId: directTaskId, tabId }.
+// Renew on the same tab: call browser_connect again with { taskId: directTaskId, tabId }.
 ```
 
 ### Apps and phones (`computer_apps`, `computer_list`, `computer_use`)
 
-- **`computer_apps`**: call with `{}` for cached discovery of granted Macs (with their granted apps) and phone screens, each showing `access` (`"read"` or `"read-write"`) or `blocked`. Pass `computerId` (and optional `query`, `taskId`) to list installed apps on a granted phone (returning opaque `appId` for `launch`) or apps on a Mac; live lookups run as recorded read operations so Stop or grant narrowing cancels them.
-- **`computer_list`**: lists visible computers and phones with `online`, `asleep`, and `phoneDisplay` (`control`, `input`, `navigationButtons`, `actions`). On a `selected` grant, an iPhone hides its connected Mac unless that Mac is also granted.
-- **`computer_use`**: runs sandboxed JavaScript (**up to 20,000 characters**) against the single Mac app or phone screen named in the arguments:
+- **`computer_apps`**: call `{}` for cached discovery of granted Macs (with granted apps) and phone screens (`access: "read" | "read-write"` or `blocked`). Pass `computerId` (plus optional `query`, `limit`, `cursor`, `taskId`, `operationId`) to list installed apps on a granted phone (returning opaque `appId` for `launch`) or apps on a Mac. On a Mac under a `selected` grant, this pages your granted apps from cache; on a phone or an `everything` Mac, it runs as a recorded structural read returning `taskId`, `operationId`, `status`, and `nextCursor` (for paging), supporting `operationId` receipt replay and cancellation on Stop or narrowing.
+- **`computer_list`**: lists visible devices with `online`, `asleep`, and `phoneDisplay` (`control`, `input`, `navigationButtons`, `actions`). On a `selected` grant, an iPhone hides its connected Mac unless that Mac is also granted.
+- **`computer_use`**: runs sandboxed JavaScript (**up to 18,956 UTF-16 characters**) against the single Mac app or phone screen named in the arguments:
   - Pass `computerId` (required) and `app` (Mac app name or `bundleId`; omitted on phone-only grants, required on Mac-only grants).
-  - Inside `code`, **`await target` is already bound** to that Mac app or phone screen, and **`help()`** prints the full API. (`tab()` is not available to connected agents.)
-  - Set `readOnly: true` to observe without asking. Observation mode blocks all input/mutations and **can never start a Mac app or open a window**.
+  - Inside `code`, **`await target` is already bound** to that Mac app or phone screen, and **`help()`** prints the full API. (`tab()` is unavailable.)
+  - Set `readOnly: true` to observe without asking; it blocks all mutations and **never launches a closed Mac app or opens a window**.
   - Work in flight ends if the device goes to sleep, is stopped, the task is stopped, the mode is lowered, the grant is narrowed, or the agent is disconnected.
 
 ```ts
@@ -520,10 +439,10 @@ await client.callTool({
 
 Installed plugins, local MCP servers, and approved device data apps (Calendar, Contacts, Reminders, Messages, iPhone Photos and Location) appear under `tools.<namespace>.<tool>`.
 
-- **Discovery is published or cached only:** `plugin_search`, `plugin_describe`, `plugin_skills`, `plugin_resources`, and `local_server_list` serve published or cached material only and never run a plugin's live code with the person's linked account. Tools outside your access level (`read` vs `read-write`) show `blocked: { code: "access_denied", ... }`.
-- **Live execution is reviewed:** `plugin_call` (one `{ path, input }` or an array for **one plugin per operation**, canonical JSON up to 20,000 characters) and `plugin_execute` (JavaScript up to 20,000 characters with required `namespace`, offered only when a `read-write` plugin is granted) run through the direct-operation pipeline. Read-only `plugin_call` runs as a read; any write or `plugin_execute` follows your access mode.
-- **Plugin input pauses (`plugin_resume`):** If a plugin itself pauses to ask the person for input in **Needs you**, `plugin_call` / `plugin_execute` returns `status: "pending"` **with an `executionId`**. Wait until the person answers, then call `plugin_resume({ executionId, taskId })` (calling before they answer returns `conflict`).
-- **Lost plugin engine:** If the plugin engine stops or loses contact after a write is sent, the operation yields `unknown` (`status: "unknown"` / `outcome_unknown`) — check current state before acting again.
+- **Discovery is published or cached only:** `plugin_search`, `plugin_describe`, `plugin_skills`, `plugin_resources`, and `local_server_list` never run a plugin's live code with the person's linked account. Tools outside your access level (`read` vs `read-write`) show `blocked: { code: "access_denied", ... }`.
+- **Live execution is reviewed:** `plugin_call` (one `{ path, input }` or an array for **one plugin per operation**, up to **18,956 UTF-16 characters** of canonical JSON) and `plugin_execute` (JavaScript up to **18,956 UTF-16 characters** with required `namespace`, listed only when a `read-write` plugin is granted) run through the direct-operation pipeline. Read-only `plugin_call` runs as a read; any write or `plugin_execute` follows your access mode.
+- **Plugin input pauses (`plugin_resume`):** If a plugin pauses to ask the person for input in **Needs you**, `plugin_call` / `plugin_execute` returns `status: "pending"` **with an `executionId`**. Call `plugin_resume({ executionId, taskId })`, which waits up to **25 seconds** for the person's answer; if still waiting, it returns `status: "pending"` with both IDs — call `plugin_resume` again (not in a tight loop) until it completes.
+- **Lost plugin engine:** If the plugin engine stops or loses contact after a write is sent, the operation yields `status: "unknown"` (`outcome_unknown`) — check current state before acting again.
 
 ```ts
 const found = await client.callTool({
@@ -546,7 +465,7 @@ const payload = called.structuredContent as {
 };
 
 if (payload.status === "pending" && payload.executionId) {
-  // Plugin asked the person for input in Needs you; resume after they answer.
+  // Waits up to 25 seconds for the person's input in Needs you; repeat if still pending.
   const resumed = await client.callTool({
     name: "plugin_resume",
     arguments: { taskId: payload.taskId, executionId: payload.executionId },
@@ -557,11 +476,7 @@ if (payload.status === "pending" && payload.executionId) {
 
 ### Asking the person (`ask_person`)
 
-Ask the person a question only they can answer (such as confirming they finished a second factor or CAPTCHA in the shared tab, or picking between options):
-
-- `questions` must have **exactly 1** item, single choice only (no `multiSelect`, no free-text input so secrets are never typed into chat). Pass `options` (2–6 choices), or omit `options` for `["Done", "Unable to do it"]`.
-- The person sees your connection name, task title, `"Enter passwords and codes only in the page."`, and your `title` and `detail` quoted as your words.
-- Returns `{ status: "completed", taskId, operationId, answer: "<chosen label>" }`.
+Ask one single-choice question (no `multiSelect`, no free-text input so secrets are never typed into chat). Pass `options` (2–6 choices), or omit `options` for `["Done", "Unable to do it"]`. The person sees your connection name, task title, `"Enter passwords and codes only in the page."`, and your `title`/`detail` quoted as your words. Returns `{ status: "completed", taskId, operationId, answer }`.
 
 ```ts
 await client.callTool({
@@ -577,16 +492,15 @@ await client.callTool({
 
 ### Saved logins and cards (`saved_login_request`, `card_request`)
 
-Offered only on a **Mac Home** (not on an Opensteer Cloud Computer, where saved logins and cards do not live) and only when a **browser profile** is granted (not on Chrome-tabs-only grants).
+Listed only when the hosting device supports Passwords (a personal Mac Home — not an Opensteer Cloud Computer or Linux Home) and a browser profile is granted (not on Chrome-tabs-only grants).
 
-- Requires a live `tabId` in a granted saved browser profile on the person's own Mac's Opensteer browser, **already open on `site`**.
-- **Always asks the person** in **Needs you**, even in `full-access`, and is never remembered across calls for a connected agent.
-- **What you receive and what is protected:** Tool results return only an opaque reference (`{ status: "completed", taskId, operationId, loginStatus: "ready", loginRef: "lgn_..." }` or `cardStatus: "ready", cardRef: "crd_..."`, or `"declined"` / `"unavailable"` with `reason`). Opensteer fills the saved login or card into the page and does not return the value in tool results. However, an agent controlling that page can still read what is on the page after a fill — **never read back, print, log, copy, or store a filled value**. Approval controls which login or card is released, to which site, each time.
-- **How to fill (`browser_use` only):** Filling is not available over `browser_connect`. In `browser_use` on that same tab, focus each field and call:
-  - `await page.cdp("Opensteer.fillLogin", { loginRef, field })` (`"username"`, `"password"`, or `"code"`).
-  - `await page.cdp("Opensteer.fillCard", { cardRef, field })` (`"number"`, `"expiry"`, `"expiry-month"`, `"expiry-year"`, `"cvc"`, `"name"`, or `"billing-postal-code"`).
+- Requires a live `tabId` in a granted saved browser profile on the hosting Mac's Opensteer browser, **already open on `site`**. Always asks the person in **Needs you** (even in `full-access`) and is never remembered across calls for a connected agent.
+- **What is returned and what is protected:** Results return only an opaque reference (`loginStatus: "ready", loginRef: "lgn_..."` or `cardStatus: "ready", cardRef: "crd_..."`, or `"declined"` / `"unavailable"` with `reason`). **Opensteer fills it into the page and does not return it; an agent working in that page can read it.** Never read back, print, log, copy, or store a filled value. Approval controls which login or card is released, to which site, each time.
+- **How to fill (`browser_use` only — not over `browser_connect`):** Focus each field and call:
+  - `await page.cdp("Opensteer.fillLogin", { loginRef, field })` (`"username"`, `"password"`, `"code"`).
+  - `await page.cdp("Opensteer.fillCard", { cardRef, field })` (`"number"`, `"expiry"`, `"expiry-month"`, `"expiry-year"`, `"cvc"`, `"name"`, `"billing-postal-code"`).
   - Check `result.status === "filled"` (other statuses: `"no-field"`, `"wrong-site"`, `"stale"`, `"expired"`, `"denied"`, `"unavailable"`).
-- **Lifetime:** References are bound to that task, tab generation, and site; expire after 60 minutes (logins) or 30 minutes (cards); and stop working immediately on Stop, Disconnect, or a grant change. Card approval covers filling only, not a purchase.
+- **Lifetime:** Bound to task, tab generation, and site; expires after 60 minutes (logins) or 30 minutes (cards); ends immediately on Stop, Disconnect, or grant change. Card approval covers filling only, not a purchase.
 
 ```ts
 const login = await client.callTool({
@@ -631,30 +545,39 @@ if (loginStatus === "ready" && loginRef) {
 
 Available when the grant includes `tasks: true` or `everything`:
 
-- **AI accounts & creation:** `opensteer_ai_account_list`, `opensteer_task_create` (omit `aiAccountId` and `model` to use the person's defaults).
+- **Accounts & creation:** `opensteer_ai_account_list`, `opensteer_task_create` (omit `aiAccountId` and `model` for defaults).
 - **Control:** `opensteer_task_send` (`delivery: "report" | "queue" | "steer"`), `opensteer_task_interrupt`, `opensteer_task_resume`, `opensteer_task_update`, `opensteer_task_configure`, `opensteer_task_queue`.
 - **Read & wait:** `opensteer_task_list`, `opensteer_task_read` (`view: "messages"` or `"activity"`), `opensteer_task_wait` (max `timeoutMs: 100000`), `opensteer_subagent_read`, `opensteer_delegation_status`, `opensteer_delegation_wait`, `opensteer_request_list`, `opensteer_request_read`.
 - **Automations:** `opensteer_automation_list`, `opensteer_automation_read`, `opensteer_automation_create` (requires `full-access` and explicit `taskId`), `opensteer_automation_update`, `opensteer_automation_control`.
 
-With `selected: { tasks: true }`, listings show only tasks created by your connection. With `everything`, you also see the person's own tasks (and in `full-access`, Home settings tools).
+With `selected: { tasks: true }`, listings show only tasks created by your connection; with `everything`, you also see the person's own tasks (and in `full-access`, Home settings tools).
 
 ---
 
 ## 6. Results
 
-Every direct tool call is recorded on the Home before review or execution. Its receipt appears in `structuredContent` (and in `content[0].text` JSON for record tools; for `browser_use` and `computer_use`, `content` holds the script's printed text and images while `structuredContent` holds the receipt):
+Every direct call is recorded on the Home before review or execution. Receipt fields appear in `structuredContent` and in text `content`:
+
+- Record tools (`tab_list`, `browser_connect`, `computer_apps` live inventory, `plugin_call`, `plugin_execute`, `plugin_resume`, `ask_person`, `saved_login_request`, `card_request`) return the full JSON object in `content[0].text` and `structuredContent`.
+- Script tools (`browser_use`, `computer_use`) put printed text and images in `content` and append a trailing text block so text-only clients still receive the receipt:
+
+```text
+Receipt: {"status":"completed","taskId":"thr_...","operationId":"aop_..."}
+```
+
+When `next` is present (for example on `pending` or `unknown`), `Receipt:` includes `"next":"..."` too. (`requestId` and `summary` are in `structuredContent`.)
 
 | Field         | Meaning                                                                                                                                      |
 | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------- |
 | `status`      | `"completed"`, `"pending"`, `"failed"`, or `"unknown"` (`plugin_call` / `plugin_execute` / `plugin_resume` may also return plugin statuses). |
 | `taskId`      | Direct-work task ID (`thr_...`). Pass on follow-up direct calls.                                                                             |
 | `operationId` | Durable receipt ID (`aop_...`). Pass with identical arguments to continue a `pending` call.                                                  |
-| `requestId`   | Present when `status === "pending"` (`req_...`, or `null` if not yet attached).                                                              |
-| `next`        | Plain-English next step when `status !== "completed"`.                                                                                       |
+| `requestId`   | Present in `structuredContent` when `status === "pending"` (`req_...`, or `null` if not yet attached).                                       |
+| `next`        | Plain-English next step when `status !== "completed"` (and on replayed `browser_connect`).                                                   |
 
 ### Continuing a `pending` call
 
-When an operation needs the person (approval, `ask_person`, `saved_login_request`, or `card_request`), the Home holds the call open for up to **25 seconds**. If the person has not answered yet, it returns:
+When an operation needs the person (approval, `ask_person`, `saved_login_request`, or `card_request`), the Home holds the call open for up to **25 seconds**. If still waiting, it returns:
 
 ```json
 {
@@ -662,26 +585,21 @@ When an operation needs the person (approval, `ask_person`, `saved_login_request
   "taskId": "thr_...",
   "operationId": "aop_...",
   "requestId": "req_...",
-  "next": "Waiting on the person in Needs you. Do not poll. After they answer, call the same tool with the same arguments and this operationId."
+  "next": "Call the same tool again with the same arguments and this operationId to wait up to 25 seconds for the person. If it is still pending, call again, but not in a tight loop."
 }
 ```
 
-- **Continue with `operationId`:** Call the exact same tool again with the exact same arguments and the returned `operationId` (you do not need to invent an `operationKey`). `operationKey` remains optional for your own idempotent retries if a network drop prevents you from receiving `operationId`.
-- **Repeats are safe:** Repeating a finished operation (by `operationId` or `operationKey`) returns the stored receipt — even after the task idled out or the Home restarted — and never runs the effect twice or issues a second `browser_connect` endpoint. Reusing an `operationId` or `operationKey` with different arguments or a different `taskId` fails with `conflict`.
-- **Do not poll tightly:** Tell the person a decision is waiting in **Needs you**, or back off before checking again (each call waits up to 25 seconds).
-- **Plugin input exception:** When `plugin_call` or `plugin_execute` returns `status: "pending"` with an `executionId`, resume with `plugin_resume({ executionId, taskId })` after the person answers, not by repeating `plugin_call`.
+- **Repeat with `operationId`:** Call the same tool with the exact same arguments and the returned `operationId` (no need to invent an `operationKey`; `operationKey` remains optional for your own retries if a call drops before you receive `operationId`). Avoid tight polling — tell the person a decision is waiting in **Needs you** or back off between 25-second waits.
+- **Repeats never double-execute:** Repeating a finished operation (by `operationId` or `operationKey`) returns the stored receipt — even after idle or a Home restart — and never runs the effect twice or issues a second `browser_connect` endpoint. Changing arguments or `taskId` with the same `operationId` / `operationKey` fails with `conflict`.
+- **Plugin input pauses:** When `plugin_call` or `plugin_execute` returns `status: "pending"` with an `executionId`, continue with `plugin_resume({ executionId, taskId })`, not by repeating `plugin_call`.
 
-### Handling `unknown` (**Uncertain**)
+### Handling `unknown` (**Uncertain**) and mid-flight Stop
 
-If contact with a device or plugin engine is lost mid-effect, the Home restarts in flight, or work in flight is ended by **Stop**, **Disconnect**, a narrowed grant, or a lowered task mode, the Home records the operation as **Uncertain** (`status: "unknown"`, or a failure carrying `status: "unknown"` / `outcome_unknown`) and never retries it on its own. **Never blindly repeat an uncertain effect** — run a safe read first to check the current state.
+- **Lost reply or Home restart mid-effect:** The Home records the operation **Uncertain** and returns `status: "unknown"` (or tool error `code: "outcome_unknown"`). It never retries an uncertain effect on its own.
+- **Work stopped mid-flight** by **Stop**, **Disconnect**, a narrowed grant, or a lowered task mode: The in-flight call aborts with `isError: true`, `error.code: "stopped_by_person"` or `"access_changed"`, `status: "unknown"`, `taskId`, `operationId`, and `error.next: "Part of it may have happened. Check the current state before doing anything else."`
+- **After Stop:** Calls passing the stopped `taskId` fail with `stopped_by_person` (`"The person stopped this work. Do not continue it; ask before starting again."`). The first call omitting `taskId` after Stop also fails once with `stopped_by_person` so an agent cannot silently ignore Stop. Only start a new task after the person asks.
 
-### Handling the person's Stop
-
-When the person clicks **Stop** on your task:
-
-1. Any in-flight call aborts with `isError: true`, `error.code: "stopped_by_person"`, `status: "unknown"`, `taskId`, `operationId`, and `error.next` telling you part of it may have happened — check current state before acting again.
-2. Any call passing the stopped `taskId` is refused with `stopped_by_person` (`"The person stopped this work. Do not continue it; ask before starting again."`).
-3. The **first** call omitting `taskId` after Stop is also refused once with `stopped_by_person` so an agent cannot silently ignore Stop. Only start a new task after the person asks you to continue.
+**Never retry blindly after either an interrupted refusal or `status: "unknown"`.** Run a safe read first (for example `tab_list`, a read-only check, or `computer_use` with `readOnly: true`) to see what happened.
 
 ```ts
 async function runDirect(client: Client, name: string, args: Record<string, unknown>) {
@@ -712,7 +630,8 @@ async function runDirect(client: Client, name: string, args: Record<string, unkn
     requestId?: string | null;
     next?: string;
   };
-  if (body.status === "pending") {
+  if (body.status === "pending" && body.operationId) {
+    // Wait or notify the person, then re-call with { ...args, operationId: body.operationId }.
     return {
       outcome: "pending" as const,
       operationId: body.operationId,
@@ -733,7 +652,7 @@ async function runDirect(client: Client, name: string, args: Record<string, unkn
 
 ### Wire shape
 
-Tool-level failures return `isError: true` with identical JSON in `structuredContent` and `content[0].text`. When a refusal or failure occurs after an operation was admitted, `taskId`, `operationId`, and `status` (`"refused"`, `"failed"`, or `"unknown"`) appear beside `error`:
+Tool failures return `isError: true` with identical JSON in `structuredContent` and `content[0].text`. Refusals and failures after admission include `taskId`, `operationId`, and `status` (`"refused"`, `"failed"`, or `"unknown"`) beside `error`:
 
 ```json
 {
@@ -748,12 +667,7 @@ Tool-level failures return `isError: true` with identical JSON in `structuredCon
 }
 ```
 
-- `error.code`: stable machine-readable code.
-- `error.message`: plain-English explanation.
-- `error.next`: next step, or `null` (never points to a tool not in your listing).
-- `error.device`: optional `{ id, name }`, present only on `computer_asleep` and `computer_stopped` and only when your grant allows knowing that device.
-
-Authentication failures (revoked, expired, or invalid bearer token) are rejected at HTTP with `401` and `WWW-Authenticate: Bearer resource_metadata="..."`.
+`error.next` is actionable guidance or `null` (and never names a tool outside your listing). `error.device` (`{ id, name }`) appears only on `computer_asleep` and `computer_stopped`, and only when your grant allows knowing that device. Authentication failures (revoked, expired, or invalid bearer token) return HTTP `401` with `WWW-Authenticate` before reaching any tool.
 
 ### Refusal codes and what to do
 
@@ -766,10 +680,10 @@ Authentication failures (revoked, expired, or invalid bearer token) are rejected
 | `not_found`                                               | Resource is outside your grant or does not exist (indistinguishable on purpose).                        | Do not probe other IDs. Tell the person if you need something shared in **Settings → Connected agents**.               |
 | `computer_stopped` (**Stopped on this Mac** / **{name}**) | The person turned on Stop on that device.                                                               | Do not retry in a loop. Wait until they resume agents there, or do other work.                                         |
 | `computer_asleep` / `computer_offline`                    | The device is asleep or offline.                                                                        | Wait until it wakes or reconnects; never substitute another profile or device.                                         |
-| `access_denied`                                           | Another refusal (for example, a device switch is off or a target is read-only).                         | Do not retry. Tell the person what is unavailable.                                                                     |
+| `access_denied`                                           | Any other refusal (such as a device access switch turned off or a read-only target).                    | Do not retry. Tell the person what is unavailable.                                                                     |
 | HTTP `401` / WebSocket `1008`                             | Disconnected or 30-day token expired.                                                                   | Discard the bearer token and stop calling the Home. Re-run OAuth only if the person asks to reconnect.                 |
 
-Other tool error codes: `invalid_input`, `conflict`, `outcome_unknown`, `unsupported`, `port_in_use`, `resource_exhausted`, `timeout`, `plugin_unavailable`, `catalog_unavailable`, `internal_error`.
+Other tool error codes a connected agent can receive: `invalid_input`, `conflict`, `outcome_unknown`, `unsupported`, `port_in_use`, `resource_exhausted`, `timeout`, `plugin_unavailable`, `catalog_unavailable`, `folder_unavailable`, `harness_error`, `harness_usage_limit`, `canonical_surface_required`, `internal_error`.
 
 ```ts
 function classifyFailure(
@@ -807,7 +721,7 @@ function classifyFailure(
 
 - **It does not hide the browser from websites.** Opensteer runs real Chromium/Electron browsers on the person's device or Opensteer Cloud Computer (with its real Browser IP), with no anti-bot stealth patches or fingerprint spoofing.
 - **It does not solve CAPTCHAs or anti-bot challenges.** Leave the page open and ask the person to complete it in the shared tab with `ask_person`.
-- **It cannot keep a filled secret hidden from an agent that controls the page.** Opensteer fills saved logins and cards into the page and does not return them in tool results, but once filled, page scripts and an agent working in that page can read what is on the page. Never read a filled value back, print it, or store it. Inside a granted browser profile or shared Chrome tab, your agent also has full control of that browser's pages and cookies.
+- **It cannot hide a filled secret from an agent controlling the page.** Opensteer fills a saved login or card into the page and does not return it; an agent working in that page can still read it. Never read back, print, or store a filled value. Inside a granted browser profile or shared Chrome tab, your agent also has full control of that browser's pages and cookies.
 - **It cannot undo what an agent already did.** **Stop** and **Disconnect** halt future work, abort in-flight calls, and mark interrupted effects **Uncertain**, but cannot recall clicks, form submissions, emails, purchases, or commands that already ran.
 
 ```ts

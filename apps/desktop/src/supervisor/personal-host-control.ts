@@ -89,6 +89,14 @@ export interface PersonalHostControlPort {
     runnerId: RunnerId,
     signal: AbortSignal,
   ): Promise<void>;
+  waitForPluginAgentWorkStopped?(
+    origin: string,
+    deploymentId: string,
+    environmentId: EnvironmentId,
+    runnerId: RunnerId,
+    stoppedSince: string,
+    signal: AbortSignal,
+  ): Promise<void>;
   waitForBrowserPlacement(
     origin: string,
     deploymentId: string,
@@ -311,6 +319,23 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     );
   }
 
+  async waitForPluginAgentWorkStopped(
+    origin: string,
+    deploymentId: string,
+    environmentId: EnvironmentId,
+    runnerId: RunnerId,
+    stoppedSince: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.#waitForReadiness(
+      deploymentId,
+      origin,
+      { kind: "runner", environmentId, runnerId },
+      signal,
+      stoppedSince,
+    );
+  }
+
   async waitForBrowserPlacement(
     origin: string,
     deploymentIdInput: string,
@@ -334,6 +359,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     origin: string,
     target: Parameters<HostApiClient["personal.readiness.get"]>[0],
     signal: AbortSignal,
+    stoppedSince?: string,
   ) {
     const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
     for (;;) {
@@ -343,7 +369,11 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
           read(target, { signal: deadline }),
         );
         if (!result.ok) throw bootstrapRefusal(result.error);
-        if (result.data.ready) return;
+        if (
+          result.data.ready &&
+          (stoppedSince === undefined || result.data.pluginAgentWorkStoppedSince === stoppedSince)
+        )
+          return;
       } catch (error) {
         throwIfAborted(signal, "Personal setup was cancelled.");
         if (error instanceof PersonalHostBootstrapRefusedError) throw error;

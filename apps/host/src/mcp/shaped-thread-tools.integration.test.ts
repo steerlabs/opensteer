@@ -1623,33 +1623,51 @@ describeStore("shaped agent task tools", (it) => {
       void result.then(created.resolve, created.reject);
       return result;
     });
+    const reading = Promise.withResolvers<void>();
+    const checkLive = vi.fn(async () => {
+      if (checkLive.mock.calls.length === 2) reading.resolve();
+    });
+    const abort = new AbortController();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
+      checkLive,
+      signal: abort.signal,
     });
     void pending.catch(created.reject);
-    const delegated = await withTimeout(created.promise, 1000, {
-      timeoutError: () => new Error("wait-mode delegation never committed its delegation"),
-    });
-    const assignmentId = delegated.assignment.id;
-    expect(assignmentId).not.toBe(s.assignmentId);
-    await storeFixture.runDelegatedTurn(
-      s.f,
-      { id: delegated.run.id, threadId: delegated.thread.id },
-      {
-        replies: ["84"],
-        end: "completed",
-        suffix: "delegate-wait-mode",
-      },
-    );
-    await storeFixture.store.drainRunFinish(delegated.run.id);
-    expect(await pending).toMatchObject({
-      result: "84",
-      status: "completed",
-      wait: { status: "settled" },
-    });
-    await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
+    try {
+      const delegated = await created.promise;
+      const assignmentId = delegated.assignment.id;
+      expect(assignmentId).not.toBe(s.assignmentId);
+      await Promise.race([
+        reading.promise,
+        pending.then(() => {
+          throw new Error("The delegation returned before its waiter read the open task");
+        }),
+      ]);
+      await storeFixture.runDelegatedTurn(
+        s.f,
+        { id: delegated.run.id, threadId: delegated.thread.id },
+        {
+          replies: ["84"],
+          end: "completed",
+          suffix: "delegate-wait-mode",
+        },
+      );
+      await storeFixture.store.drainRunFinish(delegated.run.id);
+      expect(await pending).toMatchObject({
+        result: "84",
+        status: "completed",
+        wait: { status: "settled" },
+      });
+      await expect(storeFixture.store.drainAssignmentReturn(assignmentId)).resolves.toBe("settled");
+    } finally {
+      abort.abort();
+      await pending.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("returns a task's Request promptly and reads it without exposing its payload", async ({

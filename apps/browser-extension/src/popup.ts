@@ -5,6 +5,7 @@ import {
   type ConnectionState,
   type ConnectionView,
   type Status,
+  type TabShareProblemCode,
   type UiRequest,
 } from "./messages.js";
 import { liveTabsOnly } from "./variant.js";
@@ -27,6 +28,23 @@ const stateLabels: Record<ConnectionState, { label: string; tone: string }> = {
   "host-outdated": { label: "Opensteer update needed", tone: "warn" },
 };
 
+const tabShareProblems: Record<TabShareProblemCode, string> = {
+  "untrusted-request": "Open the Opensteer tab sharing toolbar button to share this tab.",
+  "invalid-request": "Chrome couldn’t read this share request. Open the toolbar button again.",
+  "worker-unavailable": "Opensteer tab sharing couldn’t answer. Open the toolbar button again.",
+  "invalid-response": "Opensteer tab sharing couldn’t confirm whether the tab was shared.",
+  unsupported: "Use the Opensteer tab sharing extension to share this tab.",
+  "home-offline": "This Home is offline in Chrome. Wait until it’s available to share the tab.",
+  "tab-unavailable": "Chrome couldn’t find the tab to share.",
+  "unsupported-page": "Chrome doesn’t allow sharing this page.",
+  "shared-elsewhere": "This tab is shared with another Home. Stop sharing it there first.",
+  "detach-unconfirmed":
+    "Chrome couldn’t confirm that the previous debugger detached. Close and reopen the tab before sharing it again.",
+  capacity: "Too many Chrome tabs are shared. Stop sharing a tab and try again.",
+  "target-unavailable": "Chrome couldn’t open this tab for sharing. Reload the tab and try again.",
+  unexpected: "Chrome couldn’t share the tab. Check whether it appears under Shared Chrome tabs.",
+};
+
 function settingsUrl(connection: ConnectionView): string {
   return new URL("/settings/chrome", connection.origin).href;
 }
@@ -44,7 +62,9 @@ async function act(request: UiRequest): Promise<void> {
     current = result.value;
     problem = null;
   } else {
-    problem = "Chrome couldn't make that change. Try again.";
+    problem = result.tabShareReason
+      ? tabShareProblems[result.tabShareReason]
+      : "Chrome couldn't make that change. Try again.";
   }
   render(true);
 }

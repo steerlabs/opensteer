@@ -641,6 +641,7 @@ interface RunnerEnrollmentTable {
   } | null>;
   issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
+  workEnrollmentPreviewedAt: NullableTimestamp;
   id: string;
   name: string;
   tokenHash: string;
@@ -2085,7 +2086,13 @@ export interface DatabaseSchema {
     versionAuthors: JsonColumn<Record<string, "catalog" | "agent">>;
   };
   pluginExecutions: {
-    engineProcess: Generated<Readonly<{ launchId: string; namespace: string; pid: number }> | null>;
+    engineProcess: Generated<Readonly<{
+      launchId: string;
+      namespace: string;
+      pid: number;
+      machineId?: string;
+    }> | null>;
+    engineUnsent: Generated<boolean | null>;
     connectionId: Generated<string | null>;
     admittedGrantRevision: Generated<number | null>;
     admittedAccessMode: Generated<ThreadAccessMode | null>;

@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { resetAccountSigningKeys } from "../auth/signing-keys.test-support.js";
 import {
   ControlPlaneAccountIdSchema,
   HostedTeamBootstrapReceiptSchema,
@@ -133,6 +134,7 @@ integration("Hosted teams", () => {
   });
 
   beforeEach(async () => {
+    await resetAccountSigningKeys(database);
     ownerAnswer = undefined;
     ownerChecks.length = 0;
     await sql`truncate table users, hosted_teams cascade`.execute(database);

@@ -132,6 +132,8 @@ import { pluginIconReader, readPluginIcons } from "./plugin-icon-reader.js";
 import { pluginIconSources } from "./plugin-icons.js";
 import { enginePages } from "./engine-pages.js";
 import {
+  pluginComputerStoppedMessage,
+  pluginComputerStoppedReason,
   operations,
   callbackOperations,
   PluginServiceError,
@@ -293,6 +295,8 @@ export async function startEngine(
         });
         phase("sdk");
         const hostScope = yield* Scope.Scope;
+        let backgroundScope: Scope.Closeable | undefined;
+        let scheduler: Effect.Success<ReturnType<typeof startScheduleWorker>> | undefined;
         const repositories = filesystemRepositories(join(config.directory, "repositories"));
         let oauthConfiguration = {
           clients: [],
@@ -391,9 +395,19 @@ export async function startEngine(
             Effect.flatMap(({ allowed }) => (allowed ? Effect.void : Effect.fail(refusal()))),
           );
         const standing = (plugin: string, refusal?: () => Error) =>
-          check(
-            { caller: config.owner, mode: "automatic", operation: "background", plugin },
-            refusal,
+          Effect.flatMap(CurrentPluginRequest, (request) =>
+            check(
+              {
+                caller: config.owner,
+                mode: "automatic",
+                operation:
+                  request?.context.caller === config.owner && request.operation !== "webhook"
+                    ? "personWorkflow"
+                    : "background",
+                plugin,
+              },
+              refusal,
+            ),
           );
         const beforeResourceWrite = (
           plugin: string,
@@ -507,14 +521,18 @@ export async function startEngine(
           registry: memoryRegistry(),
           cache: { durable: local.declarations },
           background: (work) =>
-            Effect.flatMap(CurrentPluginRequest, (request) =>
-              request?.connected
+            Effect.flatMap(CurrentPluginRequest, (request) => {
+              const target =
+                request?.context.caller === config.owner && request.operation !== "webhook"
+                  ? hostScope
+                  : backgroundScope;
+              return request?.connected || !target
                 ? Effect.succeed(false)
                 : Effect.forkIn(
                     work.pipe(Effect.provideService(CurrentPluginRequest, undefined)),
-                    hostScope,
-                  ).pipe(Effect.as(true)),
-            ),
+                    target,
+                  ).pipe(Effect.as(true));
+            }),
           oauth,
           events: {
             sender: httpEventSender(egress),
@@ -538,10 +556,26 @@ export async function startEngine(
             Effect.repeat(Schedule.spaced("5 seconds")),
           ),
         );
-        const scheduler = yield* startScheduleWorker(
-          engine,
-          ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
-          { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+        const setAgentWorkStopped = (stopped: boolean) =>
+          Effect.gen(function* () {
+            if (stopped) {
+              const current = backgroundScope;
+              backgroundScope = undefined;
+              scheduler = undefined;
+              if (current) yield* Scope.close(current, Exit.void);
+            } else if (!backgroundScope) {
+              backgroundScope = yield* Scope.fork(hostScope);
+              scheduler = yield* startScheduleWorker(
+                engine,
+                ({ app }) => standing(app, () => new ScheduleAccessRevoked()),
+                { runner: "host", concurrency: 2, pollMilliseconds: 1000 },
+              ).pipe(Effect.provideService(Scope.Scope, backgroundScope));
+            }
+            return true;
+          });
+        yield* setAgentWorkStopped(config.agentWorkStopped ?? false);
+        const wakeWebhookSources = Effect.suspend(
+          () => scheduler?.wakeWebhookSources ?? Effect.void,
         );
         yield* Effect.forkScoped(deliverEvents(engine));
         phase("catalog");
@@ -600,7 +634,8 @@ export async function startEngine(
           engine,
           owner,
           accountAdapter,
-          scheduler,
+          setAgentWorkStopped,
+          wakeWebhookSources,
           catalog,
           readIcon,
           manager,
@@ -655,7 +690,13 @@ export async function startEngine(
           result.allowed
             ? Effect.succeed(result)
             : Effect.fail(
-                new PluginServiceError("forbidden", "Plugin operation is not authorized"),
+                result.reason === pluginComputerStoppedReason
+                  ? new PluginServiceError(
+                      "unavailable",
+                      pluginComputerStoppedMessage,
+                      result.reason,
+                    )
+                  : new PluginServiceError("forbidden", "Plugin operation is not authorized"),
               ),
         ),
       );
@@ -792,6 +833,13 @@ export async function startEngine(
         (change?.action === "schedule.configure" && !change.enabled);
       const authorityOperation = stop ? "resourcesStop" : operation;
       return Effect.gen(function* () {
+        if (operation === "agentWork") {
+          if (context.caller !== config.owner)
+            return yield* Effect.fail(
+              new PluginServiceError("forbidden", "Plugin operation is not authorized"),
+            );
+          return yield* composed.setAgentWorkStopped(operations.agentWork.input.parse(raw).stopped);
+        }
         const permission = yield* authorize(context, authorityOperation, plugin, fields.execution);
         switch (operation) {
           case "health":
@@ -1186,14 +1234,14 @@ export async function startEngine(
             const input = operations.linkAccount.input.parse(raw);
             const result = yield* accountAdapter.link(input);
             yield* publishTools(AppId.make(input.plugin));
-            yield* composed.scheduler.wakeWebhookSources;
+            yield* composed.wakeWebhookSources;
             return result;
           }
           case "unlinkAccount":
             const input = operations.unlinkAccount.input.parse(raw);
             yield* accountAdapter.unlink(input);
             yield* publishTools(AppId.make(input.plugin));
-            yield* composed.scheduler.wakeWebhookSources;
+            yield* composed.wakeWebhookSources;
             return null;
           case "pinOAuth":
             return yield* accountAdapter.pinConnection(operations.pinOAuth.input.parse(raw));
@@ -1937,7 +1985,7 @@ export async function startEngine(
         case "webhookSetup.complete":
           return decode(CompleteWebhookSetup).pipe(
             Effect.flatMap(engine.webhookSetup.complete),
-            Effect.tap(() => composed.scheduler.wakeWebhookSources),
+            Effect.tap(() => composed.wakeWebhookSources),
           );
       }
     };

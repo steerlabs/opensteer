@@ -347,3 +347,113 @@ it("checks the current Chrome grant before each command and awaits detach eviden
     source.close();
   }
 });
+
+it("rejects a stale reviewed Chrome mode at ticket issue, attach, and command dispatch", async () => {
+  const ownerId = createId("user");
+  const sourceId = createId("browserSource");
+  const threadId = createId("thread");
+  const authority = { ownerId, agentBindingId: "session:fixture" };
+  const tab = shared();
+  const agentConnection = {
+    agentConnectionId: "connected-agent",
+    grant: AgentGrantSchema.parse({ scope: "everything" }),
+    grantRevision: 1,
+    consentVersion: 2,
+    accessMode: "full-access",
+  } as const;
+  let mode: "full-access" | "approval-required" = "full-access";
+  const admitExecution: OpensteerStore["admitExecution"] = async ({ ownerUserId, subject }) => ({
+    ownerUserId,
+    subject,
+    actor: "agent",
+    agentConnection,
+    mode,
+    runId: null,
+    threadId,
+    runMode: null,
+    taskMode: mode,
+  });
+  const open = vi.fn(async () => {});
+  const service = new ChromeSharedTabs(
+    { admitExecution },
+    {
+      attempts: {
+        open,
+        finish: async () => {},
+        recordDetach: async () => {},
+        recover: async () => {},
+      },
+      device: async () => "Work Mac",
+    },
+  );
+  const peer = chromePeer((frame) => {
+    expect(source.receive(frame)).toBeUndefined();
+  });
+  const source = service.connectSource({
+    ownerId,
+    sourceId,
+    deviceId: createId("device"),
+    detachReceipts: true,
+    fail: () => {},
+    name: "Chrome",
+    write: peer.write,
+  });
+  try {
+    await source.receive(tab);
+    const signal = new AbortController().signal;
+    const input = {
+      authority,
+      tabId: tab.shareId,
+      expectedAccess: { accessMode: "full-access", grantRevision: 1 } as const,
+    };
+    const claims = async () => {
+      const { ticket } = await service.issueStandardCdpTicket(input);
+      return service.standardCdpTickets.consume(ticket)!;
+    };
+    const beforeLowering = await claims();
+    const stale = await claims();
+    const client = await service.attachStandardCdpForAgent(beforeLowering, signal);
+    const reply = Promise.withResolvers<{ result?: { sessionId: string } }>();
+    client.onFrame((frame) => {
+      const message = JSON.parse(frame.toString("utf8"));
+      if (message.id === 1) reply.resolve(message);
+    });
+    await client.send(
+      Buffer.from(
+        JSON.stringify({
+          id: 1,
+          method: "Target.attachToTarget",
+          params: { targetId: tab.targetId, flatten: true },
+        }),
+      ),
+    );
+    const attached = await reply.promise;
+    expect(attached).toMatchObject({ result: { sessionId: expect.any(String) } });
+    const sessionId = attached.result!.sessionId;
+
+    mode = "approval-required";
+    const ended = {
+      name: "BrowserCdpConnectionEnded",
+      message: "This browser authority changed. Request a new attachment.",
+    };
+    await expect(service.issueStandardCdpTicket(input)).rejects.toMatchObject(ended);
+    await expect(service.attachStandardCdpForAgent(stale, signal)).rejects.toMatchObject(ended);
+    await expect(client.reauthorize()).rejects.toMatchObject(ended);
+    await expect(
+      client.send(
+        Buffer.from(
+          JSON.stringify({
+            id: 2,
+            sessionId,
+            method: "Runtime.evaluate",
+            params: { expression: "1" },
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject(ended);
+    expect(peer.commands).toEqual([]);
+    expect(open).toHaveBeenCalledOnce();
+  } finally {
+    source.close();
+  }
+});

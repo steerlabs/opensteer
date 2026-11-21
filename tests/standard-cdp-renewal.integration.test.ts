@@ -28,6 +28,7 @@ import {
 } from "../packages/browser-runtime-core/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
+import { beginAgentSession } from "../packages/database/src/agent-session-store.js";
 import {
   listBrowserStandardCdpLeases,
   requireNoBrowserStandardCdpLease,
@@ -38,6 +39,7 @@ import {
   ownTestDatabaseProducer,
 } from "../packages/database/src/test-database.test-support.js";
 import { machineAccessPolicyDefault } from "../packages/protocol/src/shell.js";
+import { standardCdpSettledReason } from "../packages/protocol/src/standard-cdp.js";
 
 it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
   "keeps quiet CDP attachments and partially written results across a real Runner renewal",
@@ -553,6 +555,169 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL).each(["same Runtime boot", "
       acknowledge.resolve();
       home.mockRestore();
     }
+  },
+);
+
+it
+  .skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)
+  .each(["Home restart", "relay loss", "Runtime replacement"])(
+  "Disconnect settles a confined CDP attempt after %s",
+  async (failure) => {
+    const fixture = await startBrowserHome();
+    const { stack, clients, runtime } = fixture;
+    const { browser, store } = stack.host;
+    const { network } = stack;
+    if (!(network instanceof NetworkPartition)) throw new Error("Expected a real relay socket.");
+    const owner = await store.firstUser();
+    if (!owner) throw new Error("The Home has no owner.");
+    const runnerId = stack.agentHome.computerId;
+    await store.database
+      .updateTable("devices")
+      .set({ accessPolicy: { ...machineAccessPolicyDefault, browser: true } })
+      .where("id", "=", await store.requireSelfDeviceId(runnerId))
+      .execute();
+    const profile = await browser.createProfile({
+      homeRunnerId: runnerId,
+      ownerId: owner.id,
+      name: "Confined CDP cleanup",
+      idempotencyKey: randomUUID(),
+    });
+    const connections = new AgentConnectionStore(store.database);
+    const connection = await connections.create({
+      userId: owner.id,
+      label: "Confined CDP agent",
+      clientName: "Confined CDP agent",
+      accessMode: "full-access",
+      resource: stack.hostOrigin.href,
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    expect(await connections.activate(connection.id, randomBytes(32).toString("hex"))).toBe(true);
+    const { session } = await beginAgentSession(store.database, {
+      userId: owner.id,
+      agentConnectionId: connection.id,
+    });
+    const authority = { ownerId: owner.id, agentBindingId: `session:${session.id}` };
+    const actor = { kind: "browser-binding", authority, threadId: session.threadId } as const;
+    const { tab } = await stack.host.tabs.open(
+      actor,
+      { kind: "page", profileId: profile.id, url: "about:blank" },
+      randomUUID(),
+    );
+    const seed = await stack.host.tabs.bindBrowserScript(actor, tab.tabId);
+    const witnesses = async () =>
+      (
+        await stack.host.store.database
+          .selectFrom("browserSessions")
+          .select("standardCdpAttempts")
+          .where("id", "=", seed.sessionId)
+          .executeTakeFirstOrThrow()
+      ).standardCdpAttempts;
+    const ticket = await browser.issueStandardCdpTicket({
+      authority,
+      browserSessionId: seed.sessionId,
+      seedTabId: seed.tabId,
+      mode: "session",
+    });
+    expect(ticket.mode).toBe("session");
+    expect(await witnesses()).toEqual({});
+    const client = await chromium.connectOverCDP(
+      new URL(ticket.path, stack.hostOrigin).href.replace(/^http/u, "ws"),
+      { noDefaults: true },
+    );
+    clients.push(client);
+    expect(
+      await client
+        .contexts()[0]!
+        .pages()[0]!
+        .evaluate(() => 42),
+    ).toBe(42);
+    expect(await listBrowserStandardCdpLeases(store.database, runnerId)).toEqual([]);
+    const [id] = Object.keys(await witnesses());
+    expect(id).toBeDefined();
+    expect((await witnesses())[id!]).toMatchObject({
+      connectionId: connection.id,
+      recovery: {
+        sessionId: seed.sessionId,
+        attachmentId: id,
+        runtimeBootId: runtime.standardCdpBootId,
+      },
+    });
+
+    const disconnect = async () => {
+      const reply = await stack.api["commands.dispatch"]({
+        type: "connection.revoke",
+        connectionId: connection.id,
+        idempotencyKey: randomUUID(),
+      });
+      if (!reply.ok) throw new Error(JSON.stringify(reply));
+      expect(reply.data.type).toBe("connection.revoke");
+    };
+
+    if (failure === "Home restart") {
+      const close = WebSocket.prototype.close;
+      const dropDetach = vi.spyOn(WebSocket.prototype, "close").mockImplementation(function (
+        this: WebSocket,
+        code,
+        reason,
+      ) {
+        if (code === 1000 && String(reason) === standardCdpSettledReason) return this.terminate();
+        return close.call(this, code, reason);
+      });
+      try {
+        await stack.restartHost();
+      } finally {
+        dropDetach.mockRestore();
+      }
+      expect(client.isConnected()).toBe(false);
+      expect((await witnesses())[id!]).toHaveProperty("contactLostAt");
+      expect((await witnesses())[id!]).not.toHaveProperty("terminalEvidenceAt");
+      await disconnect();
+    } else {
+      const disconnected = Promise.withResolvers<void>();
+      const onDisconnect = () => disconnected.resolve();
+      client.once("disconnected", onDisconnect);
+      network.block();
+      try {
+        await milestone(disconnected.promise, "CDP connection loss");
+        await disconnect();
+        expect(await connectionAttempts(stack.host.store.database, connection.id)).toContainEqual(
+          expect.objectContaining({ id, kind: "standard-cdp", terminalEvidenceAt: null }),
+        );
+        expect(await connections.list(owner.id, { includeRevoked: true })).toContainEqual(
+          expect.objectContaining({
+            id: connection.id,
+            state: "stopping",
+            lastActionUncertain: false,
+          }),
+        );
+        if (failure === "Runtime replacement") await fixture.restartBrowserRuntime();
+      } finally {
+        client.off("disconnected", onDisconnect);
+        network.unblock();
+      }
+      await stack.restartRunner();
+    }
+    const currentConnections = new AgentConnectionStore(stack.host.store.database);
+    const view = await stack.observe(
+      async () => {
+        const record = (await currentConnections.list(owner.id, { includeRevoked: true })).find(
+          ({ id }) => id === connection.id,
+        );
+        return record?.state === "stopped" ? record : undefined;
+      },
+      AbortSignal.timeout(5_000),
+      "Disconnect did not settle the confined CDP attempt",
+    );
+    expect(view.lastActionUncertain).toBe(failure === "Runtime replacement");
+    expect(await connectionAttempts(stack.host.store.database, connection.id)).toContainEqual(
+      expect.objectContaining({
+        id,
+        kind: "standard-cdp",
+        terminalEvidenceAt: expect.any(Date),
+        contactLostAt: failure === "Runtime replacement" ? expect.any(Date) : null,
+      }),
+    );
   },
 );
 

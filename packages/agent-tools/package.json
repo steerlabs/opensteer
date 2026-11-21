@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./outputs": "./src/tools/outputs.ts",
+    "./discover": "./src/tools/discover.ts",
     "./tools": "./src/tools/index.ts"
   },
   "scripts": {

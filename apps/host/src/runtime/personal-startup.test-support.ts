@@ -187,12 +187,18 @@ export async function startPersonalRuntime(input: {
         ...(vertical?.accountDirectoryFetch
           ? { accountDirectoryFetch: vertical.accountDirectoryFetch }
           : {}),
-        onRunnerCatalogsCommitted: (_identity, _environment, captured) => {
+        onRunnerCatalogsCommitted: (
+          _identity,
+          _environment,
+          captured,
+          registrationMayResetCatalogs,
+        ) => {
           for (const notify of changes) notify();
           catalogState = captured
             .map((catalog) => `${catalog.status}: ${catalog.detail ?? ""}`)
             .join("; ");
           if (
+            !registrationMayResetCatalogs &&
             captured.some((catalog) =>
               accountIds.length
                 ? catalog.harnessInstanceId === accountIds[0] && catalog.status !== "preparing"

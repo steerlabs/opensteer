@@ -1,9 +1,8 @@
 import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { workEnrollNotice, workEnrollRefusal } from "@opensteer/client/host";
+import { workEnrollNotice, workEnrollRefusal, type HostClient } from "@opensteer/client/host";
 import { useWorkPolicy } from "@opensteer/client/react";
-import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList, SetupRow } from "../first-run/setup-list.js";
@@ -76,26 +75,31 @@ export function SetupGroup({
 export function SetUpThisMac({
   bridge,
   device,
+  hostClient,
 }: {
   readonly bridge: OpensteerDesktopBridge;
   readonly device: ThisDevice;
+  readonly hostClient: HostClient;
 }) {
   if (device.step === "macos") return <MacosStep bridge={bridge} device={device} />;
   if (device.step === "ready") return <ReadyStep bridge={bridge} device={device} />;
-  return <ChooseStep device={device} />;
+  return <ChooseStep device={device} hostClient={hostClient} />;
 }
 
-function ChooseStep({ device }: { readonly device: ThisDevice }) {
+function ChooseStep({
+  device,
+  hostClient,
+}: {
+  readonly device: ThisDevice;
+  readonly hostClient: HostClient;
+}) {
   const [name, setName] = useState(device.choice?.name ?? device.computerName);
   const [access, setAccess] = useState(
     device.choice?.access ?? { browser: true, apps: true, files: true },
   );
   const [notifications, setNotifications] = useState(device.choice?.notifications ?? true);
   const nameId = useId();
-  // A work Home says whose it is before this Mac joins, or that its organization keeps it out.
-  // Joining never waits on this: until the policy is known nothing is said, and the Home's own
-  // refusal is the backstop.
-  const policy = useWorkPolicy(useOptionalShell()?.hostClient ?? null);
+  const policy = useWorkPolicy(hostClient);
   const joining = workEnrollNotice(policy);
   const limit = workEnrollRefusal(policy);
   const working = device.stage !== null;
@@ -113,7 +117,7 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
           action={
             <button
               className="btn btn--primary"
-              disabled={working || trimmed.length === 0 || limit !== null}
+              disabled={working || trimmed.length === 0 || policy === undefined || limit !== null}
               onClick={() => submit({ name: trimmed, access, notifications })}
               type="button"
             >

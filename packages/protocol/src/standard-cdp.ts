@@ -1,4 +1,4 @@
-import { BrowserProfileIdSchema } from "@opensteer/core";
+import { BrowserProfileIdSchema, BrowserSessionIdSchema, IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
 
 export const StandardCdpLeaseReconciliationSchema = z.strictObject({
@@ -6,7 +6,21 @@ export const StandardCdpLeaseReconciliationSchema = z.strictObject({
   generation: z.number().int().positive(),
 });
 export type StandardCdpLeaseReconciliation = z.infer<typeof StandardCdpLeaseReconciliationSchema>;
-export const StandardCdpLeaseEvidenceSchema = z.strictObject({ runtimeBootId: z.uuid() });
+export const StandardCdpAttemptSchema = z.strictObject({
+  attachmentId: z.uuid(),
+  runtimeBootId: z.uuid(),
+});
+export const StandardCdpAttemptReconciliationSchema = StandardCdpAttemptSchema.extend({
+  sessionId: BrowserSessionIdSchema,
+  operationExpiresAt: IsoDateTimeSchema,
+});
+export type StandardCdpAttemptReconciliation = z.infer<
+  typeof StandardCdpAttemptReconciliationSchema
+>;
+export const StandardCdpLeaseEvidenceSchema = z.strictObject({
+  runtimeBootId: z.uuid(),
+  attachmentId: z.uuid().optional(),
+});
 
 export const standardCdpLeasePath = "/v1/local-profiles/standard-cdp-lease";
 export const standardCdpPath = "/v1/browser/cdp";

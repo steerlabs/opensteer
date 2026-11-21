@@ -338,7 +338,7 @@ export class BrowserModuleRelay {
       }
       case "browser.standard-cdp.reconcile": {
         const evidence = await this.#bridge.reconcileStandardCdpLease(
-          message.lease,
+          message.attempt ?? message.lease,
           this.#streamLifetime.signal,
         );
         if (this.#stream !== stream) return;
@@ -604,6 +604,7 @@ function isPersonFrame(message: BrowserClientMessage): boolean {
       }
       return (
         message.command.method === browserHostMethods.closeTab ||
+        message.command.method === browserHostMethods.fenceTab ||
         message.command.method === browserHostMethods.resumeTab
       );
     case "tabs.resync":

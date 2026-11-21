@@ -22,6 +22,7 @@ import {
   connectionTaskKind,
   connectionToolDescription,
   connectionToolSchema,
+  pluginResumeConnectionOutput,
   agentToolFailureResult,
   agentToolRecordResult,
   requestToolNames,
@@ -41,6 +42,8 @@ import {
   agentOperationRefusal,
   assertOperationArguments,
   operationArgumentDigest,
+  scriptFailedNext,
+  storedScriptError,
   unknownNext,
   withAgentOperationReceipt,
 } from "../agent-sessions/agent-session-service.js";
@@ -65,6 +68,7 @@ import {
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import { browserConnectCompletedNext } from "./handlers/browser.js";
+import { failedScriptOutput } from "./handlers/direct.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 
@@ -699,6 +703,21 @@ export class OpensteerMcpService {
             this.assertToolOffered(connection, name),
           );
           const status = row.state;
+          if (status === "failed" && tool.output === ComputerUseOutputSchema) {
+            const error = storedScriptError(row.resultSummary);
+            if (error) {
+              const grant = row.target.grant;
+              return failedScriptOutput(
+                {
+                  ...base,
+                  status,
+                  ...(grant.kind === "browser-profile" ? { profileId: grant.profileId } : {}),
+                  next: scriptFailedNext,
+                },
+                error,
+              );
+            }
+          }
           const request =
             status === "completed" && name === "ask_person" && row.requestId
               ? await this.options.store.requests.get(row.requestId)
@@ -729,7 +748,10 @@ export class OpensteerMcpService {
           const receipt = {
             ...plugin,
             ...credential,
-            ...base,
+            taskId: base.taskId,
+            ...(name === "plugin_resume" && plugin?.status === "pending"
+              ? {}
+              : { operationId: base.operationId }),
             status: plugin?.status ?? status,
             ...(answer !== undefined ? { answer } : {}),
             ...(status === "completed"
@@ -804,7 +826,11 @@ export class OpensteerMcpService {
       const handled = await handler(call);
       const raw = handled;
       identity.signal?.throwIfAborted();
-      const output = tool.output.safeParse(
+      const outputSchema =
+        caller.kind === "connection" && name === "plugin_resume"
+          ? pluginResumeConnectionOutput
+          : tool.output;
+      const output = outputSchema.safeParse(
         /^(opensteer_(task|delegation|subagent|request|automation|app)_|person_)/.test(tool.name)
           ? productToolOutput(raw)
           : raw,

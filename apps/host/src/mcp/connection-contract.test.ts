@@ -13,6 +13,7 @@ const phone = {
   approvalId: "con_9ff5456a-1a0a-4f3a-8624-ad2e56604518",
   app: { kind: "phone-screen", definitionId: "iphone-screen" },
 };
+const mac = { ...phone, app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null } };
 const plugin = {
   kind: "plugin",
   target: { kind: "installed", pluginId: "plg_9ff5456a-1a0a-4f3a-8624-ad2e56604518" },
@@ -27,6 +28,7 @@ describe("the connection's actual MCP listing", () => {
     ["one profile, no tasks", selected(false, profile)],
     ["Chrome tabs only", selected(false, chrome)],
     ["phone only", selected(false, phone)],
+    ["Mac app only", selected(false, mac)],
     ["plugins only", selected(false, plugin)],
     ["read-only plugin", selected(false, { ...plugin, access: "read" })],
     ["tasks only", selected(true)],
@@ -48,8 +50,15 @@ describe("the connection's actual MCP listing", () => {
     const toolsWithReceiptId = tools
       .filter(({ inputSchema }) => inputSchema.properties?.operationId)
       .map(({ name }) => name);
+    const cachedInventory =
+      grant.scope === "selected" &&
+      !grant.resources.some(
+        (resource) => resource.kind === "computer-app" && resource.app.kind === "phone-screen",
+      );
     expect(toolsWithReceiptId.toSorted()).toEqual(
-      [...connectionDirectTools].filter((name) => names.has(name)).toSorted(),
+      [...connectionDirectTools]
+        .filter((name) => names.has(name) && (!cachedInventory || name !== "computer_apps"))
+        .toSorted(),
     );
     if (grant.scope === "everything")
       expect(toolsWithReceiptId.toSorted()).toEqual([...connectionDirectTools].toSorted());
@@ -57,8 +66,15 @@ describe("the connection's actual MCP listing", () => {
       expect(input(name)?.properties?.operationId, name).toEqual({ type: "string" });
       expect(input(name)?.required ?? [], name).not.toContain("operationId");
     }
+    const description = (name: string) => tools.find((tool) => tool.name === name)?.description;
     const inventory = input("computer_apps");
-    if (inventory) {
+    if (inventory && cachedInventory) {
+      for (const id of ["taskId", "operationId", "operationKey"])
+        expect(inventory.properties).not.toHaveProperty(id);
+    } else if (inventory) {
+      expect(description("computer_apps")).toMatch(
+        /direct-work taskId or operationId only for live.*inventory with computerId/u,
+      );
       expect(inventory.properties?.taskId).toEqual({ type: "string" });
       expect(inventory.required ?? []).not.toContain("taskId");
     }
@@ -76,6 +92,18 @@ describe("the connection's actual MCP listing", () => {
     }
     for (const name of ["saved_login_request", "card_request"])
       if (names.has(name)) expect(input(name)?.required).toContain("tabId");
+    if (names.has("card_request"))
+      expect(description("card_request")).toContain(
+        "Opensteer fills the card into the page without returning it. A script in that page can read it.",
+      );
+    const pluginInput = "use plugin_resume with the returned executionId and taskId instead.";
+    if (names.has("plugin_resume")) {
+      expect(instructions).toContain(pluginInput);
+      expect(description("plugin_resume")).toContain("direct-work taskId");
+    } else {
+      expect(instructions).not.toContain("plugin_resume");
+      expect(instructions).not.toContain("executionId");
+    }
     for (const name of ["browser_use", "computer_use", "plugin_execute"])
       if (names.has(name))
         expect(input(name)?.properties?.code).toMatchObject({
@@ -102,8 +130,21 @@ describe("the connection's actual MCP listing", () => {
         "saved_login_request",
         "tab_list",
       ]);
-    if (grant.scope === "selected" && grant.resources[0]?.kind === "computer-app")
-      expect(input("computer_use")?.properties).not.toHaveProperty("app");
+    if (grant.scope === "selected" && grant.resources[0]?.kind === "computer-app") {
+      if (grant.resources[0].app.kind === "mac-app") {
+        expect(input("computer_use")?.required).toContain("app");
+        expect(input("computer_use")?.required).toContain("computerId");
+        expect(description("computer_use")).not.toMatch(/phone|\.observe\(\)/u);
+        expect([...names].sort()).toEqual([
+          "ask_person",
+          "computer_apps",
+          "computer_list",
+          "computer_use",
+        ]);
+      } else {
+        expect(input("computer_use")?.properties).not.toHaveProperty("app");
+      }
+    }
     if (
       grant.scope === "selected" &&
       grant.resources[0]?.kind === "plugin" &&
@@ -111,9 +152,14 @@ describe("the connection's actual MCP listing", () => {
     ) {
       expect(names.has("plugin_call")).toBe(true);
       expect(names.has("plugin_execute")).toBe(false);
+      expect(description("plugin_call")).toContain("Only read tools run.");
     }
-    if (grant.scope === "selected" && !grant.tasks)
+    if (grant.scope === "selected" && !grant.tasks) {
       expect(names.has("opensteer_ai_account_list")).toBe(false);
+      expect(instructions).not.toMatch(
+        /opensteer_(?:task|request|delegation|subagent|automation)_/u,
+      );
+    }
     if (grant.scope === "selected" && grant.tasks) {
       expect(names.has("opensteer_ai_account_list")).toBe(true);
       expect(input("opensteer_task_create")?.required).not.toContain("aiAccountId");

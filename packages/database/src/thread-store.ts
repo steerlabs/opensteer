@@ -1,4 +1,5 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, threadPendingRequestsCount } from "./personal-mutation.js";
+import { closeAgentOperationRequestsAboveMode } from "./agent-session-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
@@ -46,6 +47,7 @@ import {
   type AssignmentSummary,
   DEFAULT_THREAD_ACCESS_MODE,
   ThreadAccessModeSchema,
+  threadAccessModeAtMost,
   ThreadTitleSchema,
   GeneratedThreadTitleSchema,
   type ThreadTitleSource,
@@ -2048,7 +2050,7 @@ export async function updateThreadAccessMode(
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("threads")
-      .select("id")
+      .select(["id", "worker", "accessMode", "environmentId"])
       .where("id", "=", input.threadId)
       .where("removedAt", "is", null)
       .executeTakeFirst();
@@ -2058,11 +2060,23 @@ export async function updateThreadAccessMode(
         message: "Task not found",
       });
     await requirePersonalOwner(transaction, input.requestedBy);
+    await requireExecutionEnvironmentAccess(
+      transaction,
+      observed.environmentId,
+      input.requestedBy,
+      "Only the execution owner can change this task's access mode",
+    );
+    const lowersDirectWork =
+      observed.worker === "external" && !threadAccessModeAtMost(observed.accessMode, accessMode);
+    if (lowersDirectWork)
+      await closeAgentOperationRequestsAboveMode(transaction, observed.id, accessMode, new Date());
     const thread = await transaction
       .selectFrom("threads")
       .selectAll()
       .select([
-        threadPendingRequestsSelection,
+        lowersDirectWork
+          ? threadPendingRequestsCount.as("pendingRequests")
+          : threadPendingRequestsSelection,
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
@@ -2070,12 +2084,6 @@ export async function updateThreadAccessMode(
       .where("id", "=", input.threadId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    await requireExecutionEnvironmentAccess(
-      transaction,
-      thread.environmentId,
-      input.requestedBy,
-      "Only the execution owner can change this task's access mode",
-    );
     if (thread.accessMode === accessMode)
       return {
         asOfSequence: await threadMutationHead(transaction, observed.id),

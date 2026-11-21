@@ -222,20 +222,6 @@ export function createControlPlaneAuth(
                 message: "Sign-in to this work Home is not allowed",
               });
             }
-            if (!assignment) {
-              await database
-                .updateTable("cloudComputers")
-                .where("id", "=", id.data)
-                .where("accountId", "=", ControlPlaneAccountIdSchema.parse(user.id))
-                .where("state", "=", "active")
-                .where("phase", "=", "ready")
-                .where("restoreSnapshot", "is not", null)
-                .where("bootstrapReceiptAt", "is not", null)
-                .where("deletionRequestedAt", "is", null)
-                .where("ownerAccessAt", "is", null)
-                .set({ ownerAccessAt: new Date() })
-                .executeTakeFirst();
-            }
           }
           return scopes.includes("email") ? { email: user.email } : {};
         },

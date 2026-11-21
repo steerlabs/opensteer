@@ -53,7 +53,9 @@ async function wifiReady(f: Awaited<ReturnType<typeof harness>>) {
 }
 async function assign(f: Awaited<ReturnType<typeof harness>>, generation = 1) {
   const connection = f.service.forSlot(ownerA).connect(() => undefined);
-  cleanups.push(async () => connection.close());
+  cleanups.push(async () => {
+    await connection.close();
+  });
   await connection.request(
     "iphone.targets",
     {

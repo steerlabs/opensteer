@@ -3708,6 +3708,11 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const parameters = message.command.parameters;
+    if (message.command.method === browserHostMethods.fenceTab) {
+      this.ledger.fenceDurableClose(BrowserSurfaceIdSchema.parse(parameters?.surfaceId));
+      await this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
+      return;
+    }
     if (message.command.method === browserHostMethods.closeScriptAttachment) {
       if (!message.scriptAttachmentId)
         throw new BrowserRuntimeError("bad_message", "Missing browser script attachment.");
@@ -3937,17 +3942,17 @@ export class BrowserController {
     const surfaceId = parameters?.surfaceId;
     if (typeof surfaceId !== "string")
       throw new BrowserRuntimeError("bad_message", "A surface is required.");
-    const durableClose = this.claims.tabRestoreVersion === 1 && parameters?.durable === true;
-    if (
-      durableClose &&
-      message.command.method === browserHostMethods.closeTab &&
-      !this.ledger.stateOf(BrowserSurfaceIdSchema.parse(surfaceId))
-    ) {
+    const durableClose = parameters?.durable === true;
+    if (durableClose && message.command.method === browserHostMethods.closeTab) {
+      await this.ledger.closeDurableSurface(BrowserSurfaceIdSchema.parse(surfaceId));
+      const last = this.ledger.sealLastSurface();
+      await this.drainTabs();
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
-        result: { outcome: "tab-closed" },
+        result: { outcome: last ? "session-closed" : "tab-closed" },
       });
+      if (last) await this.close();
       return;
     }
     const surface = this.ledger.snapshot().find((entry) => entry.id === surfaceId);
@@ -3962,13 +3967,12 @@ export class BrowserController {
         .safeParse(parameters);
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-close parameters.");
-      if (!durableClose && parsed.data.inventoryRevision !== this.ledger.inventoryRevision)
+      if (parsed.data.inventoryRevision !== this.ledger.inventoryRevision)
         throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       let last = this.ledger.snapshot().length === 1;
       if (last) {
         last = this.ledger.sealLastSurface(surface.id);
-        if (!last && !durableClose)
-          throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
+        if (!last) throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
       if (!last && this.ledger.stateOf(surface.id))
         await this.ledger.closeSurface(surface.id, "host-closed");

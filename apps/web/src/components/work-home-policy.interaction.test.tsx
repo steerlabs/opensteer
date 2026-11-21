@@ -5,7 +5,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ShellContext } from "./app-shell.js";
+import { ShellContext, useShell } from "./app-shell.js";
 import { DevicesSection } from "./devices/devices-page.js";
 import { SetUpThisMac } from "./devices/set-up-this-mac.js";
 import type { ThisDevice } from "./devices/this-device.js";
@@ -141,7 +141,10 @@ function joining() {
     devicesAvailable: true,
     setUp,
   } as unknown as ThisDevice;
-  return { element: <SetUpThisMac bridge={{} as never} device={device} />, setUp };
+  function TestSetup() {
+    return <SetUpThisMac bridge={{} as never} device={device} hostClient={useShell().hostClient} />;
+  }
+  return { element: <TestSetup />, setUp };
 }
 const connect = (container: HTMLElement) =>
   [...container.querySelectorAll("button")].find((button) => button.textContent === "Connect")!;
@@ -177,13 +180,20 @@ describe("a Mac about to join", () => {
     expect(setUp).toHaveBeenCalledOnce();
   });
 
-  it("never waits on a policy not known yet", async () => {
+  it("waits until the Home’s policy is known", async () => {
     const { element, setUp } = joining();
     const container = await render(element, null);
     // The shell hasn't brought the policy yet.
     const { effectiveWorkPolicy: _notYet, ...unknown } = host!.getSnapshot();
     await act(async () => {
       vi.spyOn(host!, "getSnapshot").mockReturnValue(unknown);
+      host!.applyWorkPolicy(null);
+    });
+    expect(connect(container).disabled).toBe(true);
+    await act(async () => connect(container).click());
+    expect(setUp).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.mocked(host!.getSnapshot).mockRestore();
       host!.applyWorkPolicy(null);
     });
     expect(connect(container).disabled).toBe(false);

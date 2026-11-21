@@ -80,7 +80,8 @@ export async function applyAgentGrants(database: Kysely<DatabaseSchema>) {
       add column admitted_access_mode text,
       add column terminal_evidence_at timestamptz,
       add column contact_lost_at timestamptz,
-      add column engine_process jsonb;
+      add column engine_process jsonb,
+      add column engine_unsent boolean;
     create index plugin_executions_connection on plugin_executions(connection_id)
       where connection_id is not null;
     alter table browser_sessions add column standard_cdp_attempts jsonb not null default '{}';

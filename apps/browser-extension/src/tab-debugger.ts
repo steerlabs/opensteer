@@ -10,6 +10,7 @@ import {
   type BrowserSourceTabPart,
   type BrowserSourceTabShared,
 } from "@opensteer/browser-source-wire/frames";
+import type { TabShareProblemCode } from "./messages.js";
 import { maxChromeDetachReceipts } from "./storage.js";
 
 type TabFrame = Extract<BrowserSourceClientFrame, { type: `tab.${string}` }>;
@@ -34,6 +35,15 @@ type TabView = { readonly shareId: string; readonly title: string; readonly url:
 const maxShares = 64;
 const encoder = new TextEncoder();
 const browserVersion = /Chrome\/(\d+(?:\.\d+){3})/u.exec(navigator.userAgent)?.[1];
+
+export class TabShareProblem extends Error {
+  readonly reason: TabShareProblemCode;
+
+  constructor(reason: TabShareProblemCode, options?: ErrorOptions) {
+    super(reason, options);
+    this.reason = reason;
+  }
+}
 
 export class ChromeTabLink {
   readonly #assembly = new BrowserSourceTabAssembly();
@@ -260,16 +270,31 @@ export class ChromeTabDebugger {
 
   async share(sourceId: string, tab: ChromeTab): Promise<void> {
     const link = this.#links.get(sourceId);
-    if (!link || tab.id === undefined || !canDebug(tab.url ?? tab.pendingUrl ?? ""))
-      throw new Error("This tab cannot be shared with that Home.");
-    if (this.#byTab.has(tab.id)) throw new Error("This tab is already shared.");
-    if (this.#atCapacity(sourceId)) throw new Error("Too many tabs are shared.");
-    const targetId = await this.#targetId(tab.id);
-    if (this.#links.get(sourceId) !== link || !targetId)
-      throw new Error("This Chrome tab can’t be shared.");
-    if (this.#byTab.has(tab.id) || this.#atCapacity(sourceId))
-      throw new Error("This tab is already shared or there are too many shared tabs.");
-    this.#share(sourceId, link, tab.id, tab, targetId);
+    const tabId = tab.id;
+    if (!link) throw new TabShareProblem("home-offline");
+    if (tabId === undefined) throw new TabShareProblem("tab-unavailable");
+    if (!canDebug(tab.url ?? tab.pendingUrl ?? "")) throw new TabShareProblem("unsupported-page");
+
+    const alreadySharedHere = () => {
+      if (this.#links.get(sourceId) !== link) throw new TabShareProblem("home-offline");
+      const existing = this.#byTab.get(tabId);
+      if (existing && existing.link !== link) throw new TabShareProblem("shared-elsewhere");
+      if (existing?.detachFailed) throw new TabShareProblem("detach-unconfirmed");
+      if (!existing && this.#atCapacity(sourceId)) throw new TabShareProblem("capacity");
+      return existing !== undefined;
+    };
+    const detaching = this.#detaching.get(tabId);
+    if (detaching)
+      await detaching.catch((cause: unknown) => {
+        throw new TabShareProblem("detach-unconfirmed", { cause });
+      });
+    if (alreadySharedHere()) return;
+    const targetId = await this.#targetId(tabId).catch((cause: unknown) => {
+      throw new TabShareProblem("target-unavailable", { cause });
+    });
+    if (alreadySharedHere()) return;
+    if (!targetId) throw new TabShareProblem("target-unavailable");
+    this.#share(sourceId, link, tabId, tab, targetId);
   }
 
   stop(sourceId: string, shareId: string): void {
@@ -331,9 +356,9 @@ export class ChromeTabDebugger {
     };
     const group = opener?.group ?? { detaching: new Set(), detachFailed: false };
     const share: Share = { info, link, tabId, sourceId, group };
+    if (!link.announce(info)) throw new TabShareProblem("home-offline");
     this.#shares.set(info.shareId, share);
     this.#byTab.set(tabId, share);
-    link.announce(info);
   }
 
   #unshare(share: Share): Promise<void> {

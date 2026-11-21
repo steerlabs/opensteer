@@ -45,6 +45,74 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("waits for a disconnected relay's browser teardown before it confirms the drain", async () => {
+    const teardown = Promise.withResolvers<void>();
+    const close = vi.fn(() => teardown.promise);
+    const bridgeToken = "local-browser-bridge-token-with-entropy";
+    const publicKeyPem = generateKeyPairSync("ed25519")
+      .publicKey.export({ format: "pem", type: "spki" })
+      .toString();
+    const encodedKeys = Buffer.from(JSON.stringify([{ keyId: "host", publicKeyPem }])).toString(
+      "base64url",
+    );
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    const attach = runtime.attach.bind(runtime);
+    vi.spyOn(runtime, "attach").mockImplementation(async (...args) => {
+      const attachment = await attach(...args);
+      const closeAttachment = attachment.close.bind(attachment);
+      vi.spyOn(attachment, "close").mockImplementation(async (confirmPages) => {
+        await close();
+        await closeAttachment(confirmPages);
+      });
+      return attachment;
+    });
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token: bridgeToken, updateAttachKeys: () => {} },
+    });
+    let socket: WebSocket | undefined;
+    try {
+      const { host, port } = await server.start();
+      socket = new WebSocket(`ws://${host}:${port}/v1/browser`, {
+        headers: {
+          authorization: "Bearer test",
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-attach-keys": encodedKeys,
+        },
+      });
+      const attached = Promise.withResolvers<void>();
+      socket.once("error", attached.reject);
+      socket.on("message", (data) => {
+        if (JSON.parse(String(data)).type === "browser.attached") attached.resolve();
+      });
+      await withTimeout(attached.promise, 2_000, {
+        timeoutError: () => new Error("Relay did not attach."),
+      });
+      const disconnected = once(socket, "close");
+      socket.close();
+      await disconnected;
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+
+      const confirmed = vi.fn();
+      const draining = server.drainRunnerAttachments().then(confirmed);
+      await flushMicrotasks();
+      expect(confirmed).not.toHaveBeenCalled();
+      teardown.resolve();
+      await draining;
+      expect(confirmed).toHaveBeenCalledWith(true);
+    } finally {
+      teardown.resolve();
+      socket?.terminate();
+      await server.close();
+    }
+  });
+
   it.each([
     { count: 2, bytes: 0, code: 1007, admitted: 1, duplicate: true },
     { count: standardCdpMaxPending + 1, bytes: 0, code: 1013, admitted: standardCdpMaxPending },

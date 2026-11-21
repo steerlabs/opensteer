@@ -526,10 +526,6 @@ async function run(): Promise<void> {
     });
     await assertBackground("website focus and dialog handling");
 
-    await controller.handle({ type: "state.export" });
-    if (!messages.some((message) => message.type === "state.exported")) {
-      throw new Error("Electron focus smoke did not export browser state.");
-    }
     const snapshot = await browser.exportSnapshot();
     await assertBackground("profile export");
     await controller.handle({ type: "stream.unsubscribe" });

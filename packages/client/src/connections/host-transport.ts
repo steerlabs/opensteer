@@ -368,7 +368,11 @@ export class HostTransport {
         if (owner?.signal.aborted)
           throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
-        if (error instanceof HostTransportError && error.code === "deployment-changed") throw error;
+        if (
+          error instanceof HostTransportError &&
+          (error.code === "deployment-changed" || error.code === "response-too-large")
+        )
+          throw error;
         if (unauthorizedObserved)
           throw new HostTransportError("unreachable", {
             code: "unauthorized",

@@ -1,6 +1,5 @@
 import { createId, DeviceIdSchema } from "@opensteer/core";
-import { machineAccessPolicyDefault } from "@opensteer/protocol";
-import { enrollTestRunner } from "@opensteer/database/test-support/store";
+import { machineAccessPolicyDefault, type RunnerModuleName } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
@@ -16,42 +15,106 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)("computer_list paginat
     const f = await createPersonalOwnerFixture();
     try {
       if (!f.resources) throw new Error("Personal owner resources missing");
+      const ids = Array.from({ length: 101 }, () => createId("runner"));
+      const now = new Date();
+      const allowedModules = sql<readonly RunnerModuleName[]>`
+        '["browser","integrations","messaging","shell"]'::jsonb
+      `;
+      const tokenHash = (id: string) => `sha256:pagination-token-${id}`;
+      await f.database
+        .insertInto("runners")
+        .values(
+          ids.map((id) => ({
+            id,
+            ownerKind: "user",
+            ownerUserId: f.ownerId,
+            name: `Computer ${id}`,
+            kind: "local",
+            publicKeyPem: "unused",
+            publicKeyFingerprint: `sha256:pagination-key-${id}`,
+            enrollmentTokenHash: tokenHash(id),
+            capabilities: sql`'["filesystem"]'::jsonb`,
+            allowedModules,
+            moduleDescriptors: sql`'{"browser":{"runtimeId":"browser","wireVersion":2}}'::jsonb`,
+            device: null,
+            connectionGeneration: 1,
+            maxConcurrentRuns: null,
+            enrolledAt: now,
+            lastSeenAt: now,
+            revokedAt: null,
+          })),
+        )
+        .execute();
       await f.database
         .insertInto("runnerEnrollments")
-        .values({
-          id: `ren_${randomUUID()}`,
-          name: "Hosting computer",
-          runnerId: f.resources.runnerId,
-          tokenHash: "sha256:pagination-home",
-          allowedModules: sql`'["agents"]'::jsonb`,
-          createdBy: null,
-          ownerKind: "deployment",
-          ownerUserId: null,
-          idempotencyKey: "pagination-home",
-          requestFingerprint: "sha256:pagination-home",
-          runnerKind: "main",
-          expiresAt: new Date(),
-          consumedAt: new Date(),
-          createdAt: new Date(),
-        })
+        .values([
+          {
+            id: `ren_${randomUUID()}`,
+            name: "Hosting computer",
+            runnerId: f.resources.runnerId,
+            tokenHash: "sha256:pagination-home",
+            allowedModules: sql`'["agents"]'::jsonb`,
+            createdBy: null,
+            ownerKind: "deployment",
+            ownerUserId: null,
+            idempotencyKey: "pagination-home",
+            requestFingerprint: "sha256:pagination-home",
+            runnerKind: "main",
+            expiresAt: now,
+            consumedAt: now,
+            createdAt: now,
+          },
+          ...ids.map((id) => ({
+            id: `ren_${randomUUID()}`,
+            name: `Computer ${id}`,
+            runnerId: id,
+            tokenHash: tokenHash(id),
+            allowedModules,
+            createdBy: f.ownerId,
+            ownerKind: "user" as const,
+            ownerUserId: f.ownerId,
+            idempotencyKey: `pagination-${id}`,
+            requestFingerprint: tokenHash(id),
+            runnerKind: "local" as const,
+            expiresAt: now,
+            consumedAt: now,
+            createdAt: now,
+          })),
+        ])
         .execute();
-      const ids = Array.from({ length: 101 }, () => createId("runner"));
       await f.database
         .updateTable("personalRemoteAccess")
         .set({ mode: "private", routeOrigin: "https://personal.mcp.test", generation: 1 })
         .execute();
-      for (const id of ids) {
-        await enrollTestRunner(f.store, {
-          createdBy: f.ownerId,
-          environmentId: createId("environment"),
-          runnerId: id,
-          runnerKind: "local",
-          allowedModules: ["browser", "integrations", "messaging", "shell"],
-          modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
-          name: `Computer ${id}`,
-          tokenSuffix: id,
-        });
-      }
+      await f.database
+        .insertInto("devices")
+        .values(
+          ids.map((id) => ({
+            id: DeviceIdSchema.parse(id),
+            deploymentId: f.deployment.id,
+            ownerKind: "user",
+            ownerUserId: f.ownerId,
+            name: `Computer ${id}`,
+            kind: "unknown",
+            platform: null,
+            form: null,
+            accessPolicy: sql`${JSON.stringify(machineAccessPolicyDefault)}::jsonb`,
+            removedAt: null,
+          })),
+        )
+        .execute();
+      await f.database
+        .insertInto("deviceDrivers")
+        .values(
+          ids.map((id) => ({
+            deviceId: DeviceIdSchema.parse(id),
+            role: "self",
+            runnerId: id,
+            generation: 1,
+            detachedAt: null,
+          })),
+        )
+        .execute();
       const driverId = [...ids].sort().at(-1)!;
       const phoneId = DeviceIdSchema.parse(createId("device"));
       await f.database

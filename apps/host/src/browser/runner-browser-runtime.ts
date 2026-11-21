@@ -1,12 +1,13 @@
 import { RawCdpChunks, RawCdpWriter } from "@opensteer/protocol/raw-cdp-relay";
 import {
   StandardCdpChunkSchema,
+  type StandardCdpAttemptReconciliation,
   type StandardCdpLeaseReconciliation,
   type StandardCdpMode,
 } from "@opensteer/protocol/standard-cdp";
 import { OpensteerError, type RunnerId } from "@opensteer/core";
 import { sameProfileBinding } from "@opensteer/database";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
   RunnerAuxiliaryFrameFenceSchema,
   RunnerAuxiliaryRequestIdSchema,
@@ -38,6 +39,7 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { browserRuntimeCompatibilityReason } from "./browser-runtime-compatibility.js";
 import type {
   BrowserRuntimeConnection,
+  PersonBrowserReconnect,
   BrowserRuntimePlacement,
   BrowserRuntimeTarget,
   BrowserRuntimeTargetResolver,
@@ -180,7 +182,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const hooks: RunnerBrowserHooks = {
       onAttached: (stream) => this.#notifyAdmission(stream.identity.runnerId),
       onFrame: (stream, frame) => this.#handleFrame(stream, frame.header, frame.frame),
-      onLost: (stream) => this.#handleDisconnect(stream),
+      onLost: (stream, reason) => this.#handleDisconnect(stream, reason),
       onMessage: (stream, message) => this.#handleMessage(stream, message),
     };
     this.#unsubscribe = this.#registry.subscribe(hooks);
@@ -228,7 +230,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     );
   }
 
-  waitForTarget(runnerId: RunnerId, signal: AbortSignal): Promise<void> {
+  waitForTarget(runnerId: RunnerId, signal: AbortSignal, oldBootId?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const finish = (error?: unknown) => {
         this.#admissionWaiters.delete(check);
@@ -241,7 +243,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         if (signal.aborted) return abort();
         if (this.#closed) return finish(relayError("The browser relay router is closed."));
         const stream = this.#registry.stream(runnerId);
-        if (!stream) return;
+        if (!stream || (oldBootId !== undefined && stream.identity.bootId === oldBootId)) return;
         const reason = this.#admissionReason(stream);
         if (!reason) finish();
         else if (!this.pendingAdmission(runnerId)) finish(relayError(reason));
@@ -311,6 +313,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
             },
           }
         : {}),
+      ...(browser.standardCdpAttemptRecovery === 1
+        ? {
+            reconcileStandardCdpAttempt: (attempt: StandardCdpAttemptReconciliation) =>
+              this.#reconcileStandardCdpLease(expectedFence, attempt),
+          }
+        : {}),
       ...(browser.standardCdp === 1
         ? {
             connectStandard: (ticket: string, signal: AbortSignal) =>
@@ -323,8 +331,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
               ),
           }
         : {}),
-      connect: (ticket) => {
-        const connection = new RunnerBrowserConnection(this);
+      connect: (ticket, reconnect) => {
+        const connection = new RunnerBrowserConnection(this, false, reconnect);
         queueMicrotask(() => {
           void this.#open(connection, placement.runnerId, browser.runtimeId, expectedFence, ticket);
         });
@@ -335,16 +343,26 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
   async #reconcileStandardCdpLease(
     fence: RunnerAuxiliaryFrameFence,
-    lease?: StandardCdpLeaseReconciliation,
+    reconciliation?: StandardCdpAttemptReconciliation | StandardCdpLeaseReconciliation,
   ): Promise<string> {
+    const attempt = reconciliation && "attachmentId" in reconciliation ? reconciliation : undefined;
+    const lease = reconciliation && "profileId" in reconciliation ? reconciliation : undefined;
     this.#requireExpectedStream(fence.runnerId, fence);
     const result = await this.#request(fence.runnerId, fence, {
       expectedType: "browser.standard-cdp.reconciled",
-      ...(lease ? { timeoutMs: null } : {}),
-      message: { ...fence, type: "browser.standard-cdp.reconcile", ...(lease ? { lease } : {}) },
+      ...(reconciliation ? { timeoutMs: null } : {}),
+      message: {
+        ...fence,
+        type: "browser.standard-cdp.reconcile",
+        ...(lease ? { lease } : {}),
+        ...(attempt ? { attempt } : {}),
+      },
     });
-    if (result.type !== "browser.standard-cdp.reconciled")
-      throw relayError("The browser did not acknowledge exclusive CDP settlement.");
+    if (
+      result.type !== "browser.standard-cdp.reconciled" ||
+      (attempt && result.attachmentId !== attempt.attachmentId)
+    )
+      throw relayError("The browser did not acknowledge CDP settlement.");
     this.#requireExpectedStream(fence.runnerId, fence);
     return result.runtimeBootId;
   }
@@ -864,7 +882,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     channel.connection.acceptFrame(frame);
   }
 
-  #handleDisconnect(stream: RunnerAuxiliaryStream): void {
+  #handleDisconnect(stream: RunnerAuxiliaryStream, reason: RunnerStreamLossReason): void {
     for (const [id, late] of this.#lateErasures)
       if (sameRunnerAuxiliaryFence(late.fence, stream.fence)) this.#lateErasures.delete(id);
     if (
@@ -886,11 +904,53 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
     for (const channel of this.#channels.values()) {
       if (!sameRunnerAuxiliaryFence(channel.placementLease.fence, stream.fence)) continue;
-      channel.connection.acceptError(error);
-      this.#dropChannel(channel, 1011, "Browser stream lost");
+      const reconnect = channel.connection.reconnect;
+      if (reason === "device-restarting" && reconnect && channel.connection.prepareForRestart()) {
+        this.#forgetChannel(channel);
+        void this.#reconnectPerson(channel.connection, reconnect, channel.placementLease, stream);
+      } else {
+        channel.connection.acceptError(error);
+        this.#dropChannel(channel, 1011, "Browser stream lost");
+      }
       channel.placementLease.released = true;
     }
     this.#notifyAdmission(stream.identity.runnerId);
+  }
+
+  async #reconnectPerson(
+    connection: RunnerBrowserConnection,
+    reconnect: PersonBrowserReconnect,
+    lease: PlacementCapabilityLease,
+    oldStream: RunnerAuxiliaryStream,
+  ): Promise<void> {
+    const timeout = AbortSignal.timeout(12_000);
+    const expire = () => connection.terminate();
+    timeout.addEventListener("abort", expire, { once: true });
+    const deadline = AbortSignal.any([connection.lifetime, timeout]);
+    try {
+      await reconnect.prepare();
+      deadline.throwIfAborted();
+      await this.waitForTarget(lease.runnerId, deadline, oldStream.identity.bootId);
+      const stream = this.#registry.stream(lease.runnerId);
+      if (
+        !stream ||
+        stream.identity.modules.browser?.runtimeId !== lease.runtimeId ||
+        stream.identity.bootId === oldStream.identity.bootId
+      )
+        throw relayError("The browser computer could not reconnect the page.");
+      await this.#open(
+        connection,
+        lease.runnerId,
+        lease.runtimeId,
+        stream.fence,
+        reconnect.ticket(),
+      );
+    } catch (error) {
+      connection.acceptError(normalizeError(error));
+      connection.acceptClose(1011, "Browser stream could not reconnect");
+    } finally {
+      timeout.removeEventListener("abort", expire);
+    }
   }
 
   async #closeChannel(channel: RoutedChannel, code: number, reason: string): Promise<void> {
@@ -1163,7 +1223,12 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #dropChannel(channel: RoutedChannel, code: number, reason: string): void {
-    if (this.#channels.get(channel.channelId) !== channel) return;
+    if (!this.#forgetChannel(channel)) return;
+    channel.connection.acceptClose(code, reason);
+  }
+
+  #forgetChannel(channel: RoutedChannel): boolean {
+    if (this.#channels.get(channel.channelId) !== channel) return false;
     this.#channels.delete(channel.channelId);
     const placementLease = channel.placementLease;
     placementLease.channels.delete(channel.channelId);
@@ -1172,7 +1237,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       placementLease.renewalTimer = undefined;
       this.#leaseByPlacement.delete(placementLease.placementKey);
     }
-    channel.connection.acceptClose(code, reason);
+    return true;
   }
 
   async #releasePlacementLease(placementLease: PlacementCapabilityLease): Promise<void> {
@@ -1194,6 +1259,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 
 class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConnection {
   #closed = false;
+  readonly #lifetime = new AbortController();
+  readonly reconnect: PersonBrowserReconnect | undefined;
   #controlBytes = 0;
   readonly #controls: Buffer[] = [];
   readonly #frames = new Map<string, Buffer>();
@@ -1205,9 +1272,14 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   readonly raw: { reader: RawCdpChunks; writer: RawCdpWriter } | undefined;
   readyState: number = WebSocket.CONNECTING;
 
-  constructor(router: RunnerBrowserRuntimeRouter, standard = false) {
+  constructor(
+    router: RunnerBrowserRuntimeRouter,
+    standard = false,
+    reconnect?: PersonBrowserReconnect,
+  ) {
     super();
     this.#router = router;
+    this.reconnect = reconnect;
     this.raw = standard
       ? {
           reader: new RawCdpChunks(),
@@ -1259,6 +1331,17 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
     if (this.readyState === WebSocket.CLOSED) return;
     this.readyState = WebSocket.CLOSING;
     this.#router.terminateConnection(this);
+  }
+
+  get lifetime(): AbortSignal {
+    return this.#lifetime.signal;
+  }
+
+  prepareForRestart(): boolean {
+    if (this.readyState !== WebSocket.OPEN) return false;
+    this.readyState = WebSocket.CONNECTING;
+    this.#clearQueues();
+    return true;
   }
 
   acceptOpen(): void {
@@ -1324,13 +1407,18 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   acceptClose(code: number, reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#lifetime.abort();
     this.raw?.writer.close();
     this.readyState = WebSocket.CLOSED;
+    this.#clearQueues();
+    this.emit("close", code, Buffer.from(reason.slice(0, 1_000), "utf8"));
+  }
+
+  #clearQueues(): void {
     this.#controls.length = 0;
     this.#controlBytes = 0;
     this.#frames.clear();
     this.#frameBytes = 0;
-    this.emit("close", code, Buffer.from(reason.slice(0, 1_000), "utf8"));
   }
 
   #schedulePump(): void {

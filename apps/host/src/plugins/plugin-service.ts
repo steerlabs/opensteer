@@ -11,6 +11,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { engineActiveVersions, engineDemand } from "./engine-storage.js";
 import {
   engineProcessGroupGone,
+  engineProcessMachineId,
   engineProcessNamespace,
   type EngineProcess,
 } from "./engine-process.js";
@@ -67,6 +68,7 @@ export interface PluginServiceOptions {
   readonly credentialKey: Uint8Array;
   readonly origin: string;
   readonly webhookOrigin?: () => Promise<string | undefined>;
+  readonly agentWorkStopped?: () => boolean;
   readonly bridge?: string;
   readonly processEntry?: URL;
   readonly catalogUrl?: string;
@@ -136,6 +138,7 @@ export class PluginService {
   readonly #executionChildren = new Map<string, number>();
   readonly #engineCallbacks = new Map<string, Map<Promise<void>, string | undefined>>();
   #namespace: Promise<string | null> | undefined;
+  #machineId: Promise<string | null> | undefined;
   #engine: EngineProcess | null = null;
   readonly #drainedExecutions = new EventEmitter();
   readonly #elicits = new Map<
@@ -373,7 +376,10 @@ export class PluginService {
   }
   async #launch() {
     await this.#cleaning;
-    const namespace = await (this.#namespace ??= engineProcessNamespace());
+    const [namespace, machineId] = await Promise.all([
+      (this.#namespace ??= engineProcessNamespace()),
+      (this.#machineId ??= engineProcessMachineId()),
+    ]);
     if (this.#closed) return;
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer);
     const generation = this.#state.generation + 1;
@@ -387,7 +393,10 @@ export class PluginService {
     });
     this.#child = child;
     const launchId = randomUUID();
-    this.#engine = namespace && child.pid ? { namespace, pid: child.pid, launchId } : null;
+    this.#engine =
+      namespace && child.pid
+        ? { namespace, pid: child.pid, launchId, ...(machineId ? { machineId } : {}) }
+        : null;
     const callbacks = new Map<Promise<void>, string | undefined>();
     let ready = false;
     let resolveReady!: () => void;
@@ -533,7 +542,15 @@ export class PluginService {
         250 * 2 ** (this.#failures - 1),
       );
     });
-    this.#send(child, { type: "init", config: this.#config });
+    this.#send(child, {
+      type: "init",
+      config: {
+        ...this.#config,
+        ...(this.#options.agentWorkStopped
+          ? { agentWorkStopped: this.#options.agentWorkStopped() }
+          : {}),
+      },
+    });
     try {
       await withTimeout(started, 30_000, {
         timeoutError: () =>
@@ -566,8 +583,11 @@ export class PluginService {
   }
   async executionContactLost(id: string, engine: EngineProcess): Promise<boolean> {
     if (engine.launchId === this.#engine?.launchId) return false;
-    const namespace = await (this.#namespace ??= engineProcessNamespace());
-    if (!engineProcessGroupGone(engine, namespace)) return false;
+    const [namespace, machineId] = await Promise.all([
+      (this.#namespace ??= engineProcessNamespace()),
+      (this.#machineId ??= engineProcessMachineId()),
+    ]);
+    if (!engineProcessGroupGone(engine, namespace, machineId)) return false;
     // Unscoped callbacks from this engine can also be in the middle of work for this call.
     const callbacks = this.#engineCallbacks.get(engine.launchId);
     return (
@@ -991,6 +1011,7 @@ export class PluginService {
   readonly skills = this.#method("skills");
   readonly skillFiles = this.#method("skillFiles");
   readonly manage = this.#method("manage");
+  readonly agentWork = this.#method("agentWork");
   readonly webhook = this.#method("webhook");
   readonly page = this.#method("page");
   listExecutions(): PluginExecution[] {

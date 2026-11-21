@@ -17,7 +17,7 @@ import {
   type DirectOperationContext,
 } from "../../agent-sessions/agent-session-service.js";
 import type { ConnectionCaller } from "../agent-caller.js";
-import { directResult, requireDirectWork } from "./direct.js";
+import { directResult, failedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { ComputerInventoryAuthority } from "../../computer-use/computer-use-service.js";
 import type { DeviceService } from "../../devices/device-service.js";
@@ -146,6 +146,7 @@ export class DeviceToolHandlers {
             throw new OperationOutcomeUnknown(failure.message);
           return result;
         },
+        scriptFailure,
         summarize: (result) => ({
           failed: result.isError === true,
           content: result.content.length,
@@ -505,6 +506,14 @@ export class DeviceToolHandlers {
 function sessionScriptOutput(
   outcome: DirectOperationResult<Awaited<ReturnType<DeviceService["runSessionComputerCode"]>>>,
 ) {
+  if (outcome.status === "failed" && outcome.scriptError) {
+    const { status, taskId, operationId, next } = outcome;
+    return failedScriptOutput(
+      { status, taskId, operationId, next },
+      outcome.scriptError,
+      outcome.result?.content,
+    );
+  }
   const receipt = directResult(
     outcome.status === "completed"
       ? { status: outcome.status, taskId: outcome.taskId, operationId: outcome.operationId }

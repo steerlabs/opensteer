@@ -5,6 +5,7 @@ import {
   RunnerBootIdSchema,
   RunnerToHostMessageSchema,
   runnerProofFormatVersion,
+  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -15,6 +16,8 @@ import { WorkHomeEnrollmentRefused } from "./enrollment-preview.js";
 import { ReconnectingHostConnection } from "./host-connection.js";
 
 const token = "t".repeat(32);
+const previewFailed = "Couldn’t check what this Home shares. Try again.";
+const previewRequired = "Read what this work Home shares first, then try again.";
 
 describe("Runner enrollment preview", () => {
   it.each([
@@ -30,11 +33,25 @@ describe("Runner enrollment preview", () => {
       refusal: "Northwind doesn't allow other devices to join this work Home.",
     },
     { label: "personal Home", body: {} },
+    { label: "Home requires preview again", body: {}, enrollmentRefusal: previewRequired },
     { label: "older Home", status: 404 },
-    { label: "invalid token", status: 403 },
-    { label: "unreachable preview", drop: true },
-    { label: "invalid preview", body: { organizationName: "Northwind", devices: "unknown" } },
-    { label: "redirecting preview", status: 307 },
+    { label: "invalid token", status: 403, refusal: previewFailed },
+    { label: "unreachable preview", drop: true, refusal: previewFailed },
+    { label: "rate-limited preview", status: 429, refusal: previewFailed },
+    { label: "temporarily unavailable preview", status: 503, refusal: previewFailed },
+    {
+      label: "invalid preview",
+      body: { organizationName: "Northwind", devices: "unknown" },
+      refusal: previewFailed,
+    },
+    {
+      label: "incomplete preview",
+      body: { organizationName: "Northwind" },
+      refusal: previewFailed,
+    },
+    { label: "redirecting preview", status: 307, refusal: previewFailed },
+    { label: "hosting Runner", runnerKind: "main" },
+    { label: "managed service", runnerKind: "managed" },
     {
       label: "persisted identity",
       enrolled: true,
@@ -81,7 +98,20 @@ describe("Runner enrollment preview", () => {
       socket.once("message", (raw) => {
         const proof = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString()));
         actions.push(proof.type);
-        abort.abort();
+        if (preview.enrollmentRefusal) {
+          socket.send(
+            JSON.stringify({
+              type: "host.error",
+              error: {
+                code: "forbidden",
+                reason: workHomeEnrollmentPreviewRequiredReason,
+                message: preview.enrollmentRefusal,
+                retryable: false,
+              },
+            }),
+          );
+          socket.close(4003);
+        } else abort.abort();
       });
     });
     server.listen(0, "127.0.0.1");
@@ -92,7 +122,7 @@ describe("Runner enrollment preview", () => {
       const config = parseRunnerConfig({
         OPENSTEER_HOST_URL: `http://127.0.0.1:${address.port}`,
         OPENSTEER_RUNNER_ENROLLMENT_TOKEN: token,
-        OPENSTEER_RUNNER_KIND: "local",
+        OPENSTEER_RUNNER_KIND: preview.runnerKind ?? "local",
         OPENSTEER_RUNNER_MODULES: "shell",
       });
       const pair = generateKeyPairSync("ed25519");
@@ -128,13 +158,16 @@ describe("Runner enrollment preview", () => {
         await expect(result).rejects.toBeInstanceOf(WorkHomeEnrollmentRefused);
         await expect(result).rejects.toThrow(preview.refusal);
         expect(actions).toEqual(["preview"]);
+      } else if (preview.enrollmentRefusal) {
+        await expect(connection.run(abort.signal)).rejects.toThrow(preview.enrollmentRefusal);
+        expect(actions).toEqual(["preview", "opened socket", "runner.enroll"]);
       } else {
         await connection.run(abort.signal);
         expect(actions).toEqual(
           preview.enrolled
             ? ["opened socket", "runner.authenticate"]
             : [
-                "preview",
+                ...(preview.runnerKind ? [] : ["preview"]),
                 ...(preview.notice ? [preview.notice] : []),
                 "opened socket",
                 "runner.enroll",
@@ -142,7 +175,7 @@ describe("Runner enrollment preview", () => {
         );
       }
       expect(requests).toEqual(
-        preview.enrolled
+        preview.enrolled || preview.runnerKind
           ? []
           : [
               {

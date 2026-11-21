@@ -133,8 +133,13 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(ownRequest.isError, JSON.stringify(ownRequest.content)).not.toBe(true);
     const hidden = await readRequest(hiddenRequest.request.id);
     const missing = await readRequest(createId("request"));
-    expect(errorText(hidden)).toBe(errorText(missing));
-    expect(hidden.structuredContent).toEqual(missing.structuredContent);
+    expect(JSON.stringify(hidden)).toBe(JSON.stringify(missing));
+    expect(hidden).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "not_found", message: "That item is unavailable.", next: null },
+      },
+    });
 
     // Subagents: the person's Run's subagent reads exactly like one that does not exist.
     const ownNode = await subagent(storeFixture, ownRun.runId);
@@ -184,6 +189,32 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         await call("opensteer_delegation_status", { delegationId: createId("delegation") }),
       ),
     ).toBe("Task is unavailable");
+
+    // A Run of the connection's own task can delegate work the connection can follow.
+    const child = await storeFixture.store.delegateThread({
+      accessMode: "full-access",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: "lineage-delegation-visible",
+      modelSelection: testModelSelection,
+      origin: { kind: "run", parentRunId: ownRun.runId, parentThreadId: own },
+      task: [{ type: "text", text: "Sub-work" }],
+      title: "Child of the connection's task",
+    });
+    const delegationId = child.assignment.id;
+    const identifiers = { delegationId, taskId: child.thread.id, parentTaskId: own };
+    expect(
+      (await call("opensteer_delegation_status", { delegationId })).structuredContent,
+    ).toMatchObject({ ...identifiers, status: "open" });
+    await storeFixture.store.cancelAssignment({
+      assignmentId: delegationId,
+      requestedBy: f.userId,
+      idempotencyKey: "lineage-delegation-cancelled",
+    });
+    expect(
+      (await call("opensteer_delegation_wait", { delegationId })).structuredContent,
+    ).toMatchObject({ status: "settled", task: identifiers });
   });
 
   it("task_read's recent places and a tab's users show only the lineage's tasks", async ({

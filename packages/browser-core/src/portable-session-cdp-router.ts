@@ -371,12 +371,14 @@ export class SessionCdpRouter {
     this.#unclaimedPages.delete(rootTargetId);
   }
 
-  async unregisterSession(sessionId: string): Promise<void> {
+  async unregisterSession(sessionId: string, confirm = false): Promise<void> {
     const state = this.#sessions.get(sessionId);
     if (!state) return;
     this.#sessions.delete(sessionId);
-    for (const connection of state.session.connections) this.#closeConnection(connection);
+    const connections = [...state.session.connections];
+    for (const connection of connections) this.#closeConnection(connection);
     for (const targetId of state.session.ownedTargetIds) this.#ownerByTargetId.delete(targetId);
+    if (confirm) await Promise.all(connections.map((connection) => connection.settlement.promise));
   }
 
   get hasExclusiveContextClient(): boolean {
@@ -468,7 +470,7 @@ export class SessionCdpRouter {
   }
 
   #trackPhysicalWork<T>(state: ConnectionState, start: () => Promise<T>): Promise<T> {
-    return state.standard ? trackPromise(state.physicalWork, start) : start();
+    return trackPromise(state.physicalWork, start);
   }
 
   async close(): Promise<void> {
@@ -1931,7 +1933,9 @@ export class SessionCdpRouter {
       state.script &&
       !sessionId &&
       method !== "Target.detachedFromTarget" &&
-      method !== "Target.receivedMessageFromTarget"
+      method !== "Target.receivedMessageFromTarget" &&
+      // The durable close fence has already released the claim for this terminal event.
+      !(method === "Target.targetDestroyed" && parameters.targetId === state.script.root)
     ) {
       const id =
         readString(asRecord(parameters.targetInfo), "targetId") ??

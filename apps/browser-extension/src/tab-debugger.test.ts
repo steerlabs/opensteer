@@ -315,3 +315,63 @@ it("waits for a previously unshared popup to detach before sending the root rece
     { type: "tab.detached", shareId: f.shareId },
   ]);
 });
+
+it("re-shares the same tab on the same Home after a held debugger detach", async () => {
+  const f = await fixture(true);
+  await f.evaluate();
+  const tab = { id: 5, title: "Shared", url: "https://fixture.test/" };
+  f.debuggerRelay.connect(
+    "another-home",
+    () => true,
+    () => {},
+  );
+  await expect(f.debuggerRelay.share("another-home", tab)).rejects.toMatchObject({
+    reason: "shared-elsewhere",
+  });
+  const detach = Promise.withResolvers<void>();
+  f.detach.mockReturnValueOnce(detach.promise);
+  const stopping = f.send({
+    action: "detach",
+    requestId: crypto.randomUUID(),
+    shareId: f.shareId,
+    attachmentId: f.attachmentId,
+  });
+  const resharing = expect(f.debuggerRelay.share(f.sourceId, tab)).resolves.toBeUndefined();
+  detach.resolve();
+  await Promise.all([stopping, resharing]);
+  expect(f.debuggerRelay.list(f.sourceId)).toEqual([
+    expect.objectContaining({ shareId: f.shareId }),
+  ]);
+  expect(f.received.filter(({ type }) => type === "tab.shared")).toHaveLength(1);
+});
+
+it("publishes a new share only after the old debugger detaches, even with its receipt unacknowledged", async () => {
+  const f = await fixture(true, {
+    pending: [],
+    record: async () => {},
+    acknowledge: async () => {},
+  });
+  await f.evaluate();
+  const detach = Promise.withResolvers<void>();
+  f.detach.mockReturnValueOnce(detach.promise);
+  const stopping = f.send({
+    action: "unshare",
+    requestId: crypto.randomUUID(),
+    shareId: f.shareId,
+    attachmentId: f.attachmentId,
+  });
+  const target = f.getTargets.mock.results[0]!.value;
+  let detached = false;
+  f.getTargets.mockImplementation(async () => (detached ? await target : []));
+  const resharing = expect(
+    f.debuggerRelay.share(f.sourceId, { id: 5, title: "Shared", url: "https://fixture.test/" }),
+  ).resolves.toBeUndefined();
+  expect(f.received.filter(({ type }) => type === "tab.shared")).toHaveLength(1);
+  detached = true;
+  detach.resolve();
+  await Promise.all([stopping, resharing]);
+  expect(f.received).toContainEqual({ type: "tab.detached", shareId: f.shareId });
+  expect(f.debuggerRelay.list(f.sourceId)).toEqual([
+    expect.objectContaining({ shareId: expect.not.stringMatching(f.shareId) }),
+  ]);
+});

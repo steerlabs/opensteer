@@ -4,6 +4,7 @@ import {
   standardCdpSettledReason,
   standardCdpLeasePath,
   StandardCdpLeaseReconciliationSchema,
+  StandardCdpAttemptReconciliationSchema,
 } from "@opensteer/protocol/standard-cdp";
 export { standardCdpPath } from "@opensteer/protocol/standard-cdp";
 import {
@@ -19,6 +20,7 @@ import {
   type BrowserAttachPublicKey,
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
@@ -70,6 +72,9 @@ export class BrowserRuntimeServer {
   private readonly websocketServer: WebSocketServer;
   private readonly cdpServer: WebSocketServer;
   private closePromise: Promise<void> | null = null;
+  private readonly relayAttachments = new Map<WebSocket, Promise<void>>();
+  private relayTeardownFailed = false;
+  private relayRestartPlanned = false;
   private listening: Promise<unknown> | null = null;
   private startPromise: Promise<ListeningAddress> | undefined;
 
@@ -141,7 +146,10 @@ export class BrowserRuntimeServer {
         websocket.close(1008, "attach rejected");
         return;
       }
-      this.accept(websocket, ticket, {
+      const bridge =
+        this.relayBridge !== undefined &&
+        request.headers["x-opensteer-browser-bridge-token"] === this.relayBridge.token;
+      this.accept(websocket, ticket, bridge, {
         passkeys:
           Boolean(this.relayBridge) && request.headers["x-opensteer-browser-passkeys"] === "1",
       });
@@ -219,9 +227,12 @@ export class BrowserRuntimeServer {
       }
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (request.url === standardCdpLeasePath) {
-        const evidence = await this.runtime.reconcileStandardCdpLease(
-          StandardCdpLeaseReconciliationSchema.parse(body),
-        );
+        const reconciliation = z
+          .union([StandardCdpLeaseReconciliationSchema, StandardCdpAttemptReconciliationSchema])
+          .parse(body);
+        const evidence = await ("attachmentId" in reconciliation
+          ? this.runtime.reconcileStandardCdpAttempt(reconciliation)
+          : this.runtime.reconcileStandardCdpLease(reconciliation));
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(evidence));
         return;
@@ -265,10 +276,48 @@ export class BrowserRuntimeServer {
     return closing;
   }
 
-  private accept(websocket: WebSocket, ticket: string, options: { passkeys: boolean }): void {
+  prepareRunnerRestart(): void {
+    this.relayRestartPlanned = true;
+  }
+
+  /** Called by the desktop after the old relay has exited and before booting its replacement. */
+  async drainRunnerAttachments(): Promise<boolean> {
+    const attachments = [...this.relayAttachments];
+    for (const [socket] of attachments) socket.terminate();
+    const settled = await withTimeout(
+      Promise.allSettled(attachments.map(([, ended]) => ended)),
+      5_000,
+      { timeoutError: () => new Error("Browser attachments are still closing.") },
+    ).catch(() => null);
+    this.relayRestartPlanned = false;
+    return (
+      settled !== null &&
+      !this.relayTeardownFailed &&
+      settled.every((result) => result.status === "fulfilled")
+    );
+  }
+
+  private trackRelayAttachment(socket: WebSocket, ended: Promise<void>): void {
+    this.relayAttachments.set(socket, ended);
+    void ended
+      .catch(() => {
+        this.relayTeardownFailed = true;
+      })
+      .finally(() => {
+        this.relayAttachments.delete(socket);
+      });
+  }
+
+  private accept(
+    websocket: WebSocket,
+    ticket: string,
+    bridge: boolean,
+    options: { passkeys: boolean },
+  ): void {
     const sink = new WebSocketBrowserSink(websocket, this.maxBufferedBytes);
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
+    let restarting = false;
     const cancellation = new AbortController();
     let queuedBytes = 0;
     const queued: Buffer[] = [];
@@ -305,36 +354,50 @@ export class BrowserRuntimeServer {
       queued.push(frame);
     });
 
+    const closed = Promise.withResolvers<void>();
     websocket.once("close", () => {
       disconnected = true;
+      restarting = bridge && this.relayRestartPlanned;
       cancellation.abort();
-      void attachment?.close().catch(() => undefined);
+      closed.resolve();
     });
 
-    void this.runtime.attach(ticket, sink, { ...options, signal: cancellation.signal }).then(
-      async (attached) => {
-        attachment = attached;
-        if (disconnected) {
-          await attached.close().catch(() => undefined);
-          return;
-        }
-        if (this.relayBridge) {
-          websocket.send(
-            JSON.stringify({
-              type: "browser.attached",
-              ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
-            }),
-          );
-        }
-        // The controller owns command ordering; a paste may await a later part.
-        for (const frame of queued) void attached.handle(frame).catch(() => undefined);
-        queued.length = 0;
-      },
-      async (error: unknown) => {
-        await sendProtocolError(sink, toBrowserRuntimeError(error)).catch(() => undefined);
-        if (websocket.readyState === WebSocket.OPEN) websocket.close(1008, "attach rejected");
-      },
-    );
+    const ready = this.runtime
+      .attach(ticket, sink, {
+        ...options,
+        signal: cancellation.signal,
+        waitForCleanup: bridge,
+      })
+      .then(
+        (attached) => {
+          attachment = attached;
+          if (disconnected) return;
+          if (this.relayBridge) {
+            websocket.send(
+              JSON.stringify({
+                type: "browser.attached",
+                ...(attached.initialPage ? { initialPage: attached.initialPage } : {}),
+              }),
+            );
+          }
+          // The controller owns command ordering; a paste may await a later part.
+          for (const frame of queued) void attached.handle(frame).catch(() => undefined);
+          queued.length = 0;
+        },
+        async (error: unknown) => {
+          await sendProtocolError(sink, toBrowserRuntimeError(error)).catch(() => undefined);
+          if (websocket.readyState === WebSocket.OPEN) websocket.close(1008, "attach rejected");
+        },
+      );
+    const ended = closed.promise.then(async () => {
+      try {
+        await ready;
+      } finally {
+        await attachment?.close(bridge, restarting);
+      }
+    });
+    if (bridge) this.trackRelayAttachment(websocket, ended);
+    else void ended.catch(() => undefined);
   }
 
   private acceptStandardCdp(websocket: WebSocket, ticket: string, bridge: boolean): void {
@@ -380,7 +443,11 @@ export class BrowserRuntimeServer {
         outboundCount--;
       }
     };
-    websocket.once("close", () => close(1000, "CDP disconnected"));
+    const closed = Promise.withResolvers<void>();
+    websocket.once("close", () => {
+      close(1000, "CDP disconnected");
+      closed.resolve();
+    });
     websocket.on("error", () => close(1011, "CDP transport failed"));
     const ready = this.runtime.attachStandardCdp(ticket, overloaded, cancellation.signal).then(
       (client) => {
@@ -416,6 +483,15 @@ export class BrowserRuntimeServer {
         return undefined;
       },
     );
+
+    if (bridge)
+      this.trackRelayAttachment(
+        websocket,
+        closed.promise.then(async () => {
+          await ready;
+          await attachment?.settled;
+        }),
+      );
 
     websocket.on("message", (raw: RawData, binary: boolean) => {
       if (cancellation.signal.aborted || detaching) return;

@@ -1,13 +1,21 @@
 import { localNamespace } from "../plugins/provider-names.js";
+import { sign } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
+  hostApiVersionHeader,
+  runFileNameHeader,
+  runFileTransferContentType,
+  runFileTransferPath,
+  runFileTransferProofPayload,
   runnerIntegrationsProtocolVersion,
   type HostRunFileRequest,
   type HostToRunnerMessage,
+  type RunFileTransfer,
 } from "@opensteer/protocol";
 import { ComputerAppError, RunFiles, type ComputerAppProvider } from "@opensteer/runner";
 import type WebSocket from "ws";
@@ -26,6 +34,7 @@ import {
   dispatchCallerRun,
   resetMachineAccessDatabase,
   startMachineAccessWireHost,
+  type PrimaryConnection,
 } from "./machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -85,7 +94,7 @@ integration("files between a Run and an app on another computer", () => {
     closers = [];
   }, 60_000);
 
-  async function connected(appFiles: boolean) {
+  async function connected(appFiles: boolean, runFileProof = false) {
     const host = await startMachineAccessWireHost(databaseUrl, {
       remoteAccess: true,
       manualRunner: true,
@@ -102,6 +111,7 @@ integration("files between a Run and an app on another computer", () => {
     const caller = await connectCallerMachine(host, {
       name: "Caller",
       runFiles: true,
+      runFileProof,
       token: host.hostingRunnerEnrollmentToken,
     });
     closers.unshift(() => caller.close());
@@ -158,6 +168,7 @@ integration("files between a Run and an app on another computer", () => {
     return {
       caller,
       gateway,
+      origin: host.origin,
       root,
       sent,
       target: runFiles("target"),
@@ -192,47 +203,111 @@ integration("files between a Run and an app on another computer", () => {
     });
   }
 
-  it("hands a Run an attachment from another computer, at a path local to it", async () => {
-    const { caller, gateway, root, target, exportAttachment } = await connected(true);
-    const signal = new AbortController().signal;
-    answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
-      if (request.type !== "host.run-file.receive") throw new Error("Expected a receive");
-      const file = await target.download(request.transfers[0]!, signal);
-      return { paths: [await target.install(file, join(root, "exports"), signal)] };
+  async function redeemWithoutProof(origin: URL, transfer: RunFileTransfer, method: "GET" | "PUT") {
+    const response = await fetch(new URL(runFileTransferPath(transfer.id), origin), {
+      method,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        authorization: `Bearer ${transfer.token}`,
+        ...(method === "PUT"
+          ? {
+              "content-type": runFileTransferContentType,
+              [runFileNameHeader]: "chart.png",
+            }
+          : {}),
+      },
+      ...(method === "PUT" ? { body: photo } : {}),
     });
-    const exported = (await pluginCall(gateway, exportAttachment, { attachmentId: "at_1" })).value;
-    expect(exported).toMatchObject({
-      mediaType: "image/heic",
-      name: "IMG_1.HEIC",
-      sizeBytes: photo.byteLength,
-    });
-    const { path } = exported as { readonly path: string };
-    expect(path.startsWith(join(root, "exports"))).toBe(true);
-    await expect(readFile(path)).resolves.toEqual(photo);
-  });
+    await response.arrayBuffer();
+    return response.status;
+  }
 
-  it("sends a file from a Run through an app on another computer", async () => {
-    const { caller, gateway, sent, target, sendMessage } = await connected(true);
-    const signal = new AbortController().signal;
-    answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
-      if (request.type !== "host.run-file.send") throw new Error("Expected a send");
-      await target.upload(
-        request.files[0]!.transfer,
-        { body: Readable.from([photo]), name: "chart.png", size: photo.byteLength },
-        signal,
-      );
-      return { paths: [] };
+  function provingFiles(target: RunFiles, primary: PrimaryConnection, request: HostRunFileRequest) {
+    return new RunFiles({
+      ...target.options,
+      proof: (id, method) =>
+        sign(
+          null,
+          Buffer.from(runFileTransferProofPayload(request, id, method)),
+          primary.privateKey,
+        ).toString("base64url"),
     });
-    expect(
-      (
-        await pluginCall(gateway, sendMessage, {
-          files: ["chart.png"],
-          to: { conversationId: "chat-1" },
-        })
-      ).value,
-    ).toEqual({ accepted: true });
-    expect(sent).toEqual([photo]);
-  });
+  }
+
+  const runners = [
+    { runner: "a proving Runner", runFileProof: true },
+    { runner: "a legacy Runner", runFileProof: false },
+  ];
+
+  it.each(runners)(
+    "hands an attachment from another computer to $runner",
+    async ({ runFileProof }) => {
+      const { caller, gateway, origin, root, target, exportAttachment } = await connected(
+        true,
+        runFileProof,
+      );
+      const signal = new AbortController().signal;
+      let unsignedStatus: number | undefined;
+      answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
+        if (request.type !== "host.run-file.receive") throw new Error("Expected a receive");
+        const [transfer] = request.transfers;
+        if (!transfer) throw new Error("Expected a transfer");
+        if (runFileProof) {
+          unsignedStatus = await redeemWithoutProof(origin, transfer, "GET");
+          if (unsignedStatus !== 403) return { message: "The transfer accepted an unsigned GET." };
+        }
+        const files = runFileProof ? provingFiles(target, caller.primary, request) : target;
+        const file = await files.download(transfer, signal);
+        return { paths: [await files.install(file, join(root, "exports"), signal)] };
+      });
+      const exported = (await pluginCall(gateway, exportAttachment, { attachmentId: "at_1" }))
+        .value;
+      if (runFileProof) expect(unsignedStatus).toBe(403);
+      expect(exported).toMatchObject({
+        mediaType: "image/heic",
+        name: "IMG_1.HEIC",
+        sizeBytes: photo.byteLength,
+      });
+      const { path } = exported as { readonly path: string };
+      expect(path.startsWith(join(root, "exports"))).toBe(true);
+      await expect(readFile(path)).resolves.toEqual(photo);
+    },
+  );
+
+  it.each(runners)(
+    "sends a file from $runner through an app on another computer",
+    async ({ runFileProof }) => {
+      const { caller, gateway, origin, sent, target, sendMessage } = await connected(
+        true,
+        runFileProof,
+      );
+      const signal = new AbortController().signal;
+      let unsignedStatus: number | undefined;
+      answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
+        if (request.type !== "host.run-file.send") throw new Error("Expected a send");
+        const file = request.files[0];
+        if (!file) throw new Error("Expected a file");
+        if (runFileProof) {
+          unsignedStatus = await redeemWithoutProof(origin, file.transfer, "PUT");
+          if (unsignedStatus !== 403) return { message: "The transfer accepted an unsigned PUT." };
+        }
+        const files = runFileProof ? provingFiles(target, caller.primary, request) : target;
+        await files.upload(
+          file.transfer,
+          { body: Readable.from([photo]), name: "chart.png", size: photo.byteLength },
+          signal,
+        );
+        return { paths: [] };
+      });
+      const result = await pluginCall(gateway, sendMessage, {
+        files: ["chart.png"],
+        to: { conversationId: "chat-1" },
+      });
+      if (runFileProof) expect(unsignedStatus).toBe(403);
+      expect(result.value).toEqual({ accepted: true });
+      expect(sent).toEqual([photo]);
+    },
+  );
 
   it("never lets a transfer error hide a send that may have happened", async () => {
     const { caller, gateway, target, sendMessage } = await connected(true);

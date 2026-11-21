@@ -49,10 +49,12 @@ import {
   ThreadIdSchema,
   type AgentGrant,
   type BrowserProfileId,
+  type Tab,
   type TabId,
   type ThreadAccessMode,
 } from "../packages/core/src/index.js";
 import { TabStore } from "../packages/database/src/tab-store.js";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -845,7 +847,14 @@ integration("a second agent on the person's computer", () => {
     );
   }, 120_000);
 
-  it("lets the person watch both agents' exact pages without interrupting either agent", async () => {
+  it("lets the person watch both agents' exact pages without interrupting either agent", async ({
+    onTestFailed,
+  }) => {
+    let step = "create the person’s viewer client";
+    let annotated = false;
+    onTestFailed(() => {
+      if (!annotated) console.error(`Watch claim was waiting to ${step}`);
+    });
     const tabA = TabIdSchema.parse([...work.a.tabs][0]);
     const urlB = new URL("/account?agent=b", siteOrigin).href;
     const headers = {
@@ -874,12 +883,14 @@ integration("a second agent on the person's computer", () => {
     });
     const unwatchTabs = person.watchPersonalResource("tab", () => undefined);
     try {
+      step = "load the person’s Tabs";
       await person.load();
       await vi.waitFor(() => expect(person.getSnapshot().tabs.get(tabA)?.kind).toBe("page"), {
         timeout: 10_000,
       });
 
       async function viewPage(tabId: typeof tabA, label: "a" | "b") {
+        step = `activate Agent ${label.toUpperCase()}’s tab`;
         const viewer = await person.activateTab(tabId);
         if (viewer.kind !== "page") throw new Error("A browser tab must open a page viewer");
         const { sessionId, surfaceId } = viewer;
@@ -893,6 +904,7 @@ integration("a second agent on the person's computer", () => {
           rasterDemand: true,
         });
         try {
+          step = `receive the first viewer frame for Agent ${label.toUpperCase()}`;
           await vi.waitFor(
             () => {
               expect(
@@ -920,12 +932,15 @@ integration("a second agent on the person's computer", () => {
               ? once(socket, "close", { signal: within(5_000) })
               : undefined;
           release();
-          await closed;
+          await closed?.catch((cause: unknown) => {
+            throw new Error(`Close the viewer socket for Agent ${label.toUpperCase()}`, { cause });
+          });
         }
         return sessionId;
       }
 
       const sessionA = await viewPage(tabA, "a");
+      step = "run Agent A’s script after closing the viewer";
       const afterWatch = await allowedScript(
         `
         const page = await openPage(${JSON.stringify(tabA)});
@@ -939,11 +954,13 @@ integration("a second agent on the person's computer", () => {
         heading: "Signed in as Alice",
       });
 
+      step = "read Agent B’s published tab";
       const tabB = TabIdSchema.parse([...work.b.tabs][0]);
       expect(
         ok(await home.api["tabs.state"]({})).tabs.find(({ tabId }) => tabId === tabB),
       ).toMatchObject({ openedBy: { taskId: [...work.b.tasks][0] }, state: "open" });
       const sessionB = await viewPage(tabB, "b");
+      step = "drive Agent B’s page after closing the viewer";
       expect(browserBDisconnected).toBe(false);
       expect(browserB?.isConnected()).toBe(true);
       expect(await pageB!.locator("h1").innerText()).toBe("Signed in as Bob");
@@ -998,9 +1015,11 @@ integration("a second agent on the person's computer", () => {
         [a, sessionB, tabB],
         [b, sessionA, tabA],
       ] as const) {
+        step = `refuse tab activation for ${agent.label}`;
         const otherActivation = await refusedTab(agent, otherTab);
         expect(otherActivation.status).toBe(401);
         expect(otherActivation).toEqual(await refusedTab(agent, createId("tab")));
+        step = `refuse viewer admission for ${agent.label}`;
         const other = await refusedViewer(agent, otherSession);
         const absent = await refusedViewer(agent, `bsn_${randomUUID()}`);
         expect(other.status).toBe(401);
@@ -1008,23 +1027,37 @@ integration("a second agent on the person's computer", () => {
       }
 
       const context = browserB!.contexts()[0]!;
+      step = "create Agent B’s page";
       const created = await context.newPage();
       const createdUrl = new URL("/account?raw=created", siteOrigin).href;
       const popupUrl = new URL("/account?raw=popup", siteOrigin).href;
+      step = "navigate Agent B’s new page";
       await created.goto(createdUrl);
+      step = "open and load the popup";
       const popupReady = created.waitForEvent("popup");
       await created.evaluate((url) => window.open(url), popupUrl);
       const popup = await popupReady;
       await popup.waitForLoadState();
-      const catalogTab = (url: string) =>
-        home.observe(
-          async () => {
-            const { tabs } = ok(await home.api["tabs.state"]({}));
-            return tabs.find((tab) => tab.kind === "page" && tab.url === url);
-          },
-          within(10_000),
-          "The agent's page was not recorded in Tabs",
-        );
+      async function catalogTab(url: string) {
+        const found = Promise.withResolvers<Tab>();
+        const catalog = person.getSnapshot().tabs;
+        const inspect = () => {
+          const tab = [...catalog.rows.values()].find(
+            (tab) => tab.kind === "page" && tab.url === url,
+          );
+          if (tab) found.resolve(tab);
+        };
+        const unsubscribe = catalog.subscribe(inspect);
+        try {
+          inspect();
+          return await withTimeout(found.promise, 10_000, {
+            timeoutError: () => new Error(`The agent’s page was not recorded in Tabs: ${url}`),
+          });
+        } finally {
+          unsubscribe();
+        }
+      }
+      step = "find Agent B’s new page and popup in Tabs";
       const [createdTab, popupTab] = await Promise.all([
         catalogTab(createdUrl),
         catalogTab(popupUrl),
@@ -1032,12 +1065,15 @@ integration("a second agent on the person's computer", () => {
       for (const tab of [createdTab, popupTab])
         expect(tab).toMatchObject({ openedBy: { taskId: [...work.b.tasks][0] }, state: "open" });
       const ended = created.waitForEvent("close");
+      step = "close Agent B’s new tab as the person";
       expect(await person.closeTabs([createdTab.tabId])).toMatchObject({
         closed: [createdTab.tabId],
       });
+      step = "receive Agent B’s new page close event";
       await ended;
       await expect(created.evaluate(() => document.title)).rejects.toThrow(/closed/i);
       expect(context.pages()).not.toContain(created);
+      step = "check that Chromium closed the page and the popup still works";
       const physical = (await engines.get(profileB.id)!.cdp.send("Target.getTargets")) as {
         targetInfos: { url: string }[];
       };
@@ -1062,11 +1098,15 @@ integration("a second agent on the person's computer", () => {
         return open.call(this, write, key, ...rest);
       });
       try {
+        step = "create the page whose catalog write will fail";
         const unrecorded = await context.newPage();
+        step = "receive the attempted catalog write";
         const unrecordedId = await catalogReached.promise;
         const gone = unrecorded.waitForEvent("close");
         refuseWrite.resolve();
+        step = "receive the page close after the catalog write was refused";
         await gone;
+        step = "verify the unrecorded page is gone and Agent B’s original page still works";
         await expect(unrecorded.evaluate(() => document.title)).rejects.toThrow(/closed/i);
         expect(ok(await home.api["tabs.state"]({})).tabs.map(({ tabId }) => tabId)).not.toContain(
           unrecordedId,
@@ -1076,6 +1116,9 @@ integration("a second agent on the person's computer", () => {
         refuseCatalog.mockRestore();
         refuseWrite.resolve();
       }
+    } catch (cause) {
+      annotated = true;
+      throw new Error(`Watch claim could not ${step}`, { cause });
     } finally {
       unwatchTabs();
       person.dispose();

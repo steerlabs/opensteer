@@ -35,6 +35,10 @@ const directExecutionOutput = z
     next: executionOutput.shape.next.optional(),
   })
   .or(executionOutput);
+
+export const pluginResumeConnectionOutput = executionOutput
+  .extend({ status: z.literal("pending"), taskId: directOutput.taskId.unwrap() })
+  .or(directExecutionOutput);
 export const plugin_search = defineAgentTool({
   name: "plugin_search",
   title: "Find plugin tools",

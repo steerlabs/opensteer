@@ -49,6 +49,7 @@ export async function applyWorkHome(db: Kysely<unknown>): Promise<void> {
     );
     alter table agent_operations add column work_policy_revision integer;
     alter table commands add column work_owner_stop boolean;
+    alter table runner_enrollments add column work_enrollment_previewed_at timestamptz;
 
     create function work_audit_append(fields jsonb, moment timestamptz) returns void
     language plpgsql as $$

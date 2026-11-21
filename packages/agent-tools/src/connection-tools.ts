@@ -34,7 +34,7 @@ const descriptions = {
   saved_login_request:
     'Request a login for tabId and site in a shared profile. In browser_use: const page = await openPage(tabId); focus the field, then await page.cdp("Opensteer.fillLogin", {loginRef, field: "password"}). Fields: username, password, code. A script controlling the page can read filled values. Never read them back, print or store them.',
   card_request:
-    'Request a card for tabId and site in a shared profile. In browser_use: const page = await openPage(tabId); focus the field, then await page.cdp("Opensteer.fillCard", {cardRef, field: "number"}). Other fields: expiry, expiry-month, expiry-year, cvc, name, billing-postal-code. Never read back or store a fill. The purchase needs authorization.',
+    'Request a card for tabId and site. In browser_use: const page = await openPage(tabId); focus the field; await page.cdp("Opensteer.fillCard", {cardRef, field: "number"}). Fields: expiry, expiry-month, expiry-year, cvc, name, billing-postal-code. Opensteer fills the card into the page without returning it. A script in that page can read it. Never read back or store it. Get purchase approval.',
   plugin_search: "Find shared plugin tools and their paths and argument types. Pass next to page.",
   opensteer_plugin_catalog:
     "Find plugins available to install. Pass cursor to continue. Installing does not link an account.",
@@ -44,10 +44,10 @@ const descriptions = {
     "Read plugin schedules, workflows, webhooks and run history. Pass the returned cursor for older runs.",
   plugin_describe:
     "Read full argument and result types for exact paths from plugin_search. Missing paths include suggestions.",
-  plugin_call: `Call exact {path,input} tools from plugin_search for one plugin, up to ${callsLimit} characters of JSON; for pending, repeat plugin_call with operationId if executionId is absent, or use plugin_resume with executionId and taskId.`,
-  plugin_execute: `Run JavaScript in one namespace from plugin_search, up to ${callsLimit} characters; for pending, repeat plugin_execute with operationId if executionId is absent, or use plugin_resume with executionId and taskId.`,
+  plugin_call: `Call one plugin's {path,input} from plugin_search (max ${callsLimit} JSON characters). Pending input: plugin_resume with executionId and taskId. Pending approval: repeat with operationId.`,
+  plugin_execute: `Run JavaScript in one namespace from plugin_search, up to ${callsLimit} characters. Pending input: plugin_resume with executionId and taskId. Pending approval: repeat with operationId.`,
   plugin_resume:
-    "Continue plugin input with executionId and taskId; if still pending, call plugin_resume again with both IDs to wait up to 25 seconds.",
+    "Resume plugin input with executionId and its direct-work taskId. Repeat while pending to wait up to 25 seconds.",
   opensteer_plugin_list:
     "List installed plugins, connected accounts, versions and access. Pass pluginId to see its versions and cursor for the next page.",
   local_server_list:
@@ -164,8 +164,23 @@ function describeConnectionTool(tool: AgentTool, grant: AgentGrant): string {
   const profile = connectionHasBrowserProfiles(grant);
   const chrome = connectionHasChromeTabs(grant);
   const { apps, phones } = connectionComputerKinds(grant);
-  if (tool.name === "computer_apps")
-    return `Find shared ${apps && phones ? "Mac apps and phone screens" : apps ? "Mac apps" : "phone screens"} for computer_use. Results show access. Pass computerId for installed apps.`;
+  if (
+    tool.name === "plugin_call" &&
+    grant.scope === "selected" &&
+    !grant.resources.some(
+      (resource) => resource.kind === "plugin" && resource.access === "read-write",
+    )
+  )
+    return descriptions.plugin_call + " Only read tools run.";
+  if (tool.name === "computer_apps") {
+    const targets =
+      apps && phones ? "Mac apps and phone screens" : apps ? "Mac apps" : "phone screens";
+    const discovery = `Find shared ${targets} and access for computer_use. Pass computerId for apps.`;
+    return grant.scope === "everything" || phones
+      ? discovery +
+          ` Pass a direct-work taskId or operationId only for live ${grant.scope === "selected" ? "phone " : ""}inventory with computerId.`
+      : discovery;
+  }
   if (tool.name === "computer_use")
     return [
       `Run JavaScript against one target from computer_apps, up to ${callsLimit} characters. Pass computerId.`,
@@ -233,7 +248,10 @@ export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodOb
       input = z.strictObject(tool.input.shape).required({ tabId: true });
       break;
     case "computer_apps":
-      input = computerAppsConnectionInput;
+      input =
+        grant.scope === "everything" || connectionComputerKinds(grant).phones
+          ? computerAppsConnectionInput
+          : ComputerAppsInputSchema;
       break;
     case "computer_use":
       input = tool.input

@@ -505,6 +505,7 @@ export const operations = {
     output: JsonSchema,
   },
   manage: { input: z.strictObject({ operation: management, input: object }), output: JsonSchema },
+  agentWork: { input: z.strictObject({ stopped: z.boolean() }), output: z.boolean() },
   webhook: {
     input: z.strictObject({ plugin: id, subscription: id, request: raw }),
     output: RawResponseSchema,
@@ -514,6 +515,10 @@ export const operations = {
 export type PluginOperation = keyof typeof operations;
 export type PluginInput<K extends PluginOperation> = z.infer<(typeof operations)[K]["input"]>;
 export type PluginOutput<K extends PluginOperation> = z.infer<(typeof operations)[K]["output"]>;
+export const pluginComputerStoppedReason = "computer_stopped";
+export const pluginComputerStoppedMessage =
+  "Agent work is stopped on the computer hosting this Home.";
+
 export const AuthorizationSchema = z.strictObject({
   ...CallerSchema.shape,
   operation: id,
@@ -526,6 +531,7 @@ export const AuthorizationSchema = z.strictObject({
 export type PluginAuthorization = z.infer<typeof AuthorizationSchema>;
 export const AuthorizationResultSchema = z.strictObject({
   allowed: z.boolean(),
+  reason: z.literal("computer_stopped").optional(),
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
   /** For a connection's selected grant: the only apps it may learn exist. */
   visible: z.array(z.string()).optional(),
@@ -702,6 +708,7 @@ export const EngineInitSchema = z.strictObject({
   secret: z.string().regex(/^[a-f0-9]{64}$/u),
   origin: z.string().url(),
   bridge: id,
+  agentWorkStopped: z.boolean().optional(),
   catalogUrl: z.string().url().optional(),
   npmRegistry: z.string().url().optional(),
   selfOrigin: z.strictObject({ origin: id, address: id }).optional(),

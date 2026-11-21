@@ -96,15 +96,13 @@ async function readConnectionRequest(
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
   requestId: RequestId,
 ) {
-  const unavailable = () =>
-    new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
   await requirePersonalOwner(tx, authority.userId);
   const connection = await liveAgentConnection(tx, authority.userId, authority.connectionId);
   if (
     !agentGrantAllowsTasks(connection.grant) ||
     !threadAccessModeAtMost(authority.accessMode, connection.accessMode)
   )
-    throw unavailable();
+    throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
 
   const row = await tx
     .selectFrom("requests")
@@ -173,7 +171,7 @@ async function readConnectionRequest(
     !row ||
     !(await threadExecutionIsAvailableToUser(tx, row.originatingThreadId, authority.userId))
   )
-    throw unavailable();
+    throw new OpensteerError({ code: "not_found", message: "Request is unavailable" });
   return { request: requestFromRow(row), revision: row.revision };
 }
 
@@ -220,7 +218,8 @@ export function readAgentRequest(
   }).catch((error: unknown) => {
     if (
       error instanceof OpensteerError &&
-      (error.code === "forbidden" || error.code === "not_found")
+      (error.code === "forbidden" ||
+        (error.code === "not_found" && authority.kind !== "connection"))
     )
       throw new OpensteerError({
         code: "forbidden",

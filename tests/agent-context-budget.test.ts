@@ -5,6 +5,7 @@ import {
   OpensteerAgentSkillNameSchema,
   opensteerAgentSkillNames,
 } from "../packages/agent-tools/src/skills.js";
+import { AgentGrantSchema } from "../packages/core/src/agent-grants.js";
 import { createId } from "../packages/core/src/ids.js";
 import type { RunToolCapabilities } from "../packages/agent-tools/src/registry.js";
 import { renderHarnessSkillCatalog } from "../packages/harness/src/skill-catalog.js";
@@ -58,15 +59,30 @@ it("matches the caller-visible MCP context byte budget", async () => {
       expect(bytes(context.toolsJson)).toBeLessThan(25_000);
     }
   }
-  const narrow = await measureMcpContext("connection", {
-    grant: {
+  const resourcesByCase = {
+    oneProfile: { kind: "browser-profile", profileId: createId("browserProfile") },
+    oneReadOnlyPlugin: {
+      kind: "plugin",
+      target: { kind: "installed", pluginId: "plg_9ff5456a-1a0a-4f3a-8624-ad2e56604518" },
+      access: "read",
+    },
+    oneMacApp: {
+      kind: "computer-app",
+      deviceId: createId("device"),
+      approvalId: "con_9ff5456a-1a0a-4f3a-8624-ad2e56604518",
+      app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
+    },
+  };
+  for (const [name, resource] of Object.entries(resourcesByCase)) {
+    const grant = AgentGrantSchema.parse({
       scope: "selected",
       tasks: false,
-      resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
-    },
-  });
-  metrics["opensteer.connection.oneProfile.toolsJsonBytes"] = bytes(narrow.toolsJson);
-  metrics["opensteer.connection.oneProfile.toolCount"] = narrow.tools.length;
+      resources: [resource],
+    });
+    const narrow = await measureMcpContext("connection", { grant });
+    metrics[`opensteer.connection.${name}.toolsJsonBytes`] = bytes(narrow.toolsJson);
+    metrics[`opensteer.connection.${name}.toolCount`] = narrow.tools.length;
+  }
   for (const purpose of ["task", "background-job", "voice"] as const) {
     for (const personalContext of [true, false])
       metrics[`runGuide.${purpose}.personalContext.${personalContext}.bytes`] = bytes(

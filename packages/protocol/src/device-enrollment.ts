@@ -2,6 +2,7 @@ import { OrganizationNameSchema, WorkPolicySchema } from "@opensteer/control-pla
 import { z } from "zod";
 import { RunnerEnrollmentCredentialSchema } from "./runner.js";
 
+export const workHomeEnrollmentPreviewRequiredReason = "work-home-enrollment-preview-required";
 export const deviceEnrollmentPreviewPath = "/v1/runner/enrollment/preview";
 export const DeviceEnrollmentPreviewRequestSchema = RunnerEnrollmentCredentialSchema.pick({
   enrollmentToken: true,

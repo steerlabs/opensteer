@@ -6,6 +6,7 @@ import {
   standardCdpPath,
   standardCdpLeasePath,
   StandardCdpLeaseEvidenceSchema,
+  type StandardCdpAttemptReconciliation,
   type StandardCdpLeaseReconciliation,
 } from "@opensteer/protocol/standard-cdp";
 import { isLoopbackHostname } from "@opensteer/core";
@@ -40,6 +41,7 @@ const LocalHealthSchema = z.object({
   standardCdpLineage: z.literal(1).optional(),
   wholeContextCdp: z.literal(1).optional(),
   standardCdpLeaseRecovery: z.literal(1).optional(),
+  standardCdpAttemptRecovery: z.literal(1).optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
   state: z.enum(["closed", "closing", "idle", "ready", "starting"]),
@@ -114,11 +116,11 @@ export class LocalBrowserRuntimeBridge {
       .parse(await this.#maintenance("/v1/local-profiles/delete", { binding, deletionId })).state;
   }
   async reconcileStandardCdpLease(
-    lease: StandardCdpLeaseReconciliation | undefined,
+    request: StandardCdpLeaseReconciliation | StandardCdpAttemptReconciliation | undefined,
     signal: AbortSignal,
   ) {
     return StandardCdpLeaseEvidenceSchema.parse(
-      await this.#maintenance(standardCdpLeasePath, lease, signal),
+      await this.#maintenance(standardCdpLeasePath, request, signal),
     );
   }
 
@@ -213,6 +215,9 @@ export class LocalBrowserRuntimeBridge {
       ...(health.standardCdpLineage === 1 ? { standardCdpLineage: 1 as const } : {}),
       ...(health.wholeContextCdp === 1 ? { wholeContextCdp: 1 as const } : {}),
       ...(health.standardCdpLeaseRecovery === 1 ? { standardCdpLeaseRecovery: 1 as const } : {}),
+      ...(health.standardCdpAttemptRecovery === 1
+        ? { standardCdpAttemptRecovery: 1 as const }
+        : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,

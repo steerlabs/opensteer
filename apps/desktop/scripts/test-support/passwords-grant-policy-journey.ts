@@ -123,6 +123,16 @@ export async function runPasswordsGrantPolicyJourney(
       ).decision,
       "authorized",
     );
+    assert.equal(
+      (await current.release({ transactionId: id, field: "password", kind: "app" })).released,
+      false,
+      "Prepared approval must not release before signin.commit",
+    );
+    assert.equal(
+      (await current.call("signin.commit", { transactionId: id })).committed,
+      true,
+      "signin.commit must settle the prepared approval",
+    );
     const released = await current.release({ transactionId: id, field: "password", kind: "app" });
     assert.equal(released.released && released.value === fields.password, true);
     await current.cancel(id);
@@ -147,6 +157,11 @@ export async function runPasswordsGrantPolicyJourney(
         })
       ).decision,
       "authorized",
+    );
+    assert.equal(
+      (await current.call("signin.commit", { transactionId: onceId })).committed,
+      true,
+      "One-time approval must commit without persisting a grant",
     );
     await current.cancel(onceId);
     const after = await snapshot();

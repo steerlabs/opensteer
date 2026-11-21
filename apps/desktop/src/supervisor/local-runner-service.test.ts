@@ -1496,6 +1496,103 @@ describe("LocalRunnerService", () => {
     await checked;
   });
 
+  it("reports an uncontained earlier boot from the first restored stopped worker", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://first.opensteer.test");
+    const mode = "2026-11-20T09:00:00.000Z";
+    const onUncontainedBoot = vi.fn();
+    const running = fixture(
+      await configuration(await temporaryDirectory()),
+      targets,
+      undefined,
+      undefined,
+      {
+        agentsStoppedSince: () => mode,
+        onUncontainedBoot,
+      },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    first.emit("message", {
+      type: "runner.worker.ready",
+      control: { port: 32123, token: crypto.randomUUID(), earlierBootsContained: false },
+    });
+    connect(first);
+    await starting;
+    expect(onUncontainedBoot).toHaveBeenCalledExactlyOnceWith(mode);
+    running.service.dispose();
+  });
+
+  it("includes a crashed expected Device in Stop proof even after its worker exited", async () => {
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://first.opensteer.test");
+    let stoppedSince: string | null = null;
+    const running = fixture(
+      await configuration(await temporaryDirectory()),
+      targets,
+      () => 60_000,
+      undefined,
+      { agentsStoppedSince: () => stoppedSince },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    connect(first);
+    await starting;
+    first.emit("exit", 1);
+    expect(running.children).toHaveLength(1);
+
+    stoppedSince = "2026-11-20T09:00:00.000Z";
+    const transition = running.service.restartForAgentMode();
+    const checked = expect(transition).rejects.toThrow(
+      "Couldn't confirm that one device connection",
+    );
+    await eventually(() => running.children.length === 2);
+    const replacement = childAt(running.children, 1);
+    replacement.emit("message", {
+      type: "runner.worker.ready",
+      control: {
+        port: 32123,
+        token: "390e4dab-300a-4cce-8703-6db1f627463c",
+        earlierBootsContained: true,
+      },
+    });
+    connect(replacement);
+    await checked;
+    running.service.dispose();
+  });
+
+  it("invalidates update holds when a new Device starts connecting", async () => {
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://first.opensteer.test");
+    const second = targets.add("https://second.opensteer.test");
+    const running = fixture(await configuration(await temporaryDirectory()), targets);
+    const control = { port: 32123, token: crypto.randomUUID(), earlierBootsContained: true };
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    try {
+      const starting = running.service.start(startInput(first.deploymentId));
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      child.emit("message", { type: "runner.worker.ready", control });
+      connect(child);
+      await starting;
+      const hold = await running.service.holdIdleForUpdate();
+      expect(hold?.current()).toBe(true);
+      const next = running.service.start(startInput(second.deploymentId));
+      expect(hold?.current()).toBe(false);
+      await hold?.release();
+      await eventually(() => running.children.length === 2);
+      connect(childAt(running.children, 1));
+      await next;
+    } finally {
+      fetch.mockRestore();
+      running.service.dispose();
+    }
+  });
+
   it("does not disturb either Runner when only the viewed Deployment changes", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -2923,6 +3020,7 @@ function fixture(
     readonly stubborn?: boolean;
     readonly stopTimeouts?: LocalRunnerServiceDependencies["stopTimeouts"];
     readonly agentsStoppedSince?: LocalRunnerServiceDependencies["agentsStoppedSince"];
+    readonly onUncontainedBoot?: LocalRunnerServiceDependencies["onUncontainedBoot"];
   } = {},
 ) {
   const children: FakeUtilityProcess[] = [];
@@ -2972,6 +3070,7 @@ function fixture(
       runtimeRelease: testRuntimeRelease(config.dataDirectory),
       ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
       ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
+      ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
       targets,
       userEnvironment: testUserEnvironment(config.dataDirectory),
     }),

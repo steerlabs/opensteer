@@ -2,10 +2,13 @@ import {
   AgentOperationTargetSchema,
   agentSessionIdleMs,
   minThreadAccessMode,
+  threadAccessModeAtMost,
+  ThreadAccessModeSchema,
   OpensteerError,
   createId,
   nextMarkColor,
   formatRequestOperationDetail,
+  type AgentGrantTarget,
   type AgentOperationDecision,
   type AgentOperationId,
   type AgentOperationOutcome,
@@ -64,8 +67,15 @@ function refused(message: string, reason?: string): OpensteerError {
 class SessionRace extends Error {}
 
 /** The connection as a direct call needs it, held `FOR SHARE` against Disconnect and edits. */
-async function lockLiveConnection(tx: Tx, userId: UserId, agentConnectionId: string) {
-  const row = await readLiveAgentConnectionRow(tx, userId, agentConnectionId, true);
+async function lockLiveConnection(
+  tx: Tx,
+  userId: UserId,
+  agentConnectionId: string,
+  grantTarget?: AgentGrantTarget,
+) {
+  const row = await readLiveAgentConnectionRow(tx, userId, agentConnectionId, true, {
+    grantTarget,
+  });
   if (!row) throw refused(lineageEndedMessage);
   if (row.consentVersion < 2) throw refused(directWorkUnavailableMessage);
   return row;
@@ -132,6 +142,7 @@ async function touch(tx: Tx, session: AgentSessionRow): Promise<AgentSessionRow>
 export interface BeginAgentSessionInput {
   readonly userId: UserId;
   readonly agentConnectionId: string;
+  readonly grantTarget?: AgentGrantTarget | undefined;
   /** A session task the caller names; it must be this connection's active session. */
   readonly taskId?: ThreadId | undefined;
   /** A short purpose the agent gave, for a new task's title. */
@@ -163,7 +174,12 @@ async function beginInTransaction(
   input: BeginAgentSessionInput,
 ): Promise<{ session: AgentSessionRow; created: boolean } | { notice: true }> {
   await requirePersonalOwner(tx, input.userId);
-  const connection = await lockLiveConnection(tx, input.userId, input.agentConnectionId);
+  const connection = await lockLiveConnection(
+    tx,
+    input.userId,
+    input.agentConnectionId,
+    input.grantTarget,
+  );
   if (input.taskId) {
     const named = await tx
       .selectFrom("agentSessions")
@@ -423,15 +439,16 @@ async function closeDirectRequests(
 
 export async function closeObsoleteAgentOperationRequests(
   tx: Tx,
-  connectionId: string,
-  revision: number,
+  connectionIds: readonly string[],
   now: Date,
 ) {
+  if (!connectionIds.length) return;
   await closeDirectRequests(
     tx,
     await pendingDirectRequests(tx)
-      .where("agentOperations.connectionId", "=", connectionId)
-      .where("agentOperations.grantRevision", "<", revision)
+      .innerJoin("agentConnections", "agentConnections.id", "agentOperations.connectionId")
+      .where("agentOperations.connectionId", "in", connectionIds)
+      .whereRef("agentOperations.grantRevision", "<", "agentConnections.grantRevision")
       .execute(),
     now,
     false,
@@ -452,6 +469,29 @@ export function expireAgentOperationRequests(database: Kysely<DatabaseSchema>, n
       now,
       true,
     ),
+  );
+}
+
+export async function closeAgentOperationRequestsAboveMode(
+  tx: Tx,
+  threadId: ThreadId,
+  mode: ThreadAccessMode,
+  now: Date,
+) {
+  await closeDirectRequests(
+    tx,
+    await pendingDirectRequests(tx)
+      .where("requests.originatingThreadId", "=", threadId)
+      .where(
+        "agentOperations.mode",
+        "in",
+        ThreadAccessModeSchema.options.filter(
+          (admitted) => !threadAccessModeAtMost(admitted, mode),
+        ),
+      )
+      .execute(),
+    now,
+    false,
   );
 }
 
@@ -501,6 +541,7 @@ export interface AdmitOperationInput {
   readonly tool: string;
   readonly argumentDigest: string;
   readonly target: AgentOperationTarget;
+  readonly grantTarget?: AgentGrantTarget | undefined;
   readonly targetGeneration: string | null;
   readonly grantRevision: number;
   readonly mode: ThreadAccessMode;
@@ -518,7 +559,12 @@ export async function admitAgentOperation(
   input: AdmitOperationInput,
 ): Promise<{ readonly operation: AgentOperationRow; readonly replay: boolean }> {
   return commitPersonalMutation(database, async (tx) => {
-    const connection = await lockLiveConnection(tx, input.userId, input.agentConnectionId);
+    const connection = await lockLiveConnection(
+      tx,
+      input.userId,
+      input.agentConnectionId,
+      input.grantTarget,
+    );
     const session = await tx
       .selectFrom("agentSessions")
       .select(["id", "status", "endReason"])
@@ -645,6 +691,7 @@ export async function askForAgentOperation(
   input: {
     readonly operation: AgentOperationRow;
     readonly threadId: ThreadId;
+    readonly grantTarget?: AgentGrantTarget | undefined;
     readonly copy: (agent: string) => { readonly title: string; readonly summary: string };
     readonly presentation?: Extract<
       import("@opensteer/core").RequestPresentation,
@@ -657,6 +704,7 @@ export async function askForAgentOperation(
       tx,
       input.operation.userId,
       input.operation.connectionId,
+      input.grantTarget,
     );
     if (connection.grantRevision !== input.operation.grantRevision)
       throw refused(lineageEndedMessage);
@@ -674,6 +722,20 @@ export async function askForAgentOperation(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     if (operation.state !== "admitted" || !sameReview(operation, input.operation)) return operation;
+    const thread = await tx
+      .selectFrom("threads")
+      .select("accessMode")
+      .where("id", "=", input.threadId)
+      .executeTakeFirstOrThrow();
+    if (
+      !threadAccessModeAtMost(
+        operation.mode,
+        minThreadAccessMode(thread.accessMode, connection.accessMode),
+      )
+    ) {
+      await refuseUnsentAgentOperation(tx, operation.id, operation.grantRevision);
+      return readAgentOperation(tx, operation.id);
+    }
     const reason = operation.agentReason
       ? `\n\nThe agent's own reason (its words, not checked): ${operation.agentReason}`
       : "";
@@ -715,7 +777,7 @@ export async function askForAgentOperation(
           kind: "form",
           title: title.slice(0, 200),
           detail,
-          ...(titleLine ? { detailFormat: "plain" } : {}),
+          detailFormat: "plain",
           fields: [
             {
               id: operationDecisionFieldId,
@@ -926,10 +988,16 @@ export async function handOffAgentOperation(
     readonly userId: UserId;
     readonly agentConnectionId: string;
     readonly reviewed: ReviewedOperation;
+    readonly grantTarget?: AgentGrantTarget | undefined;
   },
 ): Promise<AgentOperationRow | null> {
   return commitPersonalMutation(database, async (tx) => {
-    const connection = await lockLiveConnection(tx, input.userId, input.agentConnectionId);
+    const connection = await lockLiveConnection(
+      tx,
+      input.userId,
+      input.agentConnectionId,
+      input.grantTarget,
+    );
     const operation = await tx
       .selectFrom("agentOperations")
       .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")

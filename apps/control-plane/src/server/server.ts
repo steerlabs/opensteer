@@ -8,6 +8,8 @@ import {
 } from "../cloud-computers/routes.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import Fastify, { type FastifyInstance } from "fastify";
+import { decodeJwt } from "jose";
+import { decodeBasicCredentials } from "@better-auth/core/oauth2";
 import { z } from "zod";
 import { HostedOAuthAttemptIdSchema } from "@opensteer/control-plane-protocol";
 import type {
@@ -59,6 +61,8 @@ import { registerHostedTeamProvisionerRoutes } from "../hosted-teams/provisioner
 import { registerHostedTeamAccountRoutes } from "../hosted-teams/account-routes.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
+const IssuedIdTokenSchema = z.object({ id_token: z.string().min(1) });
+const OAuthClientBodySchema = z.object({ client_id: z.string() });
 /** Every response from both vhosts, so no Opensteer hostname is ever downgraded. */
 const strictTransportSecurity = "max-age=31536000; includeSubDomains";
 const UiFormSchema = z
@@ -305,14 +309,13 @@ export async function createControlPlaneServer(
       dependencies.auth.handler(toFetchRequest(request, dependencies.publicOrigin));
     const formClient =
       (authorize || token) && request.method === "POST"
-        ? parseForm(request.body).client_id
+        ? OAuthClientBodySchema.safeParse(
+            Buffer.isBuffer(request.body) || typeof request.body === "string"
+              ? parseForm(request.body)
+              : request.body,
+          ).data?.client_id
         : undefined;
-    const basic = token
-      ? /^Basic ([A-Za-z0-9+/=]+)$/iu.exec(request.headers.authorization ?? "")
-      : null;
-    const basicClient = basic
-      ? Buffer.from(basic[1]!, "base64").toString("utf8").split(":")[0]
-      : undefined;
+    const basicClient = token ? basicClientId(request.headers.authorization) : undefined;
     const candidates = [
       basicClient,
       formClient,
@@ -321,6 +324,11 @@ export async function createControlPlaneServer(
     const clientId = candidates.find((client) => client?.startsWith("occ_"));
     if (clientId && candidates.some((candidate) => candidate && candidate !== clientId))
       throw new ControlPlaneError("bad_request", "Conflicting OAuth client identities");
+    const computers = dependencies.cloudComputers?.store;
+    const replacement =
+      token && request.method === "POST" && clientId
+        ? await computers?.pendingReplacementOwnerAccess(clientId)
+        : undefined;
     const response =
       clientId && dependencies.organizations
         ? await dependencies.organizations.issueWorkSignIn(
@@ -336,6 +344,19 @@ export async function createControlPlaneServer(
             issue,
           )
         : await issue();
+    if (computers && clientId && replacement?.accountId && response.ok) {
+      const result = IssuedIdTokenSchema.safeParse(await response.clone().json());
+      if (result.success) {
+        const claims = decodeJwt(result.data.id_token);
+        if (
+          claims.iss === dependencies.publicOrigin.origin &&
+          claims.aud === clientId &&
+          claims.sub === replacement.accountId
+        ) {
+          await computers.recordReplacementOwnerAccess(clientId, replacement);
+        }
+      }
+    }
     void reply.header("cache-control", "no-store");
     return sendWebResponse(reply, response);
   };
@@ -602,6 +623,15 @@ function serializeRequestBody(body: unknown) {
   if (Buffer.isBuffer(body)) return new Uint8Array(body);
   if (typeof body === "string") return body;
   return JSON.stringify(body);
+}
+
+function basicClientId(authorization: string | undefined): string | undefined {
+  if (!authorization) return;
+  try {
+    return decodeBasicCredentials(authorization).clientId;
+  } catch {
+    return undefined;
+  }
 }
 
 async function sendWebResponse(reply: FastifyReply, response: Response): Promise<FastifyReply> {

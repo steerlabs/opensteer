@@ -13,6 +13,7 @@ import {
   type IphoneRunnerResult,
   type IphoneRunnerOwner,
   type IphoneRunnerPort,
+  type IphoneRunnerConnection,
   type IphoneRunnerEvent,
 } from "@opensteer/protocol/iphone-bridge";
 import type { IphoneNativeTransport } from "./bridge-client.js";
@@ -48,14 +49,25 @@ type ProbeWork = {
   rerun: boolean;
 };
 type Session = {
-  key: object;
+  key: SessionOwner;
   binding: Binding;
   sessionId: string;
   runId: string;
   access: "observe" | "control";
   controller: AbortController;
 };
-type Slot = { owner: IphoneRunnerOwner; assignments: readonly Assignment[]; key: object };
+type SessionOwner = { readonly closing: Set<Promise<boolean>>; closeFailed: boolean };
+
+// The desktop's close also says whether the native side confirmed it, for Stop's proof. Not an
+// extension of the protocol's interface: its close returns nothing.
+export type DesktopIphoneRunnerConnection = Omit<IphoneRunnerConnection, "close"> & {
+  close(): void | Promise<boolean>;
+};
+export interface DesktopIphoneRunnerPort {
+  connect(...args: Parameters<IphoneRunnerPort["connect"]>): DesktopIphoneRunnerConnection;
+}
+
+type Slot = { owner: IphoneRunnerOwner; assignments: readonly Assignment[]; key: SessionOwner };
 export interface IphoneServiceOptions {
   readonly store: IphoneStore;
   readonly startNative: () => Promise<{
@@ -534,12 +546,13 @@ export class IphoneService {
         };
       });
   }
-  forSlot(owner: IphoneRunnerOwner): IphoneRunnerPort {
+  forSlot(owner: IphoneRunnerOwner): DesktopIphoneRunnerPort {
     const { deploymentId } = owner;
     return {
       connect: (emit) => {
-        const key = {};
+        const key: SessionOwner = { closing: new Set(), closeFailed: false };
         let alive = true;
+        let closed: Promise<boolean> | undefined;
         const listener = (slot: string, event: IphoneRunnerEvent) => {
           if (alive && slot === deploymentId) emit(event);
         };
@@ -591,7 +604,7 @@ export class IphoneService {
                   } else this.#cleanup(this.#release(record, false));
                 }
               }
-              if (old && old.key !== key) this.#closeOwner(old.key);
+              if (old && old.key !== key) void this.#closeOwner(old.key);
               if (this.#records.some((r) => r.phase === "bound")) await this.discover();
               for (const record of this.#records.filter(
                 (r) =>
@@ -617,10 +630,10 @@ export class IphoneService {
             return iphoneRunnerResults[method].parse(result) as IphoneRunnerResult<M>;
           },
           close: () => {
-            if (!alive) return;
+            if (closed) return closed;
             alive = false;
             this.#listeners.delete(listener);
-            this.#closeOwner(key);
+            closed = this.#closeOwner(key);
             if (this.#slots.get(deploymentId)?.key === key) {
               this.#slots.delete(deploymentId);
               for (const record of this.#records)
@@ -628,6 +641,7 @@ export class IphoneService {
               this.#syncMacWatch();
               for (const listener of this.#invalidatedSlots) listener(deploymentId);
             }
+            return closed;
           },
         };
       },
@@ -635,7 +649,7 @@ export class IphoneService {
   }
   async #runtime(
     deploymentId: string,
-    key: object,
+    key: SessionOwner,
     method: IphoneRunnerMethod,
     params: IphoneRunnerParams<IphoneRunnerMethod>,
     options: { deadline: number; signal?: AbortSignal },
@@ -1091,15 +1105,31 @@ export class IphoneService {
       empty,
       { timeoutMs: 2000 },
     );
-    if (cleanup) this.#cleanup(cleanup);
+    const key = session.key;
+    if (cleanup) {
+      const closed = cleanup.then(
+        () => true,
+        () => {
+          key.closeFailed = true;
+          return false;
+        },
+      );
+      key.closing.add(closed);
+      void closed.then(() => key.closing.delete(closed));
+      this.#cleanup(closed);
+    } else {
+      key.closeFailed = true;
+    }
   }
   #cleanup(work: Promise<unknown>): void {
     this.#cleanups.add(work);
     void work.finally(() => this.#cleanups.delete(work)).catch(() => undefined);
   }
-  #closeOwner(key: object): void {
+  async #closeOwner(key: SessionOwner): Promise<boolean> {
     for (const session of Array.from(this.#sessions.values()))
       if (session.key === key) this.#end(session, "no-session");
+    await Promise.all(key.closing);
+    return !key.closeFailed;
   }
   #invalidate(
     record: IphoneMapping,
@@ -1241,7 +1271,7 @@ export class IphoneService {
     const slot = this.#slots.get(deploymentId);
     this.#slots.delete(deploymentId);
     for (const listener of this.#invalidatedSlots) listener(deploymentId);
-    if (slot) this.#closeOwner(slot.key);
+    if (slot) await this.#closeOwner(slot.key);
     for (const record of this.#records.filter((r) => r.deploymentId === deploymentId)) {
       this.#invalidate(record, "no-session");
       await this.#release(record, false);

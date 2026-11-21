@@ -58,6 +58,7 @@ import type {
   StripeSubscription,
 } from "../apps/control-plane/src/cloud-computers/stripe.js";
 import { createControlPlaneDatabase } from "../apps/control-plane/src/database/database.js";
+import { resetManagedCloudTables } from "../apps/control-plane/src/cloud-computers/reset.test-support.js";
 import { migrateControlPlaneToLatest } from "../apps/control-plane/src/database/migrations.js";
 import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
 import { googleServiceAccountVerifier } from "../apps/control-plane/src/hosted-teams/provisioner-routes.js";
@@ -762,6 +763,9 @@ async function signInToHome(browser: Browser, homeOrigin: string) {
 
 beforeAll(async () => {
   await migrateControlPlaneToLatest(database);
+  // The worker's Account database is shared with the files that ran before this one: one of them
+  // can leave the provisioner lease held.
+  await resetManagedCloudTables(database);
   app = await createControlPlaneServer(
     {
       auth,

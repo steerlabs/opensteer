@@ -53,11 +53,27 @@ export class CdpProductIsolation {
       this.#scripts.set(record.scriptId, false);
     if (method === "Page.addScriptToEvaluateOnNewDocument" && typeof record.identifier === "string")
       this.#newDocumentScripts.add(record.identifier);
-    if (this.#referencesInternal(result, true))
+    const syntheticFrames =
+      method === "Profiler.stop"
+        ? new Set(profileFrames(result).filter(isSyntheticFrame))
+        : undefined;
+    if (this.#referencesInternal(result, true, syntheticFrames))
       throw new SessionCdpRouterError(
         "forbidden",
         `${method} returned Opensteer's preload or platform state.`,
       );
+  }
+  async observeProfileResult(
+    result: unknown,
+    inspectScripts: (observe: (method: string, parameters: CdpParameters) => void) => Promise<void>,
+  ): Promise<void> {
+    if (!profileFrames(result).some((frame) => !isSyntheticFrame(frame))) {
+      this.observeResult("Profiler.stop", {}, result);
+      return;
+    }
+    const inventory = new CdpProductIsolation();
+    await inspectScripts((method, parameters) => inventory.observe(method, parameters));
+    inventory.observeResult("Profiler.stop", {}, result);
   }
   assertCommand(method: string, params: CdpParameters = {}): void {
     if (
@@ -89,9 +105,14 @@ export class CdpProductIsolation {
       .find((entry) => entry.id === id || entry.uniqueId === id);
     return context ? internalName(context.description.name) : true;
   }
-  #referencesInternal(value: unknown, message: boolean): boolean {
+  #referencesInternal(
+    value: unknown,
+    message: boolean,
+    syntheticFrames?: ReadonlySet<object>,
+  ): boolean {
     if (!value || typeof value !== "object") return false;
-    if (Array.isArray(value)) return value.some((item) => this.#referencesInternal(item, message));
+    if (Array.isArray(value))
+      return value.some((item) => this.#referencesInternal(item, message, syntheticFrames));
     const record = value as Record<string, unknown>;
     for (const [key, field] of Object.entries(record)) {
       if (
@@ -101,7 +122,12 @@ export class CdpProductIsolation {
         return true;
       if (["worldName", "executionContextName"].includes(key) && internalName(field)) return true;
       if (key === "name" && typeof field === "string" && this.#bindings.has(field)) return true;
-      if (key === "scriptId" && this.#scripts.get(String(field)) !== false) return true;
+      if (
+        key === "scriptId" &&
+        this.#scripts.get(String(field)) !== false &&
+        !syntheticFrames?.has(record)
+      )
+        return true;
       if (key === "callFrameId" && !this.#frames.has(String(field))) return true;
       if (
         [
@@ -119,7 +145,7 @@ export class CdpProductIsolation {
         (key === "deepSerializedValue" || (key === "value" && typeof record.type === "string"))
       )
         continue;
-      if (this.#referencesInternal(field, message)) return true;
+      if (this.#referencesInternal(field, message, syntheticFrames)) return true;
     }
     return false;
   }
@@ -130,5 +156,29 @@ function internalName(value: unknown): boolean {
     (value.startsWith("opensteer-") ||
       value === "Electron Isolated Context" ||
       value === "Electron Sandbox Context")
+  );
+}
+
+function profileFrames(result: unknown): Record<string, unknown>[] {
+  const nodes = asRecord(asRecord(result).profile).nodes;
+  return Array.isArray(nodes) ? nodes.map((node) => asRecord(asRecord(node).callFrame)) : [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+const syntheticProfileFunctions = new Set(["(root)", "(idle)", "(program)", "(garbage collector)"]);
+
+function isSyntheticFrame(frame: Record<string, unknown>): boolean {
+  return (
+    frame.scriptId === "0" &&
+    typeof frame.functionName === "string" &&
+    syntheticProfileFunctions.has(frame.functionName) &&
+    frame.url === "" &&
+    frame.lineNumber === -1 &&
+    frame.columnNumber === -1
   );
 }

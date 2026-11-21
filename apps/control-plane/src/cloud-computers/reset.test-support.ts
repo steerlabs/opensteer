@@ -1,7 +1,9 @@
 import { sql, type Kysely } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
+import { resetAccountSigningKeys } from "../auth/signing-keys.test-support.js";
 
 export async function resetManagedCloudTables(database: Kysely<ControlPlaneDatabaseSchema>) {
+  await resetAccountSigningKeys(database);
   await sql`
     truncate table
       work_audit_batches, work_audit_records, work_assignments,

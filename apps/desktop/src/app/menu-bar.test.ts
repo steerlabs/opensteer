@@ -68,9 +68,11 @@ function fixture() {
     loadURL: vi.fn(async () => undefined),
     show: () => {
       visible = true;
+      popover.emit("show");
     },
     hide: () => {
       visible = false;
+      popover.emit("hide");
     },
     focus: vi.fn(),
     destroy: vi.fn(),
@@ -115,6 +117,7 @@ function fixture() {
     contents,
     log,
     menuBar,
+    popover,
     service,
     set: (next: MenuBarStatus) => {
       current = next;
@@ -135,6 +138,41 @@ it("redraws the status item from main's own snapshot, reading no full status whi
   expect(tray.setImage).toHaveBeenCalledTimes(1);
   expect(service.status).not.toHaveBeenCalled();
   expect(contents.send).not.toHaveBeenCalled();
+});
+
+it("pushes the Stop result on reopen even if the popover immediately blurs", async () => {
+  const { contents, menuBar, popover, service, set } = fixture();
+  const stopping = status({
+    stop: { phase: "stopping", stoppedAt: null, offline: null, problem: null, confirmed: null },
+  });
+  const unconfirmed = status({
+    stop: {
+      phase: "stopped",
+      stoppedAt: null,
+      offline: null,
+      problem: "Couldn’t confirm everything stopped",
+      confirmed: null,
+    },
+    icon: { attention: false, unreachable: false, stopped: true },
+  });
+  try {
+    menuBar.start();
+    set(stopping);
+    await menuBar.open();
+    expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, stopping);
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+    set(unconfirmed);
+    expect(service.status).toHaveBeenCalledTimes(1);
+
+    popover.focus.mockImplementationOnce(() => popover.emit("blur"));
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(false);
+    expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed);
+  } finally {
+    menuBar.dispose();
+  }
 });
 
 it("pushes each change to the open popover, one full status at a time, folding the rest into one", async () => {
@@ -198,4 +236,22 @@ it("opens the app's own routes in place, through its router", () => {
     'history.pushState(null, "", "/settings"); dispatchEvent(new PopStateEvent("popstate"));',
   );
   expect(appRoutes.needsYou).toBe("/?needs-you");
+});
+
+it("refreshes attention while the popover is open and stops when the popover hides", async () => {
+  vi.useFakeTimers();
+  const { menuBar, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+    await menuBar.toggle();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+  } finally {
+    menuBar.dispose();
+    vi.useRealTimers();
+  }
 });

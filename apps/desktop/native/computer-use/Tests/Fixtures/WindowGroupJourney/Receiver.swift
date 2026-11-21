@@ -384,6 +384,9 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
   case "fullscreen": root.toggleFullScreen(nil)
   case "minimize": root.miniaturize(nil)
   case "restore": root.deminiaturize(nil)
+  case "close-all":
+    for (_, window) in windows { window.close() }
+    windows.removeAll()
   case "close":
     if let name = row["window"], ["Liveness", "Unreadable"].contains(name) {
       windows.removeValue(forKey: name)?.close()

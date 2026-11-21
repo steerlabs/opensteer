@@ -16,15 +16,17 @@ export interface SetupSwitch {
 
 /**
  * What a phone joining a work Home is told before it joins: whose Home it is, or that its
- * organization keeps other devices out (then Continue waits). A personal Home, or a policy not
- * known yet, says nothing and never holds joining back; the Home's own refusal is the backstop.
+ * organization keeps other devices out. Continue waits until the Home's policy is known.
  */
 export function joinWorkLine(policy: EffectiveWorkPolicy | null | undefined): {
   readonly work: string | null;
   readonly blocked: boolean;
 } {
   const refusal = workEnrollRefusal(policy);
-  return { work: workEnrollNotice(policy) ?? refusal, blocked: refusal !== null };
+  return {
+    work: workEnrollNotice(policy) ?? refusal,
+    blocked: policy === undefined || refusal !== null,
+  };
 }
 
 export interface SetupFormProps {

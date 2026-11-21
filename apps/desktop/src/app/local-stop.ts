@@ -20,6 +20,7 @@ export interface LocalStopStore {
 const unsavedStop = menuBarWords("menubar.stop.unsaved");
 const unreadStop = menuBarWords("menubar.stop.unread");
 const unsavedResume = menuBarWords("menubar.resume.unsaved");
+const unconfirmedStop = menuBarWords("menubar.stop.unconfirmed");
 
 interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
@@ -74,6 +75,23 @@ export class DesktopLocalStop {
     this.#emit();
   }
 
+  noteUncontainedBoot(mode: string): void {
+    if (mode !== this.#mode) return;
+    this.#confirmedAt = null;
+    if (this.#problem?.includes(unconfirmedStop)) return;
+    this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
+    this.#emit();
+  }
+
+  whileModeStable<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.#transaction.then(operation);
+    this.#transaction = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   stop(): Promise<void> {
     return this.#choose(this.#now());
   }
@@ -88,7 +106,7 @@ export class DesktopLocalStop {
   }
 
   #choose(at: string | null): Promise<void> {
-    const next = this.#transaction.then(async () => {
+    return this.whileModeStable(async () => {
       if (at === null && !this.stopped) return;
       this.#phase = "stopping";
       this.#problem = null;
@@ -107,12 +125,16 @@ export class DesktopLocalStop {
       }
       this.#mode = at;
       const started = performance.now();
+      const saveProblem = this.#problem;
       try {
         await this.#options.restart();
-        this.#confirmedAt = at;
+        if (this.#problem === saveProblem) this.#confirmedAt = at;
       } catch (error) {
         const failure = messageOf(error);
-        this.#problem = this.#problem ? `${this.#problem} ${failure}` : failure;
+        if (at !== null && !this.#problem?.includes(unconfirmedStop))
+          this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
+        if (!this.#problem?.includes(failure))
+          this.#problem = this.#problem ? `${this.#problem} ${failure}` : failure;
       }
       this.#phase = at === null ? "running" : "stopped";
       this.#options.log("desktop.local-stop.restarted", {
@@ -122,8 +144,6 @@ export class DesktopLocalStop {
       });
       this.#emit();
     });
-    this.#transaction = next.catch(() => undefined);
-    return next;
   }
 
   #now(): string {

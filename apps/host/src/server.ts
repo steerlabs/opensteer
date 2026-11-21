@@ -368,6 +368,7 @@ const machinePageLimit = 100;
 export interface HostServerDependencies {
   /** The owner's plugin API; personal Hosts only. */
   readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
+  readonly pluginAgentWorkStoppedSince?: (runnerId: RunnerId) => string | undefined;
   readonly pluginOAuth?: import("./plugins/plugin-oauth-service.js").PluginOAuthService;
   readonly pluginRequests?: Pick<
     import("./plugins/plugin-executions.js").PluginExecutions,

@@ -12,7 +12,8 @@ it("atomically grants an idle hold and releases it if an update is abandoned", a
     expect(release).not.toBeNull();
     expect(control.held()).toBe(true);
     expect(await holdDesktopRunnerIdle(control.ready)).toBeNull();
-    await release?.();
+    expect(release?.current()).toBe(true);
+    await release?.release();
     expect(control.held()).toBe(false);
   } finally {
     control.close();

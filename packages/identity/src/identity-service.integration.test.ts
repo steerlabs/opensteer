@@ -825,6 +825,43 @@ integration("IdentityService", () => {
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("refuses a restored managed Home claim from a different Account issuer", async () => {
+    const setupCode = "managed-home-setup-code-with-plenty-of-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: {
+        expiresAt: new Date(Date.now() + 3_600_000),
+        tokenDigest: digestSecret(setupCode),
+      },
+      localPasswordEnabled: false,
+      managedOwner: { providerId: "opensteer-account" },
+      oidcProviders: [accountProvider(accountIssuer)],
+      signupPolicy: "closed",
+    });
+    await identity.initialize();
+    const subject = "acct_subject";
+    const owner = { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true };
+    await identity.claimManagedOwner({
+      ...accountLinked(subject),
+      claimKey: "cc_1:1:acct_subject",
+      owner,
+      receipt: {},
+      setupCode,
+    });
+    const commit = async () => {
+      throw new Error("A claim from a different issuer must not reach commit");
+    };
+    await expect(
+      identity.claimManagedOwner({
+        ...accountLinked(subject, "https://other-account.example.test"),
+        claimKey: "cc_1:2:acct_subject",
+        owner,
+        receipt: {},
+        setupCode,
+        commit,
+      }),
+    ).rejects.toMatchObject({ reason: "managed-home-owned" });
+  });
+
   it("refuses an expired managed Home setup code", async () => {
     const setupCode = "expired-managed-home-setup-code-with-entropy";
     const identity = identityService({

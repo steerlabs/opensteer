@@ -21,6 +21,7 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
+import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
 import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
@@ -58,7 +59,10 @@ export type LineageAttempt =
   | ConnectionAttempt<"trigger", TriggerId>
   | ConnectionAttempt<"session", AgentSessionId>
   | ConnectionAttempt<"operation", AgentOperationId>
-  | ConnectionAttempt<"plugin" | "standard-cdp" | "shared-chrome">;
+  | (ConnectionAttempt<"standard-cdp"> & {
+      readonly standardCdpRecovery?: StandardCdpAttemptReconciliation;
+    })
+  | ConnectionAttempt<"plugin" | "shared-chrome">;
 
 export interface ConnectionAttemptStopper {
   stop(
@@ -98,6 +102,7 @@ export async function connectionAttempts(
   const { rows } = await sql<
     LineageAttempt & {
       readonly disconnected: boolean;
+      readonly recovery: StandardCdpAttemptReconciliation | null;
       readonly grant: unknown;
       readonly sessionTargets:
         readonly { grant: AgentOperationTarget["grant"]; effect: string }[] | null;
@@ -132,6 +137,14 @@ export async function connectionAttempts(
         (f.grant->>'scope' = 'everything' and t.origin_connection_id is null) or
         t.origin_connection_id = f.id
       )
+    ),
+    cdp_attempts as (
+      select c.id, c.witness, b.runner_id
+      from browser_sessions b
+      cross join lateral jsonb_each(b.standard_cdp_attempts) c(id, witness)
+      join floor f on f.id = c.witness->>'connectionId'
+      where b.standard_cdp_attempts <> '{}'
+        and (f.disconnected or (c.witness->>'grantRevision')::integer < f.cleanup_minimum_grant_revision)
     ),
     attempts as (
       select 'run-attempt' as kind, a.id, a.binding_generation as generation,
@@ -228,14 +241,10 @@ export async function connectionAttempts(
             coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision)
               < f.cleanup_minimum_grant_revision))
       union all
-      select 'standard-cdp', c.id, null, (c.witness->>'threadId'), null, b.runner_id,
+      select 'standard-cdp', c.id, null, (c.witness->>'threadId'), null, c.runner_id,
         null, true, (c.witness->>'terminalEvidenceAt')::timestamptz,
         (c.witness->>'contactLostAt')::timestamptz, null
-      from browser_sessions b
-      cross join lateral jsonb_each(b.standard_cdp_attempts) c(id, witness)
-      join floor f on f.id = c.witness->>'connectionId'
-      where b.standard_cdp_attempts <> '{}'
-        and (f.disconnected or (c.witness->>'grantRevision')::integer < f.cleanup_minimum_grant_revision)
+      from cdp_attempts c
       union all
       select 'shared-chrome', c.id, null, c.witness->>'threadId', null, null,
         null, true, (c.witness->>'terminalEvidenceAt')::timestamptz,
@@ -256,16 +265,19 @@ export async function connectionAttempts(
       where (o.terminal_evidence_at is null or o.contact_lost_at is not null)
         and ${belowFloor("o.grant_revision", "o.mode")}
     )
-    select attempts.*, floor.disconnected,
+    select attempts.*, floor.disconnected, cdp_attempts.witness->'recovery' as recovery,
       case when kind = 'session' and not floor.disconnected then floor.grant end as grant,
       case when kind = 'session' and not floor.disconnected then (
         select jsonb_agg(distinct jsonb_build_object('grant', o.target->'grant', 'effect', o.effect))
         from agent_operations o where o.session_id = attempts.id and o.state <> 'refused'
       ) end as session_targets
     from attempts cross join floor
-    order by case when kind = 'session' then 0 else 1 end, kind, id
+    left join cdp_attempts on attempts.kind = 'standard-cdp' and cdp_attempts.id = attempts.id
+    order by case when kind = 'session' then 0 else 1 end, kind, attempts.id
   `.execute(database);
-  return rows.flatMap(({ disconnected, grant, sessionTargets, ...attempt }) => {
+  return rows.flatMap(({ disconnected, grant, sessionTargets, recovery, ...attempt }) => {
+    if (attempt.kind === "standard-cdp" && recovery)
+      return [{ ...attempt, standardCdpRecovery: recovery }];
     if (attempt.kind !== "session" || disconnected) return [attempt];
     const currentGrant = AgentGrantSchema.parse(grant);
     const withdrawn = sessionTargets?.some(({ grant: target, effect }) => {
@@ -403,7 +415,11 @@ export async function recordConnectionStop(
         row.id === attempt.id &&
         row.generation === attempt.generation &&
         row.runnerId === attempt.runnerId &&
-        row.runnerBootId === attempt.runnerBootId,
+        row.runnerBootId === attempt.runnerBootId &&
+        (attempt.kind !== "standard-cdp" ||
+          (row.kind === "standard-cdp" &&
+            row.standardCdpRecovery?.sessionId === attempt.standardCdpRecovery?.sessionId &&
+            row.standardCdpRecovery?.runtimeBootId === attempt.standardCdpRecovery?.runtimeBootId)),
     );
     if (!current) return;
     const now = new Date();
@@ -411,7 +427,25 @@ export async function recordConnectionStop(
       terminalEvidenceAt: now,
       contactLostAt: result === "contact-lost" ? now : null,
     };
-    if (attempt.kind === "plugin") {
+    if (attempt.kind === "standard-cdp" && attempt.standardCdpRecovery) {
+      await tx
+        .updateTable("browserSessions")
+        .set({
+          standardCdpAttempts: sql`jsonb_set(standard_cdp_attempts, array[${attempt.id}],
+            ((standard_cdp_attempts -> ${attempt.id}::text) - 'contactLostAt') ||
+            jsonb_build_object('terminalEvidenceAt', ${now.toISOString()}::text) ||
+            case when ${result === "contact-lost"} then
+              jsonb_build_object('contactLostAt', ${now.toISOString()}::text)
+            else '{}'::jsonb end)`,
+        })
+        .where("id", "=", attempt.standardCdpRecovery.sessionId)
+        .where(
+          sql<boolean>`standard_cdp_attempts -> ${attempt.id}::text -> 'recovery' ->> 'runtimeBootId' =
+          ${attempt.standardCdpRecovery.runtimeBootId} and
+          not (standard_cdp_attempts -> ${attempt.id}::text ? 'terminalEvidenceAt')`,
+        )
+        .execute();
+    } else if (attempt.kind === "plugin") {
       await tx
         .updateTable("pluginExecutions")
         .set({
@@ -536,13 +570,17 @@ export async function latestConnectionUncertainty(
   },
   attempts: readonly LineageAttempt[],
 ) {
-  const latest = attempts.reduce<LineageAttempt | undefined>(
-    (previous, attempt) =>
-      attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
-        ? attempt
-        : previous,
-    undefined,
-  );
+  const latest = attempts.reduce<LineageAttempt | undefined>((previous, attempt) => {
+    if (
+      attempt.kind === "standard-cdp" &&
+      attempt.standardCdpRecovery &&
+      !attempt.terminalEvidenceAt
+    )
+      return previous;
+    return attempt.contactLostAt && (!previous || attempt.contactLostAt > previous.contactLostAt!)
+      ? attempt
+      : previous;
+  }, undefined);
   const at = latest?.contactLostAt;
   if (
     !latest ||
@@ -761,6 +799,7 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
     readonly grantRevision: number;
     readonly mode: ThreadAccessMode;
     readonly threadId: ThreadId | null;
+    readonly recovery?: StandardCdpAttemptReconciliation;
   };
   return {
     async open(sessionId: BrowserSessionId, id: string, witness: Witness): Promise<void> {
@@ -795,6 +834,7 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
         .updateTable("browserSessions")
         .set({
           standardCdpAttempts: sql`case when standard_cdp_attempts -> ${id}::text ? 'contactLostAt'
+          and not (standard_cdp_attempts -> ${id}::text ? 'recovery')
           then jsonb_set(standard_cdp_attempts, array[${id}, 'terminalEvidenceAt'], to_jsonb(now()))
           else standard_cdp_attempts - ${id}::text end`,
         })

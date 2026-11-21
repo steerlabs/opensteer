@@ -132,6 +132,15 @@ import ApplicationServices
       try await SharingEvidence.run(pid: pid, root: a.serverWindowID, out: out)
       return
     }
+    if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_SELECTION"] == "read-only" {
+      let peerPath = try ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_PEER_APP"]
+        .unwrap("OPENSTEER_WINDOW_GROUP_PEER_APP")
+      let wire = try await MainActor.run { try WireJourney(out: out) }
+      defer { Task { @MainActor in wire.close() } }
+      try await wire.readOnlyAndForeignWindow(
+        app: fixtureRecord.identity, peerBundle: URL(fileURLWithPath: peerPath))
+      return
+    }
     if ProcessInfo.processInfo.environment["OPENSTEER_WINDOW_GROUP_SELECTION"] == "receipt-switch" {
       let selected = try SessionWindows.bind(app: state, window: a.windowId, monitor: monitor)
       try await receiptSwitch(out: out, app: state, ref: selected.ref, monitor: monitor)

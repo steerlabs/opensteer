@@ -453,6 +453,43 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it("notifies only the script bound to a released root so it can retire its page handle", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    router.claimTarget("session", "other");
+    const event = vi.fn<(event: CdpEvent) => void>();
+    const otherEvent = vi.fn<(event: CdpEvent) => void>();
+    const budget = { maxBytes: 1024, maxDepth: 8, maxEntries: 64 };
+    router.openScriptAttachment("session", "script", "root", budget, event);
+    router.openScriptAttachment("session", "other-script", "other", budget, otherEvent);
+    try {
+      await router.send("session", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "root" },
+        scriptAttachmentId: "script",
+      });
+      router.releaseTarget("session", "root");
+      backend.emit("Target.targetDestroyed", { targetId: "root" });
+      expect(event).toHaveBeenCalledExactlyOnceWith({
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "root" },
+        sequence: 1,
+        scriptAttachmentId: "script",
+      });
+      expect(otherEvent).not.toHaveBeenCalled();
+      await expect(
+        router.send("session", {
+          method: "Target.closeTarget",
+          parameters: { targetId: "root" },
+          scriptAttachmentId: "script",
+        }),
+      ).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      await router.close();
+    }
+  });
+
   it("rejects oversized script replies and drops events before delivering them", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

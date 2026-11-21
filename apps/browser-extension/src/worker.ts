@@ -19,7 +19,7 @@ import {
   type BrowserSourceStatus,
 } from "@opensteer/browser-source-wire/frames";
 import { extensionWire, liveTabsOnly } from "./variant.js";
-import { ChromeTabDebugger, type ChromeTabLink } from "./tab-debugger.js";
+import { ChromeTabDebugger, TabShareProblem, type ChromeTabLink } from "./tab-debugger.js";
 import { readSiteCookies } from "./cookies.js";
 import {
   ConnectProblem,
@@ -34,6 +34,7 @@ import {
   type ConnectionState,
   type ConnectionView,
   type InvitationCheck,
+  uiFailure,
   type Status,
   type UiRequest,
 } from "./messages.js";
@@ -887,9 +888,14 @@ async function handle(request: UiRequest, tab: ChromeTab | undefined): Promise<u
       return await checkInvitation(request.invitation, tab);
     case "ui.connect":
       return await connect(request.invitation, request.name, tab);
-    case "ui.tab.share":
-      await liveTabs?.share(request.sourceId, await chrome.tabs.get(request.tabId));
+    case "ui.tab.share": {
+      if (!liveTabs) throw new TabShareProblem("unsupported");
+      const tab = await chrome.tabs.get(request.tabId).catch((cause: unknown) => {
+        throw new TabShareProblem("tab-unavailable", { cause });
+      });
+      await liveTabs.share(request.sourceId, tab);
       return await status();
+    }
     case "ui.tab.stop":
       liveTabs?.stop(request.sourceId, request.shareId);
       return await status();
@@ -956,33 +962,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Only this extension's own top-level pages may drive it. connect.html is
   // reachable from the web, so a framed copy must not be able to pair.
   const extensionOrigin = chrome.runtime.getURL("");
+  const tabShare =
+    typeof request === "object" &&
+    request !== null &&
+    "type" in request &&
+    request.type === "ui.tab.share";
   if (
     sender.id !== chrome.runtime.id ||
     !sender.url?.startsWith(extensionOrigin) ||
     (sender.frameId !== undefined && sender.frameId !== 0)
   ) {
-    sendResponse({ code: "failed", deploymentName: null, ok: false, origin: null });
+    sendResponse(uiFailure(tabShare ? "untrusted-request" : undefined));
     return false;
   }
   const parsed = UiRequestSchema.safeParse(request);
   if (!parsed.success) {
-    sendResponse({ code: "failed", deploymentName: null, ok: false, origin: null });
+    sendResponse(uiFailure(tabShare ? "invalid-request" : undefined));
     return false;
   }
   void handle(parsed.data, sender.tab)
     .then((value) => sendResponse({ ok: true, value }))
-    .catch((error: unknown) =>
-      sendResponse(
-        error instanceof ConnectProblem
-          ? {
-              code: error.code,
-              deploymentName: error.deploymentName,
-              ok: false,
-              origin: error.origin,
-            }
-          : { code: "failed", deploymentName: null, ok: false, origin: null },
-      ),
-    );
+    .catch((error: unknown) => {
+      if (error instanceof ConnectProblem)
+        sendResponse({
+          code: error.code,
+          deploymentName: error.deploymentName,
+          ok: false,
+          origin: error.origin,
+        });
+      else if (error instanceof TabShareProblem) sendResponse(uiFailure(error.reason));
+      else {
+        if (tabShare) console.error("Chrome tab sharing failed", error);
+        sendResponse(uiFailure(tabShare ? "unexpected" : undefined));
+      }
+    });
   return true;
 });
 

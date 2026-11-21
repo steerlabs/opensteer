@@ -194,6 +194,7 @@ interface NativePage {
   automatic: number;
   attempt: object | null;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
+  retainClose: boolean;
   admitTimer: ReturnType<typeof setTimeout> | undefined;
   targetId: Promise<string> | undefined;
   blocked: SleepBlocker | null;
@@ -281,6 +282,25 @@ export class PageOwnership {
     const ending = [...this.held].filter((entry) => entry.session === session);
     for (const entry of ending) this.request(entry, reason);
     return Promise.all(ending.map((entry) => entry.settled.promise)).then(() => undefined);
+  }
+
+  /** For a planned relay restart, keep only the person's live page incarnations. */
+  endOtherPages(
+    session: string,
+    keep: ReadonlySet<BrowserPage>,
+    withinMs: number,
+    reason: PageEndReason = "session-ended",
+  ): Promise<boolean> {
+    const shouldEnd = (entry: NativePage) => entry.session === session && !keep.has(entry.page);
+    for (const creation of this.creations)
+      if (creation.session === session) creation.abandoned = true;
+    for (const entry of this.held) if (shouldEnd(entry)) this.request(entry, reason);
+    return this.until(
+      () =>
+        [...this.held].some(shouldEnd) ||
+        [...this.creations].some((creation) => creation.session === session),
+      withinMs,
+    );
   }
 
   /** Makes `page` this session's, if it is unowned or already its own and may still be admitted. */
@@ -389,6 +409,11 @@ export class PageOwnership {
     return this.within([entry], withinMs);
   }
 
+  retainTabClose(session: string, surfaceId: BrowserSurfaceId): void {
+    for (const entry of this.held)
+      if (entry.session === session && entry.surfaceId === surfaceId) entry.retainClose = true;
+  }
+
   /** The pages this session's tab may still have: earlier incarnations and creations under way. */
   tabPages(session: string, surfaceId: BrowserSurfaceId): BrowserPage[] {
     return [...this.held]
@@ -405,10 +430,14 @@ export class PageOwnership {
     surfaceId: BrowserSurfaceId,
     reason: PageEndReason,
     withinMs: number,
+    includeDetached = false,
   ): Promise<boolean> {
     const busy = () =>
       [...this.held].some(
-        (entry) => entry.session === session && entry.surfaceId === surfaceId && entry.holdsTab,
+        (entry) =>
+          entry.session === session &&
+          entry.surfaceId === surfaceId &&
+          (includeDetached || entry.holdsTab),
       ) ||
       [...this.creations].some(
         (creation) => creation.session === session && creation.surfaceId === surfaceId,
@@ -579,6 +608,7 @@ export class PageOwnership {
       automatic: 0,
       attempt: null,
       retryTimer: undefined,
+      retainClose: false,
       admitTimer: undefined,
       targetId: undefined,
       blocked: null,
@@ -657,7 +687,7 @@ export class PageOwnership {
       if (entry.attempt !== attempt) return;
       entry.attempt = null;
       if (entry.state !== "closing" || this.gone(entry) || this.stopped) return;
-      if (entry.automatic >= automaticAttempts) {
+      if (!entry.retainClose && entry.automatic >= automaticAttempts) {
         this.onDiagnostic({ event: "browser.page.closing.exhausted", ...this.closing(entry) });
         return;
       }
