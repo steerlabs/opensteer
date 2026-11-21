@@ -327,6 +327,7 @@ async function main(): Promise<void> {
     const nativeFsArtifact = await timePhase("runtime.native-fs", () =>
       stageNativeFsHelper(staging, targetOs, targetArch),
     );
+    const nativeFsHelper = nativeFsArtifact.path;
     artifacts.push(nativeFsArtifact);
 
     // The computer-use helper is built here, beside the other native helper,
