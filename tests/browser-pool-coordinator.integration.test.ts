@@ -733,6 +733,53 @@ it("reads the state a refused start returns, and starts again from the stopped g
   }
 });
 
+for (const asked of ["removal", "restart"] as const)
+  it(`holds admission when a ${asked} is asked while a park is in flight`, async () => {
+    const f = await poolFixture(`park-then-${asked}`);
+    try {
+      const home = f.home();
+      await home.recover();
+      await f.openSession(home);
+      const pausing = Promise.withResolvers<void>();
+      const pause = Promise.withResolvers<void>();
+      f.controller.hold("pause", async () => {
+        pausing.resolve();
+        await pause.promise;
+      });
+      const parking = home.tryPark();
+      await pausing.promise;
+      const done = asked === "removal" ? home.releaseDevice() : home.restart();
+      // A waiter with demand arrives meanwhile.
+      const waiting = home.gate.reserve(AbortSignal.timeout(10_000)).then(
+        (held) => {
+          held.release();
+          return "admitted" as const;
+        },
+        (error: unknown) => (error instanceof Error ? error.message : "refused"),
+      );
+      pause.resolve();
+      // The park finishes and reports where the browser is; it admits nothing.
+      expect(await parking).toBe("parked");
+      expect(home.gate.phase).toBe(asked === "removal" ? "released" : "restarting");
+      expect(home.gate.held).toBe(0);
+      await done;
+      if (asked === "removal") {
+        await home.released();
+        expect(await waiting).toContain("removed");
+        expect(home.gate.phase).toBe("released");
+        expect(await home.tryPark()).toBe("vetoed");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop"]);
+      } else {
+        // Only the restart's fresh guest admits the waiter; the parked guest was never woken.
+        expect(await waiting).toBe("admitted");
+        expect(home.gate.phase).toBe("open");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop", "start"]);
+      }
+    } finally {
+      await f.close();
+    }
+  });
+
 it("recovers a runtime found retiring at a Home restart as not parked", async () => {
   // The retire's page probe waits here, so the runtime is still retiring when the Home restarts.
   let probing = Promise.withResolvers<void>();
