@@ -1,0 +1,165 @@
+{
+  "gate1": {
+    "loaded": true,
+    "swUrl": "chrome-extension://ilgaahnegkiofenphohicigbedjlobif/sw.js",
+    "ping1": "pong:ilgaahnegkiofenphohicigbedjlobif",
+    "initialTabCount": 1,
+    "stoppedMethod": "ServiceWorker.stopWorker",
+    "swClosedEvent": false,
+    "workersAfterStop": 1,
+    "targetsRunningAfterStop": 0,
+    "wakeMethod": "chrome.tabs.onCreated",
+    "restarted": false,
+    "ping2": "pong:ilgaahnegkiofenphohicigbedjlobif",
+    "inv2Count": 1
+  },
+  "gate2Default": {
+    "webContentsDiscard": false,
+    "tabIdBefore": 777935020,
+    "tabIdAfterDiscard": 777935021,
+    "tabIdPreserved": false,
+    "targetIdBefore": "0858109F8F2EB9111531E4649BB54864",
+    "targetIdAfterDiscard": "599C51E5AC5607000A9D1BD2DB275762",
+    "targetIdPreserved": false,
+    "discardRes": {
+      "ok": true,
+      "oldTabId": 777935020,
+      "newTabId": 777935021,
+      "discarded": true
+    },
+    "eventsDuringDiscard": [
+      "targetPage.close",
+      "context.page:http://site-1.localhost:55733/form-scroll?label=default"
+    ],
+    "oldPageClosedAfterDiscard": true,
+    "newPagesCreatedCount": 1,
+    "contextPagesCountAfterDiscard": 1,
+    "baselineRenderers": {
+      "count": 4,
+      "rssMb": 465
+    },
+    "liveRenderers": {
+      "count": 5,
+      "rssMb": 683
+    },
+    "discardedRenderers": {
+      "count": 4,
+      "rssMb": 546
+    },
+    "wakeRes": {
+      "tabId": 777935021,
+      "discarded": false,
+      "status": "loading"
+    },
+    "tabStatusAfterWake": "complete",
+    "tabDiscardedAfterWake": false,
+    "wakeMs": 710,
+    "pageUsableAfterWake": true,
+    "newCdpWorks": true,
+    "screenshotWorks": true,
+    "evalResult": {
+      "url": "http://site-1.localhost:55733/form-scroll?label=default",
+      "scrollY": 2400,
+      "field": "Gate2 typed draft"
+    },
+    "usabilityError": null
+  },
+  "gate2Wcd": {
+    "webContentsDiscard": true,
+    "tabIdBefore": 1482276156,
+    "tabIdAfterDiscard": 1482276156,
+    "tabIdPreserved": true,
+    "targetIdBefore": "2C8DF9C623DC1F93A0B39F7FB4FD0136",
+    "targetIdAfterDiscard": "2C8DF9C623DC1F93A0B39F7FB4FD0136",
+    "targetIdPreserved": true,
+    "discardRes": {
+      "ok": true,
+      "oldTabId": 1482276156,
+      "newTabId": 1482276156,
+      "discarded": true
+    },
+    "eventsDuringDiscard": [],
+    "oldPageClosedAfterDiscard": false,
+    "newPagesCreatedCount": 0,
+    "contextPagesCountAfterDiscard": 2,
+    "baselineRenderers": {
+      "count": 4,
+      "rssMb": 452
+    },
+    "liveRenderers": {
+      "count": 5,
+      "rssMb": 684
+    },
+    "discardedRenderers": {
+      "count": 4,
+      "rssMb": 546
+    },
+    "wakeRes": {
+      "tabId": 1482276156,
+      "discarded": false,
+      "status": "loading"
+    },
+    "tabStatusAfterWake": "complete",
+    "tabDiscardedAfterWake": false,
+    "wakeMs": 707,
+    "pageUsableAfterWake": true,
+    "newCdpWorks": true,
+    "screenshotWorks": true,
+    "evalResult": {
+      "url": "http://site-1.localhost:55733/form-scroll?label=wcd",
+      "scrollY": 2400,
+      "field": "Gate2 typed draft"
+    },
+    "usabilityError": null
+  },
+  "gate3Default": {
+    "webContentsDiscard": false,
+    "launchSucceeded": true,
+    "launchMs": 323,
+    "playwrightPagesCount": 8,
+    "inventoryCount": 70,
+    "unloadedCount": 62,
+    "eagerServerRequestCount": 8,
+    "renderersAfter3s": {
+      "count": 10,
+      "rssMb": 1285
+    },
+    "wokeCheck": {
+      "index": 1,
+      "tabId": 76869012,
+      "wakeMs": 787,
+      "url": "http://site-2.localhost:55733/form-scroll?label=tab-2",
+      "scrollY": 540,
+      "field": "draft-2"
+    }
+  },
+  "gate3Wcd": {
+    "webContentsDiscard": true,
+    "launchSucceeded": true,
+    "launchMs": 310,
+    "playwrightPagesCount": 8,
+    "inventoryCount": 70,
+    "unloadedCount": 62,
+    "eagerServerRequestCount": 8,
+    "renderersAfter3s": {
+      "count": 10,
+      "rssMb": 1287
+    },
+    "wokeCheck": {
+      "index": 1,
+      "tabId": 892060193,
+      "wakeMs": 784,
+      "url": "http://site-2.localhost:55733/form-scroll?label=tab-2",
+      "scrollY": 540,
+      "field": "draft-2"
+    }
+  },
+  "removedDirs": [
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate-ext-GIdMGW",
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate1-mOR5EM",
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate2-def-a7r42P",
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate2-wcd-Jw0jS4",
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate3-70-def-GsxCJs",
+    "/Users/timjang/.t3/userdata/antigravity-tmp/ac0a3dfd6ddd/run-2RdSMu/os-gate3-70-wcd-WG4edE"
+  ]
+}
