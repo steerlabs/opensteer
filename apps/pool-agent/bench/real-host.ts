@@ -784,7 +784,9 @@ function proxySampler(slot: Slot) {
 
 const mib = 1024 ** 2;
 const spkiOf = (key: KeyObject) =>
-  createPublicKey(key).export({ format: "der", type: "spki" }).toString("base64");
+  (key.type === "public" ? key : createPublicKey(key))
+    .export({ format: "der", type: "spki" })
+    .toString("base64");
 const agentLines = async (since: string) =>
   ((await helper({ cmd: "agent-events", since })).lines as string[]).map(
     (line) => JSON.parse(line) as Record<string, unknown>,
@@ -978,9 +980,15 @@ async function capacity(others: Slot[]) {
       )
     : null;
   const after = await helper({ cmd: "capacity-events" });
-  const saves = (await agentLines(marks))
-    .filter((line) => line.event === "capacity.save")
-    .map((line) => line.saving as string);
+  // Each guest the agent chose to save, in the order it first chose it (two starts let in at
+  // once may both choose the oldest; the second's save is then skipped).
+  const saves = [
+    ...new Set(
+      (await agentLines(marks))
+        .filter((line) => line.event === "capacity.save")
+        .map((line) => line.saving as string),
+    ),
+  ];
   const kills = (events: Record<string, unknown>) =>
     ((events.guests as Record<string, number> | null)?.oom_kill ?? 0) +
     ((events.slice as Record<string, number> | null)?.oom_kill ?? 0);
