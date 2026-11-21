@@ -2700,7 +2700,9 @@ describe("native Chromium profiles", () => {
         newPage: vi.fn(async () => (++newPageCalls === 1 ? helperRawPage : personRawPage)),
         newCDPSession: vi.fn(async () => ({
           send: vi.fn(async (method: string) =>
-            method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-c3-person" } } : {},
+            method === "Target.getTargetInfo"
+              ? { targetInfo: { targetId: "target-c3-person" } }
+              : {},
           ),
           on: vi.fn(),
           off: vi.fn(),
@@ -3161,10 +3163,13 @@ describe("native Chromium profiles", () => {
         const handedOff: string[] = [];
         launched.context.handOff((p) => handedOff.push(p.url()));
         await launched.context.sessionRestore!.reconcile(new Set([surfS]));
-        await vi.waitFor(() => expect(held === "freeze" ? freezeEntered : discardEntered).toBe(true), {
-          timeout: 3_000,
-          interval: 10,
-        });
+        await vi.waitFor(
+          () => expect(held === "freeze" ? freezeEntered : discardEntered).toBe(true),
+          {
+            timeout: 3_000,
+            interval: 10,
+          },
+        );
 
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const claiming = launched.context.sessionRestore!.claim(surfS, "https://c1.test/");
@@ -3591,9 +3596,9 @@ describe("native Chromium profiles", () => {
       const handedOff: string[] = [];
       launched.context.handOff((p) => handedOff.push(p.url()));
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const reconciling = launched.context.sessionRestore!.reconcile(new Set()).catch(
-        (error: unknown) => error,
-      );
+      const reconciling = launched.context
+        .sessionRestore!.reconcile(new Set())
+        .catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(await reconciling).toBeInstanceOf(Error);
       await vi.advanceTimersByTimeAsync(60_000);

@@ -139,7 +139,9 @@ describe("BrowserRuntime", () => {
       launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
-      ticketVerifier: new FakeTicketVerifier(freshClaims({ tabRestoreVersion: 1, surfaceState: 1 })),
+      ticketVerifier: new FakeTicketVerifier(
+        freshClaims({ tabRestoreVersion: 1, surfaceState: 1 }),
+      ),
     });
     const sink = new FakeSink();
     try {

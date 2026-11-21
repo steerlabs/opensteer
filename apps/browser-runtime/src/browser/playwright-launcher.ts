@@ -1238,7 +1238,8 @@ function locateTab(
 
 /** Why a map was deleted, so a later start that matches nothing can be read against it. */
 function reportMapDeleted(
-  reason: "write-failures" | "flush-not-current" | "close-not-current" | "launch-inventory-unavailable",
+  reason:
+    "write-failures" | "flush-not-current" | "close-not-current" | "launch-inventory-unavailable",
 ): void {
   process.stderr.write(`${JSON.stringify({ event: "browser-runtime.tab-map-deleted", reason })}\n`);
 }
@@ -1248,7 +1249,10 @@ function reportMapDeleted(
  * nothing of a saved map matched, which of the reasons it was.
  */
 function reportRestoreLaunch(
-  map: { readonly state: "absent" | "unreadable" | "present"; readonly tabs: readonly { readonly surfaceId: string | null; readonly url: string }[] },
+  map: {
+    readonly state: "absent" | "unreadable" | "present";
+    readonly tabs: readonly { readonly surfaceId: string | null; readonly url: string }[];
+  },
   restored: readonly ChromiumTabEntry[],
   matched: number,
   orphans: number,
@@ -1511,7 +1515,10 @@ class PlaywrightContextHandle implements BrowserContext {
     return targetId === null && this.neverHandOffTargetIds.size > 0;
   }
 
-  private resolveWake(page: Page, waiter: NonNullable<PlaywrightContextHandle["activeWake"]>): void {
+  private resolveWake(
+    page: Page,
+    waiter: NonNullable<PlaywrightContextHandle["activeWake"]>,
+  ): void {
     if (this.activeWake !== waiter) return;
     this.activeWake = null;
     this.identifyingPages.delete(page);

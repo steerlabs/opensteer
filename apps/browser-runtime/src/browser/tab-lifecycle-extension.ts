@@ -372,16 +372,17 @@ export class ChromiumTabLifecycleBridge {
   async discardByTabIdDetailed(
     tabId: number,
   ): Promise<{ readonly newTabId: number; readonly newTargetId: string | null } | null> {
-    const raw = await this.callWorker((worker) =>
-      worker.evaluate(
-        (id) =>
-          (
-            globalThis as unknown as {
-              __opensteer: { discardByTabId(tabId: number): Promise<unknown> };
-            }
-          ).__opensteer.discardByTabId(id),
-        tabId,
-      ),
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          (id) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { discardByTabId(tabId: number): Promise<unknown> };
+              }
+            ).__opensteer.discardByTabId(id),
+          tabId,
+        ),
       "change",
     );
     const parsed = discardResultSchema.parse(raw);
@@ -398,32 +399,34 @@ export class ChromiumTabLifecycleBridge {
   }
 
   async activateByTabId(tabId: number): Promise<boolean> {
-    const raw = await this.callWorker((worker) =>
-      worker.evaluate(
-        (id) =>
-          (
-            globalThis as unknown as {
-              __opensteer: { activateByTabId(tabId: number): Promise<unknown> };
-            }
-          ).__opensteer.activateByTabId(id),
-        tabId,
-      ),
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          (id) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { activateByTabId(tabId: number): Promise<unknown> };
+              }
+            ).__opensteer.activateByTabId(id),
+          tabId,
+        ),
       "change",
     );
     return activateResultSchema.parse(raw).ok;
   }
 
   async removeByTabId(tabId: number): Promise<boolean> {
-    const raw = await this.callWorker((worker) =>
-      worker.evaluate(
-        (id) =>
-          (
-            globalThis as unknown as {
-              __opensteer: { removeByTabId(tabId: number): Promise<unknown> };
-            }
-          ).__opensteer.removeByTabId(id),
-        tabId,
-      ),
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          (id) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { removeByTabId(tabId: number): Promise<unknown> };
+              }
+            ).__opensteer.removeByTabId(id),
+          tabId,
+        ),
       "change",
     );
     return raw === true;
