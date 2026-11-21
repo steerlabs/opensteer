@@ -7,7 +7,7 @@ import {
   type CloudComputerReport,
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
-import { RemoteRequestError } from "./http.js";
+import { BootstrapScrubFailure, RemoteRequestError } from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
@@ -50,6 +50,7 @@ function harness({
   adapter,
 }: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider } = {}) {
   const reports: CloudComputerReport[] = [];
+  const onError = vi.fn();
   const calls: string[] = [];
   const servers = new Map<number, VmServer & { home: CloudComputerId }>();
   const records = new Map<string, Addresses>();
@@ -185,6 +186,7 @@ function harness({
       concurrency,
       readinessTimeoutMs: 1000,
       orphanGraceMs: 60_000,
+      onError,
       now: () => status.now,
     });
   const reconciler = setup();
@@ -200,6 +202,7 @@ function harness({
     account,
     status,
     reports,
+    onError,
     pass: () => reconciler.pass(signal),
     another: (client: AccountApi) => setup(client).pass(signal),
     pin: () => {
@@ -599,6 +602,41 @@ describe("Cloud Computer reconciliation", () => {
     );
     expect(replayedAddress?.query.get("requestId")).toBe(originalAddress.query.get("requestId"));
   });
+
+  it.each(["conflict", "rejected"])(
+    "keeps a verified Google replacement ready when the last metadata scrub is %s",
+    async (failure) => {
+      const compute = new ComputeFake();
+      const adapter = compute.adapter();
+      const h = harness({ compute, adapter });
+      h.status.desired = [{ ...home }];
+      await h.pass();
+      const [old] = compute.instances.values();
+      h.status.desired = [{ ...home, generation: 2, revision: 2 }];
+      await h.pass();
+      const replacement = [...compute.instances.values()].find(({ name }) => name !== old?.name)!;
+      h.pin();
+      h.status.desired = [{ ...h.status.desired[0]!, bootstrapReceiptRecorded: true }];
+      h.status.now += 1000;
+      h.records.clear();
+      const scrub = vi.spyOn(adapter, "updateBootstrap").mockImplementationOnce(async () => {
+        expect(h.records.get(home.hostname)?.ipv4).toBe(
+          replacement.networkInterfaces[0]?.accessConfigs[0]?.natIP,
+        );
+        expect(compute.instances.has(old!.name)).toBe(false);
+        if (failure === "rejected") throw new RemoteRequestError("Google Compute Engine", 403);
+        return false;
+      });
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "ready", generation: 2 });
+      expect(h.onError).toHaveBeenCalledExactlyOnceWith(expect.any(BootstrapScrubFailure));
+      expect(replacement.metadata.items.some(({ key }) => key === "user-data")).toBe(true);
+      await h.pass();
+      expect(scrub).toHaveBeenCalledTimes(2);
+      expect(h.last()?.phase).toBe("ready");
+      expect(replacement.metadata.items.some(({ key }) => key === "user-data")).toBe(false);
+    },
+  );
 
   it("keeps a lost Google insert unknown and deletes its late VM and reservation", async () => {
     const compute = new ComputeFake();

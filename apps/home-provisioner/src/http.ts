@@ -132,7 +132,15 @@ function retryAt(headers: Headers): number {
   return now + 1_000;
 }
 
+export class BootstrapScrubFailure extends Error {
+  constructor(cause?: unknown) {
+    super("Could not confirm removal of bootstrap metadata", { cause });
+  }
+}
+
 export function provisionerFailure(error: unknown) {
+  if (error instanceof BootstrapScrubFailure)
+    return { event: "home-provisioner.provider.bootstrap-scrub-failed" };
   if (error instanceof ProviderOutcomeUnknown)
     return { event: "home-provisioner.provider.outcome-unknown" };
   if (!(error instanceof RemoteRequestError)) return { event: "home-provisioner.pass.failed" };

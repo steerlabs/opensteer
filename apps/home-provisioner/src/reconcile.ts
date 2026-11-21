@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ProviderOutcomeUnknown, ProviderWriteRejected } from "./http.js";
+import { BootstrapScrubFailure, ProviderOutcomeUnknown, ProviderWriteRejected } from "./http.js";
 import { refused } from "@opensteer/core";
 import type {
   CloudComputerCheck,
@@ -247,13 +247,22 @@ export class Reconciler {
     };
     const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check, observe));
     const receiptRecorded = computer.bootstrapReceiptRecorded === true;
-    const syncBootstrap = (server: VmServer) => {
-      const needsUpdate = receiptRecorded
-        ? server.bootstrapMetadata !== "absent"
-        : server.bootstrapMetadata === "pending";
-      return provider.updateBootstrap && needsUpdate
-        ? act((job, check) => provider.updateBootstrap!(server.id, receiptRecorded, job, check))
-        : true;
+    const scrubBootstrap = async (server: VmServer | undefined) => {
+      if (
+        !receiptRecorded ||
+        !server ||
+        server.bootstrapMetadata === "absent" ||
+        !provider.updateBootstrap
+      )
+        return;
+      try {
+        if (!(await act((job, check) => provider.updateBootstrap!(server.id, true, job, check))))
+          throw new BootstrapScrubFailure();
+      } catch (error) {
+        this.#options.onError?.(
+          error instanceof BootstrapScrubFailure ? error : new BootstrapScrubFailure(error),
+        );
+      }
     };
     let failure: Failure = "The Cloud Computer provider operation failed.";
 
@@ -284,14 +293,6 @@ export class Reconciler {
         const power = (async () => {
           let settled = true;
           for (const server of servers) {
-            if (
-              state === "suspended" &&
-              computer.bootstrapReceiptRecorded &&
-              server.id === current?.id &&
-              !(await syncBootstrap(server))
-            ) {
-              settled = false;
-            }
             if (state === "suspended" && server.status === "off") continue;
             if (server.status !== "deleting") {
               if (state === "deleted")
@@ -325,6 +326,7 @@ export class Reconciler {
           settled = await act((job, check) => provider.releaseAddress!(id, job, check));
         }
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
+        await scrubBootstrap(current);
         return report(settled ? "suspended" : "provisioning");
       }
 
@@ -409,7 +411,13 @@ export class Reconciler {
         ))
       )
         return unready("provisioning");
-      if (!(await syncBootstrap(server))) return unready("provisioning");
+      if (
+        !receiptRecorded &&
+        server.bootstrapMetadata === "pending" &&
+        provider.updateBootstrap &&
+        !(await act((job, check) => provider.updateBootstrap!(server.id, false, job, check)))
+      )
+        return unready("provisioning");
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on"))
           return provider.canRecoverWrite ? undefined : unready("provisioning");
@@ -482,6 +490,7 @@ export class Reconciler {
           await act((job, check) => provider.delete(old.id, job, check));
         if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
       }
+      await scrubBootstrap(current);
       return report("ready");
     } catch (error) {
       signal.throwIfAborted();
