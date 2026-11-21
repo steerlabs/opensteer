@@ -282,6 +282,34 @@ it("keeps a session whose unanswered command was settled unknown when the Runner
   }
 });
 
+it("lets a tab-targeted call made while the Runner's channel reconnects wait for it, never refuse it as not found", async () => {
+  const w = await unansweredAtChannelLoss("direct-tab-reconnecting", 20_000);
+  try {
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("reconnecting"));
+    // The broker is gone with its channel: the page's document stands from when it was lost.
+    expect(w.home.service.pageInventory(w.session.id)).toBeUndefined();
+    const call = w.work.useTab(w.read, w.tab.id);
+    const early = await Promise.race([
+      call.then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("waiting"), 1_000)),
+    ]);
+    expect(early).toBe("waiting");
+    expect(w.home.coordinator.gate.phase).toBe("reconnecting");
+    w.j.runnerUp();
+    const result = await call;
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).toContain("unsent draft");
+    expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
+      w.document,
+    );
+    // The unanswered command is never sent again.
+    expect(await w.sent()).toBe(1);
+  } finally {
+    w.j.runnerUp();
+    await w.j.close();
+  }
+});
+
 it("ends a session whose unanswered command was settled unknown with its note when the Runner does not come back", async () => {
   const w = await unansweredAtChannelLoss("direct-unknown-gone", 1_500);
   try {

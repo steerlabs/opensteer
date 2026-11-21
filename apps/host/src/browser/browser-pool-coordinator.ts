@@ -129,7 +129,11 @@ export class BrowserPoolCoordinator {
   #parkSettling = false;
   #unknownIntent: string | undefined;
   /** When the loop first saw each ready session without a channel: its window runs from there. */
-  readonly #lostSince = new Map<BrowserSessionId, number>();
+  /** Each session without a channel: when its window began, and its documents then, if known. */
+  readonly #lost = new Map<
+    BrowserSessionId,
+    { readonly since: number; readonly documents?: ReadonlyMap<string, string> }
+  >();
   #recovered = false;
   readonly #recovering = Promise.withResolvers<void>();
   readonly #releasedForGood = Promise.withResolvers<void>();
@@ -203,11 +207,17 @@ export class BrowserPoolCoordinator {
     };
   }
 
-  /** While parked or waking, the retained document stands for the live one. */
-  retainedDocument(sessionId: string, surfaceId: string): string | undefined {
-    return retainedOf(this.#slot)?.documents.find(
-      (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
-    )?.documentId;
+  /**
+   * While the browser is away, the document last known stands for the live one: retained by a
+   * park, or held when the session's channel was lost.
+   */
+  knownDocument(sessionId: BrowserSessionId, surfaceId: string): string | undefined {
+    return (
+      this.#lost.get(sessionId)?.documents?.get(surfaceId) ??
+      retainedOf(this.#slot)?.documents.find(
+        (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
+      )?.documentId
+    );
   }
 
   // ---- What is wanted, and the loop -------------------------------------------------------
@@ -228,9 +238,10 @@ export class BrowserPoolCoordinator {
   }
 
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
-  channelLost(sessionId: BrowserSessionId): void {
+  channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
     if (this.#closed) return;
-    if (!this.#lostSince.has(sessionId)) this.#lostSince.set(sessionId, Date.now());
+    if (!this.#lost.has(sessionId))
+      this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
     this.#publish(this.#slot);
     this.#kick();
   }
@@ -368,7 +379,7 @@ export class BrowserPoolCoordinator {
           ? "parking"
           : slot?.phase === "waking"
             ? "waking"
-            : this.#lostSince.size
+            : this.#lost.size
               ? "reconnecting"
               : null;
     this.gate.set({
@@ -402,9 +413,9 @@ export class BrowserPoolCoordinator {
     const found = [...((await this.#adopter?.withoutChannel(this.#options.runtimeId)) ?? [])];
     const now = Date.now();
     for (const sessionId of found)
-      if (!this.#lostSince.has(sessionId)) this.#lostSince.set(sessionId, now);
-    for (const sessionId of this.#lostSince.keys())
-      if (!found.includes(sessionId)) this.#lostSince.delete(sessionId);
+      if (!this.#lost.has(sessionId)) this.#lost.set(sessionId, { since: now });
+    for (const sessionId of this.#lost.keys())
+      if (!found.includes(sessionId)) this.#lost.delete(sessionId);
     this.#publish(this.#slot);
     return found;
   }
@@ -417,12 +428,12 @@ export class BrowserPoolCoordinator {
   ): Promise<void> {
     const now = Date.now();
     const remaining = (sessionId: BrowserSessionId) =>
-      (this.#lostSince.get(sessionId) ?? now) + this.#channelDeadlineMs - now;
+      (this.#lost.get(sessionId)?.since ?? now) + this.#channelDeadlineMs - now;
     const past = sessions.filter((sessionId) => remaining(sessionId) <= 0);
     const within = sessions.filter((sessionId) => remaining(sessionId) > 0);
     if (past.length) {
       await this.#finishRunning(slot, await this.#lossesOf(slot, past, "not-adopted"));
-      for (const sessionId of past) this.#lostSince.delete(sessionId);
+      for (const sessionId of past) this.#lost.delete(sessionId);
       return;
     }
     const advanced = await this.#advance(slot, {
@@ -442,7 +453,7 @@ export class BrowserPoolCoordinator {
       signal: window,
     });
     const back = within.filter((sessionId) => this.#adopter?.live(sessionId));
-    for (const sessionId of back) this.#lostSince.delete(sessionId);
+    for (const sessionId of back) this.#lost.delete(sessionId);
     if (back.length < within.length) throw new Error("A session is not back yet.");
   }
 

@@ -1087,7 +1087,7 @@ export class BrowserService {
       reserve: (signal: AbortSignal) => pool.gate.reserve(signal),
       pageDocument: (sessionId: BrowserSessionId, tabId: TabId) =>
         this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
-        (pool.gate.retiringOrAdopting ? pool.retainedDocument(sessionId, tabId) : undefined),
+        (pool.gate.retiringOrAdopting ? pool.knownDocument(sessionId, tabId) : undefined),
     };
   }
 
@@ -1280,7 +1280,7 @@ export class BrowserService {
       };
       const broker = new HostedBrowserBroker({
         poolAdmission: this.#poolAdmission(pool, adopting),
-        onChannelLost: () => pool.channelLost(sessionId),
+        onChannelLost: (documents) => pool.channelLost(sessionId, documents),
         adoptedFromPool: true,
         personUse,
         onPersonUseChanged: () => {
@@ -6869,7 +6869,7 @@ export class BrowserService {
             ...(pooled
               ? {
                   poolAdmission: this.#poolAdmission(pooled),
-                  onChannelLost: () => pooled.channelLost(sessionId),
+                  onChannelLost: (documents) => pooled.channelLost(sessionId, documents),
                 }
               : {}),
             personUse,
@@ -7732,8 +7732,11 @@ interface PoolBrokerAdmission {
 
 interface HostedBrowserBrokerOptions {
   readonly poolAdmission?: PoolBrokerAdmission;
-  /** A pooled broker's channel was lost without the Home closing it. */
-  readonly onChannelLost?: () => void;
+  /**
+   * A pooled broker's channel was lost without the Home closing it; `documents` is each tab's
+   * document when it was lost, which stands for the live one until the session is back.
+   */
+  readonly onChannelLost?: (documents: ReadonlyMap<string, string>) => void;
   /** A broker an adoption built: its first ready does not replay saved tabs. */
   readonly adoptedFromPool?: boolean;
   readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
@@ -7785,7 +7788,7 @@ interface HostedBrowserBrokerOptions {
 
 export class HostedBrowserBroker {
   readonly #poolAdmission: PoolBrokerAdmission | undefined;
-  readonly #onChannelLost: (() => void) | undefined;
+  readonly #onChannelLost: ((documents: ReadonlyMap<string, string>) => void) | undefined;
   /** The runtime announced this session's end: its close is not a lost channel. */
   #runtimeEnded = false;
   readonly #adoptedFromPool: boolean;
@@ -8923,7 +8926,12 @@ export class HostedBrowserBroker {
           ready &&
           this.#poolAdmission !== undefined &&
           !this.#runtimeEnded;
-        if (channelLost) queueMicrotask(() => this.#onChannelLost?.());
+        if (channelLost) {
+          const documents = new Map(
+            [...this.#tabs.rows].map(([surfaceId, row]) => [surfaceId, row.documentId]),
+          );
+          queueMicrotask(() => this.#onChannelLost?.(documents));
+        }
         void this.#runtimeFrameTail
           .then(() =>
             this.#finish(
