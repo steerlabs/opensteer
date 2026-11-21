@@ -135,10 +135,6 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     void slots;
   }
 
-  /** How long making one slot's namespace and proxy socket takes; one at a time, host-wide. */
-  prepareMs = 0;
-  #prepareLock: Promise<void> = Promise.resolve();
-
   /** The next prepare waits for this, ignoring its caller's deadline as the real one does. */
   prepareGate: Promise<void> | undefined;
   /** Every prepare fails with this. */
@@ -152,11 +148,6 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.prepareGate = undefined;
     if (gate) await gate;
     if (this.prepared.has(slotId)) return;
-    const turn = this.#prepareLock.then(async () => {
-      if (this.prepareMs) await new Promise((resolve) => setTimeout(resolve, this.prepareMs));
-    });
-    this.#prepareLock = turn.catch(() => undefined);
-    await turn;
     this.prepared.add(slotId);
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
   }

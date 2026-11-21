@@ -4,16 +4,16 @@
  */
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   BrowserPoolAgentSlotDeleted,
   callBrowserPoolAgent,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { callFor, fixture, open, slotId } from "./review.test-support.js";
 import { SlotConflict } from "./agent.js";
 import { SlotNumbers } from "./firecracker/slot-numbers.js";
 import { DriverStateUncertain } from "./driver.js";
+import type { SlotRecord } from "./journal.js";
 import { homeKeyPair, testGuest, type FaultyJournal } from "./test-support.js";
 
 afterEach(async () => {
@@ -21,31 +21,50 @@ afterEach(async () => {
 });
 
 describe("finding 1: a save that fails does not spin", () => {
-  it("tries a save that always fails a bounded number of times, with two writes each", async () => {
-    const f = await fixture({ saveAfterMs: 1, faultyJournal: true });
+  it("waits longer after each failed save, with two writes per attempt", async () => {
+    const failures: number[] = [];
+    const f = await fixture({
+      saveAfterMs: 1,
+      saveRetryMs: 40,
+      faultyJournal: true,
+      log: (event) => {
+        if (event.event === "save.failed") failures.push(performance.now());
+      },
+    });
     await f.call("start");
-    await f.call("pause");
     f.driver.fail("snapshot", new Error("The snapshot failed."), 10_000);
     const journal = f.agent.journal as FaultyJournal;
     const before = journal.writes;
-    await delay(400);
+    await f.call("pause");
+    const pauseWrites = journal.writes - before;
+    await vi.waitFor(() => expect(failures.length).toBeGreaterThanOrEqual(3), { timeout: 3_000 });
     const attempts = f.driver.operations.filter((entry) => entry.startsWith("snapshot:")).length;
-    // One attempt; the next waits 30 s.
-    expect(attempts).toBe(1);
-    expect(journal.writes - before).toBe(2);
+    expect(failures[1]! - failures[0]!).toBeGreaterThanOrEqual(39);
+    expect(failures[2]! - failures[1]!).toBeGreaterThanOrEqual(79);
+    expect(journal.writes - before - pauseWrites).toBe(2 * attempts);
     expect(await f.status()).toMatchObject({ phase: "paused" });
   });
 
-  it("does not try or journal a save the array has no room for until space changes", async () => {
-    const f = await fixture({ saveAfterMs: 1, faultyJournal: true });
+  it("neither tries nor journals a save the array has no room for", async () => {
+    const f = await fixture({ saveAfterMs: 1, saveRoomRetryMs: 60, faultyJournal: true });
     await f.call("start");
     f.driver.room = false;
-    await f.call("pause");
     const journal = f.agent.journal as FaultyJournal;
+    await f.call("pause");
     const before = journal.writes;
-    await delay(300);
+    await vi.waitFor(() =>
+      expect(f.events.some((event) => event.event === "save.no-room")).toBe(true),
+    );
     expect(f.driver.operations.filter((entry) => entry.startsWith("snapshot:"))).toEqual([]);
     expect(journal.writes - before).toBe(0);
+    // Room again: the next try saves, and only it wrote (its step and its image).
+    f.driver.room = true;
+    await vi.waitFor(async () =>
+      expect((await f.status()).savedState).toMatchObject({ id: expect.any(String) }),
+    );
+    await vi.waitFor(() =>
+      expect(f.driver.operations.filter((entry) => entry.startsWith("snapshot:"))).toHaveLength(1),
+    );
     expect(f.events.filter((event) => event.event === "save.no-room")).toHaveLength(1);
   });
 });
@@ -53,26 +72,24 @@ describe("finding 1: a save that fails does not spin", () => {
 describe("finding 3: a host reboot with 400 slots does not fail the agent's start", () => {
   it("starts within its deadline with nothing prepared, and prepares a slot when it starts", async () => {
     const f = await fixture();
-    const home = homeKeyPair();
-    for (let index = 0; index < 400; index += 1)
-      await f.agent.agent.createSlot({
-        slotId: `many-${index}`,
-        term: 1,
-        homeKey: home.spki,
-        guest: testGuest,
-      });
+    const [record] = (await f.agent.journal.list()) as SlotRecord[];
+    // 400 slots on disk, as a host that ran them leaves them.
+    await Promise.all(
+      Array.from({ length: 400 }, (_, index) =>
+        f.agent.journal.write({ ...record!, slotId: `many-${index}` }),
+      ),
+    );
     f.driver.rebootHost();
-    // 400 slots one at a time would take 4 s; the start has 1 s.
-    f.driver.prepareMs = 10;
-    const began = performance.now();
+    // Making a slot's network never finishes now: a start that waited for it would not end.
+    f.driver.prepareGate = new Promise<void>(() => {});
     await f.restart({ deadlines: { sweep: 1_000 } });
-    expect(performance.now() - began).toBeLessThan(1_000);
     expect(f.driver.prepared.size).toBe(0);
+    f.driver.prepareGate = undefined;
     const status = await f.agent.agent.status("many-7", 1);
     expect(await f.agent.agent.apply(callFor(status, "start"))).toMatchObject({ applied: true });
     expect([...f.driver.prepared]).toEqual(["many-7"]);
     expect(f.driver.violations).toEqual([]);
-  }, 60_000);
+  });
 });
 
 describe("finding 4: a deleted slot keeps nothing secret", () => {
@@ -132,9 +149,13 @@ describe("finding 5: delete goes through the same lanes as everything else", () 
     f.driver.fail("discard", new Error("The discard failed."));
     await expect(f.agent.agent.deleteSlot(slotId, 1)).rejects.toThrow("The discard failed.");
     // Nothing asks the agent: only its own timer can discard the expired state.
-    await delay(1_000);
-    const discards = f.driver.operations.filter((entry) => entry === `discard:${slotId}`);
-    expect(discards.length).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(
+      () =>
+        expect(
+          f.driver.operations.filter((entry) => entry === `discard:${slotId}`).length,
+        ).toBeGreaterThanOrEqual(2),
+      { timeout: 3_000 },
+    );
   });
 
   it("does not let a create see a slot in the middle of its delete", async () => {
@@ -168,7 +189,9 @@ describe("finding 5: delete goes through the same lanes as everything else", () 
       guest: testGuest,
     });
     // The prepare outlives its deadline, as a real one that ignores its signal does.
-    await delay(150);
+    await vi.waitFor(() =>
+      expect(f.events.some((event) => event.event === "slot.create-draining")).toBe(true),
+    );
     release();
     await expect(creating).rejects.toThrow();
     await expect.poll(() => f.driver.prepared.has("late")).toBe(false);

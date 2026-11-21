@@ -509,8 +509,10 @@ export class PoolAgent {
       await this.#step("network", () => this.#driver.prepareSlot(slotId, guest.egress));
     } catch (error) {
       if (error instanceof DriverStateUncertain) this.#die(error);
-      if (error instanceof DeadlineExceeded)
+      if (error instanceof DeadlineExceeded) {
+        this.#log({ event: "slot.create-draining", slotId });
         await finishedWithin(error.settled, this.#deadlines.sweep);
+      }
       await this.#step("network", () => this.#driver.removeSlot(slotId)).catch(
         (cleanup: unknown) => {
           if (cleanup instanceof DriverStateUncertain) this.#die(cleanup);
