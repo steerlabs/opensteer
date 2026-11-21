@@ -7,6 +7,8 @@ import {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { HostToClientMessageSchema } from "./client.js";
+import { PersonalResourceDataSchema } from "./resources.js";
+import { TabCommandSchema, TabViewerSchema } from "./tabs.js";
 import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-sync.js";
 import { hostApi } from "./host-api.js";
 import { TeamCommandSchema } from "./team-api.js";
@@ -155,6 +157,44 @@ describe("personal wire compatibility", () => {
     expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.parse(pooled)).toEqual(pooled);
+  });
+
+  it("adds the pooled browser's report and loss notice as optional fields both ways", () => {
+    // A Home without a pooled browser sends the placement resource exactly as before.
+    const ordinary = '{"kind":"browser-placement","placements":[]}';
+    expect(JSON.stringify(PersonalResourceDataSchema.parse(JSON.parse(ordinary)))).toBe(ordinary);
+    // A released client reads the placements and ignores the report it does not know.
+    const pooled = {
+      kind: "browser-placement",
+      placements: [],
+      pools: [
+        {
+          runnerId: "rnr_cloud",
+          phase: "waking",
+          since: "2026-11-21T00:00:00.000Z",
+          start: { reason: "expired", at: "start-1" },
+          failures: 0,
+          pages: [{ surfaceId: "surface_a", outcome: "lost", typed: true }],
+          adopted: [{ surfaceId: "surface_b", documentId: "doc-1", revision: 3 }],
+        },
+      ],
+    };
+    const releasedPlacement = z.object({
+      kind: z.literal("browser-placement"),
+      placements: z.array(z.unknown()),
+    });
+    expect(releasedPlacement.parse(pooled)).toEqual({ kind: "browser-placement", placements: [] });
+    expect(PersonalResourceDataSchema.parse(pooled)).toEqual(pooled);
+    // A released client's activation, and a released Home's viewer, carry no notice fields.
+    const activate = '{"idempotencyKey":"k","type":"tab.activate","tabId":"tab_1"}';
+    expect(JSON.stringify(TabCommandSchema.parse(JSON.parse(activate)))).toBe(activate);
+    const viewer =
+      '{"kind":"page","sessionId":"bsn_00000000-0000-4000-8000-000000000002","surfaceId":"surface_a"}';
+    expect(JSON.stringify(TabViewerSchema.parse(JSON.parse(viewer)))).toBe(viewer);
+    // A current client sends the seen notice only to a Home that gave it one.
+    expect(
+      TabCommandSchema.safeParse({ ...JSON.parse(activate), recoveryNoticeSeen: "note-1" }).success,
+    ).toBe(true);
   });
 
   it("keeps serving every app inside the window", () => {
