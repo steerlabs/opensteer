@@ -100,17 +100,18 @@ socket's backlog.
 Bounds (round D, D1):
 
 - Every proxy runs in `opensteer-pool-egress.slice` (made by `setup-host.sh`, `MemoryMax` =
-  `driver.egressSliceMib`, 1024 MiB by default). Each has `CPUQuota=100%` (one core),
+  `driver.egressSliceMib`, 1536 MiB by default). Each has `CPUQuota=100%` (one core),
   `CPUWeight=100` and `IOWeight=100` (equal between proxies), `MemoryMax` =
-  `driver.egress.memoryMib` (80 MiB), `TasksMax=32`, and `driver.egress.maxConnections`
-  (128) connections.
+  `driver.egress.memoryMib` (128 MiB: one reached 80 MiB on run 5), `TasksMax=32`, and
+  `driver.egress.maxConnections` (64 connections: one Chromium held at most 7, 9 while
+  flooding, and Chromium opens at most 32 to one proxy).
 - The slice is counted inside the host's budget for guests: `guests/memory.max` is the host's
-  memory less max(2 GiB, 10 %) less the slice. On an n2-standard-8 (32 GiB): 32 - 3.2 - 1 =
-  27.8 GiB for guests, which holds 11 guests in memory at their `memory.high` of 2.5 GiB (27.5
-  GiB); their 11 proxies take at most 880 MiB of the slice's 1024 MiB. A host is sized for 11
+  memory less max(2 GiB, 10 %) less the slice. On an n2-standard-8 (32 GiB): 32 - 3.2 - 1.5 =
+  27.3 GiB for guests, which holds 10 guests in memory at their `memory.high` of 2.5 GiB (25
+  GiB); their 10 proxies take at most 1280 MiB of the slice's 1536 MiB. A host is sized for 10
   guests running or paused in memory; any number may be parked on disk.
-- systemd's crash protection stays on: five starts in 30 s, with a restart delay that backs off
-  from 1 s to 30 s. The agent's own stops reset the counter, so only the proxy's own failures
+- systemd's crash protection stays on: five starts in 120 s, with a restart delay that backs
+  off from 1 s to 30 s (with a 30 s window that backoff never tripped the limit, run 5). The agent's own stops reset the counter, so only the proxy's own failures
   count. A proxy that trips the limit stays down, with its socket, until the slot's next start
   or wake brings it back; meanwhile that guest has no network, nothing else is affected, and the
   slot's status says `proxy: "down"`.

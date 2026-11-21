@@ -46,15 +46,18 @@ export const agentConfigSchema = z
         node: path,
         main: path,
         /** One proxy's memory ceiling, MiB (round D, D1). */
-        memoryMib: z.number().int().min(32).max(1024).default(80),
+        // Measured on run 5: one proxy reached 80 MiB under a browser's load.
+        memoryMib: z.number().int().min(32).max(1024).default(128),
         /** One proxy's connections: sized from what one Chromium opens (round D, D1). */
-        maxConnections: z.number().int().min(16).max(1024).default(128),
+        // Measured on run 5: one Chromium held at most 7 (9 while flooding); Chromium itself opens
+        // at most 32 to one proxy. Twice that.
+        maxConnections: z.number().int().min(16).max(1024).default(64),
       }),
       /**
        * The slot proxies' slice (setup-host.sh makes it with this MemoryMax): counted inside the
        * host's budget, so the guests' ceiling leaves it room (round D, D1).
        */
-      egressSliceMib: z.number().int().min(64).default(1024),
+      egressSliceMib: z.number().int().min(64).default(1536),
       network: z.strictObject({
         /** Public resolvers only; a resolver in a blocked range must be named below. */
         resolvers: z

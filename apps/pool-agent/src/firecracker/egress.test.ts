@@ -30,6 +30,7 @@ describe("a slot's proxy unit (round D, D1)", () => {
       expect.arrayContaining([
         "--slice=opensteer-pool-egress.slice",
         "--property=StartLimitBurst=5",
+        "--property=StartLimitIntervalSec=120",
         "--property=RestartSteps=5",
         "--property=CPUQuota=100%",
         "--property=CPUWeight=100",

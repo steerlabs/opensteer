@@ -196,15 +196,15 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     # Round D, D1: every slot proxy runs in this slice. Its ceiling is counted inside the host's
-    # budget for guests (the agent's driver.egressSliceMib, 1024 by default), and each proxy has
-    # its own (80 MiB, one core) on top.
+    # budget for guests (the agent's driver.egressSliceMib, 1536 by default), and each proxy has
+    # its own (128 MiB, one core) on top.
     cat > /etc/systemd/system/opensteer-pool-egress.slice <<EOF
 [Unit]
 Description=Opensteer pool slot proxies
 
 [Slice]
 MemoryAccounting=yes
-MemoryMax=${OSP_EGRESS_SLICE_MIB:-1024}M
+MemoryMax=${OSP_EGRESS_SLICE_MIB:-1536}M
 TasksMax=4096
 EOF
     # The relay (pool-runtime-in-guest.md, decisions 4 and 5): its own user, the only one the

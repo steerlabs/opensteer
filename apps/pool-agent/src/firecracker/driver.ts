@@ -133,7 +133,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   async open(): Promise<void> {
     this.#cgroups = await GuestCgroups.delegate(
       this.#config.cgroupBase,
-      (this.#config.egressSliceMib ?? 1024) * 1024 * 1024,
+      (this.#config.egressSliceMib ?? 1536) * 1024 * 1024,
     );
     this.#numbers = new SlotNumbers(this.#config.stateDirectory);
     await this.#numbers.load();

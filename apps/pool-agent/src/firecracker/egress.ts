@@ -99,11 +99,13 @@ export async function defineEgress(
     "--socket-property=FreeBind=yes",
     "--socket-property=Backlog=256",
     // Round D, D1: systemd's crash protection stays on. The agent's own stops reset the start
-    // counter (sleepEgress), so only the proxy's own failures count: five starts in 30 s, with
-    // a restart delay that backs off to 30 s, and then the proxy stays down until the slot's
-    // next start or wake (reviveEgress), and the slot's status says so.
+    // counter (sleepEgress), so only the proxy's own failures count: five starts in 120 s, with
+    // a restart delay that backs off from 1 s to 30 s (five restarts then take about 22 s, so a
+    // proxy that keeps crashing trips the limit; measured on run 5's host, a 30 s window never
+    // tripped with that backoff), and then the proxy stays down until the slot's next start or
+    // wake (reviveEgress), and the slot's status says so.
     `--slice=${egressSlice}`,
-    "--property=StartLimitIntervalSec=30",
+    "--property=StartLimitIntervalSec=120",
     "--property=StartLimitBurst=5",
     "--property=RestartSteps=5",
     "--property=RestartMaxDelaySec=30",
@@ -132,9 +134,9 @@ export async function defineEgress(
     "--property=ProtectKernelModules=yes",
     "--property=ProtectControlGroups=yes",
     "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
-    `--property=MemoryMax=${program.memoryMib ?? 80}M`,
+    `--property=MemoryMax=${program.memoryMib ?? 128}M`,
     "--property=TasksMax=32",
-    `--setenv=OPENSTEER_BROWSER_EGRESS_MAX_CONNECTIONS=${program.maxConnections ?? 128}`,
+    `--setenv=OPENSTEER_BROWSER_EGRESS_MAX_CONNECTIONS=${program.maxConnections ?? 64}`,
     "--property=LimitCORE=0",
     "--property=StandardOutput=null",
     // A diagnostics host (driver.egressLog) keeps the proxy's refusals in the journal.
