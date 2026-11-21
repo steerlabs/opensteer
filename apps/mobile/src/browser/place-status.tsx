@@ -24,7 +24,7 @@ import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
 import { useAgentSessionStop } from "../thread/agent-session-hooks.js";
-import { placeSessionLine } from "../thread/agent-session-model.js";
+import { placeSessionLine, sessionTaskOf } from "../thread/agent-session-model.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
@@ -37,6 +37,8 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   /** The conversation's mark; null while this reader cannot name it. */
   readonly agent: PlaceAgent | null;
   readonly canRespond: boolean;
+  /** Other agents hold the place too: the row says which task it speaks for. */
+  readonly named?: boolean;
   readonly onAnswer: () => void;
   readonly onStop: () => Promise<void>;
   /** What Stop ends here, as the composer says it. */
@@ -65,12 +67,13 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   };
   const needsYou = watch.kind === "needs-you";
   const failed = pressed?.failed === true;
-  const words = needsYou ? "Needs you" : failed ? "Couldn’t stop" : watch.words;
+  const said = needsYou ? "Needs you" : failed ? "Couldn’t stop" : watch.words;
   const who = props.agent?.title ?? null;
+  const words = props.named === true && who !== null ? `${who} · ${said}` : said;
   return (
     <View style={styles.row} testID="place-status">
       <View
-        accessibilityLabel={who === null ? words : `${who}: ${words}`}
+        accessibilityLabel={who === null ? said : `${who}: ${said}`}
         accessibilityLiveRegion="polite"
         accessible
         style={styles.said}
@@ -142,16 +145,16 @@ function sameWatch(left: ThreadWatch | null, right: ThreadWatch | null): boolean
 }
 
 /**
- * The status row for the conversation a place was opened from, or null while
- * that conversation has nothing to say: it speaks for that conversation alone,
- * never for whichever agent ranks first in the place. A place opened from
- * Tabs has no conversation: with `fromTabs` it speaks for the first of the
- * place's agents that is at work or needs the person, acting first, with the
- * same Stop its task has. One whose conversation is already on screen beside
- * it has none.
+ * The status row for one agent in a place, or null while it has nothing to say. Opened from
+ * a conversation, it speaks for that conversation alone. Opened from Tabs (`fromTabs`), it
+ * speaks for the first agent in the place's own ranking (acting first, then the most recent)
+ * that is using the place: a connected agent whose session is live, or one of your own
+ * agents at work or waiting on the person. Whichever kind it is, its Stop is the one its task
+ * has, and when several agents hold the place the row names the one it speaks for. One whose
+ * conversation is already on screen beside it has none.
  */
 export function usePlaceStatusRow(props: {
-  /** The place's agents, whose mark the conversation wears while it is one of them. */
+  /** The place's agents, ranked, whose mark the conversation wears while it is one of them. */
   readonly agents: PlaceAgents;
   readonly hostClient: HostClient;
   readonly onAnswer: (threadId: string) => void;
@@ -164,10 +167,26 @@ export function usePlaceStatusRow(props: {
 }): ReactNode {
   const { agents, hostClient, onAnswer } = props;
   const fromTabs = props.fromTabs === true && props.threadId === null;
+  const tabId = props.tabId ?? null;
+  const threads = useHostSelector(hostClient, selectThreads);
+  const sharedFromChrome = useHostSelector(
+    hostClient,
+    (snapshot) => tabId !== null && snapshot.tabs.get(tabId)?.sharedByPerson !== undefined,
+  );
+  // One ranking: the place's own list, whatever kind of agent each one is.
   const selectPlaceThread = useCallback(
     (snapshot: HostSnapshot): string | null => {
       if (!fromTabs) return null;
-      const busy = agents.agents.find(({ threadId }) => {
+      const using = agents.agents.find(({ threadId, title }) => {
+        if (
+          placeSessionLine(snapshot, {
+            tabId,
+            sharedFromChrome,
+            occupants: [{ threadId, title }],
+          })?.stop
+        )
+          return true;
+        if (sessionTaskOf(snapshot, threadId) !== null) return false;
         const status = snapshot.threads.find(({ id }) => id === threadId)?.status;
         return (
           status === "running" ||
@@ -175,33 +194,27 @@ export function usePlaceStatusRow(props: {
           requestsWaitingOn(snapshot.waitingRequests, threadId).length > 0
         );
       });
-      return busy?.threadId ?? null;
+      return using?.threadId ?? null;
     },
-    [agents, fromTabs],
+    [agents, fromTabs, sharedFromChrome, tabId],
   );
   const placeThread = useHostSelector(hostClient, selectPlaceThread);
   const threadId = props.threadId ?? placeThread;
-  const tabId = props.tabId ?? null;
-  const threads = useHostSelector(hostClient, selectThreads);
-  const sharedFromChrome = useHostSelector(
-    hostClient,
-    (snapshot) => tabId !== null && snapshot.tabs.get(tabId)?.sharedByPerson !== undefined,
-  );
-  const session = useMemo(
-    () =>
-      placeSessionLine(
-        { threads },
-        {
-          tabId,
-          sharedFromChrome,
-          occupants: agents.agents.map((agent) => ({
-            threadId: agent.threadId,
-            title: agent.title,
-          })),
-        },
-      ),
-    [threads, agents, tabId, sharedFromChrome],
-  );
+  // Several agents here: the row says whose it is.
+  const named = agents.agents.length > 1;
+  const session = useMemo(() => {
+    const subject = agents.agents.find((agent) => agent.threadId === threadId);
+    return subject === undefined
+      ? null
+      : placeSessionLine(
+          { threads },
+          {
+            tabId,
+            sharedFromChrome,
+            occupants: [{ threadId: subject.threadId, title: subject.title }],
+          },
+        );
+  }, [threads, agents, tabId, sharedFromChrome, threadId]);
   const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
   const sessionThreadId = session?.threadId ?? null;
   const selectSessionNeedsYou = useCallback(
@@ -289,16 +302,18 @@ export function usePlaceStatusRow(props: {
         <PlaceStatusRow
           agent={agent}
           canRespond={canRespond}
+          named={named}
           onAnswer={answer}
           onStop={stop}
           stopLabel={stops}
           watch={watch}
         />
       ),
-    [agent, answer, canRespond, stop, stops, watch],
+    [agent, answer, canRespond, named, stop, stops, watch],
   );
-  // A connected agent's own work has no Run to stop: its row ends its session instead.
-  return sessionRow ?? runRow;
+  // The one agent the row speaks for: a connected agent's own work has no Run to stop, so
+  // its row ends its session instead.
+  return session !== null ? sessionRow : runRow;
 }
 
 const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;

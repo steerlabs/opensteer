@@ -155,6 +155,8 @@ describe("a tab a connected agent uses, on the phone", () => {
         agents: props.agents,
         hostClient: props.client,
         onAnswer: answered,
+        // Opened from Tabs: the place's own ranking decides whom the row speaks for.
+        fromTabs: true,
         tabId: props.tabId,
         threadId: null,
       }) ?? <p>nothing</p>
@@ -226,6 +228,85 @@ describe("a tab a connected agent uses, on the phone", () => {
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "agent.session.stop", threadId }),
     );
+  });
+});
+
+describe("a place two kinds of agent hold, on the phone", () => {
+  const own = "thr_00000000-0000-4000-8000-000000000001";
+  function Status(props: { readonly client: MockHostClient; readonly agents: PlaceAgents }) {
+    return (
+      usePlaceStatusRow({
+        agents: props.agents,
+        fromTabs: true,
+        hostClient: props.client,
+        onAnswer: () => undefined,
+        tabId: "mock-tab-1-0",
+        threadId: null,
+      }) ?? <p>nothing</p>
+    );
+  }
+  const holder = (threadId: string, title: string, acting: boolean) => ({
+    threadId,
+    acting,
+    title,
+    mark: null,
+    lastActiveAt: "2026-11-20T12:00:00.000Z",
+  });
+
+  it("speaks for your own agent ranked first, names it, and its Stop stops that task", async () => {
+    const client = seeded();
+    const lisbon = idOf(client, "Find flights to Lisbon");
+    const stopRun = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
+    const dispatch = vi.spyOn(client, "dispatch");
+    const page = await render(
+      <Status
+        agents={{
+          agents: [
+            holder(own, "Build the new architecture", true),
+            holder(lisbon, "Find flights to Lisbon", false),
+          ],
+          unnamedActing: false,
+        }}
+        client={client}
+      />,
+    );
+    await vi.waitFor(() => expect(page.textContent).toContain("Build the new architecture · "));
+    // Not the connected agent's row, though it holds the place too.
+    expect(page.textContent).not.toContain("Claude is using this page");
+    await act(async () =>
+      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop this run")!.click(),
+    );
+    expect(stopRun).toHaveBeenCalledExactlyOnceWith(own);
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent.session.stop" }),
+    );
+  });
+
+  it("speaks for the connected agent ranked first, and its Stop ends that session", async () => {
+    const client = seeded();
+    const lisbon = idOf(client, "Find flights to Lisbon");
+    const stopRun = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
+    const dispatch = vi.spyOn(client, "dispatch");
+    const page = await render(
+      <Status
+        agents={{
+          agents: [
+            holder(lisbon, "Find flights to Lisbon", true),
+            holder(own, "Build the new architecture", false),
+          ],
+          unnamedActing: false,
+        }}
+        client={client}
+      />,
+    );
+    expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
+    await act(async () =>
+      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop Claude")!.click(),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent.session.stop", threadId: lisbon }),
+    );
+    expect(stopRun).not.toHaveBeenCalled();
   });
 });
 
