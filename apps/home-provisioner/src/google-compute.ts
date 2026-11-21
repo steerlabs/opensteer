@@ -15,6 +15,7 @@ import {
   json,
   ProviderOutcomeUnknown,
   ProviderPlacementError,
+  ProviderRateLimited,
   ProviderWriteRejected,
   RemoteRequestError,
   request,
@@ -38,6 +39,8 @@ const labels = z.record(z.string(), z.string());
 const operation = z.object({
   name: z.string().regex(/^[A-Za-z0-9_-]{1,256}$/u),
   status: z.enum(["PENDING", "RUNNING", "DONE"]),
+  insertTime: z.string().optional(),
+  creationTimestamp: z.string().optional(),
   clientOperationId: z.string().optional(),
   operationType: z.string().optional(),
   targetId: z
@@ -50,7 +53,8 @@ const operation = z.object({
 type Operation = z.infer<typeof operation>;
 const metadata = z.object({
   fingerprint: z.string().min(1),
-  items: z.array(z.object({ key: z.string(), value: z.string() })).default([]),
+  // Inventory pages carry only the keys; a write reads the instance itself first.
+  items: z.array(z.object({ key: z.string(), value: z.string().optional() })).default([]),
 });
 const instance = z.object({
   id: numericId,
@@ -111,6 +115,22 @@ const firewall = z.object({
   denied: z.array(z.unknown()).default([]),
 });
 
+// Partial responses keep each inventory page to the fields the adapter reads.
+// https://cloud.google.com/compute/docs/api/how-tos/performance
+const instanceFields =
+  "items(id,name,labels,status,lastStartTimestamp,tags,metadata(fingerprint,items/key)," +
+  "networkInterfaces(name,accessConfigs(name,natIP),ipv6AccessConfigs(externalIpv6))),nextPageToken";
+const addressFields =
+  "items(name,address,addressType,networkTier,status,labels,users),nextPageToken";
+const operationFields =
+  "items(name,status,clientOperationId,insertTime,creationTimestamp),nextPageToken";
+// "If your project exceeds a rate quota, you receive a 403 error with the reason
+// rateLimitExceeded. ... wait a minute then try your request again."
+// https://cloud.google.com/compute/docs/api-rate-limits
+const rateLimitBackoffMs = 60_000;
+// Operations for a recovered write were sent no earlier than this before its recoverAfter.
+const recoveryLookbackMs = 2 * 60 * 60_000;
+
 interface GoogleComputeOptions extends HttpOptions {
   readonly project: string;
   readonly zone: string;
@@ -134,8 +154,12 @@ type Write = {
   query?: Record<string, string>;
   check?: Check | undefined;
   observedVersion?: string | undefined;
-  instanceAction?: { type: "stop" | "delete"; targetId: string };
 };
+type Address = z.infer<typeof address>;
+interface Inventory {
+  readonly instances: Map<string, Instance>;
+  readonly addresses: Map<string, Address>;
+}
 type PendingOperation = { requestId: string; initial?: Operation };
 
 export class GoogleCompute implements VmProvider {
@@ -149,6 +173,8 @@ export class GoogleCompute implements VmProvider {
   readonly #subnet: string;
   readonly #zone: string;
   readonly #pendingOperations = new Map<string, PendingOperation>();
+  #inventory: Inventory | undefined;
+  #retryAt = 0;
 
   constructor(options: GoogleComputeOptions) {
     this.#options = options;
@@ -160,6 +186,23 @@ export class GoogleCompute implements VmProvider {
     this.#network = `${this.#project}/global/networks/${options.network}`;
     this.#subnet = `${this.#project}/regions/${this.#region}/subnetworks/${options.subnet}`;
     this.#zone = `${this.#project}/zones/${options.zone}`;
+  }
+
+  /**
+   * Reads the zone's instances and the region's addresses once for the whole pass. Every
+   * Cloud Computer in the pass reads from it, and each write refreshes the one resource it
+   * changed by name.
+   */
+  async beginPass(signal: AbortSignal) {
+    this.#inventory = undefined;
+    const [instances, addresses] = await Promise.all([
+      this.#list(`${this.#zone}/instances`, instance, signal, { fields: instanceFields }),
+      this.#list(this.#addressesPath(), address, signal, { fields: addressFields }),
+    ]);
+    this.#inventory = {
+      instances: new Map(instances.map((vm) => [vm.name, vm])),
+      addresses: new Map(addresses.map((entry) => [entry.name, entry])),
+    };
   }
 
   async ensureFirewall(signal: AbortSignal, check?: Check) {
@@ -235,7 +278,7 @@ export class GoogleCompute implements VmProvider {
   ) {
     if (id !== firewallId) return false;
     if (server.firewalls.some((rule) => rule.id === id && rule.status === "applied")) return true;
-    const vm = await this.#readRef(server.id, signal);
+    const vm = await this.#readRef(server.id, signal, true);
     if (!vm) return false;
     if (vm.tags?.items.includes(firewallTag)) return true;
     if (!vm.tags?.fingerprint) throw refused("conflict", "The Google VM has no tag fingerprint");
@@ -248,6 +291,8 @@ export class GoogleCompute implements VmProvider {
     } catch (error) {
       if (hasStatus(error, 412)) return false;
       throw error;
+    } finally {
+      await this.#refreshAfterWrite(vm.name, signal);
     }
     return (await this.#readRef(server.id, signal))?.tags?.items.includes(firewallTag) ?? false;
   }
@@ -355,11 +400,14 @@ export class GoogleCompute implements VmProvider {
   }
 
   async #instances(signal: AbortSignal) {
-    return this.#list(`${this.#zone}/instances`, instance, signal);
+    if (this.#inventory) return [...this.#inventory.instances.values()];
+    return this.#list(`${this.#zone}/instances`, instance, signal, { fields: instanceFields });
   }
 
   async listManagedAddresses(signal: AbortSignal) {
-    const found = await this.#list(this.#addressesPath(), address, signal);
+    const found = this.#inventory
+      ? [...this.#inventory.addresses.values()]
+      : await this.#list(this.#addressesPath(), address, signal, { fields: addressFields });
     const addresses = new Map<string, VmAddress>();
     for (const entry of found) {
       const identity = managedIdentity(entry.labels);
@@ -368,13 +416,19 @@ export class GoogleCompute implements VmProvider {
     return [...addresses.values()];
   }
 
-  async #list<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal) {
+  async #list<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    signal: AbortSignal,
+    parameters: Record<string, string> = {},
+  ) {
     const page = z.object({
       items: z.array(schema).default([]),
       nextPageToken: z.string().min(1).optional(),
     });
     const records: T[] = [];
-    for await (const result of this.#pages(path, page, signal)) records.push(...result.items);
+    for await (const result of this.#pages(path, page, signal, parameters))
+      records.push(...result.items);
     return records;
   }
 
@@ -382,11 +436,12 @@ export class GoogleCompute implements VmProvider {
     path: string,
     schema: z.ZodType<T>,
     signal: AbortSignal,
+    parameters: Record<string, string> = {},
   ) {
     const cursors = new Set<string>();
     let cursor: string | undefined;
     do {
-      const query = new URLSearchParams({ maxResults: "100" });
+      const query = new URLSearchParams({ maxResults: "100", ...parameters });
       if (cursor) query.set("pageToken", cursor);
       const response = await this.#request(`${path}?${query}`, schema, signal);
       yield response;
@@ -483,15 +538,21 @@ export class GoogleCompute implements VmProvider {
       });
     } catch (error) {
       if (!hasStatus(error, 409)) throw error;
-      const existing = await this.#instance(name, signal);
+      const existing = await this.#refreshInstance(name, signal);
       if (!existing) throw new ProviderOutcomeUnknown(error);
       return googleVm(verifyNamedInstance(existing, id, generation), generation);
     }
-    const observed = await this.#instance(name, signal).catch((error: unknown) => {
+    const observed = await this.#refreshInstance(name, signal).catch((error: unknown) => {
+      if (error instanceof ProviderRateLimited) throw error;
       throw new ProviderOutcomeUnknown(error);
     });
     if (!observed || (inserted.targetId && inserted.targetId !== observed.id))
       throw new ProviderOutcomeUnknown();
+    // The insert put the address in use.
+    if (this.#inventory)
+      await this.#refreshAddress(reservation.name, signal).catch(() => {
+        this.#inventory = undefined;
+      });
     return googleVm(verifyNamedInstance(observed, id, generation), generation);
   }
 
@@ -503,7 +564,7 @@ export class GoogleCompute implements VmProvider {
   ) {
     const path = this.#addressesPath();
     const name = addressName(target);
-    let current = await this.#get(`${path}/${name}`, address, signal);
+    let current = await this.#address(name, signal);
     if (!current) {
       try {
         await this.#write(path, "region", signal, {
@@ -522,7 +583,7 @@ export class GoogleCompute implements VmProvider {
       } catch (error) {
         if (!hasStatus(error, 409)) throw error;
       }
-      current = await this.#get(`${path}/${name}`, address, signal);
+      current = await this.#refreshAddress(name, signal);
     }
     if (!current?.address || current.status === "RESERVING") throw new ProviderOutcomeUnknown();
     if (!isManagedAddress(current, target))
@@ -531,18 +592,23 @@ export class GoogleCompute implements VmProvider {
   }
 
   async releaseAddress(target: VmAddress, signal: AbortSignal, check?: Check) {
-    const path = `${this.#addressesPath()}/${addressName(target)}`;
-    const current = await this.#get(path, address, signal);
+    const name = addressName(target);
+    const path = `${this.#addressesPath()}/${name}`;
+    const current = await this.#address(name, signal);
     if (!current) return true;
     if (!isManagedAddress(current, target))
       throw refused("conflict", "The Google Cloud Computer address name is already in use");
     if (current.status !== "RESERVED" || current.users.length) return false;
     try {
-      await this.#write(path, "region", signal, { method: "DELETE", check });
+      await this.#write(path, "region", signal, {
+        method: "DELETE",
+        check,
+        requestId: childRequestId(name, "address-delete", name),
+      });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
     }
-    return (await this.#get(path, address, signal)) === undefined;
+    return (await this.#refreshAddress(name, signal)) === undefined;
   }
 
   #addressesPath() {
@@ -559,16 +625,45 @@ export class GoogleCompute implements VmProvider {
       : undefined;
   }
 
-  async #readRef(ref: GoogleComputeServerRef, signal: AbortSignal) {
+  async #readRef(ref: GoogleComputeServerRef, signal: AbortSignal, fresh = false) {
     const [name, id] = ref.split("/") as [string, string];
-    const vm = await this.#instance(name, signal);
+    const vm = fresh
+      ? await this.#refreshInstance(name, signal)
+      : await this.#instance(name, signal);
     return vm?.id === id ? vm : undefined;
   }
 
+  /** The instance as this pass's inventory holds it, or read by name outside a pass. */
   async #instance(name: string, signal: AbortSignal) {
+    if (this.#inventory) return this.#inventory.instances.get(name);
+    return this.#refreshInstance(name, signal);
+  }
+
+  /** Reads one instance by name and puts the answer in the inventory. */
+  async #refreshInstance(name: string, signal: AbortSignal) {
     const vm = await this.#get(`${this.#zone}/instances/${name}`, instance, signal);
     if (vm && vm.name !== name) throw refused("conflict", "Google returned a different VM name");
+    if (this.#inventory) {
+      if (vm) this.#inventory.instances.set(name, vm);
+      else this.#inventory.instances.delete(name);
+    }
     return vm;
+  }
+
+  async #address(name: string, signal: AbortSignal) {
+    if (this.#inventory) return this.#inventory.addresses.get(name);
+    return this.#refreshAddress(name, signal);
+  }
+
+  async #refreshAddress(name: string, signal: AbortSignal) {
+    const entry = await this.#get(`${this.#addressesPath()}/${name}`, address, signal);
+    if (entry && entry.name !== name)
+      throw refused("conflict", "Google returned a different address name");
+    if (this.#inventory) {
+      if (entry) this.#inventory.addresses.set(name, entry);
+      else this.#inventory.addresses.delete(name);
+    }
+    return entry;
   }
 
   async powerOn(
@@ -579,51 +674,90 @@ export class GoogleCompute implements VmProvider {
   ) {
     const current = await this.#readRef(id, signal);
     if (!current || current.status === "RUNNING") return;
-    await this.#write(`${this.#zone}/instances/${current.name}/start`, "zone", signal, {
-      method: "POST",
-      check,
-      requestId,
-    });
+    try {
+      await this.#write(`${this.#zone}/instances/${current.name}/start`, "zone", signal, {
+        method: "POST",
+        check,
+        requestId,
+      });
+    } finally {
+      await this.#refreshAfterWrite(current.name, signal);
+    }
   }
 
   async powerOff(id: GoogleComputeServerRef, signal: AbortSignal, check?: Check) {
     const current = await this.#readRef(id, signal);
     if (!current || ["TERMINATED", "STOPPING", "PENDING_STOP"].includes(current.status)) return;
+    // One stop per start of this instance: a provisioner that restarts sends the same id again
+    // and Compute answers with the original operation instead of a second stop.
+    // https://cloud.google.com/compute/docs/reference/rest/v1/instances/stop
     try {
       await this.#write(`${this.#zone}/instances/${current.name}/stop`, "zone", signal, {
         method: "POST",
         check,
-        observedVersion: `${id}/${current.lastStartTimestamp ?? ""}`,
-        instanceAction: { type: "stop", targetId: current.id },
+        // Without a start time there is no incarnation to name, so the id stays random.
+        ...(current.lastStartTimestamp
+          ? { requestId: childRequestId(id, "stop", current.lastStartTimestamp) }
+          : { observedVersion: id }),
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
+    } finally {
+      await this.#refreshAfterWrite(current.name, signal);
     }
   }
 
   async delete(id: GoogleComputeServerRef, signal: AbortSignal, check?: Check) {
     const current = await this.#readRef(id, signal);
     if (!current) return;
+    // One delete per instance incarnation (the reference carries its numeric id).
+    // https://cloud.google.com/compute/docs/reference/rest/v1/instances/delete
     try {
       await this.#write(`${this.#zone}/instances/${current.name}`, "zone", signal, {
         method: "DELETE",
         check,
-        observedVersion: id,
-        instanceAction: { type: "delete", targetId: current.id },
+        requestId: childRequestId(id, "delete", ""),
       });
     } catch (error) {
       if (!hasStatus(error, 404)) throw error;
+    } finally {
+      await this.#refreshAfterWrite(current.name, signal);
     }
     const identity = managedInstance(current) ?? namedIdentity(current.name);
-    if (identity) await this.releaseAddress(identity, signal, check);
+    if (!identity) return;
+    // Deleting the instance frees its address, so the address is read again by name.
+    await this.#refreshAddress(addressName(identity), signal);
+    await this.releaseAddress(identity, signal, check);
   }
 
+  /**
+   * Reads zonal operations newest first ("only sorting by name or creationTimestamp desc is
+   * supported", zoneOperations.list) and stops once a page reaches operations older than the
+   * write could have sent. `clientOperationId` is "the value of requestId if you provided it".
+   * https://cloud.google.com/compute/docs/reference/rest/v1/zoneOperations/list
+   * https://cloud.google.com/compute/docs/reference/rest/v1/zoneOperations
+   */
   async canRecoverWrite(write: CloudComputerProviderWrite, signal: AbortSignal) {
     if (!write.dispatched) return true;
-    const operations = await this.#list(`${this.#zone}/operations`, operation, signal);
-    return operations
-      .filter(({ clientOperationId }) => clientOperationId === write.token)
-      .every(({ status }) => status === "DONE");
+    const recoverAfter = write.recoverAfter ? Date.parse(write.recoverAfter) : Number.NaN;
+    const oldest = Number.isFinite(recoverAfter) ? recoverAfter - recoveryLookbackMs : undefined;
+    const page = z.object({
+      items: z.array(operation).default([]),
+      nextPageToken: z.string().min(1).optional(),
+    });
+    const matches: Operation[] = [];
+    for await (const result of this.#pages(`${this.#zone}/operations`, page, signal, {
+      orderBy: "creationTimestamp desc",
+      fields: operationFields,
+    })) {
+      matches.push(
+        ...result.items.filter(({ clientOperationId }) => clientOperationId === write.token),
+      );
+      const last = result.items.at(-1);
+      const time = last ? Date.parse(last.insertTime ?? last.creationTimestamp ?? "") : Number.NaN;
+      if (oldest !== undefined && Number.isFinite(time) && time < oldest) break;
+    }
+    return matches.every(({ status }) => status === "DONE");
   }
 
   async updateBootstrap(
@@ -632,7 +766,7 @@ export class GoogleCompute implements VmProvider {
     signal: AbortSignal,
     check?: Check,
   ) {
-    const vm = await this.#readRef(id, signal);
+    const vm = await this.#readRef(id, signal, true);
     if (!vm) return false;
     if (!vm.metadata) return true;
     const items = vm.metadata.items;
@@ -655,6 +789,8 @@ export class GoogleCompute implements VmProvider {
     } catch (error) {
       if (hasStatus(error, 412)) return false;
       throw error;
+    } finally {
+      await this.#refreshAfterWrite(vm.name, signal);
     }
     if (receiptRecorded) {
       const updated = await this.#readRef(id, signal);
@@ -685,11 +821,7 @@ export class GoogleCompute implements VmProvider {
     const prior = this.#pendingOperations.get(key);
     const pending: PendingOperation = prior ?? { requestId: write.requestId ?? randomUUID() };
     const initial =
-      pending.initial ??
-      (write.instanceAction
-        ? await this.#activeInstanceOperation(write.instanceAction, signal)
-        : undefined) ??
-      (await this.#dispatch(path, query, write, pending, key, signal));
+      pending.initial ?? (await this.#dispatch(path, query, write, pending, key, signal));
     let current = initial;
     try {
       while (current.status !== "DONE") {
@@ -699,27 +831,21 @@ export class GoogleCompute implements VmProvider {
           throw refused("conflict", "Google returned a different operation");
       }
     } catch (error) {
+      // The operation stays recorded in memory; the next pass resumes polling it.
+      if (error instanceof ProviderRateLimited) throw error;
       throw new ProviderOutcomeUnknown(error);
     }
     this.#pendingOperations.delete(key);
     if (current.error || current.httpErrorStatusCode)
       throw new ProviderWriteRejected(
-        new RemoteRequestError(compute, current.httpErrorStatusCode ?? 500),
+        new RemoteRequestError(
+          compute,
+          current.httpErrorStatusCode ?? 500,
+          undefined,
+          operationErrorCodes(current),
+        ),
       );
     return { ...current, targetId: current.targetId ?? initial.targetId };
-  }
-
-  async #activeInstanceOperation(
-    action: NonNullable<Write["instanceAction"]>,
-    signal: AbortSignal,
-  ) {
-    const operations = await this.#list(`${this.#zone}/operations`, operation, signal);
-    const matches = operations.filter(
-      ({ targetId, operationType, status }) =>
-        targetId === action.targetId && operationType === action.type && status !== "DONE",
-    );
-    if (matches.length > 1) throw new ProviderOutcomeUnknown();
-    return matches[0];
   }
 
   async #dispatch(
@@ -748,6 +874,11 @@ export class GoogleCompute implements VmProvider {
       pending.initial = await this.#request(`${path}?${query}`, operation, signal, write, token);
       return pending.initial;
     } catch (error) {
+      // A rate-limited request was not carried out: the write is rejected for now.
+      if (error instanceof ProviderRateLimited) {
+        this.#pendingOperations.delete(key);
+        throw new ProviderWriteRejected(error);
+      }
       if (
         error instanceof RemoteRequestError &&
         error.status >= 400 &&
@@ -758,6 +889,17 @@ export class GoogleCompute implements VmProvider {
         throw new ProviderWriteRejected(error);
       }
       throw new ProviderOutcomeUnknown(error);
+    }
+  }
+
+  /** Refreshes an instance after a write; a rate limit there must not hide the write's own result. */
+  async #refreshAfterWrite(name: string, signal: AbortSignal) {
+    if (!this.#inventory) return;
+    try {
+      await this.#refreshInstance(name, signal);
+    } catch {
+      // Without a fresh copy of this instance the pass reads by name from here on.
+      this.#inventory = undefined;
     }
   }
 
@@ -785,6 +927,7 @@ export class GoogleCompute implements VmProvider {
     write?: Write,
     accessToken?: string,
   ) {
+    if (Date.now() < this.#retryAt) throw new ProviderRateLimited(this.#retryAt);
     const token = accessToken ?? (await this.#authenticate(signal));
     try {
       return await request(
@@ -796,13 +939,39 @@ export class GoogleCompute implements VmProvider {
         {
           ...(write ? { method: write.method, body: write.body } : {}),
           headers: { authorization: `Bearer ${token}` },
+          errorReasons: true,
         },
       );
     } catch (error) {
       if (hasStatus(error, 401)) this.#accessToken.invalidate?.(token);
+      if (isRateLimited(error)) {
+        this.#retryAt = Math.max(
+          this.#retryAt,
+          error.retryAt ?? 0,
+          Date.now() + rateLimitBackoffMs,
+        );
+        throw new ProviderRateLimited(this.#retryAt, error);
+      }
       throw error;
     }
   }
+}
+
+function isRateLimited(error: unknown): error is RemoteRequestError {
+  return (
+    error instanceof RemoteRequestError &&
+    error.service === compute &&
+    (error.status === 429 ||
+      (error.status === 403 &&
+        error.reasons.some((reason) => /^(rateLimitExceeded|RATE_LIMIT_EXCEEDED)$/u.test(reason))))
+  );
+}
+
+function operationErrorCodes(operation: Operation): string[] {
+  return (operation.error?.errors ?? []).flatMap((entry) => {
+    const code = (entry as { code?: unknown } | null)?.code;
+    return typeof code === "string" && /^[A-Za-z0-9_.-]{1,128}$/u.test(code) ? [code] : [];
+  });
 }
 
 function matchesResource(resource: string, path: string) {

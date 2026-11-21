@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { BootstrapScrubFailure, ProviderOutcomeUnknown, ProviderWriteRejected } from "./http.js";
+import {
+  BootstrapScrubFailure,
+  ProviderOutcomeUnknown,
+  ProviderRateLimited,
+  ProviderWriteRejected,
+} from "./http.js";
 import { refused } from "@opensteer/core";
 import type {
   CloudComputerCheck,
@@ -49,6 +54,7 @@ export class Reconciler {
     const abort = new AbortController();
     const signal = AbortSignal.any([shutdown, abort.signal]);
     await account.acquire(signal);
+    await provider.beginPass?.(signal);
     await provider.validatePlacement?.(signal);
     const desired = await account.desired(signal);
     const ids = new Set(desired.map(({ id }) => id));
@@ -76,6 +82,11 @@ export class Reconciler {
             if (await account.report(report, signal)) this.#reports.set(computer.id, key);
           } catch (error) {
             if (error instanceof Superseded) continue;
+            if (error instanceof ProviderRateLimited) {
+              // Later, not failed: end the pass without reporting the computers it did not reach.
+              abort.abort(error);
+              return;
+            }
             if (accountRefused(error)) abort.abort(error);
             this.#options.onError?.(error);
             failed = true;
@@ -122,6 +133,8 @@ export class Reconciler {
         await action(job);
       } catch (error) {
         if (accountRefused(error)) throw error;
+        const limited = rateLimited(error);
+        if (limited) throw limited;
         if (!(error instanceof Superseded)) this.#options.onError?.(error);
       }
     };
@@ -276,6 +289,8 @@ export class Reconciler {
       } catch (error) {
         // Only the scrub's own failure is deferred; a stale lease or a refused Account is not.
         if (error instanceof Superseded || accountRefused(error)) throw error;
+        const limited = rateLimited(error);
+        if (limited) throw limited;
         this.#options.onError?.(
           error instanceof BootstrapScrubFailure ? error : new BootstrapScrubFailure(error),
         );
@@ -523,6 +538,8 @@ export class Reconciler {
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
+      const limited = rateLimited(error);
+      if (limited) throw limited;
       this.#options.onError?.(error);
       if (error instanceof ProviderOutcomeUnknown)
         return state === "active"
@@ -531,4 +548,12 @@ export class Reconciler {
       return report("failed", failure);
     }
   }
+}
+
+/** A provider rate limit, whether a read met it or it refused a write before carrying it out. */
+function rateLimited(error: unknown): ProviderRateLimited | undefined {
+  if (error instanceof ProviderRateLimited) return error;
+  if (error instanceof ProviderWriteRejected && error.original instanceof ProviderRateLimited)
+    return error.original;
+  return undefined;
 }

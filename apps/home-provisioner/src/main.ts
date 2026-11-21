@@ -5,7 +5,12 @@ import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
-import { ProviderPlacementError, provisionerFailure, RemoteRequestError } from "./http.js";
+import {
+  ProviderPlacementError,
+  ProviderRateLimited,
+  provisionerFailure,
+  RemoteRequestError,
+} from "./http.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -64,9 +69,13 @@ async function main(): Promise<void> {
     await account.acquire(shutdown.signal);
     console.log(JSON.stringify({ event: "home-provisioner.started" }));
     while (!shutdown.signal.aborted) {
+      let waitMs = config.intervalMs;
       try {
         await reconciler.pass(shutdown.signal);
       } catch (error) {
+        // A provider rate limit postpones the next pass until the provider accepts requests.
+        if (error instanceof ProviderRateLimited)
+          waitMs = Math.max(waitMs, error.retryAt - Date.now());
         if (error instanceof ProviderPlacementError) throw error;
         if (!shutdown.signal.aborted) logFailure(error);
         if (
@@ -78,7 +87,7 @@ async function main(): Promise<void> {
           throw error;
       }
       if (!shutdown.signal.aborted) {
-        await delay(config.intervalMs, undefined, { signal: shutdown.signal }).catch(() => {});
+        await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});
       }
     }
   } finally {

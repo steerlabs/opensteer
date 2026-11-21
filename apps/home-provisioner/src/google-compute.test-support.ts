@@ -36,6 +36,7 @@ type Instance = {
   id: string;
   labels: Labels;
   status: string;
+  lastStartTimestamp?: string;
   tags: { fingerprint: string; items: string[] };
   metadata: Metadata;
   networkInterfaces: NetworkInterface[];
@@ -44,6 +45,7 @@ type Address = { name: string; labels: Labels; address: string };
 type Operation = {
   name: string;
   status: "PENDING" | "RUNNING" | "DONE";
+  insertTime?: string;
   clientOperationId: string;
   operationType?: string | undefined;
   targetId?: string;
@@ -91,9 +93,15 @@ export class ComputeFake {
   keepOperationsRunning = false;
   rejectMetadata = false;
   rejectComputeToken = false;
+  /** The next this many Compute requests are refused for the rate quota. */
+  rateLimitRequests = 0;
+  rateLimitStatus: 403 | 429 = 403;
+  /** Refuses the first Compute request that matches, once, for the rate quota. */
+  rateLimitMatch: ((method: string, path: string) => boolean) | undefined;
   #nextId = BigInt(computeInstanceId);
   #nextAddress = 21;
   #nextOperation = 0;
+  #clock = 0;
   readonly #replays = new Map<string, { request: string; operation: Operation }>();
 
   adapter() {
@@ -133,6 +141,23 @@ export class ComputeFake {
     if (url.hostname !== "compute.test") throw new Error("Unexpected test endpoint");
     if (this.rejectComputeToken || headers.get("authorization") !== `Bearer ${this.token}`)
       return json({}, 401);
+    const matched = this.rateLimitMatch?.(method, path) ?? false;
+    if (matched) this.rateLimitMatch = undefined;
+    if (matched || this.rateLimitRequests > 0) {
+      if (!matched) this.rateLimitRequests--;
+      // "If your project exceeds a rate quota, you receive a 403 error with the reason
+      // rateLimitExceeded." https://cloud.google.com/compute/docs/api-rate-limits
+      return json(
+        {
+          error: {
+            code: this.rateLimitStatus,
+            message: "Rate Limit Exceeded",
+            errors: [{ domain: "usageLimits", reason: "rateLimitExceeded" }],
+          },
+        },
+        this.rateLimitStatus,
+      );
+    }
     // Compute ignores a repeated requestId "if it has already been completed" and answers with
     // the original operation. Google does not document a different request under the same id;
     // the fake refuses it so a reused id cannot pass unnoticed.
@@ -181,10 +206,10 @@ export class ComputeFake {
 
   #operationRequest(req: RecordedRequest) {
     if (req.path.endsWith("/operations")) {
-      return this.#page(
-        [...this.operations.values()].map(({ operation }) => operation),
-        req.query,
-      );
+      const operations = [...this.operations.values()].map(({ operation }) => operation);
+      if (req.query.get("orderBy") === "creationTimestamp desc")
+        operations.sort((a, b) => (b.insertTime ?? "").localeCompare(a.insertTime ?? ""));
+      return this.#page(operations, req.query);
     }
     const found = this.operations.get(req.path);
     if (!found) return json({}, 404);
@@ -196,6 +221,21 @@ export class ComputeFake {
       } else this.complete(req.path);
     }
     return json(found.operation);
+  }
+
+  /** Adds a finished operation from some time ago, as Compute retains them for days. */
+  addPastOperation(insertTime: string, clientOperationId = crypto.randomUUID()) {
+    const operation: Operation = {
+      name: `operation-${++this.#nextOperation}`,
+      status: "DONE",
+      insertTime,
+      clientOperationId,
+    };
+    this.operations.set(`${zonePath}/operations/${operation.name}`, {
+      operation,
+      advance: undefined,
+      finish: () => {},
+    });
   }
 
   complete(path: string) {
@@ -219,6 +259,7 @@ export class ComputeFake {
     const operation: Operation = {
       name: `operation-${++this.#nextOperation}`,
       status: advance ? "PENDING" : "RUNNING",
+      insertTime: new Date(Date.now()).toISOString(),
       clientOperationId,
       ...result,
     };
@@ -295,8 +336,10 @@ export class ComputeFake {
         zonePath,
         () => {
           if (req.method === "DELETE") this.instances.delete(current.name);
-          else if (action === "start") this.#setStatus(current, "RUNNING");
-          else if (action === "stop") this.#setStatus(current, "TERMINATED");
+          else if (action === "start") {
+            current.lastStartTimestamp = this.#timestamp();
+            this.#setStatus(current, "RUNNING");
+          } else if (action === "stop") this.#setStatus(current, "TERMINATED");
           else if (action === "setTags") current.tags = req.body as Instance["tags"];
           else if (action === "setMetadata") {
             current.metadata = { ...(req.body as Metadata), fingerprint: "changed" };
@@ -340,7 +383,9 @@ export class ComputeFake {
       req,
       zonePath,
       () => {
-        if (behavior !== "failure") this.#setStatus(vm, "RUNNING");
+        if (behavior === "failure") return;
+        vm.lastStartTimestamp = this.#timestamp();
+        this.#setStatus(vm, "RUNNING");
       },
       behavior === "failure"
         ? { targetId: id, httpErrorStatusCode: 400, error: { errors: [{ code: "FAILED" }] } }
@@ -350,6 +395,10 @@ export class ComputeFake {
     if (behavior === "lost") this.complete(`${zonePath}/operations/${operation.name}`);
     if (behavior === "lost" || behavior === "late") throw new Error("lost Compute reply");
     return json(operation);
+  }
+
+  #timestamp() {
+    return new Date(Date.UTC(2026, 10, 20) + ++this.#clock * 1_000).toISOString();
   }
 
   #setStatus(instance: Instance, status: string) {

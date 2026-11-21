@@ -45,6 +45,8 @@ export interface ExpectedVm {
 }
 
 export interface VmProvider {
+  /** Called once at the start of every reconciler pass, before any other provider call. */
+  beginPass?(signal: AbortSignal): Promise<void>;
   validatePlacement?(signal: AbortSignal): Promise<void>;
   ensureFirewall(signal: AbortSignal, check?: () => Promise<void>): Promise<number>;
   ensureFirewallAttached(

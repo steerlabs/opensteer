@@ -7,7 +7,12 @@ import {
   type CloudComputerReport,
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
-import { BootstrapScrubFailure, provisionerFailure, RemoteRequestError } from "./http.js";
+import {
+  BootstrapScrubFailure,
+  ProviderRateLimited,
+  provisionerFailure,
+  RemoteRequestError,
+} from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
@@ -674,6 +679,87 @@ describe("Cloud Computer reconciliation", () => {
     },
   );
 
+  it("reads one Compute inventory per pass for the whole Google fleet", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    const third = CloudComputerDesiredSchema.parse({
+      ...home,
+      id: "cc_00000000-0000-4000-8000-000000000003",
+      hostname: "home-3.example.com",
+    });
+    h.status.desired = [{ ...home }, { ...second }, third];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.reports.slice(-3).map(({ phase }) => phase)).toEqual(["ready", "ready", "ready"]);
+    const start = compute.requests.length;
+    await h.pass();
+    const reads = compute.requests.slice(start).filter(({ method }) => method === "GET");
+    const lists = reads.filter(({ path }) => /\/(instances|addresses|operations)$/u.test(path));
+    expect(lists.map(({ path }) => path).sort()).toEqual(
+      [
+        `${zonePath}/instances`,
+        `${regionPath}/addresses`,
+        "projects/test-project/aggregated/instances",
+      ].sort(),
+    );
+    expect(
+      lists
+        .filter(({ path }) => !path.includes("/aggregated/"))
+        .every(({ query }) => query.get("fields")?.startsWith("items(")),
+    ).toBe(true);
+    expect(reads.filter(({ path }) => path.startsWith(`${zonePath}/instances/`))).toEqual([]);
+    expect(reads.filter(({ path }) => path.startsWith(`${regionPath}/addresses/`))).toEqual([]);
+  });
+
+  it.each([403, 429] as const)(
+    "backs off a Compute rate limit (%i) without reporting any Home as failed",
+    async (status) => {
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const compute = new ComputeFake();
+      compute.rateLimitStatus = status;
+      const h = harness({ compute });
+      h.status.desired = [{ ...home }, { ...second }];
+      await h.pass();
+      h.pin();
+      await h.pass();
+      const reports = h.reports.length;
+      compute.rateLimitRequests = 1;
+      await expect(h.pass()).rejects.toBeInstanceOf(ProviderRateLimited);
+      const sent = compute.requests.length;
+      await expect(h.pass()).rejects.toBeInstanceOf(ProviderRateLimited);
+      expect(compute.requests).toHaveLength(sent);
+      expect(h.reports).toHaveLength(reports);
+      now += 61_000;
+      await h.pass();
+      expect(h.reports.some(({ phase }) => phase === "failed")).toBe(false);
+      expect(provisionerFailure(new ProviderRateLimited(now))).toMatchObject({
+        event: "home-provisioner.provider.rate-limited",
+      });
+      vi.restoreAllMocks();
+    },
+  );
+
+  it("finishes a rate-limited Google insert as not sent and creates the VM after the backoff", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const compute = new ComputeFake();
+    compute.rateLimitMatch = (method, path) =>
+      method === "POST" && path === `${zonePath}/instances`;
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await expect(h.pass()).rejects.toBeInstanceOf(ProviderRateLimited);
+    expect(h.reports).toEqual([]);
+    expect(h.status.desired[0]?.pendingProviderWrites ?? []).toEqual([]);
+    expect(compute.instances.size).toBe(0);
+    now += 61_000;
+    await h.pass();
+    expect(compute.instances.size).toBe(1);
+    expect(h.reports.some(({ phase }) => phase === "failed")).toBe(false);
+    vi.restoreAllMocks();
+  });
+
   it("keeps a lost Google insert unknown and deletes its late VM and reservation", async () => {
     const compute = new ComputeFake();
     compute.nextInsert = "late";
@@ -721,10 +807,12 @@ describe("Cloud Computer reconciliation", () => {
     });
     const requests = compute.requests.slice(start);
     expect(requests.map(({ path }) => path)).toEqual([
+      `${zonePath}/instances`,
+      `${regionPath}/addresses`,
       "projects/test-project/aggregated/instances",
       "projects/test-project/aggregated/instances",
     ]);
-    expect(requests[1]?.query.get("pageToken")).toBe("1");
+    expect(requests[3]?.query.get("pageToken")).toBe("1");
     expect(requests.every(({ method }) => method === "GET")).toBe(true);
     expect(h.account.desired).toHaveBeenCalledOnce();
   });

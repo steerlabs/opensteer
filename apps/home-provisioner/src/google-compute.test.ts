@@ -175,10 +175,18 @@ it("reports an unobserved operation as unknown", async () => {
   );
   expect(check).toHaveBeenCalledOnce();
   fake.keepOperationsRunning = false;
+  // A restarted provisioner sends the same stop under the same id; Compute answers with the
+  // original operation, so there is still exactly one stop.
   await fake.adapter().powerOff(ref, signal, check);
   expect(await provider.describe(ref, signal)).toMatchObject({ status: "off" });
-  expect(check).toHaveBeenCalledOnce();
-  expect(reqs(fake, "POST", `${zonePath}/instances/${computeInstanceName}/stop`)).toHaveLength(1);
+  expect(check).toHaveBeenCalledTimes(2);
+  const stops = reqs(fake, "POST", `${zonePath}/instances/${computeInstanceName}/stop`);
+  expect(stops).toHaveLength(2);
+  expect(new Set(stops.map(({ query }) => query.get("requestId"))).size).toBe(1);
+  expect(
+    [...fake.operations.values()].filter(({ operation }) => operation.operationType === "stop"),
+  ).toHaveLength(1);
+  expect(reqs(fake, "GET", `${zonePath}/operations`)).toEqual([]);
 });
 
 it("pages Compute inventories without filters and selects journal operations locally", async () => {
@@ -218,6 +226,29 @@ it("pages Compute inventories without filters and selects journal operations loc
   );
   expect(lists.every(({ query }) => !query.has("filter"))).toBe(true);
   expect(lists.some(({ query }) => query.has("pageToken"))).toBe(true);
+});
+
+it("reads only recent operations, newest first, to recover a dispatched write", async () => {
+  const fake = new ComputeFake();
+  fake.nextInsert = "late";
+  const provider = fake.adapter();
+  await expect(provider.create(computeCreate, signal)).rejects.toBeInstanceOf(
+    ProviderOutcomeUnknown,
+  );
+  for (let day = 0; day < 250; day++)
+    fake.addPastOperation(new Date(Date.UTC(2026, 0, 1) + day * 60_000).toISOString());
+  const write = {
+    kind: "create" as const,
+    token: computeCreate.requestId!,
+    generation: 3,
+    dispatched: true,
+    recoverAfter: new Date().toISOString(),
+  };
+  expect(await provider.canRecoverWrite(write, signal)).toBe(false);
+  const lists = reqs(fake, "GET", `${zonePath}/operations`);
+  expect(lists).toHaveLength(1);
+  expect(lists[0]?.query.get("orderBy")).toBe("creationTimestamp desc");
+  expect(lists[0]?.query.get("fields")).toContain("clientOperationId");
 });
 
 it("paginates and preserves distinct VMs for the same generation and refuses wrong identifiers", async () => {
