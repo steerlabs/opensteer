@@ -52,12 +52,21 @@ export interface BrowserPoolControllerCall {
 
 export interface BrowserPoolControllerResult {
   readonly id: string;
-  /** False is a definite refusal: nothing happened, and a repeat returns the same refusal. */
+  /**
+   * False: the requested step did not happen, and a repeat returns the same refusal. `status`
+   * is the slot as it is now, which may differ from before the call: a step that failed part
+   * way ends the guest, so a refusal may come with a stopped slot. Never read it as unchanged.
+   */
   readonly applied: boolean;
   readonly reason?: string;
   readonly status: BrowserPoolPhysicalStatus;
   readonly savedState?: BrowserPoolSavedState;
-  /** `start`: the install of the new instance; `resume`: the adoption of the next epoch. */
+  /**
+   * `start`: the install of the new instance; `resume`: the adoption of the next epoch. A start
+   * of a runtime that begins empty (a freshly booted guest) installs with no predecessor
+   * (`expect: null`) and is ordered by the sequence floor that guest was booted with; the
+   * loopback stand-in keeps one runtime across starts and names the fence it holds.
+   */
   readonly control?: BrowserPoolControl;
   /** Base64 Ed25519 signature of the control by the controller's key. */
   readonly signature?: string;
