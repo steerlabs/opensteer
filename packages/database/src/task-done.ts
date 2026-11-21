@@ -4,6 +4,7 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
   assertThreadCaller,
+  callerAuthoritySource,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
 import { isDeepStrictEqual } from "node:util";
@@ -336,10 +337,7 @@ export async function setThreadDone(
               kind: "quiet-tasks",
               userId: input.requestedBy,
             }
-          : {
-              kind: "user-session",
-              userId: input.requestedBy,
-            },
+          : callerAuthoritySource(input.authority, input.requestedBy),
       );
       if (!existing && stillQuiet) {
         const self =

@@ -281,6 +281,7 @@ export async function cancelTeamTaskRequest(
         runId: run.id,
         keepQueueRunning: true,
         requestedBy: run.requestedBy,
+        teamCancel: { teamId: input.teamId, requestId: input.requestId },
         idempotencyKey: `team-cancel:${input.teamId}:${input.requestId}`,
       });
       revokedGrants = stopped.revokedGrants;

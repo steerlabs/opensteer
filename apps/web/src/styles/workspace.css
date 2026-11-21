@@ -1190,9 +1190,9 @@ button.side-needs:hover {
   color: var(--text);
 }
 
-.side-task--finished .side-task__title,
-.side-task--failed .side-task__title {
-  color: var(--text-soft);
+/* Settled and seen, and not open: the row steps back. */
+.side-task.is-quiet .side-task__title {
+  color: var(--muted);
 }
 
 /* The one second line: what the task asks of you, in amber. One line, so
@@ -2949,10 +2949,6 @@ button.start-apps__row--away:focus-visible {
   white-space: nowrap;
 }
 
-.task-row__link .task-mark {
-  --ring-bg: var(--bg);
-}
-
 /* ---- Shortcuts ---- */
 
 /* The browser's keys beside Opensteer's own, side by side where the dialog has room. */
@@ -3944,9 +3940,6 @@ html[data-tab-sorting] * {
   font-size: var(--text-sm);
   font-weight: var(--weight-bold);
   white-space: nowrap;
-}
-.side-task--finished:not(:has(.task-row__unread)) .side-task__title {
-  color: var(--muted);
 }
 .conv-header:not(.conv-header--area) .conv-header__text {
   flex: 0 1 max-content;

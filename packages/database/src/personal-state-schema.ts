@@ -37,6 +37,7 @@ import type { PersonalChange } from "@opensteer/protocol/personal-sync";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 import { sql, type Generated, type Kysely } from "kysely";
 import type { DatabaseSchema, Timestamp } from "./schema.js";
+import { runNewsAt, unreadTaskSql } from "./personal-attention-store.js";
 
 export type PersonalScopeKey = "shell" | `thread:${string}` | `node:${string}`;
 /** `reset` rows are Host-only: a scope whose commit outgrew the feed is repaired by snapshot. */
@@ -700,6 +701,25 @@ export async function applyInlineTranscriptMessages(database: Kysely<DatabaseSch
     end $$;
     alter table client_changes add constraint client_changes_byte_count_check
       check (byte_count <= 524288);
+  `.execute(database);
+}
+
+export const stoppedRunsNotNewsMigrationName = "0044_stopped_runs_are_not_news";
+/**
+ * A Run its owner stopped, or one that ended before it started, no longer makes its task unread.
+ * Recomputes each task's latest news where it changes, the unread count from it, and starts every
+ * client's sync over. `commands_execution_proof` already finds a Run's Stops.
+ */
+export async function applyStoppedRunsNotNews(database: Kysely<DatabaseSchema>) {
+  await sql`
+    update threads set latest_run_completed_at=news.at
+    from (select source.id,(select ${runNewsAt("runs")} from runs
+        where runs.thread_id=source.id and runs.maintenance is null
+        order by runs.run_ordinal desc limit 1) as at
+      from threads source where source.latest_run_completed_at is not null) news
+    where threads.id=news.id and threads.latest_run_completed_at is distinct from news.at;
+    update client_sync_state set epoch=gen_random_uuid(),
+      unread_task_count=(select count(*) from threads where ${unreadTaskSql});
   `.execute(database);
 }
 

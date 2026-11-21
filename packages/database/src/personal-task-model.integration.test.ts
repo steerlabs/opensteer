@@ -708,6 +708,25 @@ it("publishes only the consuming Run's completion answer after an offline interv
   });
 });
 
+it("records a teammate's withdrawal, not the owner, as what stopped a started team Run", async () => {
+  const f = await fixture();
+  const ask = await f.ask();
+  const started = await f.start(ask.receipt.runId!);
+  await cancelTeamTaskRequest(f.database, { teamId: f.origin.teamId, requestId: ask.requestId });
+  expect(
+    await f.database
+      .selectFrom("commands")
+      .select("authoritySource")
+      .where("runId", "=", started.run.id)
+      .where("type", "=", "run.interrupt")
+      .execute(),
+  ).toEqual([
+    {
+      authoritySource: { kind: "team-cancel", teamId: f.origin.teamId, requestId: ask.requestId },
+    },
+  ]);
+});
+
 it("removes only the pending team request and keeps another admitted ask", async () => {
   const f = await fixture();
   const first = await f.ask();

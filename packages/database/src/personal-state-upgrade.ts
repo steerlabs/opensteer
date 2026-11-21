@@ -24,6 +24,7 @@ import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcr
 import { messageEditFromRow } from "./thread-row-mappers.js";
 import { executionDate, runOfflineSettlement } from "./personal-transaction.js";
 import { createNextPersonalTranscriptOrderIndex } from "./personal-state-schema.js";
+import { runNewsAt } from "./personal-attention-store.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks } from "./store-primitives.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -666,14 +667,14 @@ async function deriveThreadSummaries(tx: Tx, source: Source, cursor: UpgradeCurs
       select source_thread.id,
         (select count(*) from requests where originating_thread_id=source_thread.id and status='pending')
           + (select count(*) from thread_inputs where thread_id=source_thread.id and state='awaiting-approval') as pending,
-        case when latest.status in ('completed','failed','interrupted') then latest.completed_at end as completed_at,
+        ${runNewsAt("latest")} as completed_at,
         current_run.status as active_status,
         last_run.status='failed' and last_run.maintenance is null as latest_failed,
         case when last_run.status='failed' and last_run.maintenance is null then left(last_run.failure->>'message',280) end as failure,
         reply.id as reply_id,left(reply.view->>'preview',280) as reply
       from threads source_thread
       left join lateral (
-        select status,completed_at,failure from runs where thread_id=source_thread.id and maintenance is null
+        select id,status,started_at,completed_at,failure from runs where thread_id=source_thread.id and maintenance is null
         order by run_ordinal desc limit 1
       ) latest on true
       left join lateral (

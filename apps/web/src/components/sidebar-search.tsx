@@ -480,22 +480,19 @@ function TaskResult({
 }) {
   const { ask, match, row: task } = result;
   const hint = match.hint;
+  const quiet = task.quiet && !open;
   const classes = [
     "side-task",
     "side-result",
     `side-task--${task.tone}`,
     ask || hint ? "has-ask" : "",
-    open ? "is-filled" : "",
+    open ? "is-filled" : quiet ? "is-quiet" : "",
     row.selected ? "is-selected" : "",
   ];
   return (
     <div className={classes.filter(Boolean).join(" ")} {...optionProps(row)}>
       <span className="side-task__main">
-        <TaskMark
-          size={20}
-          mark={taskMark(task)}
-          quiet={task.tone === "finished" && !task.unread}
-        />
+        <TaskMark size={20} mark={taskMark(task)} quiet={quiet} />
         <span className="side-task__text">
           <span className="side-task__title">
             <Lit ranges={match.ranges} text={task.title} />

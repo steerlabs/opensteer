@@ -5,7 +5,9 @@ import {
   readAttentionKeys,
   refreshLatestRunCompletion,
   refreshTeamAskAttention,
+  unreadTaskSql,
 } from "./personal-attention-store.js";
+import { applyStoppedRunsNotNews } from "./personal-state-schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { createPersonalStateFixture } from "./personal-state.test-support.js";
@@ -148,6 +150,134 @@ test("clearing an already-read completion stamps a head even when the unread cou
         .orderBy("scopeKey")
         .execute(),
     ).toEqual([{ scopeKey: "shell" }, { scopeKey: `thread:${run.threadId}` }]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a Run its owner stopped is never news; one the Host ended is", async () => {
+  const fixture = await createPersonalStateFixture("stopped-not-news");
+  const { database, run } = fixture;
+  try {
+    const ended = new Date("2000-01-03");
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted", startedAt: new Date("2000-01-01"), completedAt: ended })
+      .where("id", "=", run.runId)
+      .execute();
+    // The owner last looked before the Run ended, so news would make it unread.
+    await database
+      .insertInto("threadVisits")
+      .values({
+        threadId: run.threadId,
+        userId: run.userId,
+        lastVisitedAt: new Date("2000-01-02"),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const stoppedBy = async (kind: string) => {
+      await sql`delete from commands where run_id=${run.runId} and type='run.interrupt'`.execute(
+        database,
+      );
+      await sql`insert into commands(id,environment_id,thread_id,run_id,requested_by,actor_principal_id,
+          authority_source,idempotency_key,type,payload,status)
+        select ${createId("command")},environment_id,thread_id,run_id,requested_by,actor_principal_id,
+          jsonb_build_object('kind',${kind}::text),${`stop:${kind}`},'run.interrupt',
+          jsonb_build_object('type','run.interrupt','runId',run_id,'threadId',thread_id),'succeeded'
+        from commands where run_id=${run.runId} and type='run.execute' limit 1`.execute(database);
+      await commitPersonalMutation(database, async (tx, mutation) =>
+        refreshLatestRunCompletion(
+          tx,
+          mutation,
+          run.threadId,
+          Number(
+            (
+              await tx
+                .selectFrom("threads")
+                .select(unreadTaskSql.as("unread"))
+                .where("id", "=", run.threadId)
+                .executeTakeFirstOrThrow()
+            ).unread,
+          ),
+        ),
+      );
+      return {
+        news: (
+          await database
+            .selectFrom("threads")
+            .select("latestRunCompletedAt")
+            .where("id", "=", run.threadId)
+            .executeTakeFirstOrThrow()
+        ).latestRunCompletedAt,
+        unread: (
+          await database
+            .selectFrom("clientSyncState")
+            .select("unreadTaskCount")
+            .executeTakeFirstOrThrow()
+        ).unreadTaskCount,
+      };
+    };
+    // The Host, an agent or a teammate cut it short: the owner hears of it.
+    expect(await stoppedBy("request-hold")).toEqual({ news: ended, unread: 1 });
+    expect(await stoppedBy("thread-agent")).toEqual({ news: ended, unread: 1 });
+    expect(await stoppedBy("team-cancel")).toEqual({ news: ended, unread: 1 });
+    // Ended before it started, it has nothing to show, whoever ended it.
+    await database
+      .updateTable("runs")
+      .set({ startedAt: null })
+      .where("id", "=", run.runId)
+      .execute();
+    expect(await stoppedBy("request-hold")).toEqual({ news: null, unread: 0 });
+    await database
+      .updateTable("runs")
+      .set({ startedAt: new Date("2000-01-01") })
+      .where("id", "=", run.runId)
+      .execute();
+    expect(await stoppedBy("request-hold")).toEqual({ news: ended, unread: 1 });
+    // The owner pressed Stop, from this computer or another: nothing to read.
+    expect(await stoppedBy("user-session")).toEqual({ news: null, unread: 0 });
+    // A Run that ended by itself is news again.
+    await sql`delete from commands where run_id=${run.runId} and type='run.interrupt'`.execute(
+      database,
+    );
+    await database
+      .updateTable("runs")
+      .set({ status: "completed" })
+      .where("id", "=", run.runId)
+      .execute();
+    expect(await stoppedBy("request-hold")).toEqual({ news: ended, unread: 1 });
+
+    // A Host from before this rule stored the Stop as news; migrating corrects it.
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted" })
+      .where("id", "=", run.runId)
+      .execute();
+    await stoppedBy("user-session");
+    await database
+      .updateTable("threads")
+      .set({ latestRunCompletedAt: ended })
+      .where("id", "=", run.threadId)
+      .execute();
+    await database.updateTable("clientSyncState").set({ unreadTaskCount: 1 }).execute();
+    const before = await database
+      .selectFrom("clientSyncState")
+      .select("epoch")
+      .executeTakeFirstOrThrow();
+    await applyStoppedRunsNotNews(database);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select("latestRunCompletedAt")
+        .where("id", "=", run.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ latestRunCompletedAt: null });
+    const after = await database
+      .selectFrom("clientSyncState")
+      .select(["epoch", "unreadTaskCount"])
+      .executeTakeFirstOrThrow();
+    expect(after.unreadTaskCount).toBe(0);
+    expect(after.epoch).not.toBe(before.epoch);
   } finally {
     await fixture.close();
   }
