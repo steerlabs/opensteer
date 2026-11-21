@@ -1876,6 +1876,23 @@ describe("full page CDP with routing isolation", () => {
     expect(f.channel.commands).toEqual([]);
     await f.router.close();
   });
+
+  it("allows Page.screencastFrameAck with a numeric screencast sessionId while still rejecting foreign target sessionIds", async () => {
+    const f = await fixture();
+    await expect(f.send("Page.screencastFrameAck", { sessionId: 49 })).resolves.toEqual({
+      method: "Page.screencastFrameAck",
+    });
+    expect(f.channel.commands).toEqual([
+      { method: "Page.screencastFrameAck", parameters: { sessionId: 49 } },
+    ]);
+    await expect(
+      f.send("Page.screencastFrameAck", { sessionId: "foreign-session" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(f.send("Target.sendMessageToTarget", { sessionId: 49 })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await f.router.close();
+  });
 });
 function asContext(event: import("./session-cdp-router.js").CdpEvent) {
   return event.method === "Runtime.executionContextCreated"

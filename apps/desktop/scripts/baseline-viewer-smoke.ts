@@ -108,7 +108,13 @@ function project(
   }
   if (message.type === "browser.snapshot" && !("surfaces" in message)) {
     runtimeSnapshot = message;
-    return browserViewerMessage({ ...message, surfaces: [] }, viewerVersion);
+    const {
+      cdpReplyBudget: _cdpReplyBudget,
+      scriptAttachments: _scriptAttachments,
+      scriptCancellation: _scriptCancellation,
+      ...viewerSnapshot
+    } = message;
+    return browserViewerMessage({ ...viewerSnapshot, surfaces: [] }, viewerVersion);
   }
   if (message.type === "browser.tabs") {
     if (tabStream.apply(message.stream) !== "applied") return;

@@ -489,13 +489,19 @@ exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stre
   };
   const runtime = await supervisor.current();
   assert(runtime);
+  // In the shipped app, LocalRunnerAuthority refuses to run a Device Runner
+  // against this Mac's own hosted Home; here the smoke composes both in one
+  // process, so give the Device Runner its own data dir to avoid colliding on
+  // the hosted Home's profile-storage lock.
+  const deviceRoot = path.join(root, "device-runner");
+  mkdirSync(deviceRoot, { recursive: true, mode: 0o700 });
   const config = readDesktopConfiguration({
-    appDataDirectory: root,
+    appDataDirectory: deviceRoot,
     defaultMode: "development",
     packaged: false,
     resourcesDirectory: resources,
     environment: {
-      OPENSTEER_DESKTOP_DATA_DIR: root,
+      OPENSTEER_DESKTOP_DATA_DIR: deviceRoot,
       OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: path.join(resources, "personal-runtime"),
       OPENSTEER_DESKTOP_RUNNER_WORKER: path.join(import.meta.dirname, "quit-runner-worker.js"),
       OPENSTEER_DESKTOP_NATIVE_FS_HELPER: path.join(

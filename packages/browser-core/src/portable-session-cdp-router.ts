@@ -740,6 +740,7 @@ export class SessionCdpRouter {
       state,
       command.parameters ?? {},
       command.method === "Target.detachFromTarget",
+      command.method,
     );
     if (state.standard && command.parameters?.browserContextId !== undefined) {
       const { browserContextId, ...parameters } = command.parameters;
@@ -1462,7 +1463,7 @@ export class SessionCdpRouter {
     }
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
-    this.#assertScope(state, parameters);
+    this.#assertScope(state, parameters, false, command.method);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
     }
@@ -2027,14 +2028,24 @@ export class SessionCdpRouter {
     );
   }
 
-  #assertScope(state: ConnectionState, parameters: CdpParameters, allowAlias = false): void {
+  #assertScope(
+    state: ConnectionState,
+    parameters: CdpParameters,
+    allowAlias = false,
+    method?: string,
+  ): void {
     for (const key of ["targetId", "openerId"]) {
       const target = parameters[key];
       if (typeof target === "string") this.#assertOwnedTarget(state, target);
     }
+    // Page.screencastFrameAck names a numeric screencast frame sessionId, not a
+    // CDP target attachment session.
+    const isScreencastAck =
+      method === "Page.screencastFrameAck" && typeof parameters.sessionId === "number";
     // Browser contexts are checked and supplied by the profile-owned backend.
     if (
       parameters.sessionId !== undefined &&
+      !isScreencastAck &&
       !state.channels.has(String(parameters.sessionId)) &&
       !state.retiredTargets.has(String(parameters.sessionId)) &&
       !(allowAlias && state.aliases.has(String(parameters.sessionId)))

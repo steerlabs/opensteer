@@ -133,28 +133,30 @@ export function createNativeBrowserE2EKit(options: {
     );
     let previous: { x: number; y: number } | null = null;
     await until(async () => {
-      try {
-        const point = await elementPoint(shell!.webContents, selector);
-        const stable = previous?.x === point.x && previous.y === point.y;
-        previous = point;
-        return stable;
-      } catch {
+      const point = await tryElementPoint(shell!.webContents, selector);
+      if (!point) {
         previous = null;
         return false;
       }
+      const stable = previous?.x === point.x && previous.y === point.y;
+      previous = point;
+      return stable;
     }, `stable visible hit-tested app control ${selector}`);
     const point = await elementPoint(shell.webContents, selector);
     artifacts.event("input.appMouseStandIn", { selector, point });
     mouse(shell.webContents, point);
     await delay(100);
   }
-  async function elementPoint(
+  async function tryElementPoint(
     contents: WebContents,
     selector: string,
-  ): Promise<{ x: number; y: number }> {
-    const point = z.object({ x: z.number(), y: z.number() }).parse(
-      await contents.executeJavaScript(
-        `(() => {
+  ): Promise<{ x: number; y: number } | null> {
+    const point = z
+      .object({ x: z.number(), y: z.number() })
+      .nullable()
+      .parse(
+        await contents.executeJavaScript(
+          `(() => {
           for (const el of document.querySelectorAll(${JSON.stringify(selector)})) {
           if (!el.checkVisibility() || el.disabled) continue;
           const r = el.getBoundingClientRect();
@@ -165,10 +167,11 @@ export function createNativeBrowserE2EKit(options: {
             continue;
           return {x, y};
           }
-          throw Error('Control is offscreen, inert or fails hit-testing: ' + ${JSON.stringify(selector)});
+          return null;
         })()`,
-      ),
-    );
+        ),
+      );
+    if (!point) return null;
     const zoom = contents.getZoomFactor();
     if (shell && contents === shell.webContents) {
       const bounds = shell.getContentBounds();
@@ -193,6 +196,14 @@ export function createNativeBrowserE2EKit(options: {
         );
       }
     }
+    return point;
+  }
+  async function elementPoint(
+    contents: WebContents,
+    selector: string,
+  ): Promise<{ x: number; y: number }> {
+    const point = await tryElementPoint(contents, selector);
+    if (!point) throw new Error(`Control is offscreen, inert or fails hit-testing: ${selector}`);
     return point;
   }
 

@@ -277,7 +277,7 @@ import Darwin
       try require(error.code == .appNotRunning, "Wrong closed-app windowsExisting error: \(error.code)")
     }
     do {
-      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget, "windowId": NSNull()])
       throw JourneyFailure.failed("session.bindExisting succeeded on a closed app")
     } catch let error as HelperError {
       try require(error.code == .appNotRunning, "Wrong closed-app bindExisting error: \(error.code)")
@@ -337,7 +337,7 @@ import Darwin
     let emptyWindows = (emptyListed["windows"] as? [[String: Any]]) ?? []
     try require(emptyWindows.isEmpty, "Running app with no windows reported \(emptyWindows.count) windows")
     do {
-      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget, "windowId": NSNull()])
       throw JourneyFailure.failed("session.bindExisting succeeded on a running app with no windows")
     } catch let error as HelperError {
       try require(

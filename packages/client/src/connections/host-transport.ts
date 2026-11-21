@@ -376,7 +376,9 @@ export class HostTransport {
           throw controller.signal.reason;
         if (
           error instanceof HostTransportError &&
-          (error.code === "deployment-changed" || error.code === "response-too-large")
+          (error.code === "deployment-changed" ||
+            error.code === "response-too-large" ||
+            (error.code === "timed-out" && error.failure.code === "unauthorized"))
         )
           throw error;
         const timedOut =
@@ -577,9 +579,9 @@ export class HostTransport {
     refusal: Response,
     deadline: HostResponseDeadline,
   ): Promise<Response> {
-    // Recovery carries its own deadlines (token refresh, session exchange); the
-    // refusal's body-stall clock must not cut it short.
-    deadline.pause();
+    // Bound recovery by the request's timeout rather than the 401 body-stall
+    // clock, and give the replayed request a fresh budget once recovered.
+    deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
     let abortRecovery: (() => void) | undefined;
     try {
       const abandoned = new Promise<never>((_resolve, reject) => {
@@ -587,7 +589,28 @@ export class HostTransport {
         if (signal.aborted) abortRecovery();
         else signal.addEventListener("abort", abortRecovery, { once: true });
       });
-      const outcome = await Promise.race([sessions.recoverUnauthorized(selected), abandoned]);
+      let outcome: Awaited<ReturnType<HostSessionRecovery["recoverUnauthorized"]>>;
+      try {
+        outcome = await deadline.wait(
+          Promise.race([sessions.recoverUnauthorized(selected), abandoned]),
+        );
+      } catch (error) {
+        const timedOut =
+          !request.signal?.aborted &&
+          ((signal.aborted &&
+            signal.reason instanceof HostTransportError &&
+            signal.reason.code === "timed-out") ||
+            (error instanceof HostTransportError && error.code === "timed-out"));
+        if (timedOut)
+          throw new HostTransportError("timed-out", {
+            code: "unauthorized",
+            reason: "sign-in-required",
+            retryable: false,
+            provenance: "host",
+            kind: "session",
+          });
+        throw error;
+      }
       signal.throwIfAborted();
       if (outcome instanceof TeamEntryOutcomeError && outcome.outcome.status === "update-required")
         return Response.json(
