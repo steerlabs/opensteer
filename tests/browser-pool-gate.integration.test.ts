@@ -56,6 +56,7 @@ import {
   holdResume,
   journey,
   TestRuntimeConnection,
+  until,
 } from "./browser-pool-journey.test-support.js";
 
 it("vetoes D on an ended session with confined CDP contact loss", async () => {
@@ -346,7 +347,7 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     ).rejects.toThrow();
     const withheld = j.withheld[0]!;
     expect(withheld).toEqual(expect.any(String));
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     expect(await home.coordinator.tryPark()).toBe("parked");
     const beforePark = j.issued[0]!;
     const issuedBeforeWake = j.issued.length;
@@ -363,7 +364,7 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     try {
       expect(await page.page.targetId()).toBe(page.targetId);
       expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
-      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+      await editVisibly(attached, watching, tabId, page.value, page.rendered);
       expect(await home.coordinator.tryPark()).toBe("vetoed");
       expect(await j.slot()).toMatchObject({
         phase: "running",
@@ -424,7 +425,7 @@ it("carries the tabs the person used to the adopted broker of a restored session
         const message = JSON.parse(data) as { type: string; personUsed?: string[] };
         return message.type === "session.state" ? (message.personUsed ?? []) : [];
       });
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     expect(await home.coordinator.tryPark()).toBe("parked");
     const parked = send.mock.calls.length;
     // A watch viewer wakes it: watching is not use, so only the carried use can name the tab.
@@ -432,7 +433,7 @@ it("carries the tabs the person used to the adopted broker of a restored session
     const attached = await watching.attaching;
     attached.close();
     expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
-    await vi.waitFor(() => expect(marked(parked)).toContain(tabId));
+    await until(() => expect(marked(parked)).toContain(tabId));
   } finally {
     vi.restoreAllMocks();
     await j.close();
@@ -478,7 +479,7 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
     await stopping;
     expect((await j.row(sessionId))?.state).toBe("closed");
     // Stop found the registered broker and closed it: the page ends now, not at a deadline.
-    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 5_000 });
+    await until(() => expect(page.page.isClosed()).toBe(true));
     expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
   } finally {
     await j.close();
@@ -508,8 +509,8 @@ it("keeps the person's tab the person's through a Home restart while parked, the
           .get(sessionId)!
           .ledger.policyRecords(),
       ].find((record) => record.id === tabId)?.personUsed;
-    await vi.waitFor(() => expect(personUsed()).toBe(true));
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(personUsed()).toBe(true));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     expect(await home.coordinator.tryPark()).toBe("parked");
     // The Home restarts while parked; its own record of who used which tab starts empty.
     home = await j.restartHome(home);
@@ -544,7 +545,7 @@ it("holds a viewer's protection, queued after the park intent, in the adopted ru
     const home = await j.startHome();
     const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("protect"));
     await j.draft();
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     holding = true;
     const parking = home.coordinator.tryPark();
     await inProbe.promise;
@@ -570,9 +571,7 @@ it("holds a viewer's protection, queued after the park intent, in the adopted ru
         Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
         false,
       );
-      await vi.waitFor(() => expect(watching.frames.length).toBeGreaterThan(0), {
-        timeout: 10_000,
-      });
+      await until(() => expect(watching.frames.length).toBeGreaterThan(0));
       expect(atFirstFrame).toContain(tabId);
       expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
     } finally {
@@ -594,7 +593,7 @@ it("keeps a running browser's sessions through a Home crash and reattaches them"
     // The Home dies while the browser runs, and starts again: the start-up sweep keeps the
     // pooled session, and the loop reattaches it inside its window.
     const next = await j.crashHome(home);
-    await vi.waitFor(() => expect(next.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    await until(() => expect(next.coordinator.gate.phase).toBe("open"));
     expect((await j.row(sessionId))?.state).toBe("ready");
     expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
     expect(page.page.isClosed()).toBe(false);
@@ -651,7 +650,7 @@ it("restarts through the service while a park is retiring, with no reconnect aft
     const home = await j.startHome();
     const { sessionId } = await home.service.openTab(j.task.userId, j.command("retiring"));
     await j.draft();
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     holding = true;
     const parking = home.coordinator.tryPark();
     await inProbe.promise;
@@ -677,11 +676,11 @@ it("lets a Stop during a reconnect end that session's wait at once", async () =>
     const home = await j.startHome();
     const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-reconnect"));
     j.runnerDown();
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     const stopped = Date.now();
     await home.service.stop(j.task.userId, sessionId);
     // The stopped session no longer needs a channel: the gate does not hold for its window.
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 5_000 });
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
     expect(Date.now() - stopped).toBeLessThan(5_000);
     expect((await j.row(sessionId))?.state).toBe("closed");
   } finally {
@@ -705,7 +704,7 @@ it("stops a parked session while its viewer waits and never reattaches it", asyn
     await home.service.stop(j.task.userId, sessionId);
     await expect(watching.attaching).rejects.toThrow("stopped this browser");
     resume.allow();
-    await vi.waitFor(async () =>
+    await until(async () =>
       expect(await j.slot()).toMatchObject({
         phase: "running",
         outcome: { adopted: [], lost: [{ sessionId }] },
@@ -770,7 +769,7 @@ it("adopts the open tab of a session and closes the one closed while parked", as
     expect(home.service.pageInventory(first.sessionId)?.records.get(first.tabId)?.documentId).toBe(
       keptDocument,
     );
-    await vi.waitFor(() =>
+    await until(() =>
       expect(home.service.pageInventory(first.sessionId)?.records.has(second.tabId)).toBe(false),
     );
     expect(await kept.value()).toBe('["unsent draft",99]');
@@ -826,7 +825,7 @@ it("continues an adoption a Home crash interrupted, inside the original window, 
     expect(await home.coordinator.tryPark()).toBe("parked");
     home = await j.restartHome(home, dyingAfter(j.guest, "adopt"));
     const dying = j.viewer(home, sessionId);
-    await vi.waitFor(() => expect(j.guest.poolState()?.phase).toBe("adopting"));
+    await until(() => expect(j.guest.poolState()?.phase).toBe("adopting"));
     const interrupted = j.guest.poolState()!;
     expect(await j.slot()).toMatchObject({ phase: "waking", epoch: 2 });
     home = await j.restartHome(home);
@@ -838,7 +837,7 @@ it("continues an adoption a Home crash interrupted, inside the original window, 
     const attached = await watching.attaching;
     try {
       expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
-      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+      await editVisibly(attached, watching, tabId, page.value, page.rendered);
       expect(await j.slot()).toMatchObject({
         phase: "running",
         epoch: 2,
@@ -905,7 +904,7 @@ it("keeps a page an agent opened through a park and adopts its session", async (
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     // The Run's end goes the ordinary way; its state update is delivered before a park.
     await home.service.detachAgentSessionsForBinding(run.agentBindingId);
-    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    await until(() => expect(home.coordinator.gate.held).toBe(0));
     expect(await home.coordinator.tryPark()).toBe("parked");
     home = await j.restartHome(home);
     // The person watches the agent's page: that demand wakes the browser.
@@ -994,7 +993,7 @@ it("keeps every page usable after a release that followed a retire", async () =>
     const attached = await watching.attaching;
     try {
       expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
-      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+      await editVisibly(attached, watching, tabId, page.value, page.rendered);
     } finally {
       attached.close();
     }
@@ -1111,7 +1110,7 @@ it("holds the gate until an awake physical close has a matching terminal receipt
     expect((await j.tabs.close(j.task.userId, [tabId], "close-awake")).tabIds).toEqual([tabId]);
     await home.service.pageTabs.closeViewers(j.task.userId, tab!, true);
     await closed.promise;
-    await vi.waitFor(async () =>
+    await until(async () =>
       expect(await j.database.selectFrom("browserPoolRelays").selectAll().execute()).toEqual([]),
     );
     expect(j.controller.effects).toEqual(["start"]);
@@ -1138,7 +1137,7 @@ it("holds the gate for a live Watch viewer before its first retained-page frame"
         Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
         false,
       );
-      await vi.waitFor(() => expect(watching.frames.length).toBeGreaterThan(0));
+      await until(() => expect(watching.frames.length).toBeGreaterThan(0));
       expect(decodeBrowserFrameEnvelope(watching.frames[0]!).header.surfaceId).toBe(tabId);
       expect(await page.page.targetId()).toBe(page.targetId);
       expect(await home.coordinator.tryPark()).toBe("vetoed");
@@ -1177,7 +1176,7 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
     try {
       const watching = j.viewer(home, session.id, "watch");
       await expect(watching.attaching).rejects.toThrow();
-      await vi.waitFor(async () =>
+      await until(async () =>
         expect(await j.slot()).toMatchObject({
           phase: "running",
           outcome: { adopted: [], lost: [{ sessionId: session.id }] },
@@ -1189,7 +1188,7 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
     expect(stopped).toBe(true);
     expect((await j.row(session.id))?.state).toBe("closed");
     // The live browser does not stay behind the closed row.
-    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true));
+    await until(() => expect(page.page.isClosed()).toBe(true));
   } finally {
     await j.close();
   }
@@ -1289,7 +1288,7 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
         session: session!.sessionId,
         close: async () => {
           socket.close();
-          await vi.waitFor(async () => {
+          await until(async () => {
             expect(
               await j.database
                 .selectFrom("browserSessionAttachments")
@@ -1395,7 +1394,7 @@ it("keeps the person's pages through a Runner restart and reattaches them under 
     const before = (await j.slot())!.attachmentGeneration;
     j.runnerDown();
     // Nothing ends: the row stays ready, the page keeps running, sends wait.
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     expect((await j.row(sessionId))?.state).toBe("ready");
     expect(page.page.isClosed()).toBe(false);
     const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
@@ -1411,7 +1410,7 @@ it("keeps the person's pages through a Runner restart and reattaches them under 
     const watching = j.viewer(home, sessionId);
     const attached = await watching.attaching;
     try {
-      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+      await editVisibly(attached, watching, tabId, page.value, page.rendered);
     } finally {
       attached.close();
     }
@@ -1430,7 +1429,7 @@ it("keeps the person's pages when the Runner's channel closes cleanly, code 1000
     const before = (await j.slot())!.attachmentGeneration;
     j.runnerDown(1000);
     // Nothing ends: the row stays ready, the page keeps running, sends wait.
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     expect((await j.row(sessionId))?.state).toBe("ready");
     expect(page.page.isClosed()).toBe(false);
     const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
@@ -1446,7 +1445,7 @@ it("keeps the person's pages when the Runner's channel closes cleanly, code 1000
     const watching = j.viewer(home, sessionId);
     const attached = await watching.attaching;
     try {
-      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+      await editVisibly(attached, watching, tabId, page.value, page.rendered);
     } finally {
       attached.close();
     }
@@ -1462,10 +1461,10 @@ it("ends the sessions with their note when the Runner does not come back before 
     const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("gone"));
     const page = await j.draft();
     j.runnerDown();
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
     expect((await j.row(sessionId))?.state).toBe("failed");
-    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 10_000 });
+    await until(() => expect(page.page.isClosed()).toBe(true));
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, surfaceId: tabId, reason: "not-adopted" },
     ]);
@@ -1615,7 +1614,7 @@ it("lets every service call made while the Runner is away wait for it, never ref
     const home = await j.startHome();
     const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("away"));
     j.runnerDown();
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     // A placement read reports the browser; it does not throw.
     expect((await home.service.resourcePools([j.task.runnerId]))[0]).toMatchObject({
       runnerId: j.task.runnerId,
