@@ -87,6 +87,8 @@ export interface HypervisorDriver {
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
   /** Removes everything prepareSlot made. Idempotent. */
   removeSlot(slotId: string): Promise<void>;
+  /** Where the relay's user reaches the slot's bridge port (through its namespace). */
+  bridgeTarget(slotId: string): { readonly host: string; readonly port: number };
   /** Lets the guest reach its egress proxy (and the bridge seam reach the guest). */
   openNetwork(slotId: string): Promise<void>;
   /** Drops every packet to and from the guest except the agent's helper channel. */

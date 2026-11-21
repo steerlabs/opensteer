@@ -29,6 +29,12 @@ import type {
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import { signBrowserPoolAgentBytes } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
+  poolRelayGrantBytes,
+  type PoolRelayGrant,
+  type PoolRelayHello,
+} from "@opensteer/shared/poolRelay";
+import type { RelayDecision } from "./relay.js";
+import {
   DriverStateUncertain,
   NoSaveRoom,
   type GuestBoot,
@@ -344,6 +350,52 @@ export class PoolAgent {
     return tombstone
       ? { key: tombstone.homeKey, term: tombstone.record.term, generation: 0, deleted: true }
       : undefined;
+  }
+
+  /**
+   * The relay's question (pool-runtime-in-guest.md, decision 4): may this client key reach this
+   * slot's bridge now? Only the slot's own relay key, at the slot's term, while its guest runs
+   * with no step open. An unknown slot, another key and another term all get one answer; only
+   * the slot's own key learns that it is parked. The grant is signed by the slot's control key.
+   */
+  authorizeRelay(hello: PoolRelayHello, clientKey: string): RelayDecision {
+    const slot = this.#slots.get(hello.slot);
+    const record = slot?.record;
+    if (
+      !slot ||
+      !record ||
+      slot.deleted ||
+      this.#dead ||
+      !record.relayKey ||
+      record.relayKey !== clientKey ||
+      record.term !== hello.term
+    )
+      return { ok: false, code: "refused" };
+    if (
+      record.phase !== "running" ||
+      record.pending ||
+      !record.jailId ||
+      !record.instance ||
+      record.epoch === null ||
+      !record.bridgeToken
+    )
+      return { ok: false, code: "parked" };
+    const grant: PoolRelayGrant = {
+      slot: record.slotId,
+      term: record.term,
+      instance: record.instance,
+      epoch: record.epoch,
+      token: record.bridgeToken,
+    };
+    return {
+      ok: true,
+      target: this.#driver.bridgeTarget(record.slotId),
+      grant,
+      signature: signBrowserPoolAgentBytes(
+        poolRelayGrantBytes(hello.nonce, grant),
+        slot.controlKey,
+      ),
+    };
   }
 
   /** Only a live slot has one; a deleted slot's key was destroyed with it. */

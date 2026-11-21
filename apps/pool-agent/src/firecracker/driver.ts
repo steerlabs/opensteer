@@ -55,6 +55,8 @@ import {
   namespaceTablesPresent,
   guestMac,
   prepareNamespace,
+  bridgePort,
+  vethAddresses,
   proxyAddress,
   proxyPort,
   removeNamespace,
@@ -222,6 +224,11 @@ export class FirecrackerDriver implements HypervisorDriver {
       await removeEgress(index);
       await removeNamespace(index);
     });
+  }
+
+  bridgeTarget(slotId: string): { readonly host: string; readonly port: number } {
+    // The namespace side of the slot's veth; its DNAT rule forwards the port to the guest.
+    return { host: vethAddresses(this.#require(slotId)).inside, port: bridgePort };
   }
 
   async openNetwork(slotId: string): Promise<void> {

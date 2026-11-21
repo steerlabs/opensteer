@@ -152,6 +152,13 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
   }
 
+  /** Where a slot's bridge listens; a test points it at a real server. */
+  readonly bridgeTargets = new Map<string, { host: string; port: number }>();
+
+  bridgeTarget(slotId: string): { readonly host: string; readonly port: number } {
+    return this.bridgeTargets.get(slotId) ?? { host: "127.0.0.1", port: 9 };
+  }
+
   /** The bridge token each jail was given, in order. */
   readonly tokens = new Map<string, string[]>();
 

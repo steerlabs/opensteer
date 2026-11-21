@@ -9,6 +9,7 @@
     "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",
+    "./poolRelay": "./src/poolRelay.ts",
     "./advertisedJsonSchema": "./src/advertisedJsonSchema.ts",
     "./atomicPrivateFile": "./src/atomicPrivateFile.ts",
     "./base64url": "./src/base64url.ts",
