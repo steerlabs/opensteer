@@ -605,8 +605,63 @@ await test("a Home installed with local images checks the machine's images inste
   assert.doesNotMatch(missing.stdout, /stamps/u);
 });
 
-const backupHarness = (restic) => `
+/**
+ * A Home whose backup runs restic's container scripts here, against a fake restic: they decide
+ * what is reported, so they run as written, with only /backups and /tmp moved.
+ */
+function backupHome(t) {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-backup-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bin = resolve(directory, "bin");
+  const backups = resolve(directory, "backups");
+  const home = resolve(directory, "home");
+  for (const path of [bin, backups, home]) mkdirSync(path);
+  writeFileSync(resolve(backups, "accessKeyId"), "key");
+  writeFileSync(resolve(backups, "secretAccessKey"), "secret");
+  writeFileSync(
+    resolve(bin, "restic"),
+    `#!/bin/sh
+case "$*" in
+  *"cat config"*)
+    case $RESTIC_REPOSITORY in
+      wrong-password) echo 'Fatal: wrong password or no key found' >&2; exit 12 ;;
+      new) echo 'Fatal: repository does not exist: unable to open config file' >&2; exit 10 ;;
+      unreachable) echo 'Stat(<config/>) returned error, retrying after 557ms: dial tcp 192.0.2.1:443: connect: connection refused' >&2; exec sleep 3 ;;
+      *) exit 0 ;;
+    esac ;;
+  *init*) echo "created restic repository" ;;
+  *"snapshots --latest 1"*) exit 0 ;;
+  *backup*)
+    echo '{"message_type":"status","percent_done":0.5,"files_done":3,"total_files":6}'
+    case $RESTIC_REPOSITORY in
+      slow) exec sleep 5 ;;
+      failing) echo 'Fatal: unable to save snapshot: connection reset by peer' >&2; exit 1 ;;
+    esac
+    echo '{"message_type":"summary","snapshot_id":"0123abcd"}' ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    resolve(bin, "timeout"),
+    `#!/bin/sh
+seconds=$1; shift
+"$@" & pid=$!
+( sleep "$seconds"; kill -TERM "$pid" 2>/dev/null ) & killer=$!
+wait "$pid"; status=$?
+kill "$killer" 2>/dev/null
+if [ "$status" -ge 128 ]; then exit 124; fi
+exit "$status"
+`,
+    { mode: 0o755 },
+  );
+  const script = `
+    set -euo pipefail
+    export OPENSTEER_HOME_DIR=${quote(home)}
+    source deploy/home/common.sh
     source deploy/home/backup.sh
+    sync() { :; }
+    backup_check_seconds=1
     backup_config() { :; }
     restore_state() { volume_set=proof; identity_secrets="$home_dir"; }
     compose() {
@@ -617,53 +672,65 @@ const backupHarness = (restic) => `
     postgres_tool() { echo database; }
     start_pod() { echo started; }
     touch "$home_dir/auth_secret" "$home_dir/environment_id"
-    action=backup
     restic_container() {
-      ${restic}
+      local script=\${1//\\/backups\\//${backups}/} argument arguments=()
+      script=\${script//\\/tmp\\//${backups}/}
+      shift
+      for argument in "$@"; do
+        argument=\${argument//\\/backups\\//${backups}/}
+        arguments+=("\${argument//\\/tmp\\//${backups}/}")
+      done
+      PATH=${quote(bin)}:$PATH sh -euc "$script" home-backup "\${arguments[@]}"
     }
     backup_command backup
-`;
+  `;
+  const run = (repository) =>
+    spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, RESTIC_REPOSITORY: repository },
+    });
+  const start = (repository) =>
+    spawn("bash", ["-c", script], {
+      env: { ...process.env, RESTIC_REPOSITORY: repository },
+    });
+  return { home, run, start };
+}
 
-await test("a backup whose repository cannot be reached fails before it stops the Home", () => {
-  const unreachable = runHome(
-    backupHarness(`
-      if [[ $1 == *"probe snapshots"* ]]; then
-        echo 'Fatal: unable to open config file: Stat: dial tcp 192.0.2.1:443: connect: connection refused' >&2
-        return 1
-      fi
-      echo "unexpected restic $*"`),
-  );
-  assert.notEqual(unreachable.status, 0);
-  assert.doesNotMatch(unreachable.stdout, /compose stop|database|started|unexpected/u);
+const checking =
+  "Checking that the backup repository can be reached and written (at most 1 seconds).\n";
+
+await test("the backup check reports what restic said, within one deadline, before anything stops", (t) => {
+  const { run } = backupHome(t);
+  const wrong = run("wrong-password");
+  assert.equal(wrong.status, 1);
+  assert.equal(wrong.stdout, checking);
   assert.match(
-    unreachable.stdout,
-    /^Checking that the backup repository can be reached and written\.\n$/u,
+    wrong.stderr,
+    /Fatal: wrong password or no key found\nThe backup repository could not be reached or written\. The Home was not stopped\./u,
   );
-  assert.match(unreachable.stderr, /connection refused/u);
+  const started = Date.now();
+  const unreachable = run("unreachable");
+  assert.ok(Date.now() - started < 3_000, "the check ran past its deadline");
+  assert.equal(unreachable.status, 1);
+  assert.equal(unreachable.stdout, checking);
   assert.match(
     unreachable.stderr,
-    /The backup repository could not be reached or written\. The Home was not stopped\./u,
+    /connection refused\nThe backup repository did not answer within 1 seconds\. The Home was not stopped\./u,
   );
+  const created = run("new");
+  assert.equal(created.status, 0, created.stderr);
+  assert.doesNotMatch(created.stderr, /does not exist/u);
+  assert.match(created.stdout, /Stopping Home services/u);
 });
 
-await test("a backup shows its progress and says it started the Home again after a late failure", () => {
-  const status = JSON.stringify({
-    message_type: "status",
-    percent_done: 0.5,
-    files_done: 3,
-    total_files: 6,
-  });
-  const summary = JSON.stringify({ message_type: "summary", snapshot_id: "0123abcd" });
-  const saved = runHome(
-    backupHarness(`
-      if [[ $1 == *"probe snapshots"* ]]; then return 0; fi
-      printf '%s\\n%s\\n' ${quote(status)} ${quote(summary)}`),
-  );
+await test("a backup shows its progress and starts the Home again after a late failure", (t) => {
+  const { home, run } = backupHome(t);
+  const saved = run("ready");
   assert.equal(saved.status, 0, saved.stderr);
   assert.equal(
     saved.stdout,
     [
-      "Checking that the backup repository can be reached and written.",
+      checking.trimEnd(),
       "Stopping Home services to capture the database and files together.",
       "compose stop host gateway runner browser-runtime browser-egress channel-runtime",
       "Saving the database.",
@@ -675,17 +742,44 @@ await test("a backup shows its progress and says it started the Home again after
       "",
     ].join("\n"),
   );
-  const failed = runHome(
-    backupHarness(`
-      if [[ $1 == *"probe snapshots"* ]]; then return 0; fi
-      echo 'Fatal: unable to save snapshot: connection reset by peer' >&2
-      return 1`),
-  );
-  assert.notEqual(failed.status, 0);
+  const failed = run("failing");
+  assert.equal(failed.status, 1);
   assert.match(failed.stdout, /compose stop .*\n.*started\n$/su);
   assert.match(
     failed.stderr,
-    /connection reset by peer\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+    /connection reset by peer\nIts unfinished files were removed\.\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+  );
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.startsWith("backup.")),
+    [],
+  );
+});
+
+await test("a backup sent TERM midway starts the Home again and removes its staging", async (t) => {
+  const { home, start } = backupHome(t);
+  const child = start("slow");
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    if (stdout.includes("Uploaded 50%") && !child.signalled) {
+      child.signalled = true;
+      child.kill("SIGTERM");
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [status] = await once(child, "close");
+  assert.notEqual(status, 0);
+  assert.match(stdout, /Uploaded 50%.*\nstarted\n$/su);
+  assert.match(
+    stderr,
+    /The operation was stopped by SIGTERM\.\nIts unfinished files were removed\.\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+  );
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.startsWith("backup.")),
+    [],
   );
 });
 
