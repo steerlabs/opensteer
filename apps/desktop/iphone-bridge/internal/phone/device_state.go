@@ -29,6 +29,7 @@ type DeviceState struct {
 	DisplayID     uint64 `json:"displayId"`
 	configuration string
 	uniqueID      string
+	viewport      AXFrame
 }
 
 func unknownState() DeviceState { return DeviceState{Lock: "unknown", Display: "unknown"} }
@@ -83,7 +84,6 @@ func exchangeOn(ctx context.Context, conn xpcChannel, request map[string]interfa
 		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	failure := func(err error) error {
-		slog.Debug("bridge.native-error", "err", err)
 		if effect {
 			return &wire.Failure{Code: wire.OutcomeUnknown, Effect: "unknown"}
 		}
@@ -148,7 +148,23 @@ func readDeviceState(ctx context.Context, open channelOpener, lock func(context.
 	if r, ok := map[string]int{"rot0": 0, "rot90": 90, "rot180": 180, "rot270": 270}[orientation]; ok {
 		state.Rotation = &r
 	}
+	if size, ok := d["nativeSize"].([]interface{}); ok && len(size) == 2 {
+		width, height := number(size[0]), number(size[1])
+		scale := number(d["pointScale"])
+		if scale > 0 && width > 0 && height > 0 {
+			state.viewport = AXFrame{Width: width / scale, Height: height / scale}
+		}
+	}
 	return state, nil
+}
+func number(v interface{}) float64 {
+	if n, ok := v.(float64); ok && finite(n) {
+		return n
+	}
+	if n, ok := unsigned(v); ok {
+		return float64(n)
+	}
+	return 0
 }
 func unsigned(v interface{}) (uint64, bool) {
 	switch n := v.(type) {
