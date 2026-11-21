@@ -51,13 +51,21 @@ it("changes the line only at its steps, from when this device first saw the wait
     ]),
   );
   expect(shown()).toBe("waking|");
-  act(() => vi.advanceTimersByTime(399));
+  act(() => {
+    vi.advanceTimersByTime(399);
+  });
   expect(shown()).toBe("waking|");
-  act(() => vi.advanceTimersByTime(1));
+  act(() => {
+    vi.advanceTimersByTime(1);
+  });
   expect(shown()).toBe("waking|Last picture");
-  act(() => vi.advanceTimersByTime(1_600));
+  act(() => {
+    vi.advanceTimersByTime(1_600);
+  });
   expect(shown()).toBe("waking|Last picture · Waking browser…");
-  act(() => vi.advanceTimersByTime(6_000));
+  act(() => {
+    vi.advanceTimersByTime(6_000);
+  });
   expect(shown()).toBe("waking|Last picture · Taking longer than usual…");
   // Nothing is left to change, so nothing more is scheduled.
   expect(vi.getTimerCount()).toBe(0);
