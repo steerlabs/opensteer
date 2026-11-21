@@ -1261,7 +1261,7 @@ export class CloudComputerStore {
           state: row.state,
           hostname: row.hostname,
           region: row.region,
-          serverType: row.serverType,
+          serverType: provider === "google" && row.serverType === "default" ? null : row.serverType,
           release: row.release,
           readinessStartedAt: row.readinessStartedAt.toISOString(),
           ...(row.deploymentId

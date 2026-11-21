@@ -3,6 +3,7 @@ import { accountClient, accountRefused, workloadIdentityToken } from "./account.
 import { CloudflareDns } from "./cloudflare.js";
 import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
+import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
 import { provisionerFailure, RemoteRequestError } from "./http.js";
 import { Reconciler } from "./reconcile.js";
@@ -22,16 +23,21 @@ async function main(): Promise<void> {
     config.accountOrigin,
     workloadIdentityToken(config.accountOrigin.origin, http),
     http,
+    undefined,
+    config.provider === "google" ? "google" : undefined,
   );
   const reconciler = new Reconciler({
     account,
     onError: logFailure,
     orphanGraceMs: config.orphanGraceMs,
-    provider: new HetznerCloud({
-      ...http,
-      token: config.hetznerToken,
-      actionTimeoutMs: config.actionTimeoutMs,
-    }),
+    provider:
+      config.provider === "google"
+        ? new GoogleCompute({ ...config, ...http })
+        : new HetznerCloud({
+            ...http,
+            token: config.hetznerToken,
+            actionTimeoutMs: config.actionTimeoutMs,
+          }),
     dns: new CloudflareDns({ ...http, token: config.cloudflareToken, zoneId: config.zoneId }),
     discover: discoverHome(http),
     accountOrigin: config.accountOrigin,
