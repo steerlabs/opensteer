@@ -374,7 +374,11 @@ export class FirecrackerDriver implements HypervisorDriver {
         mem_backend: { backend_type: "File", backend_path: "/snap/memory" },
         track_dirty_pages: false,
         resume_vm: false,
-        clock_realtime: true,
+        // No clock_realtime: on the second real-host run Firecracker refused a restore under
+        // load ("clock_realtime requested but not present in the snapshot state": KVM records
+        // the realtime clock only while the host's master clock is stable), and a failed load
+        // ends the VMM with the guest's live state. The guest's wall clock is stepped from the
+        // host over vsock before any traffic instead.
         huge_pages: "Transparent",
       },
       60_000,

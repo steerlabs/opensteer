@@ -133,9 +133,11 @@ run_bench() {
     # The agent answers only after it reconciled every slot.
     for _ in $(seq 150); do curl -s -o /dev/null http://127.0.0.1:7310/v1 && break; sleep 0.2; done
     install -d -o opensteer-pool-relay -m 0755 "$bench/out"
+    # The host key's public half is what the provisioner pins; the bench reads a copy.
+    install -m 0644 /etc/opensteer-pool/host-key.pub "$creds/host-key.pub"
     setpriv --reuid=opensteer-pool-relay --regid=opensteer-pool-relay --clear-groups --no-new-privs \
         /opt/opensteer-pool/node/bin/node "$agent_dir/dist/real-host.mjs" \
-        --provisioner-key "$creds/provisioner.pem" --host-key /etc/opensteer-pool/host-key.pub --host-id pool-bench-host --helper /run/opensteer-pool-bench-helper.sock \
+        --provisioner-key "$creds/provisioner.pem" --host-key "$creds/host-key.pub" --host-id pool-bench-host --helper /run/opensteer-pool-bench-helper.sock \
         --credentials "$creds" --out "$bench/out/results.jsonl" "$@"
 }
 
