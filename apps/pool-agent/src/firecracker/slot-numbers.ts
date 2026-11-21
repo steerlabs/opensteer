@@ -21,6 +21,8 @@ export class SlotNumbers {
   #numbers: Readonly<Record<string, number>> = {};
   /** A write failed: what is on disk is unknown, so nothing more is allocated or released. */
   #broken: DriverStateUncertain | undefined;
+  /** Work that uses a slot's number and may still be running, by slot. */
+  readonly #working = new Map<string, Set<Promise<void>>>();
 
   constructor(
     directory: string,
@@ -82,17 +84,49 @@ export class SlotNumbers {
     });
   }
 
-  /** Frees the slot's number only after `cleanup` removed everything that used it. */
-  release(slotId: string, cleanup: (index: number) => Promise<void>): Promise<void> {
-    return this.#lock.run(async () => {
-      if (this.#broken) throw this.#broken;
-      const index = this.#numbers[slotId];
-      if (index === undefined) return;
-      await cleanup(index);
-      const next = { ...this.#numbers };
-      delete next[slotId];
-      await this.#save(next);
+  /**
+   * Round E, E2: work that uses the slot's number (its namespace, its proxy). The number is not
+   * released, and so never handed to another slot, while any of it may still be running, even
+   * after the step it ran for gave up on it.
+   */
+  using<T>(slotId: string, work: () => Promise<T>): Promise<T> {
+    const running = work();
+    const settled = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    let set = this.#working.get(slotId);
+    if (!set) this.#working.set(slotId, (set = new Set()));
+    const working = set;
+    working.add(settled);
+    void settled.then(() => {
+      working.delete(settled);
+      if (!working.size && this.#working.get(slotId) === working) this.#working.delete(slotId);
     });
+    return running;
+  }
+
+  /**
+   * Frees the slot's number only after every piece of work that used it has ended and `cleanup`
+   * removed everything it made. The work is waited for outside the lock (it may allocate).
+   */
+  async release(slotId: string, cleanup: (index: number) => Promise<void>): Promise<void> {
+    for (;;) {
+      for (let set = this.#working.get(slotId); set?.size; set = this.#working.get(slotId))
+        await Promise.all(set);
+      const done = await this.#lock.run(async () => {
+        if (this.#working.get(slotId)?.size) return false;
+        if (this.#broken) throw this.#broken;
+        const index = this.#numbers[slotId];
+        if (index === undefined) return true;
+        await cleanup(index);
+        const next = { ...this.#numbers };
+        delete next[slotId];
+        await this.#save(next);
+        return true;
+      });
+      if (done) return;
+    }
   }
 
   /** Re-check finding 5: rule S2 holds here too; a failed write is never retried in place. */

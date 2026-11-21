@@ -1,23 +1,38 @@
 import { execFile, spawn } from "node:child_process";
+import { currentStepSignal } from "../step-signal.js";
 
 export interface RunOptions {
   readonly timeoutMs?: number;
   readonly input?: string;
   /** Exit codes that are not failures (such as "already exists"). */
   readonly allow?: readonly number[];
+  /** Ends the tool when it aborts; by default the signal of the step this runs for. */
+  readonly signal?: AbortSignal;
 }
 
-/** Runs a host tool without a shell; arguments are never interpreted. */
+/**
+ * Runs a host tool without a shell; arguments are never interpreted. Round E, E2: it takes the
+ * signal of the step it runs for, so a step that was given up on starts no further tool and its
+ * running one is ended.
+ */
 export function run(
   file: string,
   args: readonly string[],
   options: RunOptions = {},
 ): Promise<string> {
+  const signal = options.signal ?? currentStepSignal();
+  if (signal?.aborted)
+    return Promise.reject(new Error(`${file} was not started: its step was given up on.`));
   return new Promise((resolve, reject) => {
     const child = execFile(
       file,
       args,
-      { timeout: options.timeoutMs ?? 10_000, maxBuffer: 1024 * 1024, env: { PATH: hostPath } },
+      {
+        timeout: options.timeoutMs ?? 10_000,
+        maxBuffer: 1024 * 1024,
+        env: { PATH: hostPath },
+        ...(signal ? { signal } : {}),
+      },
       (error, stdout, stderr) => {
         const code =
           error && typeof (error as { code?: unknown }).code === "number"

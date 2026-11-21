@@ -84,11 +84,15 @@ export interface HypervisorDriver {
    * the slot is known to be prepared. Only the number and the host user are made under the
    * host-wide lock.
    */
-  prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
+  prepareSlot(slotId: string, egress: SlotEgress | undefined, signal?: AbortSignal): Promise<void>;
   /** The slots whose egress proxy tripped its start limit and is down (round D, D1). */
   proxiesDown(): Promise<readonly string[]>;
   /** At a start or wake: brings a slot's proxy back if it was down. True if it was. */
-  reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<boolean>;
+  reviveProxy(
+    slotId: string,
+    egress: SlotEgress | undefined,
+    signal?: AbortSignal,
+  ): Promise<boolean>;
   /** Every slot that holds a number (and so a namespace and proxy) on this host. */
   slotsKnown(): Promise<readonly string[]>;
   /** Removes everything prepareSlot made. Idempotent. */

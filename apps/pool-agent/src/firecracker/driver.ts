@@ -35,6 +35,7 @@ import { requireEncryptedArray } from "./array.js";
 import { confine } from "./paths.js";
 import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
+import { withStepSignal } from "../step-signal.js";
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   defineEgress,
@@ -135,13 +136,18 @@ export class FirecrackerDriver implements HypervisorDriver {
       this.#config.cgroupBase,
       (this.#config.egressSliceMib ?? 1536) * 1024 * 1024,
     );
-    this.#numbers = new SlotNumbers(this.#config.stateDirectory);
-    await this.#numbers.load();
+    await this.openSlotNumbers();
     // Review G3: never write guest memory anywhere but the encrypted array.
     this.#arrayId = await requireEncryptedArray(this.#config);
     this.#hostAddresses = await hostAddresses();
     await applyHostTable(this.#config.network);
     this.#fingerprint = await this.#computeFingerprint();
+  }
+
+  /** The slot numbers alone: `open` reads them, and a test of the network steps opens only these. */
+  async openSlotNumbers(): Promise<void> {
+    this.#numbers = new SlotNumbers(this.#config.stateDirectory);
+    await this.#numbers.load();
   }
 
   async incarnation(): Promise<string> {
@@ -209,7 +215,21 @@ export class FirecrackerDriver implements HypervisorDriver {
     }
   }
 
-  async prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void> {
+  /**
+   * Round E, E2: the work runs under the step's signal, and holds the slot's number until it
+   * ends, so a delete waits for it before the number can go to another slot.
+   */
+  async prepareSlot(
+    slotId: string,
+    egress: SlotEgress | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#numbers.using(slotId, () =>
+      withStepSignal(signal, () => this.#prepareSlot(slotId, egress)),
+    );
+  }
+
+  async #prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void> {
     const known = this.#numbers.get(slotId);
     if (known !== undefined && this.#verified.has(known)) return;
     // Only the number and the host user (/etc/passwd) are made under the host-wide lock; a
@@ -238,13 +258,21 @@ export class FirecrackerDriver implements HypervisorDriver {
       .map(([slotId]) => slotId);
   }
 
-  async reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<boolean> {
+  async reviveProxy(
+    slotId: string,
+    egress: SlotEgress | undefined,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     const index = this.#require(slotId);
-    return reviveEgress(
-      { ...this.#config.egress, debug: this.#config.egressLog === true },
-      index,
-      this.#config.egressUidBase + index,
-      egress,
+    return this.#numbers.using(slotId, () =>
+      withStepSignal(signal, () =>
+        reviveEgress(
+          { ...this.#config.egress, debug: this.#config.egressLog === true },
+          index,
+          this.#config.egressUidBase + index,
+          egress,
+        ),
+      ),
     );
   }
 

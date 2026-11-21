@@ -334,9 +334,41 @@ export class PoolAgent {
     this.#tombstones.set(record.slotId, { record, homeKey: parsePublicKey(record.homeKey) });
   }
 
-  /** Round D, D1: a proxy that tripped its limit comes back at the slot's start or wake. */
+  /**
+   * Before a start or a wake: the slot's network, and its proxy back if it tripped its limit
+   * (round D, D1). Round E, E2: each step's host work takes the step's signal, and a step that
+   * ran out of time is drained before this returns, so the slot's lane is never released (and
+   * the slot never deleted, nor its number reused) while that work may still run.
+   */
+  async #prepareToRun(slotId: string, egress: SlotEgress | undefined): Promise<void> {
+    await this.#drained(slotId, "network", (signal) =>
+      this.#driver.prepareSlot(slotId, egress, signal),
+    );
+    await this.#reviveProxy(slotId, egress);
+  }
+
+  async #drained<T>(
+    slotId: string,
+    name: keyof PoolAgentDeadlines,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.#step(name, work);
+    } catch (error) {
+      if (error instanceof DeadlineExceeded) {
+        this.#log({ event: "step.draining", slotId, step: name });
+        await error.settled;
+      }
+      throw error;
+    }
+  }
+
   async #reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<void> {
-    if (await this.#step("network", () => this.#driver.reviveProxy(slotId, egress))) {
+    if (
+      await this.#drained(slotId, "network", (signal) =>
+        this.#driver.reviveProxy(slotId, egress, signal),
+      )
+    ) {
       this.#proxiesDown.delete(slotId);
       this.#log({ event: "proxy.revived", slotId });
     }
@@ -776,10 +808,7 @@ export class PoolAgent {
     try {
       await this.#ensureHost();
       // Re-check finding 3: a slot's namespace and proxy socket are made when it next runs.
-      await this.#step("network", () =>
-        this.#driver.prepareSlot(before.slotId, before.guest.egress),
-      );
-      await this.#reviveProxy(before.slotId, before.guest.egress);
+      await this.#prepareToRun(before.slotId, before.guest.egress);
       // Nobody else may write the profile: every earlier process of the slot is gone first.
       await this.#kill(slot);
       await within(this.#deadlines.network, "Closing the guest network", () =>
@@ -906,10 +935,7 @@ export class PoolAgent {
     try {
       await this.#ensureHost();
       step("host");
-      await this.#step("network", () =>
-        this.#driver.prepareSlot(before.slotId, before.guest.egress),
-      );
-      await this.#reviveProxy(before.slotId, before.guest.egress);
+      await this.#prepareToRun(before.slotId, before.guest.egress);
       step("prepare");
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),

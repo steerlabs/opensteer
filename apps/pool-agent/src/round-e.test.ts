@@ -51,3 +51,33 @@ describe("E1: nothing admitted under the old key acts after the replacement", ()
     expect(f.agent.agent.effects(slotId)).toEqual(["start", "lost"]);
   });
 });
+
+describe("E2: a step that timed out is drained before its slot's lane is released", () => {
+  it("leaves no proxy socket for a slot deleted while its slow revive still ran", async () => {
+    const f = await fixture({ deadlines: { network: 50 } });
+    await f.call("start");
+    await f.call("stop");
+    // The proxy tripped its start limit; its revive at the next start is slow.
+    f.driver.proxyDown.add(slotId);
+    f.driver.sockets.delete(slotId);
+    let release!: () => void;
+    f.driver.gate("reviveProxy", new Promise<void>((resolve) => (release = resolve)));
+    const starting = f.call("start").then(
+      (result) => result,
+      (error: unknown) => error,
+    );
+    await expect.poll(() => f.driver.operations.includes(`reviveProxy:${slotId}`)).toBe(true);
+    // Well past the step's deadline: the start has given up on the revive.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const deleting = f.agent.agent.deleteSlot(slotId);
+    // The delete removes the slot now if nothing holds the slot's lane any more.
+    await vi
+      .waitFor(() => expect(f.driver.removed).toContain(slotId), { timeout: 300 })
+      .catch(() => undefined);
+    release();
+    f.driver.gate("reviveProxy", undefined);
+    await starting;
+    expect(await deleting).toBe(true);
+    expect(f.driver.sockets.has(slotId)).toBe(false);
+  });
+});

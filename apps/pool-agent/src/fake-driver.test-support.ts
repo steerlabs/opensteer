@@ -21,7 +21,8 @@ type Operation =
   | "closeNetwork"
   | "discard"
   | "verify"
-  | "inspect";
+  | "inspect"
+  | "reviveProxy";
 
 interface Process {
   readonly slotId: string;
@@ -149,6 +150,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     if (gate) await gate;
     if (this.prepared.has(slotId)) return;
     this.prepared.add(slotId);
+    this.sockets.set(slotId, _egress?.upstreamUrl ?? "none");
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
   }
 
@@ -182,8 +184,15 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     return [...this.proxyDown];
   }
 
-  async reviveProxy(slotId: string): Promise<boolean> {
-    if (!this.proxyDown.delete(slotId)) return false;
+  /** Each prepared slot's listening proxy socket, and the upstream it was defined with. */
+  readonly sockets = new Map<string, string>();
+
+  async reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<boolean> {
+    if (!this.proxyDown.has(slotId)) return false;
+    // A gated revive ignores its caller's deadline, as a `systemd-run` already sent does.
+    await this.#enter("reviveProxy", slotId);
+    this.proxyDown.delete(slotId);
+    this.sockets.set(slotId, egress?.upstreamUrl ?? "none");
     this.revived.push(slotId);
     return true;
   }
@@ -196,6 +205,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.removed.push(slotId);
     this.prepared.delete(slotId);
     this.networks.delete(slotId);
+    this.sockets.delete(slotId);
   }
 
   async openNetwork(slotId: string): Promise<void> {
