@@ -230,6 +230,7 @@ export interface BrowserPoolSlotChange {
   readonly lastStart?: BrowserPoolSlot["lastStart"];
   readonly failedStarts?: number;
   readonly restartKeys?: readonly string[];
+  readonly restartWanted?: readonly string[];
 }
 
 /**
@@ -277,6 +278,11 @@ export async function advanceBrowserPoolSlot(
           ...(next.failedStarts !== undefined ? { failedStarts: next.failedStarts } : {}),
           ...(next.restartKeys !== undefined
             ? { restartKeys: sql<readonly string[]>`${JSON.stringify(next.restartKeys)}::jsonb` }
+            : {}),
+          ...(next.restartWanted !== undefined
+            ? {
+                restartWanted: sql<readonly string[]>`${JSON.stringify(next.restartWanted)}::jsonb`,
+              }
             : {}),
           ...(next.phase !== current.phase ? { phaseSince: new Date() } : {}),
         })

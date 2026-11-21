@@ -125,7 +125,13 @@ export class BrowserPoolCoordinator {
     | { readonly ended: Set<BrowserSessionId>; readonly noted: PromiseWithResolvers<void> }
     | undefined;
   #restartWanted:
-    { readonly keys: Set<string>; readonly done: PromiseWithResolvers<void> } | undefined;
+    | {
+        readonly keys: Set<string>;
+        readonly done: PromiseWithResolvers<void>;
+        /** Asked before any slot existed: the first install answers it. */
+        firstInstall?: boolean;
+      }
+    | undefined;
   #parkWanted: PromiseWithResolvers<"parked" | "vetoed"> | undefined;
   #parkSettling = false;
   #unknownIntent: string | undefined;
@@ -290,7 +296,9 @@ export class BrowserPoolCoordinator {
     if (this.#released)
       return Promise.reject(new BrowserPoolAdmissionClosed("This device was removed."));
     this.#restartWanted ??= { keys: new Set(), done: Promise.withResolvers() };
-    if (input.key) this.#restartWanted.keys.add(input.key);
+    // Past the bound a key joins the same outcome without being recorded.
+    if (input.key && this.#restartWanted.keys.size < restartKeysKept)
+      this.#restartWanted.keys.add(input.key);
     this.gate.set({ hold: "restart" });
     this.#start();
     this.#kick();
@@ -372,7 +380,13 @@ export class BrowserPoolCoordinator {
     this.#publish(slot);
     if (this.#released || slot?.phase === "releasing")
       return { name: "release", run: () => this.#releaseStep(slot) };
-    if (this.#restartWanted) return { name: "restart", run: () => this.#restartStep(slot) };
+    // A restart accepted before a Home crash is finished by this Home, once.
+    const pending = slot ? pendingRestart(slot) : [];
+    if (!this.#restartWanted && pending.length)
+      this.#restartWanted = { keys: new Set(pending), done: Promise.withResolvers() };
+    if (this.#restartWanted && slot) return { name: "restart", run: () => this.#restartStep(slot) };
+    // With no slot yet, the first install answers it.
+    if (this.#restartWanted) this.#restartWanted.firstInstall = true;
     if (this.#unknownIntent) return { name: "intent", run: () => this.#readIntent() };
     if (this.#discardWanted && slot) {
       const reason = this.#discardWanted;
@@ -530,9 +544,12 @@ export class BrowserPoolCoordinator {
    */
   async #restartStep(slot: BrowserPoolSlot | undefined): Promise<void> {
     const wanted = this.#restartWanted!;
-    if (slot) {
+    if (slot && !wanted.firstInstall) {
       const handled = new Set(restartKeysOf(slot));
       if (!wanted.keys.size || [...wanted.keys].some((key) => !handled.has(key))) {
+        // Durable before the first effect: a crash from here on is finished by recovery.
+        if (wanted.keys.size)
+          slot = await this.#advance(slot, { phase: slot.phase, restartWanted: [...wanted.keys] });
         await this.#adopter?.quiesce();
         await withTimeout(this.gate.idle(), quiesceMs, {
           ...(this.#signal ? { signal: this.#signal } : {}),
@@ -542,17 +559,19 @@ export class BrowserPoolCoordinator {
         await this.#discard(slot, "person", wanted.keys);
         this.#discardWanted = undefined;
       }
-      // One that joined after the start was written: its key is recorded with that start too.
-      for (
-        let late = unrecorded(this.#slot, wanted.keys);
-        this.#slot && late.length;
-        late = unrecorded(this.#slot, wanted.keys)
-      )
-        await this.#advance(this.#slot, {
-          phase: this.#slot.phase,
-          restartKeys: withRestartKeys(this.#slot, late),
-        });
     }
+    // One that joined after the start was written, or one the first install answered: its key
+    // is recorded with that start. Keys are bounded, so this ends.
+    for (
+      let late = unrecorded(this.#slot, wanted.keys);
+      this.#slot && late.length;
+      late = unrecorded(this.#slot, wanted.keys)
+    )
+      await this.#advance(this.#slot, {
+        phase: this.#slot.phase,
+        restartKeys: withRestartKeys(this.#slot, late),
+        restartWanted: [],
+      });
     this.#restartWanted = undefined;
     this.#publish(this.#slot);
     wanted.done.resolve();
@@ -1114,7 +1133,7 @@ export class BrowserPoolCoordinator {
           id: randomUUID(),
         },
         // Every key the restart was asked with is handled by this one start.
-        ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]) } : {}),
+        ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]), restartWanted: [] } : {}),
         failedStarts: 0,
       },
       losses,
@@ -1269,6 +1288,13 @@ function restartKeysOf(slot: BrowserPoolSlot): readonly string[] {
 /** The newest handled keys first, each once, bounded. */
 function withRestartKeys(slot: BrowserPoolSlot, keys: readonly string[]): readonly string[] {
   return [...new Set([...keys, ...restartKeysOf(slot)])].slice(0, restartKeysKept);
+}
+
+/** Keys accepted before a crash whose restart no start has answered yet. */
+function pendingRestart(slot: BrowserPoolSlot): string[] {
+  const handled = new Set(restartKeysOf(slot));
+  const wanted = Array.isArray(slot.restartWanted) ? slot.restartWanted : [];
+  return wanted.filter((key) => !handled.has(key));
 }
 
 function unrecorded(slot: BrowserPoolSlot | undefined, keys: ReadonlySet<string>): string[] {

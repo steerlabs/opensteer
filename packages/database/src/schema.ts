@@ -2407,6 +2407,8 @@ export interface DatabaseSchema {
     failedStarts: ColumnType<number, number | undefined, number>;
     /** The owner's restart keys already handled, newest first, bounded: a retry does nothing. */
     restartKeys: ColumnType<readonly string[], readonly string[] | undefined, readonly string[]>;
+    /** Restart keys accepted and not yet answered, written before the restart's first effect. */
+    restartWanted: ColumnType<readonly string[], readonly string[] | undefined, readonly string[]>;
   };
   browserPoolControllerCalls: {
     id: string;

@@ -366,6 +366,78 @@ it("lets a removal asked while a wake's reattach never answers go first, and not
   }
 });
 
+it("answers a restart asked before the first slot with the first install, and records its key", async () => {
+  const f = await poolFixture("restart-before-slot");
+  try {
+    const home = f.home();
+    const restarting = home.restart({ key: "before-slot" });
+    await home.recover();
+    await restarting;
+    // It resolved only once a guest was installed, and that one install answered it.
+    expect(await f.slot()).toMatchObject({ phase: "running", restartKeys: ["before-slot"] });
+    expect(f.controller.effects).toEqual(["start"]);
+    await home.restart({ key: "before-slot" });
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(home.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
+it("answers more joined restarts than it records with one start, and never rewrites for the rest", async () => {
+  const f = await poolFixture("restart-many-keys");
+  try {
+    const home = f.home();
+    await home.recover();
+    const stopping = Promise.withResolvers<void>();
+    const stop = Promise.withResolvers<void>();
+    f.controller.hold("stop", async () => {
+      stopping.resolve();
+      await stop.promise;
+    });
+    const first = home.restart({ key: "key-0" });
+    await stopping.promise;
+    const joined = Array.from({ length: 69 }, (_, index) =>
+      home.restart({ key: `key-${index + 1}` }),
+    );
+    stop.resolve();
+    await withTimeout(Promise.all([first, ...joined]), 10_000, {
+      timeoutError: () => new Error("The joined restarts did not settle."),
+    });
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    const keys = (await f.slot())!.restartKeys as string[];
+    expect(keys).toHaveLength(64);
+    expect(new Set(keys).size).toBe(64);
+    expect(home.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
+it("finishes a restart a Home crash interrupted after its stop, once, and a retry of its key changes nothing", async () => {
+  const f = await poolFixture("restart-crash");
+  try {
+    const first = f.home();
+    await first.recover();
+    // The guest is stopped; the Home dies before the start it sent ever applies.
+    f.controller.hold("start", () => new Promise<void>(() => {}));
+    void first.restart({ key: "crashed" }).catch(() => undefined);
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "stop"]));
+    first.close();
+    const next = f.home();
+    await next.recover();
+    await vi.waitFor(async () =>
+      expect(await f.slot()).toMatchObject({ phase: "running", restartKeys: ["crashed"] }),
+    );
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    await next.restart({ key: "crashed" });
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(next.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
   try {
