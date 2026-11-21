@@ -26,7 +26,6 @@ import { Message, TranscriptGroupRow, WorkingIndicator } from "./transcript.js";
 // primitives and animation drivers are outside this check.
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
   useWindowDimensions: () => ({ fontScale: 1 }),

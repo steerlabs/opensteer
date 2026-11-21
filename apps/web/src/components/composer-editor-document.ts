@@ -8,8 +8,6 @@ import { collectComposerTokens, type ComposerToken } from "@opensteer/client/ref
  * the exact source it stands for. Serializing gives back the stored string
  * byte for byte, so drafts, sends and edits never carry editor JSON.
  */
-export type ComposerScope = "personal" | "team";
-
 export const referenceNodeName = "composerReference";
 
 export const ComposerDocument = EditorNode.create({
@@ -67,7 +65,7 @@ export const composerNodes = [
 /** What an atom stands for, read back from its attributes. */
 export function referenceOf(node: DocNode): ComposerToken {
   const attrs: Record<string, unknown> = node.attrs;
-  const kind = attrs.kind === "team" || attrs.kind === "file" ? attrs.kind : "personal";
+  const kind = attrs.kind === "file" ? attrs.kind : "personal";
   return {
     start: 0,
     end: 0,
@@ -79,9 +77,9 @@ export function referenceOf(node: DocNode): ComposerToken {
 }
 
 /** The tokens that become atoms: a link written across lines stays editable source. */
-export function composerTokens(text: string, scope: ComposerScope): readonly ComposerToken[] {
+export function composerTokens(text: string): readonly ComposerToken[] {
   if (!text.includes("](")) return [];
-  return collectComposerTokens(text, { commitTrailing: true, scope }).filter(
+  return collectComposerTokens(text, { commitTrailing: true }).filter(
     (token) => !token.source.includes("\n"),
   );
 }
@@ -116,8 +114,8 @@ const tokenAttrs = (token: ComposerToken) => ({
 });
 
 /** The editor's starting document for a source string. */
-export function composerContent(text: string, scope: ComposerScope): JSONContent {
-  const content = pieces(text, composerTokens(text, scope)).map((piece): JSONContent =>
+export function composerContent(text: string): JSONContent {
+  const content = pieces(text, composerTokens(text)).map((piece): JSONContent =>
     piece.kind === "text"
       ? { type: "text", text: piece.text }
       : piece.kind === "break"
@@ -225,7 +223,6 @@ export function atomTokens(doc: DocNode): readonly ComposerToken[] {
 export function sourceReplacement(
   doc: DocNode,
   target: string,
-  scope: ComposerScope,
 ): { readonly from: number; readonly to: number; readonly nodes: DocNode[] } | null {
   const current = composerSource(doc);
   if (current === target) return null;
@@ -239,7 +236,7 @@ export function sourceReplacement(
   )
     tail += 1;
   const atoms = atomTokens(doc);
-  const tokens = composerTokens(target, scope);
+  const tokens = composerTokens(target);
   const delta = target.length - current.length;
   let oldEnd = current.length - tail;
   for (let changed = true; changed;) {
@@ -281,12 +278,11 @@ export function sourceReplacement(
 export function typedTokenConversions(
   doc: DocNode,
   caret: number | null,
-  scope: ComposerScope,
 ): readonly { readonly from: number; readonly to: number; readonly node: DocNode }[] {
   const text = composerSource(doc);
   const schema = doc.type.schema;
   const out: { from: number; to: number; node: DocNode }[] = [];
-  for (const token of composerTokens(text, scope)) {
+  for (const token of composerTokens(text)) {
     if (caret !== null && caret >= token.start && caret <= token.end) continue;
     const from = docPosAt(doc, token.start);
     const to = docPosAt(doc, token.end);

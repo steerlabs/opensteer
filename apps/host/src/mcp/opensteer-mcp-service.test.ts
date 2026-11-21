@@ -38,7 +38,6 @@ function fixture() {
   const thread = {
     id: createId("thread"),
     purpose: "task",
-    teamOrigin: null,
     lineageRootThreadId: createId("thread"),
     accessMode: "auto",
     environmentId: createId("environment"),

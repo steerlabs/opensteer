@@ -2525,7 +2525,7 @@ function deployment(
     readonly accountAccess?: "owner" | "member" | null;
     readonly attachmentKey?: string | null;
     readonly id?: string;
-    readonly kind?: "personal" | "team";
+    readonly kind?: "personal";
     readonly lastUsedAt?: string | null;
     readonly name?: string;
     readonly onThisComputer?: boolean;
@@ -2542,7 +2542,7 @@ function deployment(
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: overrides.id ?? createId("deployment"),
-    kind: overrides.kind ?? "team",
+    kind: overrides.kind ?? "personal",
     lastUsedAt: overrides.lastUsedAt ?? null,
     name: overrides.name ?? "Host",
     onThisComputer: overrides.onThisComputer ?? false,

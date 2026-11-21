@@ -414,15 +414,19 @@ export function itemView(row: Item): TranscriptItem {
     replyMessageId,
     failure,
     usage,
-    runDelivery,
     messageKind,
     messageAuthor,
     edit,
     delivery,
     assignment,
-    teamSource,
-    ...view
+    ...stored
   } = row.view;
+  // An item stored before team removal may still carry a team source or delivery; neither is read.
+  const {
+    teamSource: _teamSource,
+    runDelivery: _runDelivery,
+    ...view
+  } = stored as typeof stored & { readonly teamSource?: unknown; readonly runDelivery?: unknown };
   const base = {
     id: row.id,
     kind: row.kind,
@@ -459,10 +463,13 @@ export function itemView(row: Item): TranscriptItem {
         ...row.refs,
         messageId: row.messageId,
         messageKind,
-        author: messageAuthor,
+        // A teammate's message kept from before team removal shows without an author.
+        author:
+          (messageAuthor as { readonly kind?: string } | undefined)?.kind === "team-member"
+            ? undefined
+            : messageAuthor,
         edit,
         delivery,
-        teamSource,
         ...(inlineText !== undefined ? { text: inlineText } : {}),
       });
     }
@@ -483,7 +490,6 @@ export function itemView(row: Item): TranscriptItem {
         replyMessageId,
         failure,
         usage,
-        delivery: runDelivery,
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });

@@ -32,7 +32,7 @@ export interface ClientIssue {
   readonly code: ClientIssueCode;
   readonly reason?: string;
   readonly name?: string;
-  readonly target?: "computer" | "team";
+  readonly target?: "computer";
   readonly route?: "same-computer" | "private-network" | "connect";
   readonly resource?: string;
   /** The whole verb phrase, as "Couldn't {action}." says it: "close this tab". */
@@ -115,8 +115,6 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "computer-app-installation-invalid":
     "The Host couldn't read this app's installation. Check for an Opensteer update on the Host.",
   "resource-exhausted": "Too many messages waiting.",
-  "team-file-too-large": "Files can be up to 100 MB.",
-  "team-file-capacity": "Too many files are moving at once. Try again in a moment.",
   "plugin-key-invalid": "Check this key and its fields.",
   "plugin-consent-changed": "What this plugin asks for changed. Review it again.",
   "plugin-webhooks-active": "Remove this plugin's webhook subscriptions first.",
@@ -134,20 +132,19 @@ function rejectionDetail(reason: string | undefined): string | undefined {
   return reason && Object.hasOwn(rejectionReasons, reason) ? rejectionReasons[reason] : undefined;
 }
 
-/** How a sentence names what it is about, by who the person is talking to. */
+/** How a sentence names what it is about. */
 const clientTargets = {
-  computer: { fallback: "your computer", longestName: 18, team: false },
-  team: { fallback: "your team", longestName: 80, team: true },
+  computer: { fallback: "your computer", longestName: 18 },
 } as const;
 
 /**
- * The name a sentence says, or "your computer" / "your team" when there is no
+ * The name a sentence says, or "your computer" when there is no
  * safe one. `sentenceStart` capitalizes only that fallback: a real name like
  * "iMac" is said as written.
  */
 export function clientDisplayName(
   name: string | null | undefined,
-  target: "computer" | "team" = "computer",
+  target: "computer" = "computer",
   sentenceStart = false,
 ): string {
   const safe = name
@@ -165,7 +162,6 @@ export function clientDisplayName(
 export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation {
   const name = clientDisplayName(issue.name, issue.target);
   const subject = clientDisplayName(issue.name, issue.target, true);
-  const team = clientTargets[issue.target ?? "computer"].team;
   const result = (
     title: string,
     action: ClientIssuePresentation["action"] = null,
@@ -182,23 +178,21 @@ export function presentClientIssue(issue: ClientIssue): ClientIssuePresentation 
                 : `Can't reach ${name}`,
               "retry",
             )
-          : result(team ? `Reconnecting to ${name}…` : "Reconnecting…");
+          : result("Reconnecting…");
     case "sign-in":
-      return result(team ? `Signed out of ${name}` : "Signed out", "sign-in");
+      return result("Signed out", "sign-in");
     case "update-app":
-      return result(team ? `Update Opensteer to use ${name}` : "Update Opensteer", "update");
+      return result("Update Opensteer", "update");
     case "update-server":
-      return result(team ? `${subject}'s server needs an update` : `${subject} needs an update`);
+      return result(`${subject} needs an update`);
     case "web-outdated":
       return result("Opensteer was updated", "reload");
     case "access-lost":
-      return team
-        ? result(`You're no longer in ${name}`, null, "Ask a team admin to add you back.")
-        : result(
-            "This isn't available",
-            null,
-            "It may have been deleted, or you don't have access.",
-          );
+      return result(
+        "This isn't available",
+        null,
+        "It may have been deleted, or you don't have access.",
+      );
     case "open-failed":
       return result(`Couldn't open ${issue.resource ?? name}`, "retry", "Try again in a moment.");
     case "read-failed":
@@ -333,7 +327,7 @@ export function presentMessageTakeBack(outcome: "restored" | "occupied" | "sent"
 export const connectedLabel = "Connected";
 export function presentConnectionStarting(
   name?: string | null,
-  target: "computer" | "team" = "computer",
+  target: "computer" = "computer",
 ): string {
   return `Connecting to ${clientDisplayName(name, target)}…`;
 }
@@ -358,7 +352,6 @@ export function presentConnectionGate(
     };
   const route = state.route ?? issue.route ?? null;
   const sameComputer = route === "same-computer";
-  const team = clientTargets[state.target ?? "computer"].team;
   const value = {
     ...issue,
     ...(state.name ? { name: state.name } : {}),
@@ -381,9 +374,7 @@ export function presentConnectionGate(
           }
         : {
             title: `Can't reach ${name}`,
-            detail: team
-              ? "Your own tasks still work."
-              : "Make sure it's on and connected to the internet.",
+            detail: "Make sure it's on and connected to the internet.",
             action: "retry",
           };
     if (state.phase === "connecting")
@@ -391,18 +382,14 @@ export function presentConnectionGate(
         title: presentConnectionStarting(state.name, state.target),
         detail: sameComputer
           ? "Opensteer on this computer is taking longer than usual to respond."
-          : team
-            ? "This is taking longer than usual. Your own tasks still work."
-            : "This is taking longer than usual.",
+          : "This is taking longer than usual.",
         action: null,
       };
     return {
-      title: team ? `Reconnecting to ${name}…` : "Reconnecting…",
+      title: "Reconnecting…",
       detail: sameComputer
         ? "Opensteer on this computer is reconnecting on its own."
-        : team
-          ? "Opensteer is reconnecting on its own. Your own tasks still work."
-          : "Opensteer is reconnecting on its own.",
+        : "Opensteer is reconnecting on its own.",
       action: null,
     };
   }

@@ -877,7 +877,6 @@ describe("HostCommandDispatcher model selection", () => {
           thread: {
             id: threadId,
             purpose: input.purpose ?? "task",
-            teamOrigin: null,
             accessMode: "full-access",
           },
         }),
@@ -1061,7 +1060,6 @@ describe("HostCommandDispatcher run planning", () => {
             thread: {
               id: threadId,
               purpose: "task",
-              teamOrigin: null,
             },
           }),
           recordHarnessCatalogs: async ({

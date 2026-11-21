@@ -345,7 +345,7 @@ describe("Host descriptor", () => {
   });
 
   it("serves a personal caller the lower current version while the windows overlap", () => {
-    const own = apiVersionHeaders("personal");
+    const own = apiVersionHeaders();
     expect(own).toEqual({
       [hostApiVersionHeader]: String(minimumHostApiVersion),
       [hostApiCurrentHeader]: String(hostApiVersion),
@@ -379,8 +379,8 @@ describe("Host descriptor", () => {
       { [hostApiVersionHeader]: ["58", "58"] },
     ])
       expect(negotiatedHostApiVersion(refused), JSON.stringify(refused)).toBeNull();
-    expect(statesApiVersion(own, "personal")).toBe(true);
-    expect(statesApiVersion({}, "personal")).toBe(false);
+    expect(statesApiVersion(own)).toBe(true);
+    expect(statesApiVersion({})).toBe(false);
   });
 
   it("keeps the capability names it knows and drops the ones it does not", () => {

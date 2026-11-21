@@ -231,9 +231,8 @@ import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { loadHostInstance, loadOrCreateHostInstance } from "../identity/host-instance.js";
+import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
-  loadHostKeys,
   loadOrCreateHostKeys,
   SignedTokenService,
   signHostDiscovery,
@@ -492,18 +491,11 @@ export async function createHostRuntime(
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
   const dataDirectory = resolve(config.dataDirectory);
-  // A strict installation was provisioned outside this process and is read, never created.
-  const keys =
-    config.strictInstallation && config.privateKeyPath && config.publicKeyPath
-      ? await loadHostKeys({
-          privateKeyPath: config.privateKeyPath,
-          publicKeyPath: config.publicKeyPath,
-        })
-      : await loadOrCreateHostKeys({
-          dataDirectory,
-          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
-          ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
-        });
+  const keys = await loadOrCreateHostKeys({
+    dataDirectory,
+    ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+    ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
+  });
   const hostKeyFingerprint = fingerprintForSpki(
     keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
   );
@@ -516,10 +508,10 @@ export async function createHostRuntime(
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
   // Deployment row without first having a durable local identity.
-  const hostInstance =
-    config.strictInstallation && config.hostInstancePath
-      ? await loadHostInstance(config.hostInstancePath, config.deploymentIdentity?.hostInstanceId)
-      : await loadOrCreateHostInstance(dataDirectory, config.deploymentIdentity?.hostInstanceId);
+  const hostInstance = await loadOrCreateHostInstance(
+    dataDirectory,
+    config.deploymentIdentity?.hostInstanceId,
+  );
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
@@ -764,7 +756,7 @@ export async function createHostRuntime(
     });
     const triggerStore = new TriggerStore(database);
     const accountDirectoryStore = new AccountDirectoryStore(database);
-    const exposurePolicy = hostExposurePolicy(config.deploymentShape, config.exposure);
+    const exposurePolicy = hostExposurePolicy(config.exposure);
     // The desktop's own claim on a loopback Host; an operator's setup link on a networked Home.
     const localSetupToken = config.identity.localOwnerClaimToken;
     const operatorSetup = config.identity.initialOwnerEnrollment;
@@ -3571,7 +3563,7 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins: hostAppRealOrigins(config.deploymentShape, config.exposure),
+        appRealOrigins: hostAppRealOrigins(config.exposure),
         trustedProxy: hostTrustedProxy(config),
         liveText,
         resourceRevisions,
@@ -4088,11 +4080,8 @@ export async function ensureDefaultHarnesses(
  * or a Remote access route's app hosts. A networked Home has no app address,
  * so its apps report themselves unavailable rather than open on its origin.
  */
-export function hostAppRealOrigins(
-  shape: import("@opensteer/core").DeploymentShape,
-  exposure: import("@opensteer/core").HostExposure,
-): boolean {
-  return hostExposurePolicy(shape, exposure).personalRemoteAccess;
+export function hostAppRealOrigins(exposure: import("@opensteer/core").HostExposure): boolean {
+  return hostExposurePolicy(exposure).personalRemoteAccess;
 }
 
 /**

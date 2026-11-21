@@ -1,4 +1,3 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { deploymentAddressFailure } from "@opensteer/client/connections";
 import { clientIssue } from "@opensteer/client/feedback";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
@@ -141,11 +140,7 @@ export function AddServerScreen(): ReactNode {
               Check that fingerprint against what the person who runs it told you. This phone will
               only ever talk to this exact deployment.
             </AppText>
-            <PrimaryButton
-              busy={busy}
-              label={isPersonalHost(verified.discovery) ? "Add Home" : "Add team"}
-              onPress={add}
-            />
+            <PrimaryButton busy={busy} label="Add Home" onPress={add} />
             <SecondaryButton label="Use a different address" onPress={() => setVerified(null)} />
           </>
         )}

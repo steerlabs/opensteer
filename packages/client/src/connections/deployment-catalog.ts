@@ -12,7 +12,6 @@ import {
   HostDescriptorSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   hostKeyFingerprint,
-  isPersonalHost,
   isSameHost,
   sameDiscoveryDocument,
   hostApiCompatibility,
@@ -747,6 +746,7 @@ export class DeploymentCatalogStore {
         cause: error,
       });
     }
+    decoded = withoutRetiredDeployments(decoded);
     // Upgrade compatible shapes without changing any signed authority bytes.
     if (!isCurrentStoredCatalogVersion(decoded)) {
       if (
@@ -1346,12 +1346,6 @@ function addConnectionRouteIssues(
     }
     return;
   }
-  if (!isPersonalHost(deployment.authority.document) || deployment.kind !== "personal") {
-    addIssue({
-      message: "Routed reachability belongs only to a Personal Host",
-      path: ["reachability"],
-    });
-  }
   if (deployment.personalAccessRoute) {
     const route = deployment.personalAccessRoute;
     try {
@@ -1390,4 +1384,49 @@ function addConnectionRouteIssues(
       path: ["personalAccessRoute"],
     });
   }
+}
+
+/**
+ * A catalog saved by a release that also served team servers may hold one; such
+ * a row is left out, its selection moves to the first Home left, and the rest of
+ * the catalog reads as before. The next write keeps the catalog without it.
+ */
+function withoutRetiredDeployments(decoded: unknown): unknown {
+  if (typeof decoded !== "object" || decoded === null || !("deployments" in decoded))
+    return decoded;
+  const { deployments } = decoded;
+  if (!Array.isArray(deployments)) return decoded;
+  const retired = (row: unknown): boolean => {
+    if (typeof row !== "object" || row === null) return false;
+    const record = row as {
+      readonly kind?: unknown;
+      readonly authority?: {
+        readonly document?: { readonly deploymentShape?: { readonly kind?: unknown } };
+      };
+    };
+    const shape = record.authority?.document?.deploymentShape?.kind;
+    return (
+      (record.kind !== undefined && record.kind !== "personal") ||
+      (shape !== undefined && shape !== "personal")
+    );
+  };
+  const kept = deployments.filter((row) => !retired(row));
+  if (kept.length === deployments.length) return decoded;
+  const selected = "selectedDeploymentId" in decoded ? decoded.selectedDeploymentId : null;
+  const stillSelected = kept.some(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      (row as { authority?: { document?: { deploymentId?: unknown } } }).authority?.document
+        ?.deploymentId === selected,
+  );
+  // A catalog that still holds a Deployment selects one: the first left, as a fresh one would.
+  const first = kept[0] as { authority?: { document?: { deploymentId?: unknown } } } | undefined;
+  return {
+    ...decoded,
+    deployments: kept,
+    ...(stillSelected
+      ? {}
+      : { selectedDeploymentId: first?.authority?.document?.deploymentId ?? null }),
+  };
 }

@@ -205,7 +205,6 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
       parentTaskId: null,
       pendingRequests: 0,
       purpose: "task" as const,
-      teamOrigin: null,
       status: "idle" as const,
       title: "t".repeat(240),
       updatedAt: new Date().toISOString(),

@@ -15,9 +15,8 @@ afterEach(() => {
 
 describe("Host runtime configuration", () => {
   it("gives apps their own origins only where a loopback Personal Host has app addresses", () => {
-    expect(hostAppRealOrigins({ kind: "personal" }, "loopback")).toBe(true);
-    expect(hostAppRealOrigins({ kind: "personal" }, "networked")).toBe(false);
-    expect(hostAppRealOrigins({ kind: "team" }, "networked")).toBe(false);
+    expect(hostAppRealOrigins("loopback")).toBe(true);
+    expect(hostAppRealOrigins("networked")).toBe(false);
   });
   it("rejects an unpinned Account-adopted Host before creating local state", async () => {
     const parent = mkdtempSync(join(tmpdir(), "opensteer-invalid-runtime-"));

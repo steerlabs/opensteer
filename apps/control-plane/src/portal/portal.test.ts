@@ -285,7 +285,7 @@ function selfHostedDeployment(
 ): AccountDeployment {
   return AccountDeploymentSchema.parse({
     access: "owner",
-    authorityEnvelope: authorityEnvelope(deploymentId, "team"),
+    authorityEnvelope: authorityEnvelope(deploymentId, "server"),
     canonicalOrigin: "https://server.opensteer.test",
     generation: 1,
     id: deploymentId,
@@ -340,14 +340,15 @@ function personalDeployment(state: "ready" | "offline" | "off"): AccountDeployme
   });
 }
 
-function authorityEnvelope(deploymentId: ReturnType<typeof createId>, kind: "personal" | "team") {
+function authorityEnvelope(deploymentId: ReturnType<typeof createId>, kind: "personal" | "server") {
   return {
     document: {
-      canonicalOrigin: kind === "team" ? "https://server.opensteer.test" : "http://127.0.0.1:4310",
+      canonicalOrigin:
+        kind === "server" ? "https://server.opensteer.test" : "http://127.0.0.1:4310",
       deploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: kind === "team" ? { kind: "team" } : { kind: "personal" },
+      deploymentShape: { kind: "personal" },
     },
     publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
     signature: "A".repeat(86),

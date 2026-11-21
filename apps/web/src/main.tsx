@@ -15,7 +15,7 @@ import "@fontsource-variable/fraunces/wght-italic.css";
 import "./styles/index.css";
 import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay.js";
 
-import { AuthSessionIdSchema, DeploymentKindSchema } from "@opensteer/core";
+import { AuthSessionIdSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
 import {
   chromeConnectPagePath,
@@ -113,17 +113,6 @@ async function renderOpensteer(): Promise<void> {
     return;
   }
 
-  if (import.meta.env.VITE_OPENSTEER_USE_MOCK !== "true" && (await servedByTeam())) {
-    const { TeamWebApp } = await import("./team/team-web-app.js");
-    reactRoot.render(
-      <StrictMode>
-        <TeamWebApp />
-      </StrictMode>,
-    );
-    return;
-  }
-
-  let preview: Parameters<typeof import("./app.js").App>[0]["preview"] = null;
   let previewDesktop: Pick<
     Parameters<typeof import("./app.js").App>[0],
     "deploymentAccess" | "desktopBridge" | "desktopDeployment"
@@ -135,8 +124,6 @@ async function renderOpensteer(): Promise<void> {
           import("@opensteer/client/mock"),
           import("./host/browser-host-client.js"),
           import("./host/browser-lifecycle.js"),
-          import("@opensteer/client/team"),
-          import("./team/mock-team-ask.js"),
         ]).then(
           ([
             {
@@ -153,74 +140,9 @@ async function renderOpensteer(): Promise<void> {
             },
             { browserPreferencesStorage },
             { browserClientLifecycle },
-            {
-              MockTeamHost,
-              MockTeamWorld,
-              TeamSessionClient,
-              createMemoryTeamPersistence,
-              busyTeamIds,
-              seedBusyTeam,
-            },
-            { seedMockTeamAsk },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
-            // `?mock-team` puts one live mock team beside the person's own tasks,
-            // with a teammate's ask to the person's agent waiting in #general and
-            // in its task; `?mock-team=busy` two teams full of people, threads,
-            // files and asks.
-            const attach = (team: InstanceType<typeof MockTeamHost>, origin: string) => ({
-              teamId: team.teamId,
-              name: team.bootstrap.teamName,
-              origin,
-              client: new TeamSessionClient({
-                scope: { teamDeploymentId: team.teamId, userId: team.userId },
-                persistence: createMemoryTeamPersistence(),
-                rpc: team.rpc,
-                connect: team.connect,
-                readFile: team.readFile,
-                uploadFile: team.uploadFile,
-              }),
-              link: null,
-            });
-            const seeded =
-              search.get("mock-team") === "busy"
-                ? [
-                    new MockTeamHost({
-                      teamId: busyTeamIds[0],
-                      origin: "https://chat.acme.example",
-                    }),
-                    new MockTeamHost({ teamId: busyTeamIds[1], origin: "https://family.example" }),
-                  ]
-                : search.has("mock-team")
-                  ? [new MockTeamHost({ origin: "https://chat.acme.example" })]
-                  : [];
-            if (seeded.length > 1) {
-              seedBusyTeam(seeded[0]!, { name: "Acme", index: 1 });
-              seedBusyTeam(seeded[1]!, { name: "Family", index: 2 });
-              // For journeys that play another member's change on the busy teams.
-              Object.assign(window, { opensteerMockTeams: seeded });
-            }
-            const teamAsk = seeded.length === 1 ? seedMockTeamAsk(seeded[0]!) : null;
-            // Every preview can create and join hosted teams in memory; the seeded teams are
-            // part of that world, so connecting an agent or leaving reaches them the same way.
-            preview = {
-              world: new MockTeamWorld({
-                seeded: () => seeded,
-                // `?mock-joined-elsewhere`: a team joined on the phone, with no session here.
-                ...(search.has("mock-joined-elsewhere")
-                  ? {
-                      joinedElsewhere: {
-                        name: "Harbor",
-                        origin: "https://harbor.teams.opensteer.com",
-                      },
-                    }
-                  : {}),
-                // `?mock-older-team`: the sample invite's team joins through the browser.
-                olderInviteTeam: search.has("mock-older-team"),
-              }),
-              teams: seeded.map((team) => attach(team, team.origin)),
-            };
             return mockClient();
             function mockClient() {
               const subagents = mockSubagentScenes.find(
@@ -269,7 +191,6 @@ async function renderOpensteer(): Promise<void> {
                   : {}),
                 ...(subagents ? { subagents } : {}),
               });
-              if (teamAsk) client.mockTeamAsk(teamAsk);
               // `?mock-asleep-step`: the computer-use task's last call was refused, a Mac asleep.
               if (search.has("mock-asleep-step")) client.mockAsleepStep();
               // `?mock-device-states`: a Device asleep and one waiting for an update.
@@ -418,12 +339,10 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} preview={preview} {...previewDesktop} />
+      <App hostClient={hostClient} {...previewDesktop} />
     </StrictMode>,
   );
 }
-
-const deploymentKindKey = "opensteer:deployment-kind";
 
 function mockUnboundSessions(current: string) {
   const at = "2026-09-14T00:00:00.000Z";
@@ -439,43 +358,6 @@ function mockUnboundSessions(current: string) {
     id: AuthSessionIdSchema.parse(`ses_00000000-0000-4000-8000-00000000000${index + 1}`),
     lastSeenAt: at,
   }));
-}
-
-/**
- * Whether a team server served this page. An origin's kind never changes, so
- * it is asked once and remembered; later loads check behind the first screen
- * and reload only if it differs.
- */
-async function servedByTeam(): Promise<boolean> {
-  let remembered: string | null = null;
-  try {
-    remembered = localStorage.getItem(deploymentKindKey);
-  } catch {
-    // Storage refused: ask every time.
-  }
-  const asked = fetch("/.well-known/opensteer", {
-    cache: "no-store",
-    credentials: "omit",
-    headers: { accept: "application/json" },
-    redirect: "error",
-  })
-    .then((response) => (response.ok ? response.json() : null))
-    .then((body: unknown) => {
-      const kind = DeploymentKindSchema.safeParse((body as { kind?: unknown } | null)?.kind);
-      if (!kind.success) return null;
-      try {
-        localStorage.setItem(deploymentKindKey, kind.data);
-      } catch {
-        // Asked again next time.
-      }
-      return kind.data;
-    })
-    .catch(() => null);
-  if (remembered !== "personal" && remembered !== "team") return (await asked) === "team";
-  void asked.then((kind) => {
-    if (kind !== null && kind !== remembered) window.location.reload();
-  });
-  return remembered === "team";
 }
 
 async function resolveDesktopPreviewBridge() {

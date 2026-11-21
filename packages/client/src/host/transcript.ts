@@ -35,8 +35,8 @@ import type {
  */
 export function isWaitingInputState(
   state: ThreadInputState,
-): state is Extract<ThreadInputState, "pending" | "awaiting-approval"> {
-  return state === "pending" || state === "awaiting-approval";
+): state is Extract<ThreadInputState, "pending"> {
+  return state === "pending";
 }
 
 /**
@@ -136,7 +136,6 @@ export function visibleTranscript(
       entry.kind === "selection" ||
       entry.kind === "withdrawn" ||
       entry.kind === "delivery" ||
-      entry.kind === "run-delivery" ||
       entry.kind === "request-wait"
     )
       continue;
@@ -173,7 +172,7 @@ type TranscriptMessageKind = Extract<MessageKind, "assistant" | "input">;
 export function toTranscriptEntry(
   message: MessageView,
   policy: ThreadInputPolicy | undefined = message.policy,
-  input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
+  input?: Pick<ThreadInput, "policy" | "state"> | null,
 ): AssignmentReturnEntry | MessageEntry | null {
   const assignmentId = assignmentReturnId(message);
   if (assignmentId === null) return toMessageEntry(message, policy, input);
@@ -201,7 +200,7 @@ export function assignmentReturnId(message: Pick<MessageView, "author">): string
 export function toMessageEntry(
   message: MessageView,
   policy: ThreadInputPolicy | undefined = message.policy,
-  input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
+  input?: Pick<ThreadInput, "policy" | "state"> | null,
 ): MessageEntry | null {
   if (message.author.kind === "platform" && message.author.cause === "claude-compaction")
     return null;
@@ -223,7 +222,6 @@ export function toMessageEntry(
     (part) => part.type === "computer-app" || part.type === "phone",
   );
   return {
-    ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
     ...(input?.state === "pending" && input.policy === "queue" && message.runId === null
       ? { queuePending: true as const }
       : {}),
@@ -260,7 +258,6 @@ export function hydrateTranscriptMessage(
     ...(card.clientSendKey ? { clientSendKey: card.clientSendKey } : {}),
     ...(card.itemId ? { itemId: card.itemId } : {}),
     ...(card.itemRevision ? { itemRevision: card.itemRevision } : {}),
-    ...(card.teamSource ? { teamSource: card.teamSource } : {}),
     ...(card.delivery ? { delivery: card.delivery } : {}),
     ...(card.edit ? { edit: card.edit } : {}),
   };

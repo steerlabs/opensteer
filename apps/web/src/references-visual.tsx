@@ -12,16 +12,15 @@ import {
 import { MockHostClient } from "@opensteer/client/mock";
 import { ReferenceStore } from "@opensteer/client/references";
 import { AgentTranscript } from "./components/agent-activity.js";
-import { MessageBody } from "./components/team/message-body.js";
 import { ToastProvider } from "./components/toast.js";
 import { FileViewer } from "./components/references/file-viewer.js";
-import { PersonalReferences, TeamReferences } from "./components/references/reference-scope.js";
+import { PersonalReferences } from "./components/references/reference-scope.js";
 import { Unavailable } from "./components/references/unavailable.js";
 
 /**
  * Visual QA for inline references over the preview's mock Host. `?scenario=`
  * picks the surface: `transcript` (a reply with chips, a person's Markdown, an
- * inline image), `team` (a team message), `unavailable` (where a gone link
+ * inline image), `unavailable` (where a gone link
  * lands) or `file` (the file viewer at line 42). Images load from
  * `/media/…`, which the capture script serves.
  */
@@ -159,12 +158,6 @@ const entries: TranscriptEntry[] = [
     runId,
   },
 ];
-const teamOrigin = "https://acme.example";
-const teamText =
-  `Heads up: the launch plan moved to [#launch](${teamOrigin}/c/${createId("teamChannel")}) ` +
-  `and the checklist is in [Launch checklist](${teamOrigin}/knowledge/${createId("knowledgeTopic")}?note=${createId("knowledgeNote")}). ` +
-  `My notes: [private task](opensteer:${taskId}).`;
-
 function Page() {
   if (scenario === "unavailable")
     return (
@@ -183,14 +176,6 @@ function Page() {
         onClose={() => undefined}
         threadId={threadId}
       />
-    );
-  if (scenario === "team")
-    return (
-      <main style={{ maxWidth: 760, margin: "0 auto", padding: 16 }}>
-        <TeamReferences team={{ teamId: "team", origin: teamOrigin, client: null }}>
-          <MessageBody mentions={[]} text={teamText} />
-        </TeamReferences>
-      </main>
     );
   return (
     <PersonalReferences client={client} threadId={thread.id}>

@@ -32,7 +32,6 @@ import type {
   NotificationDevicePlatform,
   ProjectionGeneration,
   AccountNotificationKind,
-  TeamNotificationTarget,
 } from "@opensteer/control-plane-protocol";
 import type {
   DeploymentId,
@@ -494,11 +493,6 @@ export interface NotificationPublicationTable {
   deploymentId: DeploymentId;
   notificationId: NotificationId;
   threadId: ThreadId | null;
-  teamTarget: ColumnType<
-    TeamNotificationTarget | null,
-    TeamNotificationTarget | null | undefined,
-    TeamNotificationTarget | null
-  >;
   kind: AccountNotificationKind;
   deliveries: Generated<number>;
   receivedAt: Timestamp;
@@ -515,11 +509,6 @@ export interface NotificationDeliveryTable {
   deviceId: string;
   deploymentId: DeploymentId;
   threadId: ThreadId | null;
-  teamTarget: ColumnType<
-    TeamNotificationTarget | null,
-    TeamNotificationTarget | null | undefined,
-    TeamNotificationTarget | null
-  >;
   requestId: string | null;
   messageId: string | null;
   kind: AccountNotificationKind;

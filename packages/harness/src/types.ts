@@ -201,7 +201,6 @@ export function harnessRuntimeBoundaryForRunner(runner: {
   readonly deploymentKind: DeploymentKind;
   readonly runnerKind: ExecutionEnvironmentKind;
 }): HarnessRuntimeBoundary {
-  if (runner.deploymentKind !== "personal") throw new Error("Team servers cannot run agents");
   return runner.isolateHarnesses
     ? isolatedServiceHarnessRuntimeBoundary
     : nativeUserHarnessRuntimeBoundary;

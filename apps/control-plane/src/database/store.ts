@@ -984,15 +984,11 @@ export class ControlPlaneStore {
           .where("deployments.id", "=", deploymentId)
           .executeTakeFirst();
         if (!deployment || deployment.authorityEnvelope === null) return null;
-        const team = z
+        // A team server a previous release listed is no longer one of the person's places.
+        const shape = z
           .object({ document: z.object({ deploymentShape: z.object({ kind: z.string() }) }) })
           .safeParse(deployment.authorityEnvelope);
-        if (
-          team.success &&
-          team.data.document.deploymentShape.kind === "team" &&
-          deployment.memberPresent !== true
-        )
-          return null;
+        if (shape.success && shape.data.document.deploymentShape.kind !== "personal") return null;
         const access =
           deployment.ownerAccountId === accountId
             ? "owner"

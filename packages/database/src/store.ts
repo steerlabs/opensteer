@@ -1968,7 +1968,6 @@ export class OpensteerStore {
       .where("threadInputs.messageId", "in", [...messageIds])
       .where("threadInputs.requestedBy", "=", ownerId)
       .where("threads.createdBy", "=", ownerId)
-      .where("threads.teamId", "is", null)
       .execute();
     return new Map(
       rows

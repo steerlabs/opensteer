@@ -173,7 +173,7 @@ async function realtimeSocket() {
   await app.listen({ host: "127.0.0.1", port: 0 });
   const { port } = app.server.address() as AddressInfo;
   const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/realtime`, {
-    headers: apiVersionHeaders("personal"),
+    headers: apiVersionHeaders(),
   });
   try {
     await deadline(once(socket, "open"));

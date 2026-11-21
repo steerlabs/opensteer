@@ -1,6 +1,5 @@
 import { iphoneHandlers } from "./methods/iphone.js";
 import { handleOldPersonalData, handleStartFresh } from "./methods/personal-data-reset.js";
-import { teamLinkDelivery } from "./methods/team-links.js";
 import {
   DesktopIntegrationAuthorizationSubscriptionSchema,
   DesktopFinishIntegrationAuthorizationInputSchema,
@@ -92,9 +91,7 @@ import {
   handleTestNotification,
 } from "./methods/notifications.js";
 import { handleTailscaleShare, handleTailscaleStatus } from "./methods/tailscale.js";
-import { handleAccountTeams } from "./methods/account-teams.js";
 import { handleCloudComputerAct, handleCloudComputerRead } from "./methods/cloud-computers.js";
-import { handleTeamSessions } from "./methods/team-sessions.js";
 import {
   handleCheckFullDiskAccess,
   handleCloseFullDiskAccessPanel,
@@ -354,12 +351,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     : null;
   register(desktopBridgeChannels.personalOldData, handleOldPersonalData(context));
   register(desktopBridgeChannels.personalStartFresh, handleStartFresh(context));
-  const teamLinkOwner = teamLinkDelivery(context);
-  register(desktopBridgeChannels.teamLinkDelivery, teamLinkOwner.handle);
-  register(desktopBridgeChannels.accountTeams, handleAccountTeams(context));
   register(desktopBridgeChannels.cloudComputerRead, handleCloudComputerRead(context));
   register(desktopBridgeChannels.cloudComputerAct, handleCloudComputerAct(context));
-  register(desktopBridgeChannels.teamSessions, handleTeamSessions(context));
   register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     return (
@@ -464,7 +457,6 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   return () => {
     detachIntegrationSubscription();
     webLinkOwner?.dispose();
-    teamLinkOwner.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();
     unsubscribeUpdates?.();

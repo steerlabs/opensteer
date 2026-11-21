@@ -41,45 +41,6 @@ export const hostApiScopes = {
   "resources.detail.get": "session",
   "attention.get": "session",
   "needsYou.get": "session",
-  "team.bootstrap.get": "session",
-  "team.sidebar.get": "session",
-  "team.channels.list": "session",
-  "team.channel.get": "session",
-  "team.channel.access.get": "session",
-  "team.channel.instructions.get": "session",
-  "team.messages.page": "session",
-  "team.thread.page": "session",
-  "team.message.get": "session",
-  "team.messages.check": "session",
-  "team.search": "session",
-  "team.members.list": "session",
-  "team.groups.list": "session",
-  "team.group.get": "session",
-  "team.invites.list": "session",
-  "team.invite.current.get": "session",
-  "team.audit.page": "session",
-  "team.notices.page": "session",
-  "team.knowledge.topics.list": "session",
-  "team.knowledge.topic.get": "session",
-  "team.knowledge.topic.access.get": "session",
-  "team.agent.requests.get": "session",
-  "team.agent.recipient.get": "session",
-  "team.links.list": "session",
-  "team.share.participants.get": "session",
-  "team.shares.list": "session",
-  "team.partners.list": "session",
-  "team.partner.invite.preview": "session",
-  "team.partner.invites.list": "session",
-  "team.sharing.policy.get": "session",
-  "teams.links.list": "session",
-  "teams.threadTask.get": "session",
-  "teams.replyTask.get": "session",
-  "team.mentions.page": "session",
-  "team.pins.page": "session",
-  "team.files.page": "session",
-  "team.knowledge.notes.page": "session",
-  "team.knowledge.note.get": "session",
-  "team.knowledge.note.history": "session",
   "browser.searchSuggestions.get": "session",
   "browser.contextCandidate.get": "session",
   "browser.tabIcon.get": "session",
@@ -183,10 +144,8 @@ export function registerHostApi(
   handlers: Partial<HostApiHandlers>,
   options: HostApiRegistrationOptions = {},
 ): void {
-  for (const name of Object.keys(hostApi) as (keyof typeof hostApi)[]) {
-    if (name.startsWith("team.")) continue;
+  for (const name of Object.keys(hostApi) as (keyof typeof hostApi)[])
     registerHostApiMember(app, authenticator, handlers, name, options);
-  }
 }
 
 function registerHostApiMember<Name extends keyof typeof hostApi>(

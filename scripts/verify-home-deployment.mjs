@@ -211,7 +211,7 @@ function client(host, port, ca) {
     new Promise((accept, reject) => {
       const headers = {
         origin: `https://${host}`,
-        ...(negotiation ? apiVersionHeaders("personal") : {}),
+        ...(negotiation ? apiVersionHeaders() : {}),
         ...(body ? { "content-type": "application/json" } : {}),
         ...(cookie ? { cookie } : {}),
       };
@@ -791,7 +791,7 @@ OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
 async function waitForHarnessCatalog(api, cookie, ca, environmentId, harnessInstanceId) {
   const socket = new WebSocket(`wss://${hostname}:${bind + 1}/v1/realtime`, {
     ca,
-    headers: { ...apiVersionHeaders("personal"), origin, cookie },
+    headers: { ...apiVersionHeaders(), origin, cookie },
     lookup: lookupLoopback,
   });
   let lastCatalog;
@@ -887,7 +887,7 @@ async function browserJourney(
     {
       ca,
       headers: {
-        ...apiVersionHeaders("personal"),
+        ...apiVersionHeaders(),
         origin: managed ? `https://${managedHostname}` : origin,
         cookie,
       },

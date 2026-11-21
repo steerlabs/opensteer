@@ -136,8 +136,6 @@ describe("visibleTranscript", () => {
       canSteer: true,
       lease: null,
       input: {
-        teamRequestId: null,
-        teamSource: null,
         assignmentId: null,
         cancelReason: null,
         causalChainId: createId("causalChain"),

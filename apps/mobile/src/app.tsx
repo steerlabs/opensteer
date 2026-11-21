@@ -48,14 +48,6 @@ import {
   mockIphoneRunnerId,
   type MockHostClient,
 } from "@opensteer/client/mock";
-import { AccountProfileRelay, type MockTeamHost } from "@opensteer/client/team";
-import { verifyAccessEndpoint } from "@opensteer/client/connections";
-import { MobileTeams } from "./team/mobile-teams.js";
-import { MobileTeamsProvider, type TeamEntry } from "./team/team-context.js";
-import { createMobileTeamEntry } from "./team/mobile-team-entry.js";
-import { TeamReadyNotices } from "./team/team-entry-screens.js";
-import { mockTeamTransport, networkTeamTransport } from "./team/team-transport.js";
-import { createTransportNetwork } from "./platform/host-network.js";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
@@ -66,17 +58,13 @@ import {
   mockIntegrationAuthorizationBrowser,
   mockDeploymentId,
   mockSignedOutDeploymentId,
-  mockTeamId,
-  mockTeamOrigin,
-  mockFamilyTeamId,
-  mockFamilyTeamOrigin,
 } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
 import { resolveRefreshedApplicationLink, routeComputerLink } from "./links.js";
 import { PendingDestination } from "./pending-destination.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { sideMemory } from "./side-memory.js";
-import { enterSide, forgetTeamSide, navigationRef } from "./navigation-ref.js";
+import { enterSide, navigationRef } from "./navigation-ref.js";
 import { sidebarRef } from "./sidebar/sidebar-context.js";
 import {
   applicationLinkState,
@@ -151,7 +139,6 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: process.env.EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN,
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
-    EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM,
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS,
     EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_AGENTS,
@@ -184,11 +171,8 @@ const storeName = configuration.mock ? "mock" : "opensteer";
 interface MobileRoot {
   readonly broker: OAuthDeepLinkBroker;
   readonly client: MobileClient;
-  readonly entry: TeamEntry;
   readonly iphone: IphoneAppsController;
   readonly notifications: MobileNotifications;
-  readonly profiles: AccountProfileRelay;
-  readonly teams: MobileTeams;
 }
 
 let singleton: MobileRoot | null = null;
@@ -420,61 +404,7 @@ function mobileClient(): MobileRoot {
       void previews.reconcile().catch(() => {});
     });
   }
-  // The person's teams, each its own Host reached directly, so team chat keeps
-  // working when their computer is off.
-  const mockTeams = new Map<string, MockTeamHost>();
-  // The person's Account name, relayed to each team whose copy is older. Calls reach Account only
-  // once the entry below exists, which is before any team session loads.
-  const profiles = new AccountProfileRelay({
-    profile: (signal) => entry.account.profile(signal),
-    updateProfile: (request) => entry.account.updateProfile(request),
-  });
-  const teams = new MobileTeams({
-    client,
-    onForgotten: forgetTeamSide,
-    profiles,
-    directory: `${root}${storeName}`,
-    files: privateFiles,
-    previews,
-    transport: configuration.mock
-      ? mockTeamTransport(mockTeams)
-      : networkTeamTransport({
-          catalog: client.catalog,
-          credentials: client.teamCredentials,
-          oauth: client.oauth,
-          network: createTransportNetwork({
-            fetch: mobileHostFetch,
-            openWebSocket: openReactNativeSocket,
-          }),
-        }),
-    verify: (origin) =>
-      configuration.mock
-        ? Promise.reject(new Error("Mock mode holds its teams already."))
-        : verifyAccessEndpoint({
-            fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
-            kind: "canonical",
-            origin,
-          }),
-    ...(configuration.mock
-      ? {
-          seed: {
-            [mockDeploymentId]: [
-              { teamId: mockTeamId, origin: mockTeamOrigin, teamName: "Acme" },
-              { teamId: mockFamilyTeamId, origin: mockFamilyTeamOrigin, teamName: "Family" },
-            ],
-          },
-        }
-      : {}),
-  });
-  const entry = createMobileTeamEntry({
-    accountOrigin: configuration.accountOrigin,
-    client,
-    directory: `${root}${storeName}`,
-    files: privateFiles,
-    mockHosts: configuration.mock ? mockTeams : null,
-    teams,
-  });
-  singleton = { broker, client, entry, iphone, notifications, profiles, teams };
+  singleton = { broker, client, iphone, notifications };
   return singleton;
 }
 
@@ -490,7 +420,7 @@ const startupRefusal: StartupFailure | null =
     : { detail: configuration.refusal, title: "This build cannot run" };
 
 export function App(): ReactNode {
-  const [{ broker, client, entry, iphone, notifications, teams }] = useState(mobileClient);
+  const [{ broker, client, iphone, notifications }] = useState(mobileClient);
   useEffect(() => {
     if (supportsDraftPastes())
       return receiveNativeDraftPastes(client.drafts, subscribeToDraftPastes);
@@ -512,7 +442,7 @@ export function App(): ReactNode {
           // Connect intent must exist before initialization's singleton-computer shortcut.
           return routeComputerLink(url, (id) => client.openComputer(id));
         },
-        resolve: async (url, current, release, externalIntent) => {
+        resolve: async (url, current, release) => {
           if (parseNativeIntegrationAuthorizationCallback(url) !== null) {
             release();
             setIntegrationNotice(null);
@@ -546,7 +476,6 @@ export function App(): ReactNode {
           if (outcome.kind === "pairing" && client.getSnapshot().pendingComputer !== null)
             client.cancelOpenComputer();
           return applicationLinkState(outcome, {
-            externalIntent,
             selectedDeploymentId: client.getSnapshot().selection.deploymentId,
             select: (id) =>
               client.select(id).catch((error: unknown) => {
@@ -561,7 +490,6 @@ export function App(): ReactNode {
                 );
                 observeRootSelection();
               }),
-            teams,
           });
         },
         present: (state) => {
@@ -592,7 +520,7 @@ export function App(): ReactNode {
           ),
         settled: () => observeRootSelection(),
       }),
-    [broker, client, teams],
+    [broker, client],
   );
 
   const appLinks = useMemo<AppLinks>(
@@ -678,33 +606,6 @@ export function App(): ReactNode {
       notifications.stop();
     };
   }, [broker, client, destinations, notifications]);
-
-  useEffect(() => {
-    if (startupRefusal !== null) return;
-    teams.start();
-  }, [teams]);
-
-  useEffect(() => {
-    if (startupRefusal !== null) return;
-    // Hosted teams still being set up, and agents waiting for their computer, carry on from
-    // what Account and this phone remember: at launch, on return, and under a new Account.
-    const resume = (): void => void entry.coordinator.resume().catch(() => undefined);
-    resume();
-    const state = AppState.addEventListener("change", (next) => {
-      if (next === "active") resume();
-    });
-    let subject = client.getSnapshot().account.account.identity?.subject ?? null;
-    const detach = client.subscribe(() => {
-      const next = client.getSnapshot().account.account.identity?.subject ?? null;
-      if (next === subject) return;
-      subject = next;
-      resume();
-    });
-    return () => {
-      state.remove();
-      detach();
-    };
-  }, [client, entry]);
 
   useEffect(() => {
     /**
@@ -831,20 +732,17 @@ export function App(): ReactNode {
                         />
                       )}
                       <AppLinksProvider value={appLinks}>
-                        <MobileTeamsProvider entry={entry} teams={teams}>
-                          <Navigation
-                            initialState={initialNavigationState}
-                            onReady={() => {
-                              destinations.ready();
-                              recordNavigation();
-                            }}
-                            onStateChange={recordNavigation}
-                            ref={navigationRef}
-                            theme={navigationTheme}
-                          />
-                          <TeamReadyNotices />
-                          <ConnectionPill />
-                        </MobileTeamsProvider>
+                        <Navigation
+                          initialState={initialNavigationState}
+                          onReady={() => {
+                            destinations.ready();
+                            recordNavigation();
+                          }}
+                          onStateChange={recordNavigation}
+                          ref={navigationRef}
+                          theme={navigationTheme}
+                        />
+                        <ConnectionPill />
                       </AppLinksProvider>
                       <OpenComputer />
                       {/* Outside the navigator: a Request card on the bar still navigates. */}

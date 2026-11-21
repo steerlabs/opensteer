@@ -205,7 +205,7 @@ export class AttachmentCache {
   ): Promise<{ readonly status: number; readonly body: AsyncIterable<Uint8Array> }> {
     const headers = {
       authorization: `Bearer ${token}`,
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
     };
     if (this.#fetch) {
       const { url } = await runnerHttpTransport(this.#transport, path);

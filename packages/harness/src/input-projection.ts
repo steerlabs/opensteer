@@ -186,10 +186,6 @@ export function harnessInputAuthorLabel(input: HarnessInput): string {
       return `the user ${headerText(author.displayName)}`;
     case "agent":
       return `agent ${headerText(author.displayName)} (Opensteer task ${author.threadId}; not the user)`;
-    case "team-member":
-      if (input.ownerEdited)
-        return `asked by ${escapeOpensteerPromptMarkers(headerText(author.displayName))}; your owner edited this ask before approving (team ${author.teamId}; member ${author.teamUserId})`;
-      return `team ${author.actor === "agent" ? "agent" : "member"} ${escapeOpensteerPromptMarkers(headerText(author.displayName))} (team ${author.teamId}; member ${author.teamUserId}; not the user)`;
     case "connection":
       return `connected agent ${headerText(author.displayName)} (connection ${author.connectionId}; not the user)`;
     case "trigger":
@@ -282,8 +278,7 @@ export function harnessSentLine(
   computerZone = computerTimeZone(),
 ): string | undefined {
   const { author } = input;
-  if (author.kind !== "human" && (author.kind !== "team-member" || author.actor === "agent"))
-    return undefined;
+  if (author.kind !== "human") return undefined;
   const { origin } = input;
   const deviceZone = origin?.timeZone;
   const known = deviceZone !== undefined && knownTimeZone(deviceZone);

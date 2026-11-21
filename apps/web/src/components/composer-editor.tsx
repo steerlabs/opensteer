@@ -38,7 +38,6 @@ import {
   sourceOffsetAt,
   sourceReplacement,
   typedTokenConversions,
-  type ComposerScope,
 } from "./composer-editor-document.js";
 import { Icon } from "./icon.js";
 import { referenceGlyphs } from "./references/reference-glyphs.js";
@@ -60,8 +59,6 @@ interface ComposerEditorProps {
   /** The Markdown source. A value other than the last one reported replaces the words. */
   readonly value: string;
   readonly onChange: (text: string, change: ComposerChange) => void;
-  /** A team draft shows only team pages as atoms; everything else stays source. */
-  readonly scope: ComposerScope;
   readonly autoFocus?: boolean;
   /** On the editable element, which is the whole box: it pads, sizes and scrolls itself. */
   readonly className?: string;
@@ -90,7 +87,6 @@ export function ComposerEditor({
   ref,
   value,
   onChange,
-  scope,
   autoFocus = false,
   className,
   fieldAttributes,
@@ -119,7 +115,7 @@ export function ComposerEditor({
   const generation = useRef(0);
   /** The key being handled belongs to an input method, which keeps Enter and Backspace. */
   const imeKey = useRef(false);
-  const [content] = useState(() => composerContent(value, scope));
+  const [content] = useState(() => composerContent(value));
   const editor = useEditor(
     {
       content,
@@ -134,7 +130,7 @@ export function ComposerEditor({
               })
             : node,
         ),
-        composerBehavior(scope, () => imeKey.current),
+        composerBehavior(() => imeKey.current),
       ],
       immediatelyRender: true,
       injectCSS: false,
@@ -151,7 +147,7 @@ export function ComposerEditor({
         handlePaste: (view, event) => {
           if (latest.current.onPaste?.(event)) return true;
           const text = event.clipboardData?.getData("text/plain").replace(/\r\n?/gu, "\n") ?? "";
-          if (text) insertSource(view, text, scope);
+          if (text) insertSource(view, text);
           return true;
         },
         handleDrop: (view, event, _slice, moved) => {
@@ -162,7 +158,7 @@ export function ComposerEditor({
           const at = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
           if (text && at !== undefined) {
             view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)));
-            insertSource(view, text, scope);
+            insertSource(view, text);
           }
           return true;
         },
@@ -185,7 +181,7 @@ export function ComposerEditor({
       onSelectionUpdate: () => latest.current.onSelectionChange?.(),
       onBlur: () => latest.current.onBlur?.(),
     },
-    [scope],
+    [],
   );
 
   // Focus is taken once: when the field appears, or when it first becomes editable.
@@ -231,8 +227,8 @@ export function ComposerEditor({
     known.current = value;
     if (composerSource(editor.state.doc) === value) return;
     generation.current += 1;
-    applySource(editor.view, value, scope, { history: false, sync: true });
-  }, [editor, scope, value]);
+    applySource(editor.view, value, { history: false, sync: true });
+  }, [editor, value]);
 
   useImperativeHandle(ref, (): ComposerEditorControl => {
     const view = () => editor.view;
@@ -249,7 +245,7 @@ export function ComposerEditor({
       };
     };
     const show = (next: ComposerSnapshot) => {
-      applySource(view(), next.text, scope, { history: false, sync: true });
+      applySource(view(), next.text, { history: false, sync: true });
       selectSource(view(), next.selection);
     };
     return {
@@ -260,12 +256,10 @@ export function ComposerEditor({
       replace: (selection, text) => {
         const current = composerSource(view().state.doc);
         const range = snapped(view(), selection);
-        applySource(
-          view(),
-          current.slice(0, range.start) + text + current.slice(range.end),
-          scope,
-          { history: true, sync: false },
-        );
+        applySource(view(), current.slice(0, range.start) + text + current.slice(range.end), {
+          history: true,
+          sync: false,
+        });
         const caret = range.start + text.length;
         selectSource(view(), { start: caret, end: caret });
       },
@@ -306,7 +300,7 @@ export function ComposerEditor({
         }
       },
     };
-  }, [editor, scope]);
+  }, [editor]);
 
   // The editable element is the box a press lands in, as a textarea was; the
   // wrapper Tiptap mounts it in takes no part in layout.
@@ -314,11 +308,11 @@ export function ComposerEditor({
 }
 
 /** Keys, history and the two small plugins the atoms need. */
-function composerBehavior(scope: ComposerScope, imeKey: () => boolean) {
+function composerBehavior(imeKey: () => boolean) {
   return Extension.create({
     name: "composerBehavior",
     priority: 1000,
-    addProseMirrorPlugins: () => [history(), typedLinks(scope), atomSelection()],
+    addProseMirrorPlugins: () => [history(), typedLinks(), atomSelection()],
     addKeyboardShortcuts() {
       const view = () => this.editor.view;
       const lineBreak = () => {
@@ -369,7 +363,7 @@ function composerBehavior(scope: ComposerScope, imeKey: () => boolean) {
 }
 
 /** A link typed out in full becomes an atom once the caret has left it. */
-function typedLinks(scope: ComposerScope) {
+function typedLinks() {
   let view: EditorView | null = null;
   return new Plugin({
     view: (editorView) => {
@@ -381,7 +375,7 @@ function typedLinks(scope: ComposerScope) {
       if (!transactions.some((tr) => tr.docChanged || tr.selectionSet)) return null;
       if (transactions.some((tr) => tr.getMeta(syncMeta))) return null;
       const caret = state.selection.empty ? sourceOffsetAt(state.doc, state.selection.from) : null;
-      const conversions = typedTokenConversions(state.doc, caret, scope);
+      const conversions = typedTokenConversions(state.doc, caret);
       if (conversions.length === 0) return null;
       const tr = state.tr;
       for (const { from, to, node } of conversions) tr.replaceWith(from, to, node);
@@ -414,8 +408,8 @@ function isolated(view: EditorView, tr: Transaction) {
   view.dispatch(closeHistory(view.state.tr));
 }
 
-function insertSource(view: EditorView, text: string, scope: ComposerScope) {
-  const nodes = composerInline(view.state.schema, text, composerTokens(text, scope));
+function insertSource(view: EditorView, text: string) {
+  const nodes = composerInline(view.state.schema, text, composerTokens(text));
   isolated(view, view.state.tr.replaceSelection(new Slice(Fragment.from(nodes), 0, 0)));
 }
 
@@ -445,10 +439,9 @@ function selectSource(view: EditorView, selection: ComposerSelection) {
 function applySource(
   view: EditorView,
   target: string,
-  scope: ComposerScope,
   { history: recorded, sync }: { readonly history: boolean; readonly sync: boolean },
 ) {
-  const replacement = sourceReplacement(view.state.doc, target, scope);
+  const replacement = sourceReplacement(view.state.doc, target);
   if (!replacement) return;
   const tr = view.state.tr.replaceWith(replacement.from, replacement.to, replacement.nodes);
   if (sync) tr.setMeta(syncMeta, true);

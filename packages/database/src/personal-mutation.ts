@@ -738,12 +738,10 @@ export async function commitPersonalMutation<Result>(
   return committed.result;
 }
 
-/** Requests and approval-gated inputs both wait on the person. */
+/** The Requests that wait on the person. */
 export const threadPendingRequestsCount = sql<number>`(
     (select count(*) from requests
       where originating_thread_id = threads.id and status = 'pending')
-    + (select count(*) from thread_inputs
-      where thread_id = threads.id and state = 'awaiting-approval')
   )::integer`;
 
 async function recountPendingRequests(tx: PersonalMutationTransaction, threadId: ThreadId) {

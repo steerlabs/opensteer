@@ -1,4 +1,3 @@
-import { deploymentPolicy } from "@opensteer/core";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
@@ -338,10 +337,7 @@ export function DesktopChooser({
   const [signingOut, setSigningOut] = useState(false);
   const [confirmingStart, setConfirmingStart] = useState(false);
   usePlaceChecks(bridge, true);
-  const personal = snapshot.deployments.filter(
-    (row) => deploymentPolicy({ kind: row.kind }).services.personal,
-  );
-  const facts = useComputerFacts(places.facts, personal);
+  const facts = useComputerFacts(places.facts, snapshot.deployments);
   const work = usePlaceWorkBadges(bridge);
   const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
@@ -349,7 +345,7 @@ export function DesktopChooser({
   // Account listing that can't be opened right now still counts: its kind is
   // unknown, and it may well be their Opensteer.
   const others = [
-    ...personal.filter((row) => !row.onThisComputer).map(({ name }) => name),
+    ...snapshot.deployments.filter((row) => !row.onThisComputer).map(({ name }) => name),
     ...snapshot.unavailable.map(({ name }) => name),
   ];
   // A list that couldn't be read may hold one too, so Start waits for it.
@@ -517,7 +513,7 @@ export function DesktopConnect({
       description={
         kind === "pairing"
           ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device."
-          : "The address of an Opensteer you run on your own server, or your team’s."
+          : "The address of an Opensteer you run on your own server."
       }
       live
       title={kind === "pairing" ? "Use a pairing code" : "Add a Home by address"}

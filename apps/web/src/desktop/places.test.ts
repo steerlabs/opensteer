@@ -52,7 +52,7 @@ it("names the Mac an Opensteer lives on when it differs from the Opensteer", () 
     status: "idle",
     statusInfo: placeStatus.unavailable("host-too-old", name),
   });
-  const facts = (homeName: string | null) => ({ homeName, needsYou: 0, teams: [], unread: false });
+  const facts = (homeName: string | null) => ({ homeName, needsYou: 0, unread: false });
   const rows = placeRows(
     {
       account: { available: true, status: "signed-in" },

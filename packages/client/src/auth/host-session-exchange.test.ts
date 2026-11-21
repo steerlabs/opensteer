@@ -277,7 +277,7 @@ function exchangeFixture(application: NativeOAuthApplication = "desktop") {
       const url = String(input);
       requests.push({ deploymentId, init, url });
       // Like the Host, refuse an unversioned request before reading it.
-      if (!statesApiVersion(Object.fromEntries(new Headers(init.headers)), "personal"))
+      if (!statesApiVersion(Object.fromEntries(new Headers(init.headers))))
         return Response.json({}, { status: 400 });
       if (url.endsWith("/v1/auth/session")) {
         if (probeFailure.current) throw probeFailure.current;
@@ -380,7 +380,7 @@ function serverConnection(): DeploymentConnection {
       deploymentId: serverDeploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { kind: "team" },
+      deploymentShape: { kind: "personal" },
     }),
     bootstrapMethods: ["password"],
     createdAt: "2026-08-17T09:00:00.000Z",
@@ -391,7 +391,7 @@ function serverConnection(): DeploymentConnection {
         verifiedAt: "2026-08-17T09:00:00.000Z",
       },
     ],
-    kind: "team",
+    kind: "personal",
     lastUsedAt: null,
     name: "My Opensteer",
     reachability: "canonical",

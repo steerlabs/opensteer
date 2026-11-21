@@ -128,15 +128,9 @@ import {
   DesktopPersonalTabCommandSchema,
   DeploymentAccessSnapshotSchema,
   DesktopPersonalOldDataStateSchema,
-  DesktopTeamLinkSchema,
-  DesktopTeamLinkDeliverySchema,
-  DesktopAccountTeamsCallSchema,
-  DesktopAccountTeamsResultSchema,
   DesktopCloudComputerActInputSchema,
   DesktopCloudComputerActResultSchema,
   DesktopCloudComputerReadResultSchema,
-  DesktopTeamSessionsCallSchema,
-  DesktopTeamSessionsResultSchema,
   DesktopChooseUsbDeviceInputSchema,
   DesktopReadAgentPhoneArtifactResultSchema,
   DesktopUsbDeviceChoiceSchema,
@@ -341,11 +335,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       ),
     startFresh: () => invoke<void>(desktopBridgeChannels.personalStartFresh),
   },
-  teamLinkDelivery: (input: import("@opensteer/protocol/desktop").DesktopTeamLinkDelivery) =>
-    invoke<void>(
-      desktopBridgeChannels.teamLinkDelivery,
-      DesktopTeamLinkDeliverySchema.parse(input),
-    ),
   cloudComputerRead: async () =>
     DesktopCloudComputerReadResultSchema.parse(
       await invoke(desktopBridgeChannels.cloudComputerRead),
@@ -359,20 +348,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         DesktopCloudComputerActInputSchema.parse(input),
       ),
     ),
-  accountTeams: async (input: import("@opensteer/protocol/desktop").DesktopAccountTeamsCall) =>
-    DesktopAccountTeamsResultSchema.parse(
-      await invoke(desktopBridgeChannels.accountTeams, DesktopAccountTeamsCallSchema.parse(input)),
-    ),
-  teamSessions: async (input: import("@opensteer/protocol/desktop").DesktopTeamSessionsCall) =>
-    DesktopTeamSessionsResultSchema.parse(
-      await invoke(desktopBridgeChannels.teamSessions, DesktopTeamSessionsCallSchema.parse(input)),
-    ),
-  onTeamLink: (listener: (link: import("@opensteer/protocol/desktop").DesktopTeamLink) => void) => {
-    const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
-      listener(DesktopTeamLinkSchema.parse(value));
-    ipcRenderer.on(desktopBridgeChannels.teamLink, receive);
-    return () => ipcRenderer.removeListener(desktopBridgeChannels.teamLink, receive);
-  },
   webLinkDelivery: async (input: import("@opensteer/protocol/desktop").DesktopWebLinkDelivery) => {
     const result = await invoke(
       desktopBridgeChannels.webLinkDelivery,

@@ -239,8 +239,6 @@ export const HarnessInputSchema = z
     /** Sent only to a Runner advertising `message-origin-v1`. */
     origin: MessageOriginSchema.optional(),
     quote: MessageQuoteSchema.optional(),
-    /** A teammate's ask whose words the owner edited before approving it. */
-    ownerEdited: z.literal(true).optional(),
   })
   .superRefine((input, context) => {
     if (!messageAuthorCanWriteKind(input.author, input.kind)) {

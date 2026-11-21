@@ -81,7 +81,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     parentThreadId: null,
     pendingRequests: 0,
     purpose: testCase.purpose,
-    teamOrigin: null,
     status: "idle",
     title: "Eval",
     updatedAt: new Date().toISOString(),

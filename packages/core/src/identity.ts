@@ -52,7 +52,7 @@ export const IdentityProviderSummarySchema = z.strictObject({
 export const HostExposureSchema = z.enum(["loopback", "networked"]);
 export type HostExposure = z.infer<typeof HostExposureSchema>;
 
-export const DeploymentDisplayKindSchema = z.enum(["personal", "team"]);
+export const DeploymentDisplayKindSchema = z.enum(["personal"]);
 export type DeploymentDisplayKind = z.infer<typeof DeploymentDisplayKindSchema>;
 
 /**

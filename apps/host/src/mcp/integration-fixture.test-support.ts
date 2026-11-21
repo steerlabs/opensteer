@@ -63,7 +63,6 @@ export function createIntegrationMcpFixture(options: {
           environmentId: claims.environmentId,
           lineageRootThreadId: claims.threadId,
           accessMode: "full-access",
-          teamOrigin: null,
         } as Thread;
         const base = {
           key: run ? `run:${run.runId}` : `trigger:${(claims as TriggerScope).occurrenceId}`,

@@ -37,7 +37,7 @@ it("states the epoch the Host requires before it admits the executor socket", as
     await supervisor.connect();
     expect(opened).toHaveLength(1);
     expect(new URL(opened[0]!.url).pathname).toBe("/v1/desktop-supervisor");
-    expect(statesApiVersion(opened[0]!.headers ?? {}, "personal")).toBe(true);
+    expect(statesApiVersion(opened[0]!.headers ?? {})).toBe(true);
   } finally {
     supervisor.stop();
   }

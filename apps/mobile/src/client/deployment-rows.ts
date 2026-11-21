@@ -1,4 +1,3 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -147,13 +146,11 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  * The kind, in the words the product uses for it — and only the words its own
  * data supports. A Deployment listed by the Account directory is one somebody
  * gave that Account access to; the directory entry says who may reach it, never
- * who runs it, so nothing here may call it Cloud. `personal` and `team`
- * are facts the Host itself declares in its descriptor, and are used as such.
+ * who runs it, so nothing here may call it Cloud.
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
   if (isNetworkedHome(connection.authority.document)) return "Home";
-  if (isPersonalHost(connection.authority.document)) return personalComputerKind;
-  return "Team";
+  return personalComputerKind;
 }
 const personalComputerKind = "Personal computer";
 

@@ -1675,10 +1675,6 @@ export async function createHostServer(
           userId: requireRpcSession(context).user.id,
         }),
       ),
-    // Removed with the team server; the wire drops these in the next commit.
-    "teams.links.list": async () => teamLinksRemoved(),
-    "teams.threadTask.get": async () => teamLinksRemoved(),
-    "teams.replyTask.get": async () => teamLinksRemoved(),
     "tasks.list": async ({ active: _active, deviceAccessRequests: _requests, ...input }, context) =>
       personalReads.handlers["tasks.page"](input, context),
     ...personalReads.handlers,
@@ -1704,9 +1700,6 @@ export async function createHostServer(
     | "attachment.content"
     | "attention.get"
     | "needsYou.get"
-    | "teams.links.list"
-    | "teams.threadTask.get"
-    | "teams.replyTask.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -1763,10 +1756,6 @@ export async function createHostServer(
         );
         return result;
       }
-      case "teams.link.join":
-      case "teams.ask.decide":
-      case "teams.link.leave":
-        return teamLinksRemoved();
       case "thread.visit": {
         const visit = await dependencies.store.notificationState.visit({
           threadId: command.threadId,
@@ -4290,8 +4279,4 @@ function personalResponseScopes(input: unknown, sessionId: string | undefined): 
     scopes.push(`thread:${input.selectedThreadId}`);
   if ("nodeId" in input && typeof input.nodeId === "string") scopes.push(`node:${input.nodeId}`);
   return scopes;
-}
-
-function teamLinksRemoved(): never {
-  throw new OpensteerError({ code: "not_found", message: "Team links are not available." });
 }

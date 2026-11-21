@@ -716,8 +716,9 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "team",
-    kindLabel: deploymentKindLabel(personal ? "personal" : "team"),
+    kind: personal ? "personal" : "server",
+    // A Home at its own address that is not a Cloud Computer is a server.
+    kindLabel: personal ? deploymentKindLabel("personal") : "Server",
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,

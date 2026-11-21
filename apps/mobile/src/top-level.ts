@@ -1,6 +1,6 @@
 import type { NavigationAction } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { isTeamSideRoot, sideMemory } from "./side-memory.js";
+import { sideMemory } from "./side-memory.js";
 import { presentedFrom } from "./navigation-presentations.js";
 
 /**
@@ -52,9 +52,7 @@ export interface TopLevelTarget {
 export function topLevelIndex(state: StackView): 0 | 1 | null {
   if (state.routes[0]?.name !== "Home") return null;
   const above = state.routes[1];
-  return above !== undefined &&
-    presentedFrom(state) !== 1 &&
-    (topLevelRoutes.has(above.name) || isTeamSideRoot(state, above.key))
+  return above !== undefined && presentedFrom(state) !== 1 && topLevelRoutes.has(above.name)
     ? 1
     : 0;
 }
@@ -89,7 +87,7 @@ export const topLevelScreenOptions: NativeStackNavigationOptions = {
   headerBackVisible: false,
 };
 
-/** An explicit sidebar/link destination, preserving the other sides' addresses. */
+/** An explicit sidebar/link destination. */
 export function openTopLevel(state: StackView, target: TopLevelTarget): NavigationAction | null {
   return sideMemory.enter(state, target);
 }

@@ -1,4 +1,4 @@
-import { classifyHref, type ReferenceKind, type TeamPageTarget } from "@opensteer/core";
+import { classifyHref, type ReferenceKind } from "@opensteer/core";
 
 /**
  * The picture each thing a chip names wears, on every client. Each client
@@ -33,23 +33,10 @@ const referenceIcons: Readonly<Record<ReferenceKind, ReferenceIconName>> = {
   tab: "link",
 };
 
-const teamPageIcons: Readonly<Record<TeamPageTarget["kind"], ReferenceIconName>> = {
-  invite: "people",
-  channel: "hash",
-  message: "quote",
-  thread: "reply",
-  "knowledge-topic": "folder",
-  "knowledge-note": "note",
-};
-
 const imagePath = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/iu;
 
 export function referenceIcon(kind: ReferenceKind): ReferenceIconName {
   return referenceIcons[kind];
-}
-
-export function teamPageIcon(kind: TeamPageTarget["kind"]): ReferenceIconName {
-  return teamPageIcons[kind];
 }
 
 export function fileIcon(path: string): ReferenceIconName {
@@ -62,8 +49,6 @@ export function hrefIcon(href: string): ReferenceIconName {
   switch (target.kind) {
     case "reference":
       return referenceIcons[target.reference.kind];
-    case "team-page":
-      return teamPageIcons[target.page.target.kind];
     case "file":
       return fileIcon(target.file.path);
     default:

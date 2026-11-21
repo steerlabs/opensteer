@@ -327,7 +327,6 @@ describe("mobile task mark review journeys", () => {
               }
             : null,
           title: "Tokyo flights",
-          placeName: "#travel",
           icon: "plane",
           color: "teal",
           isVoice: false,
@@ -347,14 +346,13 @@ describe("mobile task mark review journeys", () => {
           headerTitle: () => ReactNode;
         };
         const container = render(options.headerTitle());
-        expect(container.textContent).toContain(
-          connectionLabel ?? (assigned ? "Working" : "#travel"),
-        );
+        if (connectionLabel !== null || assigned)
+          expect(container.textContent).toContain(connectionLabel ?? "Working");
         const label = container
           .querySelector('[aria-label$="Actions"]')
           ?.getAttribute("aria-label");
         expect(label).toBe(
-          `Tokyo flights, #travel${connectionLabel !== null ? `, ${connectionLabel}` : assigned ? ", Working" : ""}. Actions`,
+          `Tokyo flights${connectionLabel !== null ? `, ${connectionLabel}` : assigned ? ", Working" : ""}. Actions`,
         );
       }
     },
@@ -364,18 +362,17 @@ describe("mobile task mark review journeys", () => {
   // a second bar line repeating the menu's state; dropping that line also
   // drops the state from what VoiceOver reads; a state that still asks for the
   // reader (working, waiting, failed, stopped) or a lost connection disappears
-  // with it; the channel's name or the task menu goes too.
+  // with it; or the task menu goes too.
   it.each([
-    ["completed", "Finished", null, false],
-    ["completed", "Finished", "#travel", false],
-    ["completed", "Finished", null, true],
-    ["failed", "Couldn’t finish", null, false],
-    ["stopped", "Stopped", null, false],
-    ["waiting", "Needs you", null, false],
-    ["working", "Working", null, false],
+    ["completed", "Finished", false],
+    ["completed", "Finished", true],
+    ["failed", "Couldn’t finish", false],
+    ["stopped", "Stopped", false],
+    ["waiting", "Needs you", false],
+    ["working", "Working", false],
   ] as const)(
-    "keeps a %s task's menu state accessible while compacting only Finished (%s, channel %s, offline %s)",
-    async (tone, word, channelName, offline) => {
+    "keeps a %s task's menu state accessible while compacting only Finished (%s, offline %s)",
+    async (tone, word, offline) => {
       const host = await client();
       const thread = host.getSnapshot().threads.find(({ purpose }) => purpose === "task")!;
       const header: ThreadHeaderState = {
@@ -393,7 +390,6 @@ describe("mobile task mark review journeys", () => {
           word,
         },
         title: "Tokyo flights",
-        placeName: channelName,
         icon: "plane",
         color: "teal",
         isVoice: false,
@@ -416,23 +412,22 @@ describe("mobile task mark review journeys", () => {
       const bar = container.textContent ?? "";
       expect(bar).toContain("Tokyo flights");
       if (offline) expect(bar).toContain("Studio Mac offline");
-      if (channelName !== null) expect(bar).toContain(channelName);
       // The word stands alone on its line; "Mark Done" in the menu is not that line.
       const says = [...container.querySelectorAll("*")].some(
         (node) => node.childElementCount === 0 && node.textContent === word,
       );
       expect(says).toBe(tone !== "completed");
       expect(container.querySelector('[aria-label$="Actions"]')?.getAttribute("aria-label")).toBe(
-        `Tokyo flights${channelName === null ? "" : `, ${channelName}`}, ${offline ? "Studio Mac offline" : word}. Actions`,
+        `Tokyo flights, ${offline ? "Studio Mac offline" : word}. Actions`,
       );
     },
   );
 
-  // Ways the capsule can lose what the bar said: the word and channel leave the
+  // Ways the capsule can lose what the bar said: the word leaves the
   // bar and reach neither the menu nor VoiceOver, or an offline computer is
   // dropped with them though nothing there will answer.
   it.each([null, "Studio Mac offline"])(
-    "moves a task's word and channel into the menu on Liquid Glass (offline: %s)",
+    "moves a task's word into the menu on Liquid Glass (offline: %s)",
     async (connectionLabel) => {
       harness.liquidGlass = true;
       try {
@@ -453,7 +448,6 @@ describe("mobile task mark review journeys", () => {
             word: "Needs you",
           },
           title: "Tokyo flights",
-          placeName: "#travel",
           icon: "plane",
           color: "teal",
           isVoice: false,
@@ -476,14 +470,13 @@ describe("mobile task mark review journeys", () => {
         const drawn = container.querySelector('[aria-label$="Actions"]');
         expect(drawn?.textContent).toContain("Tokyo flights");
         expect(drawn?.textContent).not.toContain("Needs you");
-        expect(drawn?.textContent).not.toContain("#travel");
         expect(drawn?.textContent?.includes("Studio Mac offline")).toBe(connectionLabel !== null);
         expect(drawn?.getAttribute("aria-label")).toBe(
-          `Tokyo flights, #travel, ${connectionLabel ?? "Needs you"}. Actions`,
+          `Tokyo flights, ${connectionLabel ?? "Needs you"}. Actions`,
         );
         expect(
           container.querySelector("[data-menu-heading]")?.getAttribute("data-menu-heading"),
-        ).toBe("From Weekly plan · Needs you\n#travel\nWaiting for approval");
+        ).toBe("From Weekly plan · Needs you\nWaiting for approval");
       } finally {
         harness.liquidGlass = false;
       }

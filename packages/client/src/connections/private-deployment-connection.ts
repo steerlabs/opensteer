@@ -44,7 +44,7 @@ export class PrivateDeploymentConnectionService {
           accountAccess: null,
           endpoints: [verified],
           kind: verified.kind,
-          name: addressDeploymentName(parsed.origin, verified.kind),
+          name: addressDeploymentName(parsed.origin),
           source: { kind: "manual" },
         }),
       );
@@ -82,7 +82,7 @@ function computerName(origin: string): string {
   return hostname.length <= 120 ? hostname : "Computer";
 }
 
-function addressDeploymentName(origin: string, kind: "personal" | "team"): string {
+function addressDeploymentName(origin: string): string {
   const hostname = new URL(origin).hostname;
-  return hostname.length <= 120 ? hostname : ({ personal: "Home", team: "Server" } as const)[kind];
+  return hostname.length <= 120 ? hostname : "Home";
 }

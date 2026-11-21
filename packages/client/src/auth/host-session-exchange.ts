@@ -342,7 +342,7 @@ export class HostSessionExchange {
         headers: {
           accept: "application/json",
           // Only Personal Hosts exchange sessions; team Hosts sign people in themselves.
-          ...apiVersionHeaders("personal"),
+          ...apiVersionHeaders(),
           origin,
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         },

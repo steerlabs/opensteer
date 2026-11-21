@@ -45,9 +45,6 @@ export class DesktopUpdatesService implements DesktopUpdates {
       ...(credentials
         ? {
             credentials: {
-              ...(credentials.accountRuntime
-                ? { accountRuntime: credentials.accountRuntime.bind(credentials) }
-                : {}),
               authorizationHeader: async (connection) => {
                 await this.#verify();
                 return credentials.authorizationHeader(connection);

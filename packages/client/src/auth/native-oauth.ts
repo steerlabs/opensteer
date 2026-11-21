@@ -1,11 +1,5 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { AccountRuntimeOwner } from "./account-runtime-owner.js";
 import { HostSignInOutcomeError } from "./host-sign-in-outcome.js";
-import {
-  NativeTeamEntry,
-  assertTeamEntryOutcome,
-  verifyTeamEndpoint,
-} from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { encodeBase64Url, decodeBase64Url } from "@opensteer/shared/base64url";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
@@ -17,36 +11,17 @@ import {
   opensteerAccountDeleteOAuthScopes,
   opensteerAccountOAuthScopes,
   opensteerHostOAuthScopes,
-  teamInviteSignInUrl,
   type DeploymentId,
-  type TeamInviteSecret,
 } from "@opensteer/core";
 import {
   ControlPlaneAccountIdSchema,
-  IssueTeamIdentityGrantResponseSchema,
-  accountTeamIdentityGrantsPath,
   type ControlPlaneAccountId,
-  type IssueTeamIdentityGrantRequest,
-  type IssueTeamIdentityGrantResponse,
 } from "@opensteer/control-plane-protocol";
-import {
-  HostApiErrorSchema,
-  TeamEntryRefusalReasonSchema,
-  TeamSessionExchangeRequestSchema,
-  TeamSessionExchangeResponseSchema,
-  teamSessionExchangePath,
-  type TeamEntryRefusalReason,
-  type TeamSessionExchangeRequest,
-  type TeamSessionExchangeResponse,
-} from "@opensteer/protocol";
 import {
   HostDescriptorSchema,
   hostAuthorityIdentityMatches,
   hostKeyFingerprint,
   verifyHostIdentityProof,
-  teamApiVersion,
-  teamApiVersionHeader,
-  teamOAuthVersionParameter,
 } from "@opensteer/deployment-authority";
 import {
   DesktopAccountAuthStateSchema,
@@ -54,11 +29,7 @@ import {
   type DesktopAccountAuthState,
 } from "@opensteer/protocol/desktop";
 import { z } from "zod";
-import {
-  ClientOperationError,
-  transientHttpStatus,
-  unrefTimer,
-} from "../connections/operation-error.js";
+import { ClientOperationError, unrefTimer } from "../connections/operation-error.js";
 import type {
   DeploymentCatalogStore,
   AccountDeploymentConnectionSource,
@@ -95,47 +66,6 @@ class OAuthTokenEndpointFailedError extends ClientOperationError {
 
 // RFC 6749 §5.2: the verdicts that the grant or its client can never be used again.
 const OAuthGrantRefusalSchema = z.object({ error: z.enum(["invalid_grant", "invalid_client"]) });
-
-/** A team Host turned the person away: not a member, or an invite that no longer works. */
-export class TeamEntryRefusedError extends ClientOperationError {
-  readonly reason: TeamEntryRefusalReason;
-
-  constructor(reason: TeamEntryRefusalReason, message: string) {
-    super(message, "blocked");
-    this.name = "TeamEntryRefusedError";
-    this.reason = reason;
-  }
-}
-
-/**
- * The Account answered from a release before team identity grants, so it can't vouch for anyone
- * at a team yet. The team's own sign-in still works; this is never the team refusing someone.
- */
-export class TeamIdentityGrantUnsupportedError extends ClientOperationError {
-  static readonly reason = "team-identity-grant-unsupported";
-  readonly reason = TeamIdentityGrantUnsupportedError.reason;
-
-  constructor() {
-    super("Sign in to the team to finish joining.", "blocked");
-    this.name = "TeamIdentityGrantUnsupportedError";
-  }
-}
-
-/** Whether a team Host can be entered with the Account's identity alone, without a browser. */
-export function supportsTeamSessionExchange(connection: DeploymentConnection): boolean {
-  return (
-    !isPersonalHost(connection.authority.document) &&
-    (connection.capabilities ?? []).includes("team-session-exchange-v1")
-  );
-}
-
-/** Whether a team's invite page continues to this app's sign-in once it proved the invite. */
-export function supportsTeamInviteContinuation(connection: DeploymentConnection): boolean {
-  return (
-    !isPersonalHost(connection.authority.document) &&
-    (connection.capabilities ?? []).includes("team-invite-native-continuation-v1")
-  );
-}
 
 const authorizationFlowLifetimeMs = 5 * 60_000;
 const accessTokenRefreshSkewMs = 60_000;
@@ -502,26 +432,15 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.state();
   }
 
-  /**
-   * The team's own sign-in in the system browser. With `invite`, the browser opens the team's
-   * invite page first, which proves the invite there and continues to this sign-in, so a person
-   * who isn't a member yet is admitted when the team's callback lands. Only a team advertising
-   * `team-invite-native-continuation-v1` takes `invite`; elsewhere the person joins in the browser
-   * first.
-   */
+  /** A Home at its own address's own sign-in, in the system browser. */
   async beginHostSignIn(
     connectionInput: DeploymentConnection,
-    invite?: TeamInviteSecret,
     entry = this.hostEntryFence(connectionInput.authority.document.deploymentId, true),
   ): Promise<HostOAuthState> {
     const connection = structuredClone(connectionInput);
     if (!usesHostNativeOAuth(connection)) {
-      throw new Error(
-        "Only a team server or a Home at its own address uses deployment-native OAuth.",
-      );
+      throw new Error("Only a Home at its own address uses deployment-native OAuth.");
     }
-    if (invite && !supportsTeamInviteContinuation(connection))
-      throw new Error("Join this team in the browser first, then sign in to it here.");
     // Claimed before the first await. Protected storage can take long enough
     // for a person to leave the flow, and only this fence sees that boundary.
     entry.assertCurrent();
@@ -552,7 +471,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
       flow,
       hostEndpoints(connection.authority.document.canonicalOrigin),
       opensteerHostOAuthScopes,
-      invite,
     );
     return this.hostCredentialState(connection);
   }
@@ -593,12 +511,11 @@ export class NativeOAuthManager implements HostCredentialProvider {
   }
 
   /**
-   * A Home at its own address signs its owner in with its native OAuth, as a
-   * team server does but with no membership to enter: a held credential
-   * answers at once, and only an interactive call opens the browser.
+   * A Home at its own address signs its owner in with its native OAuth: a held
+   * credential answers at once, and only an interactive call opens the browser.
    */
   async signInHome(connection: DeploymentConnection, interactive = true): Promise<HostOAuthState> {
-    if (!isPersonalHost(connection.authority.document) || !usesHostNativeOAuth(connection))
+    if (!usesHostNativeOAuth(connection))
       throw new Error("Only a Home at its own address signs in here.");
     if (await this.authorizationHeader(connection)) return this.hostCredentialState(connection);
     if (!interactive) throw new HostSignInOutcomeError({ status: "sign-in-required" });
@@ -616,7 +533,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     });
     try {
       const final = await Promise.race([
-        this.beginHostSignIn(connection, undefined, entry).then((begun) =>
+        this.beginHostSignIn(connection, entry).then((begun) =>
           begun.status === "authorizing" ? ended : begun,
         ),
         ended,
@@ -637,214 +554,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
       stop();
       stopAbort();
     }
-  }
-
-  async signInTeam(
-    connection: DeploymentConnection,
-    invite?: TeamInviteSecret,
-    interactive = true,
-  ): Promise<HostOAuthState> {
-    const outcome = await this.#teamEntry().authorize({
-      deploymentId: connection.authority.document.deploymentId,
-      origin: connection.authority.document.canonicalOrigin,
-      mode: interactive ? "interactive" : "passive",
-      invite: invite ?? null,
-    });
-    assertTeamEntryOutcome(outcome);
-    return this.hostCredentialState(connection);
-  }
-
-  #teamEntry(): NativeTeamEntry {
-    return new NativeTeamEntry({
-      oauth: this,
-      catalog: this.#catalog,
-      verify: (origin) =>
-        verifyTeamEndpoint(origin, {
-          fetch: (input, init) => this.#fetch(String(input), init ?? {}),
-        }),
-      bootstrap: async () => {
-        throw new Error("Entry bootstrap belongs to the attachment.");
-      },
-    });
-  }
-
-  /**
-   * Signs this application in to a team without a browser: Account signs who the person is for
-   * this exact team Host, and the team Host decides membership, admitting through `invite` when
-   * one is given. The tokens are stored and refreshed exactly like a browser sign-in's. Only for a
-   * team advertising `team-session-exchange-v1`; others keep `beginHostSignIn`.
-   */
-  async exchangeTeamSession(
-    connection: DeploymentConnection,
-    invite?: TeamInviteSecret,
-    entry = this.hostEntryFence(connection.authority.document.deploymentId, true),
-  ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    entry.assertCurrent();
-    const lease = await this.accountAuthorizationLease();
-    entry.assertCurrent();
-    if (!lease) throw new ClientOperationError("Account authorization changed.", "transient");
-    if (this.isHostSignInSuppressed(connection))
-      throw new ClientOperationError("Signing in to this team was interrupted.", "transient");
-    const exchange = async () => {
-      const { assertion } = await this.issueTeamIdentityGrant(
-        connection.authority.document.deploymentId,
-        this.#teamIdentityRequest(connection),
-      );
-      entry.assertCurrent();
-      if (lease.signal.aborted)
-        throw new ClientOperationError("Account authorization changed.", "transient");
-      return this.#exchangeTeamAssertion(
-        connection,
-        { assertion, ...(invite ? { invite } : {}) },
-        { lease, signal: entry.signal },
-      );
-    };
-    try {
-      return await exchange();
-    } catch (error) {
-      if (!(error instanceof TeamEntryRefusedError) || error.reason !== "assertion-expired")
-        throw error;
-      entry.assertCurrent();
-      return exchange();
-    }
-  }
-
-  #teamIdentityRequest(connection: DeploymentConnection): IssueTeamIdentityGrantRequest {
-    const document = connection.authority.document;
-    return {
-      expectedAuthority: {
-        canonicalOrigin: document.canonicalOrigin,
-        deploymentId: document.deploymentId,
-        hostInstanceId: document.hostInstanceId,
-        hostKeyFingerprint: hostKeyFingerprint(connection.authority.publicKey.spki),
-      },
-      surface: this.#oauth.application,
-    };
-  }
-
-  /** Account's signed statement of who this person is, for one exact team Host and this app. */
-  async issueTeamIdentityGrant(
-    deploymentId: DeploymentId,
-    request: IssueTeamIdentityGrantRequest,
-  ): Promise<IssueTeamIdentityGrantResponse> {
-    const lease = await this.accountAuthorizationLease();
-    if (!lease) {
-      throw new ClientOperationError(
-        "Sign in to your Opensteer account to join a team.",
-        "blocked",
-      );
-    }
-    const post = (authorization: string) =>
-      this.#postJson(
-        new URL(accountTeamIdentityGrantsPath(deploymentId), lease.issuer).toString(),
-        request,
-        { authorization },
-        lease.signal,
-      );
-    let response = await post(lease.authorization);
-    if (response.status === 401 && !lease.signal.aborted) {
-      const session = this.#accountSession;
-      if (session?.controller.signal === lease.signal) {
-        const authorization =
-          `Bearer ${session.credential.accessToken}` !== lease.authorization
-            ? `Bearer ${session.credential.accessToken}`
-            : await this.#serializedRefresh("account", () => this.#refreshAccountSession(session));
-        if (authorization && !lease.signal.aborted) response = await post(authorization);
-      }
-    }
-    if (!response.ok) {
-      if (response.status === 409)
-        throw new TeamEntryRefusedError(
-          "authority-changed",
-          "The team authority changed. Open its address again.",
-        );
-      // A route the Account doesn't have answers without Account's own error body.
-      if (
-        response.status === 404 &&
-        !z.object({ error: z.object({ code: z.string() }) }).safeParse(response.body).success
-      )
-        throw new TeamIdentityGrantUnsupportedError();
-      throw new ClientOperationError(
-        accountUnreachableDetail,
-        transientHttpStatus(response.status) ? "transient" : "blocked",
-      );
-    }
-    return IssueTeamIdentityGrantResponseSchema.parse(response.body);
-  }
-
-  /** The exchange half of `exchangeTeamSession`, for a caller already holding the assertion. */
-  async #exchangeTeamAssertion(
-    connectionInput: DeploymentConnection,
-    request: TeamSessionExchangeRequest,
-    context: { readonly lease: AccountAuthorizationLease; readonly signal: AbortSignal },
-  ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const connection = structuredClone(connectionInput);
-    if (!supportsTeamSessionExchange(connection)) {
-      throw new Error("This team can't be entered without a browser sign-in.");
-    }
-    const authority = connection.authority;
-    const deploymentId = authority.document.deploymentId;
-    const origin = authority.document.canonicalOrigin;
-    const current = () =>
-      !context.signal.aborted && !this.#disposed && !context.lease.signal.aborted;
-    await this.#ensureStorageReady();
-    if (!current())
-      throw new ClientOperationError("Team authorization changed. Try again.", "transient");
-    const exchanged = await this.#postJson(
-      `${origin}${teamSessionExchangePath}`,
-      TeamSessionExchangeRequestSchema.parse(request),
-      { [teamApiVersionHeader]: String(teamApiVersion) },
-      AbortSignal.any([context.signal, context.lease.signal]),
-    );
-    if (!exchanged.ok) throw teamExchangeFailure(exchanged.status, exchanged.body);
-    const entered = TeamSessionExchangeResponseSchema.parse(exchanged.body);
-    let credential: HostCredential;
-    try {
-      credential = HostCredentialSchema.parse({
-        ...tokenCredentialFields(
-          entered.tokens,
-          entered.tokens.refresh_token,
-          opensteerHostOAuthScopes,
-          this.#now(),
-        ),
-        accountIdentity: { issuer: context.lease.issuer, subject: context.lease.subject },
-        viewLoginId:
-          this.#hostCredential(deploymentId)?.viewLoginId ?? globalThis.crypto.randomUUID(),
-        canonicalOrigin: origin,
-        deploymentId,
-        hostInstanceId: authority.document.hostInstanceId,
-        hostKeyFingerprint: hostKeyFingerprint(authority.publicKey.spki),
-      });
-    } catch (error) {
-      await this.#revokeLateCredential(hostEndpoints(origin), entered.tokens.refresh_token, origin);
-      throw error;
-    }
-    const committed = await this.#mutateCredentials(async () => {
-      if (!current()) return false;
-      const state = await this.#store.setHost(credential);
-      this.#pendingHostWrites.delete(deploymentId);
-      this.#adoptHostCredentials(state.hosts);
-      if (!current()) {
-        this.#adoptHostCredentials((await this.#store.clearHost(deploymentId)).hosts);
-        return false;
-      }
-      this.#removePending(
-        (flow) =>
-          flow.kind === "host" && flow.connection.authority.document.deploymentId === deploymentId,
-      );
-      this.#hostDetails.delete(hostAttachmentKey(connection));
-      this.#accountChangedHosts.delete(deploymentId);
-      return true;
-    }).catch(async (error: unknown) => {
-      await this.#revokeLateCredential(hostEndpoints(origin), credential.refreshToken, origin);
-      throw error;
-    });
-    if (!committed) {
-      await this.#revokeLateCredential(hostEndpoints(origin), credential.refreshToken, origin);
-      throw new ClientOperationError("Signing in to this team was interrupted.", "transient");
-    }
-    this.#emitHost(connection);
-    return { admitted: entered.admitted, member: entered.member };
   }
 
   /** Stops one Deployment's pending or exchanging browser authorization. */
@@ -1069,30 +778,13 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#refreshHostCredential(connection, credential);
   }
 
-  /**
-   * Refreshes Host-native OAuth only after the Host returned an actual 401. A team that takes the
-   * Account's identity is entered again without a browser once refreshing cannot help.
-   */
+  /** Refreshes Host-native OAuth only after the Host returned an actual 401. */
   async recoverHostAuthorization(
     connection: DeploymentConnection,
     rejectedAuthorization?: string | null,
   ): Promise<boolean> {
-    if (isPersonalHost(connection.authority.document)) {
-      const refreshed = await this.refreshHostAuthorization(connection, rejectedAuthorization);
-      return refreshed !== null && refreshed !== rejectedAuthorization;
-    }
-    const outcome = await this.#teamEntry().authorize({
-      deploymentId: connection.authority.document.deploymentId,
-      origin: connection.authority.document.canonicalOrigin,
-      mode: "passive",
-      recover: { authorization: rejectedAuthorization },
-    });
-    if (outcome.status === "suppressed" || outcome.status === "sign-in-required") return false;
-    assertTeamEntryOutcome(outcome);
-    const authorization = await this.authorizationHeader(connection);
-    return (
-      outcome.status === "authorized" && !!authorization && authorization !== rejectedAuthorization
-    );
+    const refreshed = await this.refreshHostAuthorization(connection, rejectedAuthorization);
+    return refreshed !== null && refreshed !== rejectedAuthorization;
   }
 
   async refreshHostAuthorization(
@@ -1116,7 +808,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * different Opensteer, which must receive no refresh token, bearer or sign-in.
    */
   async #proveSameHome(connection: DeploymentConnection): Promise<void> {
-    if (!isPersonalHost(connection.authority.document) || !usesHostNativeOAuth(connection)) return;
+    if (!usesHostNativeOAuth(connection)) return;
     const saved = connection.authority;
     const key = `${saved.document.deploymentId}:${saved.publicKey.spki}:${saved.document.canonicalOrigin}`;
     if (this.#provenHomes.has(key)) return;
@@ -1555,7 +1247,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
     flow: NativeOAuthFlow,
     endpoints: OAuthEndpoints,
     scopes: readonly string[],
-    invite?: TeamInviteSecret,
   ): Promise<void> {
     this.#pending.set(flow.state, flow);
     if (flow.kind === "host") this.#armHostFlowExpiry(flow);
@@ -1563,10 +1254,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     else this.#emitHost(flow.connection);
     try {
       const authorization = authorizationUrl(endpoints, flow, scopes, this.#oauth.clientId);
-      await this.#openExternal(
-        invite ? teamInviteSignInUrl(authorization, invite) : authorization,
-        flow.callback,
-      );
+      await this.#openExternal(authorization, flow.callback);
     } catch (error) {
       this.#clearFlowExpiry(flow.state);
       this.#pending.delete(flow.state);
@@ -1703,9 +1391,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
         headers: {
           ...(acceptJson ? { accept: "application/json" } : {}),
           "content-type": "application/x-www-form-urlencoded",
-          ...(new URL(endpoint).pathname.startsWith("/v1/auth/native/")
-            ? { [teamApiVersionHeader]: String(teamApiVersion) }
-            : {}),
         },
         method: "POST",
         redirect: "error",
@@ -1748,56 +1433,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
       throw error;
     } finally {
       clearTimeout(timeout);
-    }
-  }
-
-  /** A bounded JSON POST that keeps the answer's body, refusals included. */
-  async #postJson(
-    endpoint: string,
-    body: unknown,
-    headers: Record<string, string>,
-    signal?: AbortSignal,
-  ): Promise<{ readonly body: unknown; readonly ok: boolean; readonly status: number }> {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(new ClientOperationError(hostUnreachableDetail, "transient")),
-      this.#networkTimeoutMs,
-    );
-    unrefTimer(timeout);
-    const abort = () => controller.abort(signal?.reason);
-    signal?.addEventListener("abort", abort, { once: true });
-    try {
-      const response = await this.#fetch(endpoint, {
-        body: JSON.stringify(body),
-        cache: "no-store",
-        credentials: "omit",
-        headers: { ...headers, accept: "application/json", "content-type": "application/json" },
-        method: "POST",
-        redirect: "error",
-        referrerPolicy: "no-referrer",
-        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-      });
-      if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
-        throw new Error("The server endpoint redirected.");
-      }
-      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-      if (contentType !== "application/json") {
-        await response.body?.cancel();
-        return { body: undefined, ok: false, status: response.ok ? 502 : response.status };
-      }
-      return {
-        body: await readBoundedJson(response, boundedJsonOptions),
-        ok: response.ok,
-        status: response.status,
-      };
-    } catch (error) {
-      if (controller.signal.aborted && controller.signal.reason instanceof Error) {
-        throw controller.signal.reason;
-      }
-      throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });
-    } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
     }
   }
 
@@ -2122,8 +1757,6 @@ function authorizationUrl(
   clientId: string,
 ): string {
   const url = new URL(endpoints.authorization);
-  if (flow.kind === "host" && !isPersonalHost(flow.connection.authority.document))
-    url.searchParams.set(teamOAuthVersionParameter, String(teamApiVersion));
   const resource =
     flow.kind === "account"
       ? flow.issuerOrigin
@@ -2232,18 +1865,6 @@ function tokenCredentialFields(
   };
 }
 
-/** A refusal the person can act on keeps its reason; anything else is the server's trouble. */
-function teamExchangeFailure(status: number, body: unknown): Error {
-  const error = z.object({ error: HostApiErrorSchema }).safeParse(body);
-  const reason = TeamEntryRefusalReasonSchema.safeParse(error.data?.error.reason);
-  if (error.success && reason.success)
-    return new TeamEntryRefusedError(reason.data, error.data.error.message);
-  return new ClientOperationError(
-    error.success ? error.data.error.message : hostUnreachableDetail,
-    transientHttpStatus(status) ? "transient" : "blocked",
-  );
-}
-
 function credentialMatchesConnection(
   credential: HostCredential,
   connection: DeploymentConnection,
@@ -2256,8 +1877,8 @@ function credentialMatchesConnection(
 }
 
 /**
- * Only a team or a networked Home reaches Host-native OAuth, and neither is a
- * Personal stack this client supervises, so its access arm resolves without
+ * Only a networked Home reaches Host-native OAuth, which is not a Personal
+ * stack this client supervises, so its access arm resolves without
  * any live runtime.
  */
 function hostAttachmentKey(connection: DeploymentConnection): string {

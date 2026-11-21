@@ -346,7 +346,6 @@ const header: ThreadHeaderState = {
   connectionLabel: null,
   icon: null,
   isVoice: false,
-  placeName: null,
   task: null,
   title: "Conversation",
 };

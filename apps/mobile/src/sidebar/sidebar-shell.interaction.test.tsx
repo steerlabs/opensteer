@@ -310,43 +310,6 @@ function stackStyle(container: HTMLElement): Record<string, unknown> {
   return JSON.parse(column.dataset["style"] ?? "{}") as Record<string, unknown>;
 }
 
-describe("the sidebar's side", () => {
-  it("switches sides over Home and leaves the selected side's drill-ins in place on reselect", async () => {
-    const task = threadA;
-    const page = {
-      key: "page",
-      name: "WorkspaceBrowser",
-      params: {
-        deploymentId: "deployment-a",
-        threadId: "thread-a",
-        sessionId: "browser",
-        tabId: "tab",
-      },
-    };
-    const acme = {
-      key: "acme-general",
-      name: "TeamChannel",
-      params: { teamId: "dep_acme", channelId: "general" },
-    };
-    const { render } = await mount([home, task, page]);
-    expect(lastPanel().sides.side).toBe("tasks");
-    act(() => lastPanel().onSide("dep_acme"));
-    expect(harness.dispatch).not.toHaveBeenCalled();
-    expect(lastPanel().sides.side).toBe("dep_acme");
-    await render([home, acme]);
-    const count = harness.dispatch.mock.calls.length;
-    act(() => lastPanel().onSide("dep_acme"));
-    expect(harness.dispatch).toHaveBeenCalledTimes(count);
-    act(() => lastPanel().onSide("tasks"));
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "RESET",
-      payload: { index: 2, routes: [home, task, page] },
-    });
-    await render([home, task, page]);
-    expect(lastPanel().sides.side).toBe("tasks");
-  });
-});
-
 describe("the sidebar as the window changes shape", () => {
   it("lets the edge swipe open the drawer on a top-level screen and leaves a drill-in's to its Back", async () => {
     const { render } = await mount([home, threadA]);

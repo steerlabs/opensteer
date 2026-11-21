@@ -306,7 +306,8 @@ export function placeRow(input: {
   readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "team";
+  /** A Mac or Cloud Computer reached by its route, or a server at its own address. */
+  readonly kind: "personal" | "server";
   readonly kindLabel: string;
   readonly name: string;
   readonly remove: {

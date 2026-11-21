@@ -44,7 +44,7 @@ function legacyState(database: Kysely<DatabaseSchema>) {
     .then(({ rows }) => rows[0]);
 }
 
-test.each(["empty", "personal", "team", "personal-0035"] as const)(
+test.each(["empty", "personal", "personal-0035"] as const)(
   "finalizes the %s pre-conversion database before owner setup",
   async (start) => {
     const kind = start === "personal-0035" ? "personal" : start;
@@ -821,28 +821,5 @@ test("resumes offline settlement of a Run with a large live node set", async () 
     expect(subagent).toEqual({ kind: "unavailable" });
   } finally {
     await fixture.close();
-  }
-});
-
-test("the current-state lineage refuses a team database with a private legacy fence", async () => {
-  const fixture = await cloneTestDatabase("host");
-  const database = createDatabase({ connectionString: fixture.url });
-  try {
-    await sql`drop schema public cascade; create schema public`.execute(database);
-    await migrateToLatest(database, migrationProvider({ personalCurrentState: false }));
-    const teamId = createId("deployment");
-    await sql`insert into deployments (id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
-      values (${teamId},'primary',${createId("hostInstance")},'https://fixture.example.invalid','active','{"kind":"team"}');
-    `.execute(database);
-    await sql`insert into deployment_event_state(deployment_id) values (${teamId})`.execute(
-      database,
-    );
-    await expect(
-      migrateToLatest(database, migrationProvider({ personalCurrentState: true })),
-    ).rejects.toThrow("Unexpected personal event history outside a personal Deployment");
-    expect(await legacyState(database)).toEqual({ legacy: true, cursor: true });
-  } finally {
-    await database.destroy();
-    await fixture.drop();
   }
 });

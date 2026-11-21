@@ -1,4 +1,3 @@
-import type { AccountRuntimeOwner } from "../auth/account-runtime-owner.js";
 import type { DeploymentId } from "@opensteer/core";
 import {
   hostKeyFingerprint,
@@ -48,7 +47,6 @@ export interface ConnectionAccess {
 }
 
 export interface ResolvedConnection {
-  readonly accountRuntime?: AccountRuntimeOwner;
   readonly access: DesktopAccess;
   readonly authorization: string | null;
   readonly bootstrapMethods: readonly HostBootstrapMethod[];

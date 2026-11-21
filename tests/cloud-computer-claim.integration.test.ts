@@ -725,14 +725,14 @@ async function homeApi(
   const response =
     payload === undefined
       ? await browser.request(`${origin}/v1/rpc/${name}?input=%7B%7D`, {
-          headers: { origin, ...apiVersionHeaders("personal") },
+          headers: { origin, ...apiVersionHeaders() },
         })
       : await browser.request(`${origin}/v1/rpc/${name}`, {
           body: JSON.stringify(payload),
           headers: {
             "content-type": "application/json",
             origin,
-            ...apiVersionHeaders("personal"),
+            ...apiVersionHeaders(),
           },
           method: "POST",
         });
@@ -746,7 +746,7 @@ async function signInToHome(browser: Browser, homeOrigin: string) {
     headers: {
       "content-type": "application/json",
       origin: homeOrigin,
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
     },
     method: "POST",
   });
@@ -754,7 +754,7 @@ async function signInToHome(browser: Browser, homeOrigin: string) {
   const { data } = (await begun.json()) as { data: { redirectUrl: string } };
   const stopped = await browser.navigate(data.redirectUrl);
   const session = await browser.request(`${homeOrigin}/v1/auth/session`, {
-    headers: { origin: homeOrigin, ...apiVersionHeaders("personal") },
+    headers: { origin: homeOrigin, ...apiVersionHeaders() },
   });
   // Where the browser came to rest, for a failure to say why.
   const trail = `${stopped.response.status} ${stopped.url} ${(await stopped.response.text()).slice(0, 300)}`;

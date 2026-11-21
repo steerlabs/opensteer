@@ -1019,7 +1019,6 @@ export function Composer(props: {
                   paddingVertical={fieldPadding}
                   placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
                   ref={input}
-                  scope="personal"
                   value={text}
                 />
               </Pressable>

@@ -2,18 +2,12 @@ import { contactSupport } from "../report-mail.js";
 import { Form, Host, Section } from "@expo/ui/swift-ui";
 import { listStyle } from "@expo/ui/swift-ui/modifiers";
 import { NavRow } from "./settings-form-primitives.ios.js";
-import {
-  settingsDestinations,
-  type SettingsHomeTeam,
-  type SettingsHomeWork,
-} from "./settings-home-model.js";
+import { settingsDestinations, type SettingsHomeWork } from "./settings-home-model.js";
 export function SettingsHomeForm({
   onOpen,
-  team,
   work = null,
 }: {
   readonly onOpen: (route: (typeof settingsDestinations)[number]["route"]) => void;
-  readonly team: SettingsHomeTeam | null;
   /** Only on a work Home; a personal Home shows nothing more. */
   readonly work?: SettingsHomeWork | null;
 }) {
@@ -34,13 +28,6 @@ export function SettingsHomeForm({
               ))}
           </Section>
         ))}
-        {team ? (
-          <Section title={team.name}>
-            {team.rows.map((row) => (
-              <NavRow key={row.title} onPress={row.onPress} title={row.title} />
-            ))}
-          </Section>
-        ) : null}
         <Section>
           <NavRow onPress={() => contactSupport()} title="Contact support" />
         </Section>

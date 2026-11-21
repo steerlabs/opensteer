@@ -1,5 +1,5 @@
 import { AgentOperationIdSchema } from "@opensteer/core";
-import { TabIdSchema, TeamSourceSchema } from "@opensteer/core";
+import { TabIdSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
 import { z } from "zod";
@@ -150,7 +150,6 @@ export const ThreadDetailSchema = z.object({
   title: task.title,
   status: task.status,
   purpose: task.purpose,
-  teamOrigin: task.teamOrigin,
   aiAccountId: task.harnessInstanceId,
   modelSelection: task.modelSelection,
   accessMode: task.accessMode,
@@ -233,15 +232,8 @@ export const PersonShowOutputSchema = z.object({
   status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
   connectedDevices: z.number().int().nonnegative(),
 });
-const [
-  humanAuthor,
-  agentAuthor,
-  triggerAuthor,
-  watchAuthor,
-  platformAuthor,
-  connectionAuthor,
-  memberAuthor,
-] = MessageAuthorViewSchema.options;
+const [humanAuthor, agentAuthor, triggerAuthor, watchAuthor, platformAuthor, connectionAuthor] =
+  MessageAuthorViewSchema.options;
 /** Authors as tools present them: an agent names its task, an automation or watch its automation. */
 const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
   humanAuthor,
@@ -250,7 +242,6 @@ const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
   watchAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
   platformAuthor,
   connectionAuthor,
-  memberAuthor,
 ]);
 const [deviceAnswerer, agentAnswerer] = RequestAnswererViewSchema.options;
 const ToolRequestAnswererSchema = z.union([
@@ -482,8 +473,6 @@ export const ThreadItemSchema = z.object({
   textTruncated: z.boolean(),
   nextTextOffset: z.number().int().nonnegative().nullable(),
   places: z.array(PlaceContentPartSchema).max(64).optional(),
-  // The team channel and audience a message came from; keep it beside anything repeated from it.
-  teamSource: TeamSourceSchema.optional(),
   createdAt: z.string(),
 });
 export type ThreadItem = z.infer<typeof ThreadItemSchema>;

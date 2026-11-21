@@ -83,7 +83,7 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
     url: "/v1/rpc/auth.setup.claim",
     headers: {
       origin: config.canonicalOrigin.origin,
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
     },
     payload: { kind: "local-machine-owner", token: config.identity.localOwnerClaimToken },
   });
@@ -93,7 +93,7 @@ export async function claimPrivateMachineOwner(runtime: PersonalHostRuntime, con
     cookie: claimed.cookies.map((c) => `${c.name}=${c.value}`).join("; "),
     origin: config.canonicalOrigin.origin,
     // As every app states it: the oldest version it reads, and the one it speaks.
-    ...apiVersionHeaders("personal"),
+    ...apiVersionHeaders(),
   };
 }
 export async function startPrivateMachineHost(

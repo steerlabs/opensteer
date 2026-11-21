@@ -50,7 +50,6 @@ import {
   type DeploymentCatalogStore,
   type AccountDeploymentConnectionSource,
 } from "./deployment-catalog.js";
-import { isNetworkedHome } from "./home-address.js";
 import {
   ClientOperationError,
   clientTimeoutError,
@@ -650,8 +649,8 @@ export class AccountDeploymentDirectoryService {
         connection: deploymentConnectionFromVerifiedEndpoints({
           accountAccess: deployment.access,
           endpoints: [verified],
-          // A Home on its own server is listed at its canonical origin, as a team is.
-          kind: isNetworkedHome(verified.discovery) ? "personal" : "team",
+          // A Home on its own server is listed at its canonical origin.
+          kind: "personal",
           name: deployment.name,
           source,
         }),

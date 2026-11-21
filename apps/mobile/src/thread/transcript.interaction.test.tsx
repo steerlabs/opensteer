@@ -53,7 +53,6 @@ const appWebView = vi.hoisted(() => ({
   injectJavaScript: vi.fn<(script: string) => void>(),
 }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native-webview", () => ({
   WebView: (
     props: WebViewProps & { ref?: Ref<{ injectJavaScript: (script: string) => void }> },

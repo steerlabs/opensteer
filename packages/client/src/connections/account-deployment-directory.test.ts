@@ -64,7 +64,7 @@ const discovery: HostDiscoveryDocument = {
   hostInstanceId,
   hostKey: { algorithm: "Ed25519" },
   deploymentShape: {
-    kind: "team" as const,
+    kind: "personal" as const,
   },
 };
 const personalDeploymentId = createId("deployment");
@@ -118,7 +118,7 @@ describe("AccountDeploymentDirectoryService", () => {
           bootstrapMethods: ["password"],
           capabilities: [],
           endpoints: [expect.objectContaining({ kind: "canonical", origin: canonicalOrigin })],
-          kind: "team",
+          kind: "personal",
           name: "Home",
           reachability: "canonical",
           source: accountSource,
@@ -344,7 +344,7 @@ describe("AccountDeploymentDirectoryService", () => {
     expect(reconcileAccountDeployments).toHaveBeenCalledWith({
       connections: [
         expect.objectContaining({ kind: "personal" as const, name: "Studio Mac" }),
-        expect.objectContaining({ kind: "team", name: "Home" }),
+        expect.objectContaining({ kind: "personal", name: "Home" }),
       ],
       directoryDeployments: [personal, cloud],
       source: accountSource,

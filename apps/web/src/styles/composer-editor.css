@@ -162,18 +162,3 @@ img.ProseMirror-separator {
     line-height: 1.4;
   }
 }
-
-/* A team page in the team composer's `@` list. */
-.at-list__glyph {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  color: var(--text-soft);
-}
-
-.at-list__glyph > .icon {
-  width: 16px;
-  height: 16px;
-}

@@ -1451,7 +1451,6 @@ function thread(
     lastVisitedAt: null,
     latestRunCompletedAt: null,
     accessMode: "full-access",
-    teamOrigin: null,
     continuationIdentity: null,
     doneAt: null,
     doneReason: null,
@@ -1479,7 +1478,6 @@ function run(value: Thread): Run {
   const seedInputId = createId("message");
   return {
     accessMode: value.accessMode,
-    delivery: null,
     activationInputId: seedInputId,
     assignmentId: null,
     completedAt: null,
@@ -1529,8 +1527,6 @@ function inboxInput(
 ): ThreadInput {
   return {
     assignmentId: null,
-    teamRequestId: null,
-    teamSource: null,
     cancelReason: null,
     causalChainId: run?.causalChainId ?? createId("causalChain"),
     createdAt: now,

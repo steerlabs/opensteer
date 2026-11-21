@@ -346,9 +346,6 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
       oauth: {
         abandonHostSignIn: () => undefined,
-        signInTeam: async () => {
-          throw new Error("Unexpected OAuth sign-in");
-        },
         signInHome: async () => {
           throw new Error("Unexpected OAuth sign-in");
         },

@@ -1,12 +1,9 @@
-import type { AccountRuntimeOwner } from "../auth/account-runtime-owner.js";
-import { HostTransportError } from "./host-transport-error.js";
 import type { DeploymentId } from "@opensteer/core";
 import type { DeploymentCatalogStore, DeploymentConnection } from "./deployment-catalog.js";
 import { resolveConnection, type LocalHostRuntime } from "./connection-resolver.js";
 import type { SelectedAttachment } from "../auth/host-session.js";
 
 export interface HostCredentialProvider {
-  accountRuntime?(): AccountRuntimeOwner;
   authorizationHeader(connection: DeploymentConnection): Promise<string | null>;
 }
 
@@ -117,7 +114,6 @@ export class HostAttachmentFence {
    * own projection of the same catalog read has to refresh both together.
    */
   async refresh(): Promise<SelectedAttachment | null> {
-    const owner = this.#credentials.accountRuntime?.();
     const turn = ++this.#refreshes;
     const [catalog, localRuntime] = await Promise.all([
       this.#catalog.load(),
@@ -149,10 +145,6 @@ export class HostAttachmentFence {
         this.#invalidate("The selected deployment’s authority is unavailable.");
       }
       throw error;
-    }
-    if (connection.kind === "team" && owner) {
-      if (owner.signal.aborted) throw new HostTransportError("deployment-changed");
-      selected = { ...selected, resolved: { ...selected.resolved, accountRuntime: owner } };
     }
     if (this.#superseded(turn)) return this.refresh();
     this.#applySelection(selected.resolved.key);

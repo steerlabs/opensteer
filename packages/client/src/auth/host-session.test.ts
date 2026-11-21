@@ -1,6 +1,6 @@
 import { HostSignInOutcomeError } from "./host-sign-in-outcome.js";
 import { createId } from "@opensteer/core";
-import { TeamEntryRefusalReasonSchema, type SessionExchangeResponse } from "@opensteer/protocol";
+import { type SessionExchangeResponse } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { establishedCookieSession, testDiscoveryEnvelope } from "../test-support/index.js";
 import {
@@ -21,16 +21,12 @@ import {
   HostSession,
   type SelectedAttachment,
 } from "./host-session.js";
-import {
-  TeamEntryRefusedError,
-  type HostOAuthState,
-  type NativeOAuthManager,
-} from "./native-oauth.js";
+import { type HostOAuthState, type NativeOAuthManager } from "./native-oauth.js";
 
 describe("HostSession", () => {
-  it("offers explicit team sign-in after passive browser-required entry", async () => {
-    const f = hostSessionFixture(connectionOfKind("team"));
-    f.oauth.signInTeam.mockRejectedValueOnce(
+  it("offers explicit sign-in after passive browser-required entry", async () => {
+    const f = hostSessionFixture(homeAtOwnAddress());
+    f.oauth.signInHome.mockRejectedValueOnce(
       new HostSignInOutcomeError({ status: "sign-in-required" }),
     );
     try {
@@ -43,7 +39,7 @@ describe("HostSession", () => {
   });
 
   it("recovers the rejected authorization without resolving and refreshing the attachment again", async () => {
-    const f = hostSessionFixture(connectionOfKind("team"));
+    const f = hostSessionFixture(homeAtOwnAddress());
     f.oauth.recoverHostAuthorization.mockResolvedValue(true);
     await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe("recovered");
     expect(f.resolveAttachment).not.toHaveBeenCalled();
@@ -52,13 +48,6 @@ describe("HostSession", () => {
       f.attachment.resolved.authorization,
     );
     f.sessions.dispose();
-  });
-
-  it("preserves a team's membership refusal through pinned recovery", async () => {
-    const f = hostSessionFixture(connectionOfKind("team"));
-    const refusal = new TeamEntryRefusedError("not-a-member", "Ask for an invite");
-    f.oauth.recoverHostAuthorization.mockRejectedValue(refusal);
-    await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe(refusal);
   });
 
   it("fences a late unauthorized recovery, clears its credential, and drains it before explicit setup", async () => {
@@ -274,7 +263,7 @@ describe("HostSession", () => {
   });
 
   it("starts Host-native OAuth only for self-hosted attachments and publishes its exact key", async () => {
-    const connection = connectionOfKind("team");
+    const connection = homeAtOwnAddress();
     const fixture = hostSessionFixture(connection);
     const observations: unknown[] = [];
     fixture.sessions.subscribe((observation) => observations.push(observation));
@@ -285,7 +274,7 @@ describe("HostSession", () => {
       outcome: "authorizing",
     });
     expect(fixture.oauth.beginHostSignIn).toHaveBeenCalledWith(connection);
-    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, true);
+    expect(fixture.oauth.signInHome).toHaveBeenCalledWith(connection, true);
 
     fixture.oauth.emit(connection, "signed-in");
     await vi.waitFor(() =>
@@ -299,36 +288,15 @@ describe("HostSession", () => {
   });
 
   it("routes returning native credentials through passive entry", async () => {
-    const connection = connectionOfKind("team");
+    const connection = homeAtOwnAddress();
     const fixture = hostSessionFixture(connection);
     fixture.oauth.emit(connection, "signed-in");
     await fixture.sessions.establish(connection.authority.document.deploymentId, false);
-    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, false);
+    expect(fixture.oauth.signInHome).toHaveBeenCalledWith(connection, false);
   });
 
-  it.each(TeamEntryRefusalReasonSchema.options)(
-    "reports %s with the shared refusal outcome",
-    async (reason) => {
-      const connection = connectionOfKind("team");
-      const fixture = hostSessionFixture(connection);
-      fixture.oauth.signInTeam.mockRejectedValueOnce(new TeamEntryRefusedError(reason, "Refused"));
-      const establishing = fixture.sessions.establish(connection.authority.document.deploymentId);
-      if (reason === "not-a-member")
-        await expect(establishing).resolves.toMatchObject({
-          outcome: "blocked",
-          detail: "Refused",
-        });
-      else
-        await expect(establishing).rejects.toMatchObject({
-          code: "unavailable",
-          message: "Refused",
-        });
-      fixture.sessions.dispose();
-    },
-  );
-
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
-    const connection = connectionOfKind("team");
+    const connection = homeAtOwnAddress();
     const fixture = hostSessionFixture(connection);
     const first = deferred<HostOAuthState>();
     fixture.oauth.beginHostSignIn.mockImplementationOnce(() => first.promise);
@@ -403,7 +371,7 @@ describe("HostSession", () => {
       ...remotePersonalConnection("private", 1),
       source,
     } as DeploymentConnection;
-    const selfHosted = connectionOfKind("team");
+    const selfHosted = homeAtOwnAddress();
     const deployments = [connect, privateConnection, selfHosted];
     const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
     const removeAccountDeployments = vi.fn(async () => catalogFor(selfHosted, [selfHosted]));
@@ -476,9 +444,6 @@ function hostSessionFixture(
   };
   const oauth = {
     abandonHostSignIn: vi.fn((_deploymentId: string) => undefined),
-    signInTeam: vi.fn<NativeOAuthManager["signInTeam"]>(
-      async (connection): Promise<HostOAuthState> => oauth.beginHostSignIn(connection),
-    ),
     signInHome: vi.fn<NativeOAuthManager["signInHome"]>(
       async (connection): Promise<HostOAuthState> => oauth.beginHostSignIn(connection),
     ),
@@ -573,8 +538,10 @@ function localHostRuntime(connection: DeploymentConnection): LocalHostRuntime {
   };
 }
 
-function connectionOfKind(kind: "team"): DeploymentConnection {
-  const origin = `https://${kind}.opensteer.test`;
+/** A Home at its own HTTPS address, which signs its owner in with its own OAuth. */
+function homeAtOwnAddress(): DeploymentConnection {
+  const kind = "personal";
+  const origin = "https://home.opensteer.test";
   return DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
       canonicalOrigin: origin,
@@ -582,7 +549,7 @@ function connectionOfKind(kind: "team"): DeploymentConnection {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        kind: "team" as const,
+        kind: "personal" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -598,7 +565,7 @@ function connectionOfKind(kind: "team"): DeploymentConnection {
 }
 
 function localPersonalConnection(): DeploymentConnection {
-  const base = connectionOfKind("team");
+  const base = homeAtOwnAddress();
   const origin = "http://127.0.0.1:4310";
   return DeploymentConnectionSchema.parse({
     ...base,

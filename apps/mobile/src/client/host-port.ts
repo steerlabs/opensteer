@@ -115,7 +115,6 @@ export function createNetworkHostPort(options: {
       return new DesktopUpdatesService({
         catalog,
         credentials: {
-          accountRuntime: () => oauth.accountRuntime(),
           authorizationHeader: (connection) => credentials.authorization(connection),
         },
         deploymentId,

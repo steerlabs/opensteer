@@ -49,7 +49,6 @@ const responseEnvelopes = new Map(
 
 export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
-  readonly kind?: "personal" | "team";
   readonly personalVersion?: number;
   readonly fetch: Fetch;
   /**
@@ -267,7 +266,7 @@ async function request<Name extends keyof typeof hostApi>(
             : {}),
           // Every rpc request states the versions this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
-          ...apiVersionHeaders(options.kind ?? "personal", options.personalVersion),
+          ...apiVersionHeaders(options.personalVersion),
           ...(declaration.method === "POST"
             ? {
                 "content-type":

@@ -30,7 +30,7 @@ export interface LocalSetupOptions {
 export interface LocalSetupResult {
   readonly environmentCreated: boolean;
   readonly environmentUpdated: boolean;
-  readonly kind: "personal" | "team";
+  readonly kind: "personal";
 }
 
 export async function initializeLocalDevelopment(
@@ -87,13 +87,13 @@ export async function initializeLocalDevelopment(
 function developmentDeploymentKind(
   processEnvironment: NodeJS.ProcessEnv,
   fileEnvironment: Record<string, string>,
-): "personal" | "team" {
+): "personal" {
   const value =
     processEnvironment.OPENSTEER_DEPLOYMENT_KIND ??
     fileEnvironment.OPENSTEER_DEPLOYMENT_KIND ??
     "personal";
-  if (value === "personal" || value === "team") return value;
-  throw new Error("Development kind must be personal or team");
+  if (value === "personal") return value;
+  throw new Error("Development kind must be personal");
 }
 
 async function materializeLocalEnvironment(repositoryRoot: string): Promise<{

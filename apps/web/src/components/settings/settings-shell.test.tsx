@@ -157,7 +157,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     ...base,
     identityConfig: {
       ...base.identityConfig,
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       machineOwner: false,
       publicOrigin: "https://steer.example.test",
     } as HostSnapshot["identityConfig"],
@@ -217,7 +217,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
 
 function placementFixtures(): Readonly<Record<SettingsScenario, Partial<ShellContext>>> {
   const personal = personalDeployment();
-  const server = { ...serverDeployment(), kind: "team" as const, name: "home-server" };
+  const server = { ...serverDeployment(), name: "home-server" };
   return {
     browser: {},
     "personal-remote": {
@@ -283,7 +283,7 @@ function serverDeployment(): DesktopDeploymentSummary {
     activeOrigin: "https://server.example.test",
     canonicalOrigin: "https://server.example.test",
     id: createId("deployment"),
-    kind: "team",
+    kind: "personal",
     lastUsedAt: "2026-08-12T22:00:00.000Z",
     name: "Design server",
     access: "native",

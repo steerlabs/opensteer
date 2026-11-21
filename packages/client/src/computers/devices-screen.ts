@@ -1,5 +1,4 @@
 import { orgWords, type CloudComputerView } from "@opensteer/control-plane-protocol";
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import type { DeploymentShape, AuthSessionSummary } from "@opensteer/core";
 import type { DesktopWorkHome, MachineSummary } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
@@ -428,7 +427,7 @@ export function asleepToolFailure(
 
 /** The Home page's facts for a server Home: its address, its version, who is signed in. */
 export function personalHomeShape(shape: DeploymentShape | null | undefined): boolean {
-  return shape != null && isPersonalHost({ deploymentShape: shape });
+  return shape != null;
 }
 
 export function serverHomeFacts(input: {
