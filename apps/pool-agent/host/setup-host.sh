@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Prepares a pool host and keeps it prepared. Idempotent: run it again at any time.
+#
+#   setup-host.sh install   packages, pinned binaries, users, units, then `boot`
+#   setup-host.sh boot      every boot (opensteer-pool-host.service): the encrypted saved-state
+#                           array with a fresh key, kernel settings, the guest images on the array
+#   setup-host.sh check     prints every setting this host must have and fails on a wrong one
+#
+# Every setting and its reason: apps/pool-agent/host/HOST-SETUP.md. Ubuntu 24.04, x86_64.
+# Downloads go through the environment's http(s)_proxy when one is set.
+set -euo pipefail
+umask 022
+
+readonly FC_VERSION=v1.18.0
+readonly FC_TARBALL_SHA256=1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd
+readonly FC_SHA256=b33f46cd6d88834cf6a4f8d184f08f219809c636236bffd286d233a60602a2ba
+readonly JAILER_SHA256=ddadbaa15b5c942271a83b7040ca7259c8ccf92a9e08d44cce0b86fa407ba460
+readonly NODE_VERSION=v24.15.0
+readonly NODE_SHA256=472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6
+readonly KERNEL_URL=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261118-6d7cfa9c6b53-0/x86_64/vmlinux-6.1.188
+readonly KERNEL_SHA256=c7f899cbd24b856bca2a6db1736a48f90b4fe1f75cd3f53e775f36d8e8b00a40
+
+readonly OPT=/opt/opensteer-pool
+readonly STATE=/var/lib/opensteer-pool        # durable: journal, driver state, profiles, images
+readonly ARRAY=/srv/opensteer-pool            # encrypted Local SSD array: jails, saved state
+readonly RUN=/run/opensteer-pool
+readonly MAPPER=osp-saved
+: "${OSP_LOCAL_SSDS:=/dev/disk/by-id/google-local-nvme-ssd-*}"
+: "${OSP_HOME_CIDR:=10.0.0.0/8}"              # who may reach the agent's Home interface
+: "${OSP_AGENT_PORT:=7310}"
+: "${OSP_ADMIN_PORT:=7311}"
+
+log() { printf 'setup-host: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+
+require_host() {
+    [[ $(id -u) == 0 ]] || die "run as root"
+    [[ $(uname -m) == x86_64 ]] || die "x86_64 only"
+    [[ -c /dev/kvm ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
+    [[ -f /sys/fs/cgroup/cgroup.controllers ]] || die "the unified cgroup v2 hierarchy is required"
+    # One thread per core: no SMT sibling is shared between two people's guests.
+    if [[ -r /sys/devices/system/cpu/smt/active && $(cat /sys/devices/system/cpu/smt/active) != 0 ]]; then
+        die "SMT is active: create the host with one thread per core"
+    fi
+}
+
+fetch() { # url output sha256
+    local url=$1 out=$2 sum=$3
+    if [[ -f $out ]] && echo "$sum  $out" | sha256sum -c --quiet 2>/dev/null; then return; fi
+    curl -fsSL --retry 3 -o "$out.part" "$url"
+    echo "$sum  $out.part" | sha256sum -c --quiet || die "checksum mismatch for $url"
+    mv "$out.part" "$out"
+}
+
+install_packages() {
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::Retries=3 update -q
+    apt-get install -y -q --no-install-recommends \
+        nftables iproute2 mdadm cryptsetup-bin xfsprogs util-linux curl ca-certificates xz-utils uuid-runtime
+}
+
+install_binaries() {
+    install -d -m 0755 "$OPT/bin" "$OPT/download"
+    fetch "https://github.com/firecracker-microvm/firecracker/releases/download/$FC_VERSION/firecracker-$FC_VERSION-x86_64.tgz" \
+        "$OPT/download/firecracker.tgz" "$FC_TARBALL_SHA256"
+    local unpack; unpack=$(mktemp -d)
+    tar -xzf "$OPT/download/firecracker.tgz" -C "$unpack"
+    local release="$unpack/release-$FC_VERSION-x86_64"
+    echo "$FC_SHA256  $release/firecracker-$FC_VERSION-x86_64" | sha256sum -c --quiet || die "firecracker checksum"
+    echo "$JAILER_SHA256  $release/jailer-$FC_VERSION-x86_64" | sha256sum -c --quiet || die "jailer checksum"
+    # Root-owned and not writable by anyone else: the jailer trusts its exec file.
+    install -o root -g root -m 0755 "$release/firecracker-$FC_VERSION-x86_64" "$OPT/bin/firecracker"
+    install -o root -g root -m 0755 "$release/jailer-$FC_VERSION-x86_64" "$OPT/bin/jailer"
+    rm -rf --one-file-system "$unpack"
+    fetch "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz" \
+        "$OPT/download/node.tar.xz" "$NODE_SHA256"
+    if [[ ! -x $OPT/node/bin/node ]] || [[ $("$OPT/node/bin/node" --version) != "$NODE_VERSION" ]]; then
+        rm -rf --one-file-system "$OPT/node.new"
+        install -d -m 0755 "$OPT/node.new"
+        tar -xJf "$OPT/download/node.tar.xz" -C "$OPT/node.new" --strip-components=1 --no-same-owner
+        rm -rf --one-file-system "$OPT/node"
+        mv "$OPT/node.new" "$OPT/node"
+    fi
+    install -d -m 0755 "$STATE/images"
+    fetch "$KERNEL_URL" "$STATE/images/vmlinux.download" "$KERNEL_SHA256"
+}
+
+install_users() {
+    # The one local peer allowed to reach a guest's bridge port (the transport relay).
+    getent passwd opensteer-pool-relay >/dev/null ||
+        useradd --system --no-create-home --shell /usr/sbin/nologin opensteer-pool-relay
+}
+
+install_units() {
+    install -d -m 0700 /etc/opensteer-pool "$STATE" "$STATE/journal" "$STATE/driver"
+    install -d -m 0711 "$STATE/profiles"
+    install -m 0755 "$0" "$OPT/setup-host.sh"
+    cat > /etc/systemd/system/opensteer-pool-host.service <<EOF
+[Unit]
+Description=Opensteer pool host: encrypted saved-state array and kernel settings
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=opensteer-pool-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$OPT/setup-host.sh boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /etc/systemd/system/opensteer-pool-agent.service <<EOF
+[Unit]
+Description=Opensteer pool agent
+Requires=opensteer-pool-host.service
+After=opensteer-pool-host.service network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$OPT/node/bin/node $OPT/agent/main.js /etc/opensteer-pool/agent.json
+Restart=always
+RestartSec=1
+# Guests are in the agent's delegated subtree and outlive an agent restart: the next agent
+# reconciles with them. Only the agent's own process is ended on stop.
+Delegate=yes
+KillMode=process
+LimitCORE=0
+LimitNOFILE=65536
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+# What the jailer and the namespace, mount and filter work need, and nothing more. No mount
+# namespace options: the agent makes network namespaces and bind mounts the host must see.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_MKNOD CAP_SYS_CHROOT CAP_KILL CAP_SYS_RESOURCE
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable opensteer-pool-host.service >/dev/null
+}
+
+kernel_settings() {
+    # Transparent huge pages only where asked for (Firecracker's guest memory): the measured
+    # restore path. KSM off: no page is ever merged between two guests.
+    echo madvise > /sys/kernel/mm/transparent_hugepage/enabled
+    echo madvise > /sys/kernel/mm/transparent_hugepage/defrag
+    if [[ -w /sys/kernel/mm/ksm/run ]]; then echo 2 > /sys/kernel/mm/ksm/run; echo 0 > /sys/kernel/mm/ksm/run; fi
+    # Guest memory is never written anywhere but the encrypted array: no swap, no core dumps.
+    swapoff -a
+    cat > /etc/sysctl.d/90-opensteer-pool.conf <<'EOF'
+kernel.core_pattern=|/bin/false
+fs.suid_dumpable=0
+kernel.kptr_restrict=2
+kernel.dmesg_restrict=1
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=1
+vm.swappiness=0
+EOF
+    sysctl -q --system
+    install -d -m 0755 /etc/systemd/coredump.conf.d /etc/systemd/system.conf.d
+    printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/opensteer-pool.conf
+    printf '[Manager]\nDefaultLimitCORE=0\n' > /etc/systemd/system.conf.d/opensteer-pool.conf
+    # Linux 6.1+ cgroup v2 attach latency (Firecracker production host setup).
+    mount -o remount,favordynmods /sys/fs/cgroup 2>/dev/null || true
+}
+
+host_firewall() {
+    # The agent's own interfaces: the Homes' network and the provisioner only. The slots'
+    # namespaces are filtered by the agent itself (table inet opensteer_pool).
+    cat > /etc/nftables.d-opensteer-pool.nft <<EOF
+table inet opensteer_pool_host
+delete table inet opensteer_pool_host
+table inet opensteer_pool_host {
+  chain input {
+    type filter hook input priority -20; policy accept;
+    tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } ip saddr != { 127.0.0.0/8, $OSP_HOME_CIDR } drop
+    tcp dport { $OSP_AGENT_PORT, $OSP_ADMIN_PORT } meta nfproto ipv6 drop
+  }
+}
+EOF
+    nft -f /etc/nftables.d-opensteer-pool.nft
+}
+
+saved_state_array() {
+    install -d -m 0700 "$RUN"
+    if mountpoint -q "$ARRAY"; then return; fi
+    # shellcheck disable=SC2206
+    local disks=($OSP_LOCAL_SSDS)
+    [[ -e ${disks[0]} ]] || die "no Local SSD found at $OSP_LOCAL_SSDS"
+    local device
+    if (( ${#disks[@]} > 1 )); then
+        # Striped: saves and wakes are bounded by the array's bandwidth.
+        mdadm --stop /dev/md/osp-saved 2>/dev/null || true
+        for disk in "${disks[@]}"; do wipefs -a -q "$disk"; done
+        mdadm --create /dev/md/osp-saved --run --force --level=0 --chunk=256 \
+            --raid-devices=${#disks[@]} --homehost=any --name=osp-saved "${disks[@]}"
+        device=/dev/md/osp-saved
+    else
+        device=${disks[0]}
+    fi
+    # A fresh random key held only by the kernel: a reboot or a lost disk makes every saved
+    # state unreadable, by design. The key never touches a file.
+    cryptsetup close "$MAPPER" 2>/dev/null || true
+    cryptsetup open --type plain --cipher aes-xts-plain64 --key-size 512 --hash plain \
+        --key-file /dev/urandom --keyfile-size 64 "$device" "$MAPPER"
+    # XFS with reflinks: each guest gets its own copy of the root image without the bytes.
+    mkfs.xfs -q -f -m reflink=1 "/dev/mapper/$MAPPER"
+    install -d -m 0700 "$ARRAY"
+    mount -o noatime,nosuid "/dev/mapper/$MAPPER" "$ARRAY"
+    chmod 0700 "$ARRAY"
+    uuidgen > "$RUN/array-id"
+    chmod 0600 "$RUN/array-id"
+    log "saved-state array ready on $device"
+}
+
+stage_images() {
+    install -d -m 0755 "$ARRAY/images"
+    if [[ -f $STATE/images/rootfs.ext4 ]]; then
+        for name in vmlinux rootfs.ext4 manifest.json; do
+            if ! cmp -s "$STATE/images/$name" "$ARRAY/images/$name" 2>/dev/null; then
+                cp --sparse=always "$STATE/images/$name" "$ARRAY/images/$name.new"
+                chmod 0444 "$ARRAY/images/$name.new"
+                mv "$ARRAY/images/$name.new" "$ARRAY/images/$name"
+            fi
+        done
+    else
+        log "no guest image in $STATE/images yet (build it with guest/build-image.sh)"
+    fi
+}
+
+check() {
+    local failed=0
+    expect() { # name actual wanted
+        if [[ $2 == "$3" ]]; then printf '  ok   %-28s %s\n' "$1" "$2"
+        else printf '  FAIL %-28s %s (want %s)\n' "$1" "$2" "$3"; failed=1; fi
+    }
+    expect "thp" "$(grep -o '\[[a-z]*\]' /sys/kernel/mm/transparent_hugepage/enabled)" "[madvise]"
+    expect "ksm" "$(cat /sys/kernel/mm/ksm/run 2>/dev/null || echo 0)" "0"
+    expect "smt active" "$(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo 0)" "0"
+    expect "threads per core" "$(lscpu | awk -F: '/Thread\(s\) per core/ {gsub(/ /,"",$2); print $2}')" "1"
+    expect "swap" "$(awk 'NR>1' /proc/swaps | wc -l)" "0"
+    expect "core_pattern" "$(cat /proc/sys/kernel/core_pattern)" "|/bin/false"
+    expect "ip_forward" "$(cat /proc/sys/net/ipv4/ip_forward)" "1"
+    expect "array mounted" "$(mountpoint -q "$ARRAY" && echo yes || echo no)" "yes"
+    expect "array encrypted" "$(cryptsetup status "$MAPPER" 2>/dev/null | awk '/type:/ {print $2}')" "PLAIN"
+    expect "array cipher" "$(cryptsetup status "$MAPPER" 2>/dev/null | awk '/cipher:/ {print $2}')" "aes-xts-plain64"
+    expect "firecracker" "$(sha256sum "$OPT/bin/firecracker" | cut -d' ' -f1)" "$FC_SHA256"
+    expect "jailer" "$(sha256sum "$OPT/bin/jailer" | cut -d' ' -f1)" "$JAILER_SHA256"
+    expect "node" "$("$OPT/node/bin/node" --version)" "$NODE_VERSION"
+    expect "kvm" "$([[ -c /dev/kvm ]] && echo present)" "present"
+    expect "cgroup v2" "$(stat -fc %T /sys/fs/cgroup)" "cgroup2fs"
+    return $failed
+}
+
+case "${1:-}" in
+    install)
+        require_host
+        install_packages
+        install_binaries
+        install_users
+        install_units
+        kernel_settings
+        host_firewall
+        saved_state_array
+        stage_images
+        check
+        ;;
+    boot)
+        require_host
+        kernel_settings
+        host_firewall
+        saved_state_array
+        stage_images
+        ;;
+    check)
+        check
+        ;;
+    *)
+        echo "usage: $0 install|boot|check" >&2
+        exit 2
+        ;;
+esac
