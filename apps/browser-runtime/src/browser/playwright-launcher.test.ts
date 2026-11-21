@@ -1304,6 +1304,134 @@ describe("native Chromium profiles", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("retries failed launch orphan removal with evidence and refuses launch if an orphan survives (R2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    let removeCalls = 0;
+    let orphanPresent = true;
+    const orphanTab = {
+      tabId: 77,
+      windowId: 1,
+      index: 0,
+      url: "https://person-secret.test/",
+      title: "Secret",
+      active: false,
+      discarded: false,
+      status: "complete",
+      targetId: "target-orphan-77",
+    };
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+    });
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => (orphanPresent ? [orphanTab] : []));
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removeCalls++;
+        if (tabId === 77 && removeCalls >= 2) {
+          orphanPresent = false;
+          return true;
+        }
+        return false;
+      });
+    try {
+      // Case 1: removeByTabId fails once, then succeeds on retry -> launch succeeds with 0 orphans!
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      expect(removeCalls).toBeGreaterThanOrEqual(2);
+      expect(orphanPresent).toBe(false);
+      await launched.close();
+
+      // Case 2: orphan keeps refusing removal and Target.closeTarget fails -> launch MUST be refused!
+      orphanPresent = true;
+      remSpy.mockResolvedValue(false);
+      f.cdp.send.mockImplementation(async (method: string) => {
+        if (method === "Target.closeTarget") throw new Error("closeTarget failed");
+        return {};
+      });
+      await expect(f.launcher.launch(nativeProfileRequest(f.directory))).rejects.toThrow(
+        /could not be removed/i,
+      );
+    } finally {
+      invSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses reconcile when an unclaimed tab cannot be confirmed removed and never hands off its late page (R2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const sidecarUrl = "https://person-private.test/";
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: "surface_00000000-0000-4000-8000-00000000r201", url: sidecarUrl, lineageId: "lin-1" },
+    ]);
+    const restoredTab = {
+      tabId: 88,
+      windowId: 1,
+      index: 0,
+      url: sidecarUrl,
+      title: "Private",
+      active: false,
+      discarded: false,
+      status: "complete",
+      targetId: "target-restored-88",
+    };
+    const pageHandlers: Array<(page: Page) => void> = [];
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockResolvedValue([restoredTab]);
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockResolvedValue(false);
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") throw new Error("closeTarget failed");
+      return {};
+    });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      // Reconcile with empty saved set (e.g. agent session first) MUST fail closed!
+      await expect(launched.context.sessionRestore!.reconcile(new Set())).rejects.toThrow(
+        /could not be removed/i,
+      );
+      // Even if a late Playwright page event arrives for target-restored-88, handOff MUST NEVER see it!
+      const handedOff: unknown[] = [];
+      launched.context.handOff((page) => handedOff.push(page));
+      const closeLate = vi.fn().mockResolvedValue(undefined);
+      const latePage = {
+        url: () => sidecarUrl,
+        isClosed: () => false,
+        close: closeLate,
+        on: vi.fn(),
+        once: vi.fn(),
+        _connection: {
+          toImpl: () => ({ delegate: { _targetId: "target-restored-88" } }),
+        },
+      } as unknown as Page;
+      for (const handler of pageHandlers) handler(latePage);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(handedOff).toHaveLength(0);
+      expect(closeLate).toHaveBeenCalled();
+    } finally {
+      invSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(

@@ -848,6 +848,38 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             helperTargetId = null;
           }
         }
+        const removeLaunchTabWithEvidence = async (
+          lc: ChromiumTabLifecycleBridge,
+          tabId: number,
+          targetId: string | null,
+        ): Promise<boolean> => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const removed = await lc.removeByTabId(tabId).catch(() => false);
+            if (removed) {
+              const check = await lc.inventory().catch(() => null);
+              if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+            } else {
+              const check = await lc.inventory().catch(() => null);
+              if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+            }
+            if (targetId) {
+              const closed = await withTimeout(
+                browserCdp.send("Target.closeTarget", { targetId }),
+                2_000,
+                { timeoutError: () => new Error("Launch Target.closeTarget timed out.") },
+              ).then(
+                () => true,
+                () => false,
+              );
+              if (closed) {
+                const check = await lc.inventory().catch(() => null);
+                if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+              }
+            }
+            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 40));
+          }
+          return false;
+        };
         const initialInventory = await candidateLifecycle.inventory().catch(() => null);
         if (initialInventory !== null) {
           lifecycle = candidateLifecycle;
@@ -856,7 +888,14 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             if (tab.targetId !== null && tab.targetId === helperTargetId) continue;
             if (isInternalExtensionUrl(tab.url)) continue;
             if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") {
-              await lifecycle.removeByTabId(tab.tabId).catch(() => undefined);
+              const confirmed = await removeLaunchTabWithEvidence(
+                lifecycle,
+                tab.tabId,
+                tab.targetId,
+              );
+              if (!confirmed) {
+                throw new Error("Chromium restored unauthorized tabs that could not be removed.");
+              }
               continue;
             }
             rawRestored.push(tab);
@@ -865,11 +904,13 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             const sidecar = await readTabRestoreSidecar(directory);
             const { matched, orphans } = matchRestoredTabs(rawRestored, sidecar);
             for (const orphan of orphans) {
-              const removed = await lifecycle.removeByTabId(orphan.tabId).catch(() => false);
-              if (!removed && orphan.targetId) {
-                await browserCdp
-                  .send("Target.closeTarget", { targetId: orphan.targetId })
-                  .catch(() => undefined);
+              const confirmed = await removeLaunchTabWithEvidence(
+                lifecycle,
+                orphan.tabId,
+                orphan.targetId,
+              );
+              if (!confirmed) {
+                throw new Error("Chromium restored unauthorized tabs that could not be removed.");
               }
             }
             for (const [surfaceId, entry] of matched) {
@@ -885,21 +926,35 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             if (page === helper || page.isClosed()) continue;
             await page.close({ runBeforeUnload: false }).catch(() => undefined);
           }
-          const targets = (await browserCdp
-            .send("Target.getTargets")
-            .catch(() => ({ targetInfos: [] }))) as {
-            targetInfos?: readonly { targetId?: unknown; type?: unknown }[];
-          };
-          for (const info of targets.targetInfos ?? []) {
-            if (
-              info.type === "page" &&
-              typeof info.targetId === "string" &&
-              info.targetId !== helperTargetId
-            ) {
-              await browserCdp
-                .send("Target.closeTarget", { targetId: info.targetId })
-                .catch(() => undefined);
+          let confirmedClean = false;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const targets = (await withTimeout(browserCdp.send("Target.getTargets"), 2_000, {
+              timeoutError: () => new Error("Launch Target.getTargets timed out."),
+            }).catch(() => null)) as {
+              targetInfos?: readonly { targetId?: unknown; type?: unknown }[];
+            } | null;
+            if (!targets) break;
+            const survivors = (targets.targetInfos ?? []).filter(
+              (info) =>
+                info.type === "page" &&
+                typeof info.targetId === "string" &&
+                info.targetId !== helperTargetId,
+            );
+            if (survivors.length === 0) {
+              confirmedClean = true;
+              break;
             }
+            for (const info of survivors) {
+              await withTimeout(
+                browserCdp.send("Target.closeTarget", { targetId: info.targetId }),
+                2_000,
+                { timeoutError: () => new Error("Launch Target.closeTarget timed out.") },
+              ).catch(() => undefined);
+            }
+            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 40));
+          }
+          if (!confirmedClean) {
+            throw new Error("Chromium restored unauthorized tabs that could not be removed.");
           }
         }
       }
@@ -1168,6 +1223,8 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly hiddenRestoredPages = new WeakSet<Page>();
   private readonly unclaimedRestoredTabs = new Map<number, ChromiumTabEntry>();
   private readonly unclaimedRestoredTargetIds = new Set<string>();
+  /** Targets from session restore that must NEVER be handed off unless explicitly claimed or confirmed gone. */
+  private readonly neverHandOffTargetIds = new Set<string>();
   private readonly restoredPagesByTabId = new Map<number, Page>();
   private readonly restoredBySurfaceId = new Map<BrowserSurfaceId, MatchedRestoredTab>();
   private readonly savedTabsBySurfaceId = new Map<
@@ -1209,12 +1266,19 @@ class PlaywrightContextHandle implements BrowserContext {
     this.providerConfig = providerConfig;
     this.context = context;
     for (const page of preHelperPages) {
-      if (page !== privatePage) this.hiddenRestoredPages.add(page);
+      if (page !== privatePage) {
+        this.hiddenRestoredPages.add(page);
+        const preTargetId = syncTargetIdOfPage(page);
+        if (preTargetId) this.neverHandOffTargetIds.add(preTargetId);
+      }
     }
     for (const [surfaceId, entry] of matchedRestored) {
       this.restoredBySurfaceId.set(surfaceId, entry);
       this.unclaimedRestoredTabs.set(entry.tab.tabId, entry.tab);
-      if (entry.tab.targetId) this.unclaimedRestoredTargetIds.add(entry.tab.targetId);
+      if (entry.tab.targetId) {
+        this.unclaimedRestoredTargetIds.add(entry.tab.targetId);
+        this.neverHandOffTargetIds.add(entry.tab.targetId);
+      }
     }
     if (lifecycle && profileDirectory) {
       this.sessionRestore = {
@@ -1231,6 +1295,7 @@ class PlaywrightContextHandle implements BrowserContext {
       this.sleepingTabs.clear();
       this.unclaimedRestoredTabs.clear();
       this.unclaimedRestoredTargetIds.clear();
+      this.neverHandOffTargetIds.clear();
       this.restoredPagesByTabId.clear();
       this.restoredBySurfaceId.clear();
       this.savedTabsBySurfaceId.clear();
@@ -1254,13 +1319,18 @@ class PlaywrightContextHandle implements BrowserContext {
         waiter.resolve(page);
         return;
       }
-      if (targetId && this.unclaimedRestoredTargetIds.has(targetId)) {
+      if (targetId && this.neverHandOffTargetIds.has(targetId)) {
         this.hiddenRestoredPages.add(page);
-        for (const tab of this.unclaimedRestoredTabs.values()) {
-          if (tab.targetId === targetId) {
-            this.restoredPagesByTabId.set(tab.tabId, page);
-            break;
+        if (this.unclaimedRestoredTargetIds.has(targetId)) {
+          for (const tab of this.unclaimedRestoredTabs.values()) {
+            if (tab.targetId === targetId) {
+              this.restoredPagesByTabId.set(tab.tabId, page);
+              break;
+            }
           }
+        } else {
+          // A surviving orphan or failed-removal tab arrived late: close it and never hand it off.
+          void page.close({ runBeforeUnload: false }).catch(() => undefined);
         }
         return;
       }
@@ -1271,6 +1341,20 @@ class PlaywrightContextHandle implements BrowserContext {
       } else {
         queueMicrotask(() => {
           if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
+          if (!targetId && this.neverHandOffTargetIds.size > 0) {
+            void this.targetIdOfPage(page).then((resolved) => {
+              if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
+              if (resolved && this.neverHandOffTargetIds.has(resolved)) {
+                this.hiddenRestoredPages.add(page);
+                if (!this.unclaimedRestoredTargetIds.has(resolved)) {
+                  void page.close({ runBeforeUnload: false }).catch(() => undefined);
+                }
+                return;
+              }
+              for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+            });
+            return;
+          }
           for (const listener of this.handOffs) listener(handle, handle.openerHandle);
         });
       }
@@ -1308,26 +1392,36 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
-  private async removeTabWithEvidence(tabId: number, targetId: string | null): Promise<boolean> {
+  private async removeTabWithEvidence(
+    tabId: number,
+    targetId: string | null,
+    attempts = 3,
+  ): Promise<boolean> {
     if (!this.lifecycle) return false;
-    let removed = await this.lifecycle.removeByTabId(tabId).catch(() => false);
-    if (!removed) {
-      const check = await this.lifecycle.inventory().catch(() => null);
-      if (check && !check.some((entry) => entry.tabId === tabId)) {
-        removed = true;
-      }
-    }
-    if (!removed && targetId && this.closeTarget) {
-      const targetClosed = await this.closeTarget(targetId).then(
-        () => true,
-        () => false,
-      );
-      if (targetClosed) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const removed = await this.lifecycle.removeByTabId(tabId).catch(() => false);
+      if (removed) {
         const check = await this.lifecycle.inventory().catch(() => null);
-        removed = check ? !check.some((entry) => entry.tabId === tabId) : true;
+        if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+      } else {
+        const check = await this.lifecycle.inventory().catch(() => null);
+        if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+      }
+      if (targetId && this.closeTarget) {
+        const targetClosed = await this.closeTarget(targetId).then(
+          () => true,
+          () => false,
+        );
+        if (targetClosed) {
+          const check = await this.lifecycle.inventory().catch(() => null);
+          if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+        }
+      }
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
       }
     }
-    return removed;
+    return false;
   }
 
   private async reconcileSavedTabs(
@@ -1335,27 +1429,39 @@ class PlaywrightContextHandle implements BrowserContext {
     lineageId?: string,
   ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory) return;
+    let failedRemovals = 0;
     for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
       if (savedTabIds.has(surfaceId) && (!lineageId || entry.lineageId === lineageId)) continue;
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
       this.restoredPagesByTabId.delete(entry.tab.tabId);
-      await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      if (confirmed) {
+        if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+      } else {
+        failedRemovals++;
+      }
     }
     if (this.restoredBySurfaceId.size > 0) {
-      await this.parkUnclaimedRestoredTabs();
+      const parkFailed = await this.parkUnclaimedRestoredTabs();
+      failedRemovals += parkFailed;
     }
     this.scheduleSidecarWrite();
+    if (failedRemovals > 0) {
+      throw new Error("Chromium restored unauthorized tabs that could not be removed.");
+    }
   }
 
   /**
    * Discards every kept unclaimed restored tab so Chromium's background loader
    * cannot run unowned pages with the person's cookies before the person opens them.
    * Any parked tab that stays live and cannot be discarded is closed with evidence.
+   * Returns the count of tabs that could neither be discarded nor confirmed closed.
    */
-  private async parkUnclaimedRestoredTabs(): Promise<void> {
-    if (!this.lifecycle || this.restoredBySurfaceId.size === 0) return;
+  private async parkUnclaimedRestoredTabs(): Promise<number> {
+    if (!this.lifecycle || this.restoredBySurfaceId.size === 0) return 0;
+    let failedRemovals = 0;
     const inventory = await this.lifecycle.inventory().catch(() => null);
     if (!inventory) {
       for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
@@ -1363,9 +1469,14 @@ class PlaywrightContextHandle implements BrowserContext {
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
         if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
         this.restoredPagesByTabId.delete(entry.tab.tabId);
-        await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+        const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+        if (confirmed) {
+          if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        } else {
+          failedRemovals++;
+        }
       }
-      return;
+      return failedRemovals;
     }
     const byTabId = new Map(inventory.map((tab) => [tab.tabId, tab]));
     for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
@@ -1373,10 +1484,14 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!current) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+        if (entry.tab.targetId) {
+          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+          this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        }
         this.restoredPagesByTabId.delete(entry.tab.tabId);
         continue;
       }
+      if (current.targetId) this.neverHandOffTargetIds.add(current.targetId);
       if (current.discarded) {
         this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
         this.unclaimedRestoredTabs.set(current.tabId, current);
@@ -1392,8 +1507,14 @@ class PlaywrightContextHandle implements BrowserContext {
       const newTabId = await this.lifecycle.discardByTabId(current.tabId).catch(() => null);
       if (newTabId !== null) {
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-        if (current.targetId) this.unclaimedRestoredTargetIds.delete(current.targetId);
+        if (entry.tab.targetId) {
+          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+          this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        }
+        if (current.targetId) {
+          this.unclaimedRestoredTargetIds.delete(current.targetId);
+          this.neverHandOffTargetIds.delete(current.targetId);
+        }
         this.restoredPagesByTabId.delete(entry.tab.tabId);
         const parked: ChromiumTabEntry = {
           ...current,
@@ -1412,7 +1533,11 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!after) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-        if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+        if (entry.tab.targetId) {
+          this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
+          this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        }
+        if (current.targetId) this.neverHandOffTargetIds.delete(current.targetId);
         this.restoredPagesByTabId.delete(entry.tab.tabId);
         continue;
       }
@@ -1426,10 +1551,20 @@ class PlaywrightContextHandle implements BrowserContext {
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-      if (after.targetId) this.unclaimedRestoredTargetIds.delete(after.targetId);
+      if (after.targetId) {
+        this.unclaimedRestoredTargetIds.delete(after.targetId);
+        this.neverHandOffTargetIds.add(after.targetId);
+      }
       this.restoredPagesByTabId.delete(entry.tab.tabId);
-      await this.removeTabWithEvidence(after.tabId, after.targetId);
+      const confirmed = await this.removeTabWithEvidence(after.tabId, after.targetId);
+      if (confirmed) {
+        if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        if (after.targetId) this.neverHandOffTargetIds.delete(after.targetId);
+      } else {
+        failedRemovals++;
+      }
     }
+    return failedRemovals;
   }
 
   /**
@@ -1479,19 +1614,22 @@ class PlaywrightContextHandle implements BrowserContext {
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
       this.restoredPagesByTabId.delete(entry.tab.tabId);
-      await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
       this.scheduleSidecarWrite();
       return null;
     }
     try {
       const restoredPage = await this.claimRestoredTab(entry.tab);
+      if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
       const handle = this.wrap(restoredPage);
       handle.restoredFromSession = true;
       this.trackSavedTab(surfaceId, handle, entry.lineageId);
       own?.(handle);
       return handle;
     } catch {
-      await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      const confirmed = await this.removeTabWithEvidence(entry.tab.tabId, entry.tab.targetId);
+      if (confirmed && entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
       this.scheduleSidecarWrite();
       return null;
     }

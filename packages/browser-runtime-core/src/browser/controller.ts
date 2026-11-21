@@ -386,6 +386,7 @@ export class BrowserController {
   private readonly onSavedTabs:
     ((savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>) | undefined;
   private savedTabsReconcile: Promise<void> | null = null;
+  private savedTabsReconcileError: unknown = undefined;
   private readonly tabPublisher = new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
     ids: () => this.tabRows.keys(),
     read: (id) => this.tabRows.get(id),
@@ -962,9 +963,18 @@ export class BrowserController {
         for (const id of this.savedTabs.rows.keys()) {
           savedIds.add(BrowserSurfaceIdSchema.parse(id));
         }
-        const reconciling = Promise.resolve(this.onSavedTabs(savedIds)).finally(() => {
-          if (this.savedTabsReconcile === reconciling) this.savedTabsReconcile = null;
-        });
+        const reconciling = Promise.resolve(this.onSavedTabs(savedIds))
+          .then(
+            () => {
+              this.savedTabsReconcileError = undefined;
+            },
+            (error: unknown) => {
+              this.savedTabsReconcileError = error;
+            },
+          )
+          .finally(() => {
+            if (this.savedTabsReconcile === reconciling) this.savedTabsReconcile = null;
+          });
         this.savedTabsReconcile = reconciling;
         return reconciling;
       }
@@ -3803,6 +3813,14 @@ export class BrowserController {
     }
     if (message.command.method === browserHostMethods.listTabs) {
       if (this.savedTabsReconcile) await this.savedTabsReconcile;
+      if (this.savedTabsReconcileError !== undefined) {
+        throw new BrowserRuntimeError(
+          "conflict",
+          this.savedTabsReconcileError instanceof Error
+            ? this.savedTabsReconcileError.message
+            : "Saved-tab reconciliation failed.",
+        );
+      }
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
@@ -3894,6 +3912,14 @@ export class BrowserController {
       throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
       if (this.savedTabsReconcile) await this.savedTabsReconcile;
+      if (this.savedTabsReconcileError !== undefined) {
+        throw new BrowserRuntimeError(
+          "conflict",
+          this.savedTabsReconcileError instanceof Error
+            ? this.savedTabsReconcileError.message
+            : "Saved-tab reconciliation failed.",
+        );
+      }
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
         sessionId: true,
