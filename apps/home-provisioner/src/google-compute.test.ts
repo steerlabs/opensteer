@@ -115,6 +115,16 @@ it("replays a Compute request ID before name checks and models intermediate inst
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual(fake.started.get(requestId));
   expect(fake.instances.size).toBe(1);
+  const reused = await fake.fetch(
+    new URL(`https://compute.test/compute/v1/${regionPath}/addresses?requestId=${requestId}`),
+    {
+      method: "POST",
+      headers: insert!.headers,
+      body: JSON.stringify({ name: "another-address", addressType: "EXTERNAL" }),
+    },
+  );
+  expect(reused.status).toBe(400);
+  expect(fake.addresses.size).toBe(1);
   await provider.powerOff(created.id, signal);
   await provider.powerOn(created.id, signal);
   expect(fake.instanceStates).toEqual(

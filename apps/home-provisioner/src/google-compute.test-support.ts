@@ -59,6 +59,11 @@ type RecordedRequest = {
 };
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
+const requestKey = ({ method, path, query, body }: RecordedRequest) => {
+  const rest = new URLSearchParams(query);
+  rest.delete("requestId");
+  return JSON.stringify([method, path, rest.toString(), body ?? null]);
+};
 
 export class ComputeFake {
   readonly requests: RecordedRequest[] = [];
@@ -89,6 +94,7 @@ export class ComputeFake {
   #nextId = BigInt(computeInstanceId);
   #nextAddress = 21;
   #nextOperation = 0;
+  readonly #replays = new Map<string, { request: string; operation: Operation }>();
 
   adapter() {
     return new GoogleCompute({
@@ -127,8 +133,15 @@ export class ComputeFake {
     if (url.hostname !== "compute.test") throw new Error("Unexpected test endpoint");
     if (this.rejectComputeToken || headers.get("authorization") !== `Bearer ${this.token}`)
       return json({}, 401);
-    const original = method !== "GET" && this.started.get(req.query.get("requestId") ?? "");
-    if (original) return json(original);
+    // Compute ignores a repeated requestId "if it has already been completed" and answers with
+    // the original operation. Google does not document a different request under the same id;
+    // the fake refuses it so a reused id cannot pass unnoticed.
+    // https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
+    const replayed = method !== "GET" && this.#replays.get(req.query.get("requestId") ?? "");
+    if (replayed) {
+      if (replayed.request !== requestKey(req)) return json({}, 400);
+      return json(replayed.operation);
+    }
     if (path.endsWith("/subnetworks/home-subnet"))
       return json({
         network: `https://compute.googleapis.com/compute/v1/${globalPath}/networks/home-net`,
@@ -210,6 +223,7 @@ export class ComputeFake {
       ...result,
     };
     this.started.set(clientOperationId, operation);
+    this.#replays.set(clientOperationId, { request: requestKey(req), operation });
     this.operations.set(`${scope}/operations/${operation.name}`, { operation, advance, finish });
     return operation;
   }
