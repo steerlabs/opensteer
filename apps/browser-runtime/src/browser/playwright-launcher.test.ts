@@ -32,6 +32,7 @@ import {
   writeTabRestoreSidecar,
 } from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
+import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 import {
   createChromiumChildEnvironment,
   PlaywrightChromiumLauncher,
@@ -3039,6 +3040,164 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it.each(["discard", "freeze"] as const)(
+    "gives the tab up when a claim's wait on its surface's queue times out during the parked %s, and leaves no page frozen (C1)",
+    async (held) => {
+      const f = await nativeCloseFixture();
+      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+      const surfS = "srf_00000000-0000-4000-8000-00000000c101" as BrowserSurfaceId;
+      await writeTabRestoreSidecar(f.directory, [
+        { index: 0, surfaceId: surfS, url: "https://c1.test/" },
+      ]);
+      const makePage = (id: string, url: string) => {
+        const state = { closed: false, lifecycle: "active" };
+        const close = vi.fn(async () => {
+          state.closed = true;
+        });
+        return {
+          state,
+          close,
+          page: {
+            url: () => url,
+            isClosed: () => state.closed,
+            close,
+            waitForLoadState: vi.fn(async () => undefined),
+            bringToFront: vi.fn(async () => undefined),
+            on: vi.fn(),
+            once: vi.fn(),
+            off: vi.fn(),
+            frames: () => [],
+            mainFrame: () => ({}),
+            addInitScript: vi.fn(async () => undefined),
+            _opener: null,
+            _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+          } as unknown as Page,
+        };
+      };
+      const helper = makePage("target-c1-helper", "about:blank");
+      const restored = makePage("target-c1-s", "https://c1.test/");
+      let tabs: ChromiumTabEntry[] = [
+        {
+          tabId: 1,
+          windowId: 1,
+          index: 0,
+          url: "about:blank",
+          title: "",
+          active: true,
+          discarded: false,
+          status: "complete",
+          targetId: "target-c1-helper",
+        },
+        {
+          tabId: 901,
+          windowId: 1,
+          index: 1,
+          url: "https://c1.test/",
+          title: "S",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-c1-s",
+        },
+      ];
+      const freezeGate = Promise.withResolvers<void>();
+      const discardGate = Promise.withResolvers<void>();
+      let freezeEntered = false;
+      let discardEntered = false;
+      Object.assign(f.context, {
+        serviceWorkers: () => [],
+        pages: () => [helper.page, ...(restored.state.closed ? [] : [restored.page])],
+        newPage: vi.fn(async () => helper.page),
+        newCDPSession: vi.fn(async (target: Page) => ({
+          send: vi.fn(async (method: string, params?: { state?: string }) => {
+            if (target === restored.page && method === "Page.setWebLifecycleState") {
+              if (params?.state === "frozen" && held === "freeze") {
+                freezeEntered = true;
+                await freezeGate.promise;
+              }
+              restored.state.lifecycle = params!.state!;
+            }
+            return {};
+          }),
+          detach: vi.fn(async () => undefined),
+        })),
+        on: vi.fn(),
+      });
+      const invSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+        .mockImplementation(async () => [...tabs]);
+      const discSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+        .mockImplementation(async (tabId) => {
+          discardEntered = true;
+          if (held === "discard") await discardGate.promise;
+          // A replacing discard: the page closes and tab 901 becomes discarded tab 951.
+          restored.state.closed = true;
+          tabs = tabs.map((t) =>
+            t.tabId === tabId
+              ? {
+                  ...t,
+                  tabId: 951,
+                  replacedFromTabIds: [901],
+                  discarded: true,
+                  status: "unloaded",
+                  targetId: null,
+                }
+              : t,
+          );
+          return { newTabId: 951, newTargetId: null };
+        });
+      const remSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+        .mockImplementation(async (tabId) => {
+          const before = tabs.length;
+          tabs = tabs.filter((t) => t.tabId !== tabId);
+          return tabs.length < before;
+        });
+      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+      try {
+        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        const handedOff: string[] = [];
+        launched.context.handOff((p) => handedOff.push(p.url()));
+        await launched.context.sessionRestore!.reconcile(new Set([surfS]));
+        await vi.waitFor(() => expect(held === "freeze" ? freezeEntered : discardEntered).toBe(true), {
+          timeout: 3_000,
+          interval: 10,
+        });
+
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const claiming = launched.context.sessionRestore!.claim(surfS, "https://c1.test/");
+        await vi.advanceTimersByTimeAsync(6_050);
+        vi.useRealTimers();
+        const claimed = await claiming;
+        // The claim gave up the tab: the session opens it by address instead.
+        expect(claimed).toBeNull();
+
+        freezeGate.resolve();
+        discardGate.resolve();
+        await vi.waitFor(() => expect(tabs.map((t) => t.tabId)).toEqual([1]), {
+          timeout: 3_000,
+          interval: 20,
+        });
+        // No page is left frozen: the run unfroze what it froze, and the restored page is closed.
+        expect(restored.state.closed || restored.state.lifecycle !== "frozen").toBe(true);
+        expect(restored.state.closed).toBe(true);
+        expect(handedOff).not.toContain("https://c1.test/");
+        expect(launched.context.pages().map((p) => p.url())).not.toContain("https://c1.test/");
+      } finally {
+        vi.useRealTimers();
+        freezeGate.resolve();
+        discardGate.resolve();
+        invSpy.mockRestore();
+        discSpy.mockRestore();
+        remSpy.mockRestore();
+        f.exit();
+        await launched?.close();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();

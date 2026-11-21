@@ -1181,6 +1181,8 @@ const wakeDiscardedTabMs = 10_000;
 const sidecarFailureBound = 3;
 /** How long close waits for a map write in flight before deleting the map. */
 const sidecarCloseWaitMs = 500;
+/** How long a claim waits for a parked run on its surface before giving the tab up. */
+const claimQueueWaitMs = 6_000;
 
 /**
  * Reads a Playwright Chromium page's CDP targetId synchronously from its
@@ -2125,6 +2127,23 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
+  /**
+   * Takes the entry from every claim at once; its page stays hidden and its targets stay
+   * never-hand-off, and the close and removal run on the surface's queue, after any run there.
+   */
+  private queueEviction(
+    surfaceId: BrowserSurfaceId,
+    entry: MatchedRestoredTab,
+    options?: Parameters<PlaywrightContextHandle["evictUnparkableRestoredTab"]>[2],
+  ): Promise<number> {
+    this.restoredBySurfaceId.delete(surfaceId);
+    if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
+    else this.neverHandOffTabIds.add(entry.tab.tabId);
+    return this.runOnParkedSurfaceQueue(surfaceId, () =>
+      this.evictUnparkableRestoredTab(surfaceId, entry, options),
+    );
+  }
+
   private async evictUnparkableRestoredTab(
     surfaceId: BrowserSurfaceId,
     entry: MatchedRestoredTab,
@@ -2196,7 +2215,9 @@ class PlaywrightContextHandle implements BrowserContext {
       this.removingSurfaceIds.has(surfaceId) ||
       !this.restoredBySurfaceId.has(surfaceId)
     ) {
-      if (frozePage && !frozePage.isClosed() && this.claimingSurfaceIds.has(surfaceId)) {
+      // The entry was claimed, given up or removed meanwhile: what this run froze it unfreezes,
+      // whoever holds the page now.
+      if (frozePage && !frozePage.isClosed() && !this.closed) {
         await this.unfreezeRestoredPage(frozePage);
       }
       return 0;
@@ -2406,9 +2427,19 @@ class PlaywrightContextHandle implements BrowserContext {
     try {
       const pendingPark = this.parkedDiscardTails.get(surfaceId);
       if (pendingPark) {
-        await withTimeout(pendingPark, 6_000, {
-          timeoutError: () => new Error("Pending parked discard wait timed out."),
-        }).catch(() => undefined);
+        const settled = await withTimeout(
+          pendingPark.then(() => true),
+          claimQueueWaitMs,
+          { timeoutError: () => new Error("Pending parked discard wait timed out.") },
+        ).catch(() => false);
+        if (!settled) {
+          // Rule B: the run on this surface is still in its freeze or discard, so the claim gives
+          // the tab up instead of taking it beside that run. The tab opens by address; its
+          // restored page stays hidden and is removed after the run, on the same queue.
+          const abandoned = this.restoredBySurfaceId.get(surfaceId);
+          if (abandoned) void this.queueEviction(surfaceId, abandoned).catch(() => undefined);
+          return null;
+        }
       }
       const entry = this.restoredBySurfaceId.get(surfaceId);
       if (!entry) return null;
