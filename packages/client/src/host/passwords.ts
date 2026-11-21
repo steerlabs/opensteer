@@ -29,7 +29,7 @@ export const passwordsAppName = "Opensteer Passwords";
 
 /** The promise every sign-in card makes, word for word the same everywhere. */
 export function passwordSignInPrivacy(site: string): string {
-  return `Your agents can type your saved login on ${browserSiteLabel(site)} and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
+  return `Opensteer fills your saved login on ${browserSiteLabel(site)}, and in apps your agents use, like on your phone. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.`;
 }
 export function passwordSignInConsent(site: string, account: string): string {
   return `Let your agents sign in to ${browserSiteLabel(site)} as ${account}. ${passwordSignInPrivacy(site)}`;
