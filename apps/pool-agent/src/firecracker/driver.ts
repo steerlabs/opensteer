@@ -20,11 +20,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { setFileMode, syncDirectory } from "@opensteer/shared/privateFiles";
-import {
-  readPrivateFileText,
-  replacePrivateFileAtomically,
-  securePrivateDirectory,
-} from "@opensteer/shared/atomicPrivateFile";
 import type {
   GuestBoot,
   GuestProcessState,
@@ -36,6 +31,7 @@ import type {
 import { slotKey } from "../agent.js";
 import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
+import { SlotNumbers } from "./slot-numbers.js";
 import {
   egressActive,
   startEgress,
@@ -81,10 +77,6 @@ export interface FirecrackerDriverConfig {
   readonly serialConsole?: boolean;
 }
 
-interface SlotNumbers {
-  readonly [slotId: string]: number;
-}
-
 const execName = "firecracker";
 const minimumFreeMarginBytes = 512 * 1024 * 1024;
 
@@ -92,7 +84,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   readonly startsEmpty = true;
   readonly #config: FirecrackerDriverConfig;
   #cgroups!: GuestCgroups;
-  #numbers: Record<string, number> = {};
+  #numbers!: SlotNumbers;
   #fingerprint = "";
   readonly #egress = new Map<string, SlotEgress | undefined>();
   readonly #pendingEgress = new Map<string, Promise<void>>();
@@ -104,16 +96,8 @@ export class FirecrackerDriver implements HypervisorDriver {
   /** Delegates the cgroup subtree, applies the host filter, and fingerprints this host. */
   async open(): Promise<void> {
     this.#cgroups = await GuestCgroups.delegate(this.#config.cgroupBase);
-    await securePrivateDirectory(this.#config.stateDirectory);
-    const text = await readPrivateFileText(
-      join(this.#config.stateDirectory, "slots.json"),
-      1 << 20,
-      {
-        invalid: () => new Error("The driver's slot numbers are unreadable."),
-        exposed: () => new Error("The driver's slot numbers are readable by other users."),
-      },
-    );
-    this.#numbers = text ? (JSON.parse(text) as SlotNumbers) : {};
+    this.#numbers = new SlotNumbers(this.#config.stateDirectory);
+    await this.#numbers.load();
     for (const directory of [this.#config.jailRoot, this.#config.savedRoot])
       await mkdir(directory, { recursive: true, mode: 0o700 });
     await applyHostTable(this.#config.network);
@@ -133,20 +117,21 @@ export class FirecrackerDriver implements HypervisorDriver {
   // ---- Network ------------------------------------------------------------------------------
 
   async prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void> {
-    const index = await this.#number(slotId);
     this.#egress.set(slotId, egress);
-    await prepareNamespace(index, this.#uid(index), this.#config.network);
-    await ensureEgressUser(index, this.#config.egressUidBase + index);
+    // Allocation, the namespace and the host user happen under the host-wide number lock; a
+    // failure releases a newly allocated number again.
+    await this.#numbers.allocate(slotId, async (index) => {
+      await prepareNamespace(index, this.#uid(index), this.#config.network);
+      await ensureEgressUser(index, this.#config.egressUidBase + index);
+    });
   }
 
   async removeSlot(slotId: string): Promise<void> {
-    const index = this.#numbers[slotId];
-    if (index === undefined) return;
-    await stopEgress(index);
-    await removeNamespace(index);
-    const next = { ...this.#numbers };
-    delete next[slotId];
-    await this.#saveNumbers(next);
+    // The number is freed only after everything that used it is gone.
+    await this.#numbers.release(slotId, async (index) => {
+      await stopEgress(index);
+      await removeNamespace(index);
+    });
   }
 
   async openNetwork(slotId: string): Promise<void> {
@@ -373,7 +358,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   ): Promise<void> {
     const key = slotKey(slotId);
     await this.#cgroups.kill(key, signal);
-    const index = this.#numbers[slotId];
+    const index = this.#numbers.get(slotId);
     if (!options.keepEgress && index !== undefined && (await egressActive(index)))
       await stopEgress(index);
     this.#pendingEgress.delete(slotId);
@@ -556,27 +541,9 @@ export class FirecrackerDriver implements HypervisorDriver {
   }
 
   #require(slotId: string): number {
-    const index = this.#numbers[slotId];
+    const index = this.#numbers.get(slotId);
     if (index === undefined) throw new Error("The driver has no network for this slot.");
     return index;
-  }
-
-  async #number(slotId: string): Promise<number> {
-    const existing = this.#numbers[slotId];
-    if (existing !== undefined) return existing;
-    const used = new Set(Object.values(this.#numbers));
-    let index = 0;
-    while (used.has(index)) index += 1;
-    await this.#saveNumbers({ ...this.#numbers, [slotId]: index });
-    return index;
-  }
-
-  async #saveNumbers(next: Record<string, number>): Promise<void> {
-    await replacePrivateFileAtomically(
-      join(this.#config.stateDirectory, "slots.json"),
-      JSON.stringify(next),
-    );
-    this.#numbers = next;
   }
 
   async #computeFingerprint(): Promise<string> {
