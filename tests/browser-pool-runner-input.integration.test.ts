@@ -36,6 +36,7 @@ import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/
 import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
+import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { RunnerBrowserHub } from "../apps/host/src/browser/runner-browser-hub.js";
 import {
@@ -55,7 +56,7 @@ input.addEventListener("input", () => {
 });
 </script>`;
 
-it("delivers a person's keys to the page of a pooled target reached through the Runner", async () => {
+async function typeThroughRunner(options: { readonly profile: boolean }) {
   const site: Server = createServer((_request, response) => {
     response.setHeader("content-type", "text/html");
     response.end(page);
@@ -63,7 +64,7 @@ it("delivers a person's keys to the page of a pooled target reached through the 
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-runner-input-"));
-  const task = await fixture.startRunFixture("pool-runner-input");
+  const task = await fixture.startRunFixture(`pool-runner-input-${options.profile}`);
   const { database, store } = fixture;
   await database
     .updateTable("runners")
@@ -86,6 +87,7 @@ it("delivers a person's keys to the page of a pooled target reached through the 
       resolvePublicKey: (id) => (id === "host-v1" ? tickets.publicKey : null),
     }),
     pool: { controllerKey: controller.publicKey, probePage: async () => [] },
+    ...(options.profile ? { localProfiles: { root: join(root, "profiles") } } : {}),
   });
   const bridgeToken = randomUUID() + randomUUID();
   const runtimeServer = new BrowserRuntimeServer({
@@ -109,7 +111,16 @@ it("delivers a person's keys to the page of a pooled target reached through the 
     controller,
     retryMs: 20,
   });
-  const { localProfileStorage: _profiles, ...capabilities } = await bridge.capabilities();
+  const { localProfileStorage, ...rest } = await bridge.capabilities();
+  // A guest identity needs no profile inventory; a local profile does, and is offered.
+  const capabilities = options.profile ? { ...rest, localProfileStorage } : rest;
+  const localProfiles = options.profile
+    ? new BrowserLocalProfiles({
+        deploymentId: task.deploymentId,
+        repository: store,
+        baseUrl: new URL("http://127.0.0.1"),
+      })
+    : undefined;
   const runner = new BrowserModuleRelay(bridge);
   const fence = RunnerAuxiliaryFrameFenceSchema.parse({
     runnerId: task.runnerId,
@@ -162,6 +173,11 @@ it("delivers a person's keys to the page of a pooled target reached through the 
       },
     },
   } as never);
+  // The router listens before the Runner reports its profile inventory.
+  const router = new RunnerBrowserRuntimeRouter({
+    registry: hub,
+    ...(localProfiles ? { localProfiles } : {}),
+  } as never);
   await runner.attach({
     fence,
     browserWireVersion: 2,
@@ -180,12 +196,12 @@ it("delivers a person's keys to the page of a pooled target reached through the 
       }
     },
   } as never);
-  const router = new RunnerBrowserRuntimeRouter({ registry: hub } as never);
   const service = new BrowserService({
     deploymentId: task.deploymentId,
     hostOrigin: new URL("http://127.0.0.1"),
     personal: true,
     pools: new Map([[task.runnerId, coordinator]]),
+    ...(localProfiles ? { localProfiles } : {}),
     tabs: new TabStore(database),
     tabPlaces: { write: async () => false, notice: () => {} },
     repository: personalBrowserRepository(store),
@@ -202,9 +218,26 @@ it("delivers a person's keys to the page of a pooled target reached through the 
   });
   try {
     await service.initialize();
+    // The Home admits a Runner's local profiles once it reconciled their inventory.
+    await vi.waitFor(
+      () => {
+        expect(service.isPlacementReady(task.runnerId, "pool-runtime")).toBe(true);
+      },
+      {
+        timeout: 30_000,
+      },
+    );
+    const profile = options.profile
+      ? await store.createBrowserProfile({
+          name: "Saved browser",
+          ownerId: task.userId,
+          homeRunnerId: task.runnerId,
+          idempotencyKey: "runner-input-profile",
+        })
+      : null;
     const opened = await service.openTab(task.userId, {
       type: "browser.tab.open",
-      identity: { kind: "guest" },
+      identity: profile ? { kind: "profile", profileId: profile.id } : { kind: "guest" },
       placement: { kind: "runner", runnerId: task.runnerId },
       url: `http://127.0.0.1:${(site.address() as AddressInfo).port}/`,
       idempotencyKey: "runner-input",
@@ -278,4 +311,10 @@ it("delivers a person's keys to the page of a pooled target reached through the 
     await new Promise<void>((resolve) => site.close(() => resolve()));
     await fixture.close();
   }
-}, 120_000);
+}
+
+it("delivers a person's keys to the page of a pooled target reached through the Runner", () =>
+  typeThroughRunner({ profile: false }));
+
+it("does the same for a person's tab from a local profile on the pooled target", () =>
+  typeThroughRunner({ profile: true }));
