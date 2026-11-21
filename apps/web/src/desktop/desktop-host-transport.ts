@@ -14,6 +14,7 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import type { WebSocketClient } from "@opensteer/client/host";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 
 const socketRegistries = new WeakMap<OpensteerDesktopBridge, DesktopHostSocketRegistry>();
 
@@ -141,7 +142,7 @@ function streamWithTransportErrors(
     release?.();
   };
   signal.addEventListener("abort", finish, { once: true });
-  const reader = response.body.getReader();
+  const reader = responseChunkReader(response.body);
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {

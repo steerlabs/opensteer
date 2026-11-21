@@ -20,6 +20,7 @@ import {
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { HttpHostClient } from "@opensteer/client/host";
@@ -1914,7 +1915,7 @@ describe("DesktopHostTransport", () => {
     const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
       const response = await route(input, init);
       if (!response.body) return response;
-      const reader = response.body.getReader();
+      const reader = responseChunkReader(response.body);
       return new Response(
         new ReadableStream<Uint8Array>({
           async pull(controller) {
@@ -2000,7 +2001,7 @@ describe("DesktopHostTransport", () => {
       }
       const response = await route(input, init);
       if (!response.body) return response;
-      const reader = response.body.getReader();
+      const reader = responseChunkReader(response.body);
       let sentFirst = false;
       return new Response(
         new ReadableStream<Uint8Array>({
@@ -2079,7 +2080,7 @@ describe("DesktopHostTransport", () => {
         return response;
       }
       if (!response.body) return response;
-      const reader = response.body.getReader();
+      const reader = responseChunkReader(response.body);
       let sentFirst = false;
       return new Response(
         new ReadableStream<Uint8Array>({
@@ -2269,7 +2270,7 @@ describe("DesktopHostTransport", () => {
     const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
       const response = await route(input, init);
       if (!response.body) return response;
-      const reader = response.body.getReader();
+      const reader = responseChunkReader(response.body);
       return new Response(
         new ReadableStream<Uint8Array>({
           async pull(controller) {
