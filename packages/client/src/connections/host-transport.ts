@@ -369,8 +369,17 @@ export class HostTransport {
           throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (
+          controller.signal.aborted &&
+          controller.signal.reason instanceof HostTransportError &&
+          (controller.signal.reason.code === "deployment-changed" ||
+            controller.signal.reason.code === "timed-out")
+        )
+          throw controller.signal.reason;
+        if (
           error instanceof HostTransportError &&
-          (error.code === "deployment-changed" || error.code === "response-too-large")
+          (error.code === "deployment-changed" ||
+            error.code === "response-too-large" ||
+            error.code === "timed-out")
         )
           throw error;
         if (unauthorizedObserved)
