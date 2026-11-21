@@ -712,25 +712,62 @@ async function homeStop(): Promise<void> {
     snapshots: liveViewSnapshots,
   });
 
-  const harnesses = z
-    .object({
+  const harnessDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness"),
       harnesses: z.array(
         z.object({ id: z.string(), driverKind: z.string(), environmentId: z.string() }),
       ),
-    })
-    .parse(await home.rpc("resources.detail.get", { kind: "harness" }));
-  const codex = harnesses.harnesses.find(
-    (harness) =>
-      harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+    }),
+  });
+  const harnessCatalogDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness-catalog"),
+      environments: z.array(
+        z.object({
+          id: z.string(),
+          harnessCatalogs: z.array(z.object({ harnessInstanceId: z.string(), status: z.string() })),
+        }),
+      ),
+    }),
+  });
+  let codex:
+    | { readonly id: string; readonly driverKind: string; readonly environmentId: string }
+    | undefined;
+  await waitFor(
+    "the fixture engine and its model catalog",
+    async () => {
+      const harnesses = harnessDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness" }),
+      );
+      codex = harnesses.data.harnesses.find(
+        (harness) =>
+          harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+      );
+      if (!codex) return false;
+      const catalogs = harnessCatalogDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness-catalog" }),
+      );
+      const environment = catalogs.data.environments.find(
+        (entry) => entry.id === home.manifest.environmentId,
+      );
+      return (
+        environment?.harnessCatalogs.some(
+          (entry) => entry.harnessInstanceId === codex!.id && entry.status === "ready",
+        ) === true
+      );
+    },
+    30_000,
   );
   assert(codex, "The Home did not expose the fixture engine");
+  const fixtureHarness = codex;
   const createTask = async (title: string) =>
     z.object({ thread: z.object({ id: z.string() }) }).parse(
       await home.rpc("commands.dispatch", {
         type: "thread.create",
         idempotencyKey: randomUUID(),
         environmentId: home.manifest.environmentId,
-        harnessInstanceId: codex.id,
+        harnessInstanceId: fixtureHarness.id,
         modelSelection: {
           modelId: "gpt-5.6-sol",
           providerId: "openai",
