@@ -8,7 +8,7 @@
     "./test-support": "./src/test-support.ts"
   },
   "scripts": {
-    "build": "tsup && esbuild bench/real-host.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/real-host.mjs",
+    "build": "tsup && esbuild bench/real-host.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/real-host.mjs && esbuild bench/crash-main.ts --bundle --platform=node --target=node24 --format=esm --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\" --outfile=dist/bench-agent.mjs",
     "start": "node dist/main.js",
     "test": "vitest run --root ../.. apps/pool-agent",
     "typecheck": "tsc --noEmit"
