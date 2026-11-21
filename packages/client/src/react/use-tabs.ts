@@ -3,7 +3,7 @@ import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
 import type { HostClient } from "../host/client.js";
 import {
-  browserThreadAgentTab,
+  requestPageTab,
   threadAgentPlace,
   type BrowserTabDestination,
   type ThreadAgentPlace,
@@ -75,24 +75,24 @@ export function useThreadAgentPlace(
 }
 
 /**
- * The page tab a task holds that changed last, from the tab list alone: what a Request that
- * task asked is about. Null for no task, or one that holds no page.
+ * The page a Request is about, from the tab list alone (see `requestPageTab`): its own tab,
+ * or its task's only page. Null for no Request, or when that is not one page.
  */
-export function useThreadPageTab(
+export function useRequestPageTab(
   hostClient: HostClient,
-  threadId: string | null,
+  request: Parameters<typeof requestPageTab>[1] | null,
 ): BrowserTabDestination | null {
   const tabs = hostClient.getSnapshot().tabs;
   const subscribe = useCallback(
     (listener: () => void) => tabs?.subscribe(listener) ?? (() => {}),
     [tabs],
   );
-  const held = useMemo(() => ({ current: null as BrowserTabDestination | null }), [threadId, tabs]);
+  const held = useMemo(() => ({ current: null as BrowserTabDestination | null }), [request, tabs]);
   const get = useCallback(() => {
-    const next = threadId === null || !tabs ? null : browserThreadAgentTab({ tabs }, threadId);
+    const next = request === null || !tabs ? null : requestPageTab({ tabs }, request);
     if (next?.tabId !== held.current?.tabId) held.current = next;
     return held.current;
-  }, [held, tabs, threadId]);
+  }, [held, request, tabs]);
   return useSyncExternalStore(subscribe, get, get);
 }
 

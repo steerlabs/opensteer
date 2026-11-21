@@ -68,6 +68,34 @@ export function threadAgentPlace(
   return best && { tabId: best.tabId, kind: best.kind, title: placeTitle(best) };
 }
 
+/**
+ * The page a Request is about, or null: the tab the Request names, while the tab list still
+ * holds it; when it names none, the asking task's page, only while the task holds exactly
+ * one. Never the most recent of several, which may be another site altogether.
+ */
+export function requestPageTab(
+  source: Pick<HostSnapshot, "tabs">,
+  request: {
+    readonly originatingThreadId?: string | null | undefined;
+    readonly payload: { readonly kind: string; readonly tabId?: string | undefined };
+  },
+): BrowserTabDestination | null {
+  const named = request.payload.kind === "browser.sign-in" ? request.payload.tabId : undefined;
+  if (named !== undefined) {
+    const tab = source.tabs.get(named);
+    return tab?.kind === "page" ? { tabId: tab.tabId } : null;
+  }
+  const threadId = request.originatingThreadId;
+  if (!threadId) return null;
+  let only: TabId | null = null;
+  for (const tab of source.tabs.rows.values()) {
+    if (tab.kind !== "page" || !tab.usedBy.some((holder) => holder.taskId === threadId)) continue;
+    if (only !== null) return null;
+    only = tab.tabId;
+  }
+  return only === null ? null : { tabId: only };
+}
+
 /** A busy agent never moves the page more than once a second. */
 const switchInterval = 1000;
 /** Moves the page never reported, such as one its navigation dropped, are forgotten after this many. */

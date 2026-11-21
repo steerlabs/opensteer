@@ -5,7 +5,7 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
-import { useCompactionOffer, useRequestAsker, useThreadPageTab } from "@opensteer/client/react";
+import { useCompactionOffer, useRequestAsker, useRequestPageTab } from "@opensteer/client/react";
 import { workWords } from "@opensteer/client/host";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
@@ -492,16 +492,14 @@ function aboutAPage(request: Request): boolean {
 }
 
 /**
- * "Open the page": the page tab the asking task is working in, for a Request that is
- * answered there, such as signing in to a site. Nothing while that page is already shown.
+ * "Open the page": the Request's own tab, or its task's only page, for a Request answered
+ * in a page, such as signing in to a site. Nothing when that is not one page, or while that
+ * page is already shown.
  */
 function RequestPageLink({ request }: { readonly request: Request }) {
   const { hostClient } = useShell();
   const workspace = useOptionalWorkspace();
-  const page = useThreadPageTab(
-    hostClient,
-    aboutAPage(request) ? request.originatingThreadId : null,
-  );
+  const page = useRequestPageTab(hostClient, aboutAPage(request) ? request : null);
   const shown =
     workspace?.selection.kind === "place" &&
     workspace.selection.destination.kind === "tab" &&
