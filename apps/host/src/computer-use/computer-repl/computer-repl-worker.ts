@@ -14,7 +14,8 @@ import {
 import { browserGuestLibrary } from "../../browser-use/browser-guest-library.js";
 import { browserGuestModules } from "../../browser-use/browser-guest-source.js";
 import { browserReplLimits } from "../../browser-use/browser-repl-messages.js";
-import { computerGuestLibrary } from "./guest-library.js";
+import { computerFailureLibrary, computerGuestLibrary } from "./guest-library.js";
+import { guestStringFits, readGuestString } from "./guest-strings.js";
 import {
   computerReplLimits as limits,
   boundedReplFailure,
@@ -64,6 +65,7 @@ interface Context {
   receiveEvents: QuickJSHandle | undefined;
   endBrowserCall: QuickJSHandle | undefined;
   browserCodec: QuickJSHandle | undefined;
+  computerFailure: QuickJSHandle | undefined;
 }
 const contexts = new Map<string, Context>();
 const creations = new Map<string, { callId: string }>();
@@ -78,6 +80,10 @@ const failure = (message: string, code = "failed"): ReplFailure => ({
   message,
   performed: [],
 });
+function outputExceeded(call: Call): void {
+  call.failure ??= failure(`${label} output exceeded its byte limit.`, "output-limit");
+  call.poisoned = true;
+}
 function emitText(key: string, call: Call, text: string): void {
   if (call.poisoned) return;
   const textBytes = Buffer.byteLength(text);
@@ -90,11 +96,8 @@ function emitText(key: string, call: Call, text: string): void {
   if (
     call.textBytes + textBytes > limits.textBytes ||
     call.messageBytes + messageBytes > limits.bridgeBytes
-  ) {
-    call.failure ??= failure(`${label} output exceeded its byte limit.`, "output-limit");
-    call.poisoned = true;
-    return;
-  }
+  )
+    return outputExceeded(call);
   call.textBytes += textBytes;
   call.messageBytes += messageBytes;
   send(message);
@@ -157,6 +160,7 @@ function dispose(key: string, discard = false) {
   context.receiveEvents?.dispose();
   context.endBrowserCall?.dispose();
   context.browserCodec?.dispose();
+  context.computerFailure?.dispose();
   context.vm.dispose();
   context.runtime.dispose();
 }
@@ -183,6 +187,7 @@ async function create(key: string, connection: boolean): Promise<Context> {
     receiveEvents: undefined,
     endBrowserCall: undefined,
     browserCodec: undefined,
+    computerFailure: undefined,
   };
   runtime.setInterruptHandler(() => {
     const call = context.call;
@@ -207,7 +212,7 @@ async function create(key: string, connection: boolean): Promise<Context> {
         limits.bridgeBytes,
         browserReplLimits.requestBytes - call.requestBytes,
       );
-      const input = readBrowserString(context, json, remaining);
+      const input = readGuestString(context.vm, json, remaining);
       if (input === undefined) {
         call.requestBytes = browserReplLimits.requestBytes;
         return bridgeLimit(vm, "Browser request byte budget exceeded.");
@@ -219,9 +224,9 @@ async function create(key: string, connection: boolean): Promise<Context> {
       send({ type: "browser-request", context: key, callId: call.id, id, json: input });
       return promise.handle;
     }
-    const input = vm.getString(json);
-    if (Buffer.byteLength(input) > limits.bridgeBytes)
-      throw new Error(`${label} arguments exceed 1 MiB.`);
+    // Only a measured string primitive leaves the guest; anything else is refused uncoerced.
+    const input = readGuestString(vm, json, limits.bridgeBytes);
+    if (input === undefined) throw new Error(`${label} arguments exceed 1 MiB.`);
     const request = ReplRequestSchema.parse(JSON.parse(input));
     const promise = vm.newPromise();
     call.queue.push({ id: ++context.nextId, request, promise });
@@ -232,7 +237,11 @@ async function create(key: string, connection: boolean): Promise<Context> {
     if (!call || call.settled) throw new Error(ended);
     if (!call.poisoned) {
       if (browser) emitBrowserText(key, context, call, value, encoded);
-      else emitText(key, call, vm.getString(value));
+      else {
+        const text = readGuestString(vm, value, limits.textBytes - call.textBytes);
+        if (text === undefined) outputExceeded(call);
+        else emitText(key, call, text);
+      }
     }
     return vm.undefined;
   });
@@ -262,6 +271,9 @@ async function create(key: string, connection: boolean): Promise<Context> {
     ).dispose();
   } else {
     if (connection) vm.setProp(vm.global, "__computerConnection", vm.true);
+    vm.unwrapResult(vm.evalCode(computerFailureLibrary)).dispose();
+    context.computerFailure = vm.getProp(vm.global, "__computerFailure");
+    vm.unwrapResult(vm.evalCode("delete globalThis.__computerFailure;")).dispose();
     vm.unwrapResult(vm.evalCode(computerGuestLibrary)).dispose();
   }
   return context;
@@ -376,34 +388,6 @@ function bridgeLimit(vm: QuickJSContext, message: string): QuickJSHandle {
   return vm.newString(JSON.stringify({ error: { code: "bridge-limit", message } }));
 }
 
-function browserStringFits(context: Context, value: QuickJSHandle, limit: number): boolean {
-  const { vm } = context;
-  if (vm.typeof(value) !== "string") return false;
-  using length = vm.getProp(value, "length");
-  const units = vm.getNumber(length);
-  if (units > limit) return false;
-  if (units * 9 > limit) {
-    using budget = vm.newNumber(limit);
-    const fit = vm.callFunction(context.browserCodec!, vm.undefined, budget, value);
-    if (fit.error) {
-      fit.error.dispose();
-      return false;
-    }
-    using fits = fit.value;
-    const bytes = vm.getNumber(fits);
-    if (!bytes && units) return false;
-  }
-  return true;
-}
-
-function readBrowserString(
-  context: Context,
-  value: QuickJSHandle,
-  limit: number,
-): string | undefined {
-  return browserStringFits(context, value, limit) ? context.vm.getString(value) : undefined;
-}
-
 function emitBrowserText(
   key: string,
   context: Context,
@@ -411,8 +395,8 @@ function emitBrowserText(
   value: QuickJSHandle,
   json: QuickJSHandle,
 ): void {
-  const encoded = browserStringFits(context, value, limits.textBytes - call.textBytes)
-    ? readBrowserString(context, json, limits.bridgeBytes - call.messageBytes)
+  const encoded = guestStringFits(context.vm, value, limits.textBytes - call.textBytes)
+    ? readGuestString(context.vm, json, limits.bridgeBytes - call.messageBytes)
     : undefined;
   if (encoded === undefined) {
     call.failure ??= failure("Browser output exceeded its byte limit.", "output-limit");
@@ -433,11 +417,11 @@ function readBrowserFailure(context: Context, error: QuickJSHandle): ReplFailure
   using next = vm.getProp(fields, 2);
   using cdp = vm.getProp(fields, 3);
   const cdpCode = vm.typeof(cdp) === "number" ? vm.getNumber(cdp) : undefined;
-  const nextText = readBrowserString(context, next, 2000);
+  const nextText = readGuestString(context.vm, next, 2000);
   return {
     ...failure(
-      readBrowserString(context, message, 8192) ?? "Browser script failed.",
-      readBrowserString(context, code, 128) ?? "failed",
+      readGuestString(context.vm, message, 8192) ?? "Browser script failed.",
+      readGuestString(context.vm, code, 128) ?? "failed",
     ),
     ...(nextText === undefined ? {} : { next: nextText }),
     ...(cdpCode === undefined ? {} : { cdpCode }),
@@ -445,32 +429,51 @@ function readBrowserFailure(context: Context, error: QuickJSHandle): ReplFailure
 }
 
 function readFailure(context: Context, error: QuickJSHandle): ReplFailure {
-  const { call, vm } = context;
+  const { call } = context;
   if (call?.failure) return call.failure;
   return slice(context, () => {
     if (browser) return readBrowserFailure(context, error);
-    const value: unknown = vm.dump(error);
-    const result = failure(
-      typeof value === "object" && value !== null && "message" in value
-        ? String(value.message)
-        : String(value),
-    );
-    if (vm.typeof(error) !== "object" || value === null) return result;
-    const deviceContext = DeviceRefusalContextSchema.safeParse(value);
-    if (deviceContext.success) Object.assign(result, deviceContext.data);
-    const code = vm.getProp(error, "code");
-    const performed = vm.getProp(error, "performed");
-    const next = vm.getProp(error, "next");
-    if (vm.typeof(next) === "string") result.next = vm.getString(next);
-    if (vm.typeof(code) === "string") result.code = vm.getString(code);
-    const receipts: unknown = vm.dump(performed);
-    if (Array.isArray(receipts))
-      result.performed = receipts.filter((value): value is string => typeof value === "string");
-    next.dispose();
-    code.dispose();
-    performed.dispose();
-    return result;
+    return readComputerFailure(context, error);
   });
+}
+
+function readComputerFailure(context: Context, error: QuickJSHandle): ReplFailure {
+  const { vm } = context;
+  const fields = vm.callFunction(context.computerFailure!, vm.undefined, error);
+  if (fields.error) {
+    fields.error.dispose();
+    return failure("Computer script failed.");
+  }
+  using list = fields.value;
+  // Every field is a string the guest already cut to `units`, so its worst case fits.
+  const read = (from: QuickJSHandle, index: number, units: number) => {
+    using item = vm.getProp(from, index);
+    return readGuestString(vm, item, units * 9);
+  };
+  const result = failure(read(list, 0, 8192) ?? "Computer script failed.");
+  using length = vm.getProp(list, "length");
+  if (vm.getNumber(length) === 1) return result;
+  const code = read(list, 1, 128);
+  const next = read(list, 2, 2000);
+  if (code !== undefined) result.code = code;
+  if (next !== undefined) result.next = next;
+  using receipts = vm.getProp(list, 3);
+  using count = vm.getProp(receipts, "length");
+  const receiptCount = vm.getNumber(count);
+  for (let index = 0; index < Math.min(receiptCount, 160); index++) {
+    const receipt = read(receipts, index, 2048);
+    if (receipt !== undefined) result.performed.push(receipt);
+  }
+  const machineId = read(list, 4, 257);
+  const capability = read(list, 5, 257);
+  const machineName = read(list, 6, 257);
+  const deviceContext = DeviceRefusalContextSchema.safeParse({
+    ...(machineId === undefined ? {} : { machineId }),
+    ...(capability === undefined ? {} : { capability }),
+    ...(machineName === undefined ? {} : { machineName }),
+  });
+  if (deviceContext.success) Object.assign(result, deviceContext.data);
+  return result;
 }
 
 function cancelQueued(context: Context, call: Call) {
@@ -552,7 +555,7 @@ async function pump(key: string, context: Context) {
               } else {
                 if (vm.typeof(encoded.value) !== "undefined") {
                   call.returned = slice(context, () =>
-                    readBrowserString(context, encoded.value, limits.textBytes - call.textBytes),
+                    readGuestString(context.vm, encoded.value, limits.textBytes - call.textBytes),
                   );
                   if (call.returned === undefined)
                     call.failure ??= failure(
@@ -562,7 +565,16 @@ async function pump(key: string, context: Context) {
                 }
                 encoded.value.dispose();
               }
-            } else call.returned = context.vm.getString(state.value);
+            } else {
+              // The wrapper's JSON.stringify is the guest's and may return anything.
+              const returned = readGuestString(
+                context.vm,
+                state.value,
+                limits.textBytes - call.textBytes,
+              );
+              if (returned === undefined) outputExceeded(call);
+              else call.returned = returned;
+            }
           }
           state.value.dispose();
         }
@@ -668,6 +680,7 @@ async function handle(input: unknown) {
         context.receiveEvents?.dispose();
         context.endBrowserCall?.dispose();
         context.browserCodec?.dispose();
+        context.computerFailure?.dispose();
         context.vm.dispose();
         context.runtime.dispose();
         return;
