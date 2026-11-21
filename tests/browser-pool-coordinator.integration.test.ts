@@ -128,6 +128,7 @@ async function poolFixture(
   const surfaces = new Set<string>();
   let tabLoss: BrowserSessionId | undefined;
   let stalled: Promise<void> | undefined;
+  let afterReattach: ((sessions: readonly BrowserSessionId[]) => Promise<void>) | undefined;
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
@@ -165,6 +166,7 @@ async function poolFixture(
         });
         sinks.set(id, await runtime.attach(name, new FakeSink()));
       }
+      await afterReattach?.(sessions);
       return tabLoss
         ? [
             {
@@ -304,6 +306,10 @@ async function poolFixture(
     },
     reportTabLoss: (value: BrowserSessionId | undefined) => {
       tabLoss = value;
+    },
+    /** Runs once a reattach has attached its sessions, before it returns. */
+    onReattached: (hook: typeof afterReattach) => {
+      afterReattach = hook;
     },
     /** Every reattach waits for this, as one that stalls on the way to the runtime. */
     stallReattach: (until: Promise<void> | undefined) => {
@@ -496,6 +502,41 @@ it("gives a holder that never lets go its recorded outcome before a restart stop
     expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     held.release();
     expect(home.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
+it("keeps a channel lost again while its attach is being finished as a new loss, with its own documents", async () => {
+  const f = await poolFixture("lost-again", { adoptionWindowMs: 60_000 });
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 20_000 });
+    await home.recover();
+    await f.openSession(home);
+    let attempts = 0;
+    let second: { document: string | undefined; admits: boolean } | undefined;
+    f.onReattached(async (sessions) => {
+      attempts++;
+      const id = sessions[0]!;
+      if (attempts === 1) {
+        // The fresh channel closes as soon as it is up: a second loss, with what it holds now.
+        await f.sinks.get(id)?.close(false, false, true);
+        f.sinks.delete(id);
+        home.channelLost(id, new Map([["surface-now", "document-now"]]));
+      } else if (attempts === 2)
+        // The second attach answers the second loss, whose witness is still the one it brought.
+        second = {
+          document: home.knownDocument(id, "surface-now"),
+          admits: home.gate.admits,
+        };
+    });
+    await f.loseChannel();
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(attempts).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+    expect(second).toEqual({ document: "document-now", admits: false });
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    expect(home.reattaching(f.sessionId)).toBe(false);
+    expect((await f.row())?.state).toBe("ready");
   } finally {
     await f.close();
   }

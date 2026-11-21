@@ -1244,6 +1244,7 @@ export class BrowserService {
       if (!local.initialized) throw new Error("The pooled profile has no storage.");
       identity = local;
     }
+    signal?.throwIfAborted();
     const origin = record.origin === "person" ? "person" : "agent";
     // A Stop that committed during the lookups above wins: the row is read again before attach.
     const stillReady = async () =>
@@ -1251,10 +1252,12 @@ export class BrowserService {
     const adopting = { active: true };
     // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
     // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
+    // The lane is awaited, never abandoned: once the attempt has ended nothing in it is sent.
     const broker = await this.#serialize(async () => {
-      if (!(await stillReady()) || this.#closed) return undefined;
+      if (signal?.aborted || !(await stillReady()) || this.#closed) return undefined;
       // Person use is keyed by the session's persistent lineage, which survives the old broker.
       const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
+      if (signal?.aborted) return undefined;
       const socket = target.connect(
         this.#signer.issue({
           creationOrigin:

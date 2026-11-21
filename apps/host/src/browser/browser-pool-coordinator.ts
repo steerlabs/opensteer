@@ -261,8 +261,9 @@ export class BrowserPoolCoordinator {
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
   channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
     if (this.#closed) return;
-    if (!this.#lost.has(sessionId))
-      this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
+    // Each close is its own loss, with its own window and documents: one that arrives while the
+    // previous attach is being finished replaces that entry, so the attach cannot delete it.
+    this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
     this.#publish(this.#slot);
     this.#kick();
   }
@@ -481,6 +482,8 @@ export class BrowserPoolCoordinator {
       for (const sessionId of past) this.#lost.delete(sessionId);
       return;
     }
+    // The losses this attempt answers: one recorded since is a new loss and stays.
+    const answering = new Map(within.map((sessionId) => [sessionId, this.#lost.get(sessionId)]));
     const advanced = await this.#advance(slot, {
       phase: slot.phase,
       attachmentGeneration: slot.attachmentGeneration + 1,
@@ -498,7 +501,8 @@ export class BrowserPoolCoordinator {
       signal: window,
     });
     const back = within.filter((sessionId) => this.#adopter?.live(sessionId));
-    for (const sessionId of back) this.#lost.delete(sessionId);
+    for (const sessionId of back)
+      if (this.#lost.get(sessionId) === answering.get(sessionId)) this.#lost.delete(sessionId);
     if (back.length < within.length) throw new Error("A session is not back yet.");
   }
 
