@@ -181,6 +181,7 @@ export interface DirectOperation<Result> {
   readonly question?: (taskId: ThreadId) => Promise<Extract<RequestPresentation, { kind: "form" }>>;
   /** Passwords owns the sole approval Request and never fills during this operation. */
   readonly passwordsApproval?: true;
+  readonly reportReplay?: true;
   readonly replay?: (
     row: AgentOperationRow,
     execution: ExecutionAuthority,
@@ -191,7 +192,7 @@ export interface DirectOperation<Result> {
   readonly scriptFailure?: (result: Result) => ReplFailure | undefined;
 }
 
-export type DirectOperationResult<Result> =
+export type DirectOperationResult<Result> = { readonly replayed?: true } & (
   | {
       readonly status: "completed";
       readonly taskId: ThreadId;
@@ -220,7 +221,8 @@ export type DirectOperationResult<Result> =
       readonly taskId: ThreadId;
       readonly operationId: AgentOperationId;
       readonly next: string;
-    };
+    }
+);
 
 export const pendingNext = `Call the same tool again with the same arguments and this operationId to wait up to ${agentOperationHoldMs / 1_000} seconds for the person. If it is still pending, call again, but not in a tight loop.`;
 export const unknownNext =
@@ -356,6 +358,7 @@ export class AgentSessionService {
           taskId: existing.taskId,
           operationId: existing.id,
           summary: existing.resultSummary,
+          ...(operation.reportReplay ? { replayed: true } : {}),
         };
       return withAgentOperationReceipt(
         this.#store.database,
@@ -363,7 +366,8 @@ export class AgentSessionService {
         existing.taskId,
         async () => {
           const execution = await this.#admit(operation, `session:${existing.sessionId}`);
-          return this.#advance(operation, existing, existing.taskId, execution);
+          const result = await this.#advance(operation, existing, existing.taskId, execution);
+          return operation.reportReplay ? { ...result, replayed: true as const } : result;
         },
       );
     }
@@ -382,7 +386,7 @@ export class AgentSessionService {
       name: operation.targetName ?? "this resource",
       device: null,
     };
-    const { operation: row } = await admitAgentOperation(this.#store.database, {
+    const { operation: row, replay } = await admitAgentOperation(this.#store.database, {
       userId: operation.ownerUserId,
       agentConnectionId: operation.agentConnectionId,
       sessionId: session.id,
@@ -398,6 +402,8 @@ export class AgentSessionService {
       calls: operation.calls,
       agentReason: operation.reason?.slice(0, 2_000) ?? null,
     });
+    // Another call can admit the same read between the first lookup and the insert.
+    if (operation.reportReplay && replay) return this.run(operation);
     return withAgentOperationReceipt(this.#store.database, row, session.threadId, () =>
       this.#advance(operation, row, session.threadId, execution),
     );

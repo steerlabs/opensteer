@@ -20,6 +20,8 @@ import {
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
   readAssignmentResult,
+  readConnectionChildResult,
+  visibleConnectionRequestIds,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
@@ -488,6 +490,7 @@ export class ProductToolHandlers {
       ...(input.query ? { query: input.query } : {}),
       ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
       scope,
+      ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
     });
     const response = {
@@ -526,11 +529,19 @@ export class ProductToolHandlers {
     if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
     const threadId = !input.taskId ? this.#targetThreadId(caller) : input.taskId;
-    const thread = await this.#store.getThreadForOwner(
-      threadId,
-      claims.requestedBy,
-      selectedLineageId(caller),
-    );
+    const thread =
+      caller.kind === "connection"
+        ? await this.#store.getThreadForOwner(
+            threadId,
+            claims.requestedBy,
+            selectedLineageId(caller),
+            true,
+          )
+        : await this.#store.getThreadForOwner(
+            threadId,
+            claims.requestedBy,
+            selectedLineageId(caller),
+          );
     if (!thread) throw forbidden("task is unavailable to this user");
 
     const recent = await readAgentThreadRecent(this.#store.database, {
@@ -667,6 +678,16 @@ export class ProductToolHandlers {
         page.items.flatMap((item) => (item.type === "message" ? [item.message] : [])),
       ),
     ]);
+    // One read for every Request item, with the predicate that decides all a connection learns of.
+    const reader = threadCallerAuthority(caller);
+    const visibleRequests =
+      reader.kind === "connection"
+        ? await visibleConnectionRequestIds(
+            this.#store.database,
+            reader,
+            page.items.flatMap((item) => ("requestId" in item ? [item.requestId] : [])),
+          )
+        : undefined;
     const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
     const teamSources = await this.#store.messageTeamSources(
@@ -693,6 +714,12 @@ export class ProductToolHandlers {
             ]
           : [];
       }
+      if (
+        caller.kind === "connection" &&
+        "requestId" in item &&
+        !visibleRequests?.has(item.requestId)
+      )
+        return [];
       const machineId = machineOf(item);
       if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) return [];
       if (item.type === "place.entered" && !readablePlaces.has(item.id)) return [];
@@ -1539,7 +1566,9 @@ export class ProductToolHandlers {
     const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
     const harnessInstanceId = named ?? automatic?.harnessInstanceId;
     if (!harnessInstanceId)
-      throw badRequest("Choose aiAccountId for the new task", chooseExecutionNext);
+      throw badRequest(
+        "No default AI account is available for a new task. Ask the person to choose one.",
+      );
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
@@ -1548,7 +1577,10 @@ export class ProductToolHandlers {
       catalogDefaultModelSelection(
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
-    if (!modelSelection) throw badRequest("Choose a model for the new task", chooseExecutionNext);
+    if (!modelSelection)
+      throw badRequest(
+        "No default model is available for a new task. Ask the person to choose one.",
+      );
     return {
       existing,
       environmentId,
@@ -1706,6 +1738,7 @@ export class ProductToolHandlers {
     // A caller waiting on the conversation of a task it assigned is waiting on that task: the
     // result it is handed must not also return to it by itself.
     const own = input.taskId ? await this.#assignedTask(caller, input.taskId) : undefined;
+    const authority = caller.kind === "connection" ? threadCallerAuthority(caller) : undefined;
     const assignmentId = input.delegationId ?? (input.afterMessageId ? undefined : own);
     const assignment = assignmentId
       ? await this.#store.getAssignmentForOwner({ assignmentId, ownerId: caller.userId })
@@ -1756,6 +1789,7 @@ export class ProductToolHandlers {
               userId: caller.userId,
               ...(!assignment && runId ? { runId } : {}),
               ...(assignment ? { assignmentId: assignment.id } : {}),
+              ...(authority?.kind === "connection" ? { connection: authority } : {}),
               ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
               ...(!assignment && afterSequence ? { afterSequence } : {}),
             });
@@ -1812,6 +1846,13 @@ export class ProductToolHandlers {
       );
       // Watching its own task's messages hands the caller the final reply too, once it has settled.
       const settled = assignment?.id ?? (result.status === "settled" ? own : undefined);
+      const connectedTask =
+        authority?.kind === "connection" && !assignment
+          ? await readConnectionChildResult(this.#store.database, {
+              authority,
+              childThreadId: threadId,
+            })
+          : undefined;
       const task =
         settled && result.status === "settled"
           ? await readAssignmentResult(this.#store.database, {
@@ -1819,7 +1860,7 @@ export class ProductToolHandlers {
               authority: threadCallerAuthority(caller),
               ...(call.signal ? { signal: call.signal } : {}),
             })
-          : undefined;
+          : connectedTask;
       // Oldest first, so the last item is where the next wait resumes.
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),

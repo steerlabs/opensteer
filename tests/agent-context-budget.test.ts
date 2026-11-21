@@ -60,6 +60,19 @@ it("matches the caller-visible MCP context byte budget", async () => {
     }
   }
   const resourcesByCase = {
+    chromeTabs: { kind: "chrome-tabs", sourceId: createId("browserSource") },
+    tasksOnly: null,
+    oneReadWritePlugin: {
+      kind: "plugin",
+      target: { kind: "installed", pluginId: "fixture" },
+      access: "read-write",
+    },
+    onePhone: {
+      kind: "computer-app",
+      deviceId: createId("device"),
+      approvalId: "con_9ff5456a-1a0a-4f3a-8624-ad2e56604518",
+      app: { kind: "phone-screen", definitionId: "iphone-screen" },
+    },
     oneProfile: { kind: "browser-profile", profileId: createId("browserProfile") },
     oneReadOnlyPlugin: {
       kind: "plugin",
@@ -76,12 +89,13 @@ it("matches the caller-visible MCP context byte budget", async () => {
   for (const [name, resource] of Object.entries(resourcesByCase)) {
     const grant = AgentGrantSchema.parse({
       scope: "selected",
-      tasks: false,
-      resources: [resource],
+      tasks: resource === null,
+      resources: resource ? [resource] : [],
     });
     const narrow = await measureMcpContext("connection", { grant });
     metrics[`opensteer.connection.${name}.toolsJsonBytes`] = bytes(narrow.toolsJson);
     metrics[`opensteer.connection.${name}.toolCount`] = narrow.tools.length;
+    metrics[`opensteer.connection.${name}.instructionsBytes`] = bytes(narrow.instructions);
   }
   for (const purpose of ["task", "background-job", "voice"] as const) {
     for (const personalContext of [true, false])

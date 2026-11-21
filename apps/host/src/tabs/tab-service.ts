@@ -499,9 +499,11 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     input: TabListInput,
     mayNameComputer?: (deviceId: DeviceId) => boolean,
+    select?: (tab: Tab) => boolean,
   ): Promise<TabListResult> {
     input = TabListInputSchema.parse(input);
-    const { tabs, layout } = await this.project(actor);
+    const { tabs: visible, layout } = await this.project(actor);
+    const tabs = select ? visible.filter(select) : visible;
     const groups = layout.items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
     const query = input.query?.toLowerCase();
     const filtered = tabs.filter(

@@ -2,7 +2,7 @@ import { AgentGrantSchema, createId } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { toolsFor } from "./tools-for.js";
 
-it("reserves profile listing and saved fills for saved profiles", () => {
+it("offers discovery for both browser grants and reserves saved fills for profiles", () => {
   const offered = (resource: unknown) =>
     toolsFor({
       kind: "connection",
@@ -15,15 +15,14 @@ it("reserves profile listing and saved fills for saved profiles", () => {
     "ask_person",
     "browser_connect",
     "browser_use",
-    "tab_list",
+    "discover",
   ]);
   expect(offered({ kind: "browser-profile", profileId: createId("browserProfile") })).toEqual([
     "ask_person",
     "browser_connect",
-    "browser_profile_list",
     "browser_use",
     "card_request",
+    "discover",
     "saved_login_request",
-    "tab_list",
   ]);
 });

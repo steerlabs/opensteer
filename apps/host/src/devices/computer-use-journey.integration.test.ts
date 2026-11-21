@@ -1,3 +1,4 @@
+import { discoverHandler } from "../mcp/handlers/discover.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   AgentConnectionStore,
@@ -43,7 +44,6 @@ type ComputerAppApprovalList = {
 };
 import { WindowIdSchema } from "@opensteer/core";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
-import { computerAppsConnectionInput } from "@opensteer/agent-tools";
 import {
   createId,
   HarnessIdSchema,
@@ -5866,12 +5866,18 @@ integration.sequential("Computer use for a connected agent, through its session"
         isError: output.isError,
       };
     };
-    const listApps = async (input = {}, operationKey: string = randomUUID()) =>
-      (await handlers.computer_apps({
-        caller,
-        input: computerAppsConnectionInput.parse(input),
-        operationKey,
-      })) as { computers: unknown[]; phones: unknown[] };
+    const discover = discoverHandler(
+      { computer_apps: (call) => handlers.computer_apps(call) },
+      {
+        store: world.store,
+        tabs: { project: async () => ({ tabs: [], layout: { revision: 0, items: [] } }) },
+        browserSources: { grantableChromeTabs: async () => [] },
+      },
+    );
+    const listApps = (
+      input: { id?: string; query?: string; taskId?: ThreadId } = {},
+      operationKey: string = randomUUID(),
+    ) => discover({ caller, input, operationKey });
     const answer = async (requestId: string, decision: "allow" | "deny") => {
       const request = await database
         .selectFrom("requests")
@@ -5974,8 +5980,8 @@ integration.sequential("Computer use for a connected agent, through its session"
     async (scope) => {
       const s = await connectedAgent("approval-required", { scope, target: "mac" });
       try {
-        expect(await s.apps({ computerId: s.computerId, query: "Notes" })).toMatchObject({
-          computer: { apps: [expect.objectContaining({ name: "Notes", access: "read-write" })] },
+        expect(await s.apps({ id: s.computerId, query: "Notes" })).toMatchObject({
+          items: [expect.objectContaining({ name: "Notes", access: "read-write" })],
         });
         const script =
           'globalThis.w=await (await app("Notes")).window(); await w.observe({screenshot:true})';
@@ -6239,12 +6245,12 @@ integration.sequential("Computer use for a connected agent, through its session"
     const s = await connectedAgent("approval-required");
     try {
       expect(await s.apps({}, "overview")).not.toHaveProperty("operationId");
-      expect(await s.apps({ computerId: s.computerId }, "live-inventory")).toMatchObject({
+      expect(await s.apps({ id: s.computerId }, "live-inventory")).toMatchObject({
         status: "completed",
         taskId: expect.any(String),
         operationId: expect.any(String),
-        apps: [expect.objectContaining({ label: "Messages" })],
-        total: 1,
+        items: [expect.objectContaining({ name: "Messages", kind: "app" })],
+        nextCursor: null,
       });
       expect(await s.operation("live-inventory")).toMatchObject({
         state: "completed",
@@ -6281,7 +6287,7 @@ integration.sequential("Computer use for a connected agent, through its session"
                 },
                 "inventory-stop",
               )
-            : s.apps({ computerId: s.computerId }, "inventory-stop");
+            : s.apps({ id: s.computerId }, "inventory-stop");
         await Promise.race([reached.promise, running]);
         if (source === "script") s.stoppedDevices.add(s.computerId);
         else
@@ -6315,7 +6321,7 @@ integration.sequential("Computer use for a connected agent, through its session"
     });
     try {
       const ready = await s.call({ code: "return 1", readOnly: true });
-      const listing = s.apps({ computerId: s.computerId, taskId: ready.taskId }, "stopped-listing");
+      const listing = s.apps({ id: s.computerId, taskId: ready.taskId }, "stopped-listing");
       await Promise.race([reached.promise, listing]);
       const { sessionId } = await s.operation("stopped-listing");
       expect(
@@ -6340,7 +6346,7 @@ integration.sequential("Computer use for a connected agent, through its session"
     const s = await connectedAgent("approval-required", { access: "read" });
     try {
       expect(await s.apps()).toMatchObject({
-        phones: [expect.objectContaining({ computerId: s.computerId, access: "read" })],
+        items: [expect.objectContaining({ id: s.computerId, access: "read-only" })],
       });
       await expect(s.call({ code: tapScript })).rejects.toThrow("allows observation only");
       expect(await database.selectFrom("agentOperations").select("id").execute()).toEqual([]);
@@ -6452,10 +6458,9 @@ integration.sequential("Computer use for a connected agent, through its session"
       // No operation was even recorded for either.
       expect(await database.selectFrom("agentOperations").select("id").execute()).toEqual([]);
       const listing = await s.apps();
-      expect(listing.computers).toEqual([]);
-      // Its own phone screen reads as usable directly, not as work only a task's Run can do.
-      expect(listing.phones).toEqual([
-        expect.objectContaining({ computerId: s.computerId, access: "read-write" }),
+      // Its own phone screen is the only result and is usable directly.
+      expect(listing.items).toEqual([
+        expect.objectContaining({ kind: "phone", id: s.computerId, access: "read-write" }),
       ]);
       const words = JSON.stringify(listing);
       expect(words).not.toContain("Notes");

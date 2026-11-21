@@ -53,6 +53,7 @@ export * from "./thread-caller.js";
 export { readThreadWaitSnapshot } from "./thread-wait.js";
 export {
   readAssignmentResult,
+  readConnectionChildResult,
   beginAssignmentResultWait,
   endAssignmentResultWait,
   recoverAssignmentResultWaits,

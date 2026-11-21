@@ -1,7 +1,13 @@
-import { AgentConnectionStore } from "@opensteer/database";
+import { AgentConnectionStore, readAgentRequest } from "@opensteer/database";
 import { describeStore, pendingEvent } from "@opensteer/database/test-support/store";
 import { expect } from "vitest";
-import { connection, ownerTask, send, serveMcp } from "./connection-caller.test-support.js";
+import {
+  commands,
+  connection,
+  ownerTask,
+  send,
+  serveMcp,
+} from "./connection-caller.test-support.js";
 
 describeStore("one send rule, at send, at dequeue and at the start of a Run", (it) => {
   it("cancels a follow-up waiting on the person's task once its connection is narrowed to selected", async ({
@@ -134,23 +140,57 @@ describeStore("one send rule, at send, at dequeue and at the start of a Run", (i
     } as never);
     const read = () =>
       reader.client.callTool({
-        name: "opensteer_request_read",
-        arguments: { requestId: created.request.id },
+        name: "opensteer_task_wait",
+        arguments: { taskId: f.threadId, timeoutMs: 1_000 },
       });
     // Asked by the person's own Run: an `everything` agent may read it.
     const first = await read();
     expect(first.isError, JSON.stringify(first.content)).not.toBe(true);
+    expect(first.structuredContent).toMatchObject({ pendingRequest: { id: created.request.id } });
+    expect(JSON.stringify(first)).not.toMatch(
+      /Which one|Ready\?|custom|multiSelect|pendingRequests/u,
+    );
     // The same task, but the asking Run worked for another connection.
     await database
       .updateTable("runs")
       .set({ connectionId: other.id })
       .where("id", "=", f.run.id)
       .execute();
-    expect(await read()).toMatchObject({
-      isError: true,
-      structuredContent: {
-        error: { code: "not_found", message: "That item is unavailable.", next: null },
-      },
+    const taskRead = async () =>
+      reader.client.callTool({
+        name: "opensteer_task_read",
+        arguments: { taskId: f.threadId, view: "activity" },
+      });
+    const hiddenTask = await taskRead();
+    expect(hiddenTask.isError, JSON.stringify(hiddenTask.content)).not.toBe(true);
+    expect(hiddenTask.structuredContent).not.toHaveProperty("task.pendingRequests");
+    expect(JSON.stringify(hiddenTask)).not.toContain(created.request.id);
+    const hidden = await read();
+    expect(hidden.isError).not.toBe(true);
+    expect(hidden.structuredContent).not.toHaveProperty("pendingRequest");
+    expect(JSON.stringify(hidden)).not.toContain(created.request.id);
+
+    const authority = {
+      kind: "connection",
+      userId: f.userId,
+      connectionId: other.id,
+      accessMode: "full-access",
+    } as const;
+    const readAsOther = () => readAgentRequest(database, authority, created.request.id);
+    await expect(readAsOther()).resolves.toMatchObject({ request: { id: created.request.id } });
+    const administration = commands(storeFixture, f.userId);
+    await administration.update(other.id, { accessMode: "approval-required" });
+    await expect(readAsOther()).rejects.toMatchObject({ code: "forbidden" });
+    await administration.update(other.id, {
+      expectedRevision: 2,
+      grant: { scope: "selected", tasks: false, resources: [] },
     });
+    await expect(
+      readAgentRequest(
+        database,
+        { ...authority, accessMode: "approval-required" },
+        created.request.id,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 });

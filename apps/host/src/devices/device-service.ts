@@ -259,7 +259,7 @@ function computerOwner(caller: ComputerCaller): UserId {
 function notThisSessionsTarget(): never {
   throw refused(
     "not_found",
-    "No app or phone screen shared with this agent matches. Call computer_apps for what you can use.",
+    "No app or phone screen shared with this agent matches. Call discover for what you can use.",
   );
 }
 
@@ -527,9 +527,13 @@ export class DeviceService {
       readonly ownerUserId: UserId;
       readonly ownerView?: boolean;
       readonly offlineAtCall?: boolean;
+      readonly connectionId?: string | undefined;
+      readonly agentBindingId?: string | undefined;
     },
     facts = this.localDiscoveryFacts(input.ownerUserId),
   ): Promise<Entry[]> {
+    const connectedAgent =
+      input.connectionId !== undefined || input.agentBindingId?.startsWith("session:") === true;
     const { connectionFor, localServers } = facts;
     const computerName = async (runnerId: RunnerId) =>
       (await localServers()).find((server) => server.runnerId === runnerId)?.runnerName ??
@@ -624,6 +628,7 @@ export class DeviceService {
           const detail = isPhoneDisplayDefinitionId(definitionId)
             ? phoneAvailabilityDetail({
                 attached,
+                connection: connectedAgent,
                 definitionId,
                 availability:
                   (await this.#deviceApps.availability?.(connection.deviceId)) ?? undefined,
@@ -1235,13 +1240,17 @@ export class DeviceService {
       )
         throw new ComputerUseError(
           "failed",
-          `${connection.runnerName} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
+          caller.session
+            ? `${connection.runnerName} allows seeing only. The person can share it with read-write access under Connected agents; do not retry this call until they do.`
+            : `${connection.runnerName} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
         );
       throw refused(
         "forbidden",
         row === "act"
           ? "This task does not have read-write access to this app or phone. Request read-write access before acting."
-          : "This app or phone is no longer approved for this task. Call computer_apps for current access.",
+          : caller.session
+            ? "This app or phone is no longer approved for this task. Call discover for current access."
+            : "This app or phone is no longer approved for this task. Call computer_apps for current access.",
       );
     }
     const {
@@ -1265,6 +1274,7 @@ export class DeviceService {
             )
           : phoneAvailabilityDetail({
               attached: false,
+              connection: !!caller.session,
               definitionId: isPhoneDisplayDefinitionId(definition.id) ? definition.id : undefined,
               availability:
                 (await this.#deviceApps.availability?.(placement.deviceId)) ?? undefined,
@@ -1848,7 +1858,9 @@ export class DeviceService {
       )
         throw refused(
           "forbidden",
-          "This phone is no longer approved for this task. Call computer_apps for current access.",
+          caller.session
+            ? "This phone is no longer approved for this task. Call discover for current access."
+            : "This phone is no longer approved for this task. Call computer_apps for current access.",
         );
       const { phones } = await this.computerAppApprovals.computerUseInventory(owner);
       const installed = await this.computerAppApprovals.installedComputerApps(

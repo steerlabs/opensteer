@@ -46,6 +46,7 @@ import {
   connection,
   errorText,
   serveMcp,
+  lastService,
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
 import {
@@ -148,6 +149,7 @@ async function setUp(
   };
   const home = { runnerId: createId("runner"), name: "Mac" };
   const url = await serveMcp(storeFixture, {
+    browserProfiles: [{ id: profile, name: "Work", home: null }],
     tabHandlers: new TabToolHandlers(tabs, sessions),
     browser: new BrowserToolHandlers({
       sessions,
@@ -352,8 +354,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
     const s = await setUp(storeFixture, "session-start");
     // A browser-only agent works on a Home where no native engine is enabled.
     await database.updateTable("harnessInstances").set({ enabled: false }).execute();
-    const first = await s.ok("tab_list", {});
-    expect(first).toMatchObject({ status: "completed", tabs: [] });
+    const first = await s.ok("discover", { id: profile });
+    expect(first).toMatchObject({ status: "completed", items: [] });
     const task = await database
       .selectFrom("threads")
       .select(["id", "worker", "listed", "status", "originConnectionId"])
@@ -374,7 +376,22 @@ describeStore("an external agent's direct work through sessions", (it) => {
       }) as unknown as Transport,
       { timeout: 5000 },
     );
-    expect((await s.ok("tab_list", {}, second)).taskId).toBe(first.taskId);
+    expect((await s.ok("discover", { id: profile }, second)).taskId).toBe(first.taskId);
+    const service = lastService!;
+    const caller = await service.options.callers.authenticate(s.agent.token);
+    expect(
+      await service.options.handlers.tab_list!({
+        caller,
+        input: {},
+        operationKey: "retained-whole-tab-read",
+      }),
+    ).toMatchObject({
+      status: "completed",
+      taskId: first.taskId,
+      tabs: [],
+      groups: [],
+      nextCursor: null,
+    });
     await expect(
       store.enqueueThreadInput({
         requestedBy: s.f.userId,
@@ -391,7 +408,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
     storeFixture,
   }) => {
     const s = await setUp(storeFixture, "session-stop");
-    const { taskId } = await s.ok("tab_list", {});
+    const { taskId } = await s.ok("discover", { id: profile });
     const session = await storeFixture.database
       .selectFrom("agentSessions")
       .select("id")
@@ -437,11 +454,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
       },
     });
     const stopped = "The person stopped this work. Do not continue it; ask before starting again.";
-    expect(errorText(await s.call("tab_list", { taskId }))).toBe(stopped);
-    expect(errorText(await s.call("tab_list", {}))).toBe(stopped);
-    const next = await s.ok("tab_list", {});
+    expect(errorText(await s.call("discover", { id: profile, taskId }))).toBe(stopped);
+    expect(errorText(await s.call("discover", { id: profile }))).toBe(stopped);
+    const next = await s.ok("discover", { id: profile });
     expect(next.taskId).not.toBe(taskId);
-    expect(errorText(await s.call("tab_list", { taskId }))).toBe(stopped);
+    expect(errorText(await s.call("discover", { id: profile, taskId }))).toBe(stopped);
   });
 
   it("returns guidance instead of reissuing a completed browser connection", async ({
@@ -634,6 +651,117 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(await resume()).toEqual(refused);
     expect(await attention()).not.toContain(requestId);
     expect(s.runBrowserScript).not.toHaveBeenCalled();
+  });
+
+  it("replays a recorded discover receipt for its connection only and rechecks its target", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "discover-replay");
+    const service = lastService!;
+    const args = { id: profile };
+    const identity = { operationKey: "discover-replay" };
+    const call = (token: string) => service.callTool(token, "discover", args, identity);
+    const initial = await call(s.agent.token);
+    expect(initial).toMatchObject({
+      status: "completed",
+      items: [],
+      operationId: expect.any(String),
+    });
+    const { taskId, operationId } = initial as { taskId: string; operationId: string };
+    const repeat = await call(s.agent.token);
+    expect(repeat).toMatchObject({
+      taskId,
+      operationId,
+      status: "completed",
+      replayed: true,
+      next: expect.stringContaining("stored receipt"),
+    });
+    expect(repeat).not.toHaveProperty("items");
+    const other = await connection(storeFixture.store, s.url, {
+      userId: s.f.userId,
+      accessMode: "full-access",
+      grant: granted,
+    });
+    const independent = await call(other.token);
+    expect(independent).toMatchObject({ status: "completed", items: [] });
+    expect(independent).not.toHaveProperty("operationId", operationId);
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select("connectionId")
+        .where("operationKey", "=", identity.operationKey)
+        .execute(),
+    ).toEqual(expect.arrayContaining([{ connectionId: s.agent.id }, { connectionId: other.id }]));
+    // Still a browser grant, so only the profile's own authority can refuse the repeat.
+    await commands(storeFixture, s.f.userId).update(s.agent.id, {
+      grant: {
+        ...granted,
+        resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
+      },
+    });
+    const hidden = await service.callToolResult(s.agent.token, "discover", args, identity);
+    const missing = await service.callToolResult(
+      s.agent.token,
+      "discover",
+      { id: createId("browserProfile") },
+      identity,
+    );
+    expect(JSON.stringify(hidden)).toBe(JSON.stringify(missing));
+    expect(hidden.structuredContent).toEqual({
+      error: {
+        code: "not_found",
+        message: "That item is unavailable.",
+        next: null,
+      },
+    });
+  });
+
+  it("marks a repeated discovery read even if its outcome is still unknown", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "in-flight-discover-replay");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const execute = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+      return [];
+    });
+    const operation = {
+      ownerUserId: s.f.userId,
+      agentConnectionId: s.agent.id,
+      operationKey: "in-flight-discover",
+      tool: "tab_list",
+      input: {},
+      target: null,
+      effect: "read",
+      calls: "tab_list {}",
+      reportReplay: true,
+      execute,
+    } as const;
+    const original = s.sessions.run(operation);
+    await entered.promise;
+    try {
+      // A process without the in-memory hand-off can give the stored identity and
+      // its unknown outcome, but has no result to return.
+      const replacement = new AgentSessionService({ store: storeFixture.store, holdMs: 0 });
+      const row = await storeFixture.database
+        .selectFrom("agentOperations")
+        .select("id")
+        .where("operationKey", "=", operation.operationKey)
+        .executeTakeFirstOrThrow();
+      expect(await replacement.run(operation)).toEqual({
+        taskId: expect.any(String),
+        operationId: row.id,
+        status: "unknown",
+        next: expect.any(String),
+        replayed: true,
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await original;
+    }
   });
 
   it("hides a completed operation when narrowing removes its tool", async ({ storeFixture }) => {

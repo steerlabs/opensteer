@@ -2,6 +2,7 @@ import {
   OpensteerError,
   agentGrantAllowsTasks,
   minThreadAccessMode,
+  nonTerminalRunStatuses,
   threadAccessModeAtMost,
   type ThreadAccessMode,
   type UserId,
@@ -85,13 +86,28 @@ export async function lockThreadCaller(
   caller: ThreadCallerAuthority | undefined,
   targetRunIds: readonly RunId[] = [],
   admitted = false,
+  /** Also lock this task's active Runs, in the same ordered statement as the caller's. */
+  activeRunsOf?: ThreadId,
 ): Promise<void> {
   if (!caller) return;
   await lockLineageConnection(tx, await threadCallerLineageId(tx, caller));
   const ids = [
     ...new Set([...targetRunIds, ...(caller.kind === "run" ? [caller.scope.runId] : [])]),
   ].sort();
-  if (ids.length)
+  if (activeRunsOf)
+    await tx
+      .selectFrom("runs")
+      .select("id")
+      .where((eb) =>
+        eb.or([
+          ...(ids.length ? [eb("id", "in", ids)] : []),
+          eb.and([eb("threadId", "=", activeRunsOf), eb("status", "in", nonTerminalRunStatuses)]),
+        ]),
+      )
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  else if (ids.length)
     await tx
       .selectFrom("runs")
       .select("id")

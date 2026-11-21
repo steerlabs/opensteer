@@ -5,6 +5,7 @@ import {
   type ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentCallerKind, RunToolCapabilities } from "./registry.js";
+import { discover } from "./tools/discover.js";
 import { agentTools, type AgentToolName } from "./tools/index.js";
 
 /**
@@ -84,6 +85,7 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   opensteer_task_delegate: tasks,
   opensteer_delegation_status: tasks,
   opensteer_delegation_cancel: tasks,
+  discover: ["tasks", "browser", "computer", "plugins"],
   ask_person: ["tasks", "browser", "computer", "plugins"],
   send_to_person: tasks,
   show_to_person: browser,
@@ -110,8 +112,8 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
 };
 
 /**
- * Whether a grant offers a tool; no grant is the person's own work, which keeps every tool. The
- * person's settings, reads included, reach a connection only with `everything` at `full-access`.
+ * Whether a grant allows a tool in a Run or program's lineage. Work in the person's own lineage
+ * has no grant ceiling. Settings in a connection's lineage require `everything` and Full access.
  */
 export function grantOffersTool(
   grant: AgentGrant | undefined,
@@ -129,6 +131,39 @@ export function grantOffersTool(
   return family.some((member) => granted.has(member));
 }
 
+const connectionSurface: ReadonlySet<AgentToolName> = new Set([
+  "discover",
+  "ask_person",
+  "browser_use",
+  "browser_connect",
+  "saved_login_request",
+  "card_request",
+  "computer_use",
+  "plugin_call",
+  "plugin_resume",
+  "plugin_execute",
+  "opensteer_task_create",
+  "opensteer_task_send",
+  "opensteer_task_read",
+  "opensteer_task_wait",
+  "opensteer_task_interrupt",
+]);
+
+const removedConnectionTools = new Set<AgentToolName>(
+  agentTools
+    .filter(
+      (tool) =>
+        !connectionSurface.has(tool.name) &&
+        (tool.access === "settings" || tool.callers.some((kind) => kind === "connection")),
+    )
+    .map(({ name }) => name),
+);
+export function isRemovedConnectionTool(name: AgentToolName): boolean {
+  return removedConnectionTools.has(name);
+}
+
+const connectedTools = [...agentTools.filter((tool) => connectionSurface.has(tool.name)), discover];
+
 export function toolsFor(caller: {
   readonly kind: AgentCallerKind;
   readonly program?: { readonly kind: "trigger" | "watch" };
@@ -139,7 +174,7 @@ export function toolsFor(caller: {
   /** The grant of the connection whose lineage this work is in. */
   readonly grant?: AgentGrant;
 }) {
-  return agentTools.filter(
+  return (caller.kind === "connection" ? connectedTools : agentTools).filter(
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
       (caller.program?.kind !== "watch" || tool.name !== "app_access_request") &&
@@ -160,22 +195,13 @@ function offersConnectionTool(
   name: AgentToolName,
   mode: ThreadAccessMode,
 ): boolean {
-  if (name === "opensteer_ai_account_list")
-    return !grant || grant.scope === "everything" || grant.tasks;
   if (grant?.scope === "selected") {
     if (name === "plugin_execute")
       return grant.resources.some(
         (resource) => resource.kind === "plugin" && resource.access === "read-write",
       );
     const profile = grant.resources.some(({ kind }) => kind === "browser-profile");
-    if (
-      name === "saved_login_request" ||
-      name === "card_request" ||
-      name === "browser_profile_list"
-    )
-      return profile;
-    if (name === "tab_list")
-      return profile || grant.resources.some(({ kind }) => kind === "chrome-tabs");
+    if (name === "saved_login_request" || name === "card_request") return profile;
   }
   return grantOffersTool(grant, name, mode);
 }

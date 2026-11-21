@@ -1,6 +1,12 @@
-import { agentToolFailureResult } from "@opensteer/agent-tools";
+import { DeviceToolHandlers } from "./devices.js";
+import {
+  agentToolFailureResult,
+  agentTools,
+  connectionToolSchema,
+  toolsFor,
+} from "@opensteer/agent-tools";
 import { discover } from "@opensteer/agent-tools/discover";
-import { createId, OpensteerError, TabIdSchema, type Tab } from "@opensteer/core";
+import { agentGrantAccess, createId, OpensteerError, TabIdSchema, type Tab } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { AgentOperationFailure } from "../../agent-sessions/agent-session-service.js";
@@ -65,7 +71,12 @@ function chromeLookup(visible: boolean) {
   };
 }
 
-function fixture(visible = true, chromeHasTabs = true) {
+function fixture(
+  visible = true,
+  chromeHasTabs = true,
+  windows = 1,
+  project?: () => Promise<{ tabs: Tab[]; layout: { revision: number; items: [] } }>,
+) {
   const computer = { computerId: macId, name: "Studio" };
   const common = {
     tabId: TabIdSchema.parse("tab_profile"),
@@ -99,42 +110,53 @@ function fixture(visible = true, chromeHasTabs = true) {
     appName: "Notes",
     bundleId: "com.apple.Notes",
   };
-  const tabs = visible ? [page, ...(chromeHasTabs ? [chrome] : []), window] : [];
-  const tabList = vi.fn(async () => ({
-    tabs,
-    groups: [],
-    nextCursor: null,
-    status: "completed",
-    taskId: directTask,
-    operationId,
-  }));
+  const tabs = visible
+    ? [
+        page,
+        ...(chromeHasTabs ? [chrome] : []),
+        ...Array.from({ length: windows }, (_, index) =>
+          index ? { ...window, tabId: TabIdSchema.parse(`tab_window_${index}`) } : window,
+        ),
+      ]
+    : [];
+  const tabList = vi.fn<import("./types.js").AgentToolHandlers["tab_list"]>(
+    async ({ discoveryTab }) => ({
+      tabs: discoveryTab ? tabs.filter(discoveryTab) : tabs,
+      groups: [],
+      nextCursor: null,
+      status: "completed",
+      taskId: directTask,
+      operationId,
+    }),
+  );
   const app = { name: "Notes", bundleId: "com.apple.Notes", access: "read" };
   const installed = { appId: "installed-app", label: "Phone Notes" };
-  const computerApps = vi.fn(async ({ input }: ToolCall<"computer_apps">) =>
-    input.computerId === phoneId && visible
-      ? {
-          apps: [installed],
-          total: 1,
-          nextCursor: null,
-          status: "completed",
-          taskId: directTask,
-          operationId,
-        }
-      : input.computerId === macId && visible
-        ? { computer: { ...computer, apps: [app] }, nextCursor: null }
-        : {
-            computers: visible ? [{ ...computer, apps: [app] }] : [],
-            phones: visible
-              ? [
-                  {
-                    computerId: phoneId,
-                    name: "Phone",
-                    definitionId: "android-phone",
-                    access: "read-write",
-                  },
-                ]
-              : [],
-          },
+  const computerApps = vi.fn<import("./types.js").AgentToolHandlers["computer_apps"]>(
+    async ({ input }) =>
+      input.computerId === phoneId && visible
+        ? {
+            apps: [installed],
+            total: 1,
+            nextCursor: null,
+            status: "completed",
+            taskId: directTask,
+            operationId,
+          }
+        : input.computerId === macId && visible
+          ? { computer: { ...computer, apps: [app] }, nextCursor: null }
+          : {
+              computers: visible ? [{ ...computer, apps: [app] }] : [],
+              phones: visible
+                ? [
+                    {
+                      computerId: phoneId,
+                      name: "Phone",
+                      definitionId: "android-phone",
+                      access: "read-write",
+                    },
+                  ]
+                : [],
+            },
   );
   const taskList = vi.fn(async ({ input }: ToolCall<"opensteer_task_list">) => ({
     threads: !visible
@@ -174,8 +196,13 @@ function fixture(visible = true, chromeHasTabs = true) {
   const instruction = { name: "Guide", version: "version", revision: "revision" };
   const handler = discoverHandler(
     {
-      browser_profile_list: async () => ({
-        profiles: visible ? [{ id: browserId, name: "Research", home: { reachable: true } }] : [],
+      browser_profile_list: async ({ caller }) => ({
+        profiles:
+          visible &&
+          caller.kind === "connection" &&
+          agentGrantAccess(caller.grant, { kind: "browser-profile", profileId: browserId })
+            ? [{ id: browserId, name: "Research", home: { reachable: true } }]
+            : [],
         sites: [{ site: "https://not-part-of-discovery.test" }],
       }),
       tab_list: tabList,
@@ -216,14 +243,19 @@ function fixture(visible = true, chromeHasTabs = true) {
     },
     {
       ...chromeLookup(visible),
-      tabs: { project: async () => ({ tabs, layout: { revision: 0, items: [] } }) },
+      tabs: { project: project ?? (async () => ({ tabs, layout: { revision: 0, items: [] } })) },
     },
   );
-  const read = (input: z.input<typeof discover.input> = {}, caller = connection) =>
+  const read = (
+    input: z.input<typeof discover.input> = {},
+    caller = connection,
+    liveCaller?: () => Promise<ConnectionCaller>,
+  ) =>
     handler({
       caller,
       input: discover.input.parse(input),
       operationKey: "discover-call",
+      ...(liveCaller ? { liveCaller } : {}),
     });
   return { read, tabList, computerApps, taskList };
 }
@@ -232,7 +264,7 @@ describe("discover before registration", () => {
   it("lists authorized choices with reusable IDs, smallest hints and no cached receipt", async () => {
     const { read, tabList } = fixture();
     const result = await read();
-    expect(result.items.map(({ kind }) => kind)).toEqual([
+    expect(result.items!.map(({ kind }) => kind)).toEqual([
       "browser-profile",
       "chrome-tabs",
       "app",
@@ -240,11 +272,11 @@ describe("discover before registration", () => {
       "plugin",
       "task",
     ]);
-    expect(result.items[0]).toMatchObject({
+    expect(result.items![0]).toMatchObject({
       id: browserId,
       use: { tool: "browser_use", argument: "profileId", value: browserId },
     });
-    expect(result.items[4]).toMatchObject({ access: "read-only", id: "tools.calendar" });
+    expect(result.items![4]).toMatchObject({ access: "read-only", id: "tools.calendar" });
     expect(result).not.toHaveProperty("taskId");
     expect(result).not.toHaveProperty("operationId");
     expect(JSON.stringify(result)).not.toContain("not-part-of-discovery");
@@ -264,7 +296,7 @@ describe("discover before registration", () => {
   it("keeps a paired Chrome source reachable by ID even when it has no visible tabs", async () => {
     const { read, tabList } = fixture(true, false);
     const list = await read();
-    expect(list.items.find((entry) => entry.id === chromeId)).toMatchObject({
+    expect(list.items!.find((entry) => entry.id === chromeId)).toMatchObject({
       kind: "chrome-tabs",
       reachable: false,
     });
@@ -307,7 +339,7 @@ describe("discover before registration", () => {
   it("follows Mac apps and windows without a receipt, and passes live phone inventory through", async () => {
     const { read, computerApps } = fixture();
     const { items } = await read();
-    const app = items.find(({ kind }) => kind === "app")!;
+    const app = items!.find(({ kind }) => kind === "app")!;
     const mac = await read({ id: app.id });
     expect(mac).toMatchObject({
       item: { id: app.id, untrusted: true },
@@ -325,7 +357,7 @@ describe("discover before registration", () => {
         input: expect.objectContaining({ computerId: phoneId, taskId: directTask }),
       }),
     );
-    const installed = await read({ id: phone.items[0]!.id });
+    const installed = await read({ id: phone.items![0]!.id });
     expect(installed.item).toMatchObject({
       name: "Phone Notes",
       appId: "installed-app",
@@ -337,7 +369,7 @@ describe("discover before registration", () => {
   it("routes tool signatures, documents and references by their returned IDs", async () => {
     const { read } = fixture();
     const result = await read({ id: "tools.calendar" });
-    const [tool, doc] = result.items;
+    const [tool, doc] = result.items!;
     expect(tool).toMatchObject({
       id: "tools.calendar.read",
       input: "{limit:number}",
@@ -348,7 +380,7 @@ describe("discover before registration", () => {
     });
     const document = await read({ id: doc!.id });
     expect(document.item).toMatchObject({ text: "Instruction text", untrusted: true });
-    expect((await read({ id: document.items[0]!.id })).item).toMatchObject({
+    expect((await read({ id: document.items![0]!.id })).item).toMatchObject({
       text: "Reference text",
     });
     expect(document).not.toHaveProperty("operationId");
@@ -402,15 +434,15 @@ describe("discover before registration", () => {
       });
     const first = await read("matching");
     const second = await read("matching", first.nextCursor!);
-    expect(first.items.map(({ id }) => id)).toEqual(profiles.slice(0, 50).map(({ id }) => id));
-    expect(second.items.map(({ id }) => id)).toEqual(profiles.slice(50).map(({ id }) => id));
+    expect(first.items!.map(({ id }) => id)).toEqual(profiles.slice(0, 50).map(({ id }) => id));
+    expect(second.items!.map(({ id }) => id)).toEqual(profiles.slice(50).map(({ id }) => id));
     expect(second.nextCursor).toBeNull();
     await expect(read("different", first.nextCursor!)).rejects.toMatchObject({
       code: "bad_request",
     });
   });
 
-  it("redacts a recorded receipt if the target disappears at admission", async () => {
+  it("keeps the recorded receipt if the target disappears at admission", async () => {
     const { read, tabList } = fixture();
     tabList.mockRejectedValueOnce(
       new AgentOperationFailure(
@@ -418,19 +450,273 @@ describe("discover before registration", () => {
         { taskId: directTask, operationId, status: "refused" },
       ),
     );
-    await expect(read({ id: browserId })).rejects.toStrictEqual(
-      new OpensteerError({ code: "not_found", message: "That item is unavailable." }),
+    await expect(read({ id: browserId })).rejects.toMatchObject({
+      receipt: { taskId: directTask, operationId, status: "refused" },
+    });
+  });
+
+  it("points a missing computer target at discover", async () => {
+    const devices = new DeviceToolHandlers({ devices: {} as never, access: {} as never });
+    await expect(
+      devices.computer_use({
+        caller: connection,
+        input: { code: "print(1)" },
+        operationKey: "missing-target",
+      }),
+    ).rejects.toMatchObject({
+      message:
+        "Name the app or phone screen shared with you: computerId, and app for a Mac app, from discover.",
+    });
+  });
+
+  it("uses the grant returned by the call's one live check for every lookup", async () => {
+    const { read } = fixture();
+    const original = {
+      ...connection,
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: browserId }],
+      },
+    } satisfies ConnectionCaller;
+    const changed = {
+      ...original,
+      grantRevision: 2,
+      grant: {
+        ...original.grant,
+        resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
+      },
+    } satisfies ConnectionCaller;
+    // The call began under the old grant; its one live check returns the new one, and every
+    // lookup of the call filters by it.
+    const live = vi.fn(async () => changed);
+    await expect(read({ id: browserId }, original, live)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect(live).toHaveBeenCalledTimes(1);
+    // The other way round: shared now, though not when the call began.
+    const widened = vi.fn(async () => original);
+    expect(await read({ id: browserId }, changed, widened)).toMatchObject({
+      item: { id: browserId },
+      items: [{ id: "tab_profile" }],
+    });
+    // A root listing makes several lookups, all from that one check.
+    const once = vi.fn(async () => connection);
+    await read({}, connection, once);
+    expect(once).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks the cursor only after resolving the visible id", async () => {
+    const { read, tabList } = fixture(true, true, 51);
+    const { nextCursor } = await read({ id: macId });
+    expect(nextCursor).toEqual(expect.any(String));
+    for (const id of ["", createId("browserProfile")]) {
+      for (const cursor of [nextCursor!, "", "x".repeat(4097)]) {
+        await expect(read({ id, cursor })).rejects.toMatchObject({
+          code: "not_found",
+          message: "That item is unavailable.",
+        });
+      }
+    }
+    const hidden = {
+      ...connection,
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: createId("browserProfile") }],
+      },
+    } satisfies ConnectionCaller;
+    await expect(read({ id: browserId, cursor: nextCursor! }, hidden)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(read({ id: browserId, cursor: nextCursor! })).rejects.toMatchObject({
+      code: "bad_request",
+    });
+    expect(tabList).not.toHaveBeenCalled();
+  });
+
+  it("returns one recorded read for a page filtered by profile", async () => {
+    const { read, tabList } = fixture();
+    const result = await read({ id: browserId });
+    expect(result).toMatchObject({
+      items: [{ id: "tab_profile", kind: "tab" }],
+      operationId,
+      taskId: directTask,
+      status: "completed",
+    });
+    expect(tabList).toHaveBeenCalledTimes(1);
+    expect(tabList.mock.calls[0]?.[0].discoveryTab).toBeTypeOf("function");
+  });
+
+  it("pages beyond 50 windows before proceeding to apps", async () => {
+    const { read } = fixture(true, true, 51);
+    const first = await read({ id: macId });
+    expect(first.items).toHaveLength(50);
+    expect(first.items?.every((entry) => entry.kind === "tab")).toBe(true);
+    const second = await read({ id: macId, cursor: first.nextCursor! });
+    expect(second.items).toMatchObject([{ id: "tab_window_50" }, { kind: "app", name: "Notes" }]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it.each(["failed", "pending", "unknown"])(
+    "preserves the recorded phone read outcome %s",
+    async (status) => {
+      const { read, computerApps } = fixture();
+      const phone = await read({ id: phoneId });
+      const original = computerApps.getMockImplementation()!;
+      computerApps.mockImplementation((call) =>
+        call.input.computerId === phoneId
+          ? Promise.resolve({
+              status,
+              operationId,
+              taskId: directTask,
+              next: "Check this receipt.",
+            })
+          : original(call),
+      );
+      expect(await read({ id: phone.items![0]!.id })).toEqual({
+        status,
+        operationId,
+        taskId: directTask,
+        next: "Check this receipt.",
+      });
+    },
+  );
+
+  it("keeps a recorded read's receipt when a later step of the same call fails", async () => {
+    const later = new OpensteerError({ code: "conflict", message: "Tabs are unavailable." });
+    const { read, computerApps } = fixture(true, true, 1, async () => {
+      throw later;
+    });
+    const original = computerApps.getMockImplementation()!;
+    computerApps.mockImplementation((call) =>
+      call.input.computerId === macId
+        ? Promise.resolve({
+            computer: {
+              computerId: macId,
+              name: "Studio",
+              apps: [{ name: "Mail", bundleId: "com.apple.mail", access: "read" as const }],
+            },
+            nextCursor: null,
+            status: "completed",
+            taskId: directTask,
+            operationId,
+          })
+        : original(call),
     );
+    const id =
+      "app:" + Buffer.from(JSON.stringify([macId, "com.apple.mail"])).toString("base64url");
+    const failure = await read({ id }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AgentOperationFailure);
+    expect(failure).toMatchObject({
+      cause: later,
+      receipt: { taskId: directTask, operationId },
+    });
+    // Nothing was recorded before a refusal of an unknown app: no receipt to keep.
+    const missing =
+      "app:" + Buffer.from(JSON.stringify([macId, "com.missing"])).toString("base64url");
+    computerApps.mockImplementation(original);
+    await expect(read({ id: missing })).rejects.not.toBeInstanceOf(AgentOperationFailure);
+  });
+
+  it("returns a completed receipt beside a missing phone app", async () => {
+    const { read } = fixture();
+    const id =
+      "phone-app:" +
+      Buffer.from(JSON.stringify([phoneId, "missing", "", "0"])).toString("base64url");
+    expect(await read({ id })).toMatchObject({
+      status: "completed",
+      operationId,
+      taskId: directTask,
+      error: { code: "not_found", message: "That item is unavailable.", next: null },
+    });
+  });
+
+  it("returns a stored receipt without fabricating a listing or a missing item", async () => {
+    const { read, tabList } = fixture();
+    const original = await read({ id: "tab_profile" });
+    expect(original.item).toMatchObject({ id: "tab_profile" });
+    const stored = {
+      status: "completed",
+      operationId,
+      taskId: directTask,
+      summary: { tabs: 1 },
+      replayed: true,
+    };
+    tabList.mockResolvedValueOnce(stored);
+    expect(await read({ id: "tab_profile" })).toEqual({
+      ...stored,
+      next: expect.stringContaining("stored receipt"),
+    });
+  });
+
+  it("offers usable hints for discovered resource IDs", async () => {
+    const { read } = fixture();
+    const root = await read();
+    const outcomes = await Promise.all(root.items!.map(({ id }) => read({ id })));
+    const pluginDetails = await read({ id: "tools.calendar" });
+    const doc = pluginDetails.items!.find(({ kind }) => kind === "document")!;
+    const document = await read({ id: doc.id });
+    const items = [
+      ...root.items!,
+      ...outcomes.flatMap((result) => [
+        ...(result.item ? [result.item] : []),
+        ...(result.items ?? []),
+      ]),
+      ...document.items!,
+      (await read({ id: macId })).item!,
+    ];
+    expect(new Set(items.map(({ kind }) => kind))).toEqual(
+      new Set([
+        "browser-profile",
+        "chrome-tabs",
+        "tab",
+        "app",
+        "phone",
+        "device",
+        "plugin",
+        "task",
+        "tool",
+        "document",
+      ]),
+    );
+    const offered = toolsFor(connection);
+    for (const { use } of items) {
+      expect(offered.map(({ name }) => name)).toContain(use.tool);
+      const tool =
+        use.tool === "discover" ? discover : agentTools.find(({ name }) => name === use.tool)!;
+      const arguments_ =
+        use.tool === "browser_use"
+          ? { code: "print(1)", [use.argument]: use.value }
+          : use.tool === "computer_use"
+            ? {
+                code: "print(1)",
+                computerId: use.computerId ?? use.value,
+                [use.argument]: use.value,
+              }
+            : use.tool === "plugin_call"
+              ? { calls: { path: use.value, input: {} } }
+              : { [use.argument]: use.value };
+      const advertised = connectionToolSchema(tool, connection.grant);
+      const description = JSON.stringify(use);
+      expect(tool.input.safeParse(arguments_).success, description).toBe(true);
+      expect(Object.keys(advertised.properties ?? {}), description).toEqual(
+        expect.arrayContaining(Object.keys(arguments_)),
+      );
+      expect(Object.keys(arguments_), description).toEqual(
+        expect.arrayContaining(advertised.required ?? []),
+      );
+    }
   });
 
   it("serializes hidden, missing and malformed IDs identically for every route", async () => {
     const { read } = fixture();
     const { read: hidden } = fixture(false);
     const offered = await read();
-    const macApp = offered.items.find(({ kind }) => kind === "app")!;
+    const macApp = offered.items!.find(({ kind }) => kind === "app")!;
     const phone = await read({ id: phoneId });
     const plugin = await read({ id: "tools.calendar" });
-    const document = await read({ id: plugin.items[1]!.id });
+    const document = await read({ id: plugin.items![1]!.id });
     const refused = async (id: string) => {
       try {
         await hidden({ id });
@@ -455,12 +741,12 @@ describe("discover before registration", () => {
       macId,
       macApp.id,
       phoneId,
-      phone.items[0]!.id,
+      phone.items![0]!.id,
       taskId,
       "tools.calendar",
-      plugin.items[0]!.id,
-      plugin.items[1]!.id,
-      document.items[0]!.id,
+      plugin.items![0]!.id,
+      plugin.items![1]!.id,
+      document.items![0]!.id,
       "no such browser",
       "",
       "app:!",

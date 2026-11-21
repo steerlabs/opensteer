@@ -1,3 +1,4 @@
+import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ThreadAccessModeSchema } from "@opensteer/core";
 import { onTestFinished } from "vitest";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -33,11 +34,10 @@ import {
   opensteer_task_read,
   opensteer_task_send,
   opensteer_task_list,
-  show_to_person,
   opensteer_task_configure,
+  show_to_person,
   opensteer_task_queue,
   opensteer_task_delegate,
-  opensteer_delegation_status,
   opensteer_task_interrupt,
   opensteer_delegation_wait,
   opensteer_request_read,
@@ -275,7 +275,10 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
     s.product.opensteer_task_wait({
       caller,
-      input: opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
+      input:
+        caller.kind === "connection"
+          ? opensteer_task_wait.input.parse({ taskId: task.threadId, timeoutMs })
+          : opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
       operationKey: randomUUID(),
       checkLive,
       ...(signal ? { signal } : {}),
@@ -1561,7 +1564,7 @@ describeStore("shaped agent task tools", (it) => {
     await s.settle();
     expect(
       (
-        await s.status({
+        await s.wait(2_000, {
           kind: "connection",
           grant: { scope: "everything" },
           grantRevision: 1,
@@ -1570,7 +1573,7 @@ describeStore("shaped agent task tools", (it) => {
           userId: s.f.userId,
           accessMode: "full-access",
         })
-      ).result,
+      ).task?.result,
     ).toBe("42");
     await storeFixture.store.drainAssignmentReturn(s.assignmentId);
     expect(await s.returns()).toHaveLength(1);
@@ -2181,6 +2184,32 @@ describeStore("shaped agent task tools", (it) => {
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("must name taskId");
+    const mcp = new OpensteerMcpService({
+      callers: { authenticate: async () => connection },
+      handlers: {
+        opensteer_task_configure: (call) => s.product.opensteer_task_configure(call),
+        opensteer_task_queue: (call) => s.product.opensteer_task_queue(call),
+      },
+      store: storeFixture.store,
+      publicUrl: new URL("https://host.test"),
+    });
+    try {
+      const options = { operationKey: randomUUID() };
+      const absent = await mcp.callToolResult("token", "unknown_fixture_tool", {}, options);
+      expect(absent).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      for (const [name, input] of [
+        ["opensteer_task_configure", { modelSelection: testModelSelection }],
+        ["opensteer_task_queue", { action: "list" }],
+      ] as const)
+        expect(JSON.stringify(await mcp.callToolResult("token", name, input, options))).toBe(
+          JSON.stringify(absent),
+        );
+    } finally {
+      await mcp.close();
+    }
     await expect(s.read({}, connection)).rejects.toThrow("must name taskId");
   });
 
@@ -2373,6 +2402,11 @@ describeStore("shaped agent task tools", (it) => {
       })
       .where("id", "=", next.assignmentId!)
       .execute();
+    await storeFixture.database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", next.runId!)
+      .execute();
     const connections = new AgentConnectionStore(storeFixture.database);
     const record = await connections.create({
       userId: f.userId,
@@ -2392,12 +2426,12 @@ describeStore("shaped agent task tools", (it) => {
       userId: f.userId,
       accessMode: "approval-required",
     };
-    const status = await s.product.opensteer_delegation_status({
+    const status = await s.product.opensteer_task_wait({
       caller: connection,
-      input: opensteer_delegation_status.input.parse({ delegationId: next.assignmentId }),
+      input: opensteer_task_wait.input.parse({ taskId: next.threadId }),
       operationKey: randomUUID(),
     });
-    expect(status.result).toBe(result);
+    expect(status.task?.result).toBe(result);
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
       assignmentId: next.assignmentId,
       taskStatus: "completed",

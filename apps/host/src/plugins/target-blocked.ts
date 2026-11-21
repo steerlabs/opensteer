@@ -7,6 +7,8 @@ export function pluginTargetBlocked(input: {
   reason: string;
   requirements: Readonly<Record<string, { scope: "app" | "user" }>>;
   canRequestAccount?: boolean;
+  /** A connected agent, which finds plugins with `discover` and never asks for an account. */
+  connection?: boolean;
   readiness: EngineAccountMetadata["readiness"];
 }): Blocked {
   if (Object.values(input.readiness).some(({ state }) => state === "consent-needs-review"))
@@ -23,15 +25,17 @@ export function pluginTargetBlocked(input: {
         code: "sign_in_required",
         message: `${input.name} needs a connected account.`,
         next:
-          input.canRequestAccount === false
-            ? "The person can connect or link this account in Plugins. Only a task Run can ask with plugin_account_request; continue without this plugin until it is connected."
-            : missing
-                .map(
-                  ([requirement, { scope }]) =>
-                    `Call plugin_account_request ${JSON.stringify({ pluginId: input.id, requirement, scope, reason: "<why you need it>" })}.`,
-                )
-                .join(" ")
-                .slice(0, 2000),
+          input.connection === true
+            ? "The person can connect or link this account in Plugins. Continue without this plugin until it is connected."
+            : input.canRequestAccount === false
+              ? "The person can connect or link this account in Plugins. Only a task Run can ask with plugin_account_request; continue without this plugin until it is connected."
+              : missing
+                  .map(
+                    ([requirement, { scope }]) =>
+                      `Call plugin_account_request ${JSON.stringify({ pluginId: input.id, requirement, scope, reason: "<why you need it>" })}.`,
+                  )
+                  .join(" ")
+                  .slice(0, 2000),
       }
     : {
         code: "unavailable",

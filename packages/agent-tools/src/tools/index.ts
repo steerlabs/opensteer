@@ -1,3 +1,4 @@
+import { discover } from "./discover.js";
 import { tabTools } from "./tabs.js";
 import { appTools } from "./apps.js";
 import { aiAccountTools } from "./ai-accounts.js";
@@ -98,7 +99,7 @@ export const agentTools = [
   opensteer_knowledge_read,
   opensteer_knowledge_save,
 ] as const;
-export type AgentTool = (typeof agentTools)[number];
+export type AgentTool = (typeof agentTools)[number] | typeof discover;
 export type AgentToolName = AgentTool["name"];
 
 /** The tools that open a Request, and so hold their call for a person. */

@@ -13,7 +13,7 @@ import {
 } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
-import { executionDate } from "./personal-transaction.js";
+import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   liveInputLease,
   inputEditEligibility,
@@ -37,6 +37,7 @@ import {
   assertLineageCompatibleReuse,
   bindingAgentConnectionId,
   assertSendEligible,
+  connectionTaskReadScope,
   liveDelegatingConnection,
   meetsConnectionFloor,
   sendEligible,
@@ -5098,6 +5099,47 @@ export async function recoverAssignmentResultWaits(
           waits.map(({ id }) => id),
         )
         .execute();
+  });
+}
+
+/**
+ * For a connected agent waiting on a child task: the newest delegation of that task whose parent
+ * the connection may also read, and its result. A connection never assigned the work, so reading
+ * it delivers nothing and leaves the parent's automatic return alone; it is a plain read.
+ */
+export function readConnectionChildResult(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly authority: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+    readonly childThreadId: ThreadId;
+  },
+) {
+  const { authority, childThreadId } = input;
+  return withPersonalReadTransaction(database, async (transaction) => {
+    await requirePersonalOwner(transaction, authority.userId);
+    const scope = await connectionTaskReadScope(transaction, authority);
+    const row = await transaction
+      .selectFrom("delegations")
+      .innerJoin("threads as parent", "parent.id", "delegations.parentThreadId")
+      .selectAll("delegations")
+      .where("delegations.childThreadId", "=", childThreadId)
+      .where("parent.createdBy", "=", authority.userId)
+      .$if(scope === "selected", (query) =>
+        query.where("parent.originConnectionId", "=", authority.connectionId),
+      )
+      .orderBy("delegations.createdAt", "desc")
+      .orderBy("delegations.id", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (
+      !row ||
+      !(await threadExecutionIsAvailableToUser(transaction, childThreadId, authority.userId))
+    )
+      return undefined;
+    return {
+      assignment: await assignmentSummaryInTransaction(transaction, row),
+      result: row.resultText,
+    };
   });
 }
 

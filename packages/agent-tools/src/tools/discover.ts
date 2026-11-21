@@ -1,4 +1,4 @@
-import { ThreadIdSchema } from "@opensteer/core";
+import { BlockedSchema, ThreadIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import { defineAgentTool } from "../registry.js";
 
@@ -24,6 +24,12 @@ const item = z.object({
     computerId: z.string().optional(),
   }),
   computer: z.string().optional(),
+  phoneSetup: z
+    .object({
+      location: z.string(),
+      driverRunnerName: z.string().optional(),
+    })
+    .optional(),
   appId: z.string().optional(),
   reachable: z.boolean().optional(),
   access: z.enum(["read-only", "read-write"]).optional(),
@@ -31,7 +37,9 @@ const item = z.object({
   description: z.string().optional(),
   input: z.string().optional(),
   signature: z.string().optional(),
+  blocked: BlockedSchema.optional(),
   text: z.string().optional(),
+  revision: z.string().optional(),
   untrusted: z.literal(true).optional(),
 });
 
@@ -45,16 +53,27 @@ export const discover = defineAgentTool({
   input: z.strictObject({
     id: z.string().optional(),
     query: z.string().trim().min(1).max(200).optional(),
-    cursor: z.string().min(1).max(4096).optional(),
+    cursor: z.string().optional(),
     taskId: ThreadIdSchema.optional(),
   }),
   output: z.object({
     item: item.optional(),
-    items: z.array(item),
-    nextCursor: z.string().nullable(),
+    items: z.array(item).optional(),
+    nextCursor: z.string().nullable().optional(),
     status: z.enum(["completed", "pending", "failed", "unknown"]).optional(),
     taskId: ThreadIdSchema.optional(),
     operationId: z.string().optional(),
+    next: z.string().optional(),
+    requestId: z.string().nullable().optional(),
+    summary: z.record(z.string(), z.unknown()).nullable().optional(),
+    replayed: z.literal(true).optional(),
+    error: z
+      .object({
+        code: z.enum(["not_found", "bad_request"]),
+        message: z.string(),
+        next: z.null(),
+      })
+      .optional(),
   }),
   access: "read",
   callers: ["connection"],

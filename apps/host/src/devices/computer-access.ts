@@ -41,6 +41,11 @@ export async function gatherComputerAccess(
   callableTools?: readonly CallableIntegrationTool[],
 ) {
   const hasRun = !!(run || input.runId || input.direct);
+  // A connected agent: its own discovery, its session's scripts, or its direct call.
+  const connectedAgent =
+    !!input.direct ||
+    input.connectionId !== undefined ||
+    input.agentBindingId?.startsWith("session:") === true;
   const [ownerInventory, tools, ownerSetupRequests, ownerAccessRequests, enabled] =
     await Promise.all([
       platform.computerAppApprovals.computerUseInventory(input.ownerUserId),
@@ -172,6 +177,7 @@ export async function gatherComputerAccess(
       ),
       pendingPersonalGrant: !!approved && grants.has(approved.connectionId),
       heldByAnotherRun: held(machine.deviceId, key),
+      connectedAgent,
     });
   };
   const phone = (entry: (typeof inventory.phones)[number]) => {
@@ -199,6 +205,7 @@ export async function gatherComputerAccess(
         entry.deviceId,
         computerUseHolderKey({ kind: "display", definitionId: entry.definitionId }),
       ),
+      connectedAgent,
     });
   };
   return {

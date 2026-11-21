@@ -71,7 +71,7 @@ The types and the matching rules are in `packages/core/src/agent-grants.ts`. A s
 holds at most 64 resources.
 
 - **`everything`** reaches what the person's own agents can reach, through the tools offered to
-  connected agents. Settings tools need `everything` and Full access.
+  connected agents.
 - **`tasks`** lets the agent ask the person's own agents to work. Those agents use the files,
   commands, credentials and network of their account on the device, under the task's mode.
   Consent says: "Opensteer can stop what happens next, but can't undo what an agent already did."
@@ -134,23 +134,25 @@ A Home never fetches an address an agent supplies. See [agent-directory.md](agen
 The tool list is built from the grant (`packages/agent-tools/src/tools-for.ts`). A tool the grant
 does not imply is neither listed nor callable.
 
-| Grant part        | Tools it brings                                                                                                                                                |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tasks`           | `opensteer_task_*`, `opensteer_request_list/read`, `opensteer_automation_*`, `opensteer_delegation_*`, `opensteer_ai_account_list`                             |
-| a browser profile | `browser_profile_list`, `tab_list`, `browser_use`, `browser_connect`, `saved_login_request`, `card_request`                                                    |
-| Chrome tabs       | `tab_list`, `browser_use`, `browser_connect`                                                                                                                   |
-| an app or phone   | `computer_list`, `computer_apps`, `computer_use`                                                                                                               |
-| a plugin          | `plugin_search`, `plugin_describe`, `plugin_skills`, `plugin_resources`, `plugin_call`, `plugin_resume`, `local_server_list`; `plugin_execute` with read-write |
+| Grant part        | Tools it brings                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| any part below    | `discover`, `ask_person`                                                                                                 |
+| a browser profile | `browser_use`, `browser_connect`, `saved_login_request`, `card_request`                                                  |
+| Chrome tabs       | `browser_use`, `browser_connect`                                                                                         |
+| an app or phone   | `computer_use`                                                                                                           |
+| a plugin          | `plugin_call`, `plugin_resume`; `plugin_execute` with read-write                                                         |
+| `tasks`           | `opensteer_task_create`, `opensteer_task_send`, `opensteer_task_read`, `opensteer_task_wait`, `opensteer_task_interrupt` |
 
-Each of these also brings `ask_person`. A connection is never offered `tab_open`,
-`tab_close` or output schemas. The saved-fill tools are left out on an Opensteer Cloud Computer.
-The server instructions (`connectionInstructionsFor` in `packages/agent-tools/src/guides.ts`) are
-built from the same list and name only what the connection holds.
+The saved-fill tools require a managed browser profile and the Home's Passwords broker.
+`discover` lists shared resources and returns IDs for use in later calls. Open a task's entry to
+find child tasks and use their IDs to read or wait for results. If the person pauses a task
+queue, messages sent in queue mode wait there until the person resumes it.
 
-Sizes are pinned in `tests/agent-context-budget.json`: an `everything` connection at Full access
-gets 52 tools in under 25 KB of tool JSON; one browser profile with tasks off gets 7 tools in
-about 4.5 KB. `apps/host/src/mcp/connection-contract.test.ts` checks eight grant shapes: no tool
-is mentioned that is not offered, and no parameter shape is listed that the handler refuses.
+An `everything` connection lists all 15 tools on a Home with Passwords. Full access and Supervised
+list the same tools, and the grant and access mode still govern each call. Connections have no
+settings tools or output schemas. Server instructions are built from the same grant, and
+`apps/host/src/mcp/connection-contract.test.ts` checks the exact tools for eight grant shapes.
+Listing sizes are pinned in `tests/agent-context-budget.json`.
 
 **Outside the grant reads exactly like non-existent.** A refusal about a target the connection
 may not know of is rewritten to `not_found` with a fixed message and no advice
@@ -535,7 +537,7 @@ install or a VM reboot.
 - **The egress proxy is a browser setting**, not a boundary against an agent that controls the
   browser.
 - **A connection lasts 30 days** and then needs a new sign-in; there are no refresh tokens.
-- **An `everything` connection lists 52 tools.** Narrower grants list far fewer.
+- **An `everything` connection lists up to 15 tools.** The person’s own agents can administer the Home.
 - **Stop while watching** interrupts the picture until the viewer reconnects.
 - **A Mac's sleep notice** reaches the device Runners it serves, not the Runner of a Home on the
   same Mac, and ends only connected agents' computer-use scripts.

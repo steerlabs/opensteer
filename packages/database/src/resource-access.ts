@@ -156,6 +156,37 @@ export async function liveAgentConnection(
   };
 }
 
+/**
+ * Which of the person's tasks a connected agent may read: all of them with `everything`, its own
+ * lineage with a `selected` grant. Refused once the grant no longer holds Tasks or the caller's
+ * mode is above the connection's.
+ */
+export async function connectionTaskReadScope(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly userId: UserId;
+    readonly connectionId: string;
+    readonly accessMode: ThreadAccessMode;
+  },
+  refusal = "Task is unavailable",
+): Promise<"everything" | "selected"> {
+  const { grant, accessMode } = await liveAgentConnection(
+    database,
+    input.userId,
+    input.connectionId,
+  );
+  if (!agentGrantAllowsTasks(grant) || !threadAccessModeAtMost(input.accessMode, accessMode))
+    throw forbidden(refusal);
+  return grant.scope;
+}
+
+export function connectionTaskRequestScope(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof connectionTaskReadScope>[1],
+): Promise<"everything" | "selected"> {
+  return connectionTaskReadScope(database, input, "Request is unavailable");
+}
+
 /** The connection delegated work may still run for: live, and still granted Tasks. */
 export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,

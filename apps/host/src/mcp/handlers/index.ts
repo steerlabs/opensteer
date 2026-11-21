@@ -1,5 +1,6 @@
 import type { SessionPersonTools } from "./session-person.js";
 import { refused } from "@opensteer/core";
+import { discoverHandler } from "./discover.js";
 import { appToolHandlers } from "./apps.js";
 import { TabToolHandlers } from "./tabs.js";
 import type { BrowserToolHandlers } from "./browser.js";
@@ -26,6 +27,7 @@ export function agentToolHandlers(options: {
   readonly triggers: TriggerToolHandlers;
   readonly apps: Pick<AppService, "publish" | "list" | "start" | "stop" | "delete">;
   readonly tabs: TabToolHandlers;
+  readonly discoverSources?: Parameters<typeof discoverHandler>[1];
   /** The browser for connected agents; absent on a Home without direct work. */
   readonly browser?: BrowserToolHandlers;
   readonly plugins?: PluginToolHandlers;
@@ -155,5 +157,12 @@ export function agentToolHandlers(options: {
       personalContext: options.personalContextForRun,
     }),
   };
+  if (options.discoverSources) {
+    const discover = discoverHandler(handlers, options.discoverSources);
+    handlers.discover = (call) => {
+      if (call.caller.kind !== "connection") throw refused("not_found", "Unknown Opensteer tool");
+      return discover({ ...call, caller: call.caller });
+    };
+  }
   return handlers;
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ToolFailureSchema, agentToolFailureResult, normalizeToolError } from "./results.js";
+import {
+  ToolFailureSchema,
+  agentToolFailureResult,
+  normalizeToolError,
+  withoutUnofferedGuidance,
+  withoutUnofferedTools,
+} from "./results.js";
 
 const connection = { tools: new Set(["computer_list"]) };
 
@@ -85,4 +91,78 @@ it("normalizes both MCP channels to one ToolError and discards internal control 
       retryable: true,
     }).structuredContent.error.next,
   ).toBeNull();
+});
+
+describe("text Opensteer wrote for its own agents, as a connection reads it", () => {
+  const offered = new Set(["discover", "plugin_call", "computer_use"]);
+
+  it("leaves out each sentence naming a tool the connection is not offered", () => {
+    expect(
+      withoutUnofferedTools(
+        "This app or phone is no longer approved for this task. Call computer_apps for current access.",
+        offered,
+      ),
+    ).toBe("This app or phone is no longer approved for this task.");
+    expect(withoutUnofferedTools("Use discover, then plugin_call.", offered)).toBe(
+      "Use discover, then plugin_call.",
+    );
+    expect(
+      withoutUnofferedTools("Supply the one plugin namespace from plugin_search.", offered),
+    ).toBe("");
+  });
+
+  it("applies the rule to a refusal's message as well as its next step", () => {
+    expect(
+      normalizeToolError(
+        {
+          code: "bad_request",
+          message: "Supply the one plugin namespace from plugin_search.",
+          next: "Call app_access_request first.",
+        },
+        { tools: offered },
+      ),
+    ).toEqual({ code: "invalid_input", message: "Tool call failed.", next: null });
+    // The person's own agents read every word.
+    expect(
+      normalizeToolError({ code: "bad_request", message: "Use plugin_search first." }),
+    ).toMatchObject({ message: "Use plugin_search first." });
+  });
+
+  it("rewrites blocked notes and refusal-shaped plugin errors, never a plugin's own value", () => {
+    const blocked = {
+      code: "access_required",
+      message: "Phone needs access for this task.",
+      next: 'Request access with app_access_request {computerId:"dev_1", access:"read-write"}; the owner can approve from any Opensteer app.',
+    };
+    const value = { code: "x", message: "Use tab_list.", next: "Then computer_apps." };
+    const shown = withoutUnofferedGuidance(
+      {
+        items: [{ id: "dev_1", kind: "phone", blocked }],
+        result: {
+          execution: {
+            value: [
+              { path: "tools.calendar.read", ok: false, error: blocked },
+              { path: "tools.calendar.list", ok: true, value: { error: value } },
+            ],
+          },
+        },
+        next: "Use plugin_search for its tools.",
+      },
+      offered,
+    );
+    expect(JSON.stringify(shown)).not.toMatch(/app_access_request|plugin_search/u);
+    expect(shown.items[0]!.blocked).toEqual({
+      code: "access_required",
+      message: "Phone needs access for this task.",
+      next: "Continue with what is shared with you, or tell the person what you need.",
+    });
+    expect(shown.result.execution.value[1]).toEqual({
+      path: "tools.calendar.list",
+      ok: true,
+      value: { error: value },
+    });
+    expect(shown.next).toBe(
+      "Continue with what is shared with you, or tell the person what you need.",
+    );
+  });
 });
