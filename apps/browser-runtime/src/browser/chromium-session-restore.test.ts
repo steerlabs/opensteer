@@ -1087,14 +1087,17 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
     { timeout: 15_000, interval: 100 },
   );
 
-  // Inject one inventory failure AND one discard failure right as parked tab 3 reloads!
+  // Inject one inventory failure AND one discard failure right as parked tab 3 reloads. Each is
+  // pinned to its caller (C7): the inventory failure lands on the parked run's own read for that
+  // tab, the discard failure on its discard, never on a map flush, a probe or the arrival check.
   const origInventory = lifecycle2.inventory.bind(lifecycle2);
   const origDiscard = lifecycle2.discardByTabIdDetailed.bind(lifecycle2);
+  const calledFrom = (name: string) => new Error().stack?.includes(name) === true;
   let failNextInventory = true;
   let failNextDiscard = true;
   let sawFailureWithEntryIntact = false;
   const invSpy = vi.spyOn(lifecycle2, "inventory").mockImplementation(async () => {
-    if (failNextInventory) {
+    if (failNextInventory && calledFrom("readInventoryWithRetry")) {
       failNextInventory = false;
       sawFailureWithEntryIntact = internal2.contextHandle.restoredBySurfaceId.has(surfaceIds[3]!);
       throw new Error("injected helper inventory failure");
@@ -1102,7 +1105,7 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
     return origInventory();
   });
   const discSpy = vi.spyOn(lifecycle2, "discardByTabIdDetailed").mockImplementation(async (id) => {
-    if (failNextDiscard) {
+    if (failNextDiscard && calledFrom("discardParkedRestoredTab")) {
       failNextDiscard = false;
       throw new Error("injected helper discard failure");
     }
@@ -1133,6 +1136,7 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
     },
     { timeout: 12_000, interval: 100 },
   );
+  expect(failNextInventory).toBe(false);
   expect(sawFailureWithEntryIntact).toBe(true);
   expect(handedOffUrls.some((u) => u.includes("tab=b2_3"))).toBe(false);
 }, 60_000);

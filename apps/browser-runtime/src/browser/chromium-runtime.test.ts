@@ -130,7 +130,11 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
   fence = { ...fence, epoch: 2 };
   const adoption = await control("adopt");
   expect(adoption.fence?.epoch).toBe(2);
+  const adopted = runtime.poolState();
   await expect(control("adopt")).rejects.toThrow("The browser adoption is not ready.");
+  // The refused repeat changed nothing.
+  expect(runtime.poolState()).toEqual(adopted);
+  expect(runtime.poolState()).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
   verifier.setClaims("old", {
     ...claims,
     reattach: true,
