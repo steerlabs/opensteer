@@ -66,7 +66,12 @@ describe("review G4: the configuration", () => {
   const base = {
     journal: "/var/lib/opensteer-pool/journal",
     listen: { host: "127.0.0.1", port: 7310 },
-    admin: { listen: { host: "127.0.0.1", port: 7311 }, provisionerKey: "a".repeat(60) },
+    admin: {
+      listen: { host: "127.0.0.1", port: 7311 },
+      provisionerKey: "a".repeat(60),
+      hostId: "pool-host-a",
+      hostKeyFile: "/etc/opensteer-pool/host-key.pem",
+    },
     driver: {
       firecracker: "/opt/f",
       jailer: "/opt/j",

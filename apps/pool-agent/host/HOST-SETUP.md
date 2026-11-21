@@ -85,7 +85,12 @@ is saved to disk or stopped.
 {
   "journal": "/var/lib/opensteer-pool/journal",
   "listen": { "host": "0.0.0.0", "port": 7310 },
-  "admin": { "listen": { "host": "0.0.0.0", "port": 7311 }, "provisionerKey": "<SPKI base64>" },
+  "admin": {
+    "listen": { "host": "0.0.0.0", "port": 7311 },
+    "provisionerKey": "<SPKI base64>",
+    "hostId": "<this host's id, as the provisioner enrolled it>",
+    "hostKeyFile": "/etc/opensteer-pool/host-key.pem"
+  },
   "retentionHours": 24,
   "saveAfterSeconds": 600,
   "maxConcurrentSaves": 2,

@@ -2,7 +2,9 @@
  * The pool agent daemon. It reconciles its journal with the host before it listens, so no
  * request is ever answered from a state it has not checked.
  */
+import { createPrivateKey, type KeyObject } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname } from "node:path";
 import type { Server } from "node:http";
@@ -47,6 +49,8 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
     agent,
     log,
     provisionerKey: parseProvisionerKey(config.admin.provisionerKey),
+    hostId: config.admin.hostId,
+    hostKey: await readHostKey(config.admin.hostKeyFile),
   });
   for (const [server, target] of [
     [home, config.listen],
@@ -65,4 +69,16 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   };
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
+}
+
+/** The host key made at install: root-only, Ed25519. */
+async function readHostKey(file: string): Promise<KeyObject> {
+  const text = await readPrivateFileText(file, 16 * 1024, {
+    invalid: () => new Error("The host key is unreadable."),
+    exposed: () => new Error("The host key is readable by other users."),
+  });
+  if (!text) throw new Error(`The host key is missing at ${file}: run setup-host.sh install.`);
+  const key = createPrivateKey(text);
+  if (key.asymmetricKeyType !== "ed25519") throw new Error("The host key must be Ed25519.");
+  return key;
 }

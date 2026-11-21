@@ -32,6 +32,9 @@ import {
 
 const options = parseArguments(process.argv.slice(2));
 const provisionerKey = createPrivateKey(readFileSync(options.provisionerKey, "utf8"));
+const hostKey = createPublicKey(readFileSync(options.hostKey, "utf8"));
+/** A rerun creates its slots above the previous run's tombstones (review G2). */
+const term = Math.floor(Date.now() / 1000);
 const now = () => performance.now();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -46,6 +49,8 @@ function parseArguments(argv: string[]) {
     agent: value("agent", "http://127.0.0.1:7310"),
     admin: value("admin", "http://127.0.0.1:7311"),
     provisionerKey: value("provisioner-key"),
+    hostId: value("host-id", "pool-bench-host"),
+    hostKey: value("host-key"),
     helper: value("helper", "/run/opensteer-pool-bench/helper.sock"),
     out: value("out"),
     profiles: value("profiles", "/var/lib/opensteer-pool/profiles"),
@@ -117,7 +122,7 @@ class Slot {
     const reply = await admin({
       op: "create",
       slotId: this.id,
-      term: 1,
+      term,
       homeKey: createPublicKey(this.#home)
         .export({ format: "der", type: "spki" })
         .toString("base64"),
@@ -151,7 +156,7 @@ class Slot {
   }
 
   async status(): Promise<BrowserPoolAgentStatus> {
-    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, 1, { op: "status" });
+    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, term, { op: "status" });
     if (reply.op !== "status") throw new Error("status failed");
     return reply.status;
   }
@@ -161,7 +166,7 @@ class Slot {
     return {
       id: randomUUID(),
       slotId: this.id,
-      term: 1,
+      term,
       kind,
       expect: {
         instance: status.instance,
@@ -174,7 +179,10 @@ class Slot {
   }
 
   async send(call: BrowserPoolAgentCall): Promise<BrowserPoolAgentResult> {
-    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, 1, { op: "apply", call });
+    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, term, {
+      op: "apply",
+      call,
+    });
     if (reply.op !== "apply") throw new Error("apply failed");
     return reply.result;
   }
@@ -211,7 +219,7 @@ class Slot {
 
 function admin(request: Parameters<typeof callBrowserPoolAgentAdmin>[1]) {
   return callBrowserPoolAgentAdmin(
-    { url: options.admin, provisionerKey, timeoutMs: 120_000 },
+    { url: options.admin, provisionerKey, host: options.hostId, hostKey, timeoutMs: 120_000 },
     request,
   );
 }
@@ -834,7 +842,8 @@ async function main() {
   const listed = await admin({ op: "list" });
   if (listed.op === "list")
     for (const slot of listed.slots)
-      if (slot.slotId.startsWith("bench-")) await admin({ op: "delete", slotId: slot.slotId });
+      if (slot.slotId.startsWith("bench-"))
+        await admin({ op: "delete", slotId: slot.slotId, term: slot.term });
   const slots = [0, 1, 2, 3, 4].map((index) => new Slot(`bench-${index}`, index));
   for (const slot of slots) await slot.create();
   const [first] = slots;

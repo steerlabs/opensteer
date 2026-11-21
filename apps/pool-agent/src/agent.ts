@@ -366,6 +366,10 @@ export class PoolAgent {
   }): Promise<BrowserPoolAgentSlotSummary> {
     const found = this.#slots.get(input.slotId);
     const existing = found && !found.deleted ? found : undefined;
+    // Review G2: a deleted slot's tombstone keeps its last term. A create at or below it is a
+    // replay of an earlier create, and changes nothing.
+    if (found?.deleted && input.term <= found.record.term)
+      throw new SlotConflict("This slot was deleted at a later term than this create names.");
     if (existing) {
       // A repeated create with the same facts is the same create.
       if (existing.record.homeKey === input.homeKey && existing.record.term === input.term)
@@ -439,11 +443,15 @@ export class PoolAgent {
    * is given only after the VMM's exit was observed and the files are gone. The profile disk
    * is the provisioner's and is left where it is.
    */
-  async deleteSlot(slotId: string): Promise<boolean> {
+  async deleteSlot(slotId: string, term?: number): Promise<boolean> {
     const slot = this.#slots.get(slotId);
     if (!slot || slot.deleted) return true;
     return slot.lane.run(async () => {
       if (slot.deleted) return true;
+      // Review G2: a delete names the term it deletes; a replay after the slot was recreated
+      // at a higher term is refused.
+      if (term !== undefined && term !== slot.record.term)
+        throw new SlotConflict("The slot is at another term than this delete names.");
       this.#unschedule(slot);
       await this.#kill(slot);
       if (slot.record.saved)

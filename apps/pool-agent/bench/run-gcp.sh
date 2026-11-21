@@ -68,7 +68,7 @@ agent() {
 {
   "journal": "/var/lib/opensteer-pool/journal",
   "listen": { "host": "127.0.0.1", "port": 7310 },
-  "admin": { "listen": { "host": "127.0.0.1", "port": 7311 }, "provisionerKey": "$spki" },
+  "admin": { "listen": { "host": "127.0.0.1", "port": 7311 }, "provisionerKey": "$spki", "hostId": "pool-bench-host", "hostKeyFile": "/etc/opensteer-pool/host-key.pem" },
   "retentionHours": 24,
   "saveAfterSeconds": 4,
   "maxConcurrentSaves": 2,
@@ -133,7 +133,7 @@ run_bench() {
     install -d -o opensteer-pool-relay -m 0755 "$bench/out"
     setpriv --reuid=opensteer-pool-relay --regid=opensteer-pool-relay --clear-groups --no-new-privs \
         /opt/opensteer-pool/node/bin/node "$agent_dir/dist/real-host.mjs" \
-        --provisioner-key "$creds/provisioner.pem" --helper /run/opensteer-pool-bench-helper.sock \
+        --provisioner-key "$creds/provisioner.pem" --host-key /etc/opensteer-pool/host-key.pub --host-id pool-bench-host --helper /run/opensteer-pool-bench-helper.sock \
         --credentials "$creds" --out "$bench/out/results.jsonl" "$@"
 }
 

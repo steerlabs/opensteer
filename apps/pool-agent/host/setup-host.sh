@@ -57,7 +57,7 @@ install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o Acquire::Retries=3 update -q
     apt-get install -y -q --no-install-recommends \
-        nftables iproute2 mdadm cryptsetup-bin xfsprogs util-linux curl ca-certificates xz-utils uuid-runtime
+        nftables iproute2 mdadm cryptsetup-bin xfsprogs util-linux curl ca-certificates xz-utils uuid-runtime openssl
 }
 
 install_binaries() {
@@ -84,6 +84,17 @@ install_binaries() {
     fi
     install -d -m 0755 "$STATE/images"
     fetch "$KERNEL_URL" "$STATE/images/vmlinux.download" "$KERNEL_SHA256"
+}
+
+host_key() {
+    # The host's own key: administration replies are signed with it, and the provisioner pins its
+    # public half when it enrolls the host (review G2). Made once, root only.
+    install -d -m 0700 /etc/opensteer-pool
+    if [[ ! -f /etc/opensteer-pool/host-key.pem ]]; then
+        (umask 077 && openssl genpkey -algorithm ed25519 -out /etc/opensteer-pool/host-key.pem)
+    fi
+    openssl pkey -in /etc/opensteer-pool/host-key.pem -pubout -out /etc/opensteer-pool/host-key.pub
+    chmod 0644 /etc/opensteer-pool/host-key.pub
 }
 
 install_users() {
@@ -285,6 +296,7 @@ case "${1:-}" in
         install_packages
         install_binaries
         install_users
+        host_key
         install_units
         kernel_settings
         host_firewall

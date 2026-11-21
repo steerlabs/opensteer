@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import {
   browserPoolAgentAdminBytes,
+  browserPoolAgentAdminReplyBytes,
   browserPoolAgentReplyBytes,
   browserPoolAgentRequestBytes,
   browserPoolAgentRequestWindowMs,
@@ -84,6 +85,7 @@ const hostFile = z
   .refine((value) => !value.split("/").some((part) => part === ".." || part === "."));
 const adminSchema = z.strictObject({
   v: z.literal(1),
+  host: z.string().min(1).max(128),
   issuedAt: z.string().datetime(),
   nonce: z.string().min(16).max(64),
   request: z.discriminatedUnion("op", [
@@ -112,7 +114,11 @@ const adminSchema = z.strictObject({
       term: z.number().int().positive(),
       homeKey: spki,
     }),
-    z.strictObject({ op: z.literal("delete"), slotId: z.string().min(1).max(128) }),
+    z.strictObject({
+      op: z.literal("delete"),
+      slotId: z.string().min(1).max(128),
+      term: z.number().int().positive(),
+    }),
     z.strictObject({ op: z.literal("list") }),
   ]),
 });
@@ -197,9 +203,17 @@ async function answer(
   }
 }
 
-/** The provisioner-facing interface, on its own listener and key. */
+/**
+ * The provisioner-facing interface, on its own listener and key. A request names this host
+ * (review G2), and every answer is signed by the host key whose public half the provisioner
+ * pinned when it enrolled the host.
+ */
 export function createAdminServer(
-  options: PoolAgentServerOptions & { readonly provisionerKey: KeyObject },
+  options: PoolAgentServerOptions & {
+    readonly provisionerKey: KeyObject;
+    readonly hostId: string;
+    readonly hostKey: KeyObject;
+  },
 ): Server {
   const now = options.now ?? Date.now;
   return harden(
@@ -210,17 +224,28 @@ export function createAdminServer(
           return { status: 400, reply: refusal("bad-request", "The request is malformed.") };
         const envelope = parsed.data as BrowserPoolAgentAdminEnvelope;
         const bytes = browserPoolAgentAdminBytes(envelope);
-        if (!signature || !verifyBrowserPoolAgentBytes(bytes, options.provisionerKey, signature))
+        if (
+          !signature ||
+          envelope.host !== options.hostId ||
+          !verifyBrowserPoolAgentBytes(bytes, options.provisionerKey, signature)
+        )
           return {
             status: 401,
-            reply: refusal("unauthenticated", "The request is not signed by the provisioner."),
+            reply: refusal(
+              "unauthenticated",
+              "The request is not signed by the provisioner for this host.",
+            ),
           };
         if (Math.abs(now() - Date.parse(envelope.issuedAt)) > browserPoolAgentRequestWindowMs)
           return {
             status: 400,
             reply: refusal("stale-request", "The request is outside its time window."),
           };
-        return { status: 200, reply: await administer(options.agent, envelope) };
+        return {
+          status: 200,
+          reply: await administer(options.agent, envelope),
+          sign: { bytes, key: options.hostKey, admin: true },
+        };
       });
     }),
   );
@@ -241,7 +266,7 @@ async function administer(
         return {
           op: "delete",
           slotId: request.slotId,
-          erased: await agent.deleteSlot(request.slotId),
+          erased: await agent.deleteSlot(request.slotId, request.term),
         };
       case "list":
         return { op: "list", slots: agent.summaries() };
@@ -294,7 +319,7 @@ function harden(server: Server): Server {
 interface Answer {
   readonly status: number;
   readonly reply: unknown;
-  readonly sign?: { readonly bytes: Buffer; readonly key: KeyObject };
+  readonly sign?: { readonly bytes: Buffer; readonly key: KeyObject; readonly admin?: boolean };
 }
 
 async function handle(
@@ -322,7 +347,10 @@ function send(response: ServerResponse, answer: Answer): void {
   if (response.headersSent) return;
   const signature = answer.sign
     ? signBrowserPoolAgentBytes(
-        browserPoolAgentReplyBytes(answer.sign.bytes, answer.reply),
+        (answer.sign.admin ? browserPoolAgentAdminReplyBytes : browserPoolAgentReplyBytes)(
+          answer.sign.bytes,
+          answer.reply,
+        ),
         answer.sign.key,
       )
     : undefined;

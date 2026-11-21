@@ -17,6 +17,10 @@ export const agentConfigSchema = z.strictObject({
     listen,
     /** SPKI DER, base64, of the provisioner's Ed25519 key. */
     provisionerKey: z.string().min(40).max(200),
+    /** This host's id as the provisioner enrolled it; requests for another host are refused. */
+    hostId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/u),
+    /** This host's Ed25519 key (PKCS#8 PEM, root only), made at install; replies are signed with it. */
+    hostKeyFile: path,
   }),
   /** May lower the binding 24-hour limit on a parked guest's live state, never raise it. */
   retentionHours: z.number().positive().max(24).default(24),

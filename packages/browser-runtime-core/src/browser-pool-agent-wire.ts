@@ -111,7 +111,8 @@ export type BrowserPoolAgentAdminRequest =
       readonly term: number;
       readonly homeKey: string;
     }
-  | { readonly op: "delete"; readonly slotId: string }
+  /** Names the term it deletes: a replay after the slot was recreated at a higher term is refused. */
+  | { readonly op: "delete"; readonly slotId: string; readonly term: number }
   | { readonly op: "list" };
 
 export interface BrowserPoolAgentGuestSpec {
@@ -131,8 +132,15 @@ export interface BrowserPoolAgentGuestSpec {
   };
 }
 
+/**
+ * An administration request names the one pool host it is for and is refused by any other. With
+ * `delete` naming its term and a deleted slot's tombstone refusing a create at or below its last
+ * term, a replayed request changes nothing, on this host or another (review G2).
+ */
 export interface BrowserPoolAgentAdminEnvelope {
   readonly v: typeof browserPoolAgentWireVersion;
+  /** The pool host's id, as the provisioner enrolled it. */
+  readonly host: string;
   readonly issuedAt: string;
   readonly nonce: string;
   readonly request: BrowserPoolAgentAdminRequest;
@@ -161,6 +169,7 @@ export type BrowserPoolAgentAdminReply =
 const requestDomain = "opensteer/browser-pool-agent/request/v1\n";
 const replyDomain = "opensteer/browser-pool-agent/reply/v1\n";
 const adminDomain = "opensteer/browser-pool-agent/admin/v1\n";
+const adminReplyDomain = "opensteer/browser-pool-agent/admin-reply/v1\n";
 
 /** The exact bytes a signature covers. Canonical JSON makes them independent of key order. */
 export function browserPoolAgentRequestBytes(envelope: BrowserPoolAgentEnvelope): Buffer {
@@ -169,6 +178,12 @@ export function browserPoolAgentRequestBytes(envelope: BrowserPoolAgentEnvelope)
 
 export function browserPoolAgentAdminBytes(envelope: BrowserPoolAgentAdminEnvelope): Buffer {
   return Buffer.from(adminDomain + canonicalJson(envelope));
+}
+
+/** An administration reply, signed by the host key the provisioner pinned, for one request. */
+export function browserPoolAgentAdminReplyBytes(requestBytes: Uint8Array, reply: unknown): Buffer {
+  const digest = createHash("sha256").update(requestBytes).digest("hex");
+  return Buffer.from(`${adminReplyDomain}${digest}\n${canonicalJson(reply)}`);
 }
 
 /** A reply is bound to the one request it answers. */
@@ -259,22 +274,38 @@ export async function callBrowserPoolAgent(
 
 /** One signed request to the agent's provisioner interface. */
 export async function callBrowserPoolAgentAdmin(
-  endpoint: BrowserPoolAgentEndpoint & { readonly provisionerKey: KeyObject },
+  endpoint: BrowserPoolAgentEndpoint & {
+    readonly provisionerKey: KeyObject;
+    /** The host's id and its public host key, pinned when the host was enrolled. */
+    readonly host: string;
+    readonly hostKey: KeyObject;
+  },
   request: BrowserPoolAgentAdminRequest,
 ): Promise<Exclude<BrowserPoolAgentAdminReply, { op: "refused" }>> {
   const envelope: BrowserPoolAgentAdminEnvelope = {
     v: 1,
+    host: endpoint.host,
     issuedAt: new Date((endpoint.now ?? Date.now)()).toISOString(),
     nonce: randomUUID(),
     request,
   };
   const bytes = browserPoolAgentAdminBytes(envelope);
-  const { reply } = await post<BrowserPoolAgentAdminReply>(
+  const parsed = await post<BrowserPoolAgentAdminReply>(
     endpoint,
     bytes,
     envelope,
     endpoint.provisionerKey,
   );
+  const reply = parsed.reply;
+  if (
+    !parsed.signature ||
+    !verifyBrowserPoolAgentBytes(
+      browserPoolAgentAdminReplyBytes(bytes, reply),
+      endpoint.hostKey,
+      parsed.signature,
+    )
+  )
+    throw new BrowserPoolAgentUnavailable("The pool host's reply is not signed by its host key.");
   if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
   return reply;
 }
