@@ -286,6 +286,50 @@ describe("Desktop Host renderer adapter", () => {
     });
   });
 
+  it("keeps the caller's abort reason mid-body without making an error lookup", async () => {
+    const caller = new AbortController();
+    const callerReason = new Error("Caller cancelled mid-body");
+    let errorLookups = 0;
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      "https://home.test",
+      deploymentId,
+      async (input) => {
+        if (String(input).startsWith("app://opensteer/host/error/")) {
+          errorLookups += 1;
+          return new Response(null, {
+            status: 204,
+            headers: { "x-opensteer-desktop-transport-error": "deployment-changed" },
+          });
+        }
+        let sentFirst = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sentFirst) {
+                sentFirst = true;
+                controller.enqueue(new TextEncoder().encode("{"));
+                return;
+              }
+              caller.abort(callerReason);
+              controller.error(new TypeError("network error"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    );
+    const response = await fetch("https://home.test/v1/rpc/auth.config?input=%7B%7D", {
+      signal: caller.signal,
+    });
+    const caught = await response.text().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBe(callerReason);
+    expect(errorLookups).toBe(0);
+  });
+
   it("adapts sockets through one bridge listener and rejects cross-Deployment targets", async () => {
     const connectionId = "desktop_host_socket_00000000-0000-4000-8000-000000000001";
     let receive: ((event: DesktopHostWebSocketEvent) => void) | null = null;

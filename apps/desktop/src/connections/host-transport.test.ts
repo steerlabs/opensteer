@@ -1961,6 +1961,182 @@ describe("DesktopHostTransport", () => {
     }
   });
 
+  it("waits in takeStreamError when the renderer asks before main records the mid-body failure", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          ),
+      },
+    });
+    const route = routeFetch(transport);
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith("app://opensteer/host/error/")) {
+        // Trigger the selection move only AFTER takeStreamError has been invoked while main's
+        // exchange is still in flight and nothing has been recorded in #streamErrors yet.
+        const lookup = route(input, init);
+        setTimeout(() => {
+          void catalog
+            .select(other.authority.document.deploymentId)
+            .then(() => transport.selection());
+        }, 15);
+        return lookup;
+      }
+      const response = await route(input, init);
+      if (!response.body) return response;
+      const reader = response.body.getReader();
+      let sentFirst = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sentFirst) {
+              sentFirst = true;
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+              return;
+            }
+            // Renderer sees the stream break before main's fence has fired.
+            controller.error(new TypeError("network error"));
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const rejection = await client["auth.config"]({}).then(
+        (result) => {
+          throw new Error(`Expected rejection, got result: ${JSON.stringify(result)}`);
+        },
+        (error: unknown) => classifyClientFailure(error),
+      );
+      expect(rejection).toMatchObject({ kind: "cancelled", reason: "deployment-changed" });
+    } finally {
+      transport.dispose();
+    }
+  });
+
+  it("times out takeStreamError and falls back to pre-commit transport-unreachable when main stays in flight", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal], deploymentId);
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          ),
+      },
+    });
+    const route = routeFetch(transport);
+    let errorLookupStatus: number | null = null;
+    let errorLookupHeader: string | null = "unset";
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const response = await route(input, init);
+      if (url.startsWith("app://opensteer/host/error/")) {
+        errorLookupStatus = response.status;
+        errorLookupHeader = response.headers.get("x-opensteer-desktop-transport-error");
+        return response;
+      }
+      if (!response.body) return response;
+      const reader = response.body.getReader();
+      let sentFirst = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sentFirst) {
+              sentFirst = true;
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+              return;
+            }
+            // Renderer stream breaks while main's exchange never settles.
+            controller.error(new TypeError("network error"));
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const result = await Promise.race([
+        client["auth.config"]({}),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("takeStreamError did not time out while exchange stayed open")),
+            1_500,
+          ),
+        ),
+      ]);
+      expect(errorLookupStatus).toBe(204);
+      expect(errorLookupHeader).toBeNull();
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          provenance: "transport",
+          code: "internal",
+          reason: "transport-unreachable",
+          retryable: true,
+        },
+      });
+    } finally {
+      transport.dispose();
+    }
+  });
+
   /**
    * The regression this phase exists to fix: at the keyboard of the computer
    * that hosts a Personal Deployment, the attachment is `owner` and provider
