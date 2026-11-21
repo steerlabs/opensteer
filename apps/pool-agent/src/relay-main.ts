@@ -21,7 +21,7 @@ function log(event: Readonly<Record<string, unknown>>): void {
 
 async function main(): Promise<void> {
   const config = configSchema.parse(
-    JSON.parse(await readFile(process.argv[2] ?? "/etc/opensteer-pool/relay.json", "utf8")),
+    JSON.parse(await readFile(process.argv[2] ?? "/etc/opensteer-pool-relay/relay.json", "utf8")),
   );
   const credentials = process.env.CREDENTIALS_DIRECTORY;
   if (!credentials) throw new Error("The relay's host key is given as a systemd credential.");

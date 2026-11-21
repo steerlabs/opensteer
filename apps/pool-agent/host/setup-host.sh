@@ -120,6 +120,9 @@ host_key() {
             -days 3650 -out /etc/opensteer-pool/host-cert.pem
     fi
     chmod 0644 /etc/opensteer-pool/host-cert.pem
+    # The relay's user cannot enter /etc/opensteer-pool: its public files live beside it.
+    install -d -m 0755 /etc/opensteer-pool-relay
+    install -m 0644 /etc/opensteer-pool/host-cert.pem /etc/opensteer-pool-relay/host-cert.pem
 }
 
 install_users() {
@@ -190,12 +193,13 @@ WantedBy=multi-user.target
 EOF
     # The relay (pool-runtime-in-guest.md, decisions 4 and 5): its own user, the only one the
     # host's rules let reach a guest's bridge port. The host key reaches it as a credential.
-    cat > /etc/opensteer-pool/relay.json <<EOF
+    install -d -m 0755 /etc/opensteer-pool-relay
+    cat > /etc/opensteer-pool-relay/relay.json <<EOF
 { "listen": { "host": "0.0.0.0", "port": $OSP_RELAY_PORT },
-  "certificate": "/etc/opensteer-pool/host-cert.pem",
+  "certificate": "/etc/opensteer-pool-relay/host-cert.pem",
   "authSocket": "/run/opensteer-pool/relay.sock" }
 EOF
-    chmod 0644 /etc/opensteer-pool/relay.json
+    chmod 0644 /etc/opensteer-pool-relay/relay.json
     cat > /etc/systemd/system/opensteer-pool-relay.service <<EOF
 [Unit]
 Description=Opensteer pool relay
@@ -207,7 +211,7 @@ Type=simple
 User=opensteer-pool-relay
 Group=opensteer-pool-relay
 LoadCredential=host-key:/etc/opensteer-pool/host-key.pem
-ExecStart=$OPT/node/bin/node $OPT/agent/relay.mjs /etc/opensteer-pool/relay.json
+ExecStart=$OPT/node/bin/node $OPT/agent/relay.mjs /etc/opensteer-pool-relay/relay.json
 Restart=always
 RestartSec=1
 NoNewPrivileges=yes
