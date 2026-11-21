@@ -10,6 +10,15 @@ async function main(): Promise<void> {
     ...activatedSocket(process.env),
     upstreamRequired: process.env.OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED === "true",
     ...(upstream ? { upstream } : {}),
+    // A debug pool host asks for every refusal on stderr.
+    ...(process.env.OPENSTEER_BROWSER_EGRESS_DEBUG === "1"
+      ? {
+          onRefusal: (event: Readonly<Record<string, unknown>>) =>
+            process.stderr.write(
+              `${JSON.stringify({ event: "browser-egress.refused", ...event })}\n`,
+            ),
+        }
+      : {}),
   });
   const address = await proxy.start();
   process.stdout.write(`${JSON.stringify({ event: "browser-egress.ready", ...address })}\n`);

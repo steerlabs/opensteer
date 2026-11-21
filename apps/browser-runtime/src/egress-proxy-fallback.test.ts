@@ -100,3 +100,22 @@ it("tries no other address when the first connects", async () => {
   expect(first.connections()).toBe(2);
   expect(second.connections()).toBe(0);
 });
+
+it("tells a debug listener why a tunnel was refused, and nothing for one that opened", async () => {
+  const site = await serve("127.0.0.1");
+  const events: unknown[] = [];
+  const proxy = new PublicBrowserEgressProxy({
+    port: 0,
+    // One address for every name; nothing listens on port 9 there.
+    resolveAddresses: async () => [{ address: "127.0.0.1", family: 4 }],
+    onRefusal: (event) => events.push(event),
+  });
+  const { port } = await proxy.start();
+  cleanups.push(() => proxy.close());
+  expect(await tunnel(port, `open.test:${site.port}`)).toContain("200");
+  expect(events).toEqual([]);
+  expect(await tunnel(port, "closed.test:9")).not.toContain("200");
+  expect(events).toEqual([
+    expect.objectContaining({ kind: "tunnel", host: "closed.test:9", error: expect.any(String) }),
+  ]);
+});

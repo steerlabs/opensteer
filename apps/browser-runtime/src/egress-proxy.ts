@@ -60,6 +60,13 @@ interface PublicBrowserEgressProxyOptions {
   readonly timeoutMs?: number;
   readonly upstream?: BrowserEgressUpstream;
   readonly upstreamRequired?: boolean;
+  /** Every request or tunnel refused, and why (diagnostics; off unless asked for). */
+  readonly onRefusal?: (event: {
+    readonly kind: "request" | "tunnel";
+    readonly host: string | null;
+    readonly status: 403 | 502;
+    readonly error: string;
+  }) => void;
 }
 
 /**
@@ -86,6 +93,7 @@ export class PublicBrowserEgressProxy {
   readonly #server: Server;
   readonly #shutdown = new AbortController();
   readonly #timeoutMs: number;
+  readonly #onRefusal: PublicBrowserEgressProxyOptions["onRefusal"];
   readonly #transport: EgressTransport;
   readonly #upstreamPending: boolean;
   /** CONNECT clients, which leave the server's HTTP connections yet hold its close. */
@@ -107,6 +115,7 @@ export class PublicBrowserEgressProxy {
       options.resolveAddresses ??
       (single ? async (hostname) => [await single(hostname)] : resolvePublicAddresses);
     this.#timeoutMs = positiveInteger(options.timeoutMs ?? 60_000);
+    this.#onRefusal = options.onRefusal;
     const track: TrackSocket = (socket) => this.#track(socket);
     this.#upstreamPending = options.upstreamRequired === true && options.upstream === undefined;
     this.#transport = options.upstream
@@ -157,6 +166,24 @@ export class PublicBrowserEgressProxy {
     for (const socket of [...this.#tunnels, ...this.#upstreams]) socket.destroy();
     this.#transport.agent?.destroy();
     await closed;
+  }
+
+  #refused(kind: "request" | "tunnel", url: string | undefined, error: unknown): void {
+    if (!this.#onRefusal) return;
+    let host: string | null = null;
+    try {
+      host = kind === "tunnel" ? (url ?? null) : new URL(url ?? "").host;
+    } catch {
+      host = null;
+    }
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : "";
+    this.#onRefusal({
+      kind,
+      host,
+      status: error === upstreamUnavailable ? 502 : 403,
+      error: `${error instanceof Error ? error.message : String(error)}${cause}`.slice(0, 300),
+    });
   }
 
   #track(upstream: { destroy(): unknown; once(event: "close", listener: () => void): unknown }) {
@@ -251,6 +278,7 @@ export class PublicBrowserEgressProxy {
     } catch (error) {
       tunnel?.destroy();
       outgoing?.destroy();
+      this.#refused("request", request.url, error);
       if (response.destroyed || response.headersSent) return;
       if (error === upstreamUnavailable) {
         response.writeHead(502, { connection: "close" }).end();
@@ -395,6 +423,7 @@ export class PublicBrowserEgressProxy {
       client.pipe(upstream).pipe(client);
     } catch (error) {
       upstream?.destroy();
+      this.#refused("tunnel", request.url, error);
       if (client.destroyed) return;
       if (error === upstreamUnavailable) {
         refuseConnection(client, 502, "Bad Gateway");

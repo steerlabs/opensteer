@@ -210,7 +210,12 @@ export class FirecrackerDriver implements HypervisorDriver {
     );
     if (!this.#present.has(index) || !(await namespaceTablesPresent(index))) {
       await prepareNamespace(index, this.#uid(index), this.#config.network, this.#hostAddresses);
-      await defineEgress(this.#config.egress, index, this.#config.egressUidBase + index, egress);
+      await defineEgress(
+        { ...this.#config.egress, debug: this.#config.serialConsole === true },
+        index,
+        this.#config.egressUidBase + index,
+        egress,
+      );
       this.#present.add(index);
     }
     this.#verified.add(index);

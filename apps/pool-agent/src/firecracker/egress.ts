@@ -18,6 +18,8 @@ export interface EgressProgram {
   readonly node: string;
   /** browser-egress's entry, `dist/egress-main.js` in the egress image's `/app`. */
   readonly main: string;
+  /** A debug host: the proxy's refusals go to the journal. */
+  readonly debug?: boolean;
 }
 
 export function egressUnit(index: number): string {
@@ -113,7 +115,9 @@ export async function defineEgress(
     "--property=TasksMax=64",
     "--property=LimitCORE=0",
     "--property=StandardOutput=null",
-    "--property=StandardError=null",
+    // A debug host (serialConsole) keeps the proxy's refusals in the journal.
+    `--property=StandardError=${program.debug ? "journal" : "null"}`,
+    ...(program.debug ? ["--setenv=OPENSTEER_BROWSER_EGRESS_DEBUG=1"] : []),
     `--setenv=OPENSTEER_BROWSER_EGRESS_HOST=${proxyAddress}`,
     `--setenv=OPENSTEER_BROWSER_EGRESS_PORT=${proxyPort}`,
     "--setenv=NODE_ENV=production",
