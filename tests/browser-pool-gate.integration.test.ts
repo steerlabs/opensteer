@@ -34,6 +34,7 @@ import {
   editVisibly,
   holdResume,
   journey,
+  TestRuntimeConnection,
 } from "./browser-pool-journey.test-support.js";
 
 it("vetoes D on an ended session with confined CDP contact loss", async () => {
@@ -316,6 +317,53 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
       attached.close();
     }
   } finally {
+    await j.close();
+  }
+});
+
+it("carries the tabs the person used to the adopted broker of a restored session, by its lineage", async () => {
+  const j = await journey("person-use");
+  try {
+    const home = await j.startHome();
+    const { sessionId: first, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("person-use"),
+    );
+    // The session ends and the tab is restored: a new session under the first one's lineage.
+    await home.service.stop(j.task.userId, first);
+    const restoredRow = await j.tabs.get(j.task.userId, tabId);
+    const restored = await home.service.pageTabs.activate(
+      j.task.userId,
+      restoredRow!,
+      "person-use-restore",
+    );
+    const sessionId = restored.kind === "page" ? restored.sessionId : undefined;
+    expect(sessionId).toBeDefined();
+    expect(sessionId).not.toBe(first);
+    const lineage = await j.database
+      .selectFrom("browserSessions")
+      .select("tabGroupId")
+      .where("id", "=", sessionId!)
+      .executeTakeFirstOrThrow();
+    expect(lineage.tabGroupId).toBe(first);
+    // What the Home tells the runtime about the person's use.
+    const send = vi.spyOn(TestRuntimeConnection.prototype, "send");
+    const marked = (from: number) =>
+      send.mock.calls.slice(from).flatMap(([data]) => {
+        const message = JSON.parse(data) as { type: string; personUsed?: string[] };
+        return message.type === "session.state" ? (message.personUsed ?? []) : [];
+      });
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    const parked = send.mock.calls.length;
+    // A watch viewer wakes it: watching is not use, so only the carried use can name the tab.
+    const watching = j.viewer(home, sessionId!, "watch");
+    const attached = await watching.attaching;
+    attached.close();
+    expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    await vi.waitFor(() => expect(marked(parked)).toContain(tabId));
+  } finally {
+    vi.restoreAllMocks();
     await j.close();
   }
 });
@@ -1008,6 +1056,45 @@ it("ends a removed device's pooled sessions with evidence, releases its slot and
     );
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     expect(j.controller.effects).toEqual(["start", "stop"]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("counts the failed starts of a restart in the report, and clears the count once one starts", async () => {
+  const j = await journey("failed-starts");
+  try {
+    const home = await j.startHome();
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    await home.service.openTab(j.task.userId, j.command("failed-starts"));
+    // The first two fresh starts cannot reach the controller; the third is held there.
+    const status = j.controller.status.bind(j.controller);
+    let unreachable = 2;
+    vi.spyOn(j.controller, "status").mockImplementation(async (slotId, term) => {
+      if (unreachable > 0) {
+        unreachable--;
+        throw new Error("The pool controller is unreachable.");
+      }
+      return status(slotId, term);
+    });
+    const third = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    j.controller.hold("start", async () => {
+      reached.resolve();
+      await third.promise;
+    });
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId);
+    await reached.promise;
+    // A third attempt is under way: the person sees the restart, and the two that failed.
+    expect(await report()).toMatchObject({ phase: "restarting", failures: 2 });
+    expect(await j.slot()).toMatchObject({ failedStarts: 2 });
+    third.resolve();
+    await restarting;
+    const started = await report();
+    expect(started).toMatchObject({ phase: "running", start: { reason: "person" } });
+    expect(started).not.toHaveProperty("failures");
+    expect(await j.slot()).toMatchObject({ failedStarts: 0 });
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
   } finally {
     await j.close();
   }

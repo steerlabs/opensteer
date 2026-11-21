@@ -28,9 +28,10 @@ async function fixture(
 ) {
   const keys = generateKeyPairSync("ed25519");
   const page = new FakePage();
+  const context = new FakeContext([page]);
   const verifier = new FakeTicketVerifier();
   const runtime = new BrowserRuntime({
-    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
     runtimeId: "runtime_test",
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: verifier,
@@ -101,6 +102,7 @@ async function fixture(
   };
   return {
     runtime,
+    context,
     controls,
     install,
     resume,
@@ -214,6 +216,28 @@ it("keeps an agent's page through retire and release, and adopts it under a newe
       { method: "Page.setWebLifecycleState", parameters: { state: "frozen" } },
       { method: "Page.setWebLifecycleState", parameters: { state: "active" } },
     ]);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("ends a page its session opens during the park, outside the retained pages, and reports it", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sink = new FakeSink();
+    await f.open(sink);
+    const tab = [...sink.tabs.rows.values()][0]!;
+    const retired = await f.controls("retire");
+    expect(retired).toMatchObject({ phase: "retired", dropped: 0 });
+    // A popup the retired page opens after the final probe: it is not kept and is said.
+    const popup = new FakePage({ opener: f.page });
+    f.context.addPage(popup);
+    await vi.waitFor(() => expect(popup.isClosed()).toBe(true));
+    const state = f.runtime.poolState();
+    expect(state).toMatchObject({ phase: "retired", dropped: 1 });
+    expect(state?.retired?.documents.map((document) => document.surfaceId)).toEqual([tab.id]);
+    expect(f.page.isClosed()).toBe(false);
   } finally {
     await f.runtime.shutdown();
   }
