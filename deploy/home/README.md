@@ -236,3 +236,13 @@ builds each image once, removes its test projects and image tags, and caps its
 own BuildKit cache at 12 GB and removes the build daemon container. The
 separately named builder holds only verifier cache so cleanup leaves other
 builders alone.
+
+To run the same checks on a Linux server instead, run
+`OPENSTEER_HOME_VERIFIER_TARGET=local pnpm exec tsx scripts/verify-home-deployment.mjs`
+on that server after `pnpm install`. It needs Node 24, Docker Engine with
+Compose v2 and buildx (`docker.io docker-compose-v2 docker-buildx` on Ubuntu
+24.04), membership in the `docker` group and passwordless `sudo`. It uses the
+local Docker socket, `sudo -n bash -s` as its root shell, `localhost` for the
+Account fixtures, and checks free space on the checkout and on the local Docker
+root. It proves the server's own architecture. The other architecture's build
+reports blocked when the builder has no emulation for it.
