@@ -268,9 +268,16 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     const early = await home.coordinator.gate.reserve(AbortSignal.timeout(1_000));
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     early.release();
-    const parkedFence = home.coordinator.fence();
+    j.withholdNextTicket();
+    await expect(
+      home.service.start({ ownerId: j.task.userId, fresh: true, reuseExisting: false }),
+    ).rejects.toThrow();
+    const withheld = j.withheld[0]!;
+    expect(withheld).toEqual(expect.any(String));
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
     expect(await home.coordinator.tryPark()).toBe("parked");
-    const beforePark = j.issued.at(-1)!;
+    const beforePark = j.issued[0]!;
+    const issuedBeforeWake = j.issued.length;
     home = await j.restartHome(home);
     expect(home.coordinator.gate.phase).toBe("parked");
     expect((await j.row(sessionId))?.state).toBe("ready");
@@ -278,7 +285,7 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     const resume = holdResume(j.controller);
     const watching = j.viewer(home, sessionId);
     await before(resume.seen, watching.attaching, "The viewer");
-    expect(j.issued.at(-1)).toBe(beforePark);
+    expect(j.issued).toHaveLength(issuedBeforeWake);
     resume.allow();
     const attached = await watching.attaching;
     try {
@@ -301,22 +308,9 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
         return (error as Error).message;
       };
       expect(await refusal(beforePark)).toBe("The browser attach ticket has already been used.");
-      // A ticket issued before the park and never redeemed meets the new fence.
-      expect(
-        await refusal(
-          j.signer.issue({
-            creationOrigin: "person",
-            actor: "person",
-            access: "read-write",
-            reattach: true,
-            pool: parkedFence,
-            identity: { kind: "fresh" },
-            runtimeId: "pool-runtime",
-            sessionId,
-            subject: j.task.userId,
-          }),
-        ),
-      ).toBe("The pooled browser authority has changed.");
+      // A ticket the Home really issued before the park, whose delivery was lost, meets the
+      // new fence when it finally arrives.
+      expect(await refusal(withheld)).toBe("The pooled browser authority has changed.");
       expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
     } finally {
       attached.close();

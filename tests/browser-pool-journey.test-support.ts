@@ -202,8 +202,16 @@ export async function journey(
   ]);
   const signer = new BrowserAttachTicketSigner({ keyId: "test", privateKey: tickets.privateKey });
   const issued: string[] = [];
+  // A ticket the Home issued that never reached the runtime, as if its delivery were lost.
+  const withheld: string[] = [];
+  let withholdNext = false;
   const connect = (ticket: string) => {
     issued.push(ticket);
+    if (withholdNext) {
+      withholdNext = false;
+      withheld.push(ticket);
+      return new TestRuntimeConnection(bridge, "withheld");
+    }
     return new TestRuntimeConnection(bridge, ticket);
   };
   const placement = {
@@ -268,6 +276,17 @@ export async function journey(
           ...(guest.localProfileStorage ? { localProfileStorage: guest.localProfileStorage } : {}),
           loopbackPool: coordinator,
           connect,
+          // Standard CDP straight into the in-process runtime, with its recovery probe.
+          standardCdpLineage: true,
+          standardRuntime: guest,
+          standardCdpRecovery: {
+            relayId: "pool-loopback",
+            boot: async () => guest.standardCdpBootId,
+            assertCurrent: () => {},
+          },
+          reconcileStandardCdpAttempt: (attempt) =>
+            guest.reconcileStandardCdpAttempt(attempt).then(({ runtimeBootId }) => runtimeBootId),
+          wholeContextCdp: true,
         }),
       },
     });
@@ -365,6 +384,10 @@ export async function journey(
     profile,
     issued,
     connect,
+    withheld,
+    withholdNextTicket: () => {
+      withholdNext = true;
+    },
     signer,
     startHome,
     restartHome,

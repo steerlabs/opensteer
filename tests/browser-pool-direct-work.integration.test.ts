@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import {
@@ -51,9 +52,23 @@ async function directWork(j: Journey, home: () => Home) {
     store: j.store,
     tabs: confinement.tabs(scriptTabs as never),
   } as never);
+  // The agent's own page: the Home's page service opens it and its tab row is written, as the
+  // tab service does (whose authorization this fixture does not repeat).
+  const open = async (actor: never, target: never, key: string) => {
+    const write = await home().service.pageTabs.open(actor, target, `fixture:${key}`);
+    await j.tabs.open(write, `fixture:${key}`);
+    await home().service.pageTabs.admitted?.(write);
+    return { tab: { tabId: write.id } };
+  };
   const handlers = new BrowserToolHandlers({
     sessions,
-    tabs: { list: refuse, open: refuse, connectionTab: refuse, bindBrowserScript: refuse } as never,
+    tabs: {
+      list: refuse,
+      open,
+      connectionTab: async (_actor: never, tabId: string) => row(tabId),
+      bindBrowserScript: async (actor: never, tabId: string) =>
+        home().service.pageTabs.bindBrowserScript!(actor, await row(tabId)),
+    } as never,
     scripts,
     confinement,
     profiles: (owner) => home().service.listProfiles(owner),
@@ -77,7 +92,12 @@ async function directWork(j: Journey, home: () => Home) {
       name: "browser_use",
       arguments: { profileId: j.profile!.id, code, reason: "Read the draft" },
     });
-  return { sessions, scripts, agent, use };
+  const connect = () =>
+    agent.client.callTool({
+      name: "browser_connect",
+      arguments: { profileId: j.profile!.id, reason: "Drive the page" },
+    });
+  return { sessions, scripts, agent, use, connect };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -252,5 +272,74 @@ it("honours a Stop of the agent's task that arrives while the browser is parked,
     expect(await p.j.slot()).toMatchObject({ phase: "parked" });
   } finally {
     await p.j.close();
+  }
+});
+
+it("issues browser_connect for a parked browser after access checks and one wake, attaches for real, and refuses a frame for another document", async () => {
+  const j = await journey("direct-connect", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    await j.draft();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service);
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    // Access is checked from Home data first: a profile outside the grant wakes nothing.
+    const outside = await work.agent.client.callTool({
+      name: "browser_connect",
+      arguments: { profileId: "bpr_00000000-0000-4000-8000-000000000000", reason: "x" },
+    });
+    expect(outside.isError).toBe(true);
+    expect(j.controller.effects).toEqual(["start", "pause"]);
+    // One wake, then the ticket.
+    const resume = holdResume(j.controller);
+    const calling = work.connect();
+    await before(resume.seen, calling, "The ticket");
+    resume.allow();
+    const issued = await calling;
+    expect(issued.isError, text(issued)).not.toBe(true);
+    const { endpoint: url } = issued.structuredContent as { endpoint: string };
+    expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    // An outstanding ticket holds the gate: no park, so there is no wake after issue.
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    const cdp = await endpoint.open(url);
+    const targets = (await cdp.send("Target.getTargets")) as {
+      result: { targetInfos: { targetId: string; type: string }[] };
+    };
+    const page = targets.result.targetInfos.find(({ type }) => type === "page");
+    expect(page).toBeDefined();
+    const attached = (await cdp.send("Target.attachToTarget", {
+      targetId: page!.targetId,
+      flatten: true,
+    })) as { result: { sessionId: string } };
+    const evaluated = (await cdp.send(
+      "Runtime.evaluate",
+      { expression: "1 + 1", returnByValue: true },
+      attached.result.sessionId,
+    )) as { result: { result: { value: number } } };
+    expect(evaluated.result.result.value).toBe(2);
+    expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    // The agent's page reloads into a new document: the next frame is refused and the socket
+    // closes. (The runtime refuses a data: navigation, so a reload makes the new document.)
+    for (const target of targets.result.targetInfos.filter(({ type }) => type === "page")) {
+      const session = (await cdp.send("Target.attachToTarget", {
+        targetId: target.targetId,
+        flatten: true,
+      })) as { result: { sessionId: string } };
+      await cdp.send("Page.reload", {}, session.result.sessionId);
+    }
+    await vi.waitFor(async () => {
+      await expect(
+        cdp.send("Runtime.evaluate", { expression: "2" }, attached.result.sessionId),
+      ).rejects.toThrow("closed");
+    });
+    // Every exit releases the hold: the browser can park again.
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+  } finally {
+    await endpoint?.close();
+    await j.close();
   }
 });
