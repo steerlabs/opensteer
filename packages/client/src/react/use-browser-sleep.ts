@@ -7,9 +7,8 @@ import {
   type BrowserTabNote,
   type BrowserTabReturn,
 } from "../host/browser-sleep.js";
-import type { HostClient, HostSnapshot } from "../host/client.js";
-import { useHostSelector } from "./use-host-snapshot.js";
-import { useTab } from "./use-tabs.js";
+import type { TabId } from "@opensteer/core";
+import type { HostClient } from "../host/client.js";
 
 export interface BrowserSleepState {
   readonly browser: BrowserSleep;
@@ -27,16 +26,36 @@ export interface BrowserSleepState {
   readonly seen: () => void;
 }
 
-const selectPools = (snapshot: HostSnapshot) => snapshot.browserPools;
+/** What the hook reads: a page view's client may hold no more than its snapshot. */
+export type BrowserSleepClient = Pick<HostClient, "getSnapshot"> &
+  Partial<Pick<HostClient, "subscribe">>;
+
+const quiet = () => () => {};
 
 /**
  * One tab's browser sleep, for a view of that tab. For every Home without a pooled browser this
  * is `not-pooled` with no note, and nothing in the view changes.
  */
-export function useBrowserSleep(hostClient: HostClient, tabId: string | null): BrowserSleepState {
-  const listed = useTab(hostClient, tabId);
-  const computerId = listed?.kind === "page" ? listed.computer.computerId : null;
-  const pools = useHostSelector(hostClient, selectPools);
+export function useBrowserSleep(
+  hostClient: BrowserSleepClient,
+  tabId: string | null,
+): BrowserSleepState {
+  const tabs = hostClient.getSnapshot().tabs;
+  const computerId = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) =>
+        tabId === null ? () => {} : tabs.subscribeTab(tabId as TabId, listener),
+      [tabs, tabId],
+    ),
+    useCallback(() => {
+      const listed = tabId === null ? undefined : tabs.get(tabId as TabId);
+      return listed?.kind === "page" ? listed.computer.computerId : null;
+    }, [tabs, tabId]),
+  );
+  const pools = useSyncExternalStore(
+    hostClient.subscribe ?? quiet,
+    useCallback(() => hostClient.getSnapshot().browserPools, [hostClient]),
+  );
   const view = useMemo(
     () => browserSleepFromHome(pools, computerId, tabId),
     [computerId, pools, tabId],

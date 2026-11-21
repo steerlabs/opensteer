@@ -1,8 +1,11 @@
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
+  browserSleepWords,
+  browserStartFailure,
   canRespondToRequests,
   placeAgentState,
+  restartPooledBrowser,
   listedRowThreadId,
   threadMark,
   tabSuccessor,
@@ -14,6 +17,7 @@ import {
 import {
   useBrowserAgentFollow,
   useBrowserPopupFollow,
+  useBrowserSleep,
   useHostSelector,
   useHostSnapshot,
   useApp,
@@ -56,6 +60,7 @@ import {
 } from "react";
 import {
   ActivityIndicator,
+  Alert,
   I18nManager,
   KeyboardAvoidingView,
   Platform,
@@ -985,6 +990,40 @@ function BrowserTab(props: {
     asked.current = sessionId;
     onReactivate();
   }, [onReactivate, sessionId, vanished]);
+  // A Cloud Computer's browser that could not start stands in for its page; tabs and sign-ins
+  // are kept. Every other browser is `not-pooled` and never shows this.
+  const sleep = useBrowserSleep(hostClient, tabId);
+  const startFailure = browserStartFailure(sleep.browser);
+  const [trying, setTrying] = useState(false);
+  if (startFailure && sleep.browser.kind === "failed") {
+    const computerId = sleep.browser.computerId;
+    return (
+      <TabStatus
+        action={{
+          label: trying ? browserSleepWords.trying : browserSleepWords.tryAgain,
+          onPress: () => {
+            if (trying) return;
+            setTrying(true);
+            void restartPooledBrowser(hostClient, computerId)
+              .catch((error: unknown) =>
+                Alert.alert(
+                  browserSleepWords.failedTitle,
+                  error instanceof Error ? error.message : String(error),
+                ),
+              )
+              .finally(() => setTrying(false));
+          },
+        }}
+        also={
+          startFailure.contactSupport
+            ? { label: browserSleepWords.contactSupport, onPress: () => contactSupport() }
+            : undefined
+        }
+        detail={startFailure.detail}
+        title={startFailure.title}
+      />
+    );
+  }
 
   if ((live || local) && session !== null)
     return (

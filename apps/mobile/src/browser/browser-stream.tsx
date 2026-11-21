@@ -1,8 +1,16 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
+import {
+  browserWakeLine,
+  getBrowserLastPicture,
+  rememberBrowserLastPicture,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
-import { useBrowserPresentationWait, useBrowserTabAwake } from "@opensteer/client/react";
+import {
+  useBrowserPresentationWait,
+  useBrowserSleep,
+  useBrowserTabAwake,
+} from "@opensteer/client/react";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -22,6 +30,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  AccessibilityInfo,
   Image,
   PanResponder,
   Platform,
@@ -35,7 +44,7 @@ import {
 } from "react-native";
 import { color, material, radius, space, type as textType } from "../theme.js";
 import { usePaneGeometry } from "../ui/pane.js";
-import { dim, exit } from "../ui/motion.js";
+import { appear, dim, exit } from "../ui/motion.js";
 import { LastPictureChip } from "../ui/last-picture-chip.js";
 import Animated from "react-native-reanimated";
 import {
@@ -737,23 +746,57 @@ function BrowserStreamView({
     if (shownWidth !== null && shownHeight !== null)
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
+  // A Cloud Computer's browser waking, for the person's own view of the page; a Watch shows its
+  // last picture as it always does. Every other browser is `not-pooled` and shows nothing new.
+  const sleep = useBrowserSleep(hostClient, interactive && !sharedWatch ? (tabId ?? null) : null);
+  const pooled = sleep.browser.kind !== "not-pooled";
+  const browserWaits =
+    sleep.browser.kind === "waking" ||
+    sleep.browser.kind === "starting" ||
+    sleep.browser.kind === "restarting";
+  const pictureWaits =
+    interactive && !sharedWatch && displayed !== null && feedState !== "synchronized";
+  // A tap on the picture while it wakes is not sent, and the picture says so.
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (!pictureWaits) setRefused(false);
+  }, [pictureWaits]);
+  const wakeOnPicture =
+    pooled && pictureWaits
+      ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: true, refused })
+      : null;
+  const wakeAlone =
+    browserWaits && displayed === null
+      ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: false })
+      : null;
+  const wakeWords = wakeOnPicture?.text ?? wakeAlone?.text ?? null;
+  useEffect(() => {
+    if (wakeWords !== null) AccessibilityInfo.announceForAccessibility(wakeWords);
+  }, [wakeWords]);
   if (!requestedActive && !kept) return null;
   // The page as it last was, while it isn't arriving: marked as such, and
   // input waits for it to be readmitted. A tap there pulses the chip.
-  const stale = interactive && !sharedWatch && displayed !== null && feedState !== "synchronized";
+  const stale = pictureWaits;
   const pulse = tapped + stalePulse;
   const words = sharedWatch
     ? null
     : (presentationError ??
       leaseError ??
-      (displayed === null ? streamLabel(session.state, feedState, feedError) : null));
+      (displayed === null
+        ? browserWaits && feedError === null
+          ? (wakeAlone?.text ?? null)
+          : streamLabel(session.state, feedState, feedError)
+        : null));
 
   return (
     <View
       accessibilityLabel={label}
       onTouchStart={(event) => {
         trackContacts(event.nativeEvent.touches.length);
-        if (stale) setTapped((count) => count + 1);
+        if (stale) {
+          setTapped((count) => count + 1);
+          if (pooled) setRefused(true);
+        }
       }}
       onTouchEnd={(event) => trackContacts(event.nativeEvent.touches.length)}
       onTouchCancel={(event) => {
@@ -932,8 +975,16 @@ function BrowserStreamView({
         />
       ) : null}
       {stale ? (
-        <Animated.View entering={dim} exiting={exit} pointerEvents="none" style={styles.stale}>
-          <LastPictureChip pulse={pulse} />
+        <Animated.View
+          entering={wakeOnPicture?.dimNow ? appear : dim}
+          exiting={exit}
+          pointerEvents="none"
+          style={styles.stale}
+        >
+          <LastPictureChip
+            pulse={pulse}
+            {...(wakeOnPicture ? { label: wakeOnPicture.text } : {})}
+          />
         </Animated.View>
       ) : null}
       {words === null ? null : (
