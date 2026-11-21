@@ -35,6 +35,7 @@ import {
   readAgentOperation,
   refuseUnsentAgentOperation,
   refuseUnsentHandedOffAgentOperation,
+  BrowserPoolAdmissionClosed,
   reopenAgentOperation,
   respondToAgentOperation,
   settleAgentOperation,
@@ -792,8 +793,9 @@ export class AgentSessionService {
       const held = reservation.ended
         ? AbortSignal.any([
             signal,
-            abortedWith(reservation.ended, () =>
-              refused("conflict", "This browser is restarting or was removed."),
+            abortedWith(
+              reservation.ended,
+              () => new BrowserPoolAdmissionClosed("This browser is restarting or was removed."),
             ),
           ])
         : signal;
@@ -917,10 +919,15 @@ export class AgentSessionService {
                   recheck: async () => {
                     await recheck();
                     await pooled.pool.recheckTarget();
+                    // Replaced before anything was sent, the runtime is a closed admission.
                     if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
-                      throw new OperationOutcomeUnknown(
-                        "The browser runtime changed during this work.",
-                      );
+                      throw submitted === 0
+                        ? new BrowserPoolAdmissionClosed(
+                            "The browser runtime changed before anything was sent.",
+                          )
+                        : new OperationOutcomeUnknown(
+                            "The browser runtime changed during this work.",
+                          );
                     signal.throwIfAborted();
                   },
                   submitted: () => {
@@ -937,30 +944,33 @@ export class AgentSessionService {
       } catch (error) {
         const ended =
           signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
-        // A pooled send refused before any command reached the wire (a cut, a recheck, a closed
-        // gate or a page that changed): nothing left the Home, so it is refused, never failed
-        // or unknown.
-        if (pooled && submitted === 0) {
-          const reason = ended ?? (error instanceof OpensteerError ? error : null);
-          const message =
-            reason?.message ??
-            (error instanceof Error ? error.message : "The browser work ended before it was sent.");
-          if (await refuseUnsentHandedOffAgentOperation(this.#store.database, row.id, message))
-            throw new ToolBlockedError(
-              {
-                code:
-                  reason?.reason === "agent-session-stopped"
-                    ? "stopped_by_person"
-                    : reason?.reason === "authority-changed" ||
-                        error instanceof OperationOutcomeUnknown
-                      ? "access_changed"
-                      : (reason?.code ?? "access_changed"),
-                message,
-                next: interruptedNext,
-              },
-              { ...base, status: "refused" },
-            );
-        }
+        // A pooled send that admission or authority refused before any command reached the
+        // wire (a cut, a recheck, a closed gate, a page or a runtime that changed): nothing left
+        // the Home, so it is refused with its own reason. Any other error is the work's own.
+        const refusal =
+          pooled && submitted === 0 && (ended || !signal.aborted)
+            ? unsentRefusal(error, ended)
+            : undefined;
+        if (
+          refusal &&
+          (await refuseUnsentHandedOffAgentOperation(
+            this.#store.database,
+            row.id,
+            refusal.message,
+            refusal.reason,
+          ))
+        )
+          throw new ToolBlockedError(
+            {
+              code: refusal.code,
+              message: refusal.message,
+              next:
+                refusal.code === "stopped_by_person"
+                  ? "Nothing was sent. Stop this task and ask the person before starting again."
+                  : "Nothing was sent. Check the current state before trying again.",
+            },
+            { ...base, status: "refused" },
+          );
         const outcome =
           error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
             ? "unknown"
@@ -971,12 +981,7 @@ export class AgentSessionService {
         if (ended)
           throw new ToolBlockedError(
             {
-              code:
-                ended.reason === "agent-session-stopped"
-                  ? "stopped_by_person"
-                  : ended.reason === "authority-changed"
-                    ? "access_changed"
-                    : ended.code,
+              code: unsentRefusal(null, ended)?.code ?? "access_denied",
               message: ended.message,
               next: interruptedNext,
             },
@@ -1067,6 +1072,37 @@ export function assertOperationArguments(
       reason: "operation-key-reused",
       message: "This operationKey already names a different call.",
     });
+}
+
+/**
+ * An admission or authority refusal of a pooled send, with the code a connected agent acts on
+ * (`docs/architecture.md`) and the decision's reason. Anything else is not a refusal.
+ */
+function unsentRefusal(
+  error: unknown,
+  ended: OpensteerError | null,
+):
+  | { readonly code: string; readonly reason: "authority" | "changed" | "stopped"; message: string }
+  | undefined {
+  // The authority recheck before a send: the grant, the mode or the connection changed.
+  if (!ended && error instanceof OperationOutcomeUnknown)
+    return {
+      code: "access_changed",
+      reason: "authority",
+      message: error.message || "The connected agent's access changed during this work.",
+    };
+  const refusal = ended ?? (error instanceof OpensteerError ? error : null);
+  if (!refusal) return undefined;
+  const { message } = refusal;
+  if (refusal.reason === "agent-session-stopped")
+    return { code: "stopped_by_person", reason: "stopped", message };
+  if (refusal.reason === "authority-changed")
+    return { code: "access_changed", reason: "authority", message };
+  if (refusal instanceof BrowserPoolAdmissionClosed)
+    return { code: "computer_offline", reason: "changed", message };
+  if (refusal.code === "not_found") return { code: "not_found", reason: "changed", message };
+  if (refusal.code === "forbidden") return { code: "access_denied", reason: "authority", message };
+  return undefined;
 }
 
 /** A signal that aborts with `reason()` when `source` does, for a refusal of our own words. */
