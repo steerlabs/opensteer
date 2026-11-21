@@ -14,6 +14,7 @@ import {
   listBrowserPoolRuntimeSessions,
   listBrowserPoolSessionTabs,
   pruneBrowserPoolBookkeeping,
+  releaseBrowserPoolSlot,
   readAppliedBrowserPoolControllerCall,
   readBrowserPoolSlot,
   type BrowserPoolSessionLoss,
@@ -25,6 +26,7 @@ import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { pooledChannelDeadlineMs } from "@opensteer/browser-runtime-core";
 import {
   BrowserPoolControllerJournal,
   expectationOf,
@@ -51,8 +53,10 @@ export interface BrowserPoolAdopter {
     readonly fence: BrowserPoolRuntimeFence;
     readonly attempt: number;
   }): Promise<readonly BrowserPoolSessionLoss[]>;
+  /** Whether this session has a live channel here now. */
+  live(sessionId: BrowserSessionId): boolean;
   /** Sessions of this runtime that are not terminal and have no live channel here, with tabs. */
-  orphans(): Promise<readonly Omit<BrowserPoolSessionLoss, "reason">[]>;
+  orphans(runtimeId: string): Promise<readonly Omit<BrowserPoolSessionLoss, "reason">[]>;
 }
 
 export type BrowserPoolRuntimeFault = "request" | "reply";
@@ -66,6 +70,8 @@ export interface BrowserPoolCoordinatorOptions {
   readonly runtime: BrowserPoolRuntimeChannel;
   readonly controller: BrowserPoolPhysicalController;
   readonly retryMs?: number;
+  /** How long a lost Runner channel may take to come back before its sessions end. */
+  readonly channelDeadlineMs?: number;
   /** Every controller call and runtime control has this deadline; then its outcome is read. */
   readonly callTimeoutMs?: number;
   readonly onError?: (error: unknown) => void;
@@ -96,6 +102,8 @@ export class BrowserPoolCoordinator {
   #slot: BrowserPoolSlot | undefined;
   #adopter: BrowserPoolAdopter | undefined;
   #closed = false;
+  readonly #lost = new Set<BrowserSessionId>();
+  #reconnecting: Promise<void> | undefined;
   #lane: Promise<unknown> = Promise.resolve();
 
   constructor(options: BrowserPoolCoordinatorOptions) {
@@ -168,6 +176,75 @@ export class BrowserPoolCoordinator {
 
   tryPark(): Promise<"parked" | "vetoed"> {
     return this.gate.tryPark();
+  }
+
+  /**
+   * A pooled session's Runner channel was lost; the guest kept its pages. The gate holds sends
+   * while the Home reattaches under a newer attachment generation; past the deadline the
+   * sessions end with their note.
+   */
+  channelLost(sessionId: BrowserSessionId): void {
+    if (this.#closed) return;
+    this.#lost.add(sessionId);
+    if (this.#reconnecting) return;
+    this.gate.reconnecting();
+    this.#reconnecting = this.#serial(() => this.#reconnect())
+      .catch((error: unknown) => this.#options.onError?.(error))
+      .finally(() => {
+        this.#reconnecting = undefined;
+      });
+  }
+
+  async #reconnect(): Promise<void> {
+    const deadline = Date.now() + (this.#options.channelDeadlineMs ?? pooledChannelDeadlineMs);
+    while (this.#lost.size && Date.now() < deadline && !this.#closed) {
+      let slot = await this.#read();
+      if (!slot || slot.phase !== "running") break;
+      slot = await this.#advance(slot, {
+        phase: slot.phase,
+        attachmentGeneration: slot.attachmentGeneration + 1,
+      });
+      const sessions = [...this.#lost];
+      await this.#adopter?.reattach({
+        sessions,
+        documents: [],
+        fence: fenceOf(slot),
+        attempt: slot.attachmentGeneration,
+      });
+      for (const sessionId of sessions)
+        if (this.#adopter?.live(sessionId)) this.#lost.delete(sessionId);
+      if (this.#lost.size) await delay(this.#options.retryMs ?? 250);
+    }
+    this.#lost.clear();
+    const slot = await this.#read();
+    // A session not back in time has no channel: it ends here, with its note.
+    if (slot?.phase === "running") await this.#finishRunning(slot, []);
+    else if (slot) this.gate.settle(slot.phase === "parked" ? "parked" : "open");
+  }
+
+  /** The device was removed: the guest stops, every session ends with its note, the slot goes. */
+  releaseDevice(): Promise<void> {
+    this.gate.released();
+    return this.#serial(async () => {
+      const slot = await this.#read();
+      if (!slot) return;
+      const status = await this.#status().catch(() => undefined);
+      if (status && status.phase !== "stopped")
+        await this.#call(slot, "stop", status).catch((error: unknown) =>
+          this.#options.onError?.(error),
+        );
+      const sessions = await listBrowserPoolRuntimeSessions(
+        this.#options.database,
+        slot.runnerId,
+        slot.runtimeId,
+      );
+      await releaseBrowserPoolSlot(
+        this.#options.database,
+        slot,
+        await this.#lossesOf(slot, sessions, "device-removed"),
+      );
+      this.#slot = undefined;
+    });
   }
 
   #serial<T>(work: () => Promise<T>): Promise<T> {
@@ -658,7 +735,7 @@ export class BrowserPoolCoordinator {
   ): Promise<void> {
     const named = new Set(losses.map(({ sessionId }) => sessionId));
     // A session the Home kept with no browser behind it ends now, with its note.
-    const orphans = (await this.#adopter?.orphans()) ?? [];
+    const orphans = (await this.#adopter?.orphans(this.#options.runtimeId)) ?? [];
     const retained = retainedOf(slot);
     const all = [
       ...losses,

@@ -318,6 +318,7 @@ export class BrowserRuntimeServer {
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
     let restarting = false;
+    let channelLost = false;
     const cancellation = new AbortController();
     let queuedBytes = 0;
     const queued: Buffer[] = [];
@@ -355,9 +356,11 @@ export class BrowserRuntimeServer {
     });
 
     const closed = Promise.withResolvers<void>();
-    websocket.once("close", () => {
+    websocket.once("close", (code: number) => {
       disconnected = true;
       restarting = bridge && this.relayRestartPlanned;
+      // A pooled guest outlives its Runner: a channel the Home did not close keeps its pages.
+      channelLost = this.runtime.pooled && code !== 1000;
       cancellation.abort();
       closed.resolve();
     });
@@ -393,7 +396,7 @@ export class BrowserRuntimeServer {
       try {
         await ready;
       } finally {
-        await attachment?.close(bridge, restarting);
+        await attachment?.close(bridge, restarting, channelLost);
       }
     });
     if (bridge) this.trackRelayAttachment(websocket, ended);

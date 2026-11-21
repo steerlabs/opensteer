@@ -138,6 +138,8 @@ interface ActiveSession {
   reattachUntil?: ReturnType<typeof setTimeout>;
   poolDetached?: boolean;
   poolAttachment?: number;
+  /** A pooled session whose channel was lost: kept until its Home reattaches or the deadline. */
+  channelLostUntil?: ReturnType<typeof setTimeout>;
 }
 
 interface FreshHostIdentity {
@@ -189,18 +191,25 @@ function browserHostKey(claims: BrowserAttachTicketClaims): BrowserPartitionKey 
     : `profile:${claims.identity.binding.profileId}`;
 }
 
+/** How long a pooled session whose Runner channel was lost waits for its Home to come back. */
+export const pooledChannelDeadlineMs = 20_000;
+
 export class BrowserAttachment {
   readonly initialPage?: InitialPageReady;
   private closePromise: Promise<void> | null = null;
   private readonly controller: BrowserController;
-  private readonly detach: (confirmPages: boolean, restarting: boolean) => Promise<void>;
+  private readonly detach: (
+    confirmPages: boolean,
+    restarting: boolean,
+    channelLost?: boolean,
+  ) => Promise<void>;
   private readonly acceptsTraffic: (() => boolean) | undefined;
   readonly sessionId: string;
 
   constructor(
     sessionId: string,
     controller: BrowserController,
-    detach: (confirmPages: boolean, restarting: boolean) => Promise<void>,
+    detach: (confirmPages: boolean, restarting: boolean, channelLost?: boolean) => Promise<void>,
     initialPage?: InitialPageReady,
     acceptsTraffic?: () => boolean,
   ) {
@@ -217,8 +226,8 @@ export class BrowserAttachment {
     return this.controller.handleRaw(frame);
   }
 
-  close(confirmPages = false, restarting = false): Promise<void> {
-    this.closePromise ??= this.detach(confirmPages, restarting);
+  close(confirmPages = false, restarting = false, channelLost = false): Promise<void> {
+    this.closePromise ??= this.detach(confirmPages, restarting, channelLost);
     return this.closePromise;
   }
 }
@@ -283,6 +292,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private state: BrowserRuntimeState = "idle";
   private readonly ticketVerifier: AttachTicketVerifier;
   private readonly pool: BrowserPoolRuntimeControl | undefined;
+  private readonly poolChannelDeadlineMs: number;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
   /** Pages a session opened while it was suspended for the pool, and that were ended. */
@@ -305,6 +315,7 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.launcher = options.launcher;
     const pool = options.pool;
+    this.poolChannelDeadlineMs = pool?.channelDeadlineMs ?? pooledChannelDeadlineMs;
     if (pool) {
       this.pool = new BrowserPoolRuntimeControl(
         pool.controllerKey,
@@ -1106,7 +1117,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const held = this.sessions.get(claims.sessionId);
         if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
           throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
-        if (held && this.pool.canAdopt(claims.sessionId))
+        if (held && (this.pool.canAdopt(claims.sessionId) || held.channelLostUntil !== undefined))
           return wait(this.reattachAfterPool(held, claims, sink, attachment));
         if (!this.pool.acceptsTraffic || held?.poolDetached)
           throw new BrowserRuntimeError("not_found", "The retained Browser Session has ended.");
@@ -1166,8 +1177,8 @@ export class BrowserRuntime implements NativePresentationSource {
         return new BrowserAttachment(
           active.sessionId,
           active.controller,
-          (confirmPages, restarting) =>
-            this.detach(active.sessionId, generation, confirmPages, restarting),
+          (confirmPages, restarting, channelLost) =>
+            this.detach(active.sessionId, generation, confirmPages, restarting, false, channelLost),
           previous.result,
           this.poolTrafficFor(active, generation),
         );
@@ -1316,8 +1327,15 @@ export class BrowserRuntime implements NativePresentationSource {
           return new BrowserAttachment(
             claims.sessionId,
             controller,
-            (confirmPages, restarting) =>
-              this.detach(claims.sessionId, sessionGeneration, confirmPages, restarting),
+            (confirmPages, restarting, channelLost) =>
+              this.detach(
+                claims.sessionId,
+                sessionGeneration,
+                confirmPages,
+                restarting,
+                false,
+                channelLost,
+              ),
             initialPage,
             this.poolTrafficFor(active, sessionGeneration),
           );
@@ -1374,6 +1392,8 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new BrowserRuntimeError("forbidden", "This ticket cannot adopt the retained session.");
 
     session.poolAttachment = attachment;
+    clearTimeout(session.channelLostUntil);
+    delete session.channelLostUntil;
     if (!session.poolDetached) {
       session.poolDetached = true;
       await session.host.router.unregisterSession(session.sessionId, true);
@@ -1413,8 +1433,8 @@ export class BrowserRuntime implements NativePresentationSource {
     return new BrowserAttachment(
       session.sessionId,
       controller,
-      (confirmPages, restarting) =>
-        this.detach(session.sessionId, generation, confirmPages, restarting),
+      (confirmPages, restarting, channelLost) =>
+        this.detach(session.sessionId, generation, confirmPages, restarting, false, channelLost),
       undefined,
       this.poolTrafficFor(session, generation),
     );
@@ -1765,6 +1785,7 @@ export class BrowserRuntime implements NativePresentationSource {
     confirmPages: boolean,
     restarting = false,
     forcePoolDetach = false,
+    channelLost = false,
   ): Promise<void> {
     const current = this.sessions.get(sessionId);
     if (current?.generation === generation) endPresentations(current);
@@ -1773,6 +1794,22 @@ export class BrowserRuntime implements NativePresentationSource {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
       if (active.poolDetached && !forcePoolDetach) return;
+      if (!forcePoolDetach && channelLost && this.pool?.acceptsTraffic) {
+        // The Runner's channel went away, the guest did not: the pages keep running, detached,
+        // until the Home reattaches the session or the reconnect deadline ends it.
+        active.poolDetached = true;
+        active.ledger.suspendForPool(() => this.poolDrops++);
+        await settleCleanup([
+          () => active.controller.detachForPool(),
+          () => active.host.router.unregisterSession(sessionId, true),
+        ]);
+        clearTimeout(active.channelLostUntil);
+        active.channelLostUntil = setTimeout(() => {
+          void this.detach(sessionId, generation, false, false, true).catch(() => undefined);
+        }, this.poolChannelDeadlineMs);
+        active.channelLostUntil.unref();
+        return;
+      }
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
         // A channel lost during adoption keeps the session for the next attempt or the window.
         active.poolDetached = true;
@@ -1809,6 +1846,7 @@ export class BrowserRuntime implements NativePresentationSource {
         return;
       }
       clearTimeout(active.reattachUntil);
+      clearTimeout(active.channelLostUntil);
       this.sleeper.remove(sessionId);
       this.sessions.delete(sessionId);
       const host = active.host;

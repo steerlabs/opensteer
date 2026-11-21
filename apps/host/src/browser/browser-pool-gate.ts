@@ -8,7 +8,15 @@ export interface BrowserPoolGateDriver {
   wake(): Promise<void>;
 }
 
-type GatePhase = "recovering" | "open" | "preparing" | "parking" | "parked" | "waking";
+type GatePhase =
+  | "recovering"
+  | "open"
+  | "preparing"
+  | "parking"
+  | "parked"
+  | "waking"
+  | "reconnecting"
+  | "released";
 
 export interface BrowserPoolReservation {
   release(): void;
@@ -54,6 +62,16 @@ export class BrowserPoolGate {
     return true;
   }
 
+  /** The Runner's channel was lost: sends wait while the Home reattaches its sessions. */
+  reconnecting(): void {
+    if (this.#phase === "open") this.#setPhase("reconnecting");
+  }
+
+  /** The device was removed: nothing is admitted or woken again. */
+  released(): void {
+    this.#setPhase("released");
+  }
+
   /** The driver reports where the browser is now. */
   settle(phase: "open" | "parked"): void {
     this.#setPhase(phase);
@@ -91,6 +109,8 @@ export class BrowserPoolGate {
             );
       const phase = this.#phase;
       if (phase === "open") return this.#hold();
+      if (phase === "released")
+        throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
       if (phase === "preparing") this.#demanded = true;
       if (phase === "parked" && demand) this.#wake();
       await waitForChange(this.#changed.signal, signal);

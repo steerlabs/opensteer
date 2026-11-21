@@ -30,6 +30,7 @@ import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool
 import {
   BrowserService,
   type BrowserRuntimeConnection,
+  type BrowserRuntimeTarget,
 } from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
@@ -81,7 +82,8 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
         pending.length = 0;
       })
       .catch((error: unknown) => {
-        this.emit("error", error);
+        // A refused attach closes the channel whether or not anyone listens for the error.
+        if (this.listenerCount("error")) this.emit("error", error);
         this.end(1011, "attach failed");
       });
   }
@@ -91,6 +93,11 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
       () => callback(),
       (error) => callback(error),
     );
+  }
+
+  /** The Runner carrying this channel went away: the Home sees the channel drop. */
+  lose(code: number, reason: string): void {
+    this.end(code, reason);
   }
 
   private end(code: number, reason: string): void {
@@ -134,6 +141,7 @@ export async function journey(
     readonly chromium?: boolean;
     readonly profile?: boolean;
     readonly runtimeFault?: ConstructorParameters<typeof BrowserPoolCoordinator>[0]["runtimeFault"];
+    readonly channelDeadlineMs?: number;
   } = {},
 ) {
   const real = options.chromium !== false;
@@ -175,7 +183,11 @@ export async function journey(
       replayLedgerPath: join(root, "private", "tickets.json"),
       resolvePublicKey: (id) => (id === "test" ? tickets.publicKey : null),
     }),
-    pool: { controllerKey: controller.publicKey, probePage: async () => [] },
+    pool: {
+      controllerKey: controller.publicKey,
+      probePage: async () => [],
+      ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
+    },
   });
   const bridgeToken = randomUUID();
   const runtimeServer = new BrowserRuntimeServer({
@@ -205,6 +217,8 @@ export async function journey(
   // A ticket the Home issued that never reached the runtime, as if its delivery were lost.
   const withheld: string[] = [];
   let withholdNext = false;
+  let runnerDown = false;
+  const connections: TestRuntimeConnection[] = [];
   const connect = (ticket: string) => {
     issued.push(ticket);
     if (withholdNext) {
@@ -212,7 +226,9 @@ export async function journey(
       withheld.push(ticket);
       return new TestRuntimeConnection(bridge, "withheld");
     }
-    return new TestRuntimeConnection(bridge, ticket);
+    const connection = new TestRuntimeConnection(bridge, ticket);
+    connections.push(connection);
+    return connection;
   };
   const placement = {
     kind: "runner" as const,
@@ -242,7 +258,11 @@ export async function journey(
       runtime: channel,
       controller,
       retryMs: 20,
+      onError: (error) => {
+        if (process.env.POOL_DEBUG) console.log("COORDERR", error);
+      },
       ...(options.runtimeFault ? { runtimeFault: options.runtimeFault } : {}),
+      ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
     });
     const service = new BrowserService({
       deploymentId: task.deploymentId,
@@ -262,38 +282,45 @@ export async function journey(
           }
         : {}),
       signer,
+      onError: (error) => {
+        if (process.env.POOL_DEBUG) console.log("HOSTERR", error);
+      },
       onSessionsChanged: () => {},
       targetResolver: {
         placements: () => [placement],
-        resolve: () => ({
-          runtimeId: "pool-runtime",
-          placementKey: "pool-test",
-          main: true,
-          surfaceState: 1,
-          tabRestoreVersion: true,
-          sharedControl: true,
-          cdpBoundary: true,
-          ...(guest.localProfileStorage ? { localProfileStorage: guest.localProfileStorage } : {}),
-          loopbackPool: coordinator,
-          connect,
-          // Standard CDP straight into the in-process runtime, with its recovery probe.
-          standardCdpLineage: true,
-          standardRuntime: guest,
-          standardCdpRecovery: {
-            relayId: "pool-loopback",
-            boot: async () => guest.standardCdpBootId,
-            assertCurrent: () => {},
-          },
-          reconcileStandardCdpAttempt: (attempt) =>
-            guest.reconcileStandardCdpAttempt(attempt).then(({ runtimeBootId }) => runtimeBootId),
-          wholeContextCdp: true,
-        }),
+        // While the Runner is away its browser target does not resolve.
+        resolve: () => (runnerDown ? undefined : target()),
       },
     });
     const home = { service, coordinator };
     homes.push(home);
     await service.initialize();
     return home;
+    function target() {
+      return {
+        runtimeId: "pool-runtime",
+        placementKey: "pool-test",
+        main: true,
+        surfaceState: 1,
+        tabRestoreVersion: true,
+        sharedControl: true,
+        cdpBoundary: true,
+        ...(guest.localProfileStorage ? { localProfileStorage: guest.localProfileStorage } : {}),
+        loopbackPool: coordinator,
+        connect,
+        // Standard CDP straight into the in-process runtime, with its recovery probe.
+        standardCdpLineage: true,
+        standardRuntime: guest,
+        standardCdpRecovery: {
+          relayId: "pool-loopback",
+          boot: async () => guest.standardCdpBootId,
+          assertCurrent: () => {},
+        },
+        reconcileStandardCdpAttempt: (attempt) =>
+          guest.reconcileStandardCdpAttempt(attempt).then(({ runtimeBootId }) => runtimeBootId),
+        wholeContextCdp: true,
+      } satisfies BrowserRuntimeTarget;
+    }
   };
   const restartHome = async (home: Home, channel?: BrowserPoolRuntimeChannel) => {
     await home.service.close();
@@ -387,6 +414,15 @@ export async function journey(
     withheld,
     withholdNextTicket: () => {
       withholdNext = true;
+    },
+    /** The Runner restarts: every channel drops, the guest keeps running. */
+    runnerDown: () => {
+      runnerDown = true;
+      bridge.closeAll(1011, "runner restarting");
+      for (const connection of connections.splice(0)) connection.lose(1011, "runner restarting");
+    },
+    runnerUp: () => {
+      runnerDown = false;
     },
     signer,
     startHome,

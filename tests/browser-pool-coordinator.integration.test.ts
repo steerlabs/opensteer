@@ -104,7 +104,8 @@ async function poolFixture(
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
-    orphans: async () => {
+    live: (id) => sinks.has(id),
+    orphans: async (_runtimeId) => {
       const live = (runtime as unknown as { sessions: Map<string, unknown> }).sessions;
       const current = await getBrowserSessionForOwner(database, sessionId, task.userId);
       return current && current.state === "ready" && !live.has(sessionId)

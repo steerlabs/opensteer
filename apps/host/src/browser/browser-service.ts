@@ -1128,13 +1128,14 @@ export class BrowserService {
               surfaceId,
             })),
           ),
-      orphans: async () => {
-        const target = this.#resolveTarget({ kind: "runner", runnerId });
-        if (!target || !(this.#repository instanceof OpensteerStore)) return [];
+      live: (sessionId) => this.#brokers.get(sessionId)?.live === true,
+      orphans: async (runtimeId) => {
+        // No target is needed: a Runner that is away still has sessions to end.
+        if (!(this.#repository instanceof OpensteerStore)) return [];
         const sessions = await listBrowserPoolRuntimeSessions(
           this.#repository.database,
           runnerId,
-          target.runtimeId,
+          runtimeId,
         );
         const owner = await readBrowserPoolOwner(this.#repository.database);
         const orphans = sessions.filter((id) => !this.#brokers.get(id)?.live);
@@ -1246,6 +1247,7 @@ export class BrowserService {
     const adopting = { active: true };
     const broker = new HostedBrowserBroker({
       poolAdmission: this.#poolAdmission(pool, adopting),
+      onChannelLost: () => pool.channelLost(sessionId),
       adoptedFromPool: true,
       personUse,
       onPersonUseChanged: () => {
@@ -6373,6 +6375,12 @@ export class BrowserService {
    * there is nothing to write: what is left is the live broker, which would
    * otherwise keep relaying for a computer the Deployment no longer trusts.
    */
+  /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
+  async poolDeviceRemoved(runnerId: RunnerId): Promise<void> {
+    if (runnerId !== this.#managedPoolTestRunner) return;
+    await this.#poolTabTarget(runnerId)?.releaseDevice();
+  }
+
   abandonSession(sessionId: BrowserSessionId): void {
     const broker = this.#brokers.get(sessionId);
     if (!broker) return;
@@ -6736,7 +6744,12 @@ export class BrowserService {
       const broker = withoutDatabaseOperationSignal(
         () =>
           new HostedBrowserBroker({
-            ...(pooled ? { poolAdmission: this.#poolAdmission(pooled) } : {}),
+            ...(pooled
+              ? {
+                  poolAdmission: this.#poolAdmission(pooled),
+                  onChannelLost: () => pooled.channelLost(sessionId),
+                }
+              : {}),
             personUse,
             onPersonUseChanged: () => {
               if (personUse.ended) return;
@@ -7597,6 +7610,8 @@ interface PoolBrokerAdmission {
 
 interface HostedBrowserBrokerOptions {
   readonly poolAdmission?: PoolBrokerAdmission;
+  /** A pooled broker's channel was lost without the Home closing it. */
+  readonly onChannelLost?: () => void;
   /** A broker an adoption built: its first ready does not replay saved tabs. */
   readonly adoptedFromPool?: boolean;
   readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
@@ -7648,6 +7663,7 @@ interface HostedBrowserBrokerOptions {
 
 export class HostedBrowserBroker {
   readonly #poolAdmission: PoolBrokerAdmission | undefined;
+  readonly #onChannelLost: (() => void) | undefined;
   readonly #adoptedFromPool: boolean;
   readonly #poolEnded = new AbortController();
   readonly profileId: BrowserProfileId | null;
@@ -7906,6 +7922,7 @@ export class HostedBrowserBroker {
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
     this.#poolAdmission = options.poolAdmission;
+    this.#onChannelLost = options.onChannelLost;
     this.#adoptedFromPool = options.adoptedFromPool === true;
     this.#personUse = options.personUse ?? { tabs: new Set(), ended: false };
     this.#pendingPersonUse = new Set(this.#personUse.tabs);
@@ -8738,13 +8755,23 @@ export class HostedBrowserBroker {
           clearTimeout(timeout);
           reject(new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`));
         }
+        const retired =
+          !this.#stopping &&
+          this.#poolAdmission?.retiring() &&
+          code === 1012 &&
+          reason.toString() === "browser-pool-retire";
+        // A pooled guest outlives its Runner: a lost channel ends nothing, the Home reattaches.
+        const channelLost =
+          !this.#stopping &&
+          !retired &&
+          ready &&
+          this.#poolAdmission !== undefined &&
+          code !== 1000;
+        if (channelLost) queueMicrotask(() => this.#onChannelLost?.());
         void this.#runtimeFrameTail
           .then(() =>
             this.#finish(
-              !this.#stopping &&
-                this.#poolAdmission?.retiring() &&
-                code === 1012 &&
-                reason.toString() === "browser-pool-retire"
+              retired || channelLost
                 ? "pooled"
                 : this.#stopping || code === 1000
                   ? "closed"

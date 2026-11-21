@@ -6,6 +6,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable } from "kysely";
+import { randomUUID } from "node:crypto";
 import { transitionBrowserSession } from "./browser-session-store.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -265,48 +266,77 @@ export async function advanceBrowserPoolSlot(
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if (losses.length) {
-        const ownerId = await readBrowserPoolOwner(tx);
-        const sessions = await tx
-          .selectFrom("browserSessions")
-          .select("id")
-          .where("id", "in", [...new Set(losses.map(({ sessionId }) => sessionId))])
-          .where("runnerId", "=", slot.runnerId)
-          .where("runtimeId", "=", slot.runtimeId)
-          .orderBy("id")
-          .execute();
-        const known = new Set(sessions.map(({ id }) => id));
-        const notes = losses.flatMap(({ sessionId, reason, surfaces }) => {
-          return ownerId && known.has(sessionId)
-            ? surfaces.map(({ surfaceId, documentId }) => ({
-                intentId: slot.intentId!,
-                runnerId: slot.runnerId,
-                ownerId,
-                sessionId,
-                surfaceId: surfaceId as BrowserSurfaceId,
-                documentId,
-                reason,
-              }))
-            : [];
-        });
-        if (notes.length && slot.intentId)
-          await tx
-            .insertInto("browserPoolDocumentLosses")
-            .values(notes)
-            .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
-            .execute();
-        // A ready row with no browser behind it is a defect: the lost session ends here.
-        const ended = new Set(
-          losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
-        );
-        for (const { id } of sessions.filter(({ id }) => ended.has(id)))
-          await transitionBrowserSession(tx, {
-            from: ["starting", "ready", "closing"],
-            sessionId: id,
-            state: "failed",
-          });
-      }
+      await recordBrowserPoolLosses(tx, slot, losses);
       return advanced;
+    },
+    undefined,
+    "non-retrying",
+  );
+}
+
+/** Notes per tab, and the end of each lost session, inside the caller's transaction. */
+async function recordBrowserPoolLosses(
+  tx: Kysely<DatabaseSchema>,
+  slot: BrowserPoolSlot,
+  losses: readonly BrowserPoolSessionLoss[],
+): Promise<void> {
+  if (losses.length) {
+    const ownerId = await readBrowserPoolOwner(tx);
+    const sessions = await tx
+      .selectFrom("browserSessions")
+      .select("id")
+      .where("id", "in", [...new Set(losses.map(({ sessionId }) => sessionId))])
+      .where("runnerId", "=", slot.runnerId)
+      .where("runtimeId", "=", slot.runtimeId)
+      .orderBy("id")
+      .execute();
+    const known = new Set(sessions.map(({ id }) => id));
+    // A loss outside a park (a lost Runner channel, a removed device) has its own note id.
+    const noteId = slot.intentId ?? randomUUID();
+    const notes = losses.flatMap(({ sessionId, reason, surfaces }) => {
+      return ownerId && known.has(sessionId)
+        ? surfaces.map(({ surfaceId, documentId }) => ({
+            intentId: noteId,
+            runnerId: slot.runnerId,
+            ownerId,
+            sessionId,
+            surfaceId: surfaceId as BrowserSurfaceId,
+            documentId,
+            reason,
+          }))
+        : [];
+    });
+    if (notes.length)
+      await tx
+        .insertInto("browserPoolDocumentLosses")
+        .values(notes)
+        .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
+        .execute();
+    // A ready row with no browser behind it is a defect: the lost session ends here.
+    const ended = new Set(
+      losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
+    );
+    for (const { id } of sessions.filter(({ id }) => ended.has(id)))
+      await transitionBrowserSession(tx, {
+        from: ["starting", "ready", "closing"],
+        sessionId: id,
+        state: "failed",
+      });
+  }
+}
+
+/** A removed device: its sessions end with their notes and the slot row goes with them. */
+export async function releaseBrowserPoolSlot(
+  database: Kysely<DatabaseSchema>,
+  slot: BrowserPoolSlot,
+  losses: readonly BrowserPoolSessionLoss[],
+): Promise<void> {
+  await commitPersonalMutation(
+    database,
+    async (tx) => {
+      // Lock order: the slot first, then the notes, then the sessions.
+      await tx.deleteFrom("browserPoolSlots").where("runnerId", "=", slot.runnerId).execute();
+      await recordBrowserPoolLosses(tx, slot, losses);
     },
     undefined,
     "non-retrying",

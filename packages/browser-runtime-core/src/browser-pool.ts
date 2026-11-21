@@ -11,6 +11,8 @@ export interface BrowserPoolRuntimeOptions {
   readonly probePage: (page: BrowserPage, phase: "active" | "frozen") => Promise<readonly string[]>;
   /** How long an adoption may take before every session not yet adopted is lost. */
   readonly adoptionWindowMs?: number;
+  /** How long a session whose Runner channel was lost waits for its Home to reattach. */
+  readonly channelDeadlineMs?: number;
 }
 
 export interface BrowserPoolIntent {

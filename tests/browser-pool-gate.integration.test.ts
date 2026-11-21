@@ -866,3 +866,81 @@ it("vetoes a park for a Trigger or Watch program with browser demand, and not fo
     await fixture.close();
   }
 });
+
+it("keeps the person's pages through a Runner restart and reattaches them under a newer attachment", async () => {
+  const j = await journey("runner-restart");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("restart"));
+    const page = await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    const before = (await j.slot())!.attachmentGeneration;
+    j.runnerDown();
+    // Nothing ends: the row stays ready, the page keeps running, sends wait.
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(page.page.isClosed()).toBe(false);
+    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+    j.runnerUp();
+    const held = await waiting;
+    held.release();
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect((await j.slot())!.attachmentGeneration).toBeGreaterThan(before);
+    expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    expect(await page.value()).toBe('["unsent draft",99]');
+    // No pause happened: the controller saw only the start.
+    expect(j.controller.effects).toEqual(["start"]);
+    const watching = j.viewer(home, sessionId);
+    const attached = await watching.attaching;
+    try {
+      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+    } finally {
+      attached.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("ends the sessions with their note when the Runner does not come back before the deadline", async () => {
+  const j = await journey("runner-gone", { channelDeadlineMs: 1_500 });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("gone"));
+    const page = await j.draft();
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    expect((await j.row(sessionId))?.state).toBe("failed");
+    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 10_000 });
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId, surfaceId: tabId, reason: "not-adopted" },
+    ]);
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("ends a removed device's pooled sessions with evidence, releases its slot and never wakes it", async () => {
+  const j = await journey("device-removed");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("removed"));
+    await j.draft();
+    await home.service.poolDeviceRemoved(j.task.runnerId);
+    expect(await j.slot()).toBeUndefined();
+    expect((await j.row(sessionId))?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId, reason: "device-removed" },
+    ]);
+    expect(j.controller.effects).toEqual(["start", "stop"]);
+    await expect(home.coordinator.gate.reserve(AbortSignal.timeout(1_000))).rejects.toThrow(
+      "device was removed",
+    );
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    expect(j.controller.effects).toEqual(["start", "stop"]);
+  } finally {
+    await j.close();
+  }
+});
