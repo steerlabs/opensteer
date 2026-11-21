@@ -475,6 +475,65 @@ it("keeps the person's tab the person's through a Home restart while parked, the
   }
 });
 
+it("holds a viewer's protection, queued after the park intent, in the adopted runtime before its first frame", async () => {
+  // The retire waits in its frozen probe: the park intent has committed and the old broker is
+  // still there when the viewer arrives.
+  const inProbe = Promise.withResolvers<void>();
+  const probe = Promise.withResolvers<void>();
+  let holding = false;
+  const j = await journey("protection-after-intent", {
+    probePage: async (_page, phase) => {
+      if (holding && phase === "frozen") {
+        inProbe.resolve();
+        await probe.promise;
+      }
+      return [];
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("protect"));
+    await j.draft();
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    holding = true;
+    const parking = home.coordinator.tryPark();
+    await inProbe.promise;
+    // A control viewer attaches after the intent: its protection (viewed) is queued, not sent.
+    const viewed = () =>
+      (
+        j.guest as unknown as {
+          sleeper: { poolState(id: string): { viewed: readonly string[] } | null };
+        }
+      ).sleeper.poolState(sessionId)?.viewed ?? [];
+    let atFirstFrame: readonly string[] | undefined;
+    const watching = j.viewer(home, sessionId, "control", () => {
+      atFirstFrame = [...viewed()];
+    });
+    holding = false;
+    probe.resolve();
+    expect(await parking).toBe("parked");
+    // The viewer's demand wakes and adopts the browser; before its first frame passes, the
+    // adopted runtime already holds the protection.
+    const attached = await watching.attaching;
+    try {
+      await attached.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
+        false,
+      );
+      await vi.waitFor(() => expect(watching.frames.length).toBeGreaterThan(0), {
+        timeout: 10_000,
+      });
+      expect(atFirstFrame).toContain(tabId);
+      expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    } finally {
+      attached.close();
+    }
+  } finally {
+    probe.resolve();
+    await j.close();
+  }
+});
+
 it("stops a parked session while its viewer waits and never reattaches it", async () => {
   const j = await journey("stop-waiting");
   try {

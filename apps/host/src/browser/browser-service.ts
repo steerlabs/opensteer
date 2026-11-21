@@ -8207,6 +8207,20 @@ export class HostedBrowserBroker {
     this.#sessionStateTimer.unref();
   }
 
+  /** Sends a pending session state now instead of after its short delay. */
+  async #flushSessionState(): Promise<void> {
+    if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
+    this.#sessionStateTimer = undefined;
+    const hold = this.#sessionStateHold;
+    this.#sessionStateHold = undefined;
+    try {
+      if (this.live && this.#snapshot?.surfaceState === 1)
+        await this.#sendSessionState().catch(() => undefined);
+    } finally {
+      hold?.release();
+    }
+  }
+
   #sendSessionState(): Promise<void> {
     if (this.#sessionStateSending) return this.#sessionStateSending;
     const send = async () => {
@@ -9764,6 +9778,9 @@ export class HostedBrowserBroker {
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
       this.refreshSessionState();
+      // A pooled runtime may just have been adopted: the viewer's protection reaches it before
+      // the subscription does, so no frame passes ahead of it.
+      if (this.#poolAdmission) await this.#flushSessionState();
       this.#passkeys?.refresh();
       // Editing reaches a viewer only once it names what it shows, so each
       // subscription starts from that surface's current field.

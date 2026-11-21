@@ -142,6 +142,8 @@ export async function journey(
     readonly profile?: boolean;
     readonly runtimeFault?: ConstructorParameters<typeof BrowserPoolCoordinator>[0]["runtimeFault"];
     readonly channelDeadlineMs?: number;
+    /** The guest's page probe during a retire; a retire waits for it. */
+    readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
 ) {
   const real = options.chromium !== false;
@@ -185,7 +187,7 @@ export async function journey(
     }),
     pool: {
       controllerKey: controller.publicKey,
-      probePage: async () => [],
+      probePage: options.probePage ?? (async () => []),
       ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
     },
   });
@@ -371,7 +373,12 @@ export async function journey(
       });
     return { page, cdp, targetId: await page.targetId(), value, rendered };
   };
-  const viewer = (home: Home, sessionId: string, mode: "control" | "watch" = "control") => {
+  const viewer = (
+    home: Home,
+    sessionId: string,
+    mode: "control" | "watch" = "control",
+    onFrame?: () => void,
+  ) => {
     let open = true;
     const frames: Buffer[] = [];
     const attaching = home.service.attach(
@@ -384,7 +391,10 @@ export async function journey(
           open = false;
         },
         send: async (data, binary) => {
-          if (binary && Buffer.isBuffer(data)) frames.push(data);
+          if (binary && Buffer.isBuffer(data)) {
+            if (!frames.length) onFrame?.();
+            frames.push(data);
+          }
         },
       },
       { authSessionId: createId("authSession"), mode, signedIn: async () => true },
