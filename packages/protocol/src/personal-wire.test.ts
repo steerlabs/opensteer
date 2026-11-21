@@ -175,16 +175,6 @@ describe("personal wire compatibility", () => {
           start: { reason: "expired", at: "start-1" },
           failures: 0,
           pages: [{ surfaceId: "surface_a", outcome: "lost", typed: true }],
-          adopted: [
-            { surfaceId: "surface_b", documentId: "doc-1", revision: 3 },
-            {
-              surfaceId: "surface_c",
-              documentId: "doc-2",
-              revision: 1,
-              frozenViewport: { width: 1280, height: 800 },
-              adoptedViewport: { width: 1280, height: 800 },
-            },
-          ],
         },
       ],
     };

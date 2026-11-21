@@ -6385,8 +6385,7 @@ export class BrowserService {
    */
   /**
    * What clients show of a pooled browser: phase and since, the last fresh start, failed starts,
-   * pages not kept until seen, and each adopted tab's document at the freeze. Nothing for an
-   * ordinary Home, and no read either.
+   * and the pages not kept until seen. Nothing for an ordinary Home, and no read either.
    */
   async resourcePools(runnerIds: readonly RunnerId[]): Promise<readonly BrowserPoolReportView[]> {
     const runnerId = this.#managedPoolTestRunner;
@@ -6398,10 +6397,7 @@ export class BrowserService {
     const shown = this.#poolTabTarget(runnerId)?.report();
     const retained =
       (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
-    const outcome = slot.outcome as {
-      adopted?: string[];
-      viewports?: { surfaceId: string; width: number; height: number }[];
-    } | null;
+
     const start = slot.lastStart as { reason?: string; id?: string } | null;
     const losses = await database
       .selectFrom("browserPoolDocumentLosses")
@@ -6426,20 +6422,6 @@ export class BrowserService {
         };
       }),
     );
-    const adopted = retained
-      .filter((document) => outcome?.adopted?.includes(document.sessionId))
-      .map(({ surfaceId, documentId, pageRevision, viewport }) => {
-        const now = outcome?.viewports?.find((entry) => entry.surfaceId === surfaceId);
-        return {
-          surfaceId,
-          documentId,
-          revision: pageRevision,
-          ...(viewport
-            ? { frozenViewport: { width: viewport.width, height: viewport.height } }
-            : {}),
-          ...(now ? { adoptedViewport: { width: now.width, height: now.height } } : {}),
-        };
-      });
     return [
       {
         runnerId,
@@ -6450,7 +6432,6 @@ export class BrowserService {
           : {}),
         ...(slot.failedStarts ? { failures: slot.failedStarts } : {}),
         ...(pages.length ? { pages } : {}),
-        ...(adopted.length ? { adopted } : {}),
       },
     ];
   }

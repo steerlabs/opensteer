@@ -670,7 +670,6 @@ export class BrowserPoolCoordinator {
     await this.#finishRunning(slot, losses, {
       adopted: outcome.adopted,
       lost: outcome.lost,
-      ...(outcome.viewports ? { viewports: outcome.viewports } : {}),
     });
   }
 

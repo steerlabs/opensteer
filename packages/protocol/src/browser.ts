@@ -1507,10 +1507,6 @@ export const BrowserPlacementsViewSchema = z.array(BrowserPlacementSchema).max(1
  * A Cloud Computer's pooled browser, as its Home reports it with the placements. Only a Home
  * with a pooled browser sends it; every field is additive and optional on the wire.
  */
-const browserPoolViewportSchema = z.object({
-  width: z.number().int().positive().max(100_000),
-  height: z.number().int().positive().max(100_000),
-});
 export const BrowserPoolReportSchema = z.object({
   runnerId: z.string().min(1).max(200),
   phase: z.enum(["running", "preparing", "parked", "waking", "starting", "restarting", "failed"]),
@@ -1531,22 +1527,6 @@ export const BrowserPoolReportSchema = z.object({
         surfaceId: z.string().min(1).max(200),
         outcome: z.enum(["reloaded", "lost"]),
         typed: z.boolean(),
-      }),
-    )
-    .max(500)
-    .optional(),
-  /**
-   * Each adopted tab's document and revision at the freeze, with the size it showed then and
-   * when the adoption ended: a picture of them is current only when the two sizes are equal.
-   */
-  adopted: z
-    .array(
-      z.object({
-        surfaceId: z.string().min(1).max(200),
-        documentId: z.string().min(1).max(200),
-        revision: z.number().int().nonnegative(),
-        frozenViewport: browserPoolViewportSchema.optional(),
-        adoptedViewport: browserPoolViewportSchema.optional(),
       }),
     )
     .max(500)

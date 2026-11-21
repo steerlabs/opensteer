@@ -54,13 +54,6 @@ export interface BrowserPoolDocument {
   readonly pageRevision: number;
   /** The page held typed text that was not sent. */
   readonly typed?: boolean;
-  /** The size the page showed at the freeze, in CSS pixels. */
-  readonly viewport?: BrowserPoolViewport;
-}
-
-export interface BrowserPoolViewport {
-  readonly width: number;
-  readonly height: number;
 }
 
 export interface BrowserPoolRetirement {
@@ -77,8 +70,6 @@ export interface BrowserPoolSessionOutcome {
 export interface BrowserPoolAdoptionOutcome {
   readonly adopted: readonly BrowserSessionId[];
   readonly lost: readonly BrowserPoolSessionOutcome[];
-  /** The size each page of an adopted session showed when the adoption ended. */
-  readonly viewports?: readonly (BrowserPoolViewport & { readonly surfaceId: BrowserSurfaceId })[];
 }
 
 export type BrowserPoolRuntimePhase =

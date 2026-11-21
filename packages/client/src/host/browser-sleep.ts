@@ -62,7 +62,7 @@ export interface BrowserPoolReport {
   readonly failures?: number | undefined;
   /**
    * The pages that did not come back as they were after the last start or wake, until the
-   * person has seen them. Every other page was `adopted`: exactly as it was.
+   * person has seen them. Every other page came back exactly as it was.
    */
   readonly pages?:
     | readonly {
@@ -74,26 +74,6 @@ export interface BrowserPoolReport {
         readonly typed: boolean;
       }[]
     | undefined;
-  /**
-   * Each adopted tab's document and its revision when the browser froze, with the size the
-   * page showed then and when the adoption ended. A picture taken of that same document and
-   * revision is still current after the wake only when the two sizes are equal.
-   */
-  readonly adopted?:
-    | readonly {
-        readonly surfaceId: string;
-        readonly documentId: string;
-        readonly revision: number;
-        readonly frozenViewport?: BrowserPoolViewport | undefined;
-        readonly adoptedViewport?: BrowserPoolViewport | undefined;
-      }[]
-    | undefined;
-}
-
-/** A page's size in CSS pixels, as the Home reports it. */
-export interface BrowserPoolViewport {
-  readonly width: number;
-  readonly height: number;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -160,8 +140,7 @@ export const browserNotPooled: BrowserSleepView = Object.freeze({
  * A Home with a pooled browser reports it with its browser placements (`pools`), and the
  * client copies that into `browserPools` unchanged; every other Home sends nothing, so this
  * returns `browserNotPooled` for it. The report carries every phase, when it began, the last
- * fresh start's reason and id, the count of failed starts, the pages not kept until seen, and
- * each adopted tab's document at the freeze.
+ * fresh start's reason and id, the count of failed starts, and the pages not kept until seen.
  */
 export function browserSleepFromHome(
   reports: HostSnapshot["browserPools"],
@@ -201,39 +180,6 @@ function tabOf(report: BrowserPoolReport, tabId: string): BrowserTabReturn {
   return page.outcome === "reloaded"
     ? { kind: "reloaded", typed: page.typed, reason: report.start?.reason ?? null, startAt }
     : { kind: "lost", typed: page.typed, startAt };
-}
-
-/**
- * Whether a picture the client holds of this tab from before a sleep is still current: the
- * Home adopted the same document at the same revision, and the page shows the size it showed
- * at the freeze. A report without both sizes, or a picture of another size, is not current.
- */
-export function browserPictureIsCurrent(
-  reports: HostSnapshot["browserPools"],
-  computerId: string | null | undefined,
-  picture: {
-    readonly tabId: string;
-    readonly documentId: string;
-    readonly revision: number;
-    /** The picture's own size in CSS pixels, when the client knows it. */
-    readonly viewport?: BrowserPoolViewport;
-  },
-): boolean {
-  const report = computerId
-    ? reports?.find((candidate) => candidate.runnerId === computerId)
-    : undefined;
-  const same = (a: BrowserPoolViewport | undefined, b: BrowserPoolViewport | undefined) =>
-    a !== undefined && b !== undefined && a.width === b.width && a.height === b.height;
-  return (
-    report?.adopted?.some(
-      ({ surfaceId, documentId, revision, frozenViewport, adoptedViewport }) =>
-        surfaceId === picture.tabId &&
-        documentId === picture.documentId &&
-        revision === picture.revision &&
-        same(frozenViewport, adoptedViewport) &&
-        (picture.viewport === undefined || same(picture.viewport, adoptedViewport)),
-    ) ?? false
-  );
 }
 
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */

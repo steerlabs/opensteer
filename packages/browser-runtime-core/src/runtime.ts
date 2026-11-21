@@ -568,20 +568,18 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     // Every live page of every session is kept; nothing a person could lose is ended.
     const documents: BrowserPoolDocument[] = pages.flatMap(
-      ({ session, record, live, documentId }) => {
-        if (!live) return [];
-        const viewport = session.ledger.viewportOf(record.id);
-        return [
-          {
-            sessionId: session.claims.sessionId,
-            surfaceId: record.id,
-            documentId,
-            pageRevision: live.commitSequence,
-            typed: record.typed,
-            ...(viewport ? { viewport: { width: viewport.width, height: viewport.height } } : {}),
-          },
-        ];
-      },
+      ({ session, record, live, documentId }) =>
+        live
+          ? [
+              {
+                sessionId: session.claims.sessionId,
+                surfaceId: record.id,
+                documentId,
+                pageRevision: live.commitSequence,
+                typed: record.typed,
+              },
+            ]
+          : [],
     );
     for (const session of sessions) {
       session.poolDetached = true;
@@ -635,18 +633,7 @@ export class BrowserRuntime implements NativePresentationSource {
       lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
     }
     await this.thawPoolPages();
-    // What each adopted page shows now: a picture from the freeze is current only at this size.
-    const viewports = adopted.flatMap((sessionId) => {
-      const session = this.sessions.get(sessionId);
-      if (!session) return [];
-      return [...session.ledger.policyRecords()].flatMap((record) => {
-        const viewport = record.live ? session.ledger.viewportOf(record.id) : null;
-        return viewport
-          ? [{ surfaceId: record.id, width: viewport.width, height: viewport.height }]
-          : [];
-      });
-    });
-    return { adopted, lost, ...(viewports.length ? { viewports } : {}) };
+    return { adopted, lost };
   }
 
   private async endPooledSession(session: ActiveSession): Promise<void> {

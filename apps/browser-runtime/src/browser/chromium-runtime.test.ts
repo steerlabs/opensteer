@@ -149,13 +149,7 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
   const surfaceId = documents[0]!.surfaceId;
   expect(view.tabs.rows.get(surfaceId)?.documentId).toBe(documents[0]!.documentId);
   const completed = await control("complete", 2);
-  // The adopted page shows the size it froze at, so a picture from the freeze is current.
-  expect(documents[0]!.viewport).toEqual({ width: expect.any(Number), height: expect.any(Number) });
-  expect(completed.adoption?.outcome).toEqual({
-    adopted: [claims.sessionId],
-    lost: [],
-    viewports: [{ surfaceId, ...documents[0]!.viewport! }],
-  });
+  expect(completed.adoption?.outcome).toEqual({ adopted: [claims.sessionId], lost: [] });
   expect(await control("complete", 2)).toEqual(completed);
   const subscribe = JSON.stringify({ type: "stream.subscribe", surfaceId });
   await attached.handle(subscribe);
