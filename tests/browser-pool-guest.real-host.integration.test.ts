@@ -741,7 +741,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       installed: installed.phase,
     });
     expect(oldRelay).toEqual(["refused", "refused"]);
-    expect(oldKey).not.toBe("answered");
+    // Round E, E3: refused as unauthenticated, which the client reports as unavailable.
+    expect(oldKey).toBe("BrowserPoolAgentUnavailable");
     expect(afterReplace).toMatchObject({ phase: "stopped", savedState: null });
     expect(coldStart.applied).toBe(true);
     expect(installed).toMatchObject({ phase: "running", fence: coldStart.control!.fence });

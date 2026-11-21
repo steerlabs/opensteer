@@ -586,9 +586,54 @@ async function wakes(
  * start limit), PID 1 is not kept busy, the slot's status says its proxy is down, the guest has
  * no network meanwhile, and the slot's next start brings the proxy back.
  */
+/** A systemd time span ("2min", "1s", "500ms", "1.500000s") in microseconds. */
+function microseconds(span: unknown): number | null {
+  const match = /^([\d.]+)(us|ms|s|min)$/u.exec(String(span));
+  if (!match) return null;
+  return Number(match[1]) * { us: 1, ms: 1e3, s: 1e6, min: 6e7 }[match[2] as "us"];
+}
+
+/**
+ * Round E, E3: the proxy unit's bounds the results claim, asserted from `systemctl show`: the
+ * start-limit window and burst, one proxy's memory and CPU ceilings, its slice, and the
+ * slice's own memory ceiling and CPU ceiling (a quarter of the host's cores, at least one).
+ */
+async function proxyUnit(slot: Slot) {
+  const read = await helper({ cmd: "proxy-unit", index: slot.index });
+  const unit = read.unit as Record<string, string>;
+  const slice = read.slice as Record<string, string>;
+  const cores = read.cores as number;
+  const expected = {
+    start_limit_window_us: 120e6,
+    start_limit_burst: "5",
+    memory_max: String(128 * 1024 ** 2),
+    cpu_quota_us: 1e6,
+    slice: "opensteer-pool-egress.slice",
+    slice_memory_max: String(1536 * 1024 ** 2),
+    slice_cpu_quota_us: Math.max(1, cores / 4) * 1e6,
+  };
+  const found = {
+    start_limit_window_us: microseconds(unit.StartLimitIntervalUSec),
+    start_limit_burst: unit.StartLimitBurst,
+    memory_max: unit.MemoryMax,
+    cpu_quota_us: microseconds(unit.CPUQuotaPerSecUSec),
+    slice: unit.Slice,
+    slice_memory_max: slice.MemoryMax,
+    slice_cpu_quota_us: microseconds(slice.CPUQuotaPerSecUSec),
+  };
+  emit({
+    kind: "proxy-unit",
+    cores,
+    expected,
+    found,
+    ok: JSON.stringify(found) === JSON.stringify(expected),
+  });
+}
+
 async function crashLoop(slot: Slot) {
   await slot.ensureStopped();
   await slot.call("start");
+  await proxyUnit(slot);
   let { cdp } = await firstReply(slot, now());
   let workload = await setup(cdp);
   const https = async () => {
@@ -621,7 +666,8 @@ async function crashLoop(slot: Slot) {
     status_after_restart: statusAfter,
     ok:
       before === "opaque" &&
-      loop.service !== "active" &&
+      // Round E, E3: tripped means failed, not merely "not active".
+      loop.service === "failed" &&
       down === "down" &&
       whileDown !== "opaque" &&
       after === "opaque" &&

@@ -266,6 +266,32 @@ async function run(command) {
         memory: /^\d+$/u.test(memory) ? Number(memory) : null,
       };
     }
+    case "proxy-unit": {
+      // Round E, E3: the properties the results claim for a slot's proxy unit and its slice,
+      // read from systemd, and the host's cores the slice's CPU ceiling is chosen from.
+      const read = (name, properties) =>
+        Object.fromEntries(
+          spawnSync("systemctl", ["show", name, ...properties.map((p) => `--property=${p}`)], {
+            encoding: "utf8",
+          })
+            .stdout.trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+        );
+      return {
+        unit: read(`opensteer-pool-egress-${command.index}.service`, [
+          "StartLimitIntervalUSec",
+          "StartLimitBurst",
+          "MemoryMax",
+          "CPUQuotaPerSecUSec",
+          "TasksMax",
+          "Slice",
+        ]),
+        slice: read("opensteer-pool-egress.slice", ["MemoryMax", "CPUQuotaPerSecUSec"]),
+        cores: Number(spawnSync("nproc", [], { encoding: "utf8" }).stdout.trim()),
+      };
+    }
     case "proxy-crash-loop": {
       // Round D, D1: the slot's proxy is killed whenever it runs, for command.seconds; systemd's
       // start limit must stop restarting it. PID 1's CPU time across the loop is reported.
