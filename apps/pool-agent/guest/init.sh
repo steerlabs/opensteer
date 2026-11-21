@@ -77,8 +77,12 @@ else
     # The token comes from the agent over vsock, never from the guest or its command line.
     while [ ! -s /run/secrets/browser_token ]; do "$b" sleep 0.05; done
     export OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE=/run/secrets/browser_token
+    # A debug guest (the agent's serialConsole) keeps the runtime's own output on its profile
+    # disk, for whoever stopped it to read; nothing else ever writes there.
+    out=/dev/null
+    if param opensteer.debug >/dev/null; then out="$profile/runtime.log"; fi
     setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs \
-        node /usr/local/bin/opensteer-entrypoint.mjs node dist/main.js &
+        node /usr/local/bin/opensteer-entrypoint.mjs node dist/main.js >>"$out" 2>&1 &
 fi
 
 # PID 1 must stay alive and reap exited children.
