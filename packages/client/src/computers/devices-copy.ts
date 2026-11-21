@@ -67,12 +67,14 @@ export function deviceWords(
  * Why the Home's own device can't be removed, said of what it is: a Mac, a server, or a
  * Cloud Computer (a work Home is one too). Never "this Mac" for a Home that isn't one.
  */
-export function homeKeptWords(kind: "this-mac" | "mac" | "server" | "cloud" | "work"): string {
-  return deviceWords(
-    kind === "cloud" || kind === "work"
-      ? "home.kept.cloud"
-      : kind === "server"
-        ? "home.kept.server"
-        : "home.kept.mac",
-  );
+export function homeKeptWords(home: "this-mac" | "mac" | "server" | "cloud" | "work"): string {
+  return deviceWords(homeKept[home]);
 }
+
+const homeKept = {
+  "this-mac": "home.kept.mac",
+  mac: "home.kept.mac",
+  server: "home.kept.server",
+  cloud: "home.kept.cloud",
+  work: "home.kept.cloud",
+} as const satisfies Record<string, DevicesCopyId>;

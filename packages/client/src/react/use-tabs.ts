@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
 import type { HostClient } from "../host/client.js";
-import { threadAgentPlace, type ThreadAgentPlace } from "../host/browser-agent-follow.js";
+import {
+  browserThreadAgentTab,
+  threadAgentPlace,
+  type BrowserTabDestination,
+  type ThreadAgentPlace,
+} from "../host/browser-agent-follow.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import type { TabStrip } from "../host/tab-strip.js";
 
@@ -64,6 +69,28 @@ export function useThreadAgentPlace(
       next.title !== last.title
     )
       held.current = next;
+    return held.current;
+  }, [held, tabs, threadId]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/**
+ * The page tab a task holds that changed last, from the tab list alone: what a Request that
+ * task asked is about. Null for no task, or one that holds no page.
+ */
+export function useThreadPageTab(
+  hostClient: HostClient,
+  threadId: string | null,
+): BrowserTabDestination | null {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback(
+    (listener: () => void) => tabs?.subscribe(listener) ?? (() => {}),
+    [tabs],
+  );
+  const held = useMemo(() => ({ current: null as BrowserTabDestination | null }), [threadId, tabs]);
+  const get = useCallback(() => {
+    const next = threadId === null || !tabs ? null : browserThreadAgentTab({ tabs }, threadId);
+    if (next?.tabId !== held.current?.tabId) held.current = next;
     return held.current;
   }, [held, tabs, threadId]);
   return useSyncExternalStore(subscribe, get, get);

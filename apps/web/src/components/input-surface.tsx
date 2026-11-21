@@ -5,7 +5,7 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
-import { useCompactionOffer, useRequestAsker, useThreadAgentTab } from "@opensteer/client/react";
+import { useCompactionOffer, useRequestAsker, useThreadPageTab } from "@opensteer/client/react";
 import { workWords } from "@opensteer/client/host";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
@@ -498,7 +498,7 @@ function aboutAPage(request: Request): boolean {
 function RequestPageLink({ request }: { readonly request: Request }) {
   const { hostClient } = useShell();
   const workspace = useOptionalWorkspace();
-  const page = useThreadAgentTab(
+  const page = useThreadPageTab(
     hostClient,
     aboutAPage(request) ? request.originatingThreadId : null,
   );
