@@ -26,10 +26,12 @@ import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync
 
 import {
   assertBuildSpace,
+  builderPlatforms,
   homeImageBuilds,
   platformSummary,
   quote,
   redact,
+  verifierTarget,
 } from "./verify-home-deployment-support.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -45,9 +47,17 @@ const registryName = `${project}-registry`;
 const registryImage = "registry:3";
 let registryId;
 const registryReferences = [];
-const dockerHost = "unix:///Users/timjang/.colima/default/docker.sock";
+const builder = "opensteer-home-verifier";
+const target = verifierTarget({
+  env: process.env,
+  home: homedir(),
+  os: process.platform,
+  arch: process.arch,
+  builder,
+});
+const dockerHost = target.dockerHost;
 const env = { ...process.env, DOCKER_HOST: dockerHost };
-const colimaArgs = ["ssh", "--", "sudo", "-n", "bash", "-s"];
+const [rootShell, rootShellArgs] = target.rootShell;
 const vmDirectory = `/tmp/${project}`;
 const recipe = resolve(root, "deploy/home");
 const components = [
@@ -60,12 +70,11 @@ const components = [
 ];
 const version = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
 const tag = "home-verifier";
-const builder = "opensteer-home-verifier";
-const builderDirectory = resolve(homedir(), ".colima", builder);
+const builderDirectory = target.builderDirectory;
 const builderEnv = { ...env, BUILDX_CONFIG: resolve(builderDirectory, "buildx") };
 let builderUsed = false;
 let proofPassed = false;
-let amd64Built;
+let buildOnlyPassed;
 const images = Object.fromEntries(
   components.map((name) => [name, `local/opensteer-home-${name}:${tag}`]),
 );
@@ -132,19 +141,19 @@ function docker(args, options) {
 }
 
 function vm(command, { managed = false, allowFailure = false, timeout = 600_000 } = {}) {
-  const child = result("colima", colimaArgs, {
+  const child = result(rootShell, rootShellArgs, {
     input: vmScript(command, managed),
     timeout,
   });
-  return allowFailure ? child : checked(child, "Colima command failed");
+  return allowFailure ? child : checked(child, `${target.shellLabel} command failed`);
 }
 
-// Keep fixtures hosted by the verifier responsive while commands run in Colima.
+// Keep fixtures hosted by the verifier responsive while commands run in the root shell.
 function vmAsync(command, { managed = false, timeout = 600_000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile(
-      "colima",
-      colimaArgs,
+      rootShell,
+      rootShellArgs,
       { cwd: root, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout },
       (error, stdout, stderr) => {
         if (error && typeof error.code !== "number") reject(error);
@@ -270,12 +279,12 @@ function expectStatus(result, status) {
   return result;
 }
 
-async function check(name, run, available = true) {
+async function check(name, run, available = true, blockedReason) {
   if (interrupted && !cleaningUp)
     throw new Error(`The verifier was interrupted by ${interrupted}.`);
   if (!available) {
     steps.blocked++;
-    console.error(`BLOCKED ${name}`);
+    console.error(`BLOCKED ${name}${blockedReason ? `: ${blockedReason}` : ""}`);
     return;
   }
   try {
@@ -574,7 +583,7 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
       "-subj",
       "/CN=8.8.8.8",
       "-addext",
-      "subjectAltName=IP:8.8.8.8,DNS:host.lima.internal",
+      `subjectAltName=IP:8.8.8.8,DNS:${target.fixtureHost}`,
     ]),
     "Upstream fixture TLS generation failed",
   );
@@ -651,11 +660,11 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
   });
   let process;
   await account.listen({ host: "0.0.0.0", port: 0 });
-  const accountOrigin = `https://host.lima.internal:${account.server.address().port}`;
+  const accountOrigin = `https://${target.fixtureHost}:${account.server.address().port}`;
   const maintain = async () =>
     checked(
       await vmAsync(`CURL_CA_BUNDLE=${quote(cert)} operator maintain`, { timeout: 300_000 }),
-      "Colima maintenance command failed",
+      `${target.shellLabel} maintenance command failed`,
     );
   try {
     vm(`nsenter -t ${hostPid} -n ip address add ${address}/32 dev lo
@@ -1022,9 +1031,9 @@ async function managedProof(directory, bootPackage) {
       "-out",
       certificate,
       "-subj",
-      "/CN=host.lima.internal",
+      `/CN=${target.fixtureHost}`,
       "-addext",
-      "subjectAltName=DNS:host.lima.internal",
+      `subjectAltName=DNS:${target.fixtureHost}`,
     ]),
     "Account fixture TLS generation failed",
   );
@@ -1128,7 +1137,7 @@ async function managedProof(directory, bootPackage) {
     stripeWebhookSecret: "fixture",
   });
   await app.listen({ host: "0.0.0.0", port: 0 });
-  const accountOrigin = `https://host.lima.internal:${app.server.address().port}`;
+  const accountOrigin = `https://${target.fixtureHost}:${app.server.address().port}`;
   const spec = {
     cloudComputerId,
     accountOrigin,
@@ -1348,15 +1357,15 @@ async function managedProof(directory, bootPackage) {
 
 function prepareBuilder() {
   assertBuildSpace(
-    "macOS",
+    target.checkoutLabel,
     checked(
-      result("df", ["-Pk", root, resolve(homedir(), ".colima")]),
+      result("df", ["-Pk", root, target.checkoutSpacePath]),
       "Cannot measure host free space",
     ),
   );
   const dockerRoot = docker(["info", "--format", "{{.DockerRootDir}}"]);
   assertBuildSpace(
-    "Colima",
+    target.shellLabel,
     vm(`paths=(${quote(dockerRoot)})
 [[ ! -d /var/lib/containerd ]] || paths+=(/var/lib/containerd)
 df -Pk "\${paths[@]}"`),
@@ -1455,24 +1464,29 @@ try {
   if (!contract) throw new Error("Home Account contract failed");
   resourcesAllowed = true;
   const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
-  const builds = homeImageBuilds(builder);
-  const buildHome = ({ platform, args }) =>
-    check(`build all six Home images for ${platform}`, () => {
-      builderUsed = true;
-      const build = result("docker", args, {
-        env: {
-          ...builderEnv,
-          REGISTRY: "local",
-          TAG: tag,
-          RELEASE_VERSION: version,
-          SOURCE_REVISION: revision,
-          CACHE_BACKEND: "none",
-          CACHE_EXPORT: "false",
-        },
-        stdio: ["ignore", "inherit", "inherit"],
-      });
-      checked(build, "Home build failed");
-    });
+  const builds = homeImageBuilds(builder, target.proofPlatform);
+  const buildHome = ({ platform, args }, blockedReason) =>
+    check(
+      `build all six Home images for ${platform}`,
+      () => {
+        builderUsed = true;
+        const build = result("docker", args, {
+          env: {
+            ...builderEnv,
+            REGISTRY: "local",
+            TAG: tag,
+            RELEASE_VERSION: version,
+            SOURCE_REVISION: revision,
+            CACHE_BACKEND: "none",
+            CACHE_EXPORT: "false",
+          },
+          stdio: ["ignore", "inherit", "inherit"],
+        });
+        checked(build, "Home build failed");
+      },
+      !blockedReason,
+      blockedReason,
+    );
   if (!(await buildHome(builds.proof)))
     throw new Error(`The deployment proof needs the source-built ${builds.proof.platform} images.`);
   const prepared = await check("prepare the local Home and stage the standalone installer", () => {
@@ -2234,9 +2248,17 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     },
     Boolean(setupToken && bucketReady),
   );
-  // The ARM64 proof above is complete; AMD64 is built afterwards so it cannot block it.
+  // The deployment proof above is complete; the other platform is built afterwards so it
+  // cannot block it.
   proofPassed = steps.fail === 0 && steps.blocked === 0;
-  amd64Built = Boolean(await buildHome(builds.buildOnly));
+  let buildOnlyBlocked;
+  if (target.requireBuilderPlatform) {
+    const inspected = docker(["buildx", "inspect", "--bootstrap", builder], { env: builderEnv });
+    if (!builderPlatforms(inspected).includes(builds.buildOnly.platform))
+      buildOnlyBlocked = `the ${builder} builder cannot run ${builds.buildOnly.platform} (no emulation is installed on this machine)`;
+  }
+  const buildOnly = await buildHome(builds.buildOnly, buildOnlyBlocked);
+  buildOnlyPassed = buildOnlyBlocked ? undefined : Boolean(buildOnly);
 } finally {
   cleaningUp = true;
   try {
@@ -2336,6 +2358,13 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     rmSync(lock, { recursive: true, force: true });
   }
   console.log(JSON.stringify(steps));
-  console.log(platformSummary({ proofPassed, buildOnly: amd64Built }));
+  console.log(
+    platformSummary({
+      proofPassed,
+      buildOnly: buildOnlyPassed,
+      proofPlatform: target.proofPlatform,
+      buildOnlyPlatform: homeImageBuilds(builder, target.proofPlatform).buildOnly.platform,
+    }),
+  );
   if (interrupted || steps.fail || steps.blocked) process.exitCode = 1;
 }

@@ -8,11 +8,13 @@ import { parseHostConfig } from "../packages/config/src/config.ts";
 import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs";
 import {
   assertBuildSpace,
+  builderPlatforms,
   homeImageBuilds,
   platformSummary,
   quote,
   redact,
   requiredFreeKiB,
+  verifierTarget,
 } from "./verify-home-deployment-support.mjs";
 
 await test("loads ARM64 for the deployment proof first and builds AMD64 only afterwards", () => {
@@ -53,6 +55,117 @@ await test("loads ARM64 for the deployment proof first and builds AMD64 only aft
     platformSummary({ proofPassed: true, buildOnly: true }),
     "The linux/arm64 deployment proof passed; the linux/amd64 Home image build passed.",
   );
+});
+
+await test("the Colima target is the default and keeps its socket, root shell and ARM64 proof", () => {
+  const target = verifierTarget({
+    env: {},
+    home: "/Users/proof",
+    os: "darwin",
+    arch: "arm64",
+    builder: "test-builder",
+  });
+  assert.deepEqual(target, {
+    name: "colima",
+    dockerHost: "unix:///Users/timjang/.colima/default/docker.sock",
+    rootShell: ["colima", ["ssh", "--", "sudo", "-n", "bash", "-s"]],
+    shellLabel: "Colima",
+    checkoutLabel: "macOS",
+    builderDirectory: "/Users/proof/.colima/test-builder",
+    checkoutSpacePath: "/Users/proof/.colima",
+    fixtureHost: "host.lima.internal",
+    proofPlatform: "linux/arm64",
+    requireBuilderPlatform: false,
+  });
+  assert.deepEqual(
+    verifierTarget({
+      env: { OPENSTEER_HOME_VERIFIER_TARGET: "colima" },
+      home: "/Users/proof",
+      os: "darwin",
+      arch: "arm64",
+      builder: "test-builder",
+    }),
+    target,
+  );
+});
+
+await test("the local target uses this Linux machine's Docker, sudo and native platform", () => {
+  const local = (arch, os = "linux") =>
+    verifierTarget({
+      env: { OPENSTEER_HOME_VERIFIER_TARGET: "local" },
+      home: "/home/proof",
+      os,
+      arch,
+      builder: "test-builder",
+    });
+  assert.deepEqual(local("x64"), {
+    name: "local",
+    dockerHost: "unix:///var/run/docker.sock",
+    rootShell: ["sudo", ["-n", "bash", "-s"]],
+    shellLabel: "Local root shell",
+    checkoutLabel: "Linux",
+    builderDirectory: "/home/proof/.cache/test-builder",
+    checkoutSpacePath: "/home/proof/.cache/test-builder",
+    fixtureHost: "localhost",
+    proofPlatform: "linux/amd64",
+    requireBuilderPlatform: true,
+  });
+  assert.equal(local("arm64").proofPlatform, "linux/arm64");
+  assert.throws(() => local("x64", "darwin"), /runs on the Linux machine it verifies/u);
+  assert.throws(() => local("ia32"), /no image platform for ia32/u);
+  assert.throws(
+    () =>
+      verifierTarget({
+        env: { OPENSTEER_HOME_VERIFIER_TARGET: "remote" },
+        home: "/home/proof",
+        os: "linux",
+        arch: "x64",
+        builder: "test-builder",
+      }),
+    /must be colima or local, not remote/u,
+  );
+});
+
+await test("an AMD64 proof loads AMD64 and builds ARM64 only afterwards", () => {
+  const builds = homeImageBuilds("test-builder", "linux/amd64");
+  assert.equal(builds.proof.platform, "linux/amd64");
+  assert.deepEqual(builds.proof.args.slice(-4), [
+    "--set",
+    "home-*.platform=linux/amd64",
+    "--load",
+    "home",
+  ]);
+  assert.equal(builds.buildOnly.platform, "linux/arm64");
+  assert.ok(builds.buildOnly.args.includes("home-*.platform=linux/arm64"));
+  assert.ok(builds.buildOnly.args.includes("home-*.output=type=cacheonly"));
+  assert.equal(
+    platformSummary({
+      proofPassed: true,
+      buildOnly: undefined,
+      proofPlatform: "linux/amd64",
+      buildOnlyPlatform: "linux/arm64",
+    }),
+    "The linux/amd64 deployment proof passed; the linux/arm64 Home image build did not run.",
+  );
+});
+
+await test("builder platforms are read from buildx inspect, including default markers", () => {
+  const inspected = [
+    "Name:          opensteer-home-verifier",
+    "Driver:        docker-container",
+    "Nodes:",
+    "Name:                  opensteer-home-verifier0",
+    "Status:                running",
+    "Platforms:             linux/amd64*, linux/amd64/v2, linux/amd64/v3, linux/386",
+  ].join("\n");
+  assert.deepEqual(builderPlatforms(inspected), [
+    "linux/amd64",
+    "linux/amd64/v2",
+    "linux/amd64/v3",
+    "linux/386",
+  ]);
+  assert.ok(!builderPlatforms(inspected).includes("linux/arm64"));
+  assert.deepEqual(builderPlatforms("Name: stopped"), []);
 });
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {

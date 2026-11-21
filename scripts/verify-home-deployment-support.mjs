@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 export function quote(value) {
   return "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
 }
@@ -10,21 +12,79 @@ export function redact(value) {
 
 export const requiredFreeKiB = 50 * 1024 * 1024;
 
-// The Colima deployment proof runs on loaded ARM64 images. AMD64 is only built, into the
-// BuildKit cache, after that proof, so a builder without AMD64 support cannot block it.
-export function homeImageBuilds(builder) {
+const otherPlatform = { "linux/arm64": "linux/amd64", "linux/amd64": "linux/arm64" };
+
+/**
+ * Where the verifier finds Docker and a root shell, chosen by OPENSTEER_HOME_VERIFIER_TARGET.
+ * `colima` (the default) drives this Mac's Colima VM. `local` runs on the Linux machine it
+ * verifies: the local Docker socket, `sudo -n bash -s` for root, and its own Docker root.
+ */
+export function verifierTarget({ env, home, os, arch, builder }) {
+  const name = env.OPENSTEER_HOME_VERIFIER_TARGET ?? "colima";
+  if (name === "colima") {
+    return {
+      name,
+      dockerHost: "unix:///Users/timjang/.colima/default/docker.sock",
+      rootShell: ["colima", ["ssh", "--", "sudo", "-n", "bash", "-s"]],
+      shellLabel: "Colima",
+      checkoutLabel: "macOS",
+      builderDirectory: resolve(home, ".colima", builder),
+      checkoutSpacePath: resolve(home, ".colima"),
+      // The VM reaches fixtures served by this process on the Mac under this name.
+      fixtureHost: "host.lima.internal",
+      proofPlatform: "linux/arm64",
+      requireBuilderPlatform: false,
+    };
+  }
+  if (name !== "local")
+    throw new Error(`OPENSTEER_HOME_VERIFIER_TARGET must be colima or local, not ${name}.`);
+  if (os !== "linux")
+    throw new Error("OPENSTEER_HOME_VERIFIER_TARGET=local runs on the Linux machine it verifies.");
+  const proofPlatform = { x64: "linux/amd64", arm64: "linux/arm64" }[arch];
+  if (!proofPlatform) throw new Error(`The local Home proof has no image platform for ${arch}.`);
+  const builderDirectory = resolve(home, ".cache", builder);
+  return {
+    name,
+    dockerHost: "unix:///var/run/docker.sock",
+    rootShell: ["sudo", ["-n", "bash", "-s"]],
+    shellLabel: "Local root shell",
+    checkoutLabel: "Linux",
+    builderDirectory,
+    checkoutSpacePath: builderDirectory,
+    fixtureHost: "localhost",
+    proofPlatform,
+    // A native builder without emulation cannot build the other platform: that check is blocked.
+    requireBuilderPlatform: true,
+  };
+}
+
+/** The platforms a `docker buildx inspect` report says the builder can build. */
+export function builderPlatforms(inspectOutput) {
+  const line = inspectOutput.split("\n").find((entry) => /^\s*Platforms:/u.test(entry));
+  if (!line) return [];
+  return line
+    .replace(/^\s*Platforms:/u, "")
+    .split(",")
+    .map((platform) => platform.trim().replace(/\*$/u, ""))
+    .filter(Boolean);
+}
+
+// The deployment proof runs on loaded images of its platform (ARM64 on Colima). The other
+// platform is only built, into the BuildKit cache, after that proof, so it cannot block it.
+export function homeImageBuilds(builder, proofPlatform = "linux/arm64") {
   const bake = ["buildx", "bake", "--builder", builder, "-f", "deploy/container/docker-bake.hcl"];
+  const buildOnlyPlatform = otherPlatform[proofPlatform];
   return {
     proof: {
-      platform: "linux/arm64",
-      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+      platform: proofPlatform,
+      args: [...bake, "--set", `home-*.platform=${proofPlatform}`, "--load", "home"],
     },
     buildOnly: {
-      platform: "linux/amd64",
+      platform: buildOnlyPlatform,
       args: [
         ...bake,
         "--set",
-        "home-*.platform=linux/amd64",
+        `home-*.platform=${buildOnlyPlatform}`,
         "--set",
         "home-*.output=type=cacheonly",
         "home",
@@ -33,17 +93,22 @@ export function homeImageBuilds(builder) {
   };
 }
 
-/** One line that separates the ARM64 deployment proof from the AMD64 build-only check. */
-export function platformSummary({ proofPassed, buildOnly }) {
+/** One line that separates the deployment proof from the other platform's build-only check. */
+export function platformSummary({
+  proofPassed,
+  buildOnly,
+  proofPlatform = "linux/arm64",
+  buildOnlyPlatform = "linux/amd64",
+}) {
   const proof = proofPassed
-    ? "The linux/arm64 deployment proof passed"
-    : "The linux/arm64 deployment proof did not pass";
+    ? `The ${proofPlatform} deployment proof passed`
+    : `The ${proofPlatform} deployment proof did not pass`;
   const build =
     buildOnly === true
-      ? "the linux/amd64 Home image build passed."
+      ? `the ${buildOnlyPlatform} Home image build passed.`
       : buildOnly === false
-        ? "the linux/amd64 Home image build failed."
-        : "the linux/amd64 Home image build did not run.";
+        ? `the ${buildOnlyPlatform} Home image build failed.`
+        : `the ${buildOnlyPlatform} Home image build did not run.`;
   return `${proof}; ${build}`;
 }
 
