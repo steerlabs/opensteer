@@ -65,6 +65,22 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("emits the released ordinary close frames byte for byte", async () => {
+    const controller = createController();
+    await controller.start();
+    const before = sink.messages.length;
+    await controller.close();
+    expect(
+      sink.messages
+        .slice(before)
+        .filter(({ type }) => type === "browser.status")
+        .map((message) => JSON.stringify(message)),
+    ).toEqual([
+      '{"state":"closing","type":"browser.status"}',
+      '{"state":"closed","type":"browser.status"}',
+    ]);
+  });
+
   it("acknowledges cancellation only for the matching queued script command", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();
