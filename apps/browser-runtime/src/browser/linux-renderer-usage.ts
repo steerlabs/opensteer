@@ -46,10 +46,16 @@ export function parseProcStatPpid(statContent: string): number | null {
   return Number.isSafeInteger(ppid) && ppid >= 0 ? ppid : null;
 }
 
-/** Identifies Chromium renderer processes from NUL-delimited Linux `/proc/<pid>/cmdline`. */
+/**
+ * Identifies Chromium renderer processes from Linux `/proc/<pid>/cmdline`.
+ * Direct launches delimit argv with NUL bytes, whereas Linux zygote-forked
+ * sandboxed renderers rewrite argv[0] with spaces via SetProcessTitleFromCommandLine.
+ */
 export function isChromiumRendererCmdline(cmdlineContent: string): boolean {
   if (!cmdlineContent) return false;
-  return cmdlineContent.split("\0").includes("--type=renderer");
+  return cmdlineContent
+    .split("\0")
+    .some((part) => part === "--type=renderer" || /(?:^|\s)--type=renderer(?:\s|$)/u.test(part));
 }
 
 /** Parses resident memory (`VmRSS`) in bytes from Linux `/proc/<pid>/status`. */

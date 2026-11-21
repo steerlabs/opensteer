@@ -30,10 +30,17 @@ describe("linux-renderer-usage", () => {
     expect(parseProcStatPpid("303 (chrome) S")).toBeNull();
   });
 
-  it("matches Chromium renderer processes from NUL-delimited cmdline only", () => {
+  it("matches Chromium renderer processes from NUL-delimited and zygote space-delimited cmdlines", () => {
     expect(isChromiumRendererCmdline("/opt/chrome\0--type=renderer\0--lang=en-US\0")).toBe(true);
+    expect(
+      isChromiumRendererCmdline(
+        "/ms-playwright/chromium-1234/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=20 --noerrdialogs",
+      ),
+    ).toBe(true);
     expect(isChromiumRendererCmdline("/opt/chrome\0--type=gpu-process\0")).toBe(false);
+    expect(isChromiumRendererCmdline("/opt/chrome --type=zygote --no-zygote-sandbox")).toBe(false);
     expect(isChromiumRendererCmdline("/opt/chrome\0--type=renderer-other\0")).toBe(false);
+    expect(isChromiumRendererCmdline("/opt/chrome --type=renderer-other --lang=en")).toBe(false);
     expect(isChromiumRendererCmdline("")).toBe(false);
   });
 
