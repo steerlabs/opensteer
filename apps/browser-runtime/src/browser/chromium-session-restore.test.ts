@@ -630,3 +630,96 @@ it("handles a fresh native launch with no restored tabs cleanly under the Playwr
     "Fresh Home Tab",
   );
 });
+
+it("discards all parked saved tabs on reconcile so Chromium never runs unowned background pages (R1)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-r1-parked-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const surfaceIds = Array.from({ length: 6 }, (_, i) =>
+    BrowserSurfaceIdSchema.parse(`srf_00000000-0000-4000-8000-00000000r10${i}`),
+  );
+  const urls = surfaceIds.map((_, i) => `${server.originForSite(i + 1)}/article?tab=p${i}`);
+
+  const browser1 = await launcher.launch(request);
+  cleanup.push(() => browser1.close());
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "lineage-r1" });
+  await ledger1.start();
+  for (let i = 0; i < surfaceIds.length; i++) {
+    await ledger1.openSurface({ surfaceId: surfaceIds[i]! });
+    const live = ledger1.binding(surfaceIds[i]!)!;
+    await live.cdp.send("Page.navigate", { url: urls[i]! });
+    await waitLoaded(live.cdp, "/article");
+    if (i === 4) {
+      await evalValue(live.cdp, "window.scrollTo(0, 1200); window.scrollY;");
+    }
+  }
+  await browser1.context.sessionRestore!.flush!();
+  await vi.waitFor(
+    async () => {
+      const sessionsDir = path.join(directory, "Default", "Sessions");
+      const files = (await readdir(sessionsDir).catch(() => [])).filter((n) =>
+        n.startsWith("Session_"),
+      );
+      expect(files.length).toBeGreaterThan(0);
+      const { readFile } = await import("node:fs/promises");
+      const all = (
+        await Promise.all(files.map((n) => readFile(path.join(sessionsDir, n), "latin1")))
+      ).join("\n");
+      for (let i = 0; i < surfaceIds.length; i++) {
+        expect(all).toContain(`tab=p${i}`);
+      }
+    },
+    { timeout: 10_000, interval: 100 },
+  );
+  await ledger1.close();
+  await browser1.close();
+
+  const browser2 = await launcher.launch(request);
+  cleanup.push(() => browser2.close());
+
+  // Claim ONLY tab 0, then reconcile all 6 saved tabs.
+  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "lineage-r1" });
+  await ledger2.start();
+  cleanup.push(() => ledger2.close());
+  await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
+  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds), "lineage-r1");
+
+  const lifecycle2 = (
+    browser2 as unknown as {
+      contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    }
+  ).contextHandle.lifecycle;
+  const inv = await lifecycle2.inventory();
+  const profileTabs = inv.filter(
+    (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+  );
+  expect(profileTabs).toHaveLength(6);
+  const liveProfileTabs = profileTabs.filter((t) => !t.discarded && t.targetId !== null);
+  expect(liveProfileTabs).toHaveLength(1);
+  expect(liveProfileTabs[0]!.url).toContain("tab=p0");
+  const parkedTabs = profileTabs.filter((t) => !t.url.includes("tab=p0"));
+  expect(
+    parkedTabs.map((t) => ({ discarded: t.discarded, status: t.status })),
+  ).toEqual(parkedTabs.map(() => ({ discarded: true, status: "unloaded" })));
+  // Only the claimed tab has a live Playwright Page in the context (zero parked live pages).
+  expect(browser2.context.pages()).toHaveLength(1);
+  expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");
+
+  // Claim parked tab 4 later -> wakes with scroll & form state intact!
+  await ledger2.openSurface({ surfaceId: surfaceIds[4]! });
+  const live4 = ledger2.binding(surfaceIds[4]!)!;
+  await waitLoaded(live4.cdp, "/article");
+  await vi.waitFor(
+    async () => {
+      expect(await evalValue<number>(live4.cdp, "window.scrollY")).toBe(1200);
+    },
+    { timeout: 5_000, interval: 100 },
+  );
+}, 60_000);
