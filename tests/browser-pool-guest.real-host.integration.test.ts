@@ -33,7 +33,11 @@ import { createId } from "../packages/core/src/index.js";
 import { callBrowserPoolAgentAdmin } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { BrowserModuleRelay } from "../packages/runner-client/src/browser-relay.js";
-import { openPoolRelay, PoolRelayRefused } from "../packages/shared/src/poolRelay.js";
+import {
+  openPoolRelay,
+  PoolRelayRefused,
+  requestOverTunnel,
+} from "../packages/shared/src/poolRelay.js";
 import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import {
   managedBrowserPool,
@@ -384,6 +388,16 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
           timeout: 60_000,
         },
       );
+      // Decision 8: Chromium's sandbox, read from its running renderers in the guest.
+      const opened = await parts.transport.open();
+      const sandbox = await requestOverTunnel(opened.socket, {
+        method: "GET",
+        path: "/v1/pool/sandbox",
+        headers: { "x-opensteer-browser-bridge-token": opened.bridgeToken },
+        maximumBytes: 64 * 1024,
+      });
+      emit({ kind: "proof-sandbox", status: sandbox.status, report: JSON.parse(sandbox.text) });
+      expect(JSON.parse(sandbox.text)).toMatchObject({ sandboxed: true });
       emit({ kind: "proof-pages", person: recordOf(person.sessionId, person.tabId).slice(0, 300) });
       const before = {
         person: documentOf(person.sessionId, person.tabId),

@@ -36,6 +36,7 @@ import type { BrowserControllerSink } from "./browser/controller.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
 import type { BrowserPoolControl } from "./browser-pool.js";
+import { readBrowserSandbox } from "./browser-pool-sandbox.js";
 import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
 
 const standardCdpRequest = z.strictObject({
@@ -215,6 +216,9 @@ export class BrowserRuntimeServer {
     };
     if (request.method === "GET" && request.url === "/v1/pool/state")
       return reply(200, { state: this.runtime.poolState() });
+    // Decision 8: the sandbox as the running browser has it, read from its renderers.
+    if (request.method === "GET" && request.url === "/v1/pool/sandbox")
+      return reply(200, await readBrowserSandbox());
     if (request.method !== "POST" || request.url !== "/v1/pool/control") return reply(404, {});
     const chunks: Buffer[] = [];
     let size = 0;
