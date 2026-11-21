@@ -137,11 +137,13 @@ describe("Opensteer Cloud Computer on the phone", () => {
       "Works while your Mac sleeps",
       "A browser with a steady address",
       "Encrypted backups",
-      "Your Mac stays connected",
+      "Your Mac can join it",
     ]);
     expect(row("price", "price")).toMatchObject({ label: "$20.00 a month" });
-    expect(section("changes")?.rows[0]?.label).toContain(
-      "Your Cloud Computer starts as a new Opensteer.",
+    // Before buying: a new Home, agents connect again, sites are signed in to again, the
+    // Mac can be added. Nothing moves across.
+    expect(section("changes")?.rows[0]?.label).toBe(
+      "It starts as a new Home. Connected agents connect again to its new address. You sign in to your sites again in its browser. Your Mac can be added to it as a device.",
     );
     expect(row("website-checkout", "address")).toMatchObject({
       kind: "status",

@@ -107,7 +107,9 @@ describe("Opensteer Cloud Computer on desktop", () => {
     expect(page.querySelector(".cloud-computer__price .card__row-title")?.textContent).toBe(
       "$20.00 a month",
     );
-    expect(page.textContent).toContain("Your Cloud Computer starts as a new Opensteer.");
+    expect(page.textContent).toContain(
+      "It starts as a new Home. Connected agents connect again to its new address. You sign in to your sites again in its browser. Your Mac can be added to it as a device.",
+    );
   });
 
   it("opens checkout on the Opensteer website and watches for the computer it creates", async () => {
