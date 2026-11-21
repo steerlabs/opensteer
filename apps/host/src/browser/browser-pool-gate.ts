@@ -16,6 +16,7 @@ type GatePhase =
   | "parked"
   | "waking"
   | "reconnecting"
+  | "restarting"
   | "released";
 
 export interface BrowserPoolReservation {
@@ -24,7 +25,9 @@ export interface BrowserPoolReservation {
 
 /**
  * One instance per pooled runtime, shared by every send on it. A send before the park intent
- * vetoes the park; a send after it waits. No phase is terminal: the driver ends every one.
+ * vetoes the park; a send after it waits. Two holds nothing else undoes: `released` is for good,
+ * and a restart holds admission until it lets go; meanwhile a park or reconnect that finishes
+ * only records where the browser is.
  */
 export class BrowserPoolGate {
   #driver: BrowserPoolGateDriver | undefined;
@@ -33,6 +36,9 @@ export class BrowserPoolGate {
   #active = 0;
   #demanded = false;
   #waking: Promise<void> | undefined;
+  /** Where the browser is, as the driver last said, whatever a hold shows. */
+  #where: "open" | "parked" = "open";
+  #restarts = 0;
 
   attach(driver: BrowserPoolGateDriver): void {
     this.#driver = driver;
@@ -67,18 +73,31 @@ export class BrowserPoolGate {
     if (this.#phase === "open") this.#setPhase("reconnecting");
   }
 
-  /** A restart or another state change the person asked for: sends wait for it to finish. */
-  closing(): void {
-    if (this.#phase !== "released") this.#setPhase("waking");
+  /**
+   * The owner's restart was accepted: admission is held until the returned release, which the
+   * restart calls once its fresh guest is installed. Nothing in between admits, wakes or parks.
+   */
+  restarting(): () => void {
+    if (this.#phase === "released") return () => {};
+    this.#restarts++;
+    this.#setPhase("restarting");
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.#restarts === 0 && this.#phase === "restarting") this.#setPhase(this.#where);
+    };
   }
 
-  /** The device was removed: nothing is admitted or woken again. */
+  /** The device was removed: nothing is admitted or woken again, whatever finishes later. */
   released(): void {
     this.#setPhase("released");
   }
 
-  /** The driver reports where the browser is now. */
+  /** The driver reports where the browser is now; under a hold that is only recorded. */
   settle(phase: "open" | "parked"): void {
+    this.#where = phase;
+    if (this.#phase === "released" || this.#phase === "restarting") return;
     this.#setPhase(phase);
   }
 
@@ -143,13 +162,13 @@ export class BrowserPoolGate {
       // Until the intent has committed, a send vetoes; the driver asks after the commit.
       outcome = await this.#driver.park(() => this.#demanded);
     } finally {
-      this.#setPhase(outcome === "parked" ? "parked" : "open");
+      this.settle(outcome === "parked" ? "parked" : "open");
     }
     return outcome;
   }
 
   #wake(): void {
-    if (this.#waking || !this.#driver) return;
+    if (this.#waking || !this.#driver || this.#phase !== "parked") return;
     this.#setPhase("waking");
     this.#waking = this.#driver.wake().finally(() => {
       this.#waking = undefined;
@@ -158,6 +177,8 @@ export class BrowserPoolGate {
   }
 
   #setPhase(phase: GatePhase): void {
+    // Released is for good: nothing moves it again.
+    if (this.#phase === "released") return;
     this.#phase = phase;
     const previous = this.#changed;
     this.#changed = new AbortController();

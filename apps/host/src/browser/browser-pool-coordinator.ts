@@ -700,12 +700,13 @@ export class BrowserPoolCoordinator {
 
   /** The owner's Restart browser: live and saved state are discarded and a fresh guest starts. */
   restart(): Promise<void> {
-    this.gate.closing();
+    // Admission is held from here until the fresh guest is installed (R1).
+    const done = this.gate.restarting();
     return this.#serial(async () => {
       const slot = await this.#read();
       if (!slot) throw new BrowserPoolAdmissionClosed();
       await this.#retry(() => this.#discard(slot, "person"));
-    });
+    }).finally(done);
   }
 
   /** The phase a client shows: a fresh start or a restart in progress, or a failed start. */

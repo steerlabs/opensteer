@@ -120,3 +120,60 @@ it("answers a wake that runs out of time with a refusal before any effect", asyn
   expect(refused).toBeInstanceOf(OpensteerError);
   g.wake.resolve();
 });
+
+/** Whether a reservation has been granted by the next macrotask. */
+async function granted(reservation: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void reservation.then(
+    () => (done = true),
+    () => undefined,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return done;
+}
+
+it("stays released for good when a park in flight finishes after the removal, and never wakes", async () => {
+  const g = gate();
+  const parking = g.subject.tryPark();
+  await g.inD.promise;
+  g.subject.released();
+  g.beforeCheck.resolve();
+  g.commit.resolve();
+  expect(await parking).toBe("vetoed");
+  expect(g.subject.phase).toBe("released");
+  // Nothing that finishes later moves it, and a waiter with demand is refused without a wake.
+  g.subject.settle("parked");
+  g.subject.reconnecting();
+  expect(g.subject.phase).toBe("released");
+  await expect(g.subject.reserve(new AbortController().signal)).rejects.toThrow("removed");
+  expect(await g.subject.tryPark()).toBe("vetoed");
+  expect(g.wakes()).toBe(0);
+});
+
+for (const during of ["park", "reconnect"] as const)
+  it(`holds admission through a restart while a ${during} in flight finishes`, async () => {
+    const g = gate();
+    let parking: Promise<"parked" | "vetoed"> | undefined;
+    if (during === "park") {
+      parking = g.subject.tryPark();
+      await g.inD.promise;
+    } else g.subject.reconnecting();
+    const done = g.subject.restarting();
+    // A waiter with demand arrives while the restart holds admission.
+    const waiting = g.subject.reserve(AbortSignal.timeout(5_000));
+    if (parking) {
+      g.beforeCheck.resolve();
+      g.commit.resolve();
+      expect(await parking).toBe("vetoed");
+    } else g.subject.settle("open");
+    // Where the browser is was reported, but nothing is admitted, woken or parked.
+    expect(await granted(waiting)).toBe(false);
+    expect(await g.subject.tryPark()).toBe("vetoed");
+    expect(g.wakes()).toBe(0);
+    // The restart installs its fresh guest and lets go: only now is the waiter admitted.
+    g.subject.settle("open");
+    done();
+    (await waiting).release();
+    expect(g.subject.phase).toBe("open");
+    expect(g.wakes()).toBe(0);
+  });
