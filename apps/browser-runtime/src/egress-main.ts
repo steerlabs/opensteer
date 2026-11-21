@@ -7,6 +7,7 @@ async function main(): Promise<void> {
   const proxy = new PublicBrowserEgressProxy({
     host: process.env.OPENSTEER_BROWSER_EGRESS_HOST?.trim() || "127.0.0.1",
     port: port(process.env.OPENSTEER_BROWSER_EGRESS_PORT),
+    ...activatedSocket(process.env),
     upstreamRequired: process.env.OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED === "true",
     ...(upstream ? { upstream } : {}),
   });
@@ -19,6 +20,17 @@ async function main(): Promise<void> {
     await proxy.close();
   };
   for (const signal of shutdownSignals) process.once(signal, () => void close().catch(fail));
+}
+
+/**
+ * systemd socket activation (sd_listen_fds): exactly one listening socket at fd 3, meant for
+ * this process. A pool host keeps a parked slot's socket open while no proxy process runs.
+ */
+function activatedSocket(environment: NodeJS.ProcessEnv): { listenFd?: number } {
+  if (environment.LISTEN_FDS === undefined) return {};
+  if (environment.LISTEN_FDS !== "1" || environment.LISTEN_PID !== String(process.pid))
+    throw new Error("browser-egress takes exactly one activated socket.");
+  return { listenFd: 3 };
 }
 
 function port(value: string | undefined): number {

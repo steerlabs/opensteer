@@ -2,6 +2,11 @@
  * The slot's egress proxy: our browser-egress, on the host, in the slot's namespace, as its
  * own unprivileged user in a transient systemd unit. It holds every outside connection, so a
  * parked guest holds none. Its output is discarded: what it would log is the person's browsing.
+ *
+ * Review G6(a): the listening socket is a socket unit in the slot's namespace that stays open for
+ * the slot's whole life, and the proxy process is a separate service started on demand. A slot
+ * saved to disk keeps no proxy process; at a wake the process is started in parallel with the
+ * restore, and a connection that arrives before it is up waits in the socket's backlog.
  */
 import { existsSync } from "node:fs";
 import type { SlotEgress } from "../driver.js";
@@ -17,6 +22,10 @@ export interface EgressProgram {
 
 export function egressUnit(index: number): string {
   return `opensteer-pool-egress-${index}.service`;
+}
+
+export function egressSocket(index: number): string {
+  return `opensteer-pool-egress-${index}.socket`;
 }
 
 /** systemd runs a unit only as a user it can resolve: each slot's proxy has its own. */
@@ -41,20 +50,23 @@ export async function ensureEgressUser(index: number, uid: number): Promise<void
   ]);
 }
 
-export async function egressActive(index: number): Promise<boolean> {
-  const state = await run("systemctl", ["is-active", egressUnit(index)], { allow: [3, 4] });
+/** Whether the slot's listening socket exists (it is made once per slot, kept across parks). */
+export async function egressDefined(index: number): Promise<boolean> {
+  const state = await run("systemctl", ["is-active", egressSocket(index)], { allow: [3, 4] });
   return state.trim() === "active";
 }
 
-export async function startEgress(
+/** Makes the slot's socket and its (not yet started) proxy service. Idempotent. */
+export async function defineEgress(
   program: EgressProgram,
   index: number,
   uid: number,
   upstream: SlotEgress | undefined,
 ): Promise<void> {
-  if (await egressActive(index)) return;
+  if (await egressDefined(index)) return;
   const unit = egressUnit(index);
-  await run("systemctl", ["reset-failed", unit], { allow: [1, 5] });
+  await run("systemctl", ["stop", egressSocket(index), unit], { allow: [1, 5] });
+  await run("systemctl", ["reset-failed", egressSocket(index), unit], { allow: [1, 5] });
   const credentials = upstream
     ? [
         `--property=LoadCredential=username:${upstream.usernameFile}`,
@@ -72,7 +84,10 @@ export async function startEgress(
   await run("systemd-run", [
     `--unit=${unit}`,
     "--quiet",
-    "--collect",
+    `--socket-property=ListenStream=${proxyAddress}:${proxyPort}`,
+    `--socket-property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
+    "--socket-property=FreeBind=yes",
+    "--socket-property=Backlog=256",
     `--uid=${uid}`,
     `--gid=${uid}`,
     `--property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
@@ -82,7 +97,7 @@ export async function startEgress(
     ...(existsSync(`/etc/netns/${namespaceName(index)}/hosts`)
       ? [`--property=BindReadOnlyPaths=/etc/netns/${namespaceName(index)}/hosts:/etc/hosts`]
       : []),
-    "--property=Restart=always",
+    "--property=Restart=on-failure",
     "--property=RestartSec=1",
     "--property=NoNewPrivileges=yes",
     "--property=CapabilityBoundingSet=",
@@ -108,23 +123,17 @@ export async function startEgress(
   ]);
 }
 
-/** Resolves once the proxy listens inside the slot's namespace. */
-export async function waitForEgress(index: number, signal: AbortSignal): Promise<void> {
-  for (;;) {
-    const listening = await run("ip", [
-      "netns",
-      "exec",
-      namespaceName(index),
-      "ss",
-      "-Hltn",
-      `sport = :${proxyPort}`,
-    ]).catch(() => "");
-    if (listening.trim()) return;
-    if (signal.aborted) throw new Error("The slot's egress proxy did not start.");
-    await new Promise((resolve) => setTimeout(resolve, 15));
-  }
+/** Starts the proxy process without waiting for it: its socket already accepts. */
+export async function wakeEgress(index: number): Promise<void> {
+  await run("systemctl", ["start", "--no-block", egressUnit(index)]);
 }
 
-export async function stopEgress(index: number): Promise<void> {
+/** Ends the proxy process; the socket stays, so the slot keeps its address. */
+export async function sleepEgress(index: number): Promise<void> {
   await run("systemctl", ["stop", egressUnit(index)], { allow: [5] });
+}
+
+/** Ends the socket and the process: the slot is going away. */
+export async function removeEgress(index: number): Promise<void> {
+  await run("systemctl", ["stop", egressSocket(index), egressUnit(index)], { allow: [5] });
 }

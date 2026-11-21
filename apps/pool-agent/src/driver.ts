@@ -58,6 +58,13 @@ export interface HypervisorDriver {
   ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */
   confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void>;
+  /**
+   * Prepares many slots at agent start (review G6c): what exists is read in bulk and only what
+   * is missing is repaired, with bounded parallelism.
+   */
+  prepareSlots(
+    slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
+  ): Promise<void>;
   /** Prepares the slot's network namespace, TAP and host-side egress. Idempotent. */
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
   /** Removes everything prepareSlot made. Idempotent. */
@@ -91,11 +98,7 @@ export interface HypervisorDriver {
   /** The state of one VMM process, from the process and its API, never from the guest. */
   inspect(slotId: string, jailId: string): Promise<GuestProcessState>;
   /** Ends every process of the slot and waits until none is left, then removes its jails. */
-  kill(
-    slotId: string,
-    signal: AbortSignal,
-    options?: { readonly keepEgress?: boolean },
-  ): Promise<void>;
+  kill(slotId: string, signal: AbortSignal): Promise<void>;
   /** Ends processes and removes jails and images that no slot record names. */
   sweep(
     known: ReadonlyMap<string, { jailId: string | null; savedStateId: string | null }>,

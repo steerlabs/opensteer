@@ -32,16 +32,18 @@ import { slotKey } from "../agent.js";
 import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
 import { requireEncryptedArray } from "./array.js";
+import { mapLimit } from "../lane.js";
 import { confine } from "./paths.js";
 import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
-  egressActive,
-  startEgress,
+  defineEgress,
+  egressSocket,
   ensureEgressUser,
-  stopEgress,
-  waitForEgress,
+  removeEgress,
+  sleepEgress,
+  wakeEgress,
   type EgressProgram,
 } from "./egress.js";
 import { run, runUntil } from "./exec.js";
@@ -49,6 +51,9 @@ import {
   applyHostTable,
   hostAddresses,
   hostTablePresent,
+  hostVeth,
+  namespaceName,
+  namespaceTablesPresent,
   guestMac,
   prepareNamespace,
   removeNamespace,
@@ -102,8 +107,6 @@ export class FirecrackerDriver implements HypervisorDriver {
   #arrayId: string | undefined;
   #hostAddresses: readonly string[] = [];
   readonly #space = new SpaceLedger();
-  readonly #egress = new Map<string, SlotEgress | undefined>();
-  readonly #pendingEgress = new Map<string, Promise<void>>();
 
   constructor(config: FirecrackerDriverConfig) {
     this.#config = config;
@@ -149,30 +152,58 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   // ---- Network ------------------------------------------------------------------------------
 
+  async prepareSlots(
+    slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
+  ): Promise<void> {
+    const [namespaces, links, passwd, sockets] = await Promise.all([
+      run("ip", ["netns", "list"]),
+      run("ip", ["-o", "link", "show"]),
+      readFile("/etc/passwd", "utf8"),
+      run("systemctl", [
+        "list-units",
+        "opensteer-pool-egress-*.socket",
+        "--state=active",
+        "--plain",
+        "--no-legend",
+      ]),
+    ]);
+    const present = new Set(namespaces.split("\n").map((line) => line.split(" ")[0]));
+    const users = new Set(passwd.split("\n").map((line) => line.split(":")[2]));
+    const healthy = async (index: number) =>
+      present.has(namespaceName(index)) &&
+      links.includes(` ${hostVeth(index)}@`) &&
+      users.has(String(this.#config.egressUidBase + index)) &&
+      sockets.includes(egressSocket(index)) &&
+      (await namespaceTablesPresent(index));
+    await mapLimit(slots, 16, async ({ slotId, egress }) => {
+      const index = this.#numbers.get(slotId);
+      if (index !== undefined && (await healthy(index))) return;
+      await this.prepareSlot(slotId, egress);
+    });
+  }
+
   async prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void> {
-    this.#egress.set(slotId, egress);
     // Allocation, the namespace and the host user happen under the host-wide number lock; a
     // failure releases a newly allocated number again.
     await this.#numbers.allocate(slotId, async (index) => {
       await prepareNamespace(index, this.#uid(index), this.#config.network, this.#hostAddresses);
       await ensureEgressUser(index, this.#config.egressUidBase + index);
+      await defineEgress(this.#config.egress, index, this.#config.egressUidBase + index, egress);
     });
   }
 
   async removeSlot(slotId: string): Promise<void> {
     // The number is freed only after everything that used it is gone.
     await this.#numbers.release(slotId, async (index) => {
-      await stopEgress(index);
+      await removeEgress(index);
       await removeNamespace(index);
     });
   }
 
   async openNetwork(slotId: string): Promise<void> {
     const index = this.#require(slotId);
-    // The proxy is started as early as possible (at restore) and awaited here.
-    await (this.#pendingEgress.get(slotId) ?? this.#ensureEgress(slotId));
-    this.#pendingEgress.delete(slotId);
-    await waitForEgress(index, AbortSignal.timeout(5_000));
+    // The proxy's socket accepts already; its process was started at boot or restore (and a
+    // paused guest's never stopped), so nothing here waits for it.
     await setGate(index, true);
   }
 
@@ -180,21 +211,17 @@ export class FirecrackerDriver implements HypervisorDriver {
     await setGate(this.#require(slotId), false);
   }
 
-  #ensureEgress(slotId: string): Promise<void> {
+  /** Starts the slot's proxy process without waiting (review G6a). */
+  #wakeEgress(slotId: string): void {
     const index = this.#require(slotId);
-    return startEgress(
-      this.#config.egress,
-      index,
-      this.#config.egressUidBase + index,
-      this.#egress.get(slotId),
-    );
+    void wakeEgress(index).catch(() => undefined);
   }
 
   // ---- VMM lifecycle ------------------------------------------------------------------------
 
   async boot(boot: GuestBoot, signal: AbortSignal): Promise<void> {
     const index = this.#require(boot.slotId);
-    this.#pendingEgress.set(boot.slotId, this.#ensureEgress(boot.slotId));
+    this.#wakeEgress(boot.slotId);
     const root = await this.#prepareJail(boot, index);
     await this.#jail(boot, index, signal);
     const socket = join(root, "api.sock");
@@ -234,6 +261,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     await api("PUT", "/vsock", { guest_cid: 3, uds_path: "/v.sock" });
     await api("PUT", "/entropy", {});
     await api("PUT", "/actions", { action_type: "InstanceStart" });
+    await this.#adoptPit(boot);
     await waitForHelper(join(root, "v.sock"), signal);
   }
 
@@ -321,7 +349,7 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async restore(boot: GuestBoot, image: SavedImage, signal: AbortSignal): Promise<void> {
     const index = this.#require(boot.slotId);
-    this.#pendingEgress.set(boot.slotId, this.#ensureEgress(boot.slotId));
+    this.#wakeEgress(boot.slotId);
     if (!(await this.verify(boot.slotId, image)))
       throw new Error("The saved image changed or is not loadable here.");
     const root = await this.#prepareJail(boot, index);
@@ -349,6 +377,7 @@ export class FirecrackerDriver implements HypervisorDriver {
       },
       60_000,
     );
+    await this.#adoptPit(boot);
     // Consumed: the names are gone; the mapping keeps the memory until this VMM ends.
     await rm(join(root, "snap", "vmstate"), { force: true });
     await rm(join(root, "snap", "memory"), { force: true });
@@ -402,17 +431,12 @@ export class FirecrackerDriver implements HypervisorDriver {
     }
   }
 
-  async kill(
-    slotId: string,
-    signal: AbortSignal,
-    options: { readonly keepEgress?: boolean } = {},
-  ): Promise<void> {
+  async kill(slotId: string, signal: AbortSignal): Promise<void> {
     const key = slotKey(slotId);
     await this.#cgroups.kill(key, signal);
+    // No VMM, no proxy process: a slot parked on disk or stopped keeps only its socket.
     const index = this.#numbers.get(slotId);
-    if (!options.keepEgress && index !== undefined && (await egressActive(index)))
-      await stopEgress(index);
-    this.#pendingEgress.delete(slotId);
+    if (index !== undefined) await sleepEgress(index);
     for (const jail of await this.#jails(key)) await this.#removeJail(jail);
   }
 
@@ -482,6 +506,30 @@ export class FirecrackerDriver implements HypervisorDriver {
     return root;
   }
 
+  /**
+   * Review G6(d), Firecracker's production guide: the VMM's `kvm-pit/<pid>` kernel thread runs
+   * in the root cgroup unless moved; it is moved into the VMM's own cgroup so its CPU counts
+   * against the guest. Best effort: a kernel that refuses the move is reported, not fatal.
+   */
+  async #adoptPit(boot: GuestBoot): Promise<void> {
+    const pid = (await readFile(join(this.#root(boot.jailId), `${execName}.pid`), "utf8")).trim();
+    const threads = await run("ps", ["-e", "-o", "pid=,comm="]);
+    const pit = threads
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/u))
+      .filter(([, comm]) => comm === `kvm-pit/${pid}`)
+      .map(([thread]) => thread!);
+    for (const thread of pit)
+      await this.#cgroups
+        .adopt(slotKey(boot.slotId), boot.jailId, thread)
+        .then(() => (this.pitAdopted += 1))
+        .catch(() => (this.pitRefused += 1));
+  }
+
+  /** How many `kvm-pit` threads were moved into, or refused by, a VMM cgroup (diagnostics). */
+  pitAdopted = 0;
+  pitRefused = 0;
+
   async #removeJail(jailId: string): Promise<void> {
     const directory = join(this.#config.jailRoot, execName, jailId);
     const profile = join(directory, "root", "profile.ext4");
@@ -501,6 +549,13 @@ export class FirecrackerDriver implements HypervisorDriver {
     // a restored guest maps that file. At guest + 512 MiB a save under contention was killed by
     // the memory cgroup (measured on the first real-host run).
     const memoryBytes = (boot.memoryMib * 2 + 512) * 1024 * 1024;
+    // Review G6(b): memory.high reclaims and slows a writer (a save's page cache) before
+    // memory.max would end it; it sits where the guest and the VMM's own use end.
+    const memoryHigh = (boot.memoryMib + 512) * 1024 * 1024;
+    // Review G6(d): no file the VMM writes may grow past what it needs: its memory file, or its
+    // profile disk, whichever is larger (a write past the limit inside the profile would fail).
+    const profileBytes = (await stat(boot.profilePath)).size;
+    const fileLimit = Math.max(boot.memoryMib * 1024 * 1024, profileBytes) + 64 * 1024 * 1024;
     const pidFile = join(this.#root(boot.jailId), `${execName}.pid`);
     await runUntil(
       this.#config.jailer,
@@ -524,11 +579,15 @@ export class FirecrackerDriver implements HypervisorDriver {
         "--cgroup",
         `memory.max=${memoryBytes}`,
         "--cgroup",
+        `memory.high=${memoryHigh}`,
+        "--cgroup",
         `cpu.max=${boot.vcpus * 100_000} 100000`,
         "--cgroup",
         "pids.max=256",
         "--resource-limit",
         "no-file=1024",
+        "--resource-limit",
+        `fsize=${fileLimit}`,
         "--new-pid-ns",
         "--daemonize",
         "--",

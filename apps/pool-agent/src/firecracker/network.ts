@@ -277,3 +277,17 @@ async function applyRuleset(prefix: readonly string[], ruleset: string): Promise
     await rm(file, { force: true });
   }
 }
+
+/** Whether the slot's namespace holds both of its filters. */
+export async function namespaceTablesPresent(index: number): Promise<boolean> {
+  const listed = await run("ip", [
+    "netns",
+    "exec",
+    namespaceName(index),
+    "nft",
+    "list",
+    "tables",
+  ]).catch(() => "");
+  const lines = new Set(listed.split("\n").map((line) => line.trim()));
+  return lines.has("table inet osp") && lines.has("table inet osp_egress");
+}

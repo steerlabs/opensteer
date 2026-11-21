@@ -97,3 +97,19 @@ export async function finishedWithin(work: Promise<void>, ms: number): Promise<b
     if (timer) clearTimeout(timer);
   }
 }
+
+/** Runs `work` on every item with at most `limit` at once; rejects with the first failure. */
+export async function mapLimit<T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      await work(item);
+    }
+  });
+  await Promise.all(workers);
+}

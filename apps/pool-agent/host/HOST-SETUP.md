@@ -66,16 +66,27 @@ CAP_DAC_READ_SEARCH CAP_MKNOD CAP_SYS_CHROOT CAP_KILL CAP_SYS_RESOURCE`), `NoNew
   typical service; the jailer confines each VMM instead.
 
 Each guest's VMM: the slot's own uid/gid (`slotUidBase + index`), a chroot on the array, its
-network namespace, a new PID namespace, cgroup limits `memory.max` = twice the guest memory + 512 MiB (page cache of the memory file is charged to the VMM: a save writes it, a restore maps it; at guest + 512 MiB a save under contention was OOM-killed),
-`cpu.max` = vCPUs, `pids.max=256`, `no-file=1024`, Firecracker's default seccomp filter, no
-serial console (`8250.nr_uarts=0`), output to `/dev/null`.
+network namespace, a new PID namespace, cgroup limits `memory.high` = guest memory + 512 MiB
+(reclaim and slow-down start there) and `memory.max` = twice the guest memory + 512 MiB (page
+cache of the memory file is charged to the VMM: a save writes it, a restore maps it; at guest
 
-Each slot's egress proxy: a transient unit `opensteer-pool-egress-<index>.service` as the slot's
-proxy uid (`egressUidBase + index`) in the slot's namespace, with no capabilities,
-`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `PrivateDevices`, `MemoryMax=256M`,
-`TasksMax=64`, credentials through `LoadCredential`, output discarded (it would be the person's
-browsing). It runs while the guest runs or is paused in memory, and is stopped when the guest
-is saved to disk or stopped.
+- 512 MiB a save under contention was OOM-killed on the first real-host run), `cpu.max` = vCPUs,
+  `pids.max=256`, `no-file=1024`, `fsize` = the larger of its memory and its profile disk + 64
+  MiB, Firecracker's default seccomp filter, no serial console (`8250.nr_uarts=0`), output to
+  `/dev/null`. Its `kvm-pit/<pid>` kernel thread is moved into its cgroup after boot and restore
+  (Firecracker's production guide), best effort. One limit over all guests
+  (`guests/memory.max`) leaves the host and the agent max(2 GiB, 10 %) of memory; the agent has
+  `OOMScoreAdjust=-900`.
+
+Each slot's egress proxy: a transient socket unit `opensteer-pool-egress-<index>.socket`
+listening on `172.16.0.1:3128` in the slot's namespace for the slot's whole life, and its
+service `opensteer-pool-egress-<index>.service` (socket-activated) as the slot's proxy uid
+(`egressUidBase + index`), with no capabilities, `NoNewPrivileges`, `ProtectSystem=strict`,
+`PrivateTmp`, `PrivateDevices`, `MemoryMax=256M`, `TasksMax=64`, credentials through
+`LoadCredential`, output discarded (it would be the person's browsing). The process runs while
+the guest runs or is paused in memory; it is stopped when the guest is saved to disk or stopped,
+so a slot parked on disk costs a socket, not a process. At a wake the process is started in
+parallel with the restore, and a connection that arrives first waits in the socket's backlog.
 
 ## Agent configuration
 
@@ -126,5 +137,4 @@ is saved to disk or stopped.
 - Building the guest image: `guest/build-image.sh` (needs Docker and the runtime images).
 - Cloud firewall rules and the host's placement: the provisioner's.
 - Host kernel and microcode updates: the image's update policy (Firecracker: patch regularly).
-- Moving each VMM's `kvm-pit` kernel thread into its cgroup (Firecracker's CPU-overhead
-  recommendation): not done; to measure first.
+- Rate limiters on the guests' block and network devices: not set yet.

@@ -29,7 +29,7 @@ import type {
 import { signBrowserPoolAgentBytes } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import type { GuestBoot, GuestProcessState, HypervisorDriver } from "./driver.js";
 import type { PendingRecord, SlotJournal, SlotRecord } from "./journal.js";
-import { DeadlineExceeded, finishedWithin, Lane, Semaphore, within } from "./lane.js";
+import { DeadlineExceeded, finishedWithin, Lane, mapLimit, Semaphore, within } from "./lane.js";
 
 export interface PoolAgentDeadlines {
   readonly boot: number;
@@ -203,11 +203,17 @@ export class PoolAgent {
       this.#slots.set(record.slotId, slot);
     }
     // A host restart removed every namespace: each slot's network is made again first.
-    for (const slot of this.#live())
-      await this.#step("network", () =>
-        this.#driver.prepareSlot(slot.record.slotId, slot.record.guest.egress),
-      );
-    for (const slot of this.#live()) await slot.lane.run(() => this.#settle(slot));
+    // Review G6(c): many slots are ready in seconds: their network in bulk, then each slot's
+    // recovery with bounded parallelism (each still alone on its own lane).
+    await within(this.#deadlines.sweep, "Preparing every slot's network", () =>
+      this.#driver.prepareSlots(
+        this.#live().map((slot) => ({
+          slotId: slot.record.slotId,
+          egress: slot.record.guest.egress,
+        })),
+      ),
+    );
+    await mapLimit(this.#live(), 16, (slot) => slot.lane.run(() => this.#settle(slot)));
     const swept = await this.#step("sweep", () =>
       this.#driver.sweep(
         new Map(
@@ -646,7 +652,7 @@ export class PoolAgent {
       if (saved.tier === "disk") {
         if (!saved.image || saved.diskGeneration !== before.diskGeneration)
           throw new Error("The saved state does not match the profile disk.");
-        await this.#kill(slot, { keepEgress: true });
+        await this.#kill(slot);
         step("kill");
         await within(this.#deadlines.restore, "The guest restore", (signal) =>
           this.#driver.restore(
@@ -897,7 +903,7 @@ export class PoolAgent {
         };
         await this.#commit(slot, withImage);
         this.#checkpoint("save:image-recorded");
-        await this.#kill(slot, { keepEgress: true });
+        await this.#kill(slot);
         this.#checkpoint("save:vmm-ended");
         const next: SlotRecord = {
           ...withImage,
@@ -972,7 +978,7 @@ export class PoolAgent {
       saved?.image &&
       (await this.#step("verify", () => this.#driver.verify(slot.record.slotId, saved.image!)))
     ) {
-      await this.#kill(slot, { keepEgress: true });
+      await this.#kill(slot);
       await this.#commit(slot, {
         ...slot.record,
         saved: { ...saved, tier: "disk" },
@@ -1077,13 +1083,9 @@ export class PoolAgent {
     return result;
   }
 
-  /**
-   * `keepEgress`: the guest's VMM ends but the slot stays parked (a save, or the restore that
-   * follows one), so its host-side proxy keeps running and a wake does not wait to start it.
-   */
-  async #kill(slot: Slot, options: { readonly keepEgress?: boolean } = {}): Promise<void> {
+  async #kill(slot: Slot): Promise<void> {
     await within(this.#deadlines.kill, "Ending the guest's processes", (signal) =>
-      this.#driver.kill(slot.record.slotId, signal, options),
+      this.#driver.kill(slot.record.slotId, signal),
     );
   }
 

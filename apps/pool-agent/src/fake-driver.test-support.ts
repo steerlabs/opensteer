@@ -127,6 +127,12 @@ export class FakeHypervisorDriver implements HypervisorDriver {
       throw new Error("The profile path leaves its root.");
   }
 
+  async prepareSlots(
+    slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
+  ): Promise<void> {
+    for (const { slotId, egress } of slots) await this.prepareSlot(slotId, egress);
+  }
+
   async prepareSlot(slotId: string, _egress: SlotEgress | undefined): Promise<void> {
     this.prepared.add(slotId);
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");

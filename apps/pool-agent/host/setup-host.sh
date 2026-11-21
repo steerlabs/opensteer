@@ -163,6 +163,8 @@ DelegateSubgroup=agent
 KillMode=process
 LimitCORE=0
 LimitNOFILE=65536
+# Under host memory pressure a guest's VMM goes before the agent that could clean it up.
+OOMScoreAdjust=-900
 NoNewPrivileges=yes
 SystemCallArchitectures=native
 # What the jailer and the namespace, mount and filter work need, and nothing more. No mount

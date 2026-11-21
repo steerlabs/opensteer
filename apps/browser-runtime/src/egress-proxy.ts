@@ -46,6 +46,8 @@ interface EgressTransport {
 
 interface PublicBrowserEgressProxyOptions {
   readonly host?: string;
+  /** A listening socket handed over by the service manager (socket activation), instead of host and port. */
+  readonly listenFd?: number;
   readonly maxConnections?: number;
   readonly maxRequestBytes?: number;
   readonly maxResponseBytes?: number;
@@ -79,6 +81,7 @@ export class PublicBrowserEgressProxy {
   readonly #maxTunnelBytes: number;
   readonly #maxTunnelLifetimeMs: number;
   readonly #port: number;
+  readonly #listenFd: number | undefined;
   readonly #resolveAddresses: ResolveAddresses;
   readonly #server: Server;
   readonly #shutdown = new AbortController();
@@ -93,6 +96,7 @@ export class PublicBrowserEgressProxy {
   constructor(options: PublicBrowserEgressProxyOptions = {}) {
     this.#host = options.host ?? "127.0.0.1";
     this.#port = options.port ?? 4_313;
+    this.#listenFd = options.listenFd;
     this.#maxConnections = positiveInteger(options.maxConnections ?? 512);
     this.#maxRequestBytes = positiveInteger(options.maxRequestBytes ?? 32 * 1_024 * 1_024);
     this.#maxResponseBytes = positiveInteger(options.maxResponseBytes ?? 64 * 1_024 * 1_024);
@@ -128,10 +132,12 @@ export class PublicBrowserEgressProxy {
   async start(): Promise<{ readonly host: string; readonly port: number }> {
     this.#listening = new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(this.#port, this.#host, () => {
+      const ready = () => {
         this.#server.off("error", reject);
         resolve();
-      });
+      };
+      if (this.#listenFd === undefined) this.#server.listen(this.#port, this.#host, ready);
+      else this.#server.listen({ fd: this.#listenFd }, ready);
     });
     await this.#listening;
     const address = this.#server.address();

@@ -32,7 +32,23 @@ export class GuestCgroups {
     await writeFile(join(absolute, "cgroup.subtree_control"), controllers);
     await mkdir(join(absolute, "guests"), { recursive: true });
     await writeFile(join(absolute, "guests", "cgroup.subtree_control"), controllers);
+    // Review G6(b): one limit over all guests leaves the host and the agent their room:
+    // everything but max(2 GiB, 10 %) of the host's memory.
+    const total = await memoryTotal();
+    if (total)
+      await writeFile(
+        join(absolute, "guests", "memory.max"),
+        String(total - Math.max(2 * 1024 ** 3, Math.floor(total / 10))),
+      );
     return new GuestCgroups(base);
+  }
+
+  /** Moves one task (a VMM's kvm-pit kernel thread) into the VMM's cgroup. */
+  async adopt(slotKey: string, jailId: string, task: string): Promise<void> {
+    await writeFile(
+      join(mountPoint, this.#base, "guests", slotKey, jailId, "cgroup.procs"),
+      `${task}\n`,
+    );
   }
 
   /** The parent the jailer creates a VMM's own cgroup in, relative to the cgroup mount. */
@@ -110,4 +126,10 @@ async function exists(path: string): Promise<boolean> {
     () => true,
     () => false,
   );
+}
+
+async function memoryTotal(): Promise<number | undefined> {
+  const text = await readFile("/proc/meminfo", "utf8").catch(() => "");
+  const kib = text.match(/^MemTotal:\s+([0-9]+) kB$/mu)?.[1];
+  return kib ? Number(kib) * 1024 : undefined;
 }
