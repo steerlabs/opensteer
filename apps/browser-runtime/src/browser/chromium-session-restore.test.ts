@@ -1134,3 +1134,93 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
   expect(sawFailureWithEntryIntact).toBe(true);
   expect(handedOffUrls.some((u) => u.includes("tab=b2_3"))).toBe(false);
 }, 60_000);
+
+it("serializes a claim racing a held parked discard and returns a single live unfrozen page (F4)", async () => {
+  const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-f4-race-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const surfaceIds = Array.from({ length: 4 }, (_, i) =>
+    BrowserSurfaceIdSchema.parse(
+      `srf_00000000-0000-4000-8000-00000000f4${String(i).padStart(2, "0")}`,
+    ),
+  );
+  const urls = surfaceIds.map((_, i) => `${server.originForSite(i + 1)}/article?tab=f4_${i}`);
+
+  // Run 1: create 4 durable tabs, close cleanly.
+  const browser1 = await launcher.launch(request);
+  cleanup.push(() => browser1.close());
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
+  await ledger1.start();
+  for (let i = 0; i < surfaceIds.length; i++) {
+    await ledger1.openSurface({ surfaceId: surfaceIds[i]! });
+    const live = ledger1.binding(surfaceIds[i]!)!;
+    await live.cdp.send("Page.navigate", { url: urls[i]! });
+    await waitLoaded(live.cdp, "/article");
+  }
+  await browser1.context.sessionRestore!.flush!();
+  await browser1.close();
+
+  // Run 2: cold start, claim tab 0, gate discardByTabIdDetailed for tab 2 while claiming it!
+  const browser2 = await launcher.launch(request);
+  cleanup.push(() => browser2.close());
+  const ledger2 = new SurfaceLedger(browser2.context, { saveTabs: true });
+  await ledger2.start();
+  await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
+
+  const internal2 = browser2 as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle2 = internal2.contextHandle.lifecycle;
+  const origDiscard = lifecycle2.discardByTabIdDetailed.bind(lifecycle2);
+  const invBefore = await lifecycle2.inventory();
+  const tab2Entry = invBefore.find((t) => t.url.includes("tab=f4_2"));
+  expect(tab2Entry).toBeDefined();
+
+  const discardGate = Promise.withResolvers<void>();
+  let discardHeld = false;
+  const discSpy = vi.spyOn(lifecycle2, "discardByTabIdDetailed").mockImplementation(async (id) => {
+    if (id === tab2Entry!.tabId) {
+      discardHeld = true;
+      await discardGate.promise;
+    }
+    return origDiscard(id);
+  });
+  cleanup.push(() => {
+    discardGate.resolve();
+    discSpy.mockRestore();
+  });
+
+  // Trigger reconcile (tab 2 is among the 4 loaded restored tabs so its parked discard starts and hits the gate).
+  await browser2.context.sessionRestore!.reconcile(new Set(surfaceIds));
+  await vi.waitFor(() => expect(discardHeld).toBe(true), { timeout: 10_000, interval: 25 });
+
+  // Claim surfaceIds[2] while its parked discard is held!
+  const opening = ledger2.openSurface({ surfaceId: surfaceIds[2]! });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  discardGate.resolve();
+  await opening;
+
+  const live2 = ledger2.binding(surfaceIds[2]!)!;
+  expect(live2).toBeDefined();
+  await waitLoaded(live2.cdp, "/article");
+
+  // Assert exactly one page for tab 2 in context.pages(), visible and NOT frozen (timers run)!
+  const pagesFor2 = browser2.context.pages().filter((p) => p.url().includes("tab=f4_2"));
+  expect(pagesFor2).toHaveLength(1);
+  const state = await evalValue<{ visibility: string; timerRan: boolean }>(
+    live2.cdp,
+    `(async () => {
+      const timerRan = await new Promise((r) => setTimeout(() => r(true), 20));
+      return { visibility: document.visibilityState, timerRan };
+    })()`,
+  );
+  expect(state).toEqual({ visibility: "visible", timerRan: true });
+}, 60_000);

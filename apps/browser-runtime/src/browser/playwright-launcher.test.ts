@@ -2806,6 +2806,222 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfPopupOpener = "srf_00000000-0000-4000-8000-00000000f401" as BrowserSurfaceId;
+    const surfNullTarget = "srf_00000000-0000-4000-8000-00000000f402" as BrowserSurfaceId;
+    const surfFrozen = "srf_00000000-0000-4000-8000-00000000f403" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfPopupOpener, url: "https://opener-f4.test/" },
+      { index: 1, surfaceId: surfNullTarget, url: "https://null-target-f4.test/" },
+      { index: 2, surfaceId: surfFrozen, url: "https://frozen-f4.test/" },
+    ]);
+
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const makePage = (id: string, url: string, opener?: Page | null) => {
+      let closed = false;
+      const close = vi.fn(async () => {
+        closed = true;
+      });
+      return {
+        close,
+        isClosed: () => closed,
+        page: {
+          url: () => url,
+          isClosed: () => closed,
+          close,
+          waitForLoadState: vi.fn(async () => undefined),
+          bringToFront: vi.fn(() => new Promise<void>(() => {})),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _opener: opener ?? null,
+          _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+        } as unknown as Page,
+      };
+    };
+
+    const helper = makePage("target-f4-helper", "about:blank");
+    const hiddenOpener = makePage("target-f4-opener", "https://opener-f4.test/");
+    const popupOfHidden = makePage("target-f4-popup", "https://popup-f4.test/", hiddenOpener.page);
+    const nullTargetPage = makePage("target-f4-late-null", "https://null-target-f4.test/");
+    const frozenPage = makePage("target-f4-frozen", "https://frozen-f4.test/");
+
+    let tabs = [
+      {
+        tabId: 1,
+        windowId: 1,
+        index: 0,
+        url: "about:blank",
+        title: "",
+        active: true,
+        discarded: false,
+        status: "complete",
+        targetId: "target-f4-helper" as string | null,
+      },
+      {
+        tabId: 801,
+        windowId: 1,
+        index: 1,
+        url: "https://opener-f4.test/",
+        title: "Opener",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-f4-opener" as string | null,
+      },
+      {
+        tabId: 802,
+        windowId: 1,
+        index: 2,
+        url: "https://null-target-f4.test/",
+        title: "NullTarget",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: null as string | null,
+      },
+      {
+        tabId: 803,
+        windowId: 1,
+        index: 3,
+        url: "https://frozen-f4.test/",
+        title: "Frozen",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-f4-frozen" as string | null,
+      },
+    ];
+
+    const freezeGate = Promise.withResolvers<void>();
+    let freezeEntered = false;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [helper.page, hiddenOpener.page],
+      newPage: vi.fn(async () => helper.page),
+      newCDPSession: vi.fn(async (targetPage: Page) => ({
+        send: vi.fn(async (method: string, params?: { state?: string }) => {
+          if (
+            targetPage === frozenPage.page &&
+            method === "Page.setWebLifecycleState" &&
+            params?.state === "frozen"
+          ) {
+            freezeEntered = true;
+            await freezeGate.promise;
+            return {};
+          }
+          if (
+            targetPage === frozenPage.page &&
+            method === "Page.setWebLifecycleState" &&
+            params?.state === "active"
+          ) {
+            throw new Error("unfreeze failed");
+          }
+          return {};
+        }),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .mockImplementation(async (tabId) => {
+        const newTabId = tabId + 100;
+        const newTargetId = `target-f4-disc-${newTabId}`;
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? { ...t, tabId: newTabId, discarded: true, status: "unloaded", targetId: newTargetId }
+            : t,
+        );
+        return { newTabId, newTargetId };
+      });
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return true;
+      });
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") return await new Promise(() => {});
+      return {};
+    });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+
+      await launched.context.sessionRestore!.reconcile(
+        new Set([surfPopupOpener, surfNullTarget, surfFrozen]),
+      );
+
+      // (a) Popup opened by a hidden restored page must be closed and NEVER handed off!
+      for (const handler of pageHandlers) handler(popupOfHidden.page);
+      await vi.waitFor(() => expect(popupOfHidden.close).toHaveBeenCalled(), {
+        timeout: 2_000,
+        interval: 20,
+      });
+      expect(handedOff).not.toContain("https://popup-f4.test/");
+
+      // (b) Restored tab whose launch inventory had targetId: null arrives later:
+      // inventory now maps tab 802 -> target-f4-late-null; MUST be hidden and discarded, NEVER handed off!
+      tabs = tabs.map((t) =>
+        t.tabId === 802 ? { ...t, status: "complete", targetId: "target-f4-late-null" } : t,
+      );
+      for (const handler of pageHandlers) handler(nullTargetPage.page);
+      await vi.waitFor(
+        () => expect(tabs.some((t) => t.tabId === 902 && t.discarded)).toBe(true),
+        { timeout: 3_000, interval: 20 },
+      );
+      expect(handedOff).not.toContain("https://null-target-f4.test/");
+
+      // (c) Claim meeting a frozen page whose unfreeze fails MUST close it and return null (open by address)!
+      tabs = tabs.map((t) => (t.tabId === 803 ? { ...t, status: "complete" } : t));
+      for (const handler of pageHandlers) handler(frozenPage.page);
+      await vi.waitFor(() => expect(freezeEntered).toBe(true), { timeout: 3_000, interval: 10 });
+      const claiming = launched.context.sessionRestore!.claim(
+        surfFrozen,
+        "https://frozen-f4.test/",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      freezeGate.resolve();
+      const claimed = await claiming;
+      expect(claimed).toBe(null);
+      expect(frozenPage.close).toHaveBeenCalled();
+
+      // (d) closeTarget and bringToFront (activatePrivateAnchor) both have deadlines (never hang)!
+      const handle = (
+        launched as unknown as {
+          contextHandle: {
+            closeTarget?: (id: string) => Promise<void>;
+            activatePrivateAnchor(): Promise<void>;
+          };
+        }
+      ).contextHandle;
+      await expect(handle.closeTarget!("target-hung")).rejects.toThrow(/timed out/i);
+      await handle.activatePrivateAnchor();
+    } finally {
+      freezeGate.resolve();
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 async function nativeCloseFixture(

@@ -1063,7 +1063,9 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     }
     this.context = this.contextHandle;
     this.contextHandle.closeTarget = async (targetId) => {
-      await browserCdp.send("Target.closeTarget", { targetId });
+      await withTimeout(browserCdp.send("Target.closeTarget", { targetId }), nameTargetMs, {
+        timeoutError: () => new Error("Target.closeTarget timed out."),
+      });
     };
     this.contextHandle.browserAlive = () =>
       withTimeout(browserCdp.send("Browser.getVersion"), nameTargetMs, {
@@ -1248,10 +1250,13 @@ class PlaywrightContextHandle implements BrowserContext {
   private pendingRestoredRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly claimedWakePages = new WeakSet<Page>();
   private readonly hiddenRestoredPages = new WeakSet<Page>();
+  private readonly frozenRestoredPages = new WeakSet<Page>();
   private readonly unclaimedRestoredTabs = new Map<number, ChromiumTabEntry>();
   private readonly unclaimedRestoredTargetIds = new Set<string>();
   /** Targets from session restore that must NEVER be handed off unless explicitly claimed or confirmed gone. */
   private readonly neverHandOffTargetIds = new Set<string>();
+  /** Restored tabs whose targetId was initially null so arrivals are still hidden by tabId. */
+  private readonly neverHandOffTabIds = new Set<number>();
   private readonly restoredPagesByTabId = new Map<number, Page>();
   private readonly restoredBySurfaceId = new Map<BrowserSurfaceId, MatchedRestoredTab>();
   private readonly claimingSurfaceIds = new Set<BrowserSurfaceId>();
@@ -1316,6 +1321,8 @@ class PlaywrightContextHandle implements BrowserContext {
       if (entry.tab.targetId) {
         this.unclaimedRestoredTargetIds.add(entry.tab.targetId);
         this.neverHandOffTargetIds.add(entry.tab.targetId);
+      } else {
+        this.neverHandOffTabIds.add(entry.tab.tabId);
       }
     }
     if (lifecycle && profileDirectory) {
@@ -1337,6 +1344,18 @@ class PlaywrightContextHandle implements BrowserContext {
       if (this.isHiddenPage(page)) return;
       const targetId = syncTargetIdOfPage(page);
       const opener = syncOpenerOfPage(page);
+      if (opener) {
+        const openerTargetId = syncTargetIdOfPage(opener);
+        if (
+          this.isHiddenPage(opener) ||
+          (openerTargetId !== null && this.neverHandOffTargetIds.has(openerTargetId))
+        ) {
+          this.hiddenRestoredPages.add(page);
+          if (targetId) this.neverHandOffTargetIds.add(targetId);
+          void page.close({ runBeforeUnload: false }).catch(() => undefined);
+          return;
+        }
+      }
       if (this.activeWake && opener === null && this.creatingNewPage === 0) {
         const waiter = this.activeWake;
         if (waiter.expectedTargetId !== null && targetId === waiter.expectedTargetId) {
@@ -1383,6 +1402,50 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       if (targetId && this.neverHandOffTargetIds.has(targetId)) {
         this.handleHiddenRestoredPageArrival(page, targetId);
+        return;
+      }
+      if (opener === null && this.creatingNewPage === 0 && this.neverHandOffTabIds.size > 0) {
+        // Guard restored tabs whose initial inventory row had no targetId: hide synchronously
+        // until inventory confirms whether this page belongs to an unclaimed restored tab.
+        this.hiddenRestoredPages.add(page);
+        void (async () => {
+          const resolvedTargetId = targetId ?? (await this.targetIdOfPage(page));
+          if (this.claimedWakePages.has(page) || this.closed) return;
+          if (resolvedTargetId && this.neverHandOffTargetIds.has(resolvedTargetId)) {
+            this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
+            return;
+          }
+          if (resolvedTargetId && this.lifecycle) {
+            const inv = await this.lifecycle.inventory().catch(() => null);
+            const matchedTab = inv?.find((entry) => entry.targetId === resolvedTargetId);
+            if (
+              matchedTab &&
+              (this.neverHandOffTabIds.has(matchedTab.tabId) ||
+                this.unclaimedRestoredTabs.has(matchedTab.tabId))
+            ) {
+              this.neverHandOffTabIds.delete(matchedTab.tabId);
+              this.neverHandOffTargetIds.add(resolvedTargetId);
+              if (this.unclaimedRestoredTabs.has(matchedTab.tabId)) {
+                this.unclaimedRestoredTabs.set(matchedTab.tabId, matchedTab);
+                this.unclaimedRestoredTargetIds.add(resolvedTargetId);
+              }
+              for (const [surfaceId, entry] of this.restoredBySurfaceId) {
+                if (entry.tab.tabId === matchedTab.tabId) {
+                  this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: matchedTab });
+                  break;
+                }
+              }
+              this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
+              return;
+            }
+          }
+          if (this.claimedWakePages.has(page) || this.closed) return;
+          this.hiddenRestoredPages.delete(page);
+          const delayedHandle = this.wrap(page);
+          for (const listener of this.handOffs)
+            listener(delayedHandle, delayedHandle.openerHandle);
+          for (const listener of this.pageListeners) listener(delayedHandle);
+        })();
         return;
       }
       const handle = this.wrap(page);
@@ -2184,6 +2247,8 @@ class PlaywrightContextHandle implements BrowserContext {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
         timeoutError: () => new Error("Freeze parked tab CDP attach timed out."),
       });
+      // Mark before sending freeze so even an uncertain/timed-out freeze must be explicitly unfrozen on claim.
+      this.frozenRestoredPages.add(page);
       await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
         timeoutError: () => new Error("Freeze parked tab timed out."),
       });
@@ -2196,8 +2261,11 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
-  private async unfreezeRestoredPage(page: Page): Promise<void> {
-    if (page.isClosed()) return;
+  private async unfreezeRestoredPage(page: Page): Promise<boolean> {
+    if (page.isClosed()) {
+      this.frozenRestoredPages.delete(page);
+      return false;
+    }
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
@@ -2206,8 +2274,10 @@ class PlaywrightContextHandle implements BrowserContext {
       await withTimeout(session.send("Page.setWebLifecycleState", { state: "active" }), 1_000, {
         timeoutError: () => new Error("Unfreeze parked tab timed out."),
       });
+      this.frozenRestoredPages.delete(page);
+      return true;
     } catch {
-      // Best-effort unfreeze when a session claims a tab mid-freeze.
+      return false;
     } finally {
       await session?.detach().catch(() => undefined);
     }
@@ -2223,7 +2293,9 @@ class PlaywrightContextHandle implements BrowserContext {
     try {
       const pendingPark = this.parkedDiscardTails.get(surfaceId);
       if (pendingPark) {
-        await pendingPark.catch(() => undefined);
+        await withTimeout(pendingPark, 6_000, {
+          timeoutError: () => new Error("Pending parked discard wait timed out."),
+        }).catch(() => undefined);
       }
       const entry = this.restoredBySurfaceId.get(surfaceId);
       if (!entry) return null;
@@ -2234,6 +2306,7 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       try {
         const restoredPage = await this.claimRestoredTab(entry.tab);
+        this.neverHandOffTabIds.delete(entry.tab.tabId);
         if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
         const handle = this.wrap(restoredPage);
         handle.restoredFromSession = true;
@@ -2303,6 +2376,7 @@ class PlaywrightContextHandle implements BrowserContext {
     this.unclaimedRestoredTabs.clear();
     this.unclaimedRestoredTargetIds.clear();
     this.neverHandOffTargetIds.clear();
+    this.neverHandOffTabIds.clear();
     this.restoredPagesByTabId.clear();
     this.restoredBySurfaceId.clear();
     this.claimingSurfaceIds.clear();
@@ -2478,10 +2552,19 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   private async claimRestoredTab(tab: ChromiumTabEntry): Promise<Page> {
+    const ensureUnfrozen = async (page: Page): Promise<void> => {
+      if (!this.frozenRestoredPages.has(page)) return;
+      const unfrozen = await this.unfreezeRestoredPage(page);
+      if (!unfrozen) {
+        await page.close({ runBeforeUnload: false }).catch(() => undefined);
+        throw new Error("Restored tab remained frozen and could not be unfrozen.");
+      }
+    };
     try {
       const cached = this.restoredPagesByTabId.get(tab.tabId);
       this.restoredPagesByTabId.delete(tab.tabId);
       if (cached && !cached.isClosed()) {
+        await ensureUnfrozen(cached);
         this.hiddenRestoredPages.delete(cached);
         this.claimedWakePages.add(cached);
         await this.ensurePagePolicyOnRestoredPage(cached);
@@ -2492,6 +2575,7 @@ class PlaywrightContextHandle implements BrowserContext {
           if (candidate === this.privatePage || candidate.isClosed()) continue;
           const candidateTargetId = await this.targetIdOfPage(candidate);
           if (candidateTargetId === tab.targetId) {
+            await ensureUnfrozen(candidate);
             this.hiddenRestoredPages.delete(candidate);
             this.claimedWakePages.add(candidate);
             await this.ensurePagePolicyOnRestoredPage(candidate);
@@ -2500,12 +2584,14 @@ class PlaywrightContextHandle implements BrowserContext {
         }
       }
       const woken = await this.wakeDiscardedTab(tab.tabId);
+      await ensureUnfrozen(woken);
       this.hiddenRestoredPages.delete(woken);
       this.claimedWakePages.add(woken);
       await this.ensurePagePolicyOnRestoredPage(woken);
       return woken;
     } finally {
       this.unclaimedRestoredTabs.delete(tab.tabId);
+      this.neverHandOffTabIds.delete(tab.tabId);
       if (tab.targetId) this.unclaimedRestoredTargetIds.delete(tab.targetId);
       this.restoredPagesByTabId.delete(tab.tabId);
     }
@@ -2513,7 +2599,9 @@ class PlaywrightContextHandle implements BrowserContext {
 
   async activatePrivateAnchor(): Promise<void> {
     if (!this.privatePage || this.privatePage.isClosed()) return;
-    await this.privatePage.bringToFront().catch(() => undefined);
+    await withTimeout(this.privatePage.bringToFront(), nameTargetMs, {
+      timeoutError: () => new Error("Private anchor bringToFront timed out."),
+    }).catch(() => undefined);
   }
 
   beginSleepingTab(
