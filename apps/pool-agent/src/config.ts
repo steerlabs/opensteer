@@ -78,10 +78,14 @@ export type AgentConfig = z.infer<typeof agentConfigSchema>;
  * refuses a non-loopback egress proxy, and its bridge token is made inside the guest). The
  * agent refuses that mode at start rather than boot guests that cannot work.
  */
+/**
+ * Our runtime in a guest is reached only through the relay (pool-runtime-in-guest.md): a host
+ * that names no relay user cannot run it.
+ */
 export function refuseUnsupportedMode(config: AgentConfig): void {
-  if (config.driver.guestMode === "runtime")
+  if (config.driver.guestMode === "runtime" && config.driver.network.relayUid === null)
     throw new Error(
-      'guestMode "runtime" is not supported yet: the browser runtime does not run in a pool guest. Use "bench".',
+      'guestMode "runtime" needs the relay: set driver.network.relayUid to the relay\'s user.',
     );
 }
 

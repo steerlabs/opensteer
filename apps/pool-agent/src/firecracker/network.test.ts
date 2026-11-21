@@ -110,16 +110,20 @@ describe("review G4: the configuration", () => {
 });
 
 describe("review G5: the guest mode", () => {
-  it("defaults to the mode that works and refuses the runtime mode with a plain message", () => {
+  it("runs our runtime in a guest only where the relay can reach it", () => {
     const config = agentConfigSchema.parse({
       ...base(),
       driver: { ...base().driver, network: { resolvers: [] } },
     });
-    expect(config.driver.guestMode).toBe("bench");
     expect(() => refuseUnsupportedMode(config)).not.toThrow();
+    const runtime = { ...config, driver: { ...config.driver, guestMode: "runtime" as const } };
+    expect(() => refuseUnsupportedMode(runtime)).toThrow("needs the relay");
     expect(() =>
-      refuseUnsupportedMode({ ...config, driver: { ...config.driver, guestMode: "runtime" } }),
-    ).toThrow('guestMode "runtime" is not supported yet');
+      refuseUnsupportedMode({
+        ...runtime,
+        driver: { ...runtime.driver, network: { ...runtime.driver.network, relayUid: 999 } },
+      }),
+    ).not.toThrow();
   });
 });
 
