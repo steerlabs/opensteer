@@ -1903,7 +1903,11 @@ class PlaywrightContextHandle implements BrowserContext {
           if (inv === null) {
             // Unreadable inventory is "unknown", never "absent": close any live Playwright page
             // directly, keep the target in neverHandOffTargetIds, and retry removal in background.
-            return await this.evictUnparkableRestoredTab(surfaceId, entry, { page });
+            return await this.evictUnparkableRestoredTab(
+              surfaceId,
+              entry,
+              page ? { page } : undefined,
+            );
           }
           current = inv.find((tab) => tab.tabId === entry.tab.tabId);
         }

@@ -556,10 +556,7 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
   // Cold restart with ONLY surfDupB remaining in Home (surfDupA deleted while down).
   const browser2 = await launcher.launch(request);
   cleanup.push(() => browser2.close());
-  await browser2.context.sessionRestore!.reconcile(
-    new Set<BrowserSurfaceId>([surfDupB]),
-    "profile-f5",
-  );
+  await browser2.context.sessionRestore!.reconcile(new Set<BrowserSurfaceId>([surfDupB]));
 
   const internal2 = browser2 as unknown as {
     contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
@@ -1009,7 +1006,6 @@ it("leaves never-loaded parked tabs untouched with sessionStorage intact and aut
 }, 60_000);
 
 it("recovers when helper inventory and discard fail right as a parked tab reloads, leaving no unowned live page (B2)", async () => {
-  const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
   const server = await startFixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-b2-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -1106,7 +1102,7 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
     }
     return origDiscard(id);
   });
-  cleanup.push(() => {
+  cleanup.push(async () => {
     invSpy.mockRestore();
     discSpy.mockRestore();
   });
@@ -1136,7 +1132,6 @@ it("recovers when helper inventory and discard fail right as a parked tab reload
 }, 60_000);
 
 it("serializes a claim racing a held parked discard and returns a single live unfrozen page (F4)", async () => {
-  const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
   const server = await startFixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-f4-race-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -1176,7 +1171,10 @@ it("serializes a claim racing a held parked discard and returns a single live un
   await ledger2.openSurface({ surfaceId: surfaceIds[0]! });
 
   const internal2 = browser2 as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: {
+      lifecycle: ChromiumTabLifecycleBridge;
+      claimingSurfaceIds: Set<BrowserSurfaceId>;
+    };
   };
   const lifecycle2 = internal2.contextHandle.lifecycle;
   const origDiscard = lifecycle2.discardByTabIdDetailed.bind(lifecycle2);
@@ -1193,7 +1191,7 @@ it("serializes a claim racing a held parked discard and returns a single live un
     }
     return origDiscard(id);
   });
-  cleanup.push(() => {
+  cleanup.push(async () => {
     discardGate.resolve();
     discSpy.mockRestore();
   });
@@ -1204,7 +1202,10 @@ it("serializes a claim racing a held parked discard and returns a single live un
 
   // Claim surfaceIds[2] while its parked discard is held!
   const opening = ledger2.openSurface({ surfaceId: surfaceIds[2]! });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await vi.waitFor(
+    () => expect(internal2.contextHandle.claimingSurfaceIds.has(surfaceIds[2]!)).toBe(true),
+    { timeout: 2_000, interval: 10 },
+  );
   discardGate.resolve();
   await opening;
 

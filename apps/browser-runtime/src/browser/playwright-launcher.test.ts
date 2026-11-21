@@ -2340,6 +2340,13 @@ describe("native Chromium profiles", () => {
         cdpRouter: router,
         files,
         ledger,
+        replaceSiteCookies: async () => undefined,
+        signIns: {
+          holdsSession: () => false,
+          holdsSurface: () => false,
+          sessionDetached: () => undefined,
+          close: () => undefined,
+        } as never,
         sink,
         onSavedTabs: async (savedIds) => {
           await launched!.context.sessionRestore!.reconcile(savedIds);
@@ -2347,6 +2354,7 @@ describe("native Chromium profiles", () => {
       });
       await controller.start();
 
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       // Send session.saved keeping surfKept (so surfStale triggers the held removeByTabId).
       const savedRows = new Map([[surfKept, { id: surfKept }]]);
       const publisher = new KeyedStreamPublisher({
@@ -2370,7 +2378,9 @@ describe("native Chromium profiles", () => {
         }),
       );
 
-      // After the 6s reconcile deadline passes, listTabs MUST answer with cdp.result (NOT cdp.error)!
+      // Advance past the 6s reconcile deadline: listTabs MUST answer with cdp.result (NOT cdp.error)!
+      await vi.advanceTimersByTimeAsync(6_050);
+      vi.useRealTimers();
       await Promise.all([...savedPromises, listDone]);
       let listReply: (typeof sink.messages)[number] | undefined;
       await vi.waitFor(
@@ -2383,7 +2393,7 @@ describe("native Chromium profiles", () => {
           );
           expect(listReply).toBeDefined();
         },
-        { timeout: 8_000, interval: 25 },
+        { timeout: 2_000, interval: 10 },
       );
       expect(listReply?.type).toBe("cdp.result");
       // Restored pages stay out of pages() and handOff, and claim returns null (opens by address).
@@ -2397,6 +2407,7 @@ describe("native Chromium profiles", () => {
       releaseHeldRemove?.();
       await vi.waitFor(() => expect(tabs).toEqual([]), { timeout: 3_000, interval: 25 });
     } finally {
+      vi.useRealTimers();
       releaseHeldRemove?.();
       await controller?.close().catch(() => undefined);
       await ledger?.close().catch(() => undefined);
@@ -2407,7 +2418,7 @@ describe("native Chromium profiles", () => {
       await launched?.close();
       await rm(f.directory, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 
   it("retries failed sidecar map writes and deletes a stale map if it cannot be brought current (F1)", async () => {
     const f = await nativeCloseFixture();
@@ -2787,7 +2798,15 @@ describe("native Chromium profiles", () => {
 
       // While discard(601 -> 701) is in flight, a second reconcile removes surfS!
       const secondReconcile = launched.context.sessionRestore!.reconcile(new Set());
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      const f3Handle = (
+        launched as unknown as {
+          contextHandle: { removingSurfaceIds: Set<BrowserSurfaceId> };
+        }
+      ).contextHandle;
+      await vi.waitFor(() => expect(f3Handle.removingSurfaceIds.has(surfS)).toBe(true), {
+        timeout: 2_000,
+        interval: 10,
+      });
       discardGate.resolve();
       await secondReconcile;
 
@@ -2996,24 +3015,36 @@ describe("native Chromium profiles", () => {
         surfFrozen,
         "https://frozen-f4.test/",
       );
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      const handle = (
+        launched as unknown as {
+          contextHandle: {
+            claimingSurfaceIds: Set<BrowserSurfaceId>;
+            closeTarget?: (id: string) => Promise<void>;
+            activatePrivateAnchor(): Promise<void>;
+          };
+        }
+      ).contextHandle;
+      await vi.waitFor(() => expect(handle.claimingSurfaceIds.has(surfFrozen)).toBe(true), {
+        timeout: 2_000,
+        interval: 10,
+      });
       freezeGate.resolve();
       const claimed = await claiming;
       expect(claimed).toBe(null);
       expect(frozenPage.close).toHaveBeenCalled();
 
       // (d) closeTarget and bringToFront (activatePrivateAnchor) both have deadlines (never hang)!
-      const handle = (
-        launched as unknown as {
-          contextHandle: {
-            closeTarget?: (id: string) => Promise<void>;
-            activatePrivateAnchor(): Promise<void>;
-          };
-        }
-      ).contextHandle;
-      await expect(handle.closeTarget!("target-hung")).rejects.toThrow(/timed out/i);
-      await handle.activatePrivateAnchor();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const closeRejected = expect(handle.closeTarget!("target-hung")).rejects.toThrow(
+        /timed out/i,
+      );
+      const anchorDone = handle.activatePrivateAnchor();
+      await vi.advanceTimersByTimeAsync(2_100);
+      vi.useRealTimers();
+      await closeRejected;
+      await anchorDone;
     } finally {
+      vi.useRealTimers();
       freezeGate.resolve();
       invSpy.mockRestore();
       discSpy.mockRestore();
@@ -3022,7 +3053,7 @@ describe("native Chromium profiles", () => {
       await launched?.close();
       await rm(f.directory, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 });
 
 async function nativeCloseFixture(
