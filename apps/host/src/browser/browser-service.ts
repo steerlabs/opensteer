@@ -1501,10 +1501,14 @@ export class BrowserService {
     return [...occupants.values()];
   }
 
-  async #requireSession(ownerId: UserId, sessionId: BrowserSessionId): Promise<void> {
+  async #requireSession(
+    ownerId: UserId,
+    sessionId: BrowserSessionId,
+  ): Promise<BrowserSessionRecord> {
     const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
     if (!record || isTerminal(record.state))
       throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
+    return record;
   }
 
   async readTabIcon(
@@ -1536,32 +1540,67 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserContextCandidateInput,
   ): Promise<BrowserContextCandidate> {
-    await this.#requireSession(ownerId, input.sessionId);
-    const broker = this.#brokers.get(input.sessionId);
-    if (!broker?.live)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Update the browser computer to read this page.",
-      });
-    const response = await broker.requestCdp({
-      type: "cdp.command",
-      requestId: randomUUID(),
-      command: {
-        method: browserHostMethods.contextCandidate,
-        parameters: { surfaceId: input.tabId },
-      },
-    });
-    const candidate = BrowserContextCandidateSchema.parse(response.result);
-    if (candidate.sessionId !== input.sessionId || candidate.tabId !== input.tabId)
-      throw new OpensteerError({ code: "conflict", message: "The browser page changed." });
-    return {
-      sessionId: candidate.sessionId,
-      tabId: candidate.tabId,
-      documentId: candidate.documentId,
-      title: candidate.title,
-      url: candidate.url,
-      ...previousReleaseEligibility(new Date()),
+    const session = await this.#requireSession(ownerId, input.sessionId);
+    const pool = this.#poolTabTarget(session.runnerId);
+    const signal = pool
+      ? AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)])
+      : undefined;
+    const readTab = async () => {
+      const row = await this.#workspaceTabs?.get(ownerId, input.tabId);
+      if (row?.pageBinding?.sessionId !== session.id || row.pageBinding.surfaceId !== input.tabId)
+        throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
+      return row;
     };
+    const before = pool ? await readTab() : undefined;
+    const reservation =
+      pool && signal ? await this.#reservePool(pool.gate, signal, session.id) : undefined;
+    try {
+      const broker = this.#brokers.get(input.sessionId);
+      if (!broker?.live)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Update the browser computer to read this page.",
+        });
+      const response = await broker.requestCdp(
+        {
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: {
+            method: browserHostMethods.contextCandidate,
+            parameters: { surfaceId: input.tabId },
+          },
+        },
+        signal,
+        before
+          ? {
+              recheck: async () => {
+                const current = await this.#requireSession(ownerId, session.id);
+                const tab = await readTab();
+                if (
+                  current.runtimeId !== session.runtimeId ||
+                  current.runnerId !== session.runnerId ||
+                  tab.generation !== before.generation
+                )
+                  throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
+              },
+              submitted: () => {},
+            }
+          : undefined,
+      );
+      const candidate = BrowserContextCandidateSchema.parse(response.result);
+      if (candidate.sessionId !== input.sessionId || candidate.tabId !== input.tabId)
+        throw new OpensteerError({ code: "conflict", message: "The browser page changed." });
+      return {
+        sessionId: candidate.sessionId,
+        tabId: candidate.tabId,
+        documentId: candidate.documentId,
+        title: candidate.title,
+        url: candidate.url,
+        ...previousReleaseEligibility(new Date()),
+      };
+    } finally {
+      reservation?.release();
+    }
   }
 
   async #resolveIdentityOpen(
