@@ -890,3 +890,75 @@ it("aborts a park when a page was ended while its session was suspended", async 
     await f.close();
   }
 });
+
+it("ends a recovery that keeps failing at start in a discard and an open gate", async () => {
+  const f = await poolFixture("startup-discard");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    const slot = await f.slot();
+    const intent = await beginBrowserPoolPark(
+      f.database,
+      browserPoolSlotIdentity(slot!),
+      randomUUID(),
+      () => false,
+    );
+    await f.signed({
+      kind: "retire",
+      fence: f.runtime.poolState()!.fence!,
+      intent: { id: intent!.intentId!, sequence: intent!.intentSequence },
+    });
+    home.close();
+    // After the restart the runtime refuses every release: the recovery cannot abort.
+    const next = f.home(undefined, f.controller, {
+      runtime: {
+        poolState: () => f.runtime.poolState(),
+        controlPool: (control, signature) =>
+          control.kind === "release"
+            ? Promise.reject(new Error("The release never applies."))
+            : f.runtime.controlPool(control, signature),
+      },
+    });
+    await next.recover();
+    expect(next.gate.phase).toBe("open");
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(await f.slot()).toMatchObject({ phase: "running", epoch: 1 });
+    expect((await f.row())?.state).toBe("failed");
+    expect(f.page.isClosed()).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("reports a lost session whose end could not be confirmed without discarding the adoption", async () => {
+  const f = await poolFixture("end-unconfirmed");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    // The session is not reattached, and ending it fails.
+    f.skip.add(f.sessionId);
+    (f.runtime as unknown as { endPooledSession: () => Promise<void> }).endPooledSession =
+      async () => {
+        throw new Error("The page close could not be confirmed.");
+      };
+    const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
+    woken.release();
+    expect(f.runtime.poolState()).toMatchObject({
+      phase: "running",
+      adoption: {
+        outcome: {
+          adopted: [],
+          lost: [{ sessionId: f.sessionId, reason: "not-reattached; end-unconfirmed" }],
+        },
+      },
+    });
+    // No blanket discard: the controller saw no fresh start.
+    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
+  } finally {
+    await f.close();
+  }
+});
