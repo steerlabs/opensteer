@@ -545,6 +545,47 @@ describe("computer REPL worker boundary", () => {
     const { run } = setup(async () => ({ value: "x".repeat(1048577) }));
     expect((await run("await apps()")).isError).toBe(true);
   });
+  it.each([
+    [
+      "arguments",
+      "JSON.stringify = () => hostile; await sleep(1)",
+      "failed: Computer arguments exceed 1 MiB.",
+    ],
+    [
+      "printed text",
+      "Array.prototype.join = () => hostile; print('a')",
+      "output-limit: Computer output exceeded its byte limit.",
+    ],
+    [
+      "a returned value",
+      "JSON.stringify = () => hostile; return 1",
+      "output-limit: Computer output exceeded its byte limit.",
+    ],
+  ])(
+    "refuses %s that are not a string without running the guest's toString",
+    async (_place, code, refusal) => {
+      const { run } = setup();
+      // Coercing this would run guest code that builds a string until a limit stops it.
+      const hostile =
+        'const hostile = { toString() { let text = ""; for (;;) text += "x".repeat(1024); } };';
+      expect(output(await run(`${hostile} ${code}`))).toBe(refusal);
+    },
+  );
+  it("reads a thrown value's fields as strings the guest cut to their bounds", async () => {
+    const { run } = setup();
+    const result = await run(`throw {
+      code: "busy", next: "Try again.", message: "é".repeat(100_000),
+      performed: [1, ...Array.from({ length: 300 }, (_, i) => "step " + i)],
+    }`);
+    expect(result.structuredContent).toEqual({
+      error: {
+        code: "busy",
+        next: "Try again.",
+        message: "é".repeat(4096),
+        performed: Array.from({ length: 160 }, (_, i) => `step ${i}`),
+      },
+    });
+  });
   it("refuses oversized arguments by their length, before the Host copies them", async () => {
     const { run } = setup();
     expect(output(await run('await sleep("x".repeat(4 * 1024 * 1024))'))).toBe(

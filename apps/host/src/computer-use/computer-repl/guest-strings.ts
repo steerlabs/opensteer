@@ -9,11 +9,16 @@ import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten-core";
 // counted, and the copy is at most `limit` units.
 const maxCopiedBytesPerUnit = 9;
 
-/** The guest string's UTF-16 length, read without copying it; undefined for any other value. */
+/**
+ * The UTF-16 length of a guest string primitive, read without copying it or
+ * running guest code. Anything else, or a length that is not a safe
+ * non-negative integer (as when reading it fails), is undefined: a refusal.
+ */
 export function guestStringUnits(vm: QuickJSContext, value: QuickJSHandle): number | undefined {
   if (vm.typeof(value) !== "string") return undefined;
   using length = vm.getProp(value, "length");
-  return vm.getNumber(length);
+  const units = vm.getNumber(length);
+  return Number.isSafeInteger(units) && units >= 0 ? units : undefined;
 }
 
 /** Whether the guest string's UTF-8 bytes on the Host fit `limit`. */

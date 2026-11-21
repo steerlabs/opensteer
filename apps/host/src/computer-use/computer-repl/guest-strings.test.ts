@@ -60,3 +60,21 @@ it("reads nothing but strings", () => {
   expect(readGuestString(vm, number, mebibyte)).toBeUndefined();
   expect(guestStringFits(vm, number, mebibyte)).toBe(false);
 });
+
+it.each([Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY])(
+  "refuses a string whose length reads as %s, without copying it",
+  (units) => {
+    using value = guest('"x".repeat(10)');
+    const length = vi.spyOn(vm, "getNumber").mockReturnValue(units);
+    const copy = vi.spyOn(vm, "getString");
+    try {
+      expect(guestStringUnits(vm, value)).toBeUndefined();
+      expect(readGuestString(vm, value, mebibyte)).toBeUndefined();
+      expect(guestStringFits(vm, value, mebibyte)).toBe(false);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      length.mockRestore();
+      copy.mockRestore();
+    }
+  },
+);

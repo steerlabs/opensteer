@@ -564,6 +564,34 @@ describe("browser REPL", () => {
     expect(port.command).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    // The guest library captured JSON.stringify before any script ran.
+    [
+      "a request",
+      `JSON.stringify = () => hostile; ${bind} await page.cdp("Runtime.evaluate"); return "sent";`,
+      { content: [text("sent")] },
+    ],
+    ["a returned value", "JSON.stringify = () => hostile; return 1", { content: [text(1)] }],
+    [
+      "printed text",
+      "Array.prototype.join = () => hostile; print('a')",
+      {
+        structuredContent: {
+          error: { code: "output-limit", message: "Browser output exceeded its byte limit." },
+        },
+      },
+    ],
+  ])(
+    "never runs a replaced JSON.stringify or join's result's toString for %s",
+    async (_place, code, expected) => {
+      const { run } = setup();
+      // Coercing this would run guest code that builds a string until a limit stops it.
+      const hostile =
+        'const hostile = { toString() { let text = ""; for (;;) text += "x".repeat(1024); } };';
+      expect(await run(`${hostile} ${code}`)).toMatchObject(expected);
+    },
+  );
+
   it("reserves capture slots and producer credit before dispatch", async () => {
     const held = Promise.withResolvers<string>();
     const captures = vi.fn<BrowserUsePort["command"]>(() => held.promise);
