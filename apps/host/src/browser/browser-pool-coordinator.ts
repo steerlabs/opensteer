@@ -522,17 +522,16 @@ export class BrowserPoolCoordinator {
       );
     }
     this.#released?.noted.resolve();
-    if (slot?.phase === "releasing") {
-      // A failed status read is not knowing, never "stopped" (R2); only an applied stop or a
-      // status that reads stopped is evidence.
-      const status = await this.#status();
-      if (status.phase !== "stopped") {
-        const stopped = await this.#call(slot, "stop", status, true);
-        if (!stopped.applied && stopped.status.phase !== "stopped")
-          throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
-      }
-      await finishBrowserPoolRelease(this.#options.database, slot.runnerId);
+    // With or without a slot row the controller is asked: a guest started before its row was
+    // written is stopped too. A failed status read is not knowing, never "stopped" (R2); only an
+    // applied stop or a status that reads stopped is evidence.
+    const status = await this.#status();
+    if (status.phase !== "stopped") {
+      const stopped = await this.#call(slot, "stop", status, true);
+      if (!stopped.applied && stopped.status.phase !== "stopped")
+        throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
     }
+    await finishBrowserPoolRelease(this.#options.database, this.#options.runnerId);
     this.#slot = undefined;
     this.#ended = true;
     this.gate.set({ hold: "released" });

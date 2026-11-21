@@ -542,6 +542,38 @@ it("keeps a channel lost again while its attach is being finished as a new loss,
   }
 });
 
+it("stops a guest the controller reports for a removed device that never had a slot row", async () => {
+  const f = await poolFixture("removed-no-slot");
+  try {
+    // A Home started a guest and died before its slot row was written.
+    await f.controller.apply({
+      id: randomUUID(),
+      slotId: "slot-removed-no-slot",
+      term: 1,
+      kind: "start",
+      expect: { instance: null, epoch: null, phase: "stopped", savedStateId: null },
+    });
+    expect((await f.controller.status("slot-removed-no-slot", 1)).phase).toBe("running");
+    // The device was removed meanwhile.
+    await f.database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", f.task.runnerId)
+      .execute();
+    const home = f.home();
+    await home.recover();
+    await withTimeout(home.released(), 10_000, {
+      timeoutError: () => new Error("The removal did not end."),
+    });
+    expect(f.controller.effects).toEqual(["start", "stop"]);
+    expect((await f.controller.status("slot-removed-no-slot", 1)).phase).toBe("stopped");
+    expect(await f.slot()).toBeUndefined();
+    expect(home.gate.phase).toBe("released");
+  } finally {
+    await f.close();
+  }
+});
+
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
   try {
