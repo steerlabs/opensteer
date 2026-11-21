@@ -1,0 +1,269 @@
+import { randomUUID } from "node:crypto";
+import type {
+  GuestBoot,
+  GuestProcessState,
+  HypervisorDriver,
+  SavedImage,
+  SlotEgress,
+} from "./driver.js";
+
+type Operation =
+  | "boot"
+  | "sync"
+  | "pause"
+  | "resume"
+  | "snapshot"
+  | "restore"
+  | "stepClock"
+  | "kill"
+  | "openNetwork"
+  | "closeNetwork";
+
+interface Process {
+  readonly slotId: string;
+  readonly jailId: string;
+  state: "running" | "paused";
+  /** Set when this process's memory was saved: running it again makes that image unsafe. */
+  snapshotted: string | null;
+}
+
+/**
+ * A hypervisor with no VMs: processes, images and networks are records, faults and gates are
+ * injected, and the physical facts survive an agent restart (a new agent on the same driver),
+ * exactly as real processes and files would. It fails a test that ever runs two writers.
+ */
+export class FakeHypervisorDriver implements HypervisorDriver {
+  readonly startsEmpty: boolean;
+  readonly processes = new Map<string, Process>();
+  readonly images = new Map<string, { slotId: string; image: SavedImage; intact: boolean }>();
+  readonly networks = new Map<string, "open" | "closed">();
+  readonly prepared = new Set<string>();
+  readonly operations: string[] = [];
+  readonly violations: string[] = [];
+  /** Images whose source process ran again after they were taken: never to be loaded. */
+  readonly tainted = new Set<string>();
+  readonly loaded = new Map<string, number>();
+  #incarnation = randomUUID();
+  #fingerprint = "fake-host-1";
+  readonly #faults = new Map<Operation, { error?: Error; hang?: boolean; count: number }>();
+  readonly #gates = new Map<Operation, Promise<void>>();
+
+  constructor(options: { startsEmpty?: boolean } = {}) {
+    this.startsEmpty = options.startsEmpty ?? false;
+  }
+
+  /** The next `count` calls of `operation` fail with this error, or never answer. */
+  fail(operation: Operation, error: Error | "hang", count = 1): void {
+    this.#faults.set(operation, error === "hang" ? { hang: true, count } : { error, count });
+  }
+
+  /** Every `operation` waits for this promise before it acts. */
+  gate(operation: Operation, until: Promise<void> | undefined): void {
+    if (until) this.#gates.set(operation, until);
+    else this.#gates.delete(operation);
+  }
+
+  /** The host restarted: every process and every image is gone; the incarnation changes. */
+  restartHost(): void {
+    this.processes.clear();
+    this.images.clear();
+    this.networks.clear();
+    this.#incarnation = randomUUID();
+  }
+
+  /** The guest died and its saved state vanished, as a physical fact the agent must notice. */
+  loseGuest(slotId: string): void {
+    for (const [id, process] of this.processes)
+      if (process.slotId === slotId) this.processes.delete(id);
+    for (const [id, image] of this.images) if (image.slotId === slotId) this.images.delete(id);
+  }
+
+  corrupt(savedStateId: string): void {
+    const image = this.images.get(savedStateId);
+    if (image) image.intact = false;
+  }
+
+  /** A newer host software or hardware: no older image loads. */
+  changeFingerprint(value: string): void {
+    this.#fingerprint = value;
+  }
+
+  writers(slotId: string): number {
+    return [...this.processes.values()].filter((process) => process.slotId === slotId).length;
+  }
+
+  async incarnation(): Promise<string> {
+    return this.#incarnation;
+  }
+
+  async fingerprint(): Promise<string> {
+    return this.#fingerprint;
+  }
+
+  async prepareSlot(slotId: string, _egress: SlotEgress | undefined): Promise<void> {
+    this.prepared.add(slotId);
+    this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
+  }
+
+  async removeSlot(slotId: string): Promise<void> {
+    this.prepared.delete(slotId);
+    this.networks.delete(slotId);
+  }
+
+  async openNetwork(slotId: string): Promise<void> {
+    await this.#enter("openNetwork", slotId);
+    this.networks.set(slotId, "open");
+  }
+
+  async closeNetwork(slotId: string): Promise<void> {
+    await this.#enter("closeNetwork", slotId);
+    this.networks.set(slotId, "closed");
+  }
+
+  async boot(boot: GuestBoot, _signal: AbortSignal): Promise<void> {
+    await this.#enter("boot", boot.slotId);
+    this.#oneWriter(boot.slotId);
+    this.processes.set(boot.jailId, {
+      slotId: boot.slotId,
+      jailId: boot.jailId,
+      state: "running",
+      snapshotted: null,
+    });
+  }
+
+  async sync(slotId: string, jailId: string): Promise<void> {
+    await this.#enter("sync", slotId);
+    this.#process(jailId, "running");
+  }
+
+  async pause(slotId: string, jailId: string): Promise<void> {
+    await this.#enter("pause", slotId);
+    this.#process(jailId, "running").state = "paused";
+  }
+
+  async resume(slotId: string, jailId: string): Promise<void> {
+    await this.#enter("resume", slotId);
+    const process = this.#process(jailId, "paused");
+    if (process.snapshotted) {
+      // Its image may never be loaded now; the agent must have deleted it already.
+      if (this.images.has(process.snapshotted))
+        this.violations.push(`resumed ${jailId} while its image ${process.snapshotted} exists`);
+      this.tainted.add(process.snapshotted);
+      process.snapshotted = null;
+    }
+    process.state = "running";
+  }
+
+  async snapshot(slotId: string, jailId: string, savedStateId: string): Promise<SavedImage> {
+    await this.#enter("snapshot", slotId);
+    const process = this.#process(jailId, "paused");
+    process.snapshotted = savedStateId;
+    const image: SavedImage = {
+      savedStateId,
+      sourceJailId: jailId,
+      files: [
+        {
+          name: "vmstate",
+          size: 24_580,
+          inode: 1,
+          mtimeNs: "1",
+          ctimeNs: "1",
+          sha256: "0".repeat(64),
+        },
+        { name: "memory", size: 1 << 30, inode: 2, mtimeNs: "1", ctimeNs: "1", sha256: null },
+      ],
+      fingerprint: this.#fingerprint,
+      writtenAt: new Date().toISOString(),
+    };
+    this.images.set(savedStateId, { slotId, image, intact: true });
+    return image;
+  }
+
+  async restore(boot: GuestBoot, image: SavedImage): Promise<void> {
+    await this.#enter("restore", boot.slotId);
+    const stored = this.images.get(image.savedStateId);
+    if (!stored || !stored.intact) throw new Error("The image is missing or damaged.");
+    if (this.tainted.has(image.savedStateId))
+      this.violations.push(`loaded ${image.savedStateId} after its source ran again`);
+    this.loaded.set(image.savedStateId, (this.loaded.get(image.savedStateId) ?? 0) + 1);
+    if (this.loaded.get(image.savedStateId)! > 1)
+      this.violations.push(`loaded ${image.savedStateId} twice`);
+    this.#oneWriter(boot.slotId);
+    // Loading consumes the image: its files are unlinked once mapped.
+    this.images.delete(image.savedStateId);
+    this.processes.set(boot.jailId, {
+      slotId: boot.slotId,
+      jailId: boot.jailId,
+      state: "paused",
+      snapshotted: null,
+    });
+  }
+
+  async stepClock(slotId: string, jailId: string): Promise<void> {
+    await this.#enter("stepClock", slotId);
+    this.#process(jailId, "running");
+  }
+
+  async verify(_slotId: string, image: SavedImage): Promise<boolean> {
+    const stored = this.images.get(image.savedStateId);
+    return !!stored && stored.intact && image.fingerprint === this.#fingerprint;
+  }
+
+  async discard(_slotId: string, savedStateId: string): Promise<void> {
+    this.images.delete(savedStateId);
+  }
+
+  async inspect(_slotId: string, jailId: string): Promise<GuestProcessState> {
+    return this.processes.get(jailId)?.state ?? "absent";
+  }
+
+  async kill(slotId: string): Promise<void> {
+    await this.#enter("kill", slotId);
+    for (const [id, process] of this.processes)
+      if (process.slotId === slotId) this.processes.delete(id);
+  }
+
+  async sweep(
+    known: ReadonlyMap<string, { jailId: string | null; savedStateId: string | null }>,
+  ): Promise<readonly string[]> {
+    const removed: string[] = [];
+    for (const [id, process] of this.processes) {
+      if (known.get(process.slotId)?.jailId !== id) {
+        this.processes.delete(id);
+        removed.push(`process:${id}`);
+      }
+    }
+    for (const [id, image] of this.images) {
+      if (known.get(image.slotId)?.savedStateId !== id) {
+        this.images.delete(id);
+        removed.push(`image:${id}`);
+      }
+    }
+    return removed;
+  }
+
+  #oneWriter(slotId: string): void {
+    if (this.writers(slotId) > 0) this.violations.push(`two writers of ${slotId}`);
+  }
+
+  #process(jailId: string, state: Process["state"]): Process {
+    const process = this.processes.get(jailId);
+    if (!process) throw new Error(`No process ${jailId}.`);
+    if (process.state !== state)
+      throw new Error(`Process ${jailId} is ${process.state}, not ${state}.`);
+    return process;
+  }
+
+  async #enter(operation: Operation, slotId: string): Promise<void> {
+    this.operations.push(`${operation}:${slotId}`);
+    const gate = this.#gates.get(operation);
+    if (gate) await gate;
+    const fault = this.#faults.get(operation);
+    if (fault) {
+      fault.count -= 1;
+      if (fault.count <= 0) this.#faults.delete(operation);
+      if (fault.hang) await new Promise<never>(() => {});
+      throw fault.error!;
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@opensteer/pool-agent",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./test-support": "./src/test-support.ts"
+  },
+  "scripts": {
+    "build": "tsup",
+    "start": "node dist/main.js",
+    "test": "vitest run --root ../.. apps/pool-agent",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/browser-runtime-core": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
