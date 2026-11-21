@@ -1,18 +1,33 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { test } from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { parseHostConfig } from "../packages/config/src/config.ts";
 import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs";
 import {
+  accountFixtureRoute,
   assertBuildSpace,
+  builderPlatforms,
+  checkoutTemporaryDirectory,
+  installerContents,
   homeImageBuilds,
   platformSummary,
   quote,
   redact,
   requiredFreeKiB,
+  verifierTarget,
 } from "./verify-home-deployment-support.mjs";
 
 await test("loads ARM64 for the deployment proof first and builds AMD64 only afterwards", () => {
@@ -53,6 +68,197 @@ await test("loads ARM64 for the deployment proof first and builds AMD64 only aft
     platformSummary({ proofPassed: true, buildOnly: true }),
     "The linux/arm64 deployment proof passed; the linux/amd64 Home image build passed.",
   );
+});
+
+await test("the Colima target is the default and keeps its socket, root shell and ARM64 proof", () => {
+  const target = verifierTarget({
+    env: {},
+    home: "/Users/proof",
+    os: "darwin",
+    arch: "arm64",
+    builder: "test-builder",
+  });
+  assert.deepEqual(target, {
+    name: "colima",
+    dockerHost: "unix:///Users/timjang/.colima/default/docker.sock",
+    rootShell: ["colima", ["ssh", "--", "sudo", "-n", "bash", "-s"]],
+    shellLabel: "Colima",
+    checkoutLabel: "macOS",
+    builderDirectory: "/Users/proof/.colima/test-builder",
+    checkoutSpacePath: "/Users/proof/.colima",
+    fixtureHost: "host.lima.internal",
+    fixtureRoute: "forward-to-fixture-host",
+    proofPlatform: "linux/arm64",
+    requireBuilderPlatform: false,
+  });
+  assert.deepEqual(
+    verifierTarget({
+      env: { OPENSTEER_HOME_VERIFIER_TARGET: "colima" },
+      home: "/Users/proof",
+      os: "darwin",
+      arch: "arm64",
+      builder: "test-builder",
+    }),
+    target,
+  );
+});
+
+await test("the local target uses this Linux machine's Docker, sudo and native platform", () => {
+  const local = (arch, os = "linux") =>
+    verifierTarget({
+      env: { OPENSTEER_HOME_VERIFIER_TARGET: "local" },
+      home: "/home/proof",
+      os,
+      arch,
+      builder: "test-builder",
+    });
+  assert.deepEqual(local("x64"), {
+    name: "local",
+    dockerHost: "unix:///var/run/docker.sock",
+    rootShell: ["sudo", ["-n", "bash", "-s"]],
+    shellLabel: "Local root shell",
+    checkoutLabel: "Linux",
+    builderDirectory: "/home/proof/.cache/test-builder",
+    checkoutSpacePath: "/home/proof/.cache/test-builder",
+    fixtureHost: "localhost",
+    fixtureRoute: "local-address",
+    proofPlatform: "linux/amd64",
+    requireBuilderPlatform: true,
+  });
+  assert.equal(local("arm64").proofPlatform, "linux/arm64");
+  assert.throws(() => local("x64", "darwin"), /runs on the Linux machine it verifies/u);
+  assert.throws(() => local("ia32"), /no image platform for ia32/u);
+  assert.throws(
+    () =>
+      verifierTarget({
+        env: { OPENSTEER_HOME_VERIFIER_TARGET: "remote" },
+        home: "/home/proof",
+        os: "linux",
+        arch: "x64",
+        builder: "test-builder",
+      }),
+    /must be colima or local, not remote/u,
+  );
+});
+
+await test("an AMD64 proof loads AMD64 and builds ARM64 only afterwards", () => {
+  const builds = homeImageBuilds("test-builder", "linux/amd64");
+  assert.equal(builds.proof.platform, "linux/amd64");
+  assert.deepEqual(builds.proof.args.slice(-4), [
+    "--set",
+    "home-*.platform=linux/amd64",
+    "--load",
+    "home",
+  ]);
+  assert.equal(builds.buildOnly.platform, "linux/arm64");
+  assert.ok(builds.buildOnly.args.includes("home-*.platform=linux/arm64"));
+  assert.ok(builds.buildOnly.args.includes("home-*.output=type=cacheonly"));
+  assert.equal(
+    platformSummary({
+      proofPassed: true,
+      buildOnly: undefined,
+      proofPlatform: "linux/amd64",
+      buildOnlyPlatform: "linux/arm64",
+    }),
+    "The linux/amd64 deployment proof passed; the linux/arm64 Home image build did not run.",
+  );
+});
+
+await test("builder platforms are read from buildx inspect, including default markers", () => {
+  const inspected = [
+    "Name:          opensteer-home-verifier",
+    "Driver:        docker-container",
+    "Nodes:",
+    "Name:                  opensteer-home-verifier0",
+    "Status:                running",
+    "Platforms:             linux/amd64*, linux/amd64/v2, linux/amd64/v3, linux/386",
+  ].join("\n");
+  assert.deepEqual(builderPlatforms(inspected), [
+    "linux/amd64",
+    "linux/amd64/v2",
+    "linux/amd64/v3",
+    "linux/386",
+  ]);
+  assert.ok(!builderPlatforms(inspected).includes("linux/arm64"));
+  assert.deepEqual(builderPlatforms("Name: stopped"), []);
+});
+
+await test("the verifier's working directory is created in a fresh checkout without .opensteer", () => {
+  const checkout = mkdtempSync(resolve(tmpdir(), "home-proof-checkout-"));
+  try {
+    const directory = checkoutTemporaryDirectory(checkout);
+    assert.ok(directory.startsWith(resolve(checkout, ".opensteer", "home-proof-")));
+    assert.ok(existsSync(directory));
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+await test("the verifier fetches and removes the PostgreSQL image the Compose recipe pins", () => {
+  const verifier = readFileSync(resolve(import.meta.dirname, "verify-home-deployment.mjs"), "utf8");
+  const recipe = readFileSync(resolve(import.meta.dirname, "../deploy/home/compose.yaml"), "utf8");
+  const pinned = recipe.match(/^ {4}image: (postgres:\S+)$/mu)?.[1];
+  assert.ok(pinned);
+  assert.ok(
+    verifier.includes(`"${pinned}"`),
+    "The verifier's postgresImage must match compose.yaml",
+  );
+  assert.match(verifier, /docker\(\["pull", "--quiet", postgresImage\]\)/u);
+});
+
+await test("the Host CDP fixture finds its anchor after the bundler renames the local", async () => {
+  const { injectCdpFixture } = await import("./verify-home-deployment-cdp.mjs");
+  for (const name of ["address", "address2"]) {
+    const bundled = `async function main() {\n  const ${name} = await runtime.listen();\n  log(${name});\n}`;
+    assert.equal(
+      injectCdpFixture(bundled),
+      `async function main() {\n  const ${name} = await runtime.listen();\nglobalThis.opensteerHomeProofCdp(runtime);\n  log(${name});\n}`,
+    );
+  }
+  assert.throws(() => injectCdpFixture("await runtime.start();"), /fixture anchor/u);
+});
+
+await test("the Account fixture's public-looking address is local on Linux and forwarded on Colima", () => {
+  const local = verifierTarget({
+    env: { OPENSTEER_HOME_VERIFIER_TARGET: "local" },
+    home: "/home/proof",
+    os: "linux",
+    arch: "x64",
+    builder: "test-builder",
+  });
+  assert.deepEqual(accountFixtureRoute(local, "11.1.2.3", 4000), {
+    add: "ip address add 11.1.2.3/32 dev lo",
+    remove: "ip address del 11.1.2.3/32 dev lo || true",
+  });
+  const colima = verifierTarget({
+    env: {},
+    home: "/Users/proof",
+    os: "darwin",
+    arch: "arm64",
+    builder: "test-builder",
+  });
+  const route = accountFixtureRoute(colima, "11.1.2.3", 4000);
+  for (const chain of ["OUTPUT", "PREROUTING"]) {
+    assert.match(
+      route.add,
+      new RegExp(
+        `iptables -t nat -I ${chain} -d 11\\.1\\.2\\.3/32 -p tcp --dport 4000 -j DNAT`,
+        "u",
+      ),
+    );
+    assert.match(route.remove, new RegExp(`iptables -t nat -D ${chain} -d 11\\.1\\.2\\.3/32`, "u"));
+  }
+  assert.match(route.add, /getent ahostsv4 host\.lima\.internal/u);
+});
+
+await test("the managed proof claims through the Account and never signs in with a password", () => {
+  const verifier = readFileSync(resolve(import.meta.dirname, "verify-home-deployment.mjs"), "utf8");
+  const managed = verifier.slice(verifier.indexOf("async function managedProof("));
+  const body = managed.slice(0, managed.indexOf("\nfunction prepareBuilder("));
+  assert.doesNotMatch(body, /auth\.password\.signIn|auth\.setup\.(exchange|claim)/u);
+  assert.match(body, /managedHome: \{ cloudComputerId/u);
+  assert.match(body, /accountClaim\(api, generations\[0\]/u);
+  assert.match(body, /accountClaim\(restoredApi, generations\[1\]/u);
 });
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
@@ -136,6 +342,509 @@ function runRecovery(script) {
     { encoding: "utf8" },
   );
 }
+
+function runHome(script) {
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      `
+    set -euo pipefail
+    OPENSTEER_HOME_DIR=$(mktemp -d)
+    export OPENSTEER_HOME_DIR
+    trap 'command rm -rf -- "$OPENSTEER_HOME_DIR"' EXIT
+    source deploy/home/common.sh
+    sync() { :; }
+    ${script}
+  `,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
+const releaseManifest = (version, tag) =>
+  JSON.stringify({
+    version,
+    images: Object.fromEntries(
+      ["host", "gateway", "runner", "browser-runtime", "browser-egress", "channel-runtime"].map(
+        (service) => [service, `local/opensteer-home-${service}:${tag}`],
+      ),
+    ),
+  });
+
+const homeServices = [
+  "host",
+  "gateway",
+  "runner",
+  "browser-runtime",
+  "browser-egress",
+  "channel-runtime",
+];
+
+/** An installed Home in a temporary directory, its old recipe and release, and stubs that log. */
+const installedHome = ({ state = "required", fetch = "ok", start = "ok", running = true } = {}) => `
+    log=$(mktemp); staging=$(mktemp -d)
+    printf '%s\\n' ${quote(releaseManifest("1.0.0", "old"))} > "$staging/old.json"
+    printf '%s\\n' ${quote(releaseManifest("1.0.1", "new"))} > "$staging/new.json"
+    for name in "\${recipe_files[@]}" chromium-oci.json runner-oci.json; do echo old > "$home_dir/$name"; done
+    printf 'tls internal\\n' > "$home_dir/tls.caddy"
+    printf "OPENSTEER_HOME_HOSTNAME=home.example.test\\n" > "$home_dir/config.env"
+    release_to_env "$staging/old.json" "$home_dir/images.env" false
+    cp "$staging/old.json" "$staging/old-manifest.json"
+    mkdir "$staging/run"
+    checksums() { (cd "$home_dir" && find . -type f | LC_ALL=C sort | xargs cksum); }
+    checksums > "$staging/before"
+    compose() {
+      case $1 in
+        config) printf '%s' '{"services":{"gateway":{"environment":{"OPENSTEER_HOME_HOSTNAME":"home.example.test"}}},"volumes":{"postgres-data":{"name":"proof_postgres-data"}}}' ;;
+        ps) ${running ? "echo hostcontainer" : ":"} ;;
+        *) echo "compose $*" >> "$log" ;;
+      esac
+    }
+    docker() { echo "docker $*" >> "$log"; false; }
+    claimed_state() { echo ${state}; }
+    fetch_release_images() { echo "fetch $2" >> "$log"; ${fetch === "ok" ? "true" : "false"}; }
+    install_sandbox_policies() { echo new > "$1/chromium-oci.json"; echo new > "$1/runner-oci.json"; }
+    start_pod() {
+      local version; version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env")
+      echo "start $version" >> "$log"
+      ${start === "ok" ? "true" : "[[ $version == 1.0.0 ]]"}
+    }
+    rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home" "$staging/run"); }
+    report() { status=$1; checksums > "$staging/after"; if cmp -s "$staging/before" "$staging/after"; then echo unchanged; else echo changed; fi; cat "$log"; echo "status $status"; }
+`;
+
+await test("the installer run again on a claimed, managed or mismatched Home changes nothing", () => {
+  const cases = [
+    {
+      setup: installedHome({ state: "complete" }),
+      run: 'rerun home.example.test "$staging/new.json" false true',
+      message:
+        /This Home is already claimed, so the installer will not change it\. Change its release with: sudo opensteer-home update \/.*\/new\.json\. Or remove it with: sudo opensteer-home uninstall --purge\. Nothing was changed\./u,
+    },
+    {
+      setup: `${installedHome()} touch "$home_dir/managed"; checksums > "$staging/before"`,
+      run: 'rerun home.example.test "$staging/new.json" false true',
+      message:
+        /This Home is managed by its Opensteer account; the installer run by hand does not change it\. Nothing was changed\./u,
+    },
+    {
+      setup: installedHome({ state: "complete" }),
+      run: "rerun home.example.test '' true true",
+      message:
+        /--local-images applies to the release given with --manifest\. Nothing was changed\./u,
+    },
+    {
+      setup: installedHome(),
+      run: 'rerun other.example.test "$staging/new.json" false true',
+      message: /This installation already uses home\.example\.test\. Nothing was changed\./u,
+    },
+    {
+      setup: installedHome(),
+      run: 'rerun home.example.test "$staging/new.json" false false',
+      message:
+        /This Home was installed with --local, and the installer does not change that\. Nothing was changed\./u,
+    },
+    {
+      setup: installedHome({ running: false }),
+      run: 'docker() { true; }; rerun home.example.test "$staging/new.json" false true',
+      message:
+        /Could not tell whether this Home was claimed\. Start it with: sudo opensteer-home start\./u,
+    },
+    {
+      setup: installedHome({ fetch: "fails" }),
+      run: 'rerun home.example.test "$staging/new.json" true true',
+      message: /The release's images could not be obtained\. Nothing was changed\./u,
+      log: "fetch true\n",
+    },
+  ];
+  for (const { setup, run, message, log = "" } of cases) {
+    const result = runHome(`${setup}
+      ${run} && report 0 || report $?`);
+    assert.equal(result.stdout, `unchanged\n${log}status 1\n`, result.stderr);
+    assert.match(result.stderr, message);
+  }
+});
+
+await test("the installer run again on an unclaimed Home replaces it, or puts it back when it does not start", () => {
+  const replaced = runHome(`${installedHome()}
+    rerun home.example.test "$staging/new.json" true true && status=0 || status=$?
+    echo "status $status"; cat "$log"
+    sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env"
+    test -f "$home_dir/local-images" && echo local-images
+    cmp -s "$home_dir/common.sh" deploy/home/common.sh && echo recipe-replaced
+    cat "$home_dir/runner-oci.json"`);
+  assert.equal(
+    replaced.stdout,
+    [
+      "This Home was never claimed. It now runs release 1.0.1.",
+      "The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.",
+      "status 0",
+      "fetch true",
+      "compose down",
+      "start 1.0.1",
+      "1.0.1",
+      "local-images",
+      "recipe-replaced",
+      "new",
+      "",
+    ].join("\n"),
+    replaced.stderr,
+  );
+  const restored = runHome(`${installedHome({ start: "new release fails" })}
+    rerun home.example.test "$staging/new.json" true true && report 0 || report $?`);
+  assert.equal(
+    restored.stdout,
+    "unchanged\nfetch true\ncompose down\nstart 1.0.1\nstart 1.0.0\nstatus 1\n",
+    restored.stderr,
+  );
+  assert.match(
+    restored.stderr,
+    /The new release did not start\. Putting the previous one back\.\nThe Home is back on its previous release\./u,
+  );
+});
+
+await test("the installer decides about an installed Home before it writes anything", () => {
+  const installer = readFileSync("deploy/home/install.sh", "utf8");
+  const rerun = installer.indexOf("rerun_installed_home ");
+  assert.ok(rerun > 0);
+  for (const write of [
+    'install -d -m 0700 "$home_dir/secrets"',
+    'install_recipe "$source_dir" "$home_dir"',
+    "/usr/local/bin/opensteer-home",
+  ])
+    assert.ok(installer.indexOf(write) > rerun, `${write} runs before the rerun is decided`);
+  assert.match(
+    installer,
+    /if \[\[ -z \$managed && -f "\$home_dir\/config\.env" \]\]; then\n  # An installed Home/u,
+  );
+  assert.match(installer, /if ! \$prepare && owns_operator_command; then/u);
+  assert.match(
+    installer,
+    /\[\[ -z \$hostname && -z \$manifest && -n \$token_path \]\] && ! \$local_images \|\| usage/u,
+  );
+  assert.match(
+    readFileSync("deploy/home/install-scheduler.sh", "utf8"),
+    /if \[\[ \$unit == opensteer-home && \$home_dir == \/etc\/opensteer-home \]\]; then/u,
+  );
+});
+
+await test("only the default Home owns the command on the path, and purge removes only its own files", () => {
+  const owner = runHome(`
+    owns_operator_command && echo temp-owns || echo temp-does-not-own
+    home_dir=/etc/opensteer-home; owns_operator_command && echo default-owns
+    OPENSTEER_HOME_UNIT_PREFIX=opensteer-home-proof owns_operator_command || echo prefixed-does-not-own`);
+  assert.equal(
+    owner.stdout,
+    "temp-does-not-own\ndefault-owns\nprefixed-does-not-own\n",
+    owner.stderr,
+  );
+  const purged = runHome(`
+    mkdir -p "$home_dir/"{secrets,boot,backup.abc123,install.def456,update.ghi789,restore.pending.retired}
+    touch "$home_dir/"{config.env,backup.resume,local-images,runner-apparmor.name,images.env.Xy12Ab} "$home_dir/someone-else.txt"
+    printf 'opensteer-home-proof\n' > "$home_dir/unit-prefix"
+    installed_unit_prefix
+    remove_home_files
+    remove_home_files
+    installed_unit_prefix
+    (cd "$home_dir" && find . -mindepth 1 | LC_ALL=C sort)`);
+  assert.equal(purged.status, 0, purged.stderr);
+  assert.equal(
+    purged.stdout,
+    "opensteer-home-proof\nopensteer-home\n./images.env.Xy12Ab\n./someone-else.txt\n",
+  );
+  const stopped = runHome(`
+    compose() { echo "compose $* with $(sed -n 's/^OPENSTEER_HOME_HOST_IMAGE=//p' "$release_env")"; }
+    compose_down_home --volumes
+    ls "$home_dir" | grep -c placeholder || true`);
+  assert.equal(stopped.stdout, "compose down --volumes with placeholder\n0\n", stopped.stderr);
+  const apparmor = runHome(`
+    printf 'proof-runner-userns\\n' > "$home_dir/runner-apparmor.name"
+    apparmor_parser() { echo "unload $*"; return 1; }
+    remove_runner_apparmor
+    test ! -e "$home_dir/runner-apparmor.name" && echo name-removed`);
+  assert.equal(apparmor.status, 0, apparmor.stderr);
+  assert.equal(apparmor.stdout, "name-removed\n");
+  const home = readFileSync("deploy/home/opensteer-home", "utf8");
+  assert.ok(home.indexOf("[[ $EUID == 0 ]]") < home.indexOf('source "$home_dir/common.sh"'));
+  assert.ok(
+    home.indexOf("$(stat -c '%u:%a' \"$home_dir\") != 0:700") <
+      home.indexOf('source "$home_dir/common.sh"'),
+  );
+  assert.match(home, /if owns_operator_command; then rm -f \/usr\/local\/bin\/opensteer-home; fi/u);
+  assert.match(
+    home,
+    /if \[\[ -f "\$own_dir\/common\.sh" && -f "\$own_dir\/install-scheduler\.sh" \]\]; then default_dir=\$own_dir; fi/u,
+  );
+});
+
+await test("a Home installed with local images checks the machine's images instead of pulling them", () => {
+  const composeConfig = JSON.stringify({
+    services: Object.fromEntries(
+      homeServices.map((service) => [service, { image: `local/opensteer-home-${service}:1.2.3` }]),
+    ),
+  });
+  const stubs = `
+    compose() {
+      if [[ $1 == config ]]; then printf '%s' ${quote(composeConfig)}; else echo "compose $*"; fi
+    }
+    check_release_stamps() { echo "stamps $1"; }
+  `;
+  const pulled = runHome(`${stubs}
+    touch "$home_dir/local-images"
+    docker() { echo "docker $*"; }
+    fetch_release_images "$home_dir/images.env" false`);
+  assert.equal(pulled.status, 0, pulled.stderr);
+  assert.equal(pulled.stdout, "compose pull --quiet\n");
+  const local = runHome(`${stubs}
+    docker() { [[ $1 == image && $2 == inspect ]]; }
+    fetch_release_images "$home_dir/images.env" true`);
+  assert.equal(local.status, 0, local.stderr);
+  assert.match(local.stdout, /^compose pull --quiet postgres\nstamps \/.*\/images\.env\n$/u);
+  const missing = runHome(`${stubs}
+    docker() { [[ $3 != local/opensteer-home-runner:1.2.3 && $3 != local/opensteer-home-host:1.2.3 ]]; }
+    fetch_release_images "$home_dir/images.env" true`);
+  assert.notEqual(missing.status, 0);
+  assert.match(
+    missing.stderr,
+    /These Home images are not on this machine: local\/opensteer-home-host:1\.2\.3 local\/opensteer-home-runner:1\.2\.3\. Build them with: sudo bash deploy\/home\/build-images\.sh/u,
+  );
+  assert.doesNotMatch(missing.stdout, /stamps/u);
+});
+
+/**
+ * A Home whose backup runs restic's container scripts here, against a fake restic: they decide
+ * what is reported, so they run as written, with only /backups and /tmp moved.
+ */
+function backupHome(t) {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-backup-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bin = resolve(directory, "bin");
+  const backups = resolve(directory, "backups");
+  const home = resolve(directory, "home");
+  for (const path of [bin, backups, home]) mkdirSync(path);
+  writeFileSync(resolve(backups, "accessKeyId"), "key");
+  writeFileSync(resolve(backups, "secretAccessKey"), "secret");
+  writeFileSync(
+    resolve(bin, "restic"),
+    `#!/bin/sh
+case "$*" in
+  *"cat config"*)
+    case $RESTIC_REPOSITORY in
+      wrong-password) echo 'Fatal: wrong password or no key found' >&2; exit 12 ;;
+      new) echo 'Fatal: repository does not exist: unable to open config file' >&2; exit 10 ;;
+      unreachable) echo 'Stat(<config/>) returned error, retrying after 557ms: dial tcp 192.0.2.1:443: connect: connection refused' >&2; exec sleep 3 ;;
+      *) exit 0 ;;
+    esac ;;
+  *init*) echo "created restic repository" ;;
+  *"snapshots --latest 1"*) exit 0 ;;
+  *backup*)
+    echo '{"message_type":"status","percent_done":0.5,"files_done":3,"total_files":6}'
+    case $RESTIC_REPOSITORY in
+      slow) exec sleep 5 ;;
+      failing) echo 'Fatal: unable to save snapshot: connection reset by peer' >&2; exit 1 ;;
+    esac
+    echo '{"message_type":"summary","snapshot_id":"0123abcd"}' ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    resolve(bin, "timeout"),
+    `#!/bin/sh
+seconds=$1; shift
+"$@" & pid=$!
+( sleep "$seconds"; kill -TERM "$pid" 2>/dev/null ) & killer=$!
+wait "$pid"; status=$?
+kill "$killer" 2>/dev/null
+if [ "$status" -ge 128 ]; then exit 124; fi
+exit "$status"
+`,
+    { mode: 0o755 },
+  );
+  const script = `
+    set -euo pipefail
+    export OPENSTEER_HOME_DIR=${quote(home)}
+    source deploy/home/common.sh
+    source deploy/home/backup.sh
+    sync() { :; }
+    backup_check_seconds=1
+    backup_config() { :; }
+    restore_state() { volume_set=proof; identity_secrets="$home_dir"; }
+    compose() {
+      if [[ $1 == config ]]; then printf '%s' '{"name":"proof","services":{"gateway":{"environment":{"OPENSTEER_HOME_HOSTNAME":"home.example.test"}}}}'
+      else echo "compose $*"; fi
+    }
+    durable_marker() { :; }
+    postgres_tool() { echo database; }
+    start_pod() { echo started; }
+    touch "$home_dir/auth_secret" "$home_dir/environment_id"
+    restic_container() {
+      local script=\${1//\\/backups\\//${backups}/} argument arguments=()
+      script=\${script//\\/tmp\\//${backups}/}
+      shift
+      for argument in "$@"; do
+        argument=\${argument//\\/backups\\//${backups}/}
+        arguments+=("\${argument//\\/tmp\\//${backups}/}")
+      done
+      PATH=${quote(bin)}:$PATH sh -euc "$script" home-backup "\${arguments[@]}"
+    }
+    backup_command backup
+  `;
+  const run = (repository) =>
+    spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, RESTIC_REPOSITORY: repository },
+    });
+  const start = (repository) =>
+    spawn("bash", ["-c", script], {
+      env: { ...process.env, RESTIC_REPOSITORY: repository },
+    });
+  return { home, run, start };
+}
+
+const checking =
+  "Checking that the backup repository can be reached and written (at most 1 seconds).\n";
+
+await test("the backup check reports what restic said, within one deadline, before anything stops", (t) => {
+  const { run } = backupHome(t);
+  const wrong = run("wrong-password");
+  assert.equal(wrong.status, 1);
+  assert.equal(wrong.stdout, checking);
+  assert.match(
+    wrong.stderr,
+    /Fatal: wrong password or no key found\nThe backup repository could not be reached or written\. The Home was not stopped\./u,
+  );
+  const started = Date.now();
+  const unreachable = run("unreachable");
+  assert.ok(Date.now() - started < 3_000, "the check ran past its deadline");
+  assert.equal(unreachable.status, 1);
+  assert.equal(unreachable.stdout, checking);
+  assert.match(
+    unreachable.stderr,
+    /connection refused\nThe backup repository did not answer within 1 seconds\. The Home was not stopped\./u,
+  );
+  const created = run("new");
+  assert.equal(created.status, 0, created.stderr);
+  assert.doesNotMatch(created.stderr, /does not exist/u);
+  assert.match(created.stdout, /Stopping Home services/u);
+});
+
+await test("a backup shows its progress and starts the Home again after a late failure", (t) => {
+  const { home, run } = backupHome(t);
+  const saved = run("ready");
+  assert.equal(saved.status, 0, saved.stderr);
+  assert.equal(
+    saved.stdout,
+    [
+      checking.trimEnd(),
+      "Stopping Home services to capture the database and files together.",
+      "compose stop host gateway runner browser-runtime browser-egress channel-runtime",
+      "Saving the database.",
+      "Uploading the encrypted snapshot.",
+      "Uploaded 50% (3 of 6 files)",
+      "snapshot 0123abcd saved",
+      "Starting Home services.",
+      "started",
+      "",
+    ].join("\n"),
+  );
+  const failed = run("failing");
+  assert.equal(failed.status, 1);
+  assert.match(failed.stdout, /compose stop .*\n.*started\n$/su);
+  assert.match(
+    failed.stderr,
+    /connection reset by peer\nIts unfinished files were removed\.\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+  );
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.startsWith("backup.")),
+    [],
+  );
+});
+
+await test("a backup sent TERM midway starts the Home again and removes its staging", async (t) => {
+  const { home, start } = backupHome(t);
+  const child = start("slow");
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    if (stdout.includes("Uploaded 50%") && !child.signalled) {
+      child.signalled = true;
+      child.kill("SIGTERM");
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [status] = await once(child, "close");
+  assert.notEqual(status, 0);
+  assert.match(stdout, /Uploaded 50%.*\nstarted\n$/su);
+  assert.match(
+    stderr,
+    /The operation was stopped by SIGTERM\.\nIts unfinished files were removed\.\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+  );
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.startsWith("backup.")),
+    [],
+  );
+});
+
+await test("build-images.sh writes the manifest where it was asked, and checks that first", (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-build-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bin = resolve(directory, "bin");
+  mkdirSync(bin);
+  mkdirSync(resolve(directory, "work"));
+  const work = realpathSync(resolve(directory, "work"));
+  writeFileSync(
+    resolve(bin, "docker"),
+    `#!/bin/sh
+echo "docker $*" >> ${quote(resolve(directory, "docker.log"))}
+case "$*" in
+  "image inspect --format {{.Id}} "*) echo sha256:${"a".repeat(64)} ;;
+esac
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  const build = (manifest) =>
+    spawnSync("bash", [resolve("deploy/home/build-images.sh"), manifest], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        OPENSTEER_SOURCE_REVISION: "b".repeat(40),
+      },
+    });
+  const built = build("release.json");
+  assert.equal(built.status, 0, built.stderr);
+  const manifest = JSON.parse(readFileSync(resolve(work, "release.json"), "utf8"));
+  assert.deepEqual(Object.keys(manifest.images).sort(), [...homeServices].sort());
+  assert.match(
+    built.stdout,
+    new RegExp(`--manifest ${resolve(work, "release.json")} HOSTNAME`, "u"),
+  );
+  assert.equal(existsSync(resolve("release.json")), false);
+  rmSync(resolve(directory, "docker.log"));
+  const refused = build("missing/release.json");
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Cannot write the manifest to .*\/work\/missing\/release\.json/u);
+  assert.equal(existsSync(resolve(directory, "docker.log")), false, "it built before checking");
+});
+
+await test("the standalone installer's payload is read back file by file", (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-package-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const installer = resolve(directory, "opensteer-home-installer.sh");
+  execFileSync("bash", ["deploy/home/package-installer.sh", installer]);
+  const { script, files } = installerContents(installer);
+  assert.equal(files["common.sh"], readFileSync("deploy/home/common.sh", "utf8"));
+  assert.equal(files.version.trim(), JSON.parse(readFileSync("package.json", "utf8")).version);
+  assert.match(script, /^#!\/usr\/bin\/env bash\n/u);
+  assert.match(script, /\nbash "\$package\/install\.sh" "\$@"\n$/u);
+});
 
 await test("restore rollback reselects the previous volume set before restarting the Home", () => {
   const output = runRecovery(`${restoreJournal}

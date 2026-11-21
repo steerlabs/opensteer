@@ -37,17 +37,18 @@ globalThis.opensteerHomeProofCdp = (runtime) => {
   server.listen(socketPath).unref();
 };
 
+// The bundler may rename the local (`address2` in the Host image), so match the statement.
+const anchor = /^(\s*const [A-Za-z_$][\w$]* = await runtime\.listen\(\);)$/mu;
+
+export function injectCdpFixture(source) {
+  if (!anchor.test(source)) throw new Error("Cannot find the Host CDP verifier fixture anchor");
+  return source.replace(anchor, "$1\nglobalThis.opensteerHomeProofCdp(runtime);");
+}
+
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
     if (url !== "file:///app/dist/main.js") return loaded;
-    const source = String(loaded.source);
-    const anchor = "const address = await runtime.listen();";
-    if (!source.includes(anchor))
-      throw new Error("Cannot find the Host CDP verifier fixture anchor");
-    return {
-      ...loaded,
-      source: source.replace(anchor, `${anchor}\nglobalThis.opensteerHomeProofCdp(runtime);`),
-    };
+    return { ...loaded, source: injectCdpFixture(String(loaded.source)) };
   },
 });
