@@ -192,6 +192,18 @@ await test("the verifier fetches and removes the PostgreSQL image the Compose re
   assert.match(verifier, /docker\(\["pull", "--quiet", postgresImage\]\)/u);
 });
 
+await test("the Host CDP fixture finds its anchor after the bundler renames the local", async () => {
+  const { injectCdpFixture } = await import("./verify-home-deployment-cdp.mjs");
+  for (const name of ["address", "address2"]) {
+    const bundled = `async function main() {\n  const ${name} = await runtime.listen();\n  log(${name});\n}`;
+    assert.equal(
+      injectCdpFixture(bundled),
+      `async function main() {\n  const ${name} = await runtime.listen();\nglobalThis.opensteerHomeProofCdp(runtime);\n  log(${name});\n}`,
+    );
+  }
+  assert.throws(() => injectCdpFixture("await runtime.start();"), /fixture anchor/u);
+});
+
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
   const value = "'a b' `printf substituted` $(printf substituted)\n--arg";
   const output = execFileSync("bash", ["-c", `printf '%s' ${quote(value)}`], { encoding: "utf8" });
