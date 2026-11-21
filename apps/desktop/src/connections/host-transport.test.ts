@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { HttpHostClient } from "@opensteer/client/host";
 import {
+  classifyClientFailure,
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
   type DeploymentCatalog,
@@ -1876,6 +1877,86 @@ describe("DesktopHostTransport", () => {
     } finally {
       unsubscribe();
       host.dispose();
+      transport.dispose();
+    }
+  });
+
+  it("rejects as cancelled deployment-changed when selection moves mid-body across the protocol stream", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const stalled = Promise.withResolvers<void>();
+    let upstreamSignal: AbortSignal | undefined;
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async (input) => {
+          upstreamSignal = input.signal;
+          stalled.resolve();
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          );
+        },
+      },
+    });
+    // Electron's protocol.handle strips JS error types when a streamed body aborts across IPC.
+    const route = routeFetch(transport);
+    const crossProcessRoute: typeof globalThis.fetch = async (input, init) => {
+      const response = await route(input, init);
+      if (!response.body) return response;
+      const reader = response.body.getReader();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) controller.close();
+              else controller.enqueue(chunk.value);
+            } catch {
+              controller.error(new TypeError("network error"));
+            }
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      );
+    };
+    const client = createHttpHostApiClient({
+      baseUrl: new URL(routeOrigin),
+      fetch: createDesktopHostFetch(
+        cancelBridge(transport),
+        routeOrigin,
+        deploymentId,
+        crossProcessRoute,
+      ),
+      onAuthenticationRequired: () => undefined,
+    });
+    try {
+      const pending = client["auth.config"]({});
+      await stalled.promise;
+      await catalog.select(other.authority.document.deploymentId);
+      await transport.selection();
+      const rejection = await pending.then(
+        (result) => {
+          throw new Error(`Expected rejection, got result: ${JSON.stringify(result)}`);
+        },
+        (error: unknown) => classifyClientFailure(error),
+      );
+      expect(rejection).toMatchObject({ kind: "cancelled", reason: "deployment-changed" });
+      expect(upstreamSignal?.aborted).toBe(true);
+    } finally {
       transport.dispose();
     }
   });

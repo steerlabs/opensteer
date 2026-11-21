@@ -44,6 +44,8 @@ import {
   DesktopDeploymentSelectionSchema,
   desktopHostRequestIdHeader,
   DesktopHostRequestIdSchema,
+  DesktopHostTransportErrorCodeSchema,
+  type DesktopHostTransportErrorCode,
   desktopHostTransportErrorHeader,
   DesktopHostWebSocketCommandSchema,
   isDesktopHostUploadPath,
@@ -173,6 +175,9 @@ export class DesktopHostTransport extends HostTransport {
   readonly #ownerGenerations = new Map<number, number>();
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   readonly #forwarded = new Map<string, AbortController>();
+  readonly #inflightSettled = new Map<string, Promise<void>>();
+  /** Post-headers stream failures keyed by request id so the renderer recovers typed cancels. */
+  readonly #streamErrors = new Map<string, DesktopHostTransportErrorCode>();
   /** Bumped when a Deployment's session changes; a request admitted before it isn't sent. */
   readonly #sessionEpochs = new Map<DeploymentId, number>();
   /** A cancel can overtake its request on the way to main. */
@@ -353,6 +358,7 @@ export class DesktopHostTransport extends HostTransport {
     };
     let settled: Promise<void> = Promise.resolve();
     return this.#forward(
+      id,
       deploymentId,
       path,
       request,
@@ -361,6 +367,7 @@ export class DesktopHostTransport extends HostTransport {
       selection,
       (exchange) => {
         settled = exchange;
+        this.#inflightSettled.set(id, exchange);
       },
       options.anyHome === true,
     )
@@ -370,15 +377,41 @@ export class DesktopHostTransport extends HostTransport {
           void settled.finally(() => {
             request.signal.removeEventListener("abort", cancelled);
             this.#forwarded.delete(id);
+            if (this.#inflightSettled.get(id) === settled) this.#inflightSettled.delete(id);
           }),
       );
+  }
+
+  /** Consumes main's recorded transport failure for a response whose body aborted mid-stream. */
+  async takeStreamError(requestId: string): Promise<DesktopHostTransportErrorCode | null> {
+    const parsed = DesktopHostRequestIdSchema.safeParse(requestId);
+    if (!parsed.success) return null;
+    const id = parsed.data;
+    const existing = this.#streamErrors.get(id);
+    if (existing) {
+      this.#streamErrors.delete(id);
+      return existing;
+    }
+    const inflight = this.#inflightSettled.get(id);
+    if (inflight) {
+      await Promise.race([
+        inflight,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 250);
+          timer.unref?.();
+        }),
+      ]);
+    }
+    const recorded = this.#streamErrors.get(id) ?? null;
+    if (recorded) this.#streamErrors.delete(id);
+    return recorded;
   }
 
   /**
    * Main's own refusal of a window request, recorded by route and code so the
    * log says why a window couldn't open. The window's own cancel is not one.
    */
-  #refused(path: string, error: unknown): Response {
+  #logRefusal(path: string, error: unknown): void {
     const failure = classifyClientFailure(error);
     if (failure.kind !== "cancelled" || failure.reason === "deployment-changed") {
       try {
@@ -390,10 +423,29 @@ export class DesktopHostTransport extends HostTransport {
         /* Diagnostics cannot change the answer. */
       }
     }
+  }
+
+  #refused(path: string, error: unknown): Response {
+    this.#logRefusal(path, error);
     return transportFailure(error);
   }
 
+  #recordStreamError(id: string, path: string, error: unknown): void {
+    this.#logRefusal(path, error);
+    const code =
+      error instanceof HostTransportError
+        ? DesktopHostTransportErrorCodeSchema.safeParse(error.code)
+        : error instanceof HostRouteUnavailableError
+          ? { success: true as const, data: "unreachable" as const }
+          : { success: false as const };
+    if (!code.success) return;
+    this.#streamErrors.set(id, code.data);
+    if (this.#streamErrors.size > 256)
+      this.#streamErrors.delete(this.#streamErrors.keys().next().value!);
+  }
+
   async #forward(
+    requestId: string,
     deploymentId: DeploymentId,
     path: string,
     request: Request,
@@ -476,7 +528,12 @@ export class DesktopHostTransport extends HostTransport {
     const command =
       pathname === "/v1/rpc/commands.dispatch" && body ? enrollmentCommand(body) : null;
     if (command) return this.#forwardEnrollment(transport, command, forwarded);
-    const relayed = relay(transport, forwarded, (error) => this.#refused(path, error));
+    const relayed = relay(
+      transport,
+      forwarded,
+      (error) => this.#refused(path, error),
+      (error) => this.#recordStreamError(requestId, path, error),
+    );
     relaying(relayed.settled);
     return relayed.response;
   }
@@ -929,6 +986,7 @@ export class DesktopHostTransport extends HostTransport {
     for (const team of this.#teams.values()) team.retire();
     this.#teams.clear();
     this.#summaries.clear();
+    this.#streamErrors.clear();
   }
 
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
@@ -1101,12 +1159,15 @@ function relay(
   transport: HostTransport,
   request: Parameters<HostTransport["exchange"]>[0],
   refused: (error: unknown) => Response,
+  streamFailed: (error: unknown) => void,
 ): { readonly response: Promise<Response>; readonly settled: Promise<void> } {
   const ready = Promise.withResolvers<Response>();
+  let headersSent = false;
   const settled = transport
     .exchange(request, async (response, progress) => {
       const init = { status: response.status, headers: responseHeaders(response.headers) };
       if (!response.body || [204, 205, 304].includes(response.status)) {
+        headersSent = true;
         ready.resolve(new Response(null, init));
         return;
       }
@@ -1114,10 +1175,14 @@ function relay(
         ...progress,
         maximumBytes: Number.MAX_SAFE_INTEGER,
       });
+      headersSent = true;
       ready.resolve(new Response(body, init));
       await done;
     })
-    .catch((error: unknown) => ready.resolve(refused(error)));
+    .catch((error: unknown) => {
+      if (headersSent) streamFailed(error);
+      else ready.resolve(refused(error));
+    });
   return { response: ready.promise, settled };
 }
 
