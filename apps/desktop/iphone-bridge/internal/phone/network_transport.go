@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"syscall"
@@ -82,12 +83,30 @@ func networkFailure(err error) *wire.Failure {
 	if errors.Is(err, tunnel.ErrRemotePairingRequired) {
 		return wire.Fail(wire.WifiPairingRequired)
 	}
-	f := Classify(err, wire.WifiTransportUnsupported)
+	if errors.Is(err, tunnel.ErrRemotePairingDenied) {
+		return wire.Fail(wire.WifiPairingDenied)
+	}
+	if errors.Is(err, tunnel.ErrRemotePairingBusy) || errors.Is(err, tunnel.ErrRemotePairingUnavailable) || errors.Is(err, tunnel.ErrRemotePairingProtocol) {
+		return wire.Fail(wire.WifiPairingFailed)
+	}
+	// An unrecognised network error is a failed attempt, never proof the phone can't use Wi-Fi.
+	f := Classify(err, wire.TunnelFailed)
 	switch f.Code {
 	case wire.IdentityMismatch:
 		return wire.Fail(wire.WifiIdentityMismatch)
 	case wire.TrustRequired, wire.PairingRevoked:
 		return wire.Fail(wire.WifiPairingRequired)
+	}
+	return f
+}
+
+// pairingFailure keeps the reasons a person can act on and reports every other failed
+// Pair Setup as retryable: the USB link that carried it was working a moment ago.
+func pairingFailure(err error) *wire.Failure {
+	f := networkFailure(err)
+	switch f.Code {
+	case wire.TunnelFailed, wire.ProtocolUnsupported, wire.NativeServiceFailed, wire.WifiTransportUnsupported:
+		return wire.Fail(wire.WifiPairingFailed)
 	}
 	return f
 }
@@ -238,11 +257,12 @@ func (m *Manager) wifiSetup(ctx context.Context, p *localPhone, method string) (
 		}
 		x, err := s.OpenXPC(ctx, "com.apple.internal.dt.coredevice.untrusted.tunnelservice")
 		if err != nil {
-			return nil, networkFailure(err)
+			return nil, pairingFailure(err)
 		}
-		record, err := tunnel.PairRemote(ctx, x, p.identity, uuid.New().String())
+		consent := func(stage tunnel.PairStage) { slog.Debug("bridge.wifi-pairing", "stage", string(stage)) }
+		record, err := tunnel.PairRemote(ctx, x, p.identity, uuid.New().String(), localPairHost(ctx), consent)
 		if err != nil {
-			return nil, networkFailure(err)
+			return nil, pairingFailure(err)
 		}
 		state.Pair = record
 	}

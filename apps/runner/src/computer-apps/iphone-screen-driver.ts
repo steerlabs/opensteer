@@ -77,6 +77,8 @@ export function iphoneCapabilityReason(reason: string | null | undefined): Devic
     case "trust-denied":
     case "pairing-revoked":
     case "wifi-pairing-required":
+    case "wifi-pairing-denied":
+    case "wifi-pairing-failed":
       return { kind: "trust-required" };
     case "developer-mode-required":
     case "developer-mode-status-unknown":
