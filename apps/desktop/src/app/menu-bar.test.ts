@@ -164,12 +164,65 @@ it("pushes the Stop result on reopen even if the popover immediately blurs", asy
     await menuBar.toggle();
     expect(popover.isVisible()).toBe(false);
     set(unconfirmed);
-    expect(service.status).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
+    expect(service.refresh).toHaveBeenCalledTimes(1);
 
     popover.focus.mockImplementationOnce(() => popover.emit("blur"));
     await menuBar.open();
     expect(popover.isVisible()).toBe(false);
     expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed);
+  } finally {
+    menuBar.dispose();
+  }
+});
+
+it("advances the popover Stop state when a Stop fails after blur hides the popover", async () => {
+  const { contents, menuBar, popover, service, set } = fixture();
+  const stopping = status({
+    stop: { phase: "stopping", stoppedAt: null, offline: null, problem: null, confirmed: null },
+  });
+  const unconfirmed = status({
+    stop: {
+      phase: "stopped",
+      stoppedAt: null,
+      offline: null,
+      problem: "Couldn’t confirm everything stopped",
+      confirmed: null,
+    },
+    icon: { attention: false, unreachable: false, stopped: true },
+  });
+  try {
+    menuBar.start();
+    set(stopping);
+    await menuBar.open();
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, stopping),
+    );
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+
+    // Reopen while Stop is still in flight; the window immediately loses focus and hides.
+    popover.focus.mockImplementationOnce(() => popover.emit("blur"));
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(false);
+
+    // Proof fails to arrive after blur already hid the popover.
+    set(unconfirmed);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
+    expect(popover.isVisible()).toBe(false);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    // Opening the popover later shows the failed Stop state immediately.
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(true);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
   } finally {
     menuBar.dispose();
   }
