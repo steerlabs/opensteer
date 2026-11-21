@@ -1,11 +1,15 @@
 import { createId } from "@opensteer/core";
 import { expect, test } from "vitest";
-import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-sync.js";
+import {
+  scopedPersonalApiVersion,
+  ScopedClientMessageSchema,
+  ScopedHostMessageSchema,
+} from "./personal-sync.js";
 
 test("accepts exact personal version and requires a generation on scoped frames", () => {
   const attach = {
     type: "client.attach",
-    apiVersion: 64,
+    apiVersion: scopedPersonalApiVersion,
     generation: 1,
     interests: ["settings"],
     installed: { settings: "2" },

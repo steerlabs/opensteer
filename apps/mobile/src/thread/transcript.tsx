@@ -1,5 +1,4 @@
 import type { HostClient } from "@opensteer/client/host";
-import { AnswerPill } from "./answer-pill.js";
 import {
   useAnsweredQuestion,
   useTranscriptMessage,
@@ -497,12 +496,11 @@ function ReplyBubble(props: {
   readonly onReply: ((message: MessageEntry) => void) | undefined;
 }): ReactNode {
   const scope = useContext(TaskScopeContext);
-  const [expanded, setExpanded] = useState(false);
   const message = useTranscriptMessage(
     scope?.hostClient ?? null,
     scope?.threadId ?? null,
     props.message,
-    expanded,
+    true,
   );
   const { onReply } = props;
   const parts = useMemo(() => replyParts(message.body), [message.body]);
@@ -543,11 +541,6 @@ function ReplyBubble(props: {
       )}
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
-      {props.message.previewTruncated && !expanded ? (
-        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
-          <AppText>Read full reply</AppText>
-        </Pressable>
-      ) : null}
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
         <ReplySurfaces
@@ -1167,7 +1160,6 @@ function NodeMessage(props: {
   generation?: number | undefined;
 }) {
   const { entry, client, threadId, nodeId, generation } = props;
-  const [expanded, expand] = useState(false);
   const text = useTranscriptText({
     client,
     threadId,
@@ -1175,15 +1167,12 @@ function NodeMessage(props: {
     generation,
     itemId: entry.id,
     revision: entry.itemRevision,
-    expanded: expanded && entry.previewTruncated === true,
+    expanded: entry.previewTruncated === true,
     preview: entry.text,
   });
   return (
     <View style={styles.assistant}>
-      <Markdown text={text.text} />
-      {entry.previewTruncated && !expanded ? (
-        <AnswerPill tone="secondary" label="Show full message" onPress={() => expand(true)} />
-      ) : null}
+      <Markdown streaming={text.streaming} text={text.text} />
     </View>
   );
 }
@@ -1368,12 +1357,11 @@ function AssistantMessage(props: {
   readonly message: MessageEntry;
 }): ReactNode {
   const scope = useContext(TaskScopeContext);
-  const [expanded, setExpanded] = useState(false);
   const message = useTranscriptMessage(
     scope?.hostClient ?? null,
     scope?.threadId ?? null,
     props.message,
-    expanded,
+    true,
   );
   const { body } = message;
   return (
@@ -1385,11 +1373,6 @@ function AssistantMessage(props: {
       {body ? <Markdown streaming={message.streaming === true} text={body} /> : null}
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
-      {props.message.previewTruncated && !expanded ? (
-        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)}>
-          <AppText>Read full reply</AppText>
-        </Pressable>
-      ) : null}
       <MessageAttachments attachments={message.attachments ?? []} />
       {message.streaming === true ? null : (
         <View style={styles.marks}>

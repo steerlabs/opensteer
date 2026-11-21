@@ -65,9 +65,9 @@ export interface HttpHostApiClientOptions {
 
 const scopedReadLimits = {
   "personal.shell.get": 96 * 1024,
-  "thread.snapshot.get": 128 * 1024,
-  "thread.items.page": 128 * 1024,
-  "node.items.page": 128 * 1024,
+  "thread.snapshot.get": 1024 * 1024,
+  "thread.items.page": 1024 * 1024,
+  "node.items.page": 1024 * 1024,
   "transcript.item.get": 1024 * 1024,
   "thread.inputQueue.get": 96 * 1024,
   "thread.overlays.page": 16 * 1024,

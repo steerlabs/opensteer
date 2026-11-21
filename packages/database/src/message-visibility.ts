@@ -85,7 +85,7 @@ export async function syncTranscriptMessage(
             .executeTakeFirst()
         : seed;
     const edit = messageEditFromRow(message);
-    const { published, visible, isTurnStart, view, refs } = describeTranscriptMessage({
+    const { published, visible, isTurnStart, view, refs, messageText } = describeTranscriptMessage({
       kind: message.kind,
       content: MessageContentSchema.parse(message.content),
       author: message.author,
@@ -139,7 +139,7 @@ export async function syncTranscriptMessage(
       if (visible)
         mutation.change(
           { scopeKey, entityKind: "item", entityId: messageId, operation: "upsert" },
-          () => itemView(item),
+          () => itemView({ ...item, messageText }),
         );
       else if (prior?.visible)
         mutation.change({ scopeKey, entityKind: "item", entityId: messageId, operation: "remove" });

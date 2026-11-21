@@ -212,7 +212,8 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
     expect(card(linesId)).toMatchObject({ body: "First\nSecond", previewTruncated: false });
     expect(card(uncertainId)).toMatchObject({
       messageKind: "input",
-      previewTruncated: true,
+      body: long,
+      previewTruncated: false,
       delivery: { status: "unconfirmed" },
       teamSource,
     });

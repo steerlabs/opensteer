@@ -351,9 +351,8 @@ const durablePageInputSchema = z.strictObject({
 });
 
 /**
- * Hosts list every Request kind and ignore this. Older version-64 Hosts hide `device.access`
- * Requests from a read without it, so apps send it on every Request read until
- * `minimumHostApiVersion` passes 64.
+ * Hosts list every Request kind and ignore this. Retained as an optional field for callers that
+ * still include it on Request reads.
  */
 export const includeDeviceAccessRequests = { deviceAccessRequests: "include" } as const;
 const deviceAccessRequestsInput = { deviceAccessRequests: z.literal("include").optional() };

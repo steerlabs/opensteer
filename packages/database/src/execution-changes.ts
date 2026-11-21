@@ -7,6 +7,7 @@ import { itemColumns, itemView, type NodeFacts } from "./personal-sync-store.js"
 import { runDeliverySelection, runUsageFromRow } from "./thread-row-mappers.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TranscriptPreview, TranscriptItemTable } from "./personal-state-schema.js";
+import type { MessageTextFacts } from "./transcript-store.js";
 import type { TranscriptMessageRefs } from "@opensteer/protocol/transcript";
 
 export async function updateExecutionThread(
@@ -131,6 +132,8 @@ export async function writeExecutionItem(
   fresh?: { readonly position: string | null },
   /** A node's card draws its node's facts. */
   node?: NodeFacts,
+  /** Inline prose facts for a message item, already in memory on the write path. */
+  messageText?: MessageTextFacts,
 ) {
   const old = fresh
     ? undefined
@@ -209,11 +212,20 @@ export async function writeExecutionItem(
       const scopeKey = card.nodeId
         ? (`node:${card.nodeId}` as const)
         : (`thread:${card.threadId}` as const);
-      if (card.visible)
+      if (card.visible) {
+        const nodeMessageText =
+          card.kind === "node-message" && typeof body === "string" ? body : undefined;
         mutation.change(
           { scopeKey, entityKind: "item", entityId: card.id, operation: "upsert" },
-          () => itemView(node ? { ...card, node } : card),
+          () =>
+            itemView({
+              ...card,
+              ...(node ? { node } : {}),
+              ...(messageText ? { messageText } : {}),
+              ...(nodeMessageText !== undefined ? { nodeMessageText } : {}),
+            }),
         );
+      }
     },
   );
 }
