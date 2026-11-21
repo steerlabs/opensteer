@@ -366,21 +366,17 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
   - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
   - The personal or organization page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates. An offboarded seat stops counting as assigned after the first two facts are confirmed. A free seat requires an independently reserved usable backup target.
+  - **Settling with Stripe**: from the moment deletion is requested, nothing more is kept. This holds the same whether the owner deleted the Cloud Computer or deleted their Account. The 60-second billing pass settles each such row (`deletionRequestedAt` set, `billingSettledAt` empty). Each step rests on what Stripe says now and is retried every pass:
+    - `cancel`: the subscription is cancelled (`invoice_now=false`, `prorate=false`). It won't renew, and the rest of the period already paid isn't refunded.
+    - `refund`: every payment for that subscription at or after the request is refunded in full. This works by charge, across every page of invoices. A payment in the same second as the request is refunded. Refunds that already exist count, whoever made them, and only what remains is refunded. The idempotency key comes from the charge and its count of refunds, so a lost reply asks for the same refund. A disputed charge is left to the dispute.
+    - `checkout`: the person's checkouts from before the request must be closed. The pass already expires an open one and refunds a payment on it (`#recoverCheckout`, then the paid-checkout refund). A paid one must be refunded the same way.
+    - `customer`: then each Stripe customer is deleted, with its saved card, unless Stripe shows a live subscription on it. The customers are found from the subscription and from the person's checkout sessions. Stripe keeps its own records of past payments.
+    - Only then is `billingSettledAt` set. A row still unsettled an hour after its request is logged as `Cloud Computer billing reconciliation failed`, with error `CloudComputerDeletionUnsettled`, the row's `computerId` and the `step` it is stuck on.
 - **Account deletion**:
-  - The account deletion page says first that the person's Cloud Computer goes with the Account. The subscription is cancelled first (`invoice_now=false`, `prorate=false`: it won't renew, and the rest of the period already paid isn't refunded). Any payment Stripe takes after the person confirms is refunded in full. Then the computer, disk and backups go, and the card saved with Stripe is deleted.
-  - `AccountDeletionService.delete` records `users.deletion_requested_at` first. From then on the Account is closing (`accountClosing`):
-    - No personal Cloud Computer checkout, organization checkout, invitation accept or work assignment is admitted.
-    - The person's open personal checkouts are expired at once where Stripe answers; the billing pass closes the rest within a minute.
-    - A payment for any checkout that lands after the decision is refunded and never fulfilled.
-  - Then each of the person's own Cloud Computers goes through the same Delete as above: the subscription is cancelled before the machine is let go, with no second teardown.
-  - The Account's own records go only once three things hold. Then the Stripe customers are deleted (Stripe keeps its own records of past payments), then the Account.
-    - Every such machine is destroyed (`vmDestroyedAt`).
-    - Every payment Stripe took on its subscriptions after the decision is refunded (`refundSubscriptionPaymentsSince`).
-    - No paid checkout waits unrefunded.
-  - Until then, `DELETE /v1/account` answers `202 {"deleted":false,"pending":true}`, also when pressed again while another attempt works on it. The page says the Account is being deleted.
-  - The account service's one-minute pass finishes pending deletions. It walks every pending Account, and only one replica runs it at a time (`pg_try_advisory_lock`).
-  - A deletion pending for more than an hour is logged as `Account deletion is taking longer than it should`, with what it waits on (`billing`, `machine` or `refund`). The person's page then says so, says any payment is refunded in full, and gives the support address.
-  - A person with a work Home is refused until the organization offboards it. A work Home is never deleted with an Account.
+  - The account deletion page says the person's Cloud Computer goes with the Account, with the same billing words as the Cloud Computer's own Delete.
+  - `AccountDeletionService.delete` first asks each of the person's own Cloud Computers to delete itself through the Delete above, so the subscription is cancelled at once when Stripe answers. Then it deletes the Account whether or not Stripe answered. The refusals stay as before: a work Home its organization hasn't offboarded, the last organization admin, an open organization checkout.
+  - The Cloud Computer's row outlives the Account, unlinked, with its deletion request. The billing pass settles it as above, and the reconciler destroys the machine, the backup key and the stored backups after the Account is gone.
+  - The page after deletion says the Account is deleted, and that the Cloud Computer's cancellation and removal are being completed.
 
 ## When something goes wrong
 

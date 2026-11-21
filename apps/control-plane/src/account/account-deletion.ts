@@ -13,46 +13,17 @@ import type { ConnectLifecycleService } from "./connect-lifecycle.js";
 
 type OAuthTokenContext = Parameters<typeof decryptOAuthToken>[1];
 
-/**
- * What a pending deletion waits on: Stripe to confirm a subscription's cancellation
- * (`billing`), a machine to be destroyed (`machine`), or a payment taken after the decision to
- * be refunded (`refund`).
- */
-export type AccountDeletionWait = "billing" | "machine" | "refund";
-
-/**
- * What one attempt came to: the Account is gone, or it is being deleted and waits on `reason`
- * (`billingCanceled` says whether every subscription is cancelled yet).
- */
-export type AccountDeletionOutcome =
-  | { readonly status: "deleted" }
-  | {
-      readonly status: "pending";
-      readonly billingCanceled: boolean;
-      readonly reason: AccountDeletionWait;
-    };
-
-/** How long a deletion may wait before it is reported as taking longer than it should. */
-export const accountDeletionOverdueMilliseconds = 60 * 60 * 1000;
-
-type CloudComputersForDeletion = Pick<
-  CloudComputerStore,
-  "accountDeletionState" | "closeAccountCheckouts" | "mutate" | "settleAccountBilling"
->;
+type CloudComputersForDeletion = Pick<CloudComputerStore, "listForAccount" | "mutate">;
 
 /**
  * Deletes an Account from wherever a person asks, including when a computer it
  * owns is lost or off, so nothing here depends on a Host answering. Each attempt
  * is complete on its own: a refusal leaves the Account intact to retry.
  *
- * An Account with a paid Cloud Computer goes in an order that cannot charge after the
- * decision and cannot leave a machine behind: the decision is recorded first (no checkout
- * charges it from then on); each Cloud Computer is deleted through its own Delete, which
- * cancels the subscription before it lets the machine go; and the Account's records go only
- * once every machine is gone and every payment Stripe took after the decision is refunded; then
- * the Stripe customers go, with the cards saved on them. Until then the Account is being
- * deleted and stays closing (see `accountClosing`), and `finishPending` completes it on the
- * account service's own schedule.
+ * Just before the Account goes, each of the person's own Cloud Computers is asked to delete
+ * itself through the Delete it already has, and the Account goes whether or not Stripe answered:
+ * the computer's row outlives the Account with its deletion request, and the billing pass settles
+ * it (`CloudComputerStore.reconcileBilling`).
  */
 export class AccountDeletionService {
   readonly #apple: AppleSignInConfig | undefined;
@@ -62,21 +33,16 @@ export class AccountDeletionService {
   readonly #store: ControlPlaneStore;
   readonly #resolveOrganizationCheckouts?: (account: ControlPlaneAccountId) => Promise<void>;
   readonly #cloudComputers: CloudComputersForDeletion | undefined;
-  readonly #pageSize: number;
 
   constructor(dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
     readonly auth: ControlPlaneAuth;
-    /** The person's Cloud Computers, ended through their own Delete before the Account goes. */
     readonly cloudComputers?: CloudComputersForDeletion;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
     readonly store: ControlPlaneStore;
     readonly resolveOrganizationCheckouts?: (account: ControlPlaneAccountId) => Promise<void>;
-    /** How many pending Accounts the pass reads at a time; it reads them all either way. */
-    readonly pendingPageSize?: number;
   }) {
-    this.#pageSize = dependencies.pendingPageSize ?? 100;
     this.#apple = dependencies.appleSignIn;
     this.#auth = dependencies.auth;
     this.#connectLifecycle = dependencies.connectLifecycle;
@@ -87,33 +53,19 @@ export class AccountDeletionService {
       this.#resolveOrganizationCheckouts = dependencies.resolveOrganizationCheckouts;
   }
 
-  async delete(accountId: ControlPlaneAccountId): Promise<AccountDeletionOutcome> {
+  async delete(accountId: ControlPlaneAccountId): Promise<void> {
     // Before anything is undone: a hosted team the Account holds refuses here, and from here on
-    // nothing can give it one. So does a work Home its organization hasn't offboarded.
+    // nothing can give it one.
     let attemptId: string;
     try {
       attemptId = await this.#store.beginAccountDeletion(accountId);
     } catch (error) {
-      if (isNotFound(error)) return { status: "deleted" };
-      // Another attempt, the pass or a second press, is at work on a deletion already asked
-      // for: that is the same deletion, still pending.
-      if (isInProgress(error) && (await this.#store.accountDeletionRequestedAt(accountId)))
-        return this.#pendingNow(accountId);
+      if (isNotFound(error)) return;
       throw error;
     }
     let appleRefreshToken: string | null;
     try {
       await this.#resolveOrganizationCheckouts?.(accountId);
-      // The decision, kept: from here nothing new can bill or bind this Account.
-      await this.#store.requestAccountDeletion(accountId, attemptId);
-      await this.#cloudComputers?.closeAccountCheckouts(accountId);
-      const waiting =
-        (await this.#endCloudComputers(accountId, attemptId)) ??
-        (await this.#settleBilling(accountId, attemptId));
-      if (waiting) {
-        await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
-        return waiting;
-      }
       for (const deployment of await this.#store.ownedDeployments(accountId)) {
         if (deployment.connectState === null || deployment.connectState === "revoked") continue;
         // Each step renews the fence, so a slow deletion keeps it and only a dead one lets go.
@@ -136,103 +88,29 @@ export class AccountDeletionService {
         ? await this.#store.oauthRefreshToken(accountId, "apple")
         : null;
       await this.#store.renewAccountDeletion(accountId, attemptId);
+      // Last, after every refusal that can keep the Account.
+      await this.#deleteCloudComputers(accountId);
       await this.#store.deleteAccount(accountId, attemptId);
     } catch (error) {
       await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
-      if (isNotFound(error)) return { status: "deleted" };
+      if (isNotFound(error)) return;
       throw error;
     }
     if (this.#apple && appleRefreshToken) await this.#revokeApple(this.#apple, appleRefreshToken);
-    return { status: "deleted" };
   }
 
   /**
-   * Finishes Accounts their people asked to delete, every one of them, page by page. One that
-   * still waits stays for the next pass; one waiting longer than
-   * `accountDeletionOverdueMilliseconds` is reported with what it waits on; a failure is
-   * reported and kept. Only one replica runs the pass at a time.
+   * Asks each of the person's own Cloud Computers to delete itself, so its subscription is
+   * cancelled now when Stripe answers. A failure here never keeps the Account: the request is
+   * recorded before Stripe is contacted, or the Account's deletion records it.
    */
-  async finishPending(
-    onError: (error: unknown) => void,
-    onOverdue: (accountId: ControlPlaneAccountId, reason: AccountDeletionWait) => void = () =>
-      undefined,
-    now: () => Date = () => new Date(),
-  ): Promise<boolean> {
-    return this.#store.withAccountDeletionPass(async () => {
-      let after: ControlPlaneAccountId | null = null;
-      for (;;) {
-        const page = await this.#store.accountsAwaitingDeletion(after, this.#pageSize);
-        if (page.length === 0) return;
-        for (const { id, requestedAt } of page) {
-          try {
-            const outcome = await this.delete(id);
-            if (
-              outcome.status === "pending" &&
-              now().getTime() - requestedAt.getTime() > accountDeletionOverdueMilliseconds
-            )
-              onOverdue(id, outcome.reason);
-          } catch (error) {
-            onError(error);
-          }
-        }
-        after = page.at(-1)!.id;
-      }
-    });
-  }
-
-  /** Where a deletion already asked for stands now, for an answer while another works on it. */
-  async #pendingNow(accountId: ControlPlaneAccountId): Promise<AccountDeletionOutcome> {
-    const left = (await this.#cloudComputers?.accountDeletionState(accountId)) ?? [];
-    const running = left.filter((computer) => !computer.machineGone);
-    const billingCanceled = running.every((computer) => computer.billingCanceled);
-    return {
-      status: "pending",
-      billingCanceled,
-      reason: !billingCanceled ? "billing" : running.length > 0 ? "machine" : "refund",
-    };
-  }
-
-  /**
-   * Once every machine is gone: refunds what Stripe took after the decision and deletes the
-   * Stripe customers. Null once settled; otherwise the deletion waits on a refund.
-   */
-  async #settleBilling(
-    accountId: ControlPlaneAccountId,
-    attemptId: string,
-  ): Promise<Extract<AccountDeletionOutcome, { status: "pending" }> | null> {
+  async #deleteCloudComputers(accountId: ControlPlaneAccountId): Promise<void> {
     const cloud = this.#cloudComputers;
-    const since = await this.#store.accountDeletionRequestedAt(accountId);
-    if (!cloud || !since) return null;
-    await this.#store.renewAccountDeletion(accountId, attemptId);
-    // Stripe unreachable now is a refund or a customer still to settle, never a failure.
-    const settled = await cloud.settleAccountBilling(accountId, since).catch(() => false);
-    return settled ? null : { status: "pending", billingCanceled: true, reason: "refund" };
-  }
-
-  /**
-   * Ends the person's own Cloud Computers through the Delete each already has: it records the
-   * request, cancels the Stripe subscription, and only once Stripe confirms lets the machine,
-   * its disk and its backups go. Null once every machine is gone; otherwise what still waits.
-   */
-  async #endCloudComputers(
-    accountId: ControlPlaneAccountId,
-    attemptId: string,
-  ): Promise<Extract<AccountDeletionOutcome, { status: "pending" }> | null> {
-    const cloud = this.#cloudComputers;
-    if (!cloud) return null;
-    for (const computer of await cloud.accountDeletionState(accountId)) {
-      if (computer.machineGone || (computer.deletionRequested && computer.billingCanceled))
-        continue;
-      await this.#store.renewAccountDeletion(accountId, attemptId);
-      // A Stripe failure keeps the durable request; the billing pass cancels on its next run.
-      await cloud.mutate(computer.id, "delete", accountId);
+    if (!cloud) return;
+    for (const computer of await cloud.listForAccount(accountId)) {
+      if (computer.work || computer.status === "deleted") continue;
+      await cloud.mutate(computer.id, "delete", accountId).catch(() => undefined);
     }
-    const left = (await cloud.accountDeletionState(accountId)).filter(
-      (computer) => !computer.machineGone,
-    );
-    if (left.length === 0) return null;
-    const billingCanceled = left.every((computer) => computer.billingCanceled);
-    return { status: "pending", billingCanceled, reason: billingCanceled ? "machine" : "billing" };
   }
 
   /** Apple documents a manual fallback, so a failure here never undoes a deletion. */
@@ -257,10 +135,6 @@ export class AccountDeletionService {
       console.error(`Sign in with Apple revocation failed: ${(error as Error).name}`);
     }
   }
-}
-
-function isInProgress(error: unknown): boolean {
-  return error instanceof ControlPlaneError && error.reason === "account-deletion-in-progress";
 }
 
 function isNotFound(error: unknown): boolean {

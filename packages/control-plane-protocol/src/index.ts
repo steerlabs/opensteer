@@ -1287,14 +1287,7 @@ export function adoptedHostProvisioningBundle(
   });
 }
 
-/**
- * The Account is gone, or it is being deleted: its Cloud Computers are ending first, and the
- * account service finishes it once they have.
- */
-export const DeleteAccountResponseSchema = z.union([
-  z.object({ deleted: z.literal(true) }).strict(),
-  z.object({ deleted: z.literal(false), pending: z.literal(true) }).strict(),
-]);
+export const DeleteAccountResponseSchema = z.object({ deleted: z.literal(true) }).strict();
 
 export const RevokeAccountSessionsResponseSchema = z.object({ revoked: z.literal(true) }).strict();
 

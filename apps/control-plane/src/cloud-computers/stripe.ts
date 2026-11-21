@@ -152,6 +152,7 @@ const invoicePayments = z.object({
         payment_intent: stripeToken("pi").nullish(),
         charge: stripeToken("ch").nullish(),
       }),
+      status_transitions: z.object({ paid_at: z.number().int().positive().nullish() }).nullish(),
     }),
   ),
 });
@@ -159,10 +160,18 @@ const refundRecord = z.object({
   id: stripeToken("re"),
   amount: z.number().int().positive(),
   status: z.enum(["pending", "requires_action", "succeeded", "failed", "canceled"]),
-  metadata: z.record(z.string(), z.string()),
 });
 const refundList = z.object({ has_more: z.boolean(), data: z.array(refundRecord) });
-const paidInvoiceList = z.object({
+const chargeRecord = z.object({
+  id: stripeToken("ch"),
+  amount: z.number().int().nonnegative(),
+  disputed: z.boolean(),
+});
+const paymentIntentRecord = z.object({
+  id: stripeToken("pi"),
+  latest_charge: z.union([stripeToken("ch"), z.object({ id: stripeToken("ch") })]).nullish(),
+});
+const invoiceList = z.object({
   has_more: z.boolean(),
   data: z.array(
     z.object({
@@ -171,6 +180,10 @@ const paidInvoiceList = z.object({
       status_transitions: z.object({ paid_at: z.number().int().positive().nullish() }).nullish(),
     }),
   ),
+});
+const subscriptionList = z.object({
+  has_more: z.boolean(),
+  data: z.array(z.object({ id: subscriptionId, status: z.string() })),
 });
 const customerRecord = z.object({ id: z.string(), deleted: z.boolean().optional() });
 const hostedSession = z.object({ url: z.url({ protocol: /^https$/u }) });
@@ -469,6 +482,7 @@ export class CloudComputerStripe {
     }
   }
 
+  /** Refunds in full what a paid Checkout's invoice took. True once nothing of it remains. */
   async refundCheckout(checkout: StripePaidCheckout): Promise<boolean> {
     const invoice =
       checkout.invoice ??
@@ -479,40 +493,48 @@ export class CloudComputerStripe {
         )
       ).invoice;
     if (!invoice) throw new ControlPlaneError("unavailable", "Paid Stripe Checkout has no invoice");
-    return this.#refundInvoice(invoice);
+    return this.#refundInvoice(invoice, null);
   }
 
   /**
-   * Refunds in full every payment of this subscription that Stripe took at or after `since`,
-   * whatever invoice it paid. True once each such payment is refunded; false while one waits.
+   * Refunds in full every payment Stripe took for this subscription at or after `since`, through
+   * every page of its invoices. A payment in the same second as `since` is refunded too. True once
+   * each such payment is refunded or left to its dispute; false while a refund is still pending.
    */
   async refundSubscriptionPaymentsSince(subscription: string, since: Date): Promise<boolean> {
-    const query = new URLSearchParams({
-      subscription: subscriptionId.parse(subscription),
-      status: "paid",
-      limit: "100",
-    });
-    const invoices = await this.#request(`invoices?${query}`, paidInvoiceList);
-    if (invoices.has_more)
-      throw new ControlPlaneError("unavailable", "Stripe invoices could not be established");
     const after = Math.floor(since.getTime() / 1000);
+    const invoices = await this.#list(
+      "invoices",
+      { subscription: subscriptionId.parse(subscription) },
+      invoiceList,
+    );
     let settled = true;
-    for (const invoice of invoices.data) {
+    for (const invoice of invoices) {
       const paidAt = invoice.status_transitions?.paid_at ?? null;
-      if (invoice.amount_paid === 0 || paidAt === null || paidAt < after) continue;
-      settled = (await this.#refundInvoice(invoice.id)) && settled;
+      // Paid in full before `since`, it took nothing after it.
+      if (invoice.amount_paid === 0 || (paidAt !== null && paidAt < after)) continue;
+      settled = (await this.#refundInvoice(invoice.id, after)) && settled;
     }
     return settled;
   }
 
   /**
-   * Deletes a customer, with its saved payment methods. Stripe keeps its own records of past
-   * payments. A customer already deleted is done.
+   * Deletes a customer, with its saved payment methods, unless Stripe shows a live subscription
+   * on it. Stripe keeps its own records of past payments. One already deleted is done.
    */
-  async deleteCustomer(id: string): Promise<void> {
+  async deleteIdleCustomer(id: string): Promise<void> {
     const customer = customerId.parse(id);
     const current = await this.#request(`customers/${customer}`, customerRecord);
     if (current.deleted === true) return;
+    const subscriptions = await this.#list(
+      "subscriptions",
+      { customer, status: "all" },
+      subscriptionList,
+    );
+    if (
+      subscriptions.some(({ status }) => status !== "canceled" && status !== "incomplete_expired")
+    )
+      return;
     const deleted = await this.#request(
       `customers/${customer}`,
       customerRecord,
@@ -524,68 +546,89 @@ export class CloudComputerStripe {
       throw new ControlPlaneError("unavailable", "Stripe did not delete the customer");
   }
 
-  async #refundInvoice(invoice: string): Promise<boolean> {
-    const query = new URLSearchParams({ invoice, limit: "100" });
-    const payments = await this.#request(`invoice_payments?${query}`, invoicePayments);
-    const paid = payments.data.filter((item) => item.status === "paid" && item.amount_paid > 0);
-    if (payments.has_more || !paid.length)
+  /** Refunds the paid payments of an invoice, those paid at or after `after` when given. */
+  async #refundInvoice(invoice: string, after: number | null): Promise<boolean> {
+    const payments = await this.#list(
+      "invoice_payments",
+      { invoice: stripeToken("in").parse(invoice) },
+      invoicePayments,
+    );
+    const paid = payments.filter((item) => item.status === "paid" && item.amount_paid > 0);
+    if (after === null && !paid.length)
       throw new ControlPlaneError(
         "unavailable",
         "Stripe Checkout payments could not be established",
       );
-
     let settled = true;
     for (const item of paid) {
-      const source =
-        item.payment.type === "payment_intent" && item.payment.payment_intent
-          ? { payment_intent: item.payment.payment_intent }
-          : item.payment.type === "charge" && item.payment.charge
-            ? { charge: item.payment.charge }
-            : undefined;
-      if (!source)
+      const paidAt = item.status_transitions?.paid_at ?? null;
+      // The doubt goes in the person's favour: a payment without a time is refunded.
+      if (after !== null && paidAt !== null && paidAt < after) continue;
+      const charge =
+        item.payment.charge ??
+        (item.payment.payment_intent
+          ? await this.#latestCharge(item.payment.payment_intent)
+          : undefined);
+      if (!charge)
         throw new ControlPlaneError(
           "unavailable",
           "Stripe Checkout payment is not refundable by the Account",
         );
-      const previous = await this.#request(
-        `refunds?${new URLSearchParams({ ...source, limit: "100" })}`,
-        refundList,
-      );
-      if (previous.has_more)
-        throw new ControlPlaneError(
-          "unavailable",
-          "Stripe Checkout refunds could not be established",
-        );
-      const matching = previous.data.filter(
-        (refund) => refund.metadata.opensteer_invoice_payment === item.id,
-      );
-      if (
-        matching.some(
-          (refund) => refund.status === "succeeded" && refund.amount === item.amount_paid,
-        )
-      )
-        continue;
-      if (
-        matching.some(
-          (refund) => refund.status === "pending" || refund.status === "requires_action",
-        )
-      ) {
-        settled = false;
-        continue;
-      }
-      const refund = await this.#request(
-        "refunds",
-        refundRecord,
-        {
-          ...source,
-          amount: String(item.amount_paid),
-          "metadata[opensteer_invoice_payment]": item.id,
-        },
-        `cloud-computer-refund:${item.id}:${matching[0]?.id ?? "first"}`,
-      );
-      settled = refund.status === "succeeded" && refund.amount === item.amount_paid && settled;
+      settled = (await this.#refundCharge(charge)) && settled;
     }
     return settled;
+  }
+
+  async #latestCharge(paymentIntent: string): Promise<string | undefined> {
+    const intent = await this.#request(`payment_intents/${paymentIntent}`, paymentIntentRecord);
+    if (intent.id !== paymentIntent)
+      throw new ControlPlaneError("unavailable", "Stripe returned another payment");
+    const latest = intent.latest_charge;
+    return typeof latest === "string" ? latest : latest?.id;
+  }
+
+  /**
+   * Refunds what remains of a charge: every refund it already has counts, whoever made it, and
+   * only the rest is refunded. The idempotency key is derived from Stripe's own record of the
+   * charge, so a retry after a lost reply asks for the same refund. A disputed charge is left to
+   * its dispute. True once nothing remains and no refund is still pending.
+   */
+  async #refundCharge(id: string): Promise<boolean> {
+    const charge = await this.#request(`charges/${id}`, chargeRecord);
+    if (charge.id !== id)
+      throw new ControlPlaneError("unavailable", "Stripe returned another charge");
+    if (charge.disputed) return true;
+    const refunds = await this.#list("refunds", { charge: id }, refundList);
+    const live = refunds.filter(({ status }) => status !== "failed" && status !== "canceled");
+    const waiting = live.some(({ status }) => status !== "succeeded");
+    const remaining = charge.amount - live.reduce((sum, refund) => sum + refund.amount, 0);
+    if (remaining <= 0) return !waiting;
+    const refund = await this.#request(
+      "refunds",
+      refundRecord,
+      { charge: id, amount: String(remaining) },
+      `cloud-computer-refund:${id}:${refunds.length}`,
+    );
+    return refund.status === "succeeded" && refund.amount === remaining && !waiting;
+  }
+
+  /** Every item of a Stripe list, through all of its pages. */
+  async #list<T extends { id: string }>(
+    path: string,
+    filter: Record<string, string>,
+    schema: z.ZodType<{ has_more: boolean; data: T[] }>,
+  ): Promise<T[]> {
+    const items: T[] = [];
+    const query = new URLSearchParams({ ...filter, limit: "100" });
+    for (;;) {
+      const page = await this.#request(`${path}?${query}`, schema);
+      items.push(...page.data);
+      if (!page.has_more) return items;
+      const last = page.data.at(-1);
+      if (!last || query.get("starting_after") === last.id)
+        throw new ControlPlaneError("unavailable", "Stripe pagination was incomplete");
+      query.set("starting_after", last.id);
+    }
   }
 
   async updateSeatQuantity(input: {
@@ -695,7 +738,7 @@ export type StripeBilling = Pick<
   | "expireCheckout"
   | "refundCheckout"
   | "refundSubscriptionPaymentsSince"
-  | "deleteCustomer"
+  | "deleteIdleCustomer"
   | "validatePortal"
 >;
 

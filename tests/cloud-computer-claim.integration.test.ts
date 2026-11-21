@@ -296,7 +296,7 @@ const stripe = {
   }),
   refundCheckout: async () => true,
   refundSubscriptionPaymentsSince: async () => true,
-  deleteCustomer: async () => {},
+  deleteIdleCustomer: async () => {},
   findCheckout: async () => undefined,
   cancel: async () => {
     if (stripeUnavailable) throw new Error("Stripe is unavailable");

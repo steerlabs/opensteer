@@ -73,6 +73,8 @@ export interface CloudComputerTable {
   restoreSnapshot: string | null;
   ipv6Enabled: Generated<boolean>;
   deletionRequestedAt: NullableTimestamp;
+  /** Set once the billing pass settled this computer's deletion with Stripe; see `reconcileBilling`. */
+  billingSettledAt: Generated<Date | null>;
   vmDestroyedAt: Generated<Date | null>;
   backupsUnreadableAt: Generated<Date | null>;
   backupObjectsRemovedAt: Generated<Date | null>;

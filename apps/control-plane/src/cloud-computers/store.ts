@@ -1,4 +1,5 @@
 import { cancelAndRefundCheckout } from "./checkout-compensation.js";
+import { CloudComputerDeletionUnsettled, type CloudComputerDeletionStep } from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
@@ -86,6 +87,8 @@ const bootstrapLifetimeMs = 20 * 60_000;
 const checkoutLifetimeMs = 2 * 60 * 60_000;
 const checkoutCreationWindowMs = 31 * 60_000;
 const paidFulfillmentDeadlineMs = 15 * 60_000;
+/** A deleted Cloud Computer still unsettled with Stripe this long after its request is reported. */
+const unsettledDeletionMs = 60 * 60_000;
 const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
 const providerWriteGraceMs = 3 * 60_000;
@@ -366,7 +369,7 @@ export class CloudComputerStore {
     const recovered = await this.#db.transaction().execute(async (tx) => {
       const owner = await tx
         .selectFrom("users")
-        .select(["deletionFencedUntil", "deletionRequestedAt"])
+        .select("deletionFencedUntil")
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
@@ -386,7 +389,7 @@ export class CloudComputerStore {
         .where("deletionRequestedAt", "is not", null)
         .where("tombstonedAt", "is", null)
         .executeTakeFirst();
-      const close = !owner || owner.deletionRequestedAt !== null || Boolean(deleting);
+      const close = !owner || Boolean(deleting);
       let session = await this.#options.stripe.findCheckout({
         accountId,
         requestId,
@@ -535,7 +538,7 @@ export class CloudComputerStore {
       }
       const owner = await tx
         .selectFrom("users")
-        .select(["deletionFencedUntil", "deletionRequestedAt"])
+        .select("deletionFencedUntil")
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
@@ -577,8 +580,7 @@ export class CloudComputerStore {
           await releaseCheckoutTarget(tx, accountId, requestId);
         }
       };
-      // Paid after the person asked to delete the Account: refunded, never fulfilled.
-      if (!owner || owner.deletionRequestedAt || attempt.status === "expired") {
+      if (!owner || attempt.status === "expired") {
         await refund();
         return;
       }
@@ -864,7 +866,7 @@ export class CloudComputerStore {
         .where("status", "=", "open")
         .where((eb) =>
           eb.or([
-            eb("targetComputerId", "=", row.id),
+            eb("targetComputerId", "=", CloudComputerIdSchema.parse(row.id)),
             ...(row.accountId ? [eb("accountId", "=", row.accountId)] : []),
           ]),
         )
@@ -964,7 +966,139 @@ export class CloudComputerStore {
           .transaction()
           .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId)),
       );
+    const deleted = await this.#db
+      .selectFrom("cloudComputers")
+      .select("id")
+      .where("deletionRequestedAt", "is not", null)
+      .where("billingSettledAt", "is", null)
+      .where("workAssignmentId", "is", null)
+      .orderBy("id")
+      .execute();
+    for (const row of deleted)
+      await run(() => this.#settleDeletion(CloudComputerIdSchema.parse(row.id), onError));
     await run(async () => this.#options.organizations?.reconcile(onError));
+  }
+
+  /**
+   * Settles with Stripe a Cloud Computer whose deletion was requested, however it was asked
+   * (deleting it, or deleting the Account): from the request on, nothing more is kept. Every
+   * step rests on what Stripe says now and is retried each pass; the row is marked settled only
+   * once all of them hold, and one unsettled an hour after its request is reported with its step.
+   */
+  async #settleDeletion(id: CloudComputerId, onError: (error: unknown) => void) {
+    const row = await this.#db
+      .selectFrom("cloudComputers")
+      .select([
+        "id",
+        "accountId",
+        "state",
+        "deletionRequestedAt",
+        "billingSettledAt",
+        "stripeCheckoutId",
+        "stripeSubscriptionId",
+      ])
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (!row?.deletionRequestedAt || row.billingSettledAt) return;
+    const since = row.deletionRequestedAt;
+    let step: CloudComputerDeletionStep = "cancel";
+    let failure: unknown;
+    try {
+      const settled = await this.#settledWithStripe({ ...row, since }, (next) => {
+        step = next;
+      });
+      if (settled) {
+        await this.#db
+          .updateTable("cloudComputers")
+          .where("id", "=", id)
+          .where("billingSettledAt", "is", null)
+          .set({ billingSettledAt: this.#now() })
+          .executeTakeFirst();
+        return;
+      }
+    } catch (error) {
+      failure = error;
+    }
+    if (this.#now().getTime() - since.getTime() >= unsettledDeletionMs)
+      onError(new CloudComputerDeletionUnsettled(id, step, { cause: failure }));
+    else if (failure) throw failure;
+  }
+
+  async #settledWithStripe(
+    row: {
+      readonly id: string;
+      readonly accountId: ControlPlaneAccountId | null;
+      readonly state: string;
+      readonly since: Date;
+      readonly stripeCheckoutId: string;
+      readonly stripeSubscriptionId: string;
+    },
+    at: (step: CloudComputerDeletionStep) => void,
+  ): Promise<boolean> {
+    const { stripe } = this.#options;
+    // The subscription cancelled: `#refreshSubscription` cancels it, then marks the row deleted.
+    at("cancel");
+    if (row.state !== "deleted") return false;
+    const subscription = await stripe.subscription(row.stripeSubscriptionId);
+    if (subscription.id !== row.stripeSubscriptionId)
+      throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+    if (billingStatus(subscription) !== "canceled") await stripe.cancel(subscription.id);
+    // Every payment for it at or after the request, refunded in full.
+    at("refund");
+    if (!(await stripe.refundSubscriptionPaymentsSince(subscription.id, row.since))) return false;
+    // The person's checkouts from before the request: none still open, none paid unrefunded. The
+    // pass expires an open one, and refunds one paid, before this runs (`#recoverCheckout`).
+    at("checkout");
+    const customers = new Set([subscription.customer]);
+    const owner =
+      row.accountId ??
+      (
+        await this.#db
+          .selectFrom("cloudComputerCheckouts")
+          .select("accountId")
+          .where("stripeSessionId", "=", row.stripeCheckoutId)
+          .executeTakeFirst()
+      )?.accountId;
+    if (owner) {
+      const attempts = await this.#db
+        .selectFrom("cloudComputerCheckouts")
+        .selectAll()
+        .where((eb) =>
+          eb.or([
+            eb("accountId", "=", owner),
+            eb("targetComputerId", "=", CloudComputerIdSchema.parse(row.id)),
+          ]),
+        )
+        .where("createdAt", "<=", row.since)
+        .orderBy("createdAt")
+        .execute();
+      const deferred = await this.#db
+        .selectFrom("cloudComputerStripeEvents")
+        .select("id")
+        .where("deferredCheckout", "is not", null)
+        .where(sql<boolean>`deferred_checkout->>'client_reference_id' = ${owner}`)
+        .executeTakeFirst();
+      if (deferred || attempts.some((attempt) => attempt.status === "open")) return false;
+      for (const attempt of attempts) {
+        if (attempt.status !== "completed" && attempt.status !== "refunded") continue;
+        if (!attempt.stripeSessionId) continue;
+        const session = await stripe.findCheckout({
+          accountId: attempt.accountId,
+          requestId: attempt.requestId,
+          sessionId: attempt.stripeSessionId,
+          createdAt: attempt.createdAt,
+          expiresAt: attempt.expiresAt,
+        });
+        if (!session?.payment) continue;
+        if (attempt.status === "refunded" && !(await stripe.refundCheckout(session.payment)))
+          return false;
+        customers.add(session.payment.customer);
+      }
+    }
+    // Then the customers, with the cards saved on them, unless another subscription lives there.
+    at("customer");
+    for (const customer of customers) await stripe.deleteIdleCustomer(customer);
+    return true;
   }
 
   #deferredCheckouts() {
@@ -2279,85 +2413,6 @@ export class CloudComputerStore {
     );
   }
 
-  /**
-   * The person's own Cloud Computers that deleting their Account must end first, and how far
-   * each has gone: asked to delete, its subscription cancelled, its machine and disk gone.
-   * A work Home is the organization's and never listed here.
-   */
-  async accountDeletionState(accountId: ControlPlaneAccountId) {
-    const rows = await this.#db
-      .selectFrom("cloudComputers")
-      .select(["id", "billingStatus", "deletionRequestedAt", "state", "vmDestroyedAt"])
-      .where("accountId", "=", accountId)
-      .where("workAssignmentId", "is", null)
-      .where("tombstonedAt", "is", null)
-      .orderBy("id")
-      .execute();
-    return rows.map((row) => ({
-      id: CloudComputerIdSchema.parse(row.id),
-      deletionRequested: row.deletionRequestedAt !== null,
-      billingCanceled: row.billingStatus === "canceled",
-      machineGone: row.vmDestroyedAt !== null,
-    }));
-  }
-
-  /**
-   * Closes the person's open checkouts at once, where Stripe answers: an open session is
-   * expired, and one already paid is refunded. What Stripe can't answer now, the billing pass
-   * closes on its next run.
-   */
-  async closeAccountCheckouts(accountId: ControlPlaneAccountId): Promise<void> {
-    const open = await this.#db
-      .selectFrom("cloudComputerCheckouts")
-      .select("requestId")
-      .where("accountId", "=", accountId)
-      .where("status", "=", "open")
-      .execute();
-    for (const { requestId } of open)
-      await this.#recoverCheckout(accountId, requestId).catch(() =>
-        this.#billingAttention(
-          "Closing a Cloud Computer Checkout for a deleted Account is pending.",
-        ),
-      );
-  }
-
-  /**
-   * Settles what the person paid after asking to delete their Account (`since`): every payment
-   * Stripe took on their own subscriptions from then on is refunded in full, and no paid
-   * checkout waits unrefunded. Once that holds, their Stripe customers, with the cards saved
-   * on them, are deleted. False while anything still waits.
-   */
-  async settleAccountBilling(accountId: ControlPlaneAccountId, since: Date): Promise<boolean> {
-    const rows = await this.#db
-      .selectFrom("cloudComputers")
-      .select(["stripeSubscriptionId", "stripeCustomerId"])
-      .where("accountId", "=", accountId)
-      .where("workAssignmentId", "is", null)
-      .execute();
-    let settled = true;
-    for (const subscription of new Set(rows.map((row) => row.stripeSubscriptionId)))
-      settled =
-        (await this.#options.stripe.refundSubscriptionPaymentsSince(subscription, since)) &&
-        settled;
-    const unrefunded = await this.#db
-      .selectFrom("cloudComputerCheckouts")
-      .select("requestId")
-      .where("accountId", "=", accountId)
-      .where("paidAt", "is not", null)
-      .where("status", "not in", ["completed", "refunded"])
-      .executeTakeFirst();
-    const deferred = await this.#db
-      .selectFrom("cloudComputerStripeEvents")
-      .select("id")
-      .where("deferredCheckout", "is not", null)
-      .where(sql<boolean>`deferred_checkout->>'client_reference_id' = ${accountId}`)
-      .executeTakeFirst();
-    if (!settled || unrefunded || deferred) return false;
-    for (const customer of new Set(rows.map((row) => row.stripeCustomerId)))
-      await this.#options.stripe.deleteCustomer(customer);
-    return true;
-  }
-
   async mutate(
     id: CloudComputerId,
     action: Mutation,
@@ -3153,15 +3208,12 @@ function needsVm(row: Computer) {
 async function lockOwner(tx: TransactionDb, accountId: ControlPlaneAccountId, now: Date) {
   const owner = await tx
     .selectFrom("users")
-    .select(["id", "deletionFencedUntil", "deletionRequestedAt"])
+    .select(["id", "deletionFencedUntil"])
     .where("id", "=", accountId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  // An Account its person asked to delete buys nothing more, however long the deletion takes.
   return (
-    owner !== undefined &&
-    owner.deletionRequestedAt === null &&
-    (owner.deletionFencedUntil === null || owner.deletionFencedUntil <= now)
+    owner !== undefined && (owner.deletionFencedUntil === null || owner.deletionFencedUntil <= now)
   );
 }
 

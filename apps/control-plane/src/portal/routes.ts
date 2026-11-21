@@ -457,12 +457,8 @@ export function registerControlPlaneRoutes(
       mutation: true,
       scope: "account:delete",
     });
-    const outcome = await dependencies.accountDeletion.delete(principal.accountId);
+    await dependencies.accountDeletion.delete(principal.accountId);
     void reply.header("cache-control", "no-store");
-    if (outcome.status === "pending") {
-      void reply.code(202);
-      return DeleteAccountResponseSchema.parse({ deleted: false, pending: true });
-    }
     return DeleteAccountResponseSchema.parse({ deleted: true });
   });
 }

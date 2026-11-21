@@ -1,7 +1,7 @@
 import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
 import { describe, expect, it } from "vitest";
-import { accountDeletionPendingBody, deleteAccountBody, portalHomeBody } from "./pages.js";
+import { accountDeletedBody, deleteAccountBody, portalHomeBody } from "./pages.js";
 
 const base = {
   account: { displayName: "Sam", email: "sam@example.com" },
@@ -43,18 +43,17 @@ describe("the page that deletes an Account", () => {
     servers: [],
   };
 
-  it("says before confirming that a Cloud Computer goes with it, cancelled first, unrefunded", () => {
+  it("says before confirming what deleting its Cloud Computer with it promises", () => {
     const body = deleteAccountBody({ ...base, cloudComputer: true });
     for (const words of [
       "Your Cloud Computer is deleted with it.",
-      "Opensteer cancels its subscription first, so it won’t renew",
-      "the rest of the period already paid isn’t refunded",
-      "If Stripe takes any payment after you confirm, Opensteer refunds it in full.",
-      "destroys the computer and its disk",
+      // The same promise as deleting only the Cloud Computer.
+      cloudWords("cloud.delete.billing"),
+      "Your account goes at once; then Opensteer destroys the computer and its disk",
       "makes its backups unreadable and removes them, and deletes the card saved with Stripe",
-      "Your account goes once all of this is done.",
     ])
       expect(body).toContain(escapeHtml(words));
+    expect(cloudWords("cloud.delete.body")).toContain(cloudWords("cloud.delete.billing"));
     expect(body).toContain('<form method="post"');
     // Never the promise the code can't keep when Stripe charges during an outage.
     expect(body).not.toContain("nothing more is charged");
@@ -69,23 +68,17 @@ describe("the page that deletes an Account", () => {
     expect(body).not.toContain("<form");
   });
 
-  it("says a deletion that waits on its Cloud Computer is under way, and whether billing stopped", () => {
-    expect(accountDeletionPendingBody({ billingCanceled: true })).toContain(
-      escapeHtml("subscription is cancelled, so it won’t renew"),
+  it("says once the Account is deleted that its Cloud Computer's deletion is being finished", () => {
+    const body = accountDeletedBody({ cloudComputer: true });
+    expect(body).toContain("Your Opensteer account is deleted");
+    expect(body).toContain(
+      escapeHtml(
+        "Opensteer is finishing your Cloud Computer’s deletion: cancelling its subscription",
+      ),
     );
-    expect(accountDeletionPendingBody({ billingCanceled: true })).toContain(
-      escapeHtml("Any payment Stripe takes after you asked is refunded in full"),
-    );
-    expect(accountDeletionPendingBody({ billingCanceled: true })).not.toContain(
-      "longer than it should",
-    );
-    const late = accountDeletionPendingBody({ billingCanceled: true, overdue: true });
-    expect(late).toContain(escapeHtml("This is taking longer than it should."));
-    expect(late).toContain("tim@opensteer.com");
-    expect(accountDeletionPendingBody({ billingCanceled: false })).toContain(
-      escapeHtml("keeps trying until Stripe confirms it"),
-    );
-    // Without a Cloud Computer the page says nothing about one.
+    expect(body).toContain(escapeHtml("If Stripe takes a payment after you ask"));
+    // Without a Cloud Computer the pages say nothing about one.
+    expect(accountDeletedBody()).not.toContain("Cloud Computer");
     expect(deleteAccountBody(base)).not.toContain("Cloud Computer");
   });
 });

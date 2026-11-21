@@ -15,24 +15,20 @@ export function workSignInAuthority(db: DB, clientId: string, lock = false) {
 }
 
 export function otherAdmin(db: DB, org: OrganizationId, account: ControlPlaneAccountId, now: Date) {
-  return (
-    db
-      .selectFrom("organizationMembers")
-      .innerJoin("users", "users.id", "organizationMembers.accountId")
-      .select("organizationMembers.accountId")
-      .where("organizationMembers.organizationId", "=", org)
-      .where("organizationMembers.role", "=", "admin")
-      .where("organizationMembers.accountId", "!=", account)
-      // An admin whose Account is closing is no other admin.
-      .where("users.deletionRequestedAt", "is", null)
-      .where((eb) =>
-        eb.or([
-          eb("users.deletionFencedUntil", "is", null),
-          eb("users.deletionFencedUntil", "<=", now),
-        ]),
-      )
-      .executeTakeFirst()
-  );
+  return db
+    .selectFrom("organizationMembers")
+    .innerJoin("users", "users.id", "organizationMembers.accountId")
+    .select("organizationMembers.accountId")
+    .where("organizationMembers.organizationId", "=", org)
+    .where("organizationMembers.role", "=", "admin")
+    .where("organizationMembers.accountId", "!=", account)
+    .where((eb) =>
+      eb.or([
+        eb("users.deletionFencedUntil", "is", null),
+        eb("users.deletionFencedUntil", "<=", now),
+      ]),
+    )
+    .executeTakeFirst();
 }
 
 /** Locks organizations in a stable order so concurrent departures cannot leave one adminless. */

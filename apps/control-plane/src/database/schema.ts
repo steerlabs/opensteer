@@ -74,11 +74,6 @@ export interface UserTable {
   /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
   deletionAttemptId: string | null;
   deletionFencedUntil: NullableTimestamp;
-  /**
-   * When the person asked to delete this Account, kept until it goes: from then no checkout
-   * can charge it, and `AccountDeletionService` finishes once its Cloud Computers are gone.
-   */
-  deletionRequestedAt: NullableTimestamp;
   /** Bumped by every name change; see `AccountProfiles`. */
   nameRevision: ColumnType<string, never, string>;
 }

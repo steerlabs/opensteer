@@ -472,79 +472,6 @@ it("uses an attempt's fixed Checkout expiry and rereads a Session when expiry lo
   }
 });
 
-it("refunds the Checkout invoice payment and waits for Stripe's confirmed refund", async () => {
-  const refund = {
-    id: "re_attempt",
-    amount: 2900,
-    status: "pending",
-    metadata: { opensteer_invoice_payment: "inpay_attempt" },
-  };
-  let existing: object[] = [];
-  const sent = vi.fn();
-  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/v1/invoice_payments") {
-      expect(url.searchParams.get("invoice")).toBe("in_attempt");
-      return Response.json({
-        has_more: false,
-        data: [
-          {
-            id: "inpay_attempt",
-            status: "paid",
-            amount_paid: 2900,
-            payment: { type: "payment_intent", payment_intent: "pi_attempt" },
-          },
-        ],
-      });
-    }
-    expect(url.pathname).toBe("/v1/refunds");
-    if (init?.method === "GET") {
-      expect(url.searchParams.get("payment_intent")).toBe("pi_attempt");
-      return Response.json({ has_more: false, data: existing });
-    }
-    sent(
-      Object.fromEntries(new URLSearchParams(String(init?.body))),
-      new Headers(init?.headers).get("idempotency-key"),
-    );
-    existing = [refund];
-    return Response.json(refund);
-  });
-  try {
-    const stripe = new CloudComputerStripe({
-      key,
-      returnUrl: new URL("https://account.example.test"),
-    });
-    const checkout = StripePaidCheckoutSchema.parse({
-      id: "cs_attempt",
-      mode: "subscription",
-      customer: "cus_attempt",
-      subscription: "sub_attempt",
-      currency: "usd",
-      payment_status: "paid",
-      invoice: "in_attempt",
-      client_reference_id: "acct_00000000-0000-4000-8000-000000000001",
-      metadata: {
-        account_id: "acct_00000000-0000-4000-8000-000000000001",
-        request_id: "00000000-0000-4000-8000-000000000001",
-      },
-    });
-    await expect(stripe.refundCheckout(checkout)).resolves.toBe(false);
-    await expect(stripe.refundCheckout(checkout)).resolves.toBe(false);
-    existing = [{ ...refund, status: "succeeded" }];
-    await expect(stripe.refundCheckout(checkout)).resolves.toBe(true);
-    expect(sent).toHaveBeenCalledExactlyOnceWith(
-      {
-        payment_intent: "pi_attempt",
-        amount: "2900",
-        "metadata[opensteer_invoice_payment]": "inpay_attempt",
-      },
-      "cloud-computer-refund:inpay_attempt:first",
-    );
-  } finally {
-    provider.mockRestore();
-  }
-});
-
 it("opens only the validated dedicated portal configuration with the call's return URL", async () => {
   const features = {
     customer_update: { enabled: false },
@@ -643,98 +570,264 @@ it("finds an ambiguous Checkout beyond the first twenty pages", async () => {
   }
 });
 
-it("refunds every payment a subscription took after the decision, and none before it", async () => {
-  const since = new Date("2026-11-21T12:00:00.000Z");
-  const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
-  const refunded: Record<string, string>[] = [];
+interface FakeRefund {
+  id: string;
+  amount: number;
+  status: "pending" | "succeeded" | "failed";
+}
+
+/**
+ * Stripe's lists, charges, refunds and customers, as the account service reads them, paged
+ * `pageSize` at a time. A refund it is asked for is recorded before it answers.
+ */
+function fakeStripe(state: {
+  invoices?: { id: string; amount_paid: number; paid_at: number | null }[];
+  payments?: Record<
+    string,
+    { id: string; charge?: string; payment_intent?: string; paid_at?: number }[]
+  >;
+  intents?: Record<string, string>;
+  charges?: Record<string, { amount: number; disputed?: boolean }>;
+  refunds?: Record<string, FakeRefund[]>;
+  subscriptions?: Record<string, { id: string; status: string }[]>;
+  customers?: Record<string, { deleted?: boolean }>;
+  pageSize?: number;
+  refundAnswer?: (refund: FakeRefund) => Response;
+}) {
+  const posts: { body: Record<string, string>; key: string | null }[] = [];
+  const reads: string[] = [];
+  const page = <T extends { id: string }>(items: T[], url: URL) => {
+    const after = url.searchParams.get("starting_after");
+    const start = after ? items.findIndex(({ id }) => id === after) + 1 : 0;
+    const size = state.pageSize ?? 100;
+    return Response.json({
+      has_more: start + size < items.length,
+      data: items.slice(start, start + size),
+    });
+  };
   const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(String(input));
-    if (url.pathname === "/v1/invoices") {
-      expect(url.searchParams.get("subscription")).toBe("sub_closing");
-      expect(url.searchParams.get("status")).toBe("paid");
-      return Response.json({
-        has_more: false,
-        data: [
-          // The renewal Stripe charged after the person asked: refunded.
-          {
-            id: "in_renewal",
-            amount_paid: 2900,
-            status_transitions: { paid_at: at("2026-11-21T13:00:00Z") },
-          },
-          // The period paid before the decision: kept, as the pages say.
-          {
-            id: "in_first",
-            amount_paid: 2900,
-            status_transitions: { paid_at: at("2026-10-21T12:00:00Z") },
-          },
-          {
-            id: "in_zero",
-            amount_paid: 0,
-            status_transitions: { paid_at: at("2026-11-21T14:00:00Z") },
-          },
-        ],
-      });
-    }
-    if (url.pathname === "/v1/invoice_payments")
-      return Response.json({
-        has_more: false,
-        data: [
-          {
-            id: `inpay_${url.searchParams.get("invoice")}`,
+    const path = url.pathname.replace("/v1/", "");
+    const method = init?.method ?? "GET";
+    const filter = url.searchParams.get("invoice") ?? url.searchParams.get("charge");
+    reads.push(`${method} ${path}${filter && method === "GET" ? `?${filter}` : ""}`);
+    if (path === "invoices")
+      return page(
+        (state.invoices ?? []).map(({ paid_at, ...invoice }) => ({
+          ...invoice,
+          status_transitions: { paid_at },
+        })),
+        url,
+      );
+    if (path === "invoice_payments")
+      return page(
+        (state.payments?.[url.searchParams.get("invoice")!] ?? []).map(
+          ({ id, charge, payment_intent, paid_at }) => ({
+            id,
             status: "paid",
             amount_paid: 2900,
-            payment: { type: "payment_intent", payment_intent: "pi_renewal" },
-          },
-        ],
-      });
-    if (url.pathname === "/v1/refunds" && init?.method === "GET")
-      return Response.json({ has_more: false, data: [] });
-    expect(url.pathname).toBe("/v1/refunds");
-    refunded.push(Object.fromEntries(new URLSearchParams(String(init?.body))));
-    return Response.json({
-      id: "re_renewal",
-      amount: 2900,
-      status: "succeeded",
-      metadata: { opensteer_invoice_payment: "inpay_in_renewal" },
-    });
+            payment: charge
+              ? { type: "charge", charge }
+              : { type: "payment_intent", payment_intent },
+            status_transitions: { paid_at: paid_at ?? null },
+          }),
+        ),
+        url,
+      );
+    if (path.startsWith("payment_intents/")) {
+      const id = path.slice("payment_intents/".length);
+      return Response.json({ id, latest_charge: state.intents?.[id] ?? null });
+    }
+    if (path.startsWith("charges/")) {
+      const id = path.slice("charges/".length);
+      const charge = state.charges![id]!;
+      return Response.json({ id, amount: charge.amount, disputed: charge.disputed ?? false });
+    }
+    if (path === "refunds" && method === "GET")
+      return page(state.refunds?.[url.searchParams.get("charge")!] ?? [], url);
+    if (path === "refunds") {
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      posts.push({ body, key: new Headers(init?.headers).get("idempotency-key") });
+      const refund: FakeRefund = {
+        id: `re_${posts.length}`,
+        amount: Number(body["amount"]),
+        status: "succeeded",
+      };
+      (state.refunds ??= {})[body["charge"]!] = [...(state.refunds[body["charge"]!] ?? []), refund];
+      return state.refundAnswer?.(refund) ?? Response.json(refund);
+    }
+    if (path === "subscriptions")
+      return page(state.subscriptions?.[url.searchParams.get("customer")!] ?? [], url);
+    if (path.startsWith("customers/")) {
+      const id = path.slice("customers/".length);
+      const customer = (state.customers ??= {})[id] ?? (state.customers[id] = {});
+      if (method === "DELETE") customer.deleted = true;
+      return Response.json({ id, ...(customer.deleted ? { deleted: true } : {}) });
+    }
+    throw new Error(`Unexpected Stripe request ${method} ${path}`);
+  });
+  const stripe = new CloudComputerStripe({
+    key,
+    returnUrl: new URL("https://account.example.test"),
+  });
+  return { stripe, posts, reads, state, restore: () => provider.mockRestore() };
+}
+
+const paidCheckout = StripePaidCheckoutSchema.parse({
+  id: "cs_attempt",
+  mode: "subscription",
+  customer: "cus_attempt",
+  subscription: "sub_attempt",
+  currency: "usd",
+  payment_status: "paid",
+  invoice: "in_attempt",
+  client_reference_id: "acct_00000000-0000-4000-8000-000000000001",
+  metadata: {
+    account_id: "acct_00000000-0000-4000-8000-000000000001",
+    request_id: "00000000-0000-4000-8000-000000000001",
+  },
+});
+
+it("refunds a Checkout by its charge, waits for a pending refund, and never asks twice", async () => {
+  const fake = fakeStripe({
+    payments: { in_attempt: [{ id: "inpay_attempt", payment_intent: "pi_attempt" }] },
+    intents: { pi_attempt: "ch_attempt" },
+    charges: { ch_attempt: { amount: 2900 } },
+    refundAnswer: (refund) => {
+      refund.status = "pending";
+      return Response.json(refund);
+    },
   });
   try {
-    const stripe = new CloudComputerStripe({
-      key,
-      returnUrl: new URL("https://account.example.test"),
-    });
-    await expect(stripe.refundSubscriptionPaymentsSince("sub_closing", since)).resolves.toBe(true);
-    expect(refunded).toEqual([
-      {
-        payment_intent: "pi_renewal",
-        amount: "2900",
-        "metadata[opensteer_invoice_payment]": "inpay_in_renewal",
-      },
+    await expect(fake.stripe.refundCheckout(paidCheckout)).resolves.toBe(false);
+    // Pending at Stripe: counted, and not asked for again.
+    await expect(fake.stripe.refundCheckout(paidCheckout)).resolves.toBe(false);
+    fake.state.refunds!["ch_attempt"]![0]!.status = "succeeded";
+    await expect(fake.stripe.refundCheckout(paidCheckout)).resolves.toBe(true);
+    expect(fake.posts).toEqual([
+      { body: { charge: "ch_attempt", amount: "2900" }, key: "cloud-computer-refund:ch_attempt:0" },
     ]);
   } finally {
-    provider.mockRestore();
+    fake.restore();
   }
 });
 
-it("deletes a customer with its saved card once, and treats one already deleted as done", async () => {
-  let deleted = false;
-  const calls: string[] = [];
-  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = new URL(String(input));
-    expect(url.pathname).toBe("/v1/customers/cus_closing");
-    calls.push(init?.method ?? "GET");
-    if (init?.method === "DELETE") deleted = true;
-    return Response.json({ id: "cus_closing", ...(deleted ? { deleted: true } : {}) });
+it("asks for the same refund after a lost reply, and for a new one after a failed refund", async () => {
+  let lose = true;
+  const fake = fakeStripe({
+    payments: { in_attempt: [{ id: "inpay_attempt", charge: "ch_attempt" }] },
+    charges: { ch_attempt: { amount: 2900 } },
+    refundAnswer: (refund) => {
+      if (!lose) return Response.json(refund);
+      lose = false;
+      refund.status = "failed";
+      return new Response("lost", { status: 500 });
+    },
   });
   try {
-    const stripe = new CloudComputerStripe({
-      key,
-      returnUrl: new URL("https://account.example.test"),
-    });
-    await stripe.deleteCustomer("cus_closing");
-    await stripe.deleteCustomer("cus_closing");
-    expect(calls).toEqual(["GET", "DELETE", "GET"]);
+    // Stripe recorded the refund, then the reply was lost.
+    await expect(fake.stripe.refundCheckout(paidCheckout)).rejects.toThrow();
+    // That refund failed at Stripe: what remains is asked for again, under a new key.
+    await expect(fake.stripe.refundCheckout(paidCheckout)).resolves.toBe(true);
+    await expect(fake.stripe.refundCheckout(paidCheckout)).resolves.toBe(true);
+    expect(fake.posts.map(({ key }) => key)).toEqual([
+      "cloud-computer-refund:ch_attempt:0",
+      "cloud-computer-refund:ch_attempt:1",
+    ]);
   } finally {
-    provider.mockRestore();
+    fake.restore();
+  }
+});
+
+it("refunds what remains of every payment since the request, through a long invoice history", async () => {
+  // 12:00:00.500: a payment in the same second is refunded, the doubt in the person's favour.
+  const since = new Date("2026-11-21T12:00:00.500Z");
+  const at = Math.floor(since.getTime() / 1000);
+  const old = Array.from({ length: 250 }, (_, index) => ({
+    id: `in_old${index}`,
+    amount_paid: 2900,
+    paid_at: at - 86_400 * (index + 1),
+  }));
+  const fake = fakeStripe({
+    pageSize: 100,
+    invoices: [
+      ...old,
+      { id: "in_same", amount_paid: 2900, paid_at: at },
+      { id: "in_support", amount_paid: 2900, paid_at: at + 60 },
+      { id: "in_partial", amount_paid: 2900, paid_at: at + 120 },
+      { id: "in_disputed", amount_paid: 2900, paid_at: at + 180 },
+      { id: "in_free", amount_paid: 0, paid_at: at + 240 },
+    ],
+    payments: {
+      in_same: [{ id: "inpay_same", charge: "ch_same", paid_at: at }],
+      in_support: [{ id: "inpay_support", charge: "ch_support", paid_at: at + 60 }],
+      in_partial: [{ id: "inpay_partial", charge: "ch_partial", paid_at: at + 120 }],
+      in_disputed: [{ id: "inpay_disputed", charge: "ch_disputed", paid_at: at + 180 }],
+    },
+    charges: {
+      ch_same: { amount: 2900 },
+      ch_support: { amount: 2900 },
+      ch_partial: { amount: 2900 },
+      ch_disputed: { amount: 2900, disputed: true },
+    },
+    refunds: {
+      // Refunded whole by support already: counted, not repeated.
+      ch_support: [{ id: "re_support", amount: 2900, status: "succeeded" }],
+      // Partly refunded, one attempt failed: only the rest is refunded.
+      ch_partial: [
+        { id: "re_part", amount: 1000, status: "succeeded" },
+        { id: "re_failed", amount: 500, status: "failed" },
+      ],
+    },
+  });
+  try {
+    await expect(fake.stripe.refundSubscriptionPaymentsSince("sub_closing", since)).resolves.toBe(
+      true,
+    );
+    expect(fake.posts).toEqual([
+      { body: { charge: "ch_same", amount: "2900" }, key: "cloud-computer-refund:ch_same:0" },
+      { body: { charge: "ch_partial", amount: "1900" }, key: "cloud-computer-refund:ch_partial:2" },
+    ]);
+    // Every page read; no old invoice's payments looked at, and the disputed one left alone.
+    expect(fake.reads.filter((read) => read === "GET invoices")).toHaveLength(3);
+    expect(fake.reads.filter((read) => read.startsWith("GET invoice_payments"))).toEqual([
+      "GET invoice_payments?in_same",
+      "GET invoice_payments?in_support",
+      "GET invoice_payments?in_partial",
+      "GET invoice_payments?in_disputed",
+    ]);
+    expect(fake.reads).toContain("GET charges/ch_disputed");
+    expect(fake.reads).toContain("GET refunds?ch_partial");
+    expect(fake.reads).not.toContain("GET refunds?ch_disputed");
+  } finally {
+    fake.restore();
+  }
+});
+
+it("deletes an idle customer with its saved card once, and keeps one with a live subscription", async () => {
+  const fake = fakeStripe({
+    subscriptions: {
+      cus_idle: [{ id: "sub_gone", status: "canceled" }],
+      cus_live: [
+        { id: "sub_gone", status: "canceled" },
+        { id: "sub_other", status: "active" },
+      ],
+    },
+  });
+  try {
+    await fake.stripe.deleteIdleCustomer("cus_idle");
+    await fake.stripe.deleteIdleCustomer("cus_idle");
+    await fake.stripe.deleteIdleCustomer("cus_live");
+    expect(fake.reads).toEqual([
+      "GET customers/cus_idle",
+      "GET subscriptions",
+      "DELETE customers/cus_idle",
+      "GET customers/cus_idle",
+      "GET customers/cus_live",
+      "GET subscriptions",
+    ]);
+    expect(fake.state.customers).toEqual({ cus_idle: { deleted: true }, cus_live: {} });
+  } finally {
+    fake.restore();
   }
 });

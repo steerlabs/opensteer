@@ -89,7 +89,9 @@ export const cloudComputerCopy = {
   "cloud.deleting": "Deleting…",
   "cloud.delete.title": "Delete Cloud Computer?",
   "cloud.delete.body":
-    "Opensteer destroys the computer and disk, including its browser profiles and tasks, and makes its backups unreadable. Opensteer then removes the stored backup data. This can’t be undone.",
+    "Its subscription is cancelled, so it won’t renew; the rest of the period already paid isn’t refunded. If Stripe takes a payment after you ask, Opensteer refunds it in full. Opensteer destroys the computer and disk, including its browser profiles and tasks, and makes its backups unreadable. Opensteer then removes the stored backup data and deletes the card saved with Stripe. This can’t be undone.",
+  "cloud.delete.billing":
+    "Its subscription is cancelled, so it won’t renew; the rest of the period already paid isn’t refunded. If Stripe takes a payment after you ask, Opensteer refunds it in full.",
   "cloud.delete.typeToConfirm": "Type delete to confirm",
   "cloud.delete.word": "delete",
   "cloud.delete.confirm": "Delete",

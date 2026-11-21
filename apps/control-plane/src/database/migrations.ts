@@ -7,6 +7,7 @@ import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
 import {
   cloudComputerBackupReportMigration,
+  cloudComputerBillingSettledMigration,
   cloudComputerClaimMigration,
   cloudComputerGoogleServerRefMigration,
   cloudComputersMigration,
@@ -527,7 +528,7 @@ const migrationProvider = {
       "0032_agent_directory": agentDirectoryMigration,
       "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
       "0034_cloud_computer_google_server_ref": cloudComputerGoogleServerRefMigration,
-      "0035_account_deletion_requested": accountDeletionRequestedMigration,
+      "0035_cloud_computer_billing_settled": cloudComputerBillingSettledMigration,
     };
   },
 };
@@ -712,18 +713,6 @@ export const personalHomeAccountLinkMigration: Migration = {
         reachability = 'canonical' or account_link is not null
       )
     `.execute(database);
-  },
-};
-
-/**
- * The person decided to delete their Account; it goes once nothing can bill or run for it.
- * Add-only: a previous release never reads it, and its absence means nobody asked.
- */
-const accountDeletionRequestedMigration: Migration = {
-  async up(database) {
-    await sql`alter table public.users add column deletion_requested_at timestamptz`.execute(
-      database,
-    );
   },
 };
 
