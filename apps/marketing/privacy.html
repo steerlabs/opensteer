@@ -116,10 +116,12 @@
               Passwords work only on a Home on your Mac.
             </p>
             <p>
-              Once a day the Cloud Computer makes an encrypted backup of its data to S3-compatible
-              object storage, in a space set aside for that computer. Our Account service creates
-              the encryption key and keeps it in Google Cloud Secret Manager; the Cloud Computer
-              receives it when it starts. Backups are kept while the Cloud Computer exists.
+              Once a day the Cloud Computer attempts an encrypted backup of its data to
+              S3-compatible object storage, in a space set aside for that computer; an attempt can
+              fail, and its Cloud Computer page shows when the last backup was reported. Our Account
+              service creates the encryption key and keeps it in Google Cloud Secret Manager; the
+              Cloud Computer receives it when it starts. Backups are kept while the Cloud Computer
+              exists.
             </p>
             <p>Our operators run the machine, its disk and its backups, and can reach them.</p>
             <p>
@@ -260,11 +262,7 @@
               processes Cloud Computer payments. Hetzner Cloud or Google Cloud hosts Cloud
               Computers, S3-compatible object storage keeps their encrypted backups, Google Cloud
               Secret Manager keeps the backup keys, and a proxy provider carries their browsers'
-              traffic. The website is hosted on Vercel. When configured, the website uses PostHog
-              for page views and interaction analytics, including its session-recording features,
-              and Crisp for optional support chat. Those website features can process browser
-              identifiers, page and interaction data, or information you send to support. These
-              website services are separate from the iPhone app.
+              traffic. The website is hosted on Vercel.
             </p>
             <p>
               Your chosen AI and connected-service providers also process information you instruct
@@ -306,8 +304,8 @@
             </p>
             <p>
               You can sign out, remove connections and revoke optional phone permissions. Signing
-              out does not delete your Account. To request access, correction or deletion of
-              information TrendUp AI holds, contact
+              out does not delete your Opensteer account. To request access, correction or deletion
+              of information TrendUp AI holds, contact
               <a href="mailto:tim@opensteer.com">tim@opensteer.com</a>.
             </p>
             <p>
@@ -323,15 +321,24 @@
               deletion cascades to associated push devices, deliveries and OAuth broker records.
             </p>
             <p>
-              If you have an Opensteer Cloud Computer, deleting your account deletes it too. We
-              cancel its subscription first, so nothing more is charged, then destroy the computer
-              and its disk, destroy the backup key, which makes its backups unreadable, and remove
-              the stored backup data. Your account is deleted once the computer is gone. Deleting
-              only the Cloud Computer does the same and keeps your account. A record that the Cloud
-              Computer existed, with its identifiers, billing references and deletion dates, remains
-              in our Account database without your account. Stripe keeps its own records of your
-              payments under its policies. A work Home belongs to its organization, so it must be
-              offboarded by the organization before you can delete your account.
+              If you have an Opensteer Cloud Computer, deleting your Opensteer account deletes it
+              too. We cancel its subscription first, so it won't renew; the rest of the period
+              already paid isn't refunded. Any payment Stripe takes after you ask is refunded in
+              full. Then we destroy the computer and its disk, destroy the backup key, which makes
+              its backups unreadable, and remove the stored backup data. Once the computer is gone
+              and any such payment is refunded, we delete your customer record at Stripe, with the
+              card saved on it, and then your Opensteer account. Deleting only the Cloud Computer
+              cancels its subscription and deletes the computer, its disk and its backups the same
+              way, and keeps your Opensteer account.
+            </p>
+            <p>
+              Some billing records remain in our Account database after your Opensteer account is
+              deleted: a record that each Cloud Computer existed, with its identifiers, billing
+              references and deletion dates, no longer linked to your account; and a record of each
+              Cloud Computer checkout you started, which keeps your deleted account's identifier.
+              Stripe keeps its own records of your past payments under its policies. A work Home
+              belongs to its organization, so it must be offboarded by the organization before you
+              can delete your Opensteer account.
             </p>
             <h2 id="security-and-international-processing">
               Security and international processing

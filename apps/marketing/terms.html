@@ -132,11 +132,12 @@
               it turns back on when Stripe reports the subscription active again.
             </p>
             <p>
-              Deleting your Cloud Computer, or your Opensteer account, cancels its subscription at
-              once: nothing more is charged, and the rest of the period already paid isn't refunded.
-              We then destroy the computer and its disk, make its backups unreadable and remove
-              them. This can't be undone. A work Home belongs to its organization, which offboards
-              it.
+              Deleting your Cloud Computer cancels its subscription, so it won't renew, and the rest
+              of the period already paid isn't refunded. If Stripe can't be reached, we keep
+              cancelling until Stripe confirms. We then destroy the computer and its disk, make its
+              backups unreadable and remove them. This can't be undone. Deleting your Opensteer
+              account does all of this too, and refunds in full any payment Stripe takes after you
+              ask. A work Home belongs to its organization, which offboards it.
             </p>
             <p>
               A Cloud Computer is one server for one person, and an account has one at a time. Use
