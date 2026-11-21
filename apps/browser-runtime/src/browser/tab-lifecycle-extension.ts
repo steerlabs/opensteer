@@ -30,21 +30,25 @@ const extensionManifestJson = JSON.stringify(
   2,
 );
 
-const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
-const replacedFromByTabId = new Map();
+/** The helper's service worker source; exported so its replacement record can be tested alone. */
+export const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
+// Replacements are remembered only by this worker; a restarted worker has a new epoch, so the
+// runtime knows its memory may not cover a replacement made before.
+const helperEpoch = crypto.randomUUID();
+const ancestorsByTabId = new Map();
 function recordReplacement(addedTabId, removedTabId) {
   if (typeof addedTabId !== "number" || typeof removedTabId !== "number" || addedTabId === removedTabId) {
     return;
   }
-  const rootId = replacedFromByTabId.get(removedTabId) ?? removedTabId;
-  replacedFromByTabId.delete(removedTabId);
-  replacedFromByTabId.set(addedTabId, rootId);
+  const ancestors = [removedTabId, ...(ancestorsByTabId.get(removedTabId) ?? [])].slice(0, 32);
+  ancestorsByTabId.delete(removedTabId);
+  ancestorsByTabId.set(addedTabId, ancestors);
 }
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   recordReplacement(addedTabId, removedTabId);
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
-  replacedFromByTabId.delete(tabId);
+  ancestorsByTabId.delete(tabId);
 });
 globalThis.__opensteer = {
   async inventory() {
@@ -70,7 +74,8 @@ globalThis.__opensteer = {
         discarded: Boolean(tab.discarded),
         status: tab.status || "",
         targetId: targetByTabId.get(tab.id) ?? null,
-        replacedFromTabId: replacedFromByTabId.get(tab.id) ?? null,
+        replacedFromTabIds: ancestorsByTabId.get(tab.id) ?? [],
+        helperEpoch,
       }));
   },
   async discardByTabId(tabId) {
@@ -124,7 +129,10 @@ const tabEntrySchema = z.object({
   discarded: z.boolean(),
   status: z.string(),
   targetId: z.string().nullable(),
-  replacedFromTabId: z.number().int().nullable().optional(),
+  /** Every earlier tab id Chromium replaced this tab from, nearest first, as far as this worker saw. */
+  replacedFromTabIds: z.array(z.number().int()).max(64).optional(),
+  /** The helper worker that answered; a different one may not remember earlier replacements. */
+  helperEpoch: z.string().min(1).max(128).optional(),
 });
 
 export type ChromiumTabEntry = z.infer<typeof tabEntrySchema>;
@@ -319,16 +327,27 @@ export class ChromiumTabLifecycleBridge {
     throw new Error("Opensteer tab lifecycle helper worker did not become ready.");
   }
 
-  private async callWorker<T>(fn: (worker: Worker) => Promise<T>): Promise<T> {
+  /**
+   * A read is retried once. A change (discard, activate, remove) is retried only when the worker
+   * could not be reached: once it was asked, a failure or timeout is an unknown outcome the caller
+   * resolves from the inventory, never a second request (Rule B).
+   */
+  private async callWorker<T>(
+    fn: (worker: Worker) => Promise<T>,
+    kind: "read" | "change" = "read",
+  ): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
+      let asked = false;
       try {
         const worker = await this.ensureWorker();
+        asked = true;
         return await withTimeout(fn(worker), workerCallMs, {
           timeoutError: () => new Error("Opensteer tab lifecycle helper call timed out."),
         });
       } catch (error) {
         lastError = error;
+        if (asked && kind === "change") break;
       }
     }
     throw lastError;
@@ -363,6 +382,7 @@ export class ChromiumTabLifecycleBridge {
           ).__opensteer.discardByTabId(id),
         tabId,
       ),
+      "change",
     );
     const parsed = discardResultSchema.parse(raw);
     if (!parsed.ok || parsed.newTabId === null) return null;
@@ -388,6 +408,7 @@ export class ChromiumTabLifecycleBridge {
           ).__opensteer.activateByTabId(id),
         tabId,
       ),
+      "change",
     );
     return activateResultSchema.parse(raw).ok;
   }
@@ -403,6 +424,7 @@ export class ChromiumTabLifecycleBridge {
           ).__opensteer.removeByTabId(id),
         tabId,
       ),
+      "change",
     );
     return raw === true;
   }

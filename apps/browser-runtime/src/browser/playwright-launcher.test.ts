@@ -1541,6 +1541,8 @@ describe("native Chromium profiles", () => {
     };
     const raw1 = makeRawPage();
     const raw2 = makeRawPage();
+    const raw3 = makeRawPage();
+    const raw4 = makeRawPage();
     const helperPage = {
       url: () => "about:blank",
       isClosed: () => false,
@@ -1556,7 +1558,7 @@ describe("native Chromium profiles", () => {
       newPage: vi.fn(async () => {
         newPageCalls++;
         if (newPageCalls === 1) return helperPage;
-        return newPageCalls === 2 ? raw1.page : raw2.page;
+        return [raw1, raw2, raw3, raw4][newPageCalls - 2]!.page;
       }),
       newCDPSession: vi.fn(async () => ({
         send: vi.fn(async (method: string) =>
@@ -1579,6 +1581,8 @@ describe("native Chromium profiles", () => {
       discarded: boolean;
       status: string;
       targetId: string | null;
+      replacedFromTabIds?: number[];
+      helperEpoch?: string;
     }> = [];
     let removeAttempts = 0;
     const invSpy = vi
@@ -1659,13 +1663,23 @@ describe("native Chromium profiles", () => {
         return [...tabs];
       });
       discSpy.mockImplementationOnce(async () => {
-        // Chromium committed the discard of tab 303 (closing the page) before helper threw!
+        // Chromium committed the discard (closing the page and replacing tab 303 with discarded
+        // tab 404) before the helper threw.
         raw2.markClosed();
-        tabs = [{ ...tabs[0]!, tabId: 303, discarded: true, status: "unloaded", targetId: null }];
+        tabs = [
+          {
+            ...tabs[0]!,
+            tabId: 404,
+            replacedFromTabIds: [303],
+            discarded: true,
+            status: "unloaded",
+            targetId: null,
+          },
+        ];
         throw new Error("Helper call timed out");
       });
       remSpy.mockImplementation(async (tabId) => {
-        if (tabId === 303) {
+        if (tabId === 404) {
           tabs = [];
           return true;
         }
@@ -1675,11 +1689,97 @@ describe("native Chromium profiles", () => {
       const page2 = await launched.context.createPage();
       const token2 = await page2.captureRestore!();
       await page2.close({ reason: "slept" });
-      expect(tabs.map((t) => t.tabId)).toEqual([303]);
+      expect(tabs.map((t) => t.tabId)).toEqual([404]);
 
-      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, finds 303 by tabId, and removes it!
+      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, follows 303 to its
+      // replacement 404, and removes it.
       expect(await launched.context.releaseRestore!(token2)).toBe(true);
       expect(tabs).toHaveLength(0);
+
+      // Scenario C (C4): a tab replaced twice. Tab 505 was itself the replacement of 500 (an earlier
+      // park discard); this sleep's discard replaces it again with 606 and the helper throws.
+      tabs = [
+        {
+          tabId: 505,
+          windowId: 1,
+          index: 1,
+          url: "https://sleeping.test/page",
+          title: "Twice",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-sleep-1",
+          replacedFromTabIds: [500],
+          helperEpoch: "worker-1",
+        },
+      ];
+      invCallCount = 0;
+      discSpy.mockImplementationOnce(async () => {
+        raw3.markClosed();
+        tabs = [
+          {
+            ...tabs[0]!,
+            tabId: 606,
+            replacedFromTabIds: [505, 500],
+            discarded: true,
+            status: "unloaded",
+            targetId: null,
+          },
+        ];
+        throw new Error("Helper call timed out");
+      });
+      remSpy.mockImplementation(async (tabId) => {
+        if (tabId === 606) {
+          tabs = [];
+          return true;
+        }
+        return false;
+      });
+      const page3 = await launched.context.createPage();
+      const token3 = await page3.captureRestore!();
+      await page3.close({ reason: "slept" });
+      expect(tabs.map((t) => t.tabId)).toEqual([606]);
+      expect(await launched.context.releaseRestore!(token3)).toBe(true);
+      expect(tabs).toHaveLength(0);
+
+      // Scenario D (C4): the helper's worker restarted after the discard, so its memory of the
+      // replacement is gone. "Not found" is then "not known": the token is kept, never dropped.
+      tabs = [
+        {
+          tabId: 707,
+          windowId: 1,
+          index: 1,
+          url: "https://sleeping.test/page",
+          title: "Restarted",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-sleep-1",
+          helperEpoch: "worker-1",
+        },
+      ];
+      invCallCount = 0;
+      discSpy.mockImplementationOnce(async () => {
+        raw4.markClosed();
+        tabs = [
+          {
+            ...tabs[0]!,
+            tabId: 808,
+            replacedFromTabIds: [],
+            helperEpoch: "worker-2",
+            discarded: true,
+            status: "unloaded",
+            targetId: null,
+          },
+        ];
+        throw new Error("Helper call timed out");
+      });
+      remSpy.mockImplementation(async () => false);
+      const page4 = await launched.context.createPage();
+      const token4 = await page4.captureRestore!();
+      await page4.close({ reason: "slept" });
+      expect(await launched.context.releaseRestore!(token4)).toBe(false);
+      expect(tabs.map((t) => t.tabId)).toEqual([808]);
     } finally {
       await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
       invSpy.mockRestore();

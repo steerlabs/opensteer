@@ -1205,6 +1205,29 @@ function syncTargetIdOfPage(page: Page): string | null {
   }
 }
 
+type TabWhereabouts =
+  | { readonly status: "found"; readonly row: ChromiumTabEntry }
+  | { readonly status: "gone" }
+  | { readonly status: "unknown" };
+
+/**
+ * Where the tab last seen as `tabId` (in a row the helper answered at `epoch`) is now. A discard
+ * can replace a tab, so a row replaced from it any number of times is that tab. "Gone" needs the
+ * same helper worker: a restarted one has forgotten earlier replacements, so its silence is
+ * "not known" (Rule A), never "gone".
+ */
+function locateTab(
+  inventory: readonly ChromiumTabEntry[],
+  tabId: number,
+  epoch: string | undefined,
+): TabWhereabouts {
+  const row = inventory.find(
+    (entry) => entry.tabId === tabId || entry.replacedFromTabIds?.includes(tabId) === true,
+  );
+  if (row) return { status: "found", row };
+  return inventory[0]?.helperEpoch === epoch ? { status: "gone" } : { status: "unknown" };
+}
+
 function syncOpenerOfPage(page: Page): Page | null {
   const opener = (page as unknown as { _opener?: Page | null })._opener;
   return opener && !opener.isClosed() ? opener : null;
@@ -1249,6 +1272,8 @@ class PlaywrightContextHandle implements BrowserContext {
     | {
         readonly state: "unknown";
         readonly originalTabId: number;
+        /** The helper worker that saw `originalTabId` before the discard. */
+        readonly epoch: string | undefined;
         readonly url: string;
         readonly surfaceId?: BrowserSurfaceId;
       }
@@ -1257,7 +1282,7 @@ class PlaywrightContextHandle implements BrowserContext {
   private pendingRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pendingRestoredRemovals = new Map<
     number,
-    { targetId: string | null; attempts: number }
+    { targetId: string | null; epoch: string | undefined; attempts: number }
   >();
   private pendingRestoredRemovalTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly claimedWakePages = new WeakSet<Page>();
@@ -1516,29 +1541,46 @@ class PlaywrightContextHandle implements BrowserContext {
     }
   }
 
+  /**
+   * Removes the tab last seen as `tabId` and proves it gone. Where a discard may have replaced
+   * it (`replaceable`, with the helper epoch of that sighting), the tab is followed through its
+   * replacements, and "no row has that id" is evidence only from the same helper worker or right
+   * after this removal of the tab itself succeeded.
+   */
   private async removeTabWithEvidence(
     tabId: number,
     targetId: string | null,
     attempts = 3,
+    replaceable?: { readonly epoch: string | undefined },
   ): Promise<boolean> {
     if (!this.lifecycle) return false;
+    let currentId = tabId;
+    let currentTargetId = targetId;
+    const where = (check: readonly ChromiumTabEntry[]): TabWhereabouts =>
+      replaceable
+        ? locateTab(check, tabId, replaceable.epoch)
+        : locateTab(check, tabId, check[0]?.helperEpoch);
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const removed = await this.lifecycle.removeByTabId(tabId).catch(() => false);
-      if (removed) {
-        const check = await this.lifecycle.inventory().catch(() => null);
-        if (check && !check.some((entry) => entry.tabId === tabId)) return true;
-      } else {
-        const check = await this.lifecycle.inventory().catch(() => null);
-        if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+      const removed = await this.lifecycle.removeByTabId(currentId).catch(() => false);
+      const check = await this.lifecycle.inventory().catch(() => null);
+      if (check) {
+        const found = where(check);
+        if (found.status === "gone") return true;
+        // Removing this id succeeded, so it was not replaced before the removal.
+        if (found.status === "unknown" && removed) return true;
+        if (found.status === "found") {
+          currentId = found.row.tabId;
+          currentTargetId = found.row.targetId ?? currentTargetId;
+        }
       }
-      if (targetId && this.closeTarget) {
-        const targetClosed = await this.closeTarget(targetId).then(
+      if (currentTargetId && this.closeTarget) {
+        const targetClosed = await this.closeTarget(currentTargetId).then(
           () => true,
           () => false,
         );
         if (targetClosed) {
-          const check = await this.lifecycle.inventory().catch(() => null);
-          if (check && !check.some((entry) => entry.tabId === tabId)) return true;
+          const after = await this.lifecycle.inventory().catch(() => null);
+          if (after && where(after).status === "gone") return true;
         }
       }
       if (attempt < attempts - 1) {
@@ -1568,7 +1610,10 @@ class PlaywrightContextHandle implements BrowserContext {
     const abort = new AbortController();
     this.reconcileAbort = abort;
     // Track any unlisted tab currently undergoing removal so a deadline timeout still cleans it up.
-    const inProgressRemoval = new Map<number, string | null>();
+    const inProgressRemoval = new Map<
+      number,
+      { targetId: string | null; epoch: string | undefined }
+    >();
     const work = this.reconcileTail.then(() =>
       this.reconcileSavedTabsOnce(savedTabIds, abort.signal, inProgressRemoval),
     );
@@ -1585,10 +1630,14 @@ class PlaywrightContextHandle implements BrowserContext {
         // Deadline passed (R5/B3): fence the timed-out body, evict remaining restored tabs
         // so the session goes on opening tabs by address, and remove them in the background.
         abort.abort();
-        const toRemove: Array<{ tabId: number; targetId: string | null }> = [];
-        for (const [tabId, targetId] of inProgressRemoval) {
+        const toRemove: Array<{
+          tabId: number;
+          targetId: string | null;
+          epoch: string | undefined;
+        }> = [];
+        for (const [tabId, { targetId, epoch }] of inProgressRemoval) {
           if (targetId) this.neverHandOffTargetIds.add(targetId);
-          toRemove.push({ tabId, targetId });
+          toRemove.push({ tabId, targetId, epoch });
         }
         for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
           if (this.claimingSurfaceIds.has(surfaceId)) continue;
@@ -1598,7 +1647,11 @@ class PlaywrightContextHandle implements BrowserContext {
             this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
             this.neverHandOffTargetIds.add(entry.tab.targetId);
           }
-          toRemove.push({ tabId: entry.tab.tabId, targetId: entry.tab.targetId });
+          toRemove.push({
+            tabId: entry.tab.tabId,
+            targetId: entry.tab.targetId,
+            epoch: entry.tab.helperEpoch,
+          });
         }
         this.parkedAutoDiscardArmed = true;
         if (toRemove.length > 0 && !this.closed) {
@@ -1611,11 +1664,13 @@ class PlaywrightContextHandle implements BrowserContext {
                 if (livePage && !livePage.isClosed()) {
                   await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
                 }
-                const confirmed = await this.removeTabWithEvidence(item.tabId, item.targetId);
+                const confirmed = await this.removeTabWithEvidence(item.tabId, item.targetId, 3, {
+                  epoch: item.epoch,
+                });
                 if (confirmed) {
                   if (item.targetId) this.neverHandOffTargetIds.delete(item.targetId);
                 } else {
-                  this.enqueuePendingRestoredRemoval(item.tabId, item.targetId);
+                  this.enqueuePendingRestoredRemoval(item.tabId, item.targetId, item.epoch);
                 }
               }
               this.scheduleSidecarWrite();
@@ -1647,7 +1702,7 @@ class PlaywrightContextHandle implements BrowserContext {
   private async reconcileSavedTabsOnce(
     savedTabIds: ReadonlySet<BrowserSurfaceId>,
     signal: AbortSignal,
-    inProgressRemoval: Map<number, string | null>,
+    inProgressRemoval: Map<number, { targetId: string | null; epoch: string | undefined }>,
   ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory || signal.aborted || this.closed) return;
     let failedRemovals = 0;
@@ -1668,14 +1723,23 @@ class PlaywrightContextHandle implements BrowserContext {
           if (livePage && !livePage.isClosed()) {
             await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
           }
-          inProgressRemoval.set(latest.tab.tabId, latest.tab.targetId);
-          const ok = await this.removeTabWithEvidence(latest.tab.tabId, latest.tab.targetId);
+          inProgressRemoval.set(latest.tab.tabId, {
+            targetId: latest.tab.targetId,
+            epoch: latest.tab.helperEpoch,
+          });
+          const ok = await this.removeTabWithEvidence(latest.tab.tabId, latest.tab.targetId, 3, {
+            epoch: latest.tab.helperEpoch,
+          });
           inProgressRemoval.delete(latest.tab.tabId);
           if (ok) {
             if (latest.tab.targetId) this.neverHandOffTargetIds.delete(latest.tab.targetId);
             return true;
           }
-          this.enqueuePendingRestoredRemoval(latest.tab.tabId, latest.tab.targetId);
+          this.enqueuePendingRestoredRemoval(
+            latest.tab.tabId,
+            latest.tab.targetId,
+            latest.tab.helperEpoch,
+          );
           return false;
         });
         if (!confirmed) failedRemovals++;
@@ -1717,11 +1781,15 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       return failedRemovals;
     }
-    const byTabId = new Map(inventory.map((tab) => [tab.tabId, tab]));
     for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
       if (signal.aborted || this.closed) return 0;
       if (this.claimingSurfaceIds.has(surfaceId)) continue;
-      const current = byTabId.get(entry.tab.tabId);
+      const where = locateTab(inventory, entry.tab.tabId, entry.tab.helperEpoch);
+      if (where.status === "unknown") {
+        failedRemovals += await this.evictUnparkableRestoredTab(surfaceId, entry);
+        continue;
+      }
+      const current = where.status === "found" ? where.row : undefined;
       if (!current) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
@@ -1923,7 +1991,15 @@ class PlaywrightContextHandle implements BrowserContext {
               page ? { page } : undefined,
             );
           }
-          current = inv.find((tab) => tab.tabId === entry.tab.tabId);
+          const where = locateTab(inv, entry.tab.tabId, entry.tab.helperEpoch);
+          if (where.status === "unknown") {
+            return await this.evictUnparkableRestoredTab(
+              surfaceId,
+              entry,
+              page ? { page } : undefined,
+            );
+          }
+          current = where.status === "found" ? where.row : undefined;
         }
         if (!current) {
           if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
@@ -1994,11 +2070,15 @@ class PlaywrightContextHandle implements BrowserContext {
     return undefined;
   }
 
-  private enqueuePendingRestoredRemoval(tabId: number, targetId: string | null): void {
+  private enqueuePendingRestoredRemoval(
+    tabId: number,
+    targetId: string | null,
+    epoch: string | undefined,
+  ): void {
     if (this.closed) return;
     if (targetId) this.neverHandOffTargetIds.add(targetId);
     if (!this.pendingRestoredRemovals.has(tabId)) {
-      this.pendingRestoredRemovals.set(tabId, { targetId, attempts: 0 });
+      this.pendingRestoredRemovals.set(tabId, { targetId, epoch, attempts: 0 });
     }
     this.schedulePendingRestoredRemovalRetry();
   }
@@ -2032,7 +2112,9 @@ class PlaywrightContextHandle implements BrowserContext {
       if (livePage) {
         await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
       }
-      const confirmed = await this.removeTabWithEvidence(tabId, tracker.targetId, 1);
+      const confirmed = await this.removeTabWithEvidence(tabId, tracker.targetId, 1, {
+        epoch: tracker.epoch,
+      });
       if (confirmed) {
         if (tracker.targetId) this.neverHandOffTargetIds.delete(tracker.targetId);
         this.pendingRestoredRemovals.delete(tabId);
@@ -2050,10 +2132,12 @@ class PlaywrightContextHandle implements BrowserContext {
       readonly page?: Page;
       readonly latestTabId?: number;
       readonly latestTargetId?: string | null;
+      readonly latestEpoch?: string | undefined;
     },
   ): Promise<number> {
     const tabId = options?.latestTabId ?? entry.tab.tabId;
     const targetId = options?.latestTargetId ?? entry.tab.targetId;
+    const epoch = options?.latestTabId !== undefined ? options.latestEpoch : entry.tab.helperEpoch;
     if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
     if (targetId) this.neverHandOffTargetIds.add(targetId);
 
@@ -2073,14 +2157,14 @@ class PlaywrightContextHandle implements BrowserContext {
       await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
     }
 
-    const confirmed = await this.removeTabWithEvidence(tabId, targetId);
+    const confirmed = await this.removeTabWithEvidence(tabId, targetId, 3, { epoch });
     if (confirmed) {
       if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
       if (targetId) this.neverHandOffTargetIds.delete(targetId);
       this.scheduleSidecarWrite();
       return 0;
     }
-    this.enqueuePendingRestoredRemoval(tabId, targetId);
+    this.enqueuePendingRestoredRemoval(tabId, targetId, epoch);
     return 1;
   }
 
@@ -2141,11 +2225,13 @@ class PlaywrightContextHandle implements BrowserContext {
         // Entry was evicted (e.g., deadline timeout) while discard was in flight: do not
         // resurrect it; remove the replacement tabId with evidence instead.
         if (newTargetId) this.neverHandOffTargetIds.add(newTargetId);
-        const removed = await this.removeTabWithEvidence(newTabId, newTargetId);
+        const removed = await this.removeTabWithEvidence(newTabId, newTargetId, 3, {
+          epoch: current.helperEpoch,
+        });
         if (removed) {
           if (newTargetId) this.neverHandOffTargetIds.delete(newTargetId);
         } else {
-          this.enqueuePendingRestoredRemoval(newTabId, newTargetId);
+          this.enqueuePendingRestoredRemoval(newTabId, newTargetId, current.helperEpoch);
         }
         return 0;
       }
@@ -2181,7 +2267,17 @@ class PlaywrightContextHandle implements BrowserContext {
         latestTargetId: current.targetId,
       });
     }
-    const after = recheck.find((tab) => tab.tabId === current.tabId);
+    // The discard may have committed and replaced the tab before the helper failed.
+    const where = locateTab(recheck, current.tabId, current.helperEpoch);
+    if (where.status === "unknown") {
+      return await this.evictUnparkableRestoredTab(surfaceId, entry, {
+        ...(options?.page ? { page: options.page } : {}),
+        latestTabId: current.tabId,
+        latestTargetId: current.targetId,
+        latestEpoch: current.helperEpoch,
+      });
+    }
+    const after = where.status === "found" ? where.row : undefined;
     if (!after) {
       if (this.restoredBySurfaceId.get(surfaceId)?.tab.tabId === entry.tab.tabId) {
         this.restoredBySurfaceId.delete(surfaceId);
@@ -2702,6 +2798,7 @@ class PlaywrightContextHandle implements BrowserContext {
     newTabId: number | null,
     unknownOutcome?: {
       readonly originalTabId: number;
+      readonly epoch: string | undefined;
     },
   ): void {
     const current = this.sleepingTabs.get(tokenId);
@@ -2713,6 +2810,7 @@ class PlaywrightContextHandle implements BrowserContext {
         this.sleepingTabs.set(tokenId, {
           state: "unknown",
           originalTabId: unknownOutcome.originalTabId,
+          epoch: unknownOutcome.epoch,
           url: current.url,
           ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
         });
@@ -2732,19 +2830,12 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private async resolveUnknownSleepingTabId(probe: {
     readonly originalTabId: number;
-  }): Promise<
-    | { readonly status: "found"; readonly tabId: number }
-    | { readonly status: "absent" }
-    | { readonly status: "unknown" }
-  > {
+    readonly epoch: string | undefined;
+  }): Promise<TabWhereabouts> {
     if (!this.lifecycle) return { status: "unknown" };
     const after = await this.lifecycle.inventory().catch(() => null);
     if (!after) return { status: "unknown" };
-    const sameId = after.find(
-      (entry) =>
-        entry.tabId === probe.originalTabId || entry.replacedFromTabId === probe.originalTabId,
-    );
-    return sameId ? { status: "found", tabId: sameId.tabId } : { status: "absent" };
+    return locateTab(after, probe.originalTabId, probe.epoch);
   }
 
   private enqueuePendingSleepingRemoval(tokenId: string): void {
@@ -2797,6 +2888,7 @@ class PlaywrightContextHandle implements BrowserContext {
       | {
           readonly state: "unknown";
           readonly originalTabId: number;
+          readonly epoch: string | undefined;
         }
       | { readonly state: "discarding"; readonly settled: Promise<number | null> },
   ): Promise<boolean> {
@@ -2813,9 +2905,11 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     if (sleeping.state === "unknown") {
       const probed = await this.resolveUnknownSleepingTabId(sleeping);
-      if (probed.status === "absent") return true;
+      if (probed.status === "gone") return true;
       if (probed.status === "unknown") return false;
-      return this.removeTabWithEvidence(probed.tabId, null, 1);
+      return this.removeTabWithEvidence(probed.row.tabId, probed.row.targetId, 1, {
+        epoch: probed.row.helperEpoch,
+      });
     }
     return this.removeTabWithEvidence(sleeping.tabId, null, 1);
   }
@@ -3406,6 +3500,7 @@ class PlaywrightPageHandle implements BrowserPage {
         let unknownOutcome:
           | {
               readonly originalTabId: number;
+              readonly epoch: string | undefined;
             }
           | undefined;
         try {
@@ -3423,14 +3518,12 @@ class PlaywrightPageHandle implements BrowserPage {
                 newTabId = await this.contextHandle.lifecycle.discardByTabId(tab.tabId);
               } catch {
                 discardThrew = true;
-                // Unknown outcome: match strictly by tabId (including Chromium's recorded
-                // tab-replacement lineage), never by another tab's URL.
+                // Unknown outcome: follow this tab by its id through any replacement, never by
+                // another tab's URL.
                 const after = await this.contextHandle.lifecycle.inventory().catch(() => null);
-                const sameId = after?.find(
-                  (entry) => entry.tabId === tab.tabId || entry.replacedFromTabId === tab.tabId,
-                );
-                if (sameId?.discarded) {
-                  newTabId = sameId.tabId;
+                const where = after ? locateTab(after, tab.tabId, tab.helperEpoch) : null;
+                if (where?.status === "found" && where.row.discarded) {
+                  newTabId = where.row.tabId;
                 }
               }
               if (newTabId === null && !this.page.isClosed()) {
@@ -3440,6 +3533,7 @@ class PlaywrightPageHandle implements BrowserPage {
                 // retain unknown-outcome tabId so release/wake can clean it up if it survives.
                 unknownOutcome = {
                   originalTabId: tab.tabId,
+                  epoch: tab.helperEpoch,
                 };
               }
             }
