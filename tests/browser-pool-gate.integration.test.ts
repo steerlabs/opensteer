@@ -23,6 +23,7 @@ import {
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
 import { randomUUID } from "node:crypto";
+import { browserPictureIsCurrent } from "../packages/client/src/host/browser-sleep.js";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
@@ -1114,11 +1115,29 @@ it("reports the pooled browser's phase, its adopted documents, a fresh start's r
     home = await j.restartHome(home);
     const row = await j.tabs.get(j.task.userId, tabId);
     await home.service.pageTabs.activate(j.task.userId, row!, "report-wake");
-    // The adopted tab's document at the freeze: a picture of it is current.
-    expect(await report()).toMatchObject({
+    // The adopted tab's document at the freeze, and its size then and after the adoption: the
+    // same size, so a picture of it is current.
+    const adoptedReport = await report();
+    expect(adoptedReport).toMatchObject({
       phase: "running",
-      adopted: [{ surfaceId: tabId, documentId: original, revision: expect.any(Number) }],
+      adopted: [
+        {
+          surfaceId: tabId,
+          documentId: original,
+          revision: expect.any(Number),
+          frozenViewport: { width: expect.any(Number), height: expect.any(Number) },
+        },
+      ],
     });
+    const [entry] = adoptedReport!.adopted!;
+    expect(entry!.adoptedViewport).toEqual(entry!.frozenViewport);
+    expect(
+      browserPictureIsCurrent([adoptedReport!], j.task.runnerId, {
+        tabId,
+        documentId: original!,
+        revision: entry!.revision,
+      }),
+    ).toBe(true);
     // Only the owner restarts it; an ordinary computer has no such browser.
     await expect(
       home.service.restartPooledBrowser("usr_someone-else" as never, j.task.runnerId),

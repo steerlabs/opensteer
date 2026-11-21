@@ -75,16 +75,25 @@ export interface BrowserPoolReport {
       }[]
     | undefined;
   /**
-   * Each adopted tab's document and its revision when the browser froze. A picture taken of
-   * that same document and revision is still current after the wake.
+   * Each adopted tab's document and its revision when the browser froze, with the size the
+   * page showed then and when the adoption ended. A picture taken of that same document and
+   * revision is still current after the wake only when the two sizes are equal.
    */
   readonly adopted?:
     | readonly {
         readonly surfaceId: string;
         readonly documentId: string;
         readonly revision: number;
+        readonly frozenViewport?: BrowserPoolViewport | undefined;
+        readonly adoptedViewport?: BrowserPoolViewport | undefined;
       }[]
     | undefined;
+}
+
+/** A page's size in CSS pixels, as the Home reports it. */
+export interface BrowserPoolViewport {
+  readonly width: number;
+  readonly height: number;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -196,24 +205,33 @@ function tabOf(report: BrowserPoolReport, tabId: string): BrowserTabReturn {
 
 /**
  * Whether a picture the client holds of this tab from before a sleep is still current: the
- * Home adopted the same document at the same revision. A viewport change is not covered: the
- * Home does not yet report the viewport at the freeze and at adoption, so a picture is current
- * only for its own size.
+ * Home adopted the same document at the same revision, and the page shows the size it showed
+ * at the freeze. A report without both sizes, or a picture of another size, is not current.
  */
 export function browserPictureIsCurrent(
   reports: HostSnapshot["browserPools"],
   computerId: string | null | undefined,
-  picture: { readonly tabId: string; readonly documentId: string; readonly revision: number },
+  picture: {
+    readonly tabId: string;
+    readonly documentId: string;
+    readonly revision: number;
+    /** The picture's own size in CSS pixels, when the client knows it. */
+    readonly viewport?: BrowserPoolViewport;
+  },
 ): boolean {
   const report = computerId
     ? reports?.find((candidate) => candidate.runnerId === computerId)
     : undefined;
+  const same = (a: BrowserPoolViewport | undefined, b: BrowserPoolViewport | undefined) =>
+    a !== undefined && b !== undefined && a.width === b.width && a.height === b.height;
   return (
     report?.adopted?.some(
-      ({ surfaceId, documentId, revision }) =>
+      ({ surfaceId, documentId, revision, frozenViewport, adoptedViewport }) =>
         surfaceId === picture.tabId &&
         documentId === picture.documentId &&
-        revision === picture.revision,
+        revision === picture.revision &&
+        same(frozenViewport, adoptedViewport) &&
+        (picture.viewport === undefined || same(picture.viewport, adoptedViewport)),
     ) ?? false
   );
 }

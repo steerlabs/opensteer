@@ -5,6 +5,7 @@ import {
   BrowserReturnNotes,
   browserRestartFailure,
   browserNotPooled,
+  browserPictureIsCurrent,
   browserSleepFromHome,
   browserSleepWords,
   browserStartFailure,
@@ -286,5 +287,44 @@ describe("a restart that did not happen", () => {
     expect(browserRestartFailure(new Error("socket hang up ECONNRESET"))).toBe(
       "Your browser wasn’t restarted. Try again in a moment.",
     );
+  });
+});
+
+describe("a picture from before the sleep", () => {
+  const picture = { tabId: tab, documentId: "doc-1", revision: 4 };
+  const size = { width: 1280, height: 800 };
+  const adopted = (entry: Record<string, unknown>) => [
+    {
+      ...mockBrowserPoolReport("awake", computer, tab, since),
+      adopted: [{ surfaceId: tab, documentId: "doc-1", revision: 4, ...entry }],
+    },
+  ];
+
+  it("is current only for the same document and revision at the size it froze at", () => {
+    const same = adopted({ frozenViewport: size, adoptedViewport: size });
+    expect(browserPictureIsCurrent(same, computer, picture)).toBe(true);
+    expect(browserPictureIsCurrent(same, computer, { ...picture, viewport: size })).toBe(true);
+    expect(browserPictureIsCurrent(same, computer, { ...picture, revision: 5 })).toBe(false);
+    expect(browserPictureIsCurrent(same, computer, { ...picture, documentId: "doc-2" })).toBe(
+      false,
+    );
+    expect(browserPictureIsCurrent(same, "rnr_other", picture)).toBe(false);
+  });
+
+  it("is not current when the page shows another size now, or the sizes are not reported", () => {
+    const resized = adopted({ frozenViewport: size, adoptedViewport: { width: 390, height: 844 } });
+    expect(browserPictureIsCurrent(resized, computer, picture)).toBe(false);
+    expect(browserPictureIsCurrent(adopted({}), computer, picture)).toBe(false);
+    expect(browserPictureIsCurrent(adopted({ frozenViewport: size }), computer, picture)).toBe(
+      false,
+    );
+    // A picture of its own, other size is not the page the person will see.
+    const same = adopted({ frozenViewport: size, adoptedViewport: size });
+    expect(
+      browserPictureIsCurrent(same, computer, {
+        ...picture,
+        viewport: { width: 800, height: 600 },
+      }),
+    ).toBe(false);
   });
 });

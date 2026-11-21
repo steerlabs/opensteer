@@ -6398,7 +6398,10 @@ export class BrowserService {
     const shown = this.#poolTabTarget(runnerId)?.report();
     const retained =
       (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
-    const outcome = slot.outcome as { adopted?: string[] } | null;
+    const outcome = slot.outcome as {
+      adopted?: string[];
+      viewports?: { surfaceId: string; width: number; height: number }[];
+    } | null;
     const start = slot.lastStart as { reason?: string; id?: string } | null;
     const losses = await database
       .selectFrom("browserPoolDocumentLosses")
@@ -6425,11 +6428,18 @@ export class BrowserService {
     );
     const adopted = retained
       .filter((document) => outcome?.adopted?.includes(document.sessionId))
-      .map(({ surfaceId, documentId, pageRevision }) => ({
-        surfaceId,
-        documentId,
-        revision: pageRevision,
-      }));
+      .map(({ surfaceId, documentId, pageRevision, viewport }) => {
+        const now = outcome?.viewports?.find((entry) => entry.surfaceId === surfaceId);
+        return {
+          surfaceId,
+          documentId,
+          revision: pageRevision,
+          ...(viewport
+            ? { frozenViewport: { width: viewport.width, height: viewport.height } }
+            : {}),
+          ...(now ? { adoptedViewport: { width: now.width, height: now.height } } : {}),
+        };
+      });
     return [
       {
         runnerId,
