@@ -9,16 +9,14 @@ import {
 } from "./linux-renderer-usage.js";
 
 function fakeProc(files: Record<string, string>, pids?: readonly number[]): LinuxProcFs {
-  const discovered =
-    pids ??
-    [
-      ...new Set(
-        Object.keys(files)
-          .map((filePath) => /^\/proc\/(\d+)\//u.exec(filePath)?.[1])
-          .filter((value): value is string => value !== undefined)
-          .map(Number),
-      ),
-    ];
+  const discovered = pids ?? [
+    ...new Set(
+      Object.keys(files)
+        .map((filePath) => /^\/proc\/(\d+)\//u.exec(filePath)?.[1])
+        .filter((value): value is string => value !== undefined)
+        .map(Number),
+    ),
+  ];
   return {
     listPids: async () => discovered,
     readText: async (filePath) => files[filePath] ?? null,
@@ -40,9 +38,9 @@ describe("linux-renderer-usage", () => {
         "/ms-playwright/chromium-1234/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=20 --noerrdialogs",
       ),
     ).toBe(true);
-    expect(
-      isChromiumRendererCmdline("/opt/chrome\0--type=renderer\0--extension-process\0"),
-    ).toBe(false);
+    expect(isChromiumRendererCmdline("/opt/chrome\0--type=renderer\0--extension-process\0")).toBe(
+      false,
+    );
     expect(
       isChromiumRendererCmdline(
         "/ms-playwright/chromium-1234/chrome-linux64/chrome --type=renderer --extension-process --lang=en",

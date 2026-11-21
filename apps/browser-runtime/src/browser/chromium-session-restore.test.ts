@@ -388,7 +388,7 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
   const browser1 = await launcher.launch(request);
   const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-test" });
   await ledger1.start();
-  const urls = await populateTabs(ledger1, server, false);
+  await populateTabs(ledger1, server, false);
   await browser1.context.sessionRestore!.flush!();
 
   // Wait for Chromium to flush Session_* (2.5 s) and Preferences exit_type="Crashed" (up to 10 s)
@@ -626,7 +626,7 @@ it("handles a fresh native launch with no restored tabs cleanly under the Playwr
   expect(live.page.restoredFromSession).toBe(false);
   await live.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/fresh-home` });
   await waitLoaded(live.cdp, "/fresh-home");
-  expect(
-    await evalValue<string>(live.cdp, "document.getElementById('fresh').textContent"),
-  ).toBe("Fresh Home Tab");
+  expect(await evalValue<string>(live.cdp, "document.getElementById('fresh').textContent")).toBe(
+    "Fresh Home Tab",
+  );
 });

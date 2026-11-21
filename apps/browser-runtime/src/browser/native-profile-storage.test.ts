@@ -2,12 +2,7 @@ import { describe, expect, it } from "vitest";
 import { matchRestoredTabs, type TabRestoreSidecarEntry } from "./native-profile-storage.js";
 import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 
-function restored(
-  tabId: number,
-  index: number,
-  url: string,
-  windowId = 1,
-): ChromiumTabEntry {
+function restored(tabId: number, index: number, url: string, windowId = 1): ChromiumTabEntry {
   return {
     tabId,
     windowId,

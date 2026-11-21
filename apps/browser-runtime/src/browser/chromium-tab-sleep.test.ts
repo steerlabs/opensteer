@@ -727,11 +727,20 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
   // ledger.sleep returns as soon as Chromium closes the WebContents during discard,
   // while discardByTabId's reply is still held!
   expect(await ledger.sleep(sA.id, () => null)).toBe(true);
+  const createPageEntered = Promise.withResolvers<void>();
+  const origCreatePage = launched.context.createPage.bind(launched.context);
+  const createPageSpy = vi
+    .spyOn(launched.context, "createPage")
+    .mockImplementation(async (options) => {
+      createPageEntered.resolve();
+      return origCreatePage(options);
+    });
   const wakePromise = ledger.wake(sA.id);
   // Release the discard reply after wake has already entered createPage.
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await createPageEntered.promise;
   releaseReply.resolve();
   const wokenA = await wakePromise;
+  createPageSpy.mockRestore();
   discardSpyA.mockRestore();
 
   await waitLoaded(wokenA.cdp, "/article");
@@ -943,7 +952,11 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
       on(event: string, listener: (p: unknown) => void): void;
       off(event: string, listener: (p: unknown) => void): void;
     };
-    playwrightContext: { newCDPSession(page: unknown): Promise<{ send(m: string, p?: unknown): Promise<unknown>; detach(): Promise<void> }> };
+    playwrightContext: {
+      newCDPSession(
+        page: unknown,
+      ): Promise<{ send(m: string, p?: unknown): Promise<unknown>; detach(): Promise<void> }>;
+    };
     persistencePage: { goto(url: string): Promise<unknown>; close(): Promise<void> };
     contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
   };
@@ -976,7 +989,10 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
     let versionId: string | undefined;
     (
       stopSession as unknown as {
-        on(e: string, fn: (p: { versions?: { versionId: string; status: string }[] }) => void): void;
+        on(
+          e: string,
+          fn: (p: { versions?: { versionId: string; status: string }[] }) => void,
+        ): void;
       }
     ).on("ServiceWorker.workerVersionUpdated", (params) => {
       const running = params.versions?.find((v) => v.status === "activated");
@@ -994,9 +1010,9 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
       const t = (await internal.browserCdp.send("Target.getTargets")) as {
         targetInfos: readonly { type: string; url: string }[];
       };
-      expect(t.targetInfos.some((x) => x.type === "service_worker" && x.url.endsWith("/sw.js"))).toBe(
-        false,
-      );
+      expect(
+        t.targetInfos.some((x) => x.type === "service_worker" && x.url.endsWith("/sw.js")),
+      ).toBe(false);
     },
     { timeout: 5_000, interval: 50 },
   );
@@ -1026,11 +1042,11 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
   // Also prove wakeServiceWorker never falls back to Target.createTarget even if privatePage is closed!
   await internal.persistencePage.close();
   const createSpy = vi.spyOn(internal.browserCdp, "send");
-  const wakeMethod = (lifecycle as unknown as { wakeServiceWorker(): Promise<void> }).wakeServiceWorker.bind(lifecycle);
+  const wakeMethod = (
+    lifecycle as unknown as { wakeServiceWorker(): Promise<void> }
+  ).wakeServiceWorker.bind(lifecycle);
   await wakeMethod();
-  expect(
-    createSpy.mock.calls.some(([method]) => method === "Target.createTarget"),
-  ).toBe(false);
+  expect(createSpy.mock.calls.some(([method]) => method === "Target.createTarget")).toBe(false);
   createSpy.mockRestore();
 });
 
@@ -1092,7 +1108,10 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
   };
   fgLive.cdp.on("Page.screencastFrame", onFrame);
   await fgLive.cdp.send("Page.startScreencast", { format: "jpeg", quality: 60 });
-  await vi.waitFor(() => expect(frames).toBeGreaterThanOrEqual(1), { timeout: 5_000, interval: 50 });
+  await vi.waitFor(() => expect(frames).toBeGreaterThanOrEqual(1), {
+    timeout: 5_000,
+    interval: 50,
+  });
 
   // Sleep background tab -> foreground tab must stay Chromium's active tab and NEVER lose focus/visibility!
   const anchorSpy = vi.spyOn(internal.contextHandle, "activatePrivateAnchor");

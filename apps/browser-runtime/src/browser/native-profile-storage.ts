@@ -209,10 +209,7 @@ export function matchRestoredTabs(
     if (consumedSidecarIndices.has(i)) continue;
     const sidecar = orderedSidecar[i]!;
     if (matched.has(sidecar.surfaceId)) continue;
-    if (
-      sidecarUrlCounts.get(sidecar.url) !== 1 ||
-      restoredUrlCounts.get(sidecar.url) !== 1
-    ) {
+    if (sidecarUrlCounts.get(sidecar.url) !== 1 || restoredUrlCounts.get(sidecar.url) !== 1) {
       continue;
     }
     const candidate = orderedRestored.find(

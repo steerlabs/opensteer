@@ -1109,7 +1109,8 @@ function syncTargetIdOfPage(page: Page): string | null {
         _connection?: {
           toImpl?: (
             obj: unknown,
-          ) => { delegate?: { _targetId?: unknown }; _delegate?: { _targetId?: unknown } } | undefined;
+          ) =>
+            { delegate?: { _targetId?: unknown }; _delegate?: { _targetId?: unknown } } | undefined;
         };
       }
     )._connection?.toImpl?.(page);
@@ -1200,7 +1201,6 @@ class PlaywrightContextHandle implements BrowserContext {
     profileDirectory?: string,
     matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
     preHelperPages: ReadonlySet<Page> = new Set(),
-    privatePageTargetId?: string,
   ) {
     this.privatePage = privatePage;
     this.lifecycle = lifecycle;
@@ -1221,7 +1221,8 @@ class PlaywrightContextHandle implements BrowserContext {
         claim: (surfaceId, url, own, lineageId) =>
           this.claimSavedRestoredTab(surfaceId, url, own, lineageId),
         reconcile: (savedTabIds, lineageId) => this.reconcileSavedTabs(savedTabIds, lineageId),
-        trackSavedTab: (surfaceId, page, lineageId) => this.trackSavedTab(surfaceId, page, lineageId),
+        trackSavedTab: (surfaceId, page, lineageId) =>
+          this.trackSavedTab(surfaceId, page, lineageId),
         flush: () => this.flushSavedTabs(),
       };
     }
@@ -1244,8 +1245,7 @@ class PlaywrightContextHandle implements BrowserContext {
         this.activeWake &&
         opener === null &&
         this.creatingNewPage === 0 &&
-        (this.activeWake.expectedTargetId === null ||
-          this.activeWake.expectedTargetId === targetId)
+        (this.activeWake.expectedTargetId === null || this.activeWake.expectedTargetId === targetId)
       ) {
         const waiter = this.activeWake;
         this.activeWake = null;
@@ -1265,8 +1265,15 @@ class PlaywrightContextHandle implements BrowserContext {
         return;
       }
       const handle = this.wrap(page);
-      if (opener && !handle.openerHandle) handle.openerHandle = this.wrap(opener);
-      for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+      if (opener) {
+        if (!handle.openerHandle) handle.openerHandle = this.wrap(opener);
+        for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+      } else {
+        queueMicrotask(() => {
+          if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
+          for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+        });
+      }
       for (const listener of this.pageListeners) listener(handle);
     });
     this.openDialogs = openDialogs;
@@ -1328,7 +1335,7 @@ class PlaywrightContextHandle implements BrowserContext {
     lineageId?: string,
   ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory) return;
-    for (const [surfaceId, entry] of [...this.restoredBySurfaceId.entries()]) {
+    for (const [surfaceId, entry] of this.restoredBySurfaceId) {
       if (savedTabIds.has(surfaceId) && (!lineageId || entry.lineageId === lineageId)) continue;
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
@@ -1426,7 +1433,7 @@ class PlaywrightContextHandle implements BrowserContext {
     this.sidecarDirty = true;
     const write = this.sidecarTail.then(async () => {
       if (this.inFlightDiscards.size > 0) {
-        await Promise.allSettled([...this.inFlightDiscards]);
+        await Promise.allSettled(this.inFlightDiscards);
       }
       if (!this.sidecarDirty || this.closed || !this.lifecycle || !this.profileDirectory) return;
       this.sidecarDirty = false;
@@ -1542,7 +1549,12 @@ class PlaywrightContextHandle implements BrowserContext {
       settled,
       ...(saved ? { surfaceId: saved.surfaceId, lineageId: saved.lineageId } : {}),
     });
-    this.trackInFlightDiscard(settled.then(() => undefined, () => undefined));
+    this.trackInFlightDiscard(
+      settled.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
     if (saved) {
       this.savedTabsBySurfaceId.set(saved.surfaceId, {
         page: null,

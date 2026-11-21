@@ -7,7 +7,10 @@ import {
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import type { ChromiumTabLifecycleBridge } from "../apps/browser-runtime/src/browser/tab-lifecycle-extension.js";
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
-import { BrowserService, type BrowserRuntimeConnection } from "../apps/host/src/browser/browser-service.js";
+import {
+  BrowserService,
+  type BrowserRuntimeConnection,
+} from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { TabStore, type DatabaseSchema } from "../packages/database/src/index.js";
 import { ownTestDatabaseProducer } from "../packages/database/src/test-database.test-support.js";
@@ -46,11 +49,15 @@ async function startFixtureServer() {
       return;
     }
     if (url.pathname === "/agent-page") {
-      response.end(`<!doctype html><html><head><title>Agent</title></head><body>agent</body></html>`);
+      response.end(
+        `<!doctype html><html><head><title>Agent</title></head><body>agent</body></html>`,
+      );
       return;
     }
     if (url.pathname === "/deleted-page") {
-      response.end(`<!doctype html><html><head><title>Deleted</title></head><body>deleted</body></html>`);
+      response.end(
+        `<!doctype html><html><head><title>Deleted</title></head><body>deleted</body></html>`,
+      );
       return;
     }
     response.end(`<!doctype html><html><body>ok</body></html>`);
@@ -73,12 +80,7 @@ async function startFixtureServer() {
 class BridgeRuntimeSocket extends EventEmitter implements BrowserRuntimeConnection {
   initialPage: InitialPageReady | undefined;
   readonly #ws: WebSocket;
-  constructor(
-    runtimePort: number,
-    bridgeToken: string,
-    encodedKeys: string,
-    ticket: string,
-  ) {
+  constructor(runtimePort: number, bridgeToken: string, encodedKeys: string, ticket: string) {
     super();
     this.#ws = new WebSocket(`ws://127.0.0.1:${runtimePort}/v1/browser`, {
       headers: {
@@ -157,531 +159,532 @@ async function waitPageLoaded(browser: LaunchedBrowser, urlSubstring: string): P
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
 
 integration("Linux cold-start session restore through Home BrowserService", () => {
-  it(
-    "restores saved person tabs by Home tab id, excludes agent and deleted tabs, and leaves zero unclaimed tabs in Chromium",
-    async () => {
-      const fixture = await createStoreFixture();
-      const f = await fixture.startRunFixture("linux-cold-restore");
-      const { database, store } = fixture;
-      await database
-        .updateTable("runners")
-        .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
-        .where("id", "=", f.runnerId)
-        .execute();
+  it("restores saved person tabs by Home tab id, excludes agent and deleted tabs, and leaves zero unclaimed tabs in Chromium", async () => {
+    const fixture = await createStoreFixture();
+    const f = await fixture.startRunFixture("linux-cold-restore");
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
 
-      const site = await startFixtureServer();
-      const scratch = await mkdtemp(path.join(tmpdir(), "os-f1-home-restore-"));
-      const profileRoot = path.join(scratch, "profiles");
-      const filesRoot = path.join(scratch, "files");
-      const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
-      const keyPair = generateKeyPairSync("ed25519");
-      const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
-      const keys: BrowserAttachPublicKey[] = [{ keyId: "test", publicKeyPem }];
-      const signer = new BrowserAttachTicketSigner({
-        keyId: "test",
-        privateKey: keyPair.privateKey,
+    const site = await startFixtureServer();
+    const scratch = await mkdtemp(path.join(tmpdir(), "os-f1-home-restore-"));
+    const profileRoot = path.join(scratch, "profiles");
+    const filesRoot = path.join(scratch, "files");
+    const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
+    const keyPair = generateKeyPairSync("ed25519");
+    const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const keys: BrowserAttachPublicKey[] = [{ keyId: "test", publicKeyPem }];
+    const signer = new BrowserAttachTicketSigner({
+      keyId: "test",
+      privateKey: keyPair.privateKey,
+    });
+
+    const cleanups: (() => Promise<unknown>)[] = [
+      () => site.close(),
+      () => rm(scratch, { recursive: true, force: true }),
+    ];
+
+    await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+      close: async () => {
+        for (const fn of cleanups.reverse()) await fn().catch(() => undefined);
+      },
+    }));
+
+    const startStack = async (tag: string) => {
+      const launcher = new PlaywrightChromiumLauncher({
+        executablePath: chromium.executablePath(),
+        headless: true,
+        chromiumSandbox: false,
+        args: ["--no-proxy-server"],
       });
-
-      const cleanups: (() => Promise<unknown>)[] = [
-        () => site.close(),
-        () => rm(scratch, { recursive: true, force: true }),
-      ];
-
-      await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
-        close: async () => {
-          for (const fn of cleanups.reverse()) await fn().catch(() => undefined);
+      let lastBrowser: LaunchedBrowser | undefined;
+      let lastDirectory: string | undefined;
+      const runtime = new BrowserRuntime({
+        runtimeId: "linux-restore-runtime",
+        launcher: {
+          hostCost: launcher.hostCost,
+          localProfiles: launcher.localProfiles,
+          launch: async (request, signal) => {
+            if (request.storage.kind === "local") lastDirectory = request.storage.directory;
+            lastBrowser = await launcher.launch(request, signal);
+            return lastBrowser;
+          },
         },
-      }));
-
-      const startStack = async (tag: string) => {
-        const launcher = new PlaywrightChromiumLauncher({
-          executablePath: chromium.executablePath(),
-          headless: true,
-          chromiumSandbox: false,
-          args: ["--no-proxy-server"],
-        });
-        let lastBrowser: LaunchedBrowser | undefined;
-        let lastDirectory: string | undefined;
-        const runtime = new BrowserRuntime({
-          runtimeId: "linux-restore-runtime",
-          launcher: {
-            hostCost: launcher.hostCost,
-            localProfiles: launcher.localProfiles,
-            launch: async (request, signal) => {
-              if (request.storage.kind === "local") lastDirectory = request.storage.directory;
-              lastBrowser = await launcher.launch(request, signal);
-              return lastBrowser;
-            },
-          },
-          localProfiles: { root: profileRoot },
-          sessionFilesRoot: path.join(filesRoot, tag),
-          ticketVerifier: await Ed25519AttachTicketVerifier.create({
-            replayLedgerPath: path.join(scratch, `private-${tag}`, "replay.json"),
-            resolvePublicKey: (id) => keys.find((k) => k.keyId === id)?.publicKeyPem ?? null,
-          }),
-        });
-        await runtime.prepare();
-        const bridgeToken = randomBytes(16).toString("base64url");
-        const server = new BrowserRuntimeServer({
-          runtime,
-          port: 0,
-          relayBridge: {
-            token: bridgeToken,
-            updateAttachKeys: () => undefined,
-          },
-        });
-        const addr = await server.start();
-        const storage = runtime.localProfileStorage!;
-        const errors: unknown[] = [];
-        const browser = new BrowserService({
+        localProfiles: { root: profileRoot },
+        sessionFilesRoot: path.join(filesRoot, tag),
+        ticketVerifier: await Ed25519AttachTicketVerifier.create({
+          replayLedgerPath: path.join(scratch, `private-${tag}`, "replay.json"),
+          resolvePublicKey: (id) => keys.find((k) => k.keyId === id)?.publicKeyPem ?? null,
+        }),
+      });
+      await runtime.prepare();
+      const bridgeToken = randomBytes(16).toString("base64url");
+      const server = new BrowserRuntimeServer({
+        runtime,
+        port: 0,
+        relayBridge: {
+          token: bridgeToken,
+          updateAttachKeys: () => undefined,
+        },
+      });
+      const addr = await server.start();
+      const storage = runtime.localProfileStorage!;
+      const errors: unknown[] = [];
+      const browser = new BrowserService({
+        deploymentId: f.deploymentId,
+        hostOrigin: new URL("http://127.0.0.1"),
+        personal: true,
+        repository: personalBrowserRepository(store),
+        localProfiles: new BrowserLocalProfiles({
           deploymentId: f.deploymentId,
-          hostOrigin: new URL("http://127.0.0.1"),
-          personal: true,
-          repository: personalBrowserRepository(store),
-          localProfiles: new BrowserLocalProfiles({
-            deploymentId: f.deploymentId,
-            baseUrl: new URL("http://127.0.0.1"),
-            repository: store,
-          }),
-          tabs,
-          tabPlaces: { write: async () => false, notice: () => {} },
-          signer,
-          onSessionsChanged: () => {},
-          onError: (error) => errors.push(error),
-          targetResolver: {
-            placements: () => [
-              {
-                kind: "runner",
-                runnerId: f.runnerId,
-                runtimeId: "linux-restore-runtime",
-                label: "Linux Home",
-                available: true,
-                agents: true,
-                environmentIds: [f.environmentId],
-              },
-            ],
-            resolve: (placement) =>
-              placement.runnerId === f.runnerId
-                ? {
-                    runtimeId: "linux-restore-runtime",
-                    placementKey: "linux-restore",
-                    cdpBoundary: true,
-                    sharedControl: true,
-                    targetControl: true,
-                    surfaceState: 1,
-                    tabRestoreVersion: true,
-                    actorClaim: true,
-                    localProfileStorage: storage,
-                    connect: (ticket) =>
-                      new BridgeRuntimeSocket(
-                        addr.port,
-                        bridgeToken,
-                        Buffer.from(JSON.stringify(keys)).toString("base64url"),
-                        ticket,
-                      ),
-                  }
-                : undefined,
-          },
-        });
-        const close = async () => {
-          // Shut down runtime FIRST (matching real Linux Home / container restart)
-          // so durable person tabs exit with Chromium instead of being closed as session-ended.
-          await runtime.shutdown();
-          await server.close();
-          await browser.close();
-        };
-        cleanups.push(close);
-        return {
-          runtime,
-          server,
-          browser,
-          errors,
-          close,
-          getBrowser: () => lastBrowser!,
-          getDirectory: () => lastDirectory!,
-        };
-      };
-
-      const urlA = `${site.originForSite(1)}/article?tab=a`;
-      const urlB = `${site.originForSite(2)}/article?tab=b`;
-      const urlDeleted = `${site.originForSite(3)}/deleted-page`;
-      const urlAgent = `${site.originForSite(4)}/agent-page`;
-
-      // --- RUN 1: populate saved person tabs + deleted tab + agent tab in the same native profile ---
-      const stack1 = await startStack("run1");
-      const profile = await store.createBrowserProfile({
-        ownerId: f.userId,
-        name: "Personal",
-        homeRunnerId: f.runnerId,
-        idempotencyKey: "profile-f1",
-      });
-
-      const person = { kind: "person", ownerId: f.userId } as const;
-      const writeA = await stack1.browser.pageTabs.open(
-        person,
-        { kind: "page", profileId: profile.id, url: urlA },
-        "open-a",
-      );
-      await tabs.open(writeA, "open-a");
-      await stack1.browser.pageTabs.admitted!(writeA);
-      await waitPageLoaded(stack1.getBrowser(), "tab=a");
-      await evalOnPage(stack1.getBrowser(), "tab=a", "document.getElementById('draft').focus()");
-      const pageA = stack1.getBrowser().context.pages().find((p) => p.url().includes("tab=a"))!;
-      await (await pageA.cdp()).send("Input.insertText", { text: "Person draft A" });
-      await evalOnPage(
-        stack1.getBrowser(),
-        "tab=a",
-        `document.activeElement.blur(); window.scrollTo(0, 1400); sessionStorage.setItem("k", "val-A"); window.scrollY`,
-      );
-
-      const writeB = await stack1.browser.pageTabs.open(
-        person,
-        { kind: "page", profileId: profile.id, url: urlB },
-        "open-b",
-      );
-      await tabs.open(writeB, "open-b");
-      await stack1.browser.pageTabs.admitted!(writeB);
-      await waitPageLoaded(stack1.getBrowser(), "tab=b");
-      await evalOnPage(stack1.getBrowser(), "tab=b", "document.getElementById('draft').focus()");
-      const pageB = stack1.getBrowser().context.pages().find((p) => p.url().includes("tab=b"))!;
-      await (await pageB.cdp()).send("Input.insertText", { text: "Person draft B" });
-      await evalOnPage(
-        stack1.getBrowser(),
-        "tab=b",
-        `document.activeElement.blur(); window.scrollTo(0, 2200); window.scrollY`,
-      );
-
-      const writeD = await stack1.browser.pageTabs.open(
-        person,
-        { kind: "page", profileId: profile.id, url: urlDeleted },
-        "open-d",
-      );
-      await tabs.open(writeD, "open-d");
-      await stack1.browser.pageTabs.admitted!(writeD);
-      await waitPageLoaded(stack1.getBrowser(), "/deleted-page");
-
-      // Connected/run agent opens its own tab in the SAME profile.
-      await stack1.browser.openAgentTab(
-        {
-          ownerId: f.userId,
-          agentBindingId: `run:${f.runId}`,
-          threadId: f.threadId,
-          environmentId: f.environmentId,
-        },
-        {
-          identity: { kind: "profile", profile: profile.id },
-          url: urlAgent,
-          operationKey: "agent-tab-c",
-        },
-      );
-      await waitPageLoaded(stack1.getBrowser(), "/agent-page");
-
-      // Wait for Chromium to flush Default/Sessions/Session_* before shutdown.
-      const profileDir = stack1.getDirectory();
-      await vi.waitFor(
-        async () => {
-          const files = await readdir(path.join(profileDir, "Default", "Sessions")).catch(() => []);
-          const sf = files.filter((n) => n.startsWith("Session_"));
-          expect(sf.length).toBeGreaterThan(0);
-          const sizes = await Promise.all(
-            sf.map((n) => stat(path.join(profileDir, "Default", "Sessions", n)).then((s) => s.size)),
-          );
-          expect(Math.max(...sizes)).toBeGreaterThan(0);
-        },
-        { timeout: 10_000, interval: 100 },
-      );
-
-      // Shut down run 1 (simulating Home/runtime restart).
-      await stack1.close();
-
-      // Delete tab D in Home while the browser is down.
-      await tabs.close(f.userId, [writeD.id], "delete-d-while-down");
-
-      // --- RUN 2: cold restart through Home's real pageTabs.activate ---
-      const stack2 = await startStack("run2");
-      const rowA = (await tabs.get(f.userId, writeA.id))!;
-      const rowB = (await tabs.get(f.userId, writeB.id))!;
-      expect(rowA).toBeDefined();
-      expect(rowB).toBeDefined();
-
-      // Restore tab A via Home's real entry point (NO hand-called launcher hooks!).
-      const activatedA = await stack2.browser.pageTabs.activate(f.userId, rowA);
-      expect(activatedA.surfaceId).toBe(rowA.id);
-
-      const browser2 = stack2.getBrowser();
-      const lifecycle2 = (
-        browser2 as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-      ).contextHandle.lifecycle;
-
-      // Immediately after ready: agent tab and deleted tab MUST already be gone from Chromium!
-      const invAfterA = await lifecycle2.inventory();
-      const nonBlankAfterA = invAfterA.filter(
-        (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
-      );
-      expect(nonBlankAfterA.some((t) => t.url.includes("/agent-page"))).toBe(false);
-      expect(nonBlankAfterA.some((t) => t.url.includes("/deleted-page"))).toBe(false);
-      expect(nonBlankAfterA).toHaveLength(2);
-
-      // Tab A came back as itself with scroll, typed draft, and sessionStorage intact!
-      await waitPageLoaded(browser2, "tab=a");
-      await vi.waitFor(
-        async () => {
-          expect(await evalOnPage<number>(browser2, "tab=a", "window.scrollY")).toBe(1400);
-        },
-        { timeout: 5_000, interval: 100 },
-      );
-      expect(
-        await evalOnPage<string>(browser2, "tab=a", "document.getElementById('draft').value"),
-      ).toBe("Person draft A");
-      expect(await evalOnPage<string | null>(browser2, "tab=a", "window.__ssAtLoad")).toBe("val-A");
-
-      // Restore dormant tab B via Home's real entry point -> claims its restored Chromium tab!
-      const activatedB = await stack2.browser.pageTabs.activate(f.userId, rowB);
-      expect(activatedB.surfaceId).toBe(rowB.id);
-      await waitPageLoaded(browser2, "tab=b");
-      await vi.waitFor(
-        async () => {
-          expect(await evalOnPage<number>(browser2, "tab=b", "window.scrollY")).toBe(2200);
-        },
-        { timeout: 5_000, interval: 100 },
-      );
-      expect(
-        await evalOnPage<string>(browser2, "tab=b", "document.getElementById('draft').value"),
-      ).toBe("Person draft B");
-
-      // Still exactly 2 non-blank tabs in Chromium (no duplicates, no unclaimed tabs!).
-      const invAfterB = await lifecycle2.inventory();
-      const nonBlankAfterB = invAfterB.filter(
-        (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
-      );
-      expect(nonBlankAfterB).toHaveLength(2);
-      expect(stack2.errors).toEqual([]);
-    },
-    60_000,
-  );
-
-  it(
-    "removes sleeping agent tabs from Chromium on BrowserService.stop and brings none back on cold restart",
-    async () => {
-      const fixture = await createStoreFixture();
-      const f = await fixture.startRunFixture("linux-sleep-stop");
-      const { database, store } = fixture;
-      await database
-        .updateTable("runners")
-        .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
-        .where("id", "=", f.runnerId)
-        .execute();
-
-      const site = await startFixtureServer();
-      const scratch = await mkdtemp(path.join(tmpdir(), "os-f2-sleep-stop-"));
-      const profileRoot = path.join(scratch, "profiles");
-      const filesRoot = path.join(scratch, "files");
-      const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
-      const keyPair = generateKeyPairSync("ed25519");
-      const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
-      const keys: BrowserAttachPublicKey[] = [{ keyId: "test", publicKeyPem }];
-      const signer = new BrowserAttachTicketSigner({
-        keyId: "test",
-        privateKey: keyPair.privateKey,
-      });
-
-      const cleanups: (() => Promise<unknown>)[] = [
-        () => site.close(),
-        () => rm(scratch, { recursive: true, force: true }),
-      ];
-
-      await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
-        close: async () => {
-          for (const fn of cleanups.reverse()) await fn().catch(() => undefined);
-        },
-      }));
-
-      const startStack = async (tag: string) => {
-        const launcher = new PlaywrightChromiumLauncher({
-          executablePath: chromium.executablePath(),
-          headless: true,
-          chromiumSandbox: false,
-          args: ["--no-proxy-server"],
-        });
-        let lastBrowser: LaunchedBrowser | undefined;
-        let lastDirectory: string | undefined;
-        const runtime = new BrowserRuntime({
-          runtimeId: "linux-stop-runtime",
-          launcher: {
-            hostCost: launcher.hostCost,
-            localProfiles: launcher.localProfiles,
-            launch: async (request, signal) => {
-              if (request.storage.kind === "local") lastDirectory = request.storage.directory;
-              lastBrowser = await launcher.launch(request, signal);
-              return lastBrowser;
+          baseUrl: new URL("http://127.0.0.1"),
+          repository: store,
+        }),
+        tabs,
+        tabPlaces: { write: async () => false, notice: () => {} },
+        signer,
+        onSessionsChanged: () => {},
+        onError: (error) => errors.push(error),
+        targetResolver: {
+          placements: () => [
+            {
+              kind: "runner",
+              runnerId: f.runnerId,
+              runtimeId: "linux-restore-runtime",
+              label: "Linux Home",
+              available: true,
+              agents: true,
+              environmentIds: [f.environmentId],
             },
-          },
-          localProfiles: { root: profileRoot },
-          sessionFilesRoot: path.join(filesRoot, tag),
-          ticketVerifier: await Ed25519AttachTicketVerifier.create({
-            replayLedgerPath: path.join(scratch, `private-${tag}`, "replay.json"),
-            resolvePublicKey: (id) => keys.find((k) => k.keyId === id)?.publicKeyPem ?? null,
-          }),
-        });
-        await runtime.prepare();
-        const bridgeToken = randomBytes(16).toString("base64url");
-        const server = new BrowserRuntimeServer({
-          runtime,
-          port: 0,
-          relayBridge: {
-            token: bridgeToken,
-            updateAttachKeys: () => undefined,
-          },
-        });
-        const addr = await server.start();
-        const storage = runtime.localProfileStorage!;
-        const browser = new BrowserService({
-          deploymentId: f.deploymentId,
-          hostOrigin: new URL("http://127.0.0.1"),
-          personal: true,
-          repository: personalBrowserRepository(store),
-          localProfiles: new BrowserLocalProfiles({
-            deploymentId: f.deploymentId,
-            baseUrl: new URL("http://127.0.0.1"),
-            repository: store,
-          }),
-          tabs,
-          tabPlaces: { write: async () => false, notice: () => {} },
-          signer,
-          onSessionsChanged: () => {},
-          onError: () => {},
-          targetResolver: {
-            placements: () => [
-              {
-                kind: "runner",
-                runnerId: f.runnerId,
-                runtimeId: "linux-stop-runtime",
-                label: "Linux Home",
-                available: true,
-                agents: true,
-                environmentIds: [f.environmentId],
-              },
-            ],
-            resolve: (placement) =>
-              placement.runnerId === f.runnerId
-                ? {
-                    runtimeId: "linux-stop-runtime",
-                    placementKey: "linux-stop",
-                    cdpBoundary: true,
-                    sharedControl: true,
-                    targetControl: true,
-                    surfaceState: 1,
-                    tabRestoreVersion: true,
-                    actorClaim: true,
-                    localProfileStorage: storage,
-                    connect: (ticket) =>
-                      new BridgeRuntimeSocket(
-                        addr.port,
-                        bridgeToken,
-                        Buffer.from(JSON.stringify(keys)).toString("base64url"),
-                        ticket,
-                      ),
-                  }
-                : undefined,
-          },
-        });
-        const close = async () => {
-          await runtime.shutdown();
-          await server.close();
-          await browser.close();
-        };
-        cleanups.push(close);
-        return {
-          runtime,
-          server,
-          browser,
-          close,
-          getBrowser: () => lastBrowser!,
-          getDirectory: () => lastDirectory!,
-        };
-      };
-
-      const stack1 = await startStack("f2-run1");
-      const profile = await store.createBrowserProfile({
-        ownerId: f.userId,
-        name: "Personal",
-        homeRunnerId: f.runnerId,
-        idempotencyKey: "profile-f2",
+          ],
+          resolve: (placement) =>
+            placement.runnerId === f.runnerId
+              ? {
+                  runtimeId: "linux-restore-runtime",
+                  placementKey: "linux-restore",
+                  cdpBoundary: true,
+                  sharedControl: true,
+                  targetControl: true,
+                  surfaceState: 1,
+                  tabRestoreVersion: true,
+                  actorClaim: true,
+                  localProfileStorage: storage,
+                  connect: (ticket) =>
+                    new BridgeRuntimeSocket(
+                      addr.port,
+                      bridgeToken,
+                      Buffer.from(JSON.stringify(keys)).toString("base64url"),
+                      ticket,
+                    ),
+                }
+              : undefined,
+        },
       });
-
-      // Keep a person session open on the same profile so the Chromium host stays alive
-      // when the agent session ends via BrowserService.stop().
-      const person = { kind: "person", ownerId: f.userId } as const;
-      const personWrite = await stack1.browser.pageTabs.open(
-        person,
-        { kind: "page", profileId: profile.id, url: `${site.originForSite(1)}/article?tab=person` },
-        "open-person",
-      );
-      await tabs.open(personWrite, "open-person");
-      await stack1.browser.pageTabs.admitted!(personWrite);
-      await waitPageLoaded(stack1.getBrowser(), "tab=person");
-
-      const agentUrl = `${site.originForSite(2)}/agent-page`;
-      const openedAgent = await stack1.browser.openAgentTab(
-        {
-          ownerId: f.userId,
-          agentBindingId: `run:${f.runId}`,
-          threadId: f.threadId,
-          environmentId: f.environmentId,
-        },
-        {
-          identity: { kind: "profile", profile: profile.id },
-          url: agentUrl,
-          operationKey: "agent-sleep-stop",
-        },
-      );
-      await waitPageLoaded(stack1.getBrowser(), "/agent-page");
-
-      // Sleep the agent tab inside its live runtime session.
-      const internalRuntime = stack1.runtime as unknown as {
-        sessions: Map<string, { ledger: { sleep(id: string, blocked: () => null): Promise<boolean> } }>;
+      const close = async () => {
+        // Shut down runtime FIRST (matching real Linux Home / container restart)
+        // so durable person tabs exit with Chromium instead of being closed as session-ended.
+        await runtime.shutdown();
+        await server.close();
+        await browser.close();
       };
-      const agentRuntimeSession = internalRuntime.sessions.get(openedAgent.sessionId);
-      expect(agentRuntimeSession).toBeDefined();
-      expect(await agentRuntimeSession!.ledger.sleep(openedAgent.tabId, () => null)).toBe(true);
+      cleanups.push(close);
+      return {
+        runtime,
+        server,
+        browser,
+        errors,
+        close,
+        getBrowser: () => lastBrowser!,
+        getDirectory: () => lastDirectory!,
+      };
+    };
 
-      const lifecycle1 = (
-        stack1.getBrowser() as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-      ).contextHandle.lifecycle;
-      expect((await lifecycle1.inventory()).some((t) => t.url === agentUrl && t.discarded)).toBe(
-        true,
-      );
+    const urlA = `${site.originForSite(1)}/article?tab=a`;
+    const urlB = `${site.originForSite(2)}/article?tab=b`;
+    const urlDeleted = `${site.originForSite(3)}/deleted-page`;
+    const urlAgent = `${site.originForSite(4)}/agent-page`;
 
-      // Wait for Chromium to flush Default/Sessions/Session_* while the agent tab is asleep.
-      const profileDir = stack1.getDirectory();
-      await vi.waitFor(
-        async () => {
-          const files = await readdir(path.join(profileDir, "Default", "Sessions")).catch(() => []);
-          const sf = files.filter((n) => n.startsWith("Session_"));
-          expect(sf.length).toBeGreaterThan(0);
-          const sizes = await Promise.all(
-            sf.map((n) => stat(path.join(profileDir, "Default", "Sessions", n)).then((s) => s.size)),
-          );
-          expect(Math.max(...sizes)).toBeGreaterThan(0);
+    // --- RUN 1: populate saved person tabs + deleted tab + agent tab in the same native profile ---
+    const stack1 = await startStack("run1");
+    const profile = await store.createBrowserProfile({
+      ownerId: f.userId,
+      name: "Personal",
+      homeRunnerId: f.runnerId,
+      idempotencyKey: "profile-f1",
+    });
+
+    const person = { kind: "person", ownerId: f.userId } as const;
+    const writeA = await stack1.browser.pageTabs.open(
+      person,
+      { kind: "page", profileId: profile.id, url: urlA },
+      "open-a",
+    );
+    await tabs.open(writeA, "open-a");
+    await stack1.browser.pageTabs.admitted!(writeA);
+    await waitPageLoaded(stack1.getBrowser(), "tab=a");
+    await evalOnPage(stack1.getBrowser(), "tab=a", "document.getElementById('draft').focus()");
+    const pageA = stack1
+      .getBrowser()
+      .context.pages()
+      .find((p) => p.url().includes("tab=a"))!;
+    await (await pageA.cdp()).send("Input.insertText", { text: "Person draft A" });
+    await evalOnPage(
+      stack1.getBrowser(),
+      "tab=a",
+      `document.activeElement.blur(); window.scrollTo(0, 1400); sessionStorage.setItem("k", "val-A"); window.scrollY`,
+    );
+
+    const writeB = await stack1.browser.pageTabs.open(
+      person,
+      { kind: "page", profileId: profile.id, url: urlB },
+      "open-b",
+    );
+    await tabs.open(writeB, "open-b");
+    await stack1.browser.pageTabs.admitted!(writeB);
+    await waitPageLoaded(stack1.getBrowser(), "tab=b");
+    await evalOnPage(stack1.getBrowser(), "tab=b", "document.getElementById('draft').focus()");
+    const pageB = stack1
+      .getBrowser()
+      .context.pages()
+      .find((p) => p.url().includes("tab=b"))!;
+    await (await pageB.cdp()).send("Input.insertText", { text: "Person draft B" });
+    await evalOnPage(
+      stack1.getBrowser(),
+      "tab=b",
+      `document.activeElement.blur(); window.scrollTo(0, 2200); window.scrollY`,
+    );
+
+    const writeD = await stack1.browser.pageTabs.open(
+      person,
+      { kind: "page", profileId: profile.id, url: urlDeleted },
+      "open-d",
+    );
+    await tabs.open(writeD, "open-d");
+    await stack1.browser.pageTabs.admitted!(writeD);
+    await waitPageLoaded(stack1.getBrowser(), "/deleted-page");
+
+    // Connected/run agent opens its own tab in the SAME profile.
+    await stack1.browser.openAgentTab(
+      {
+        ownerId: f.userId,
+        agentBindingId: `run:${f.runId}`,
+        threadId: f.threadId,
+        environmentId: f.environmentId,
+      },
+      {
+        identity: { kind: "profile", profile: profile.id },
+        url: urlAgent,
+        operationKey: "agent-tab-c",
+      },
+    );
+    await waitPageLoaded(stack1.getBrowser(), "/agent-page");
+
+    // Wait for Chromium to flush Default/Sessions/Session_* before shutdown.
+    const profileDir = stack1.getDirectory();
+    await vi.waitFor(
+      async () => {
+        const files = await readdir(path.join(profileDir, "Default", "Sessions")).catch(() => []);
+        const sf = files.filter((n) => n.startsWith("Session_"));
+        expect(sf.length).toBeGreaterThan(0);
+        const sizes = await Promise.all(
+          sf.map((n) => stat(path.join(profileDir, "Default", "Sessions", n)).then((s) => s.size)),
+        );
+        expect(Math.max(...sizes)).toBeGreaterThan(0);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+
+    // Shut down run 1 (simulating Home/runtime restart).
+    await stack1.close();
+
+    // Delete tab D in Home while the browser is down.
+    await tabs.close(f.userId, [writeD.id], "delete-d-while-down");
+
+    // --- RUN 2: cold restart through Home's real pageTabs.activate ---
+    const stack2 = await startStack("run2");
+    const rowA = (await tabs.get(f.userId, writeA.id))!;
+    const rowB = (await tabs.get(f.userId, writeB.id))!;
+    expect(rowA).toBeDefined();
+    expect(rowB).toBeDefined();
+
+    // Restore tab A via Home's real entry point (NO hand-called launcher hooks!).
+    const activatedA = await stack2.browser.pageTabs.activate(f.userId, rowA, "activate-a");
+    expect(activatedA.surfaceId).toBe(rowA.id);
+
+    const browser2 = stack2.getBrowser();
+    const lifecycle2 = (
+      browser2 as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+
+    // Immediately after ready: agent tab and deleted tab MUST already be gone from Chromium!
+    const invAfterA = await lifecycle2.inventory();
+    const nonBlankAfterA = invAfterA.filter(
+      (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+    );
+    expect(nonBlankAfterA.some((t) => t.url.includes("/agent-page"))).toBe(false);
+    expect(nonBlankAfterA.some((t) => t.url.includes("/deleted-page"))).toBe(false);
+    expect(nonBlankAfterA).toHaveLength(2);
+
+    // Tab A came back as itself with scroll, typed draft, and sessionStorage intact!
+    await waitPageLoaded(browser2, "tab=a");
+    await vi.waitFor(
+      async () => {
+        expect(await evalOnPage<number>(browser2, "tab=a", "window.scrollY")).toBe(1400);
+      },
+      { timeout: 5_000, interval: 100 },
+    );
+    expect(
+      await evalOnPage<string>(browser2, "tab=a", "document.getElementById('draft').value"),
+    ).toBe("Person draft A");
+    expect(await evalOnPage<string | null>(browser2, "tab=a", "window.__ssAtLoad")).toBe("val-A");
+
+    // Restore dormant tab B via Home's real entry point -> claims its restored Chromium tab!
+    const activatedB = await stack2.browser.pageTabs.activate(f.userId, rowB, "activate-b");
+    expect(activatedB.surfaceId).toBe(rowB.id);
+    await waitPageLoaded(browser2, "tab=b");
+    await vi.waitFor(
+      async () => {
+        expect(await evalOnPage<number>(browser2, "tab=b", "window.scrollY")).toBe(2200);
+      },
+      { timeout: 5_000, interval: 100 },
+    );
+    expect(
+      await evalOnPage<string>(browser2, "tab=b", "document.getElementById('draft').value"),
+    ).toBe("Person draft B");
+
+    // Still exactly 2 non-blank tabs in Chromium (no duplicates, no unclaimed tabs!).
+    const invAfterB = await lifecycle2.inventory();
+    const nonBlankAfterB = invAfterB.filter(
+      (t) => t.url !== "" && t.url !== "about:blank" && !t.url.startsWith("chrome-extension://"),
+    );
+    expect(nonBlankAfterB).toHaveLength(2);
+    expect(stack2.errors).toEqual([]);
+  }, 60_000);
+
+  it("removes sleeping agent tabs from Chromium on BrowserService.stop and brings none back on cold restart", async () => {
+    const fixture = await createStoreFixture();
+    const f = await fixture.startRunFixture("linux-sleep-stop");
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+
+    const site = await startFixtureServer();
+    const scratch = await mkdtemp(path.join(tmpdir(), "os-f2-sleep-stop-"));
+    const profileRoot = path.join(scratch, "profiles");
+    const filesRoot = path.join(scratch, "files");
+    const tabs = new TabStore(database as unknown as Kysely<DatabaseSchema>);
+    const keyPair = generateKeyPairSync("ed25519");
+    const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const keys: BrowserAttachPublicKey[] = [{ keyId: "test", publicKeyPem }];
+    const signer = new BrowserAttachTicketSigner({
+      keyId: "test",
+      privateKey: keyPair.privateKey,
+    });
+
+    const cleanups: (() => Promise<unknown>)[] = [
+      () => site.close(),
+      () => rm(scratch, { recursive: true, force: true }),
+    ];
+
+    await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+      close: async () => {
+        for (const fn of cleanups.reverse()) await fn().catch(() => undefined);
+      },
+    }));
+
+    const startStack = async (tag: string) => {
+      const launcher = new PlaywrightChromiumLauncher({
+        executablePath: chromium.executablePath(),
+        headless: true,
+        chromiumSandbox: false,
+        args: ["--no-proxy-server"],
+      });
+      let lastBrowser: LaunchedBrowser | undefined;
+      let lastDirectory: string | undefined;
+      const runtime = new BrowserRuntime({
+        runtimeId: "linux-stop-runtime",
+        launcher: {
+          hostCost: launcher.hostCost,
+          localProfiles: launcher.localProfiles,
+          launch: async (request, signal) => {
+            if (request.storage.kind === "local") lastDirectory = request.storage.directory;
+            lastBrowser = await launcher.launch(request, signal);
+            return lastBrowser;
+          },
         },
-        { timeout: 10_000, interval: 100 },
-      );
+        localProfiles: { root: profileRoot },
+        sessionFilesRoot: path.join(filesRoot, tag),
+        ticketVerifier: await Ed25519AttachTicketVerifier.create({
+          replayLedgerPath: path.join(scratch, `private-${tag}`, "replay.json"),
+          resolvePublicKey: (id) => keys.find((k) => k.keyId === id)?.publicKeyPem ?? null,
+        }),
+      });
+      await runtime.prepare();
+      const bridgeToken = randomBytes(16).toString("base64url");
+      const server = new BrowserRuntimeServer({
+        runtime,
+        port: 0,
+        relayBridge: {
+          token: bridgeToken,
+          updateAttachKeys: () => undefined,
+        },
+      });
+      const addr = await server.start();
+      const storage = runtime.localProfileStorage!;
+      const browser = new BrowserService({
+        deploymentId: f.deploymentId,
+        hostOrigin: new URL("http://127.0.0.1"),
+        personal: true,
+        repository: personalBrowserRepository(store),
+        localProfiles: new BrowserLocalProfiles({
+          deploymentId: f.deploymentId,
+          baseUrl: new URL("http://127.0.0.1"),
+          repository: store,
+        }),
+        tabs,
+        tabPlaces: { write: async () => false, notice: () => {} },
+        signer,
+        onSessionsChanged: () => {},
+        onError: () => {},
+        targetResolver: {
+          placements: () => [
+            {
+              kind: "runner",
+              runnerId: f.runnerId,
+              runtimeId: "linux-stop-runtime",
+              label: "Linux Home",
+              available: true,
+              agents: true,
+              environmentIds: [f.environmentId],
+            },
+          ],
+          resolve: (placement) =>
+            placement.runnerId === f.runnerId
+              ? {
+                  runtimeId: "linux-stop-runtime",
+                  placementKey: "linux-stop",
+                  cdpBoundary: true,
+                  sharedControl: true,
+                  targetControl: true,
+                  surfaceState: 1,
+                  tabRestoreVersion: true,
+                  actorClaim: true,
+                  localProfileStorage: storage,
+                  connect: (ticket) =>
+                    new BridgeRuntimeSocket(
+                      addr.port,
+                      bridgeToken,
+                      Buffer.from(JSON.stringify(keys)).toString("base64url"),
+                      ticket,
+                    ),
+                }
+              : undefined,
+        },
+      });
+      const close = async () => {
+        await runtime.shutdown();
+        await server.close();
+        await browser.close();
+      };
+      cleanups.push(close);
+      return {
+        runtime,
+        server,
+        browser,
+        close,
+        getBrowser: () => lastBrowser!,
+        getDirectory: () => lastDirectory!,
+      };
+    };
 
-      // End the session through Home's real BrowserService.stop().
-      // This must remove the sleeping tab from Chromium before Chromium exits so it never survives.
-      await stack1.browser.stop(f.userId, openedAgent.sessionId);
+    const stack1 = await startStack("f2-run1");
+    const profile = await store.createBrowserProfile({
+      ownerId: f.userId,
+      name: "Personal",
+      homeRunnerId: f.runnerId,
+      idempotencyKey: "profile-f2",
+    });
 
-      await stack1.close();
+    // Keep a person session open on the same profile so the Chromium host stays alive
+    // when the agent session ends via BrowserService.stop().
+    const person = { kind: "person", ownerId: f.userId } as const;
+    const personWrite = await stack1.browser.pageTabs.open(
+      person,
+      { kind: "page", profileId: profile.id, url: `${site.originForSite(1)}/article?tab=person` },
+      "open-person",
+    );
+    await tabs.open(personWrite, "open-person");
+    await stack1.browser.pageTabs.admitted!(personWrite);
+    await waitPageLoaded(stack1.getBrowser(), "tab=person");
 
-      // Cold restart must bring none of the stopped session's sleeping tabs back!
-      const stack2 = await startStack("f2-run2");
-      const personRow = (await tabs.get(f.userId, personWrite.id))!;
-      await stack2.browser.pageTabs.activate(f.userId, personRow);
-      const lifecycle2 = (
-        stack2.getBrowser() as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-      ).contextHandle.lifecycle;
-      expect((await lifecycle2.inventory()).some((t) => t.url === agentUrl)).toBe(false);
-    },
-    60_000,
-  );
+    const agentUrl = `${site.originForSite(2)}/agent-page`;
+    const openedAgent = await stack1.browser.openAgentTab(
+      {
+        ownerId: f.userId,
+        agentBindingId: `run:${f.runId}`,
+        threadId: f.threadId,
+        environmentId: f.environmentId,
+      },
+      {
+        identity: { kind: "profile", profile: profile.id },
+        url: agentUrl,
+        operationKey: "agent-sleep-stop",
+      },
+    );
+    await waitPageLoaded(stack1.getBrowser(), "/agent-page");
+
+    // Sleep the agent tab inside its live runtime session.
+    const internalRuntime = stack1.runtime as unknown as {
+      sessions: Map<
+        string,
+        { ledger: { sleep(id: string, blocked: () => null): Promise<boolean> } }
+      >;
+    };
+    const agentRuntimeSession = internalRuntime.sessions.get(openedAgent.sessionId);
+    expect(agentRuntimeSession).toBeDefined();
+    expect(await agentRuntimeSession!.ledger.sleep(openedAgent.tabId, () => null)).toBe(true);
+
+    const lifecycle1 = (
+      stack1.getBrowser() as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+    expect((await lifecycle1.inventory()).some((t) => t.url === agentUrl && t.discarded)).toBe(
+      true,
+    );
+
+    // Wait for Chromium to flush Default/Sessions/Session_* while the agent tab is asleep.
+    const profileDir = stack1.getDirectory();
+    await vi.waitFor(
+      async () => {
+        const files = await readdir(path.join(profileDir, "Default", "Sessions")).catch(() => []);
+        const sf = files.filter((n) => n.startsWith("Session_"));
+        expect(sf.length).toBeGreaterThan(0);
+        const sizes = await Promise.all(
+          sf.map((n) => stat(path.join(profileDir, "Default", "Sessions", n)).then((s) => s.size)),
+        );
+        expect(Math.max(...sizes)).toBeGreaterThan(0);
+      },
+      { timeout: 10_000, interval: 100 },
+    );
+
+    // End the session through Home's real BrowserService.stop().
+    // This must remove the sleeping tab from Chromium before Chromium exits so it never survives.
+    await stack1.browser.stop(f.userId, openedAgent.sessionId);
+
+    await stack1.close();
+
+    // Cold restart must bring none of the stopped session's sleeping tabs back!
+    const stack2 = await startStack("f2-run2");
+    const personRow = (await tabs.get(f.userId, personWrite.id))!;
+    await stack2.browser.pageTabs.activate(f.userId, personRow, "activate-person");
+    const lifecycle2 = (
+      stack2.getBrowser() as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+    expect((await lifecycle2.inventory()).some((t) => t.url === agentUrl)).toBe(false);
+  }, 60_000);
 });

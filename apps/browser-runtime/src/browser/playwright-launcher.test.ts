@@ -1193,7 +1193,8 @@ describe("native Chromium profiles", () => {
       "/proc/12345/stat": "12345 (chrome) S 1 12345 12345",
       "/proc/12346/stat": "12346 (chrome) S 12345 12345 12345",
       "/proc/12346/cmdline": "/opt/chrome\0--type=renderer\0",
-      "/proc/12346/status": "Name:\tchrome\nVmRSS:\t64000 kB\n",
+      "/proc/12346/smaps_rollup": "Rss: 64000 kB\nPss: 32000 kB\n",
+      "/proc/12346/status": "Name:\tchrome\nVmRSS:\t64000 kB\nRssAnon:\t40000 kB\n",
     };
     const f = await nativeCloseFixture({
       platform: "linux",
@@ -1210,16 +1211,16 @@ describe("native Chromium profiles", () => {
     });
     expect(darwinLauncher.rendererUsage).toBeUndefined();
     expect(f.launcher.rendererUsage).toBeTypeOf("function");
-    expect(f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+    expect(await f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
     let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
     try {
       launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-      expect(f.launcher.rendererUsage?.()).toEqual({
+      expect(await f.launcher.rendererUsage?.()).toEqual({
         processes: 1,
-        bytes: 64000 * 1024,
+        bytes: 32000 * 1024,
       });
       f.exit();
-      expect(f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+      expect(await f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
     } finally {
       f.exit();
       await launched?.close();
@@ -1248,13 +1249,33 @@ describe("native Chromium profiles", () => {
       );
 
       await writeTabRestoreSidecar(directory, [
-        { index: 1, surfaceId: "surface_b", url: "https://example.test/doc" },
-        { index: 0, surfaceId: "surface_a", url: "https://example.test/doc" },
+        {
+          index: 1,
+          surfaceId: "surface_b",
+          url: "https://example.test/doc",
+          lineageId: "profile-1",
+        },
+        {
+          index: 0,
+          surfaceId: "surface_a",
+          url: "https://example.test/doc",
+          lineageId: "profile-1",
+        },
       ]);
       const sidecar = await readTabRestoreSidecar(directory);
       expect(sidecar).toEqual([
-        { index: 0, surfaceId: "surface_a", url: "https://example.test/doc" },
-        { index: 1, surfaceId: "surface_b", url: "https://example.test/doc" },
+        {
+          index: 0,
+          surfaceId: "surface_a",
+          url: "https://example.test/doc",
+          lineageId: "profile-1",
+        },
+        {
+          index: 1,
+          surfaceId: "surface_b",
+          url: "https://example.test/doc",
+          lineageId: "profile-1",
+        },
       ]);
 
       const tab = (tabId: number, index: number, url: string) => ({
@@ -1269,22 +1290,16 @@ describe("native Chromium profiles", () => {
         targetId: `target_${tabId}`,
       });
       const result = matchRestoredTabs(
-        [
-          tab(10, 0, "https://example.test/doc"),
-          tab(11, 1, "https://example.test/doc"),
-          tab(12, 2, "https://orphan.test/"),
-        ],
+        [tab(10, 0, "https://example.test/doc"), tab(11, 1, "https://example.test/doc")],
         sidecar,
-        [
-          { surfaceId: "surface_a", url: "https://example.test/doc" },
-          { surfaceId: "surface_b", url: "https://example.test/doc" },
-          { surfaceId: "surface_missing", url: "https://missing.test/" },
-        ],
+        {
+          savedTabIds: new Set(["surface_a", "surface_b", "surface_missing"]),
+          lineageId: "profile-1",
+        },
       );
-      expect(result.matched.get("surface_a")?.tabId).toBe(10);
-      expect(result.matched.get("surface_b")?.tabId).toBe(11);
-      expect(result.orphans.map((entry) => entry.tabId)).toEqual([12]);
-      expect(result.missingSurfaceIds).toEqual(["surface_missing"]);
+      expect(result.matched.get("surface_a")?.tab.tabId).toBe(10);
+      expect(result.matched.get("surface_b")?.tab.tabId).toBe(11);
+      expect(result.orphans).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

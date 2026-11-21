@@ -383,8 +383,7 @@ export class BrowserController {
     Record<string, never>
   >();
   private readonly onSavedTabs:
-    | ((savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>)
-    | undefined;
+    ((savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>) | undefined;
   private savedTabsReconcile: Promise<void> | null = null;
   private readonly tabPublisher = new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
     ids: () => this.tabRows.keys(),

@@ -1124,7 +1124,9 @@ export class BrowserRuntime implements NativePresentationSource {
         if (!stateHost.restoredReconciled) {
           stateHost.restoredReconciled = true;
           const lineageId =
-            claims.identity.kind === "profile-local" ? claims.identity.binding.profileId : undefined;
+            claims.identity.kind === "profile-local"
+              ? claims.identity.binding.profileId
+              : undefined;
           await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
         }
       },

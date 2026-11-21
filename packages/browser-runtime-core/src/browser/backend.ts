@@ -174,7 +174,7 @@ export interface BrowserContext {
    */
   releaseRestore?(restore: unknown): Promise<boolean> | boolean;
   /** Present only on engines that persist and reconcile native session restore. */
-  readonly sessionRestore?: BrowserSessionRestore;
+  readonly sessionRestore?: BrowserSessionRestore | undefined;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the

@@ -1455,10 +1455,7 @@ export class SurfaceLedger {
     this.agentCommandListeners.clear();
   }
 
-  private async releaseSleepingRestore(
-    record: TabRecord,
-    timeoutMs: number,
-  ): Promise<boolean> {
+  private async releaseSleepingRestore(record: TabRecord, timeoutMs: number): Promise<boolean> {
     const engine = record.restore?.engine;
     if (engine == null) return true;
     const release = this.context.releaseRestore;
@@ -1510,12 +1507,16 @@ export class SurfaceLedger {
       const records = [...this.records.values()];
       const keep = new Set(
         records
-          .filter((record): record is SurfaceRecord => isLive(record) && this.isSavedLineageTab(record))
+          .filter(
+            (record): record is SurfaceRecord => isLive(record) && this.isSavedLineageTab(record),
+          )
           .map((record) => record.live.page),
       );
       const nonDurable = records.filter((record) => !this.isSavedLineageTab(record));
       await Promise.all([
-        this.pages.endOtherPages(this.session, keep, pageCloseWaitMs, reason).catch(() => undefined),
+        this.pages
+          .endOtherPages(this.session, keep, pageCloseWaitMs, reason)
+          .catch(() => undefined),
         this.releaseSleepingRestores(nonDurable, false).catch(() => undefined),
       ]);
       return;
