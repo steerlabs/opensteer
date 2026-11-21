@@ -44,6 +44,7 @@ import {
   RelayBrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/managed-pool.js";
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
+import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { RunnerBrowserHub } from "../apps/host/src/browser/runner-browser-hub.js";
 import {
@@ -258,9 +259,13 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       transport: parts.transport,
       runtimeId: "browser-main",
     });
-    // The proof uses guest identities: the Runner does not offer local profiles, so the Home
-    // has no profile inventory to reconcile first (profiles in a pooled guest are not proven here).
-    const { localProfileStorage: _profiles, ...capabilities } = await bridge.capabilities();
+    // The guest offers local profiles on its profile disk; the person's tab is one of them.
+    const capabilities = await bridge.capabilities();
+    const localProfiles = new BrowserLocalProfiles({
+      deploymentId: task.deploymentId,
+      repository: store,
+      baseUrl: new URL("http://127.0.0.1"),
+    });
     const runner = new BrowserModuleRelay(bridge);
     const fence = RunnerAuxiliaryFrameFenceSchema.parse({
       runnerId: task.runnerId,
@@ -310,6 +315,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         },
       },
     } as never);
+    // The router listens before the Runner reports its profile inventory.
+    const router = new RunnerBrowserRuntimeRouter({ registry: hub, localProfiles } as never);
     await runner.attach({
       fence,
       browserWireVersion: 2,
@@ -331,7 +338,6 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         }
       },
     } as never);
-    const router = new RunnerBrowserRuntimeRouter({ registry: hub } as never);
     // The pooled target is the Runner's, with this Home's coordinator for its pool.
     const targetResolver = {
       placements: (ids?: never) => router.placements(ids),
@@ -345,6 +351,7 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
       pools: new Map([[task.runnerId, coordinator]]),
+      localProfiles,
       tabs: new TabStore(database),
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
@@ -355,10 +362,20 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     });
     try {
       await service.initialize();
+      await vi.waitFor(
+        () => expect(service.isPlacementReady(task.runnerId, "browser-main")).toBe(true),
+        { timeout: 60_000 },
+      );
+      const profile = await store.createBrowserProfile({
+        name: "Saved browser",
+        ownerId: task.userId,
+        homeRunnerId: task.runnerId,
+        idempotencyKey: "proof-profile",
+      });
       // A person's tab with a form, typed into and not sent.
       const person = await service.openTab(task.userId, {
         type: "browser.tab.open",
-        identity: { kind: "guest" },
+        identity: { kind: "profile", profileId: profile.id },
         placement: { kind: "runner", runnerId: task.runnerId },
         url: r.formUrl,
         idempotencyKey: "proof-person",
