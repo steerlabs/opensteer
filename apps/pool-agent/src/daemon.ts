@@ -3,7 +3,7 @@
  * request is ever answered from a state it has not checked.
  */
 import { createPrivateKey, type KeyObject } from "node:crypto";
-import { chmod, chown, mkdir, rm } from "node:fs/promises";
+import { chown, mkdir, rm } from "node:fs/promises";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname } from "node:path";
@@ -78,7 +78,7 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
       relayAuth.listen(path, () => resolve());
     });
     await chown(path, relayUid, 0);
-    await chmod(path, 0o600);
+    await setPrivateFileMode(path);
     servers.push(relayAuth as unknown as Server);
   }
   log({ event: "agent.ready", slots: agent.slotIds().length });
