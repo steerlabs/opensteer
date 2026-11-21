@@ -8,7 +8,7 @@
  */
 import { DeploymentCatalogSchema, DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { menuBarWords } from "@opensteer/client/computers";
-import { HttpHostClient, placeList, type WebSocketClient } from "@opensteer/client/host";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -554,50 +554,9 @@ async function homeStop(): Promise<void> {
   assert(address && typeof address !== "string");
   const pageUrl = `http://127.0.0.1:${address.port}/person`;
   const agentPageUrl = `http://127.0.0.1:${address.port}/agent`;
-  const session = z.object({ session: z.object({ id: z.string() }) }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "browser.session.start",
-      idempotencyKey: randomUUID(),
-      input: {
-        fresh: true,
-        initialUrl: pageUrl,
-        reuseExisting: false,
-        placement: { kind: "runner", runnerId: homeRunnerId },
-      },
-    }),
-  ).session;
-  await waitFor("the person's tab", () =>
-    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
-  );
-  const personTab = webContents
-    .getAllWebContents()
-    .find((contents) => contents.getURL() === pageUrl)!;
-  const typedNote = "kept-across-stop";
-  const initialPageId = z
-    .string()
-    .min(1)
-    .parse(
-      await personTab.executeJavaScript(
-        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
-      ),
-    );
-  const assertPersonTabIntact = async (stage: string) => {
-    assert(
-      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
-      `The person's tab closed (${stage})`,
-    );
-    const state = z
-      .object({ pageId: z.string(), value: z.string() })
-      .parse(
-        await personTab.executeJavaScript(
-          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
-        ),
-      );
-    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
-    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
-  };
 
-  // Real HttpHostClient live view kept open across Stop to verify self-reconnection.
+  // Real HttpHostClient opens, activates and watches the person's tab the way the product does.
+  let personSessionId: string | null = null;
   let liveViewSocketsOpened = 0;
   let liveViewSnapshots = 0;
   const liveClient = new HttpHostClient({
@@ -606,7 +565,8 @@ async function homeStop(): Promise<void> {
     reconnectBaseDelayMs: 100,
     reconnectMaxDelayMs: 500,
     webSocketFactory: (url): WebSocketClient => {
-      const isBrowserWatch = url.includes(`/v1/browser-sessions/${session.id}/connect`);
+      const isBrowserWatch =
+        personSessionId !== null && url.includes(`/v1/browser-sessions/${personSessionId}/connect`);
       if (isBrowserWatch) liveViewSocketsOpened += 1;
       let readyState = 0;
       const listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -683,24 +643,59 @@ async function homeStop(): Promise<void> {
       };
     },
   });
-  await liveClient.load();
-  const findPersonTab = () =>
-    placeList(liveClient.getSnapshot()).find(
-      (place) => place.tab.kind === "page" && place.tab.url === pageUrl,
-    );
-  await waitFor("person tab in live client snapshot", () => Boolean(findPersonTab()));
-  const personSurfaceId = findPersonTab()!.tab.tabId;
-  const releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
+  let releaseLiveView: (() => void) | null = null;
   shutdown.add({
     component: "live-watch",
     step: "close",
     order: 20,
     timeoutMs: 2_000,
     stop: () => {
-      releaseLiveView();
+      releaseLiveView?.();
       liveClient.dispose();
     },
   });
+  await liveClient.load();
+  const openedTab = await liveClient.openTab({
+    kind: "page",
+    url: pageUrl,
+    guest: true,
+  });
+  const viewer = await liveClient.activateTab(openedTab.tabId);
+  assert.equal(viewer.kind, "page", "Person tab did not activate as a page viewer");
+  const session = { id: viewer.sessionId };
+  personSessionId = session.id;
+  const personSurfaceId = openedTab.tabId;
+  await waitFor("the person's tab", () =>
+    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
+  );
+  const personTab = webContents
+    .getAllWebContents()
+    .find((contents) => contents.getURL() === pageUrl)!;
+  const typedNote = "kept-across-stop";
+  const initialPageId = z
+    .string()
+    .min(1)
+    .parse(
+      await personTab.executeJavaScript(
+        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
+      ),
+    );
+  const assertPersonTabIntact = async (stage: string) => {
+    assert(
+      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
+      `The person's tab closed (${stage})`,
+    );
+    const state = z
+      .object({ pageId: z.string(), value: z.string() })
+      .parse(
+        await personTab.executeJavaScript(
+          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
+        ),
+      );
+    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
+    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
+  };
+  releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
   await waitFor(
     "live view admitted before Stop",
     () =>
@@ -885,6 +880,7 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("home-shows-the-device-stopped-not-offline");
+  if (item.window().isVisible()) item.window().hide();
   await item.menuBar.open();
   await waitFor(
     "the Home's confirmation",
