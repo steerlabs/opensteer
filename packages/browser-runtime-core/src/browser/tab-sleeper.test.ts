@@ -569,12 +569,27 @@ describe("TabSleeper", () => {
       expect(suspended()).toBeGreaterThan(0);
       expect(opened).toBe(true);
 
-      // Under pressure with nothing that may sleep (every page pinned), the open is not held.
+      // Under pressure with nothing that may sleep (every page pinned), the open is not held,
+      // and leaves no waiter behind.
       f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
       opened = false;
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
+      expect((f.sleeper as unknown as { passWaiters: unknown[] }).passWaiters).toHaveLength(0);
+
+      // An unreadable reading is neither an effective nor an ineffective reclaim: the count that
+      // decides backoff, and any backoff, stay as they were (Rule C).
+      const internals = f.sleeper as unknown as {
+        ineffectiveReclaims: number;
+        pressureBackoffUntil: number;
+        applyMemoryPressureSample(reading: null, now: number): void;
+      };
+      internals.ineffectiveReclaims = 2;
+      internals.pressureBackoffUntil = Date.now() + 5_000;
+      internals.applyMemoryPressureSample(null, Date.now());
+      expect(internals.ineffectiveReclaims).toBe(2);
+      expect(internals.pressureBackoffUntil).toBeGreaterThan(Date.now());
     } finally {
       await f.close();
     }

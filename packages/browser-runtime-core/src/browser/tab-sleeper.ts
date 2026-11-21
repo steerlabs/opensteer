@@ -437,19 +437,42 @@ export class TabSleeper {
       return;
     }
     if (this.closed || reading === null) return;
-    this.applyMemoryPressureSample(reading, Date.now());
+    const now = Date.now();
+    this.applyMemoryPressureSample(reading, now);
     if (!this.releasing) return;
-    const settled = new Promise<void>((resolve) => this.passWaiters.push(resolve));
     this.pendingAsyncPressurePass = true;
-    this.poke();
-    // Nothing can sleep now (every page blocked or backing off): the open is not held.
-    if (!this.running && this.timer === undefined) {
-      this.releasePassWaiters();
+    // The open waits only for work that can make progress: a pass already running, or a page
+    // that may sleep right now. Every page blocked, or a backoff, holds nothing.
+    if (!this.running && !this.canShedNow(now)) {
+      this.poke();
       return;
     }
+    let release: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      release = resolve;
+      this.passWaiters.push(resolve);
+    });
+    this.poke();
     await withTimeout(settled, openPressureWaitMs, {
       timeoutError: () => new Error("Pressure pass did not settle."),
-    }).catch(() => undefined);
+    }).catch(() => {
+      // A waiter that timed out leaves; it does not stay until some later pass ends.
+      const index = this.passWaiters.indexOf(release);
+      if (index >= 0) this.passWaiters.splice(index, 1);
+    });
+  }
+
+  /** Whether a pass started now could sleep some page under pressure. */
+  private canShedNow(now: number): boolean {
+    if (now < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)) return false;
+    for (const [id, session] of this.sessions) {
+      const links = this.openerLinks(session);
+      for (const record of session.ledger.policyRecords()) {
+        if (!record.live || (this.nextProbe.get(record) ?? 0) > now) continue;
+        if (this.blocked(id, record, now, links) === null) return true;
+      }
+    }
+    return false;
   }
 
   private releasePassWaiters(): void {
@@ -493,6 +516,12 @@ export class TabSleeper {
 
   private applyMemoryPressureSample(reading: BrowserMemoryPressure | null, now: number): void {
     this.memoryPressureState = { known: reading !== null, reading };
+    if (reading === null) {
+      // Not known: the page estimate decides this pass, and nothing is recorded as a reclaim
+      // that worked or did not, so no failure count or backoff is reset (Rule C).
+      this.overBudget();
+      return;
+    }
     if (!this.overBudget()) {
       this.reclaimFrom = null;
       this.ineffectiveReclaims = 0;
@@ -509,15 +538,12 @@ export class TabSleeper {
     }
     this.reclaimFrom = null;
     if (
-      reading !== null &&
       reclaim.pressureUsedBytes !== null &&
       reclaim.pressureUsedBytes - reading.usedBytes >= minimumReclaimBytes
     ) {
       this.ineffectiveReclaims = 0;
-    } else if (reading === null) {
-      // Not known is neither a failure nor a success (Rule C): the count is left as it was.
     } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
-      this.ineffectiveReclaims = 0;
+      // The count stays until a reclaim works (Rule C): each further ineffective one backs off.
       this.pressureBackoffUntil = now + rendererSampleMs;
     }
   }
