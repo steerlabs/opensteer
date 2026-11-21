@@ -355,6 +355,17 @@ export const CloudComputerPlanSchema = z.object({
   interval: z.enum(["day", "week", "month", "year"]).optional(),
 });
 
+/**
+ * The public offer: what a Cloud Computer costs now, from the account service's own plan, for
+ * the website to say before anyone signs in. Null while checkout isn't ready, when the site
+ * says only that it is paid monthly. It names nothing about whoever asked.
+ */
+export const cloudComputerOfferPath = "/v1/cloud-computers/offer";
+export const CloudComputerOfferResponseSchema = z.strictObject({
+  plan: CloudComputerPlanSchema.nullable(),
+});
+export type CloudComputerOfferResponse = z.infer<typeof CloudComputerOfferResponseSchema>;
+
 export const CloudComputerReasonCodeSchema = z.enum([
   "cloud-computer-already-exists",
   "cloud-computer-no-capacity",

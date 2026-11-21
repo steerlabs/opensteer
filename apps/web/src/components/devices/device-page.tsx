@@ -10,6 +10,7 @@ import {
   computerGlyph,
   deviceAsleepDetail,
   deviceRemovalProfiles,
+  homeKeptWords,
   hostsDeployment,
 } from "@opensteer/client/computers";
 import {
@@ -68,7 +69,7 @@ import { IphoneWifiRow } from "./iphone-wifi-row.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
 import { useThisDevice } from "./this-device.js";
 import { HomeCloudComputerRow } from "../settings/sections/cloud-computer.js";
-import { HomeFacts } from "./home-facts.js";
+import { HomeFacts, useHomeKind } from "./home-facts.js";
 
 export function DevicePage() {
   const { deviceId } = useParams();
@@ -230,6 +231,7 @@ export function deviceRemovalCopy(input: {
 }
 
 function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
+  const homeKind = useHomeKind();
   const { desktopBridge, desktopDeployment, hostClient, openMobileNavigation, snapshot } =
     useShell();
   const navigate = useNavigate();
@@ -720,9 +722,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
                 </Link>
               </section>
             ) : null}
-            <p className="settings-footnote">
-              Your Opensteer lives on this Mac, so it can’t be removed.
-            </p>
+            <p className="settings-footnote">{homeKeptWords(homeKind.kind)}</p>
           </>
         ) : machine.revocable || leavesHere ? (
           <section aria-label="Remove" className="device-remove">

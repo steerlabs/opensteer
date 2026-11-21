@@ -132,7 +132,7 @@ export function PluginRequestBody(props: {
     <View style={styles.section}>
       {who}
       <AppText role="secondary" tone="muted">
-        Only {view.plugin.name} receives your answer. The agent never sees it.
+        Only {view.plugin.name} receives your answer. Opensteer doesn’t pass it to the agent.
       </AppText>
       {view.form.fields.map((field) => (
         <InputField

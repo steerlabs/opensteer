@@ -436,7 +436,7 @@
               >
               <p class="story__fix">
                 Opensteer fills your saved card after you allow it. The number is not sent to the
-                agent.
+                agent, though an agent working in that page can read it.
               </p>
             </li>
             <li class="story">
@@ -545,7 +545,8 @@
                   <h3>Passwords and cards stay with Opensteer</h3>
                   <p>
                     When a page needs one, the agent asks, you allow it, and Opensteer fills it in
-                    on your Mac. It is not sent to the agent.
+                    on your Mac. It is not sent to the agent, but an agent working in that page can
+                    read it.
                   </p>
                 </div>
               </li>
@@ -698,8 +699,10 @@
               <p class="homecard__who">
                 <svg aria-hidden="true"><use href="#i-cloud" /></svg>Opensteer Cloud Computer
               </p>
-              <!-- TODO(owner): the monthly price. Until it is set, the card says only "Paid monthly". -->
-              <p class="homecard__price">Paid monthly · cancel any time</p>
+              <!-- The price is the account service's own plan, read when the page loads. -->
+              <p class="homecard__price" data-offer="{{cloudComputerOffer}}" aria-live="polite">
+                Paid monthly · cancel any time
+              </p>
               <ul>
                 <li>
                   <svg aria-hidden="true"><use href="#i-check" /></svg>Always on: agents keep
@@ -707,21 +710,21 @@
                 </li>
                 <li>
                   <svg aria-hidden="true"><use href="#i-check" /></svg>A browser with a steady IP
-                  address, so you sign in once
+                  address
                 </li>
                 <li>
                   <svg aria-hidden="true"><use href="#i-check" /></svg>Encrypted backups every day
                 </li>
                 <li>
-                  <svg aria-hidden="true"><use href="#i-check" /></svg>Your Mac stays connected as
-                  one of its devices
+                  <svg aria-hidden="true"><use href="#i-check" /></svg>Your Mac can be added as one
+                  of its devices
                 </li>
               </ul>
               <p class="homecard__note">
-                Set it up in the Opensteer app, under Settings, then Account. It starts as a new
-                Home, so connected agents connect again to its new address.
+                It starts as a new Home, so connected agents connect again to its new address. You
+                can also set it up in the Opensteer app, under Settings, then Account.
               </p>
-              <!-- TODO(owner): a direct "Get a Cloud Computer" link once the public checkout page is confirmed. -->
+              <a class="btn btn--accent" href="{{cloudComputer}}">Get a Cloud Computer</a>
             </div>
           </div>
           <p class="row__facts reveal">

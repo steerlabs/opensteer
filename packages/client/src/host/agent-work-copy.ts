@@ -22,6 +22,8 @@ export const agentWorkCopy = {
   "work.activity": "Activity",
   "work.activityEmpty": "Nothing yet.",
   "work.activityUnavailable": "This Opensteer doesn’t list an agent’s actions yet.",
+  "work.usingNow": "Using now",
+  "work.openPlace": "Open {place}",
 
   "op.tab_list": "Listed tabs in {target}",
   "op.tab_open": "Opened a tab in {target}",
@@ -65,6 +67,8 @@ export const agentWorkCopy = {
   "tab.sharedNoTask": "You and {agent} are using this page",
   "tab.stopped": "Stopped by you",
   "tab.stop": "Stop",
+  "tab.needsYou": "{agent} needs you",
+  "tab.answer": "Answer",
 
   "ask.title": "{agent}: {question}",
   "ask.says": "{agent} says:",
@@ -78,6 +82,7 @@ export const agentWorkCopy = {
   "ask.allowed": "You allowed this once.",
   "ask.denied": "You didn’t allow this.",
   "ask.withdrawn": "No longer needed.",
+  "ask.openPage": "Open the page",
   "ask.withdrawn.stopped": "No longer needed: you stopped {agent}.",
   "ask.withdrawn.revoked": "No longer needed: {agent} was disconnected.",
   "ask.withdrawn.narrowed": "No longer needed: {agent} can no longer use {target}.",

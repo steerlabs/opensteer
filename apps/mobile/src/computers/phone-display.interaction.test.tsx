@@ -225,12 +225,7 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
 }));
-import {
-  ComputerDisplay,
-  ComputerTaskView,
-  ComputerOwnerView,
-  decodeDisplayFrame,
-} from "./phone-display.js";
+import { ComputerDisplay, ComputerOwnerView, decodeDisplayFrame } from "./phone-display.js";
 class Socket implements WebSocketClient {
   readyState = 0;
   binaryType: "arraybuffer" | "blob" = "arraybuffer";
@@ -528,13 +523,20 @@ async function setup(
         ) : screen === "reconnect" ? (
           <ReopeningWindow active={active} />
         ) : screen === "task" ? (
-          <ComputerTaskView
+          // A task's own session, as its live place shows it.
+          <ComputerDisplay
+            bar={{ title: phone ? "Phone" : "Notes", detail: null, menu: [], onTyping: noop }}
             active={active}
-            hostClient={client}
-            computerSessionId={sessionId}
+            interactive={phone}
             machineId="machine"
-            appKey={phone ? null : "com.apple.notes"}
-            onTyping={noop}
+            phone={phone}
+            label={phone ? "Phone" : "Notes"}
+            hostClient={client}
+            source={{
+              kind: "task-session",
+              sessionId,
+              ...(phone ? {} : { appKey: "com.apple.notes" }),
+            }}
           />
         ) : screen === "owner" ? (
           <ComputerOwnerView

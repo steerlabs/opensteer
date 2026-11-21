@@ -180,4 +180,23 @@ describe("Passwords in settings", () => {
       }).detail,
     ).toBe("Kept on Mac mini");
   });
+
+  it("says on a Cloud Computer or a server that saved logins work only on a Home on a Mac", () => {
+    for (const home of [
+      { homeKind: "cloud-computer" as const },
+      { homeKind: "server" as const },
+      { exposure: "networked" as const },
+    ]) {
+      const model = passwordsSettingsModel({
+        deploymentName: "My Cloud Computer",
+        machines: [{ ...macMini, name: "My Cloud Computer" }],
+        ...home,
+      });
+      expect(model.body).toBe(
+        "Saved logins and cards work only when your Home is on your Mac. On this Home, sign in to a site in its own browser.",
+      );
+      expect(model.detail).toBe("Only on a Home on your Mac");
+      expect(model.facts).toEqual([]);
+    }
+  });
 });

@@ -449,7 +449,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
 
     expect(text()).toContain("Sign in to github.com");
     expect(text()).toContain(
-      "Your agents can type your saved login on github.com and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
+      "Opensteer fills your saved login on github.com, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.",
     );
     expect(text()).toContain("Agent’s reason");
     expect(text().split("Open the pull request").length - 1).toBe(1);

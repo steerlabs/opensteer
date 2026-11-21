@@ -201,6 +201,8 @@ const AccountEnvironmentSchema = z
     OPENSTEER_HOSTED_OAUTH_PROVIDERS: z.string().max(262_144).optional(),
     OPENSTEER_DESKTOP_DOWNLOAD_URL: z.url().optional(),
     OPENSTEER_IOS_APP_URL: z.url().optional(),
+    /** The Opensteer website, the one page origin allowed to read the public Cloud Computer offer. */
+    OPENSTEER_WEBSITE_ORIGIN: BareOriginSchema.default(new URL("https://opensteer.com")),
     OPENSTEER_ANDROID_APP_URL: z.url().optional(),
     OPENSTEER_CONNECT_DOMAIN: DeploymentDomainSchema,
     OPENSTEER_CONNECT_CLOUDFLARE_ACCOUNT_ID: CloudflareIdentifierSchema,
@@ -252,6 +254,8 @@ export interface ControlPlaneConfig {
    */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
+  /** The Opensteer website's origin: it reads the public Cloud Computer offer from its pages. */
+  readonly websiteOrigin?: URL;
   readonly androidAppUrl?: string;
   readonly connectCloudflare: {
     readonly accountId: string;
@@ -363,6 +367,7 @@ export function loadControlPlaneConfig(
       ? { desktopDownloadUrl: parsed.OPENSTEER_DESKTOP_DOWNLOAD_URL }
       : {}),
     ...(parsed.OPENSTEER_IOS_APP_URL ? { iosAppUrl: parsed.OPENSTEER_IOS_APP_URL } : {}),
+    websiteOrigin: parsed.OPENSTEER_WEBSITE_ORIGIN,
     ...(parsed.OPENSTEER_ANDROID_APP_URL
       ? { androidAppUrl: parsed.OPENSTEER_ANDROID_APP_URL }
       : {}),

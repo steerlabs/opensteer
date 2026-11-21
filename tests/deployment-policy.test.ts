@@ -68,12 +68,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason:
       "A frozen copy of what shipped extensions verify; it cannot call the evolving policy and must never change.",
   },
-  "apps/control-plane/src/portal/pages.ts": {
-    counts: {
-      "input.kind": 1,
-    },
-    reason: "The comparison reads a resource's own kind, not Deployment policy.",
-  },
   "apps/desktop/src/bridge/methods/web-links.ts": {
     counts: {
       "selected.kind": 1,
@@ -152,12 +146,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: {
       presentation: 1,
       "selected.kind": 1,
-    },
-    reason: "The comparison reads a resource's own kind, not Deployment policy.",
-  },
-  "apps/web/src/desktop/places.ts": {
-    counts: {
-      "deployment.kind": 3,
     },
     reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },

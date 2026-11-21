@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./cloud-computer-copy": "./src/cloud-computer-copy.ts",
     "./broker-sealing": "./src/broker-sealing.ts"
   },
   "scripts": {

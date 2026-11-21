@@ -1,3 +1,4 @@
+import { deviceWords } from "@opensteer/client/computers";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -153,6 +154,20 @@ export function deploymentKindLabel(connection: DeploymentConnection): string {
   return personalComputerKind;
 }
 const personalComputerKind = "Personal computer";
+
+/**
+ * What a row in the list of Homes calls its kind: "Cloud Computer" when the Account says it
+ * is one (a work Home too), whatever its record alone would make of it; its record's kind
+ * otherwise. The cloud symbol goes with the first.
+ */
+export function listedKind(
+  row: Pick<DeploymentRow, "kindLabel">,
+  cloud: boolean,
+): { readonly label: string; readonly cloud: boolean } {
+  return cloud
+    ? { label: deviceWords("place.kind.cloud"), cloud: true }
+    : { label: row.kindLabel, cloud: false };
+}
 
 /**
  * A Home on a person's own Mac: a personal deployment reached through it, never a networked

@@ -1459,7 +1459,8 @@ export interface HostClient extends TabsClient {
    * A lost answer is retried under the same key, never as a second promotion.
    */
   steerThreadInput(threadId: string, messageId: string): Promise<void>;
-  stopRun(threadId: string, expectedRunId?: string): Promise<void>;
+  /** Stops the task's current work: the Run under way when the Host receives it. */
+  stopRun(threadId: string): Promise<void>;
   stopNode(threadId: string, nodeId: string): Promise<void>;
   subscribe(listener: () => void): () => void;
   /** Moves a Thread to another access mode; remembered once the Host accepts. */

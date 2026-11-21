@@ -17,13 +17,20 @@ export const welcomeCopy = {
   address: "Enter address",
   failureTitle: "Opensteer sign-in did not finish",
   mac: "Send me the Mac link",
-  otherWays: "Already have Opensteer?",
+  otherWays: "Other ways in",
   scan: "Scan QR Code",
-  title: "Opensteer runs on your Mac",
+  title: "Open your Opensteer",
 } as const;
 
-export function welcomeSentence(noun: string): string {
-  return `Install it there, and this ${noun} will find it.`;
+/**
+ * What the first screen says Opensteer is: it runs on a Mac or on a Cloud Computer, and the
+ * Opensteer account finds either. A build with no account to sign in to has only the Mac.
+ * It never offers to buy anything.
+ */
+export function welcomeSentence(noun: string, account = true): string {
+  return account
+    ? `It runs on your Mac or on a Cloud Computer. Sign in with your Opensteer account, and this ${noun} will find it.`
+    : `Install it on your Mac, and this ${noun} will find it.`;
 }
 
 /** What the first run shows, shared by the iOS form and the Android screen. */
@@ -34,6 +41,8 @@ export function welcomePresentation(props: WelcomeProps): {
   readonly footer: string;
   readonly macLink: string | null;
   readonly signedInAs: string | null;
+  /** What the first screen says, with the account in it while there is one to sign in to. */
+  readonly sentence: (noun: string) => string;
 } {
   const door = accountDoorPresentation(props.account, props.signingIn);
   const unavailable = !props.account.available;
@@ -49,12 +58,11 @@ export function welcomePresentation(props: WelcomeProps): {
         : null),
     footer:
       props.signedInAs != null
-        ? "Your Opensteer appears here as soon as your Mac has it."
-        : unavailable
-          ? "Use an address for Tailscale or your own server."
-          : "Sign in if your Mac uses Opensteer Connect. Use an address for Tailscale or your own server.",
+        ? "Your Opensteer appears here as soon as it’s ready."
+        : "Use an address for Tailscale or your own server.",
     macLink: props.portalOrigin ? `${props.portalOrigin}/mac` : null,
     signedInAs: props.signedInAs ?? null,
+    sentence: (noun) => welcomeSentence(noun, !unavailable),
   };
 }
 

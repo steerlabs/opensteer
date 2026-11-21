@@ -110,7 +110,8 @@ import {
   type TranscriptSurfaces,
 } from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
-import { AgentSessionPane, useSessionTask } from "./agent-session.js";
+import { AgentSessionPane } from "./agent-session.js";
+import { useSessionTask } from "./agent-session-hooks.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
 import { PersonalReferenceProvider } from "../markdown/reference-navigation.js";
@@ -322,6 +323,7 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
   if (session !== null)
     return (
       <AgentSessionPane
+        deploymentId={props.deploymentId}
         hostClient={props.hostClient}
         onHeader={props.onHeader}
         threadId={threadId}

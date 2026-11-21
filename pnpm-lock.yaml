@@ -937,6 +937,9 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@opensteer/control-plane-protocol':
+        specifier: workspace:*
+        version: link:../../packages/control-plane-protocol
     devDependencies:
       typescript:
         specifier: 'catalog:'

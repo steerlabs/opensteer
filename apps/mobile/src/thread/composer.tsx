@@ -217,9 +217,10 @@ export function Composer(props: {
     {
       label: "stop this run",
       done: "stopped",
-      execute: async (runId) => {
+      // Stop ends the task's current work, whichever Run that is by the time it lands.
+      execute: async () => {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        await props.hostClient.stopRun(threadId, runId);
+        await props.hostClient.stopRun(threadId);
       },
       reconcile: async (runId) => {
         const detail = props.hostClient.getThreadTranscript(threadId)?.getSnapshot();

@@ -115,6 +115,54 @@ describe("a tab a connected agent uses", () => {
         "You and Grok are using this page, for “Buy the phone case”",
       ),
     );
+    // Grok waits on the person's Allow once: Answer back to the Request, and Stop beside it.
+    expect(button("Answer")?.getAttribute("aria-label")).toBe("Grok needs you. Answer");
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () => button("Stop")!.click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId: mockAgentWorkThreads.waiting,
+      }),
+    );
+  });
+});
+
+describe("what a connected agent asks the person itself", () => {
+  const asking = {
+    mock: mockConnectedAgents("seeded"),
+    hostClient: (source: MockHostClient) => {
+      source.mockAgentWork({ question: true });
+      return source;
+    },
+  };
+
+  it("shows the question with its own choices, one click to its page and one click back", async () => {
+    await mount(task(mockAgentWorkThreads.working), asking);
+    await vi.waitFor(() =>
+      expect(document.querySelector(".request-card")?.textContent).toContain(
+        "Enter passwords and codes only in the page.",
+      ),
+    );
+    const card = document.querySelector(".request-card")!;
+    expect(card.textContent).toContain("Done");
+    expect(card.textContent).toContain("Unable to do it");
+    expect(card.textContent).not.toContain("Allow once");
+    await act(async () => button("Open the page")!.click());
+    await vi.waitFor(() =>
+      expect(document.querySelector(".tab-agent-status")?.textContent).toContain(
+        "Claude is using this page for “Find flights to Lisbon”",
+      ),
+    );
+    expect(button("Answer")?.getAttribute("aria-label")).toBe("Claude needs you. Answer");
+    // Stop stays beside Answer while the question waits.
+    expect(document.querySelector(".tab-agent-status")?.textContent).toContain("Stop");
+    await act(async () => button("Answer")!.click());
+    await vi.waitFor(() =>
+      expect(document.querySelector(".request-card")?.textContent).toContain(
+        "Enter passwords and codes only in the page.",
+      ),
+    );
   });
 });
 

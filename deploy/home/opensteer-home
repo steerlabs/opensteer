@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
+[[ $EUID == 0 ]] || { echo 'Run opensteer-home as root.' >&2; exit 1; }
+# A Home's own copy of this command operates that Home; the copy on the path operates the
+# default Home. The directory is checked before anything in it is read or removed.
 default_dir=/etc/opensteer-home
-if [[ -d $(dirname -- "$0") && -f $(dirname -- "$0")/images.env ]]; then default_dir=$(dirname -- "$0"); fi
+own_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
+if [[ -f "$own_dir/common.sh" && -f "$own_dir/install-scheduler.sh" ]]; then default_dir=$own_dir; fi
 home_dir=${OPENSTEER_HOME_DIR:-$default_dir}
+if [[ ! $home_dir =~ ^/[a-zA-Z0-9._/-]+$ || $home_dir == / || $home_dir =~ (^|/)\.\.?(/|$) ||
+  -L $home_dir || ! -d $home_dir || $(stat -c '%u:%a' "$home_dir") != 0:700 || ! -f "$home_dir/common.sh" ]]; then
+  echo "No Home is installed at $home_dir." >&2
+  exit 1
+fi
 export OPENSTEER_HOME_DIR="$home_dir"
 # shellcheck source=deploy/home/common.sh
 source "$home_dir/common.sh"
 
-[[ $EUID == 0 ]] || fail "Run opensteer-home as root."
-[[ -f "$home_dir/config.env" ]] || fail "No Home configuration was found at $home_dir."
+# A failed first install can be removed before it wrote its configuration.
+[[ -f "$home_dir/config.env" || ( ${1:-} == uninstall && -d $home_dir ) ]] ||
+  fail "No Home configuration was found at $home_dir."
 
 # shellcheck source=deploy/home/backup.sh
 source "$home_dir/backup.sh"
@@ -97,7 +107,8 @@ case "${1:-}" in
     ;;
   uninstall)
     [[ $# == 1 || ( $# == 2 && $2 == --purge ) ]] || fail "Usage: opensteer-home uninstall [--purge]"
-    unit=${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home}
+    unit=${OPENSTEER_HOME_UNIT_PREFIX:-$(installed_unit_prefix)}
+    export OPENSTEER_HOME_UNIT_PREFIX=$unit
     [[ $unit =~ ^opensteer-home(-[a-z0-9-]+)?$ ]] || fail "Invalid Home systemd unit prefix."
     system_files="/etc/systemd/system/$unit"
     if [[ -f "$system_files-managed.service" ]] &&
@@ -116,23 +127,22 @@ case "${1:-}" in
     lock_home
     if [[ $# == 2 ]]; then
       echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
-      compose down --volumes
+      if [[ -f "$home_dir/config.env" ]]; then compose_down_home --volumes; fi
       remove_runner_apparmor
       if [[ -f "$system_files.service" ]] &&
          grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
         rm -f -- "$system_files"{.service,-update.service,-update.timer,-backup.service,-backup.timer,-maintain.service,-maintain.timer}
-        if [[ $unit == opensteer-home ]]; then rm -f /usr/local/bin/opensteer-home; fi
       fi
+      if owns_operator_command; then rm -f /usr/local/bin/opensteer-home; fi
       if [[ -f "$system_files-managed.service" ]] &&
          grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
         rm -f -- "$system_files-managed.service"
       fi
       if command -v systemctl >/dev/null; then systemctl daemon-reload; fi
-      rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending}
-      rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem}
+      remove_home_files
       rmdir -- "$home_dir" 2>/dev/null || true
     else
-      compose down
+      if [[ -f "$home_dir/config.env" ]]; then compose_down_home; fi
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;

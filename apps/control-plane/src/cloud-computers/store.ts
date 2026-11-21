@@ -1,4 +1,9 @@
 import { cancelAndRefundCheckout } from "./checkout-compensation.js";
+import {
+  CloudComputerCancelledLate,
+  CloudComputerDeletionUnsettled,
+  type CloudComputerDeletionStep,
+} from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
@@ -86,6 +91,8 @@ const bootstrapLifetimeMs = 20 * 60_000;
 const checkoutLifetimeMs = 2 * 60 * 60_000;
 const checkoutCreationWindowMs = 31 * 60_000;
 const paidFulfillmentDeadlineMs = 15 * 60_000;
+/** A deleted Cloud Computer still unsettled with Stripe this long after its request is reported. */
+const unsettledDeletionMs = 60 * 60_000;
 const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
 const providerWriteGraceMs = 3 * 60_000;
@@ -136,6 +143,11 @@ export class CloudComputerStore {
 
   get plan() {
     return { ...this.#options.config.plan, interval: this.#options.config.interval };
+  }
+
+  /** The plan a checkout would sell now, or null while Stripe hasn't confirmed the offer. */
+  get offer() {
+    return this.#offerValid ? this.plan : null;
   }
 
   pendingReplacementOwnerAccess(clientId: string) {
@@ -837,6 +849,10 @@ export class CloudComputerStore {
       .executeTakeFirst();
   }
 
+  /**
+   * Brings a personal Cloud Computer's billing up to date with Stripe. A row whose deletion is
+   * requested has its subscription cancelled whatever else is open: a checkout keeps its own path.
+   */
   async #refreshSubscription(tx: TransactionDb, id: string) {
     const row = await tx
       .selectFrom("cloudComputers")
@@ -852,18 +868,6 @@ export class CloudComputerStore {
     }
     const billing = billingStatus(subscription);
     if (row.deletionRequestedAt) {
-      const payable = await tx
-        .selectFrom("cloudComputerCheckouts")
-        .select("requestId")
-        .where("status", "=", "open")
-        .where((eb) =>
-          eb.or([
-            eb("targetComputerId", "=", row.id),
-            ...(row.accountId ? [eb("accountId", "=", row.accountId)] : []),
-          ]),
-        )
-        .executeTakeFirst();
-      if (payable) return;
       if (billing !== "canceled") await this.#options.stripe.cancel(id);
       const now = this.#now();
       await tx
@@ -951,6 +955,7 @@ export class CloudComputerStore {
       .where("tombstonedAt", "is", null)
       .where("workAssignmentId", "is", null)
       .where("state", "!=", "deleted")
+      .where("deletionRequestedAt", "is", null)
       .execute();
     for (const row of rows)
       await run(() =>
@@ -958,7 +963,101 @@ export class CloudComputerStore {
           .transaction()
           .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId)),
       );
+    // Deleted, not yet settled with Stripe. A work Home's billing is its organization's.
+    const deleted = await this.#db
+      .selectFrom("cloudComputers")
+      .select("id")
+      .where("deletionRequestedAt", "is not", null)
+      .where("billingSettledAt", "is", null)
+      .where("workAssignmentId", "is", null)
+      .orderBy("id")
+      .execute();
+    for (const row of deleted)
+      await run(() => this.#settleDeletion(CloudComputerIdSchema.parse(row.id), onError));
     await run(async () => this.#options.organizations?.reconcile(onError));
+  }
+
+  /**
+   * Settles with Stripe a Cloud Computer whose deletion was requested, however it was asked
+   * (deleting it, or deleting the Account): its subscription cancelled, then the Stripe customer
+   * it belongs to deleted with its saved payment details unless another subscription there is
+   * not cancelled. A fixed few Stripe calls, retried each pass. A cancellation confirmed later
+   * than the first attempt is reported with how long it took, so a person can look for a renewal
+   * charged in that time; a row unsettled an hour after its request is reported with the step.
+   */
+  async #settleDeletion(id: CloudComputerId, onError: (error: unknown) => void) {
+    const read = () =>
+      this.#db
+        .selectFrom("cloudComputers")
+        .select([
+          "state",
+          "deletionRequestedAt",
+          "deletedAt",
+          "billingSettledAt",
+          "cancelFailedAt",
+          "stripeSubscriptionId",
+        ])
+        .where("id", "=", id)
+        .executeTakeFirst();
+    const row = await read();
+    if (!row?.deletionRequestedAt || row.billingSettledAt) return;
+    const since = row.deletionRequestedAt;
+    let step: CloudComputerDeletionStep = "cancel";
+    let failure: unknown;
+    try {
+      if (row.state !== "deleted") {
+        await this.#db
+          .transaction()
+          .execute((tx) => this.#refreshSubscription(tx, row.stripeSubscriptionId))
+          .catch(async (error: unknown) => {
+            await this.#cancelFailed(id);
+            throw error;
+          });
+        if ((await read())?.state !== "deleted")
+          throw new ControlPlaneError("unavailable", "The subscription is not cancelled yet");
+      }
+      const { stripe } = this.#options;
+      const subscription = await stripe.subscription(row.stripeSubscriptionId);
+      if (subscription.id !== row.stripeSubscriptionId)
+        throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
+      if (billingStatus(subscription) !== "canceled") await stripe.cancel(subscription.id);
+      step = "customer";
+      await stripe.deleteIdleCustomer(subscription.customer);
+      step = "record";
+      const settled = await this.#db
+        .updateTable("cloudComputers")
+        .where("id", "=", id)
+        .where("billingSettledAt", "is", null)
+        .set({ billingSettledAt: this.#now() })
+        .returning(["deletedAt", "cancelFailedAt"])
+        .executeTakeFirst();
+      // Not cancelled at the first attempt: a renewal may have been charged meanwhile.
+      if (settled?.cancelFailedAt)
+        onError(
+          new CloudComputerCancelledLate(
+            id,
+            (settled.deletedAt ?? this.#now()).getTime() - since.getTime(),
+          ),
+        );
+      return;
+    } catch (error) {
+      failure = error;
+    }
+    if (this.#now().getTime() - since.getTime() >= unsettledDeletionMs)
+      onError(new CloudComputerDeletionUnsettled(id, step, { cause: failure }));
+    else throw failure;
+  }
+
+  /** Remembers that cancelling a deleted Cloud Computer's subscription failed at least once. */
+  async #cancelFailed(id: CloudComputerId) {
+    await this.#db
+      .updateTable("cloudComputers")
+      .where("id", "=", id)
+      .where("cancelFailedAt", "is", null)
+      .where("deletionRequestedAt", "is not", null)
+      .set({ cancelFailedAt: this.#now() })
+      .executeTakeFirst()
+      .catch(() => undefined);
   }
 
   #deferredCheckouts() {
@@ -2530,9 +2629,13 @@ export class CloudComputerStore {
             ]),
           )
           .execute();
+        // Cancelled first, whatever happens to a checkout: each keeps its own path.
+        await this.#db
+          .transaction()
+          .execute((tx) => this.#refreshSubscription(tx, subscription))
+          .catch(() => this.#cancelFailed(id));
         for (const attempt of attempts)
           await this.#recoverCheckout(attempt.accountId, attempt.requestId);
-        await this.#db.transaction().execute((tx) => this.#refreshSubscription(tx, subscription));
       } catch {
         // Keep the durable request for the next billing pass.
       }

@@ -58,9 +58,9 @@ describe("device membership", () => {
   it("derives setup, blockers and applicability without storing state", () => {
     expect(deviceMembership(base)).toEqual({ state: "needs-setup" });
     expect(deviceMembership({ ...base, settingUp: true })).toEqual({ state: "setting-up" });
-    expect(deviceMembership({ ...base, finishSetupReason: "Turn on Use from anywhere" })).toEqual({
+    expect(deviceMembership({ ...base, finishSetupReason: "Turn on Remote access" })).toEqual({
       state: "finish-setup",
-      reason: "Turn on Use from anywhere",
+      reason: "Turn on Remote access",
     });
     expect(
       deviceMembership({

@@ -146,12 +146,44 @@ describe("portal Deployment cards", () => {
     for (const present of [true, false]) {
       const card = deploymentCard(directoryDeployment(deployment), present);
       expect(card).not.toContain('class="dot');
-      expect(card).not.toContain('class="place__note');
+      // The one note is its kind: a personal Home at its own address is a server.
+      expect(card.match(/class="place__note/gu)).toHaveLength(1);
+      expect(card).toContain('<span class="place__note">Server</span>');
       expect(card).toContain('class="place__go');
     }
     expect(deploymentCard(directoryDeployment(deployment), false)).toContain(
       'href="https://server.opensteer.test"',
     );
+  });
+
+  it("calls a Cloud Computer a Cloud Computer, and a work Home's organization by name, never Team", () => {
+    // A Cloud Computer is a personal Home at its own address.
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
+    const mine = deploymentCard(deployment, true, { organization: null });
+    expect(mine).toContain("Cloud Computer");
+    expect(mine).not.toContain(">Team<");
+    expect(mine).toContain("M17.5 18.5"); // the cloud, not a server
+    const work = deploymentCard(deployment, true, { organization: "Acme" });
+    expect(work).toContain("Work · Acme · Cloud Computer");
+    // A retired team server's row, still in the directory until removed, says no kind.
+    const retired = deploymentCard(retiredTeamServerEntry(), true, "not-cloud");
+    for (const word of ["Team", "Server", "Cloud Computer"])
+      expect(retired).not.toContain(`>${word}<`);
+    expect(retired).not.toContain('<span class="place__note">');
+  });
+
+  it("calls a personal Home on a server a Server, with the server icon, never a team", () => {
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
+    const card = deploymentCard(deployment, true, "not-cloud");
+    expect(card).toContain(">Server<");
+    expect(card).not.toContain("Team");
+    expect(card).toContain('<rect x="4" y="4" width="16" height="7"'); // the server icon
+  });
+
+  it("names no kind it cannot know when the Account's Cloud Computers couldn't be read", () => {
+    const card = deploymentCard(directoryDeployment(personalHomeAtItsAddress()), true, "unknown");
+    for (const word of ["Team", "Server", "Cloud Computer"]) expect(card).not.toContain(word);
+    expect(card).not.toMatch(/<span class="device"><svg/u);
   });
 
   it("keeps removed member access unavailable even without a Host health observation", () => {
@@ -296,6 +328,21 @@ function selfHostedDeployment(
   });
 }
 
+/** A personal Home listed at its own address: a server of the person's, or a Cloud Computer. */
+function personalHomeAtItsAddress(): AccountDeployment {
+  const deploymentId = createId("deployment");
+  const authority = authorityEnvelope(deploymentId, "personal");
+  return AccountDeploymentSchema.parse({
+    ...selfHostedDeployment(deploymentId),
+    authorityEnvelope: {
+      ...authority,
+      document: { ...authority.document, canonicalOrigin: "https://home.opensteer.test" },
+    },
+    canonicalOrigin: "https://home.opensteer.test",
+    name: "Home server",
+  });
+}
+
 function personalDeployment(state: "ready" | "offline" | "off"): AccountDeployment {
   const deploymentId = createId("deployment");
   const authority = authorityEnvelope(deploymentId, "personal");
@@ -353,6 +400,21 @@ function authorityEnvelope(deploymentId: ReturnType<typeof createId>, kind: "per
     publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
     signature: "A".repeat(86),
   } as const;
+}
+
+/** A team server's row a previous release listed: its signed shape still says "team". */
+function retiredTeamServerEntry(): AccountDeploymentDirectoryEntry {
+  const entry = directoryDeployment(selfHostedDeployment());
+  const envelope = entry.authorityEnvelope as {
+    readonly document: Record<string, unknown>;
+  };
+  return AccountDeploymentDirectoryEntrySchema.parse({
+    ...entry,
+    authorityEnvelope: {
+      ...envelope,
+      document: { ...envelope.document, deploymentShape: { kind: "team" } },
+    },
+  });
 }
 
 function directoryDeployment(deployment: AccountDeployment): AccountDeploymentDirectoryEntry {
