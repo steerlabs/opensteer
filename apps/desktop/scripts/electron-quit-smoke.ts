@@ -52,6 +52,7 @@ import {
   readPersonalProcessSupervisorRelease,
 } from "../src/supervisor/personal-process-port.js";
 import { runTabRestoreTrial } from "./electron-tab-restore-trial.js";
+import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 
 const smokeDownloads = smokeDesktopDownloads();
@@ -104,6 +105,7 @@ void run().catch((error: unknown) => {
 
 async function run(): Promise<void> {
   await app.whenReady();
+  if (trial.startsWith("restore-")) await requireSmokeProtectedStorage();
   const shell = new BrowserWindow({ show: false });
   await shell.loadURL("data:text/html,<script>window.onbeforeunload=()=>false</script>");
   shutdown.add({

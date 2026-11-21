@@ -223,6 +223,8 @@ interface PointerGesture {
   /** Resize and departure may converge while CDP is acknowledging cleanup. */
   cleanup: Promise<void> | null;
   readonly buttons: Set<PointerButton>;
+  /** Buttons whose mouseReleased has already been dispatched to Chromium. */
+  readonly releasing: Set<PointerButton>;
   /** Released by anything other than the person's own pointer-up. */
   ended: boolean;
   readonly surfaceId: BrowserSurfaceId;
@@ -1123,8 +1125,12 @@ export class BrowserController {
     else
       await Promise.all(cleanups.map(({ surfaceId, done }) => this.untilDialog(surfaceId, done)));
     const holdsInput = () =>
-      [...this.gestures.values()].some((gesture) => gesture.owner === producer && !gesture.ended) ||
-      [...this.keyOwners.values()].includes(producer);
+      [...this.gestures.values()].some(
+        (gesture) =>
+          gesture.owner === producer &&
+          !gesture.ended &&
+          [...gesture.buttons].some((button) => !gesture.releasing.has(button)),
+      ) || [...this.keyOwners.values()].includes(producer);
     if (holdsInput()) {
       if (!message.scriptAttachmentId) {
         // Finish a legacy detach after dialog-held input releases.
@@ -1150,6 +1156,12 @@ export class BrowserController {
         ).toProtocolError(),
       });
       return;
+    }
+    for (const gesture of this.gestures.values()) {
+      if (gesture.owner === producer && !gesture.ended) {
+        gesture.ended = true;
+        this.gestures.delete(gesture.surfaceId);
+      }
     }
     await this.run(message);
   }
@@ -1419,7 +1431,11 @@ export class BrowserController {
         });
         return;
       }
-      if (surfaceId && (this.closingSurfaces.has(surfaceId) || !this.ledger.stateOf(surfaceId))) {
+      const closingTarget = surfaceId ?? this.pageOf(message);
+      if (
+        closingTarget &&
+        (this.closingSurfaces.has(closingTarget) || !this.ledger.binding(closingTarget))
+      ) {
         return;
       }
       await this.send({
@@ -2387,6 +2403,7 @@ export class BrowserController {
         cdp: binding.cdp,
         cleanup: null,
         buttons: new Set(),
+        releasing: new Set(),
         ended: false,
         surfaceId: message.surfaceId,
         owner: inputProducer(message),
@@ -2598,6 +2615,7 @@ export class BrowserController {
       if (gesture.cdp.cancelDragging) await gesture.cdp.cancelDragging();
       else await gesture.cdp.send("Input.cancelDragging");
       for (const button of gesture.buttons) {
+        if (gesture.releasing.has(button)) continue;
         const remaining = new Set(gesture.buttons);
         remaining.delete(button);
         // Keep ownership fenced until a live target actually acknowledges cleanup.
@@ -2634,7 +2652,7 @@ export class BrowserController {
     surfaceId: BrowserSurfaceId,
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
     command: CdpCommand,
-  ): () => void {
+  ): (succeeded?: boolean) => void {
     const { method, parameters: p } = message.command;
     if (method === "Input.dispatchMouseEvent") {
       const parsed = z
@@ -2658,21 +2676,29 @@ export class BrowserController {
           owner: inputProducer(message),
           generation: message.inputGeneration ?? 0,
           buttons: new Set(),
+          releasing: new Set(),
           ended: false,
           x,
           y,
         };
+        gesture.releasing.delete(button);
         gesture.buttons.add(button);
         this.gestures.set(surfaceId, gesture);
+      }
+      if (type === "mouseReleased" && button && button !== "none" && gesture?.buttons.has(button)) {
+        gesture.releasing.add(button);
       }
       if (gesture) {
         gesture.x = x;
         gesture.y = y;
       }
-      return () => {
+      return (succeeded = true) => {
         if (type === "mouseReleased" && button && button !== "none" && gesture) {
-          gesture.buttons.delete(button);
-          if (!gesture.buttons.size) this.gestures.delete(surfaceId);
+          gesture.releasing.delete(button);
+          if (succeeded) {
+            gesture.buttons.delete(button);
+            if (!gesture.buttons.size) this.gestures.delete(surfaceId);
+          }
         }
       };
     }
@@ -3476,10 +3502,13 @@ export class BrowserController {
               : command.method === "Page.navigate"
                 ? await navigation(send)
                 : await send();
+    } catch (error) {
+      settleInput(false);
+      throw error;
     } finally {
       script?.stop();
     }
-    settleInput();
+    settleInput(true);
     if (
       command.method === "Target.closeTarget" &&
       typeof command.parameters?.targetId === "string"

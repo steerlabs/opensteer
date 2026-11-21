@@ -3042,6 +3042,130 @@ describe("BrowserController", () => {
     }
   });
 
+  it("allows Target.detachFromTarget when mouseReleased has already been dispatched and is held by a dialog", async () => {
+    const controller = createController();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let pending: Promise<void> | undefined;
+    try {
+      await controller.start();
+      const attachId = crypto.randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: attachId,
+        command: {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        },
+      });
+      const attached = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === attachId,
+      );
+      if (attached?.type !== "cdp.result") throw new Error("Agent attachment never completed.");
+      const { sessionId } = attached.result as { sessionId: string };
+      page.cdpSession.responses.set(
+        "Input.dispatchMouseEvent",
+        async (parameters: Record<string, unknown> | undefined) => {
+          if (parameters?.type === "mouseReleased") {
+            entered.resolve();
+            await release.promise;
+          }
+          return {};
+        },
+      );
+      await controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mousePressed", button: "left", buttons: 1, x: 30, y: 40 },
+        },
+      });
+      pending = controller.handle({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: {
+          method: "Input.dispatchMouseEvent",
+          sessionId,
+          parameters: { type: "mouseReleased", button: "left", buttons: 0, x: 30, y: 40 },
+        },
+      });
+      await entered.promise;
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Delete?", type: "confirm" });
+      const detachId = crypto.randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: detachId,
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        }),
+        1000,
+        { timeoutError: () => new Error("Detach waited behind dialog-held mouseReleased.") },
+      );
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "cdp.result", requestId: detachId }),
+      );
+      expect(cdpRouter.attachedTargetId(validClaims().sessionId, sessionId)).toBeNull();
+    } finally {
+      release.resolve();
+      await pending;
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("does not emit browser.error when a closing tab notifies its capture listener while streaming", async () => {
+    const second = new FakePage();
+    const listeners = new Set<() => void>();
+    let capture: { width: number; height: number; rasterScale: number; revision: number } | null = {
+      width: 1280,
+      height: 720,
+      rasterScale: 1,
+      revision: 1,
+    };
+    Object.assign(second, {
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      applyGeometry: async () => undefined,
+    });
+    const originalClose = second.close.bind(second);
+    second.close = async () => {
+      // Simulate Electron's terminal close clearing capture and notifying listeners
+      // before the renderer's close confirmation arrives.
+      capture = null;
+      for (const listener of listeners) listener();
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      await originalClose();
+    };
+    const controller = createController();
+    try {
+      await controller.start();
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(second);
+        return second;
+      });
+      await controller.handle({ type: "surface.open", url: "https://example.test/closing" });
+      await vi.waitFor(() => expect(ledger.snapshot()).toHaveLength(2));
+      const secondId = ledger.surfaceIdForTarget(await second.targetId())!;
+      expect(secondId).toBeDefined();
+      await controller.handle({ type: "surface.activate", surfaceId: secondId });
+      await controller.handle({ type: "stream.subscribe" });
+      await vi.waitFor(() => expect(command("Page.startScreencast", second)).toBeDefined());
+      await controller.handle({ type: "surface.close", surfaceId: secondId });
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("keeps a script detach pending while input cleanup is blocked by a dialog", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();
