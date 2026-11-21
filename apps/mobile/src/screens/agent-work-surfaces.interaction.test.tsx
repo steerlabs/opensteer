@@ -1,12 +1,6 @@
 // @vitest-environment happy-dom
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
-import {
-  mutationIdempotencyKey,
-  requestDecision,
-  taskList,
-  type PlaceAgents,
-  type TaskRow,
-} from "@opensteer/client/host";
+import { taskList, type PlaceAgents, type TaskRow } from "@opensteer/client/host";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -196,15 +190,6 @@ describe("a tab a connected agent uses, on the phone", () => {
   it("says both of you on a tab the person shares", async () => {
     const client = seeded();
     const threadId = idOf(client, "Buy the phone case");
-    const request = client
-      .getSnapshot()
-      .waitingRequests.find((entry) => entry.request.originatingThreadId === threadId)!.request;
-    await client.dispatch({
-      type: "request.respond",
-      ...requestDecision(request),
-      response: { kind: "form", answers: { "operation-decision": ["deny"] } },
-      idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
-    });
     const page = await render(
       <Status
         agents={agentsOf(threadId, "Buy the phone case")}
@@ -228,7 +213,9 @@ describe("a tab a connected agent uses, on the phone", () => {
         tabId="mock-tab-1-0"
       />,
     );
-    expect(page.textContent).toContain("Claude needs you");
+    expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
+    // Answer takes Stop's place while the agent waits on the person.
+    expect(page.textContent).not.toContain("Stop Claude");
     await act(async () =>
       [...page.querySelectorAll("button")].find((b) => b.textContent === "Answer")!.click(),
     );

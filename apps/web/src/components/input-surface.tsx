@@ -5,7 +5,8 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
-import { useCompactionOffer, useRequestAsker } from "@opensteer/client/react";
+import { useCompactionOffer, useRequestAsker, useThreadAgentTab } from "@opensteer/client/react";
+import { workWords } from "@opensteer/client/host";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
@@ -466,6 +467,7 @@ export function RequestStack({
         ) : pager ? (
           <div className="request-card__by">{pager}</div>
         ) : null}
+        <RequestPageLink request={open.surface.request} />
         <DeviceGrantDock value={threadId}>
           <DockedRequestPanel
             composer={composer}
@@ -477,6 +479,43 @@ export function RequestStack({
         </DeviceGrantDock>
       </div>
     </div>
+  );
+}
+
+/** A question or a sign-in, which is answered in a page: its page is one click away. */
+function aboutAPage(request: Request): boolean {
+  return (
+    isQuestionRequest(request) ||
+    request.payload.kind === "browser.sign-in" ||
+    request.payload.kind === "browser.password-sign-in"
+  );
+}
+
+/**
+ * "Open the page": the page tab the asking task is working in, for a Request that is
+ * answered there, such as signing in to a site. Nothing while that page is already shown.
+ */
+function RequestPageLink({ request }: { readonly request: Request }) {
+  const { hostClient } = useShell();
+  const workspace = useOptionalWorkspace();
+  const page = useThreadAgentTab(
+    hostClient,
+    aboutAPage(request) ? request.originatingThreadId : null,
+  );
+  const shown =
+    workspace?.selection.kind === "place" &&
+    workspace.selection.destination.kind === "tab" &&
+    workspace.selection.destination.tabId === page?.tabId;
+  if (!workspace || !page || shown) return null;
+  return (
+    <button
+      className="btn btn--small request-card__page"
+      onClick={() => workspace.nav.showPlace({ kind: "tab", tabId: page.tabId })}
+      type="button"
+    >
+      <Icon name="globe" />
+      {workWords("ask.openPage")}
+    </button>
   );
 }
 

@@ -315,7 +315,6 @@ function SessionStatusRow(props: {
   readonly session: NonNullable<ReturnType<typeof placeSessionLine>>;
 }): ReactNode {
   const { session } = props;
-  const needsYou = props.onAnswer !== null;
   return (
     <View style={styles.row} testID="place-status">
       <View accessibilityLiveRegion="polite" accessible style={styles.said}>
@@ -327,16 +326,16 @@ function SessionStatusRow(props: {
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
-          role={needsYou ? "secondaryMedium" : "secondary"}
-          style={[styles.words, needsYou && styles.needsYou]}
+          role="secondary"
+          style={styles.words}
           tone={props.onStop === null ? "muted" : "soft"}
         >
-          {needsYou ? workWords("tab.needsYou", { agent: session.agent.name }) : session.line}
+          {session.line}
         </AppText>
       </View>
       {props.onAnswer !== null ? (
         <AnswerPill
-          accessibilityHint="Returns to the task, where you answer it"
+          accessibilityHint={`${workWords("tab.needsYou", { agent: session.agent.name })}. Returns to the task, where you answer it`}
           label={workWords("tab.answer")}
           onPress={props.onAnswer}
           tone="primary"
