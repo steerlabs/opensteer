@@ -5,7 +5,7 @@ import {
   type BrowserPoolControl,
   type BrowserPoolRuntimeFence,
 } from "./browser-pool.js";
-import { BrowserRuntime } from "./runtime.js";
+import { BrowserRuntime, pooledSessionWithoutChannelMs } from "./runtime.js";
 import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import {
   FakeContext,
@@ -452,5 +452,54 @@ it("thaws without detaching when the frozen probe finds blockers", async () => {
     expect(f.page.isClosed()).toBe(false);
   } finally {
     await f.runtime.shutdown();
+  }
+});
+
+it("keeps a pooled session without a channel for its whole window, and ends it with its pages after", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = await fixture();
+  try {
+    await f.install();
+    const attachment = await f.open();
+    // The Runner's channel is lost; the Home is away for longer than the old 20 seconds.
+    await attachment.close(false, false, true);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.page.isClosed()).toBe(false);
+    await vi.advanceTimersByTimeAsync(pooledSessionWithoutChannelMs - 30_000 - 1_000);
+    expect(f.page.isClosed()).toBe(false);
+    // Past the window, the session ends and its pages close in the guest.
+    await vi.advanceTimersByTimeAsync(2_000);
+    for (let turn = 0; turn < 20 && !f.page.isClosed(); turn++)
+      await vi.advanceTimersByTimeAsync(100);
+    expect(f.page.isClosed()).toBe(true);
+  } finally {
+    vi.useRealTimers();
+    await f.runtime.shutdown();
+  }
+});
+
+it("ends an ordinary runtime's session with its channel, with no window", async () => {
+  const page = new FakePage();
+  const verifier = new FakeTicketVerifier();
+  const runtime = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+    runtimeId: "runtime_ordinary",
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+  });
+  try {
+    verifier.setClaims(
+      "open",
+      freshClaims({ actor: "person", creationOrigin: "person", tabRestoreVersion: 1 }),
+    );
+    const attachment = await runtime.attach("open", new FakeSink());
+    await attachment.handle(
+      JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+    );
+    expect(page.isClosed()).toBe(false);
+    await attachment.close(false, false, true);
+    await vi.waitFor(() => expect(page.isClosed()).toBe(true));
+  } finally {
+    await runtime.shutdown();
   }
 });

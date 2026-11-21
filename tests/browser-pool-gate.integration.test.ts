@@ -604,6 +604,46 @@ it("keeps a running browser's sessions through a Home crash and reattaches them"
   }
 });
 
+for (const away of ["within", "past"] as const)
+  it(`${away === "within" ? "brings a Home away longer than 20 seconds back to the same documents, inside the window" : "ends the sessions of a Home away longer than the window with their notes"}`, async () => {
+    const j = await journey(`away-${away}`);
+    // Time flows, and jumps: the clock (Date.now and new Date alike) is moved, never a timer.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    try {
+      const home = await j.startHome();
+      const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("away"));
+      const page = await j.draft();
+      const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+      // The Home dies for an update while its Runner is away too, and starts again.
+      j.runnerDown();
+      const next = await j.crashHome(home);
+      await until(() => expect(next.coordinator.gate.phase).toBe("reconnecting"));
+      vi.setSystemTime(Date.now() + (away === "within" ? 30_000 : 11 * 60_000));
+      j.runnerUp();
+      await until(() => expect(next.coordinator.gate.phase).toBe("open"));
+      if (away === "within") {
+        expect((await j.row(sessionId))?.state).toBe("ready");
+        expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
+          original,
+        );
+        expect(page.page.isClosed()).toBe(false);
+        expect(await page.value()).toBe('["unsent draft",99]');
+        expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+        // The reconnect is over: nothing of it holds the next sleep off.
+        expect(await next.coordinator.tryPark()).toBe("parked");
+      } else {
+        expect((await j.row(sessionId))?.state).toBe("failed");
+        expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject(
+          [{ sessionId, surfaceId: tabId, reason: "not-adopted" }],
+        );
+      }
+    } finally {
+      vi.useRealTimers();
+      j.runnerUp();
+      await j.close();
+    }
+  });
+
 it("finishes a removal a Home crash interrupted after the revocation, with the notes", async () => {
   const j = await journey("removal-crash");
   try {

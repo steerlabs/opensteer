@@ -194,8 +194,13 @@ function browserHostKey(claims: BrowserAttachTicketClaims): BrowserPartitionKey 
     : `profile:${claims.identity.binding.profileId}`;
 }
 
-/** How long a pooled session whose Runner channel was lost waits for its Home to come back. */
-export const pooledChannelDeadlineMs = 20_000;
+/**
+ * How long a pooled session without a channel keeps its pages: the runtime keeps them detached
+ * for this long, and the Home tries to reattach them for this long before it ends the session
+ * with its note. Long enough for a Home restarted by an update to come back. An ordinary
+ * runtime has no such window: its session ends with its channel.
+ */
+export const pooledSessionWithoutChannelMs = 10 * 60_000;
 
 export class BrowserAttachment {
   readonly initialPage?: InitialPageReady;
@@ -322,7 +327,7 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.launcher = options.launcher;
     const pool = options.pool;
-    this.poolChannelDeadlineMs = pool?.channelDeadlineMs ?? pooledChannelDeadlineMs;
+    this.poolChannelDeadlineMs = pool?.channelDeadlineMs ?? pooledSessionWithoutChannelMs;
     if (pool) {
       this.pool = new BrowserPoolRuntimeControl(
         pool.controllerKey,

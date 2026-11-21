@@ -31,7 +31,7 @@ import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { pooledChannelDeadlineMs } from "@opensteer/browser-runtime-core";
+import { pooledSessionWithoutChannelMs } from "@opensteer/browser-runtime-core";
 import {
   BrowserPoolControllerJournal,
   expectationOf,
@@ -429,7 +429,8 @@ export class BrowserPoolCoordinator {
     if (withoutChannel.length)
       return {
         name: "reconnect",
-        deadlineMs: this.#channelDeadlineMs,
+        // One attempt is a step like any other; the sessions' window decides when they end.
+        deadlineMs: Math.min(this.#channelDeadlineMs, defaultStepMs),
         run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
       };
     if (slot.phase === "parked" && this.gate.demand)
@@ -475,7 +476,7 @@ export class BrowserPoolCoordinator {
   }
 
   get #channelDeadlineMs(): number {
-    return this.#options.channelDeadlineMs ?? pooledChannelDeadlineMs;
+    return this.#options.channelDeadlineMs ?? pooledSessionWithoutChannelMs;
   }
 
   /** Ready sessions of this runtime with no channel here; each one's window starts when seen. */
