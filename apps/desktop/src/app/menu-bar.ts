@@ -196,10 +196,19 @@ export class DesktopMenuBar {
     const before = this.#refreshGeneration;
     popover.show();
     popover.focus();
+    if (popover.isDestroyed()) return;
     if (this.#refreshGeneration === before) {
       this.#pushStatus();
       void this.#options.service.refresh().catch(() => undefined);
     }
+    if (popover.isVisible()) this.#startRefreshing();
+  }
+
+  #startRefreshing(): void {
+    this.#refreshTimer ??= setInterval(() => {
+      void this.#options.service.refresh().catch(() => undefined);
+    }, 15_000);
+    this.#refreshTimer.unref();
   }
 
   #stopRefreshing(): void {
@@ -254,10 +263,7 @@ export class DesktopMenuBar {
       if (!popover.isVisible()) return;
       this.#refreshGeneration += 1;
       void this.#options.service.refresh().catch(() => undefined);
-      this.#refreshTimer ??= setInterval(() => {
-        void this.#options.service.refresh().catch(() => undefined);
-      }, 15_000);
-      this.#refreshTimer.unref();
+      this.#startRefreshing();
     });
     popover.on("blur", () => {
       if (!popover.isDestroyed() && !popover.webContents.isDevToolsOpened()) popover.hide();
