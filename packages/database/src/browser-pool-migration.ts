@@ -68,7 +68,8 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       slot_id text not null,
       term integer not null,
       instance_id uuid not null,
-      epoch integer not null
+      epoch integer not null,
+      created_at timestamptz not null default now()
     )
   `.execute(database);
 }

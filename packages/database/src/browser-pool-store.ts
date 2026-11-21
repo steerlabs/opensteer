@@ -50,6 +50,10 @@ export class BrowserPoolAdmissionClosed extends OpensteerError {
 
 /** A pending pooled tab open older than every open deadline no longer vetoes D. */
 export const browserPoolTabOpenDeadlineMs = 30_000;
+/** A relay command older than every agent request deadline no longer vetoes D. */
+export const browserPoolRelayDeadlineMs = 60_000;
+/** How long finished controller calls and seen loss notes are kept. */
+export const browserPoolRetentionMs = 7 * 24 * 60 * 60_000;
 
 /** Pooled variants call this after the deployment fence and before locking any child. */
 export async function requireBrowserPoolAdmission(
@@ -174,11 +178,14 @@ export async function beginBrowserPoolPark(
         select 1 from browser_profile_deletions
         where runner_id = ${runnerId} and state <> 'deleted'
         union all
+        -- A relay whose reply was lost vetoes until the relay deadline: by then the runtime's
+        -- own command drain decides, and the retire vetoes anything still in flight.
         select 1 from browser_pool_relays relay
         where (relay.runner_id, relay.runtime_id, relay.slot_id, relay.term,
                relay.instance_id, relay.epoch) =
               (${runnerId}, ${runtimeId}, ${target.slotId}, ${target.term},
                ${target.instanceId}::uuid, ${target.epoch})
+          and relay.created_at > now() - make_interval(secs => ${browserPoolRelayDeadlineMs / 1000})
         union all
         -- Only an executor that has not returned vetoes; a settled unknown is settled.
         select 1 from agent_operations operation
@@ -371,12 +378,43 @@ export async function readAppliedBrowserPoolControllerCall(
     .executeTakeFirst();
 }
 
+/** The persistent tab lineage of a session: person use is keyed by it, not by the session. */
+export async function readBrowserPoolSessionLineage(
+  database: Kysely<DatabaseSchema>,
+  sessionId: BrowserSessionId,
+): Promise<BrowserSessionId | undefined> {
+  const row = await database
+    .selectFrom("browserSessions")
+    .select("tabGroupId")
+    .where("id", "=", sessionId)
+    .executeTakeFirst();
+  return row?.tabGroupId;
+}
+
 /** A pooled browser belongs to a personal Home, so its sessions have its one owner. */
 export async function readBrowserPoolOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | undefined> {
   const row = await database.selectFrom("personalSettings").select("ownerId").executeTakeFirst();
   return (row?.ownerId ?? undefined) as UserId | undefined;
+}
+
+/** The Home's own open tab rows of these sessions: what a lost session's notes attach to. */
+export async function listBrowserPoolSessionTabs(
+  database: Kysely<DatabaseSchema>,
+  sessionIds: readonly BrowserSessionId[],
+): Promise<ReadonlyMap<BrowserSessionId, readonly string[]>> {
+  const tabs = new Map<BrowserSessionId, string[]>();
+  if (!sessionIds.length) return tabs;
+  const rows = await database
+    .selectFrom("personalTabs")
+    .select(["id", sql<BrowserSessionId>`page_binding->>'sessionId'`.as("sessionId")])
+    .where(sql<string>`page_binding->>'sessionId'`, "in", [...sessionIds])
+    .where("closedAt", "is", null)
+    .orderBy("id")
+    .execute();
+  for (const { id, sessionId } of rows) tabs.set(sessionId, [...(tabs.get(sessionId) ?? []), id]);
+  return tabs;
 }
 
 /** Every session of a pooled runtime that is not yet terminal. */
@@ -396,14 +434,6 @@ export async function listBrowserPoolRuntimeSessions(
   return rows.map(({ id }) => id);
 }
 
-export function readBrowserPoolControllerCall(database: Kysely<DatabaseSchema>, id: string) {
-  return database
-    .selectFrom("browserPoolControllerCalls")
-    .selectAll()
-    .where("id", "=", id)
-    .executeTakeFirst();
-}
-
 export function listBrowserPoolDocumentLosses(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
@@ -418,21 +448,69 @@ export function listBrowserPoolDocumentLosses(
     .execute();
 }
 
-/** The person sees a loss once: the first activation that shows it marks it seen. */
-export async function consumeBrowserPoolDocumentLoss(
+/**
+ * The person sees a loss once. A notice stays until the client says it showed it (by its id);
+ * a reply lost on the way is answered with the same notice again.
+ */
+export async function nextBrowserPoolDocumentLoss(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
   surfaceId: BrowserSurfaceId,
-): Promise<boolean> {
-  const seen = await database
-    .updateTable("browserPoolDocumentLosses")
-    .set({ noticedAt: new Date() })
+  seen?: string,
+): Promise<{ readonly id: string; readonly reason: string } | undefined> {
+  if (seen)
+    await database
+      .updateTable("browserPoolDocumentLosses")
+      .set({ noticedAt: new Date() })
+      .where("ownerId", "=", ownerId)
+      .where("surfaceId", "=", surfaceId)
+      .where(sql<string>`intent_id::text`, "=", seen)
+      .where("noticedAt", "is", null)
+      .execute();
+  const row = await database
+    .selectFrom("browserPoolDocumentLosses")
+    .select(["intentId", "reason"])
     .where("ownerId", "=", ownerId)
     .where("surfaceId", "=", surfaceId)
     .where("noticedAt", "is", null)
-    .returning("intentId")
+    .orderBy("lostAt")
+    .executeTakeFirst();
+  return row ? { id: row.intentId, reason: row.reason } : undefined;
+}
+
+/**
+ * Pool code cleans up its own bookkeeping: finished calls of earlier intents, relays of other
+ * fences or past their deadline, and loss notes the person has seen, after the retention.
+ */
+export async function pruneBrowserPoolBookkeeping(
+  database: Kysely<DatabaseSchema>,
+  slot: BrowserPoolSlot,
+): Promise<void> {
+  const before = new Date(Date.now() - browserPoolRetentionMs);
+  let calls = database
+    .deleteFrom("browserPoolControllerCalls")
+    .where("runnerId", "=", slot.runnerId)
+    .where("settledAt", "is not", null)
+    .where("settledAt", "<", before);
+  if (slot.intentId) calls = calls.where("intentId", "is distinct from", slot.intentId);
+  await calls.execute();
+  await database
+    .deleteFrom("browserPoolRelays")
+    .where("runnerId", "=", slot.runnerId)
+    .where((eb) =>
+      eb.or([
+        eb("instanceId", "!=", slot.instanceId),
+        eb("epoch", "!=", slot.epoch),
+        eb("term", "!=", slot.term),
+        eb(sql<Date>`created_at`, "<", new Date(Date.now() - browserPoolRelayDeadlineMs)),
+      ]),
+    )
     .execute();
-  return seen.length > 0;
+  await database
+    .deleteFrom("browserPoolDocumentLosses")
+    .where("runnerId", "=", slot.runnerId)
+    .where("noticedAt", "<", before)
+    .execute();
 }
 
 export async function openBrowserPoolRelay(

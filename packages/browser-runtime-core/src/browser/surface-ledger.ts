@@ -365,10 +365,13 @@ export class SurfaceLedger {
   private sequence = 0;
   private started = false;
   private readonly viewportMutex = new AsyncMutex();
+  private poolDrop: (() => void) | undefined;
   private readonly onPage = (page: BrowserPage) => {
     if (this.tearingDown) {
-      if (this.pages.sessionOf(page) === this.session && !this.pageIds.has(page))
+      if (this.pages.sessionOf(page) === this.session && !this.pageIds.has(page)) {
+        this.poolDrop?.();
         this.pages.destroy(page, "session-ended");
+      }
       return;
     }
     this.discoveries++;
@@ -1431,9 +1434,10 @@ export class SurfaceLedger {
     } else await ended.catch(() => undefined);
   }
 
-  /** A pooled park keeps every page; a page this session opens meanwhile is ended. */
-  suspendForPool(): void {
+  /** A pooled park keeps every page; a page this session opens meanwhile is ended and reported. */
+  suspendForPool(onDrop: () => void): void {
     this.tearingDown = true;
+    this.poolDrop = onDrop;
   }
 
   async suspendForRelayRestart(): Promise<void> {
@@ -1452,6 +1456,7 @@ export class SurfaceLedger {
 
   resumeAfterRelayRestart(): string[] {
     this.tearingDown = false;
+    this.poolDrop = undefined;
     return [...this.records.values()]
       .filter(isLive)
       .flatMap(({ live }) => (live.page.isClosed() ? [] : [live.targetId]));

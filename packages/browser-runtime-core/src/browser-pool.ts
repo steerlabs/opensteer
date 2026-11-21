@@ -32,6 +32,10 @@ export interface BrowserPoolControl {
   readonly intent?: BrowserPoolIntent;
   /** `complete`: the Home's adoption attempt; no older attempt can complete it. */
   readonly attempt?: number;
+  /** Issued by the controller, growing within the slot: an applied control never applies again. */
+  readonly sequence: number;
+  /** The fence this control expects the runtime to hold now; null only for a first install. */
+  readonly expect: BrowserPoolRuntimeFence | null;
 }
 
 export interface BrowserPoolDocument {
@@ -69,6 +73,8 @@ export interface BrowserPoolRuntimeState {
   readonly cancelled: boolean;
   readonly retired: BrowserPoolRetirement | null;
   readonly blockers: readonly string[];
+  /** Pages ended while sessions were suspended for this park: the park must not commit. */
+  readonly dropped?: number;
   readonly adoption: {
     readonly cause: "resume" | "release";
     readonly until: number;
@@ -91,6 +97,8 @@ export interface BrowserPoolRuntimeHooks {
   highestAttempt(sessions: readonly BrowserSessionId[]): number;
   /** Sessions a retire detached from their channel, even one that then failed. */
   detached(): readonly BrowserSessionId[];
+  /** Pages a suspended session opened and that were ended, since the last retire began. */
+  dropped(): number;
 }
 
 export function browserPoolControlBytes(control: BrowserPoolControl): Buffer {
@@ -106,6 +114,10 @@ export function browserPoolControlBytes(control: BrowserPoolControl): Buffer {
       intent?.sequence ?? null,
       intent?.id ?? null,
       control.attempt ?? null,
+      control.sequence,
+      control.expect
+        ? [control.expect.slot, control.expect.term, control.expect.instance, control.expect.epoch]
+        : null,
     ]),
   );
 }
@@ -146,6 +158,7 @@ export class BrowserPoolRuntimeControl {
     adoption: null,
   };
   private expiry: ReturnType<typeof setTimeout> | undefined;
+  private high: { readonly term: number; readonly sequence: number } | null = null;
 
   constructor(key: KeyObject, hooks: BrowserPoolRuntimeHooks, windowMs = 30_000) {
     if (key.type !== "public" || key.asymmetricKeyType !== "ed25519")
@@ -156,7 +169,7 @@ export class BrowserPoolRuntimeControl {
   }
 
   state(): BrowserPoolRuntimeState {
-    return structuredClone(this.current);
+    return { ...structuredClone(this.current), dropped: this.hooks.dropped() };
   }
 
   get acceptsTraffic(): boolean {
@@ -191,13 +204,24 @@ export class BrowserPoolRuntimeControl {
   private async transition(request: BrowserPoolControl): Promise<BrowserPoolRuntimeState> {
     const current = this.current;
     const { kind, fence, intent } = request;
+    // Ordered by (term, sequence): a control already applied, or an older one, never applies.
+    const high = this.high;
+    if (
+      !Number.isSafeInteger(request.sequence) ||
+      request.sequence < 1 ||
+      (high &&
+        (fence.term < high.term || (fence.term === high.term && request.sequence <= high.sequence)))
+    )
+      throw new BrowserRuntimeError("conflict", "The browser pool control was superseded.");
+    // A control names the fence it replaces: the current one, or none before the first install.
+    if (
+      request.expect === null ? current.fence !== null : !sameFence(current.fence, request.expect)
+    )
+      throw new BrowserRuntimeError("conflict", "The browser pool fence is not the expected one.");
+    this.high = { term: fence.term, sequence: request.sequence };
     if (kind === "install") {
       if (sameFence(current.fence, fence)) return this.state();
-      const fresh =
-        !current.fence ||
-        current.fence.slot !== fence.slot ||
-        current.fence.instance !== fence.instance;
-      if (!fresh || (current.fence && fence.term < current.fence.term))
+      if (current.fence && (fence.slot !== current.fence.slot || fence.term < current.fence.term))
         throw new BrowserRuntimeError("conflict", "The browser pool fence moved backwards.");
       // A fresh instance is a newly started guest: discard every live page first.
       if (current.fence) await this.hooks.discard();
@@ -351,17 +375,8 @@ export class BrowserPoolRuntimeControl {
   private async finish(attempt: number | null, reason: string): Promise<void> {
     this.stopExpiry();
     const adoption = this.current.adoption!;
-    let outcome: BrowserPoolAdoptionOutcome;
-    try {
-      outcome = await this.hooks.finishAdoption(adoption.sessions, attempt, reason);
-    } catch {
-      // Ending the pages could not be confirmed: the guest's live state is discarded instead.
-      await this.hooks.discard().catch(() => undefined);
-      outcome = {
-        adopted: [],
-        lost: adoption.sessions.map((sessionId) => ({ sessionId, reason: "discarded" })),
-      };
-    }
+    // Each session's outcome is its own; ending one lost session never touches another.
+    const outcome = await this.hooks.finishAdoption(adoption.sessions, attempt, reason);
     this.write({ phase: "running", adoption: { ...adoption, outcome } });
   }
 

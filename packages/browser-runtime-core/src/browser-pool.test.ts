@@ -42,6 +42,14 @@ async function fixture(
   });
   const signed = (control: BrowserPoolControl) =>
     runtime.controlPool(control, sign(null, browserPoolControlBytes(control), keys.privateKey));
+  // Stands in for the controller: it numbers its controls and names the fence each replaces.
+  let sequence = 0;
+  let held: BrowserPoolRuntimeFence | null = null;
+  const issue = (control: Omit<BrowserPoolControl, "sequence" | "expect">) => {
+    const full = { ...control, sequence: ++sequence, expect: held } as BrowserPoolControl;
+    if (control.kind === "install" || control.kind === "adopt") held = control.fence;
+    return { control: full, apply: () => signed(full) };
+  };
   let fence: BrowserPoolRuntimeFence = {
     slot: "slot",
     term: 1,
@@ -60,20 +68,24 @@ async function fixture(
       ...(reattach ? { reattach: true, initialNavigation: undefined } : {}),
       pool: { ...fence, attachment },
     });
-  const controls = (kind: BrowserPoolControl["kind"], sequence = 1, attempt?: number) =>
-    signed({
+  const controls = (kind: BrowserPoolControl["kind"], intentSequence = 1, attempt?: number) =>
+    issue({
       kind,
       fence,
-      intent: { id: `intent-${sequence}`, sequence },
+      intent: { id: `intent-${intentSequence}`, sequence: intentSequence },
       ...(attempt ? { attempt } : {}),
-    });
+    }).apply();
   const install = (next = fence) => {
     fence = next;
-    return signed({ kind: "install", fence });
+    return issue({ kind: "install", fence }).apply();
   };
-  const resume = (sequence = 1) => {
+  const resume = (intentSequence = 1) => {
     fence = { ...fence, epoch: fence.epoch + 1 };
-    return signed({ kind: "adopt", fence, intent: { id: `intent-${sequence}`, sequence } });
+    return issue({
+      kind: "adopt",
+      fence,
+      intent: { id: `intent-${intentSequence}`, sequence: intentSequence },
+    }).apply();
   };
   const state = () =>
     JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] });
@@ -98,6 +110,7 @@ async function fixture(
     open,
     reattach,
     signed,
+    issue,
     keys,
     fence: () => fence,
   };
@@ -108,17 +121,32 @@ it("refuses every send until the controller installs a fence, and refuses a fenc
   try {
     expect(f.runtime.poolState()).toMatchObject({ phase: "uninstalled", fence: null });
     await expect(f.open()).rejects.toThrow("parked");
-    const install = { kind: "install", fence: f.fence() } as const;
+    const install = { kind: "install", fence: f.fence(), sequence: 1, expect: null } as const;
     await expect(f.runtime.controlPool(install, Buffer.alloc(64))).rejects.toThrow(
       "not authorized",
     );
-    await f.install();
-    await expect(f.install()).resolves.toMatchObject({ phase: "running" });
+    const first = f.issue({ kind: "install", fence: f.fence() });
+    await first.apply();
     await f.open();
-    await expect(f.install({ ...f.fence(), term: 0, instance: randomUUID() })).rejects.toThrow(
-      "moved backwards",
-    );
-    expect(f.page.isClosed()).toBe(false);
+    // The same signed install, applied again, and an older one, are refused.
+    await expect(f.signed(first.control)).rejects.toThrow("superseded");
+    // Two starts in the same term: the older install can never replace the newer instance.
+    const older = f.issue({ kind: "install", fence: { ...f.fence(), instance: randomUUID() } });
+    await older.apply();
+    const newer = { ...f.fence(), instance: randomUUID() };
+    await f.issue({ kind: "install", fence: newer }).apply();
+    expect(f.runtime.poolState()?.fence).toEqual(newer);
+    await expect(f.signed(older.control)).rejects.toThrow("superseded");
+    // An install that does not name the current fence is refused even with a higher sequence.
+    const stray = f.issue({ kind: "install", fence: { ...newer, instance: randomUUID() } });
+    await expect(
+      f.signed({
+        ...stray.control,
+        sequence: stray.control.sequence + 5,
+        expect: first.control.fence,
+      }),
+    ).rejects.toThrow("not the expected one");
+    expect(f.runtime.poolState()?.fence).toEqual(newer);
   } finally {
     await f.runtime.shutdown();
   }

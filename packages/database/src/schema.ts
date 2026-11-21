@@ -2432,6 +2432,7 @@ export interface DatabaseSchema {
     term: number;
     instanceId: string;
     epoch: number;
+    createdAt: Generated<Timestamp>;
   };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;

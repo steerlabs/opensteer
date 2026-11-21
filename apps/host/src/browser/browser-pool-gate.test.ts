@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { OpensteerError } from "@opensteer/core";
+import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 import { BrowserPoolGate } from "./browser-pool-gate.js";
 
 function gate() {
@@ -18,7 +20,8 @@ function gate() {
       checked.resolve(vetoed);
       if (vetoed) return "vetoed";
       await commit.promise;
-      return "parked";
+      // After the commit the driver asks again: a send during the commit still vetoes.
+      return subject.committed() ? "parked" : "vetoed";
     },
     wake: async () => {
       wakes++;
@@ -63,29 +66,57 @@ it("vetoes a park for a background send queued before the intent check, and neve
   await Promise.resolve();
   expect(g.subject.phase).toBe("parked");
   expect(g.wakes()).toBe(0);
-  waiting.abort(new Error("Ended"));
+  waiting.abort(new OpensteerError({ code: "conflict", message: "Ended" }));
   await expect(background).rejects.toThrow("Ended");
 });
 
-it("makes a send that arrives while the intent is being written wait for one wake", async () => {
+it("vetoes a park for a send that arrives while the intent is being committed", async () => {
   const g = gate();
   const parking = g.subject.tryPark();
   await g.inD.promise;
   g.beforeCheck.resolve();
   expect(await g.checked.promise).toBe(false);
-  expect(g.subject.phase).toBe("parking");
+  // The intent is written but not committed: the gate is still before D.
+  expect(g.subject.phase).toBe("preparing");
+  const send = g.subject.reserve(new AbortController().signal);
+  g.commit.resolve();
+  expect(await parking).toBe("vetoed");
+  (await send).release();
+  expect(g.wakes()).toBe(0);
+});
+
+it("makes a send after the commit wait for one wake, and Stop while waiting dispatches nothing", async () => {
+  const g = gate();
+  g.beforeCheck.resolve();
+  const parking = g.subject.tryPark();
+  await g.inD.promise;
+  expect(await g.checked.promise).toBe(false);
+  g.commit.resolve();
+  expect(await parking).toBe("parked");
   const stop = new AbortController();
   let dispatched = 0;
   const cancelled = g.subject.reserve(stop.signal).then(() => dispatched++);
   const first = g.subject.reserve(new AbortController().signal);
   const second = g.subject.reserve(new AbortController().signal);
-  stop.abort(new Error("Stopped"));
+  stop.abort(new OpensteerError({ code: "conflict", message: "Stopped" }));
   await expect(cancelled).rejects.toThrow("Stopped");
-  g.commit.resolve();
-  expect(await parking).toBe("parked");
   await vi.waitFor(() => expect(g.subject.phase).toBe("waking"));
   g.wake.resolve();
   (await first).release();
   (await second).release();
   expect([g.wakes(), dispatched]).toEqual([1, 0]);
+});
+
+it("answers a wake that runs out of time with a refusal before any effect", async () => {
+  const g = gate();
+  g.beforeCheck.resolve();
+  g.commit.resolve();
+  expect(await g.subject.tryPark()).toBe("parked");
+  const refused = await g.subject.reserve(AbortSignal.timeout(10)).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
+  expect(refused).toBeInstanceOf(OpensteerError);
+  g.wake.resolve();
 });

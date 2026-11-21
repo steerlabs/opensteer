@@ -285,6 +285,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly pool: BrowserPoolRuntimeControl | undefined;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
+  /** Pages a session opened while it was suspended for the pool, and that were ended. */
+  private poolDrops = 0;
 
   constructor(options: BrowserRuntimeOptions) {
     this.initialViewport = options.initialViewport ?? {
@@ -454,6 +456,7 @@ export class BrowserRuntime implements NativePresentationSource {
       discard: () => this.discardForPool(),
       highestAttempt: (sessions) =>
         Math.max(0, ...sessions.map((id) => this.sessions.get(id)?.poolAttachment ?? 0)),
+      dropped: () => this.poolDrops,
       detached: () =>
         [...this.sessions.values()]
           .filter((session) => session.poolDetached)
@@ -462,6 +465,7 @@ export class BrowserRuntime implements NativePresentationSource {
   }
 
   private async retireForPool(options: BrowserPoolRuntimeOptions) {
+    this.poolDrops = 0;
     try {
       await withTimeout(
         (async () => {
@@ -567,7 +571,7 @@ export class BrowserRuntime implements NativePresentationSource {
     );
     for (const session of sessions) {
       session.poolDetached = true;
-      session.ledger.suspendForPool();
+      session.ledger.suspendForPool(() => this.poolDrops++);
       await session.host.router.unregisterSession(session.sessionId, true);
       await session.controller.detachForPool();
     }
@@ -582,7 +586,8 @@ export class BrowserRuntime implements NativePresentationSource {
 
   private async thawPoolPages(): Promise<void> {
     for (const [id, live] of this.frozenPages) {
-      if (!live.page.isClosed()) await this.setPoolLifecycle(live, "active");
+      // A page that cannot be thawed stays a page of its session; the others still thaw.
+      if (!live.page.isClosed()) await this.setPoolLifecycle(live, "active").catch(() => undefined);
       this.frozenPages.delete(id);
     }
   }
@@ -606,8 +611,14 @@ export class BrowserRuntime implements NativePresentationSource {
         adopted.push(sessionId);
         continue;
       }
-      lost.push({ sessionId, reason });
-      if (session) await this.endPooledSession(session);
+      // Ending one lost session is that session's alone: a failure cannot touch the adopted.
+      const ended = session
+        ? await this.endPooledSession(session).then(
+            () => true,
+            () => false,
+          )
+        : true;
+      lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
     }
     await this.thawPoolPages();
     return { adopted, lost };
@@ -1765,7 +1776,7 @@ export class BrowserRuntime implements NativePresentationSource {
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
         // A channel lost during adoption keeps the session for the next attempt or the window.
         active.poolDetached = true;
-        active.ledger.suspendForPool();
+        active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
           () => active.host.router.unregisterSession(sessionId, true),

@@ -34,6 +34,8 @@ import {
   idleAgentSessions,
   readAgentOperation,
   refuseUnsentAgentOperation,
+  refuseUnsentHandedOffAgentOperation,
+  BrowserPoolAdmissionClosed,
   reopenAgentOperation,
   respondToAgentOperation,
   settleAgentOperation,
@@ -863,6 +865,7 @@ export class AgentSessionService {
     ]);
     const base = { taskId, operationId: row.id };
     let outstanding = 0;
+    let submitted = 0;
     const recheck = async () => {
       signal.throwIfAborted();
       const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
@@ -904,6 +907,7 @@ export class AgentSessionService {
                   },
                   submitted: () => {
                     outstanding++;
+                    submitted++;
                   },
                   acknowledged: () => {
                     outstanding--;
@@ -915,6 +919,35 @@ export class AgentSessionService {
       } catch (error) {
         const ended =
           signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
+        // A pooled send refused before any command reached the wire (a cut, a recheck or a
+        // closed gate): nothing happened, so it is refused rather than failed or unknown.
+        if (
+          pooled &&
+          submitted === 0 &&
+          (ended !== null ||
+            error instanceof OperationOutcomeUnknown ||
+            error instanceof BrowserPoolAdmissionClosed)
+        ) {
+          const reason = ended ?? (error instanceof OpensteerError ? error : null);
+          const message =
+            reason?.message ??
+            (error instanceof Error ? error.message : "The browser work ended before it was sent.");
+          if (await refuseUnsentHandedOffAgentOperation(this.#store.database, row.id, message))
+            throw new ToolBlockedError(
+              {
+                code:
+                  reason?.reason === "agent-session-stopped"
+                    ? "stopped_by_person"
+                    : reason?.reason === "authority-changed" ||
+                        error instanceof OperationOutcomeUnknown
+                      ? "access_changed"
+                      : (reason?.code ?? "access_changed"),
+                message,
+                next: interruptedNext,
+              },
+              { ...base, status: "refused" },
+            );
+        }
         const outcome =
           error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
             ? "unknown"

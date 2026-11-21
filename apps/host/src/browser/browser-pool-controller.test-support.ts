@@ -23,6 +23,9 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
   readonly log: string[] = [];
   readonly retentionMs: number;
   #status: BrowserPoolPhysicalStatus;
+  #sequence = 0;
+  /** The fence the controller last installed in its guest; every control names it. */
+  #installed: BrowserPoolControl["fence"] | null = null;
   #now: () => number;
   unreachable = false;
 
@@ -142,7 +145,12 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
           control.fence.epoch !== current.epoch
         )
           return refuse("not-current");
-        result = { id: call.id, applied: true, status: current, ...this.#signed(control) };
+        result = {
+          id: call.id,
+          applied: true,
+          status: current,
+          ...this.#signed({ ...control, expect: this.#installed }),
+        };
         break;
       }
       case "pause": {
@@ -165,12 +173,14 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
           epoch: current.epoch! + 1,
           savedState: null,
         };
-        const control: BrowserPoolControl = {
+        const signed = this.#signed({
           kind: "adopt",
           fence: this.#fence(),
           intent: call.intent,
-        };
-        result = { id: call.id, applied: true, status: this.#status, ...this.#signed(control) };
+          expect: this.#installed,
+        });
+        this.#installed = this.#fence();
+        result = { id: call.id, applied: true, status: this.#status, ...signed };
         break;
       }
       case "stop": {
@@ -187,8 +197,13 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
           epoch: 1,
           savedState: null,
         };
-        const control: BrowserPoolControl = { kind: "install", fence: this.#fence() };
-        result = { id: call.id, applied: true, status: this.#status, ...this.#signed(control) };
+        const signed = this.#signed({
+          kind: "install",
+          fence: this.#fence(),
+          expect: this.#installed,
+        });
+        this.#installed = this.#fence();
+        result = { id: call.id, applied: true, status: this.#status, ...signed };
         break;
       }
     }
@@ -206,7 +221,9 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
     };
   }
 
-  #signed(control: BrowserPoolControl) {
+  /** Numbers each control: an applied one, or an older one, never applies again. */
+  #signed(input: Omit<BrowserPoolControl, "sequence">) {
+    const control: BrowserPoolControl = { ...input, sequence: ++this.#sequence };
     return {
       control,
       signature: sign(null, browserPoolControlBytes(control), this.#privateKey).toString("base64"),

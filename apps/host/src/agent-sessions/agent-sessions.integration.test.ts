@@ -204,7 +204,14 @@ async function setUp(
 }
 
 describeStore("an external agent's direct work through sessions", (it) => {
-  for (const cut of ["Stop", "Disconnect", "grant cut", "task-mode cut", "no cut"] as const) {
+  for (const cut of [
+    "Stop",
+    "Disconnect",
+    "grant cut",
+    "task-mode cut",
+    "no cut",
+    "refused before any send",
+  ] as const) {
     it(`keeps an approved pooled script outside hand-off during wake with ${cut}`, async ({
       storeFixture,
     }) => {
@@ -261,6 +268,11 @@ describeStore("an external agent's direct work through sessions", (it) => {
       });
       s.runBrowserScript.mockImplementation(async ({ browserSend }) => {
         expect(browserSend?.target).toEqual(identity);
+        // The send-side check refuses after hand-off and before any command left the Home.
+        if (cut === "refused before any send")
+          throw new OperationOutcomeUnknown(
+            "The connected agent's access changed during this work.",
+          );
         await browserSend!.recheck();
         browserSend!.submitted();
         browserSend!.acknowledged();
@@ -320,6 +332,18 @@ describeStore("an external agent's direct work through sessions", (it) => {
             });
             await s.sessions.lowerTaskMode(threadId, "approval-required");
             break;
+          case "refused before any send":
+            releaseWake.resolve();
+            expect(await resumed).toMatchObject({
+              structuredContent: { status: "refused", error: { code: "access_changed" } },
+            });
+            expect(await operation()).toMatchObject({
+              state: "refused",
+              outcome: "refused",
+              handedOffAt: expect.any(Date),
+              terminalEvidenceAt: expect.any(Date),
+            });
+            break;
           case "no cut":
             releaseWake.resolve();
             expect(await resumed).toMatchObject({ structuredContent: { status: "completed" } });
@@ -330,7 +354,7 @@ describeStore("an external agent's direct work through sessions", (it) => {
             expect(s.runBrowserScript).toHaveBeenCalledOnce();
             break;
         }
-        if (cut !== "no cut") {
+        if (cut !== "no cut" && cut !== "refused before any send") {
           await reserveCancelled.promise;
           await s.sessions.drain();
           expect(await operation()).toMatchObject({ state: "refused", handedOffAt: null });

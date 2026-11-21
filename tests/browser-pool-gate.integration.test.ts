@@ -9,6 +9,8 @@ import {
   listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
   settleBrowserPoolRelay,
+  browserPoolRelayDeadlineMs,
+  pruneBrowserPoolBookkeeping,
   type BrowserPoolTargetIdentity,
 } from "../packages/database/src/index.js";
 import {
@@ -21,9 +23,11 @@ import {
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
 import { randomUUID } from "node:crypto";
+import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import {
   before,
   dyingAfter,
@@ -152,6 +156,44 @@ it("keeps outstanding Shared Chrome and plugin handoffs outside D", async () => 
         .where("sessionId", "=", session.id)
         .execute(),
     ).toEqual([{ state: "handed-off" }, { state: "handed-off" }]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+it("lets a lost relay reply veto only until the relay deadline, and prunes it then", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("relay-deadline");
+    const target = {
+      runnerId: task.runnerId,
+      runtimeId: "runtime",
+      slotId: "slot",
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    const slot = await installBrowserPoolSlot(fixture.database, target);
+    const relay = await PooledBrowserRelay.open(fixture.database, target, { release: () => {} });
+    relay.submitted();
+    await relay.close();
+    expect(
+      await beginBrowserPoolPark(fixture.database, target, randomUUID(), () => false),
+    ).toBeUndefined();
+    // Past the deadline the runtime's own drain decides; the row no longer vetoes.
+    await fixture.database
+      .updateTable("browserPoolRelays")
+      .set({
+        createdAt: sql`now() - make_interval(secs => ${browserPoolRelayDeadlineMs / 1000 + 1})`,
+      })
+      .execute();
+    await pruneBrowserPoolBookkeeping(fixture.database, slot);
+    expect(await fixture.database.selectFrom("browserPoolRelays").selectAll().execute()).toEqual(
+      [],
+    );
+    expect(
+      await beginBrowserPoolPark(fixture.database, target, randomUUID(), () => false),
+    ).toMatchObject({ phase: "preparing" });
   } finally {
     await fixture.close();
   }
@@ -542,12 +584,20 @@ it("says once that a page could not be kept when the saved state expired, and re
       restored.kind === "page" &&
         home.service.pageInventory(restored.sessionId)?.records.get(tabId)?.documentId,
     ).not.toBe(original);
-    const again = await home.service.pageTabs.activate(
-      j.task.userId,
-      (await j.tabs.get(j.task.userId, tabId))!,
-      "activate-again",
-    );
+    // The reply that carried the notice may not have reached the person: until the client
+    // says it showed it, every activation carries it again.
+    const activate = (key: string, seen?: string) =>
+      j.tabs
+        .get(j.task.userId, tabId)
+        .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key, seen));
+    const retried = await activate("activate-retry");
+    expect(retried).toMatchObject({ recoveryNotice: expect.any(String) });
+    const noticeId = restored.kind === "page" ? restored.recoveryNoticeId : undefined;
+    expect(noticeId).toEqual(expect.any(String));
+    expect(retried.kind === "page" && retried.recoveryNoticeId).toBe(noticeId);
+    const again = await activate("activate-again", noticeId);
     expect(again).not.toHaveProperty("recoveryNotice");
+    expect(await activate("activate-later")).not.toHaveProperty("recoveryNotice");
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, surfaceId: tabId, documentId: original, noticedAt: expect.any(Date) },
     ]);
@@ -731,6 +781,51 @@ it("holds the gate for a live Watch viewer before its first retained-page frame"
     } finally {
       attached.close();
     }
+  } finally {
+    await j.close();
+  }
+});
+
+it("lets a Stop that commits while a saved-profile session reattaches win, and does not adopt it", async () => {
+  const j = await journey("stop-during-reattach", { profile: true });
+  try {
+    let home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const page = await j.draft();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    home = await j.restartHome(home);
+    const current = home;
+    // The adoption looks up the profile's storage; the person's Stop commits right then.
+    const identity = BrowserLocalProfiles.prototype.identity;
+    let stopped = false;
+    const spy = vi
+      .spyOn(BrowserLocalProfiles.prototype, "identity")
+      .mockImplementation(async function (this: BrowserLocalProfiles, ...args) {
+        if (!stopped) {
+          stopped = true;
+          await current.service.stop(j.task.userId, session.id);
+        }
+        return identity.apply(this, args);
+      });
+    try {
+      const watching = j.viewer(home, session.id, "watch");
+      await expect(watching.attaching).rejects.toThrow();
+      await vi.waitFor(async () =>
+        expect(await j.slot()).toMatchObject({
+          phase: "running",
+          outcome: { adopted: [], lost: [{ sessionId: session.id }] },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(stopped).toBe(true);
+    expect((await j.row(session.id))?.state).toBe("closed");
+    // The live browser does not stay behind the closed row.
+    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true));
   } finally {
     await j.close();
   }

@@ -12,6 +12,8 @@ import {
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
   listBrowserPoolRuntimeSessions,
+  listBrowserPoolSessionTabs,
+  pruneBrowserPoolBookkeeping,
   readAppliedBrowserPoolControllerCall,
   readBrowserPoolSlot,
   type BrowserPoolSessionLoss,
@@ -22,6 +24,7 @@ import {
 import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   BrowserPoolControllerJournal,
   expectationOf,
@@ -63,7 +66,15 @@ export interface BrowserPoolCoordinatorOptions {
   readonly runtime: BrowserPoolRuntimeChannel;
   readonly controller: BrowserPoolPhysicalController;
   readonly retryMs?: number;
+  /** Every controller call and runtime control has this deadline; then its outcome is read. */
+  readonly callTimeoutMs?: number;
   readonly onError?: (error: unknown) => void;
+  /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
+  readonly testHooks?: {
+    readonly beginPark?: typeof beginBrowserPoolPark;
+    readonly readSlot?: typeof readBrowserPoolSlot;
+    readonly settleCall?: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>;
+  };
   /** Tests lose a runtime control's request or its reply. */
   readonly runtimeFault?: (kind: BrowserPoolControl["kind"]) => BrowserPoolRuntimeFault | undefined;
 }
@@ -93,6 +104,8 @@ export class BrowserPoolCoordinator {
       options.database,
       options.controller,
       options.runnerId,
+      options.callTimeoutMs,
+      options.testHooks?.settleCall,
     );
     this.gate.attach({
       park: (demanded) => this.#serial(() => this.#park(demanded)),
@@ -145,7 +158,12 @@ export class BrowserPoolCoordinator {
 
   /** Call once the Home's startup sweep has run; the gate stays closed until this settles. */
   recover(): Promise<void> {
-    return this.#serial(() => this.#retry(() => this.#recover()));
+    return this.#serial(() =>
+      this.#retry(
+        () => this.#recover(),
+        () => this.#discardNow(),
+      ),
+    );
   }
 
   tryPark(): Promise<"parked" | "vetoed"> {
@@ -231,7 +249,7 @@ export class BrowserPoolCoordinator {
     fence: BrowserPoolRuntimeFence,
     attempt?: number,
   ): Promise<BrowserPoolRuntimeState> {
-    const control: BrowserPoolControl = {
+    const control: Omit<BrowserPoolControl, "sequence" | "expect"> = {
       kind,
       fence,
       intent: { id: slot.intentId!, sequence: slot.intentSequence },
@@ -247,24 +265,65 @@ export class BrowserPoolCoordinator {
       },
       slot.intentId,
     );
-    if (!signed.applied || !signed.signature)
+    const issued = signed.control;
+    if (
+      !signed.applied ||
+      !signed.signature ||
+      !issued ||
+      issued.kind !== kind ||
+      !sameRuntimeFence(issued.fence, fence) ||
+      issued.intent?.id !== control.intent?.id ||
+      issued.attempt !== control.attempt
+    )
       throw new Error(`The controller did not sign ${kind}: ${signed.reason ?? "refused"}.`);
-    return this.#deliver(control, signed.signature);
+    return (await this.#deliver(issued, signed.signature)).state;
   }
 
-  async #deliver(control: BrowserPoolControl, signature: string): Promise<BrowserPoolRuntimeState> {
+  /**
+   * Delivers a signed control with a deadline. `answered` is false when the reply was lost or
+   * did not come in time: the current state is then read, and the outcome is not assumed.
+   */
+  async #deliver(
+    control: BrowserPoolControl,
+    signature: string,
+  ): Promise<{ readonly state: BrowserPoolRuntimeState; readonly answered: boolean }> {
     const fault = this.#options.runtimeFault?.(control.kind);
-    if (fault === "request") return this.#state();
+    if (fault === "request") return { state: this.#state(), answered: false };
     try {
-      const state = await this.#options.runtime.controlPool(
-        control,
-        Buffer.from(signature, "base64"),
+      const state = await withTimeout(
+        this.#options.runtime.controlPool(control, Buffer.from(signature, "base64")),
+        this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
+        { timeoutError: () => new Error("The runtime did not answer in time.") },
       );
-      return fault === "reply" ? this.#state() : state;
+      return fault === "reply"
+        ? { state: this.#state(), answered: false }
+        : { state, answered: true };
     } catch {
       // A refusal and a lost reply look alike here: the current state decides.
-      return this.#state();
+      return { state: this.#state(), answered: false };
     }
+  }
+
+  /** Retire, and whether its own reply came back: a lost retire reply is an abort. */
+  async #retire(slot: BrowserPoolSlot) {
+    const control: BrowserPoolControl["kind"] = "retire";
+    const signed = await this.#journal.call(
+      {
+        slotId: this.#options.slotId,
+        term: this.#options.term,
+        kind: "sign",
+        expect: expectationOf(await this.#status()),
+        control: {
+          kind: control,
+          fence: fenceOf(slot),
+          intent: { id: slot.intentId!, sequence: slot.intentSequence },
+        },
+      },
+      slot.intentId,
+    );
+    if (!signed.applied || !signed.signature || signed.control?.kind !== "retire")
+      throw new Error(`The controller did not sign retire: ${signed.reason ?? "refused"}.`);
+    return this.#deliver(signed.control, signed.signature);
   }
 
   // ---- Park -------------------------------------------------------------------------------
@@ -275,39 +334,53 @@ export class BrowserPoolCoordinator {
     const intentId = randomUUID();
     let intent: BrowserPoolSlot | undefined;
     try {
-      intent = await beginBrowserPoolPark(
+      intent = await (this.#options.testHooks?.beginPark ?? beginBrowserPoolPark)(
         this.#options.database,
         browserPoolSlotIdentity(slot),
         intentId,
         demanded,
       );
     } catch (error) {
-      // A failed reply to COMMIT does not say whether D exists: read it.
-      const current = await this.#read();
-      if (current?.intentId !== intentId) {
-        if (error instanceof BrowserPoolAdmissionClosed) return "vetoed";
-        throw error;
-      }
-      intent = current;
+      // A failed reply to COMMIT does not say whether D exists. Admission stays closed and the
+      // intent is read back until it is known.
+      intent = await this.#retry(async () => {
+        const current = await (this.#options.testHooks?.readSlot ?? readBrowserPoolSlot)(
+          this.#options.database,
+          this.#options.runnerId,
+        );
+        return current?.intentId === intentId ? current : null;
+      }).then(
+        (found) => found ?? undefined,
+        () => undefined,
+      );
+      if (!intent && !(error instanceof BrowserPoolAdmissionClosed)) this.#options.onError?.(error);
     }
     if (!intent) {
       await this.#read();
       return "vetoed";
     }
     this.#slot = intent;
+    // A send that arrived before the commit vetoes: the intent is released before any retire.
+    const vetoedDuringCommit = !this.gate.committed();
     const expected = this.#adopter?.inventory() ?? [];
-    let retireSent = false;
+    let retireSent = vetoedDuringCommit;
+    let abort = vetoedDuringCommit;
     // After D the park only ends parked or released: every attempt re-reads where it stands.
     return this.#retry<"parked" | "vetoed">(
       async () => {
+        await this.#journal.settleOpen();
         const slot = await this.#read();
         if (!slot || slot.intentId !== intentId || slot.phase === "running") return "vetoed";
         if (slot.phase === "parked") return "parked";
         let state = this.#state();
         if (!retireSent) {
           retireSent = true;
-          state = await this.#control(slot, "retire", fenceOf(slot));
+          const retired = await this.#retire(slot);
+          state = retired.state;
+          // Rule D: a retire whose reply was lost is aborted, even if the runtime retired.
+          if (!retired.answered) abort = true;
         }
+        if (abort && state.phase !== "sealed") return this.#abort(slot);
         return this.#afterRetire(slot, state, expected);
       },
       async () => {
@@ -323,7 +396,8 @@ export class BrowserPoolCoordinator {
     expected: readonly { readonly sessionId: BrowserSessionId; readonly surfaceId: string }[],
   ): Promise<"parked" | "vetoed"> {
     const same = sameIntent(state, slot);
-    if (same && state.phase === "retired" && !state.cancelled && state.retired) {
+    // A page ended while its session was suspended was dropped: the park must not commit.
+    if (same && state.phase === "retired" && !state.cancelled && state.retired && !state.dropped) {
       const kept = new Set(
         state.retired.documents.map(({ sessionId, surfaceId }) => `${sessionId}\n${surfaceId}`),
       );
@@ -410,6 +484,9 @@ export class BrowserPoolCoordinator {
   // ---- Wake -------------------------------------------------------------------------------
 
   async #wake(): Promise<void> {
+    // One recovery live and at start: an open journal row is settled by its id first, so a
+    // guest a lost acknowledgement left resumed is never mistaken for one without live state.
+    await this.#journal.settleOpen();
     let slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed();
     if (slot.phase === "running") return this.gate.settle("open");
@@ -449,7 +526,7 @@ export class BrowserPoolCoordinator {
         fence: { instanceId: adopt.fence.instance, epoch: adopt.fence.epoch },
       });
     let state = this.#state();
-    if (state.phase === "sealed") state = await this.#deliver(adopt, resumed.signature!);
+    if (state.phase === "sealed") state = (await this.#deliver(adopt, resumed.signature!)).state;
     if (state.fence?.instance !== slot.instanceId) return this.#discard(slot, "guest-changed");
     if (sameIntent(state, slot) && (state.phase === "adopting" || state.adoption?.outcome))
       return this.#readopt(slot, state);
@@ -487,7 +564,16 @@ export class BrowserPoolCoordinator {
           fence: state.fence!,
           attempt,
         });
+      // Partial results survive a restart: they are durable before the runtime completes.
+      slot = await this.#advance(slot, {
+        phase: slot.phase,
+        outcome: { pendingTabLosses: tabLosses } as unknown as Record<string, unknown>,
+      });
       state = await this.#control(slot, "complete", state.fence!, attempt);
+    } else {
+      tabLosses =
+        (slot.outcome as { pendingTabLosses?: BrowserPoolSessionLoss[] } | null)
+          ?.pendingTabLosses ?? [];
     }
     const outcome = state.adoption?.outcome;
     if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
@@ -518,20 +604,16 @@ export class BrowserPoolCoordinator {
     const started = await this.#call(slot, "start", status);
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
-    const state = await this.#deliver(started.control, started.signature);
+    const { state } = await this.#deliver(started.control, started.signature);
     if (state.phase !== "running" || state.fence?.instance !== started.control.fence.instance)
       throw new Error("The fresh guest was not installed.");
-    const retained = retainedOf(slot);
     const sessions = await listBrowserPoolRuntimeSessions(
       this.#options.database,
       slot.runnerId,
       slot.runtimeId,
     );
-    const losses = sessions.map((sessionId) => ({
-      sessionId,
-      reason,
-      surfaces: retained ? surfacesOf(retained, sessionId) : [],
-    }));
+    // The tabs come from the Home's own rows, not from a manifest that may be missing.
+    const losses = await this.#lossesOf(slot, sessions, reason);
     this.#slot = await advanceBrowserPoolSlot(
       this.#options.database,
       slot,
@@ -544,6 +626,29 @@ export class BrowserPoolCoordinator {
       losses,
     );
     this.gate.settle("open");
+  }
+
+  async #lossesOf(
+    slot: BrowserPoolSlot,
+    sessions: readonly BrowserSessionId[],
+    reason: string,
+  ): Promise<BrowserPoolSessionLoss[]> {
+    const retained = retainedOf(slot);
+    const rows = await listBrowserPoolSessionTabs(this.#options.database, sessions);
+    return sessions.map((sessionId) => {
+      const kept = retained ? surfacesOf(retained, sessionId) : [];
+      const known = new Set<string>(kept.map(({ surfaceId }) => surfaceId));
+      return {
+        sessionId,
+        reason,
+        surfaces: [
+          ...kept,
+          ...(rows.get(sessionId) ?? [])
+            .filter((surfaceId) => !known.has(surfaceId))
+            .map((surfaceId) => ({ surfaceId, documentId: null })),
+        ],
+      };
+    });
   }
 
   async #finishRunning(
@@ -567,12 +672,15 @@ export class BrowserPoolCoordinator {
             : surfaces,
         })),
     ];
-    await this.#advance(
+    const settled = await this.#advance(
       slot,
       { phase: "running", savedState: null, ...(outcome ? { outcome } : {}) },
       all,
     );
     this.gate.settle("open");
+    await pruneBrowserPoolBookkeeping(this.#options.database, settled).catch((error: unknown) =>
+      this.#options.onError?.(error),
+    );
   }
 
   // ---- Recovery ---------------------------------------------------------------------------
@@ -624,7 +732,15 @@ export class BrowserPoolCoordinator {
       status.instance === state.fence.instance &&
       status.epoch === state.fence.epoch
     ) {
-      this.#slot = await installBrowserPoolSlot(this.#options.database, this.#target(state.fence));
+      this.#slot = await installBrowserPoolSlot(
+        this.#options.database,
+        this.#target({
+          slot: status.slotId,
+          term: status.term,
+          instance: status.instance,
+          epoch: status.epoch,
+        }),
+      );
       return this.gate.settle("open");
     }
     if (status.phase !== "stopped") {
@@ -635,12 +751,13 @@ export class BrowserPoolCoordinator {
     const started = await this.#call(undefined, "start", status);
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
-    const installed = await this.#deliver(started.control, started.signature);
-    if (installed.phase !== "running" || !installed.fence)
+    const { state: installed } = await this.#deliver(started.control, started.signature);
+    if (installed.phase !== "running" || !sameFence(installed.fence, started.control.fence))
       throw new Error("The guest was not installed.");
+    // The fence comes from the controller, never from the runtime's own state.
     this.#slot = await installBrowserPoolSlot(
       this.#options.database,
-      this.#target(installed.fence),
+      this.#target(started.control.fence),
     );
     this.gate.settle("open");
   }
@@ -658,6 +775,15 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+const defaultCallTimeoutMs = 10_000;
+
+function sameFence(a: BrowserPoolRuntimeFence | null, b: BrowserPoolRuntimeFence): boolean {
+  return !!a && sameRuntimeFence(a, b);
+}
+
+function sameRuntimeFence(a: BrowserPoolRuntimeFence, b: BrowserPoolRuntimeFence): boolean {
+  return a.slot === b.slot && a.term === b.term && a.instance === b.instance && a.epoch === b.epoch;
+}
 
 function fenceOf(slot: BrowserPoolSlot): BrowserPoolRuntimeFence {
   return { slot: slot.slotId, term: slot.term, instance: slot.instanceId, epoch: slot.epoch };

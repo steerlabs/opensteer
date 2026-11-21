@@ -1130,6 +1130,37 @@ export async function refuseUnsentAgentOperation(
     .execute();
 }
 
+/**
+ * A pooled browser operation that was handed off but whose every command was refused before it
+ * reached the wire: nothing happened, so it is refused, not failed or unknown.
+ */
+export async function refuseUnsentHandedOffAgentOperation(
+  database: Kysely<DatabaseSchema>,
+  id: AgentOperationId,
+  message: string,
+): Promise<boolean> {
+  const now = new Date();
+  const row = await database
+    .updateTable("agentOperations")
+    .set({
+      state: "refused",
+      outcome: "refused",
+      terminalEvidenceAt: now,
+      completedAt: now,
+      updatedAt: now,
+      decision: jsonValue({
+        by: "refused",
+        reason: "authority",
+        message,
+      } satisfies AgentOperationDecision),
+    })
+    .where("id", "=", id)
+    .where("state", "=", "handed-off")
+    .returning("id")
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
 /** The terminal outcome of a handed-off operation; `unknown` is never retried. */
 export async function settleAgentOperation(
   database: Kysely<DatabaseSchema>,

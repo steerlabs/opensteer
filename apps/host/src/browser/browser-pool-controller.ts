@@ -8,6 +8,7 @@ import {
 import type { RunnerId } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 /** A guest's saved live state: consumed by exactly one resume, discarded at `discardAt`. */
 export interface BrowserPoolSavedState {
@@ -43,8 +44,8 @@ export interface BrowserPoolControllerCall {
   readonly term: number;
   readonly kind: BrowserPoolPhysicalKind;
   readonly expect: BrowserPoolPhysicalExpectation;
-  /** `sign`: the runtime control to sign for the current fence. */
-  readonly control?: BrowserPoolControl;
+  /** `sign`: the runtime control to sign; the controller numbers it and names the fence. */
+  readonly control?: Omit<BrowserPoolControl, "sequence" | "expect">;
   /** `resume`: the park intent the adoption control is bound to. */
   readonly intent?: BrowserPoolIntent;
 }
@@ -92,18 +93,30 @@ export class BrowserPoolControllerJournal {
   readonly #controller: BrowserPoolPhysicalController;
   readonly #runnerId: RunnerId;
 
+  readonly #timeoutMs: number;
+
   constructor(
     database: Kysely<DatabaseSchema>,
     controller: BrowserPoolPhysicalController,
     runnerId: RunnerId,
+    timeoutMs = 10_000,
+    settle?: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>,
   ) {
     this.#database = database;
     this.#controller = controller;
     this.#runnerId = runnerId;
+    this.#timeoutMs = timeoutMs;
+    this.#settle =
+      settle ?? ((id, result) => settleBrowserPoolControllerCall(database, id, result));
   }
 
+  readonly #settle: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>;
+
+  /** A read of the slot: it changes nothing, so it carries no journal row. */
   status(slotId: string, term: number) {
-    return this.#controller.status(slotId, term);
+    return withTimeout(this.#controller.status(slotId, term), this.#timeoutMs, {
+      timeoutError: () => new Error("The pool controller did not answer in time."),
+    });
   }
 
   async call(
@@ -132,26 +145,29 @@ export class BrowserPoolControllerJournal {
   }
 
   async #deliver(call: BrowserPoolControllerCall): Promise<BrowserPoolControllerResult> {
+    // Every call has a deadline. Past it the outcome is unknown and is read by the call's id.
+    const bounded = <T>(work: Promise<T>) =>
+      withTimeout(work, this.#timeoutMs, {
+        timeoutError: () => new Error("The pool controller did not answer in time."),
+      });
     let result: BrowserPoolControllerResult | null;
     try {
-      result = await this.#controller.apply(call);
+      result = await bounded(this.#controller.apply(call));
     } catch (error) {
       // A lost reply has a stored result; a lost request has none and is sent again.
-      result = await this.#controller.result(call.slotId, call.term, call.id).catch(() => null);
+      result = await bounded(this.#controller.result(call.slotId, call.term, call.id)).catch(
+        () => null,
+      );
       if (!result) {
         try {
-          result = await this.#controller.apply(call);
+          result = await bounded(this.#controller.apply(call));
         } catch {
           throw error;
         }
       }
     }
     if (result.id !== call.id) throw new Error("The pool controller answered another call.");
-    await settleBrowserPoolControllerCall(
-      this.#database,
-      call.id,
-      result as unknown as Record<string, unknown>,
-    );
+    await this.#settle(call.id, result as unknown as Record<string, unknown>);
     return result;
   }
 }

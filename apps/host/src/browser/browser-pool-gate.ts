@@ -1,3 +1,4 @@
+import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
 export interface BrowserPoolGateDriver {
@@ -43,14 +44,19 @@ export class BrowserPoolGate {
     return this.#phase === "parking" || this.#phase === "parked" || this.#phase === "waking";
   }
 
+  /**
+   * The driver calls this once the park intent has committed. False: a send arrived first and
+   * vetoes the park. True: from here on a send waits for the wake.
+   */
+  committed(): boolean {
+    if (this.#demanded || this.#phase !== "preparing") return false;
+    this.#setPhase("parking");
+    return true;
+  }
+
   /** The driver reports where the browser is now. */
   settle(phase: "open" | "parked"): void {
     this.#setPhase(phase);
-  }
-
-  /** The driver is bringing the browser back by itself, as after a restart mid-wake. */
-  recovering(): void {
-    this.#setPhase("recovering");
   }
 
   /** Demand: wakes a parked browser and waits for it. */
@@ -76,9 +82,13 @@ export class BrowserPoolGate {
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
     for (;;) {
       if (signal.aborted)
-        throw signal.reason instanceof Error
+        // A Stop or a cut keeps its own refusal; a deadline is a refusal before any effect.
+        throw signal.reason instanceof OpensteerError
           ? signal.reason
-          : new BrowserPoolAdmissionClosed("The browser request was cancelled.");
+          : new BrowserPoolAdmissionClosed(
+              "The pooled browser did not wake in time. Nothing was sent.",
+              signal.reason,
+            );
       const phase = this.#phase;
       if (phase === "open") return this.#hold();
       if (phase === "preparing") this.#demanded = true;
@@ -105,12 +115,8 @@ export class BrowserPoolGate {
     this.#setPhase("preparing");
     let outcome: "parked" | "vetoed" = "vetoed";
     try {
-      outcome = await this.#driver.park(() => {
-        if (this.#demanded) return true;
-        // From here on a send waits instead of vetoing.
-        this.#setPhase("parking");
-        return false;
-      });
+      // Until the intent has committed, a send vetoes; the driver asks after the commit.
+      outcome = await this.#driver.park(() => this.#demanded);
     } finally {
       this.#setPhase(outcome === "parked" ? "parked" : "open");
     }
