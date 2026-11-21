@@ -51,7 +51,15 @@ export async function initializePersonalState(
           path: initialPath,
         })
       ) {
-        for (const kind of ["settings", "identity", "owner-profile"] as const)
+        // The browser kinds answered "not ready" until now, so their readers read again.
+        for (const kind of [
+          "settings",
+          "identity",
+          "owner-profile",
+          "browser-availability",
+          "browser-placement",
+          "browser-home",
+        ] as const)
           mutation.bumpResource(kind);
       }
     });

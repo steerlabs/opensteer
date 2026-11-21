@@ -88,6 +88,8 @@ export interface PersonalHostControlPort {
     environmentId: EnvironmentId,
     runnerId: RunnerId,
     signal: AbortSignal,
+    /** Hears what the Host says it is still waiting for, on each not-ready answer. */
+    onPending?: (pending: "agent-home" | undefined) => void,
   ): Promise<void>;
   waitForPluginAgentWorkStopped?(
     origin: string,
@@ -307,6 +309,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     environmentIdInput: EnvironmentId,
     runnerIdInput: RunnerId,
     signal: AbortSignal,
+    onPending?: (pending: "agent-home" | undefined) => void,
   ): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
@@ -316,6 +319,8 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       origin,
       { kind: "runner", environmentId, runnerId },
       signal,
+      undefined,
+      onPending,
     );
   }
 
@@ -360,6 +365,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     target: Parameters<HostApiClient["personal.readiness.get"]>[0],
     signal: AbortSignal,
     stoppedSince?: string,
+    onPending?: (pending: "agent-home" | undefined) => void,
   ) {
     const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
     for (;;) {
@@ -369,6 +375,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
           read(target, { signal: deadline }),
         );
         if (!result.ok) throw bootstrapRefusal(result.error);
+        onPending?.(result.data.ready ? undefined : result.data.pending);
         if (
           result.data.ready &&
           (stoppedSince === undefined || result.data.pluginAgentWorkStoppedSince === stoppedSince)
