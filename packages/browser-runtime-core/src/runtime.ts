@@ -1393,6 +1393,7 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new BrowserRuntimeError("forbidden", "This ticket cannot adopt the retained session.");
 
     session.poolAttachment = attachment;
+    const channelLost = session.channelLostUntil !== undefined;
     clearTimeout(session.channelLostUntil);
     delete session.channelLostUntil;
     if (!session.poolDetached) {
@@ -1400,30 +1401,42 @@ export class BrowserRuntime implements NativePresentationSource {
       await session.host.router.unregisterSession(session.sessionId, true);
       await session.controller.detachForPool().catch(() => undefined);
     }
-    const [root, ...others] = session.ledger.resumeAfterRelayRestart();
-    if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const router = session.host.router;
-    router.registerSession(
-      session.sessionId,
-      root,
-      session.ledger.resolveTarget.bind(session.ledger),
-      session.files.root,
-    );
-    for (const target of others) router.claimTarget(session.sessionId, target);
-    const controller = this.createController(
-      session.host,
-      claims,
-      session.files,
-      session.ledger,
-      sink,
-    );
+    let registered = false;
+    let controller: BrowserController | undefined;
     try {
+      const [root, ...others] = session.ledger.resumeAfterRelayRestart();
+      if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      // Refused while a command sent before the channel was lost still holds a kept page: the
+      // router never hands a target to new work under old work.
+      router.registerSession(
+        session.sessionId,
+        root,
+        session.ledger.resolveTarget.bind(session.ledger),
+        session.files.root,
+      );
+      registered = true;
+      for (const target of others) router.claimTarget(session.sessionId, target);
+      controller = this.createController(session.host, claims, session.files, session.ledger, sink);
       await controller.start();
     } catch (error) {
+      const started = controller;
       await settleCleanup([
-        () => controller.detachForPool(),
-        () => router.unregisterSession(session.sessionId, true),
+        ...(started ? [() => started.detachForPool()] : []),
+        ...(registered ? [() => router.unregisterSession(session.sessionId)] : []),
       ]);
+      session.ledger.suspendForPool(() => this.poolDrops++);
+      // A reattach after a lost channel that did not take ends the session now, as its deadline
+      // would: nothing else will reattach it. An adoption keeps it for its window.
+      if (channelLost) {
+        const generation = session.generation;
+        session.channelLostUntil = setTimeout(() => {
+          void this.detach(session.sessionId, generation, false, false, true).catch(
+            () => undefined,
+          );
+        }, 0);
+        session.channelLostUntil.unref();
+      }
       throw error;
     }
     session.controller = controller;
@@ -1797,12 +1810,14 @@ export class BrowserRuntime implements NativePresentationSource {
       if (active.poolDetached && !forcePoolDetach) return;
       if (!forcePoolDetach && channelLost && this.pool?.acceptsTraffic) {
         // The Runner's channel went away, the guest did not: the pages keep running, detached,
-        // until the Home reattaches the session or the reconnect deadline ends it.
+        // until the Home reattaches the session or the reconnect deadline ends it. A command
+        // already sent may never answer in a kept page, so its routing ends without waiting
+        // for it: its outcome is unknown, and a late answer reaches no one.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId, true),
+          () => active.host.router.unregisterSession(sessionId),
         ]);
         clearTimeout(active.channelLostUntil);
         active.channelLostUntil = setTimeout(() => {
@@ -1812,12 +1827,13 @@ export class BrowserRuntime implements NativePresentationSource {
         return;
       }
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
-        // A channel lost during adoption keeps the session for the next attempt or the window.
+        // A channel lost during adoption keeps the session for the next attempt or the window;
+        // as above, its routing ends without waiting for a command a kept page may never answer.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId, true),
+          () => active.host.router.unregisterSession(sessionId),
         ]);
         return;
       }

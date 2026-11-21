@@ -172,6 +172,63 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
   }
 });
 
+it("records a send dispatched and unanswered when the Runner's channel drops as unknown, and never sends it again", async () => {
+  const j = await journey("direct-unknown", { profile: true, channelDeadlineMs: 1_500 });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const page = await j.draft();
+    const work = await directWork(j, () => home);
+    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+    expect(bound.isError, text(bound)).not.toBe(true);
+    const sent = async () =>
+      (
+        await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+          expression: "window.__sent ?? 0",
+          returnByValue: true,
+        })
+      ).result.value;
+    // The page receives the command and does not answer it.
+    const hanging = work.use(
+      `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
+    );
+    await vi.waitFor(async () => expect(await sent()).toBe(1));
+    j.runnerDown();
+    // The agent hears that the Home lost track of it, never that it failed.
+    const result = await hanging;
+    expect(result.structuredContent, text(result)).toMatchObject({ status: "unknown" });
+    const operations = () =>
+      j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .orderBy("createdAt", "asc")
+        .execute();
+    const settled = [
+      { state: "completed", outcome: "completed" },
+      { state: "unknown", outcome: "unknown" },
+    ];
+    expect(await operations()).toEqual(settled);
+    expect(await sent()).toBe(1);
+    // The Runner comes back. The kept page still holds the unanswered command, so the session
+    // is not handed to a new attachment under it: it ends with its note, as an ordinary Home's
+    // would, and nothing is sent again or recorded otherwise.
+    j.runnerUp();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    await vi.waitFor(async () => expect((await j.row(session.id))?.state).toBe("failed"), {
+      timeout: 10_000,
+    });
+    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 10_000 });
+    expect(await operations()).toEqual(settled);
+  } finally {
+    await j.close();
+  }
+});
+
 /** A connected agent that already used the profile, with the browser parked afterwards. */
 async function parkedAfterWork(key: string) {
   const j = await journey(key, { profile: true });
