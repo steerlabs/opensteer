@@ -1085,9 +1085,17 @@ export class BrowserService {
     return {
       identity: () => pool.identity(),
       reserve: (signal: AbortSignal) => pool.gate.reserve(signal),
-      pageDocument: (sessionId: BrowserSessionId, tabId: TabId) =>
+      /**
+       * The page's document: live, or while the browser is away the one last known. Null: its
+       * session is being reattached and no document is known (after a Home crash); undefined:
+       * there is no such page.
+       */
+      pageDocument: (sessionId: BrowserSessionId, tabId: TabId): string | null | undefined =>
         this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
-        (pool.gate.retiringOrAdopting ? pool.knownDocument(sessionId, tabId) : undefined),
+        (pool.gate.retiringOrAdopting
+          ? (pool.knownDocument(sessionId, tabId) ??
+            (pool.reattaching(sessionId) ? null : undefined))
+          : undefined),
     };
   }
 

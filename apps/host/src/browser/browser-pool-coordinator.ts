@@ -212,9 +212,11 @@ export class BrowserPoolCoordinator {
    * park, or held when the session's channel was lost.
    */
   knownDocument(sessionId: BrowserSessionId, surfaceId: string): string | undefined {
+    // A running browser's last park no longer says what its pages hold.
+    const retained = this.#slot?.phase === "running" ? undefined : retainedOf(this.#slot);
     return (
       this.#lost.get(sessionId)?.documents?.get(surfaceId) ??
-      retainedOf(this.#slot)?.documents.find(
+      retained?.documents.find(
         (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
       )?.documentId
     );
@@ -235,6 +237,11 @@ export class BrowserPoolCoordinator {
     this.#parkWanted = Promise.withResolvers();
     this.#kick();
     return this.#parkWanted.promise;
+  }
+
+  /** The session has no channel and is inside its window: the loop is reattaching it. */
+  reattaching(sessionId: BrowserSessionId): boolean {
+    return this.#lost.has(sessionId);
   }
 
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
