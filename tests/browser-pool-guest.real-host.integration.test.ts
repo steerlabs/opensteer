@@ -476,19 +476,23 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       await type(woken, "x");
       // Recorded, not assumed: on this run the viewer's keys did not change the page in the
       // guest (see RESULTS-3.md), so the draft's survival is read from the frames and reported.
-      let draftVisible = false;
-      for (let attempt = 0; attempt < 15 && !draftVisible; attempt += 1) {
-        await woken.handle(
-          Buffer.from(JSON.stringify({ type: "stream.unsubscribe", surfaceId: person.tabId })),
-          false,
-        );
-        await woken.handle(
-          Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: person.tabId })),
-          false,
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        draftVisible = await greenFrame(second.frames);
-      }
+      const draftVisible = await vi
+        .waitFor(
+          async () => {
+            await woken.handle(
+              Buffer.from(JSON.stringify({ type: "stream.unsubscribe", surfaceId: person.tabId })),
+              false,
+            );
+            await woken.handle(
+              Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: person.tabId })),
+              false,
+            );
+            if (!(await greenFrame(second.frames))) throw new Error("Not visible yet.");
+            return true;
+          },
+          { timeout: 15_000, interval: 1_000 },
+        )
+        .catch(() => false);
       const edited = performance.now() - mark;
       const slot = await readBrowserPoolSlot(database, task.runnerId);
       emit({
