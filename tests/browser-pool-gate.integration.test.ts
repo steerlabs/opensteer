@@ -1,7 +1,12 @@
 import {
+  AgentConnectionStore,
+  admitAgentOperation,
   advanceBrowserPoolSlot,
+  beginAgentSession,
   beginBrowserPoolPark,
   BrowserPoolAdmissionClosed,
+  decideAgentOperation,
+  handOffAgentOperation,
   readBrowserPoolSlot,
   requireBrowserPoolAdmission,
   TabStore,
@@ -13,10 +18,14 @@ import {
   personalBrowserRepository,
 } from "../packages/database/src/store.integration.test-support.js";
 import {
+  BrowserClientMessageSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
+  decodeBrowserFrameEnvelope,
   type InitialPageReady,
 } from "../packages/protocol/src/browser.js";
+import { BrowserChannelIdSchema } from "../packages/protocol/src/browser-relay.js";
+import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -86,6 +95,7 @@ it("orders park intent against demand and wakes once without dispatching a cance
     const parking = gate.tryPark();
     await afterD.promise;
     expect(await read()).toMatchObject({ phase: "preparing", intentSequence: 1 });
+    expect(() => gate.holdOpen()).toThrow(BrowserPoolAdmissionClosed);
     await expect(
       commitPersonalMutation(database, (tx) => requireBrowserPoolAdmission(tx, target.runnerId)),
     ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
@@ -168,63 +178,136 @@ it("vetoes D on an ended session with confined CDP contact loss", async () => {
     await fixture.close();
   }
 });
+
+it("keeps outstanding Shared Chrome and plugin handoffs outside D", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("park-foreign-effects");
+    const { database } = fixture;
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: task.userId,
+      label: "Fixture connection",
+      clientName: "Fixture agent",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      resource: "https://fixture.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    const lineage = { userId: task.userId, agentConnectionId: connection.id };
+    const { session } = await beginAgentSession(database, lineage);
+    for (const grant of [
+      { kind: "chrome-tabs", sourceId: createId("browserSource") },
+      { kind: "plugin", target: { kind: "installed", pluginId: "fixture-plugin" } },
+    ] as const) {
+      const { operation } = await admitAgentOperation(database, {
+        ...lineage,
+        sessionId: session.id,
+        operationKey: grant.kind,
+        tool: grant.kind,
+        argumentDigest: randomUUID(),
+        target: { grant, name: grant.kind, device: null },
+        targetGeneration: null,
+        grantRevision,
+        mode: "full-access",
+        effect: "write",
+        calls: grant.kind,
+        agentReason: null,
+      });
+      const reviewed = await decideAgentOperation(database, operation, { by: "full-access" });
+      await expect(
+        handOffAgentOperation(database, { ...lineage, reviewed }),
+      ).resolves.toMatchObject({ state: "handed-off", terminalEvidenceAt: null });
+    }
+    const intent = await beginBrowserPoolPark(
+      database,
+      {
+        runnerId: task.runnerId,
+        runtimeId: "pool-runtime",
+        slotId: "test-slot",
+        instanceId: randomUUID(),
+        term: 1,
+        epoch: 1,
+      },
+      randomUUID(),
+      () => false,
+    );
+    expect(intent?.phase).toBe("preparing");
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select("state")
+        .where("sessionId", "=", session.id)
+        .execute(),
+    ).toEqual([{ state: "handed-off" }, { state: "handed-off" }]);
+  } finally {
+    await fixture.close();
+  }
+});
 import {
   BrowserRuntime,
+  BrowserRuntimeServer,
   browserPoolControlBytes,
   Ed25519AttachTicketVerifier,
-  encodeBrowserFrame,
-  type BrowserAttachment,
   type LaunchedBrowser,
   type BrowserPoolControl,
 } from "../packages/browser-runtime-core/src/index.js";
 import { FakeIsolatingLauncher } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 
 class TestRuntimeConnection extends EventEmitter implements BrowserRuntimeConnection {
-  readyState = 1;
+  readyState = 0;
   initialPage: InitialPageReady | undefined;
-  private readonly attached: Promise<BrowserAttachment>;
+  private readonly channel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+  private readonly bridge: LocalBrowserRuntimeBridge;
 
-  constructor(runtime: BrowserRuntime, ticket: string) {
+  constructor(bridge: LocalBrowserRuntimeBridge, ticket: string) {
     super();
-    this.attached = runtime
-      .attach(ticket, {
-        sendFrame: async (frame) => {
-          if (this.readyState === 1) this.emit("message", encodeBrowserFrame(frame), true);
-        },
-        sendServer: async (message) => {
-          if (this.readyState === 1)
-            this.emit("message", Buffer.from(JSON.stringify(message)), false);
-        },
-        closeForPool: () => this.end(1012, "browser-pool-retire"),
+    this.bridge = bridge;
+    const pending: [Buffer, boolean][] = [];
+    const frame = (data: Buffer, binary: boolean) => {
+      if (this.readyState === 0) pending.push([data, binary]);
+      else if (this.readyState === 1) this.emit("message", data, binary);
+    };
+    void bridge
+      .attach(this.channel, ticket, {
+        onFrame: (_channel, value) => frame(value, true),
+        onServerMessage: (_channel, value) => frame(Buffer.from(JSON.stringify(value)), false),
+        onClosed: (_channel, code, reason) => this.end(code, reason),
       })
-      .then((attachment) => {
-        this.initialPage = attachment.initialPage;
-        return attachment;
+      .then((attached) => {
+        if (this.readyState === 3) return;
+        this.initialPage = attached.initialPage;
+        this.readyState = 1;
+        for (const [data, binary] of pending) frame(data, binary);
+        pending.length = 0;
+      })
+      .catch((error: unknown) => {
+        this.emit("error", error);
+        this.end(1011, "attach failed");
       });
-    void this.attached.catch((error: unknown) => this.emit("error", error));
   }
 
   send(data: string, _options: { binary: false }, callback: (error?: Error) => void): void {
-    void this.attached
-      .then((attachment) => attachment.handle(data))
-      .then(
-        () => callback(),
-        (error) => callback(error),
-      );
+    void this.bridge.send(this.channel, BrowserClientMessageSchema.parse(JSON.parse(data))).then(
+      () => callback(),
+      (error) => callback(error),
+    );
   }
 
   private end(code: number, reason: string): void {
-    if (this.readyState !== 1) return;
+    if (this.readyState === 3) return;
     this.readyState = 3;
-    void this.attached
-      .then(
-        (attachment) => attachment.close(),
-        () => undefined,
-      )
-      .finally(() => this.emit("close", code, Buffer.from(reason)));
+    queueMicrotask(() => this.emit("close", code, Buffer.from(reason)));
   }
 
   close(): void {
+    this.bridge.close(this.channel);
     this.end(1000, "closed");
   }
 
@@ -239,6 +322,10 @@ it("rebuilds the owner broker after a parked BrowserService restart and edits th
   ownerTabJourney("restore"));
 it("stops a parked session while its viewer waits and never reattaches it", () =>
   ownerTabJourney("stop"));
+it("stops a validly parked browser session without waking it", () =>
+  ownerTabJourney("stop-parked"));
+it("closes parked workspace membership without a physical close and excludes it on wake", () =>
+  ownerTabJourney("close-parked"));
 it("activates a retained workspace tab after waiting for its pooled browser", () =>
   ownerTabJourney("activate"));
 it("wakes only for a visible owner context read and keeps a parked sign-in lookup non-waking", () =>
@@ -247,12 +334,21 @@ it("reconciles an interrupted adoption with the original epoch and one physical 
   ownerTabJourney("recover-adoption"));
 
 async function ownerTabJourney(
-  mode: "empty" | "restore" | "stop" | "activate" | "context" | "recover-adoption",
+  mode:
+    | "empty"
+    | "restore"
+    | "stop"
+    | "stop-parked"
+    | "close-parked"
+    | "activate"
+    | "context"
+    | "recover-adoption",
 ) {
   const restart = mode !== "empty";
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-route-"));
   let runtime: BrowserRuntime | undefined;
+  let runtimeServer: BrowserRuntimeServer | undefined;
   let browser: BrowserService | undefined;
   const allowResume = Promise.withResolvers<void>();
   try {
@@ -293,6 +389,29 @@ async function ownerTabJourney(
       pool: { term: 1, controllerKey: controller.publicKey, probePage: async () => [] },
     });
     runtime = guest;
+    const bridgeToken = randomUUID();
+    runtimeServer = new BrowserRuntimeServer({
+      runtime: guest,
+      port: 0,
+      relayBridge: {
+        token: bridgeToken,
+        updateAttachKeys: () => {
+          throw new Error("The loopback data bridge cannot replace the pooled ticket key.");
+        },
+      },
+    });
+    const address = await runtimeServer.start();
+    const bridge = new LocalBrowserRuntimeBridge({
+      bridgeToken,
+      runtimeId: "pool-runtime",
+      url: new URL(`http://${address.host}:${address.port}`),
+    });
+    bridge.setAttachPublicKeys([
+      {
+        keyId: "test",
+        publicKeyPem: tickets.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      },
+    ]);
     const target: BrowserPoolTargetIdentity = {
       runnerId: task.runnerId,
       runtimeId: "pool-runtime",
@@ -394,7 +513,7 @@ async function ownerTabJourney(
             loopbackPool: negotiated,
             connect: (ticket) => {
               calls.push("attach");
-              return new TestRuntimeConnection(guest, ticket);
+              return new TestRuntimeConnection(bridge, ticket);
             },
           }),
         },
@@ -437,8 +556,15 @@ async function ownerTabJourney(
       const cdp = await document.cdp();
       const targetId = await document.targetId();
       await cdp.send("Runtime.evaluate", {
-        expression:
-          "document.body.innerHTML = '<input>'; document.querySelector('input').focus(); window.marker = 99;",
+        expression: `
+          document.body.innerHTML = '<input style="font-size:32px;width:90%">';
+          const input = document.querySelector('input');
+          input.addEventListener('input', () => {
+            document.body.style.backgroundColor = input.value.endsWith('x') ? '#147443' : '#ffffff';
+          });
+          input.focus();
+          window.marker = 99;
+        `,
       });
       await cdp.send("Input.insertText", { text: "unsent draft" });
       const original = service.pageInventory(sessionId)?.records.get(tabId);
@@ -457,6 +583,43 @@ async function ownerTabJourney(
       let restarted = await startHome();
       expect((await store.getBrowserSessionForOwner(sessionId, task.userId))?.state).toBe("ready");
       expect(calls).toEqual(["attach", "pause"]);
+      if (mode === "stop-parked") {
+        await restarted.service.stop(task.userId, sessionId);
+        expect((await store.getBrowserSessionForOwner(sessionId, task.userId))?.state).toBe(
+          "closed",
+        );
+        expect(await readBrowserPoolSlot(database, task.runnerId)).toMatchObject({
+          phase: "parked",
+        });
+        expect(calls).toEqual(["attach", "pause"]);
+        expect(document.isClosed()).toBe(false);
+        return;
+      }
+      if (mode === "close-parked") {
+        expect((await tabs.close(task.userId, [tabId], "close-parked")).tabIds).toEqual([tabId]);
+        await restarted.service.pageTabs.closeViewers(task.userId, tab!, true);
+        expect(calls).toEqual(["attach", "pause"]);
+        expect(document.isClosed()).toBe(false);
+        const opening = restarted.service.openTab(task.userId, {
+          ...command,
+          idempotencyKey: "after-close",
+        });
+        await Promise.race([
+          resumeSeen.promise,
+          opening.then(() => {
+            throw new Error("The new tab opened before resume.");
+          }),
+        ]);
+        allowResume.resolve();
+        await expect(opening).resolves.toMatchObject({ browserStarted: true });
+        expect(document.isClosed()).toBe(true);
+        expect(calls).toEqual(["attach", "pause", "resume", "attach"]);
+        expect(await readBrowserPoolSlot(database, task.runnerId)).toMatchObject({
+          phase: "running",
+          retained: { adopted: [], lost: [{ sessionId, surfaceId: tabId }] },
+        });
+        return;
+      }
       if (mode === "context") {
         await expect(
           restarted.service.signInTarget({ ownerId: task.userId, sessionId, tabId }),
@@ -485,7 +648,11 @@ async function ownerTabJourney(
         return;
       }
       if (mode === "activate") {
-        const activating = restarted.service.pageTabs.activate(task.userId, tab!);
+        const activating = restarted.service.pageTabs.activate(
+          task.userId,
+          tab!,
+          "activate-retained",
+        );
         await Promise.race([
           resumeSeen.promise,
           activating.then(() => {
@@ -564,6 +731,9 @@ async function ownerTabJourney(
           false,
         );
         await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+        const originalFrame = decodeBrowserFrameEnvelope(frames[0]!);
+        expect(originalFrame.header.surfaceId).toBe(tabId);
+        const frameCountBeforeEdit = frames.length;
         expect(await document.targetId()).toBe(targetId);
         expect(restarted.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
           original?.documentId,
@@ -586,6 +756,30 @@ async function ownerTabJourney(
           });
         await vi.waitFor(async () =>
           expect((await value()).result.value).toBe('["unsent draftx",99]'),
+        );
+        await cdp.send("Runtime.evaluate", {
+          expression:
+            "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+          awaitPromise: true,
+        });
+        await viewer.handle(
+          Buffer.from(JSON.stringify({ type: "stream.unsubscribe", surfaceId: tabId })),
+          false,
+        );
+        await viewer.handle(
+          Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
+          false,
+        );
+        await vi.waitFor(() =>
+          expect(
+            frames.slice(frameCountBeforeEdit).some((frame) => {
+              const decoded = decodeBrowserFrameEnvelope(frame);
+              return (
+                decoded.header.surfaceId === tabId &&
+                !Buffer.from(decoded.data).equals(Buffer.from(originalFrame.data))
+              );
+            }),
+          ).toBe(true),
         );
         expect(await readBrowserPoolSlot(database, task.runnerId)).toMatchObject({
           phase: "running",
@@ -618,7 +812,8 @@ async function ownerTabJourney(
     allowResume.resolve();
     try {
       await browser?.close();
-      await runtime?.shutdown();
+      if (runtimeServer) await runtimeServer.close();
+      else await runtime?.shutdown();
     } finally {
       await rm(root, { recursive: true, force: true });
       await fixture.close();
