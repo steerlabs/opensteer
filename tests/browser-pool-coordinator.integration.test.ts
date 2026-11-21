@@ -73,7 +73,7 @@ async function poolFixture(
     /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
     freshGuests?: boolean;
     /** The runtime's page probe during a retire; a retire waits for it. */
-    probePage?: () => Promise<readonly string[]>;
+    probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
 ) {
   const fixture = await createStoreFixture();
@@ -629,6 +629,40 @@ it("recovers a retire that threw by release and adoption, then parks again", asy
     await parkAndWake(f, home);
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
     expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+it("notes a page a vetoed retire could not thaw as its own loss, and keeps its session", async () => {
+  // The frozen probe finds a blocker, so the retire thaws its pages and is vetoed.
+  const f = await poolFixture("veto-thaw", {
+    probePage: async (_page, phase) => (phase === "frozen" ? ["busy"] : []),
+  });
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    // Chromium refuses to thaw the page.
+    f.page.cdpSession.responses.set(
+      "Page.setWebLifecycleState",
+      (parameters: Record<string, unknown> | undefined) => {
+        if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
+        return {};
+      },
+    );
+    expect(await home.tryPark()).toBe("vetoed");
+    // Never left frozen as usable: the page is closed, and it is a loss with its note.
+    expect(f.page.isClosed()).toBe(true);
+    expect(
+      await f.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select(["sessionId", "reason"])
+        .where("sessionId", "=", f.sessionId)
+        .execute(),
+    ).toEqual([{ sessionId: f.sessionId, reason: "thaw-failed" }]);
+    expect((await f.row())?.state).toBe("ready");
+    expect(home.gate.phase).toBe("open");
   } finally {
     await f.close();
   }

@@ -71,11 +71,7 @@ export interface BrowserPoolAdoptionOutcome {
   readonly adopted: readonly BrowserSessionId[];
   readonly lost: readonly BrowserPoolSessionOutcome[];
   /** Pages of adopted sessions that did not thaw: each closed, and each its own loss. */
-  readonly pagesLost?: readonly {
-    readonly sessionId: BrowserSessionId;
-    readonly surfaceId: BrowserSurfaceId;
-    readonly reason: string;
-  }[];
+  readonly pagesLost?: readonly BrowserPoolPageLoss[];
 }
 
 export type BrowserPoolRuntimePhase =
@@ -92,6 +88,8 @@ export interface BrowserPoolRuntimeState {
   readonly blockers: readonly string[];
   /** Pages ended while sessions were suspended for this park: the park must not commit. */
   readonly dropped?: number;
+  /** Pages a vetoed retire could not thaw: each was closed and is its own loss. */
+  readonly unthawed?: readonly BrowserPoolPageLoss[];
   readonly adoption: {
     readonly cause: "resume" | "release";
     readonly until: number;
@@ -116,6 +114,15 @@ export interface BrowserPoolRuntimeHooks {
   detached(): readonly BrowserSessionId[];
   /** Pages a suspended session opened and that were ended, since the last retire began. */
   dropped(): number;
+  /** Pages a vetoed retire froze and could not thaw, since the last retire began. */
+  unthawed(): readonly BrowserPoolPageLoss[];
+}
+
+/** One page lost on its own: its session is kept. */
+export interface BrowserPoolPageLoss {
+  readonly sessionId: BrowserSessionId;
+  readonly surfaceId: BrowserSurfaceId;
+  readonly reason: string;
 }
 
 export function browserPoolControlBytes(control: BrowserPoolControl): Buffer {
@@ -186,7 +193,12 @@ export class BrowserPoolRuntimeControl {
   }
 
   state(): BrowserPoolRuntimeState {
-    return { ...structuredClone(this.current), dropped: this.hooks.dropped() };
+    const unthawed = this.hooks.unthawed();
+    return {
+      ...structuredClone(this.current),
+      dropped: this.hooks.dropped(),
+      ...(unthawed.length ? { unthawed: structuredClone(unthawed) } : {}),
+    };
   }
 
   get acceptsTraffic(): boolean {

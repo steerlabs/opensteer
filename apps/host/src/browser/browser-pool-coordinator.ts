@@ -611,7 +611,9 @@ export class BrowserPoolCoordinator {
       return "vetoed";
     }
     if (state.phase === "running" && state.cancelled) {
-      await this.#finishRunning(slot, []);
+      // A page the vetoed retire could not thaw was closed: it is that page's loss, with its
+      // note; its session is kept.
+      await this.#finishRunning(slot, pageLosses(state.unthawed ?? []));
       return "vetoed";
     }
     throw new Error(`The runtime is still ${state.phase}.`);
@@ -762,22 +764,6 @@ export class BrowserPoolCoordinator {
     if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
       throw new Error("The browser adoption has no outcome yet.");
     const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
-    // A page that did not thaw is that page's loss with its note; its session is kept.
-    const unthawed = new Map<
-      BrowserSessionId,
-      { surfaceId: string; documentId: string | null }[]
-    >();
-    for (const { sessionId, surfaceId } of outcome.pagesLost ?? [])
-      unthawed.set(sessionId, [
-        ...(unthawed.get(sessionId) ?? []),
-        {
-          surfaceId,
-          documentId:
-            retained.documents.find(
-              (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
-            )?.documentId ?? null,
-        },
-      ]);
     const losses: BrowserPoolSessionLoss[] = [
       ...outcome.lost.map(({ sessionId, reason }) => ({
         sessionId,
@@ -785,12 +771,14 @@ export class BrowserPoolCoordinator {
         surfaces: surfacesOf(retained, sessionId),
       })),
       ...tabLosses.filter(({ sessionId }) => !lostIds.has(sessionId)),
-      ...[...unthawed].map(([sessionId, surfaces]) => ({
-        sessionId,
-        reason: "thaw-failed",
-        surfaces,
-        endSession: false,
-      })),
+      // A page that did not thaw is that page's loss with its note; its session is kept.
+      ...pageLosses(
+        outcome.pagesLost ?? [],
+        (sessionId, surfaceId) =>
+          retained.documents.find(
+            (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
+          )?.documentId ?? null,
+      ),
     ];
     await this.#finishRunning(slot, losses, {
       adopted: outcome.adopted,
@@ -1097,6 +1085,29 @@ function fenceOf(slot: BrowserPoolSlot): BrowserPoolRuntimeFence {
 
 function sameIntent(state: BrowserPoolRuntimeState, slot: BrowserPoolSlot): boolean {
   return state.intent?.id === slot.intentId && state.intent?.sequence === slot.intentSequence;
+}
+
+/** Pages lost on their own, grouped by session, each session kept. */
+function pageLosses(
+  pages: readonly {
+    readonly sessionId: BrowserSessionId;
+    readonly surfaceId: string;
+    readonly reason: string;
+  }[],
+  documentOf: (sessionId: BrowserSessionId, surfaceId: string) => string | null = () => null,
+): BrowserPoolSessionLoss[] {
+  const bySession = new Map<BrowserSessionId, { surfaceId: string; documentId: string | null }[]>();
+  for (const { sessionId, surfaceId } of pages)
+    bySession.set(sessionId, [
+      ...(bySession.get(sessionId) ?? []),
+      { surfaceId, documentId: documentOf(sessionId, surfaceId) },
+    ]);
+  return [...bySession].map(([sessionId, surfaces]) => ({
+    sessionId,
+    reason: "thaw-failed",
+    surfaces,
+    endSession: false,
+  }));
 }
 
 function retainedOf(slot: BrowserPoolSlot | undefined): Retained | undefined {

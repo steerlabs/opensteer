@@ -52,6 +52,7 @@ import {
   BrowserPoolRuntimeControl,
   type BrowserPoolControl,
   type BrowserPoolDocument,
+  type BrowserPoolPageLoss,
   type BrowserPoolRuntimeHooks,
   type BrowserPoolRuntimeOptions,
 } from "./browser-pool.js";
@@ -296,6 +297,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly pool: BrowserPoolRuntimeControl | undefined;
   private readonly poolChannelDeadlineMs: number;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
+  /** Pages a vetoed retire could not thaw since that retire began; each was closed. */
+  private poolUnthawed: BrowserPoolPageLoss[] = [];
   /** The session of each frozen page, so a page that does not thaw is that session's loss. */
   private readonly frozenSessions = new Map<BrowserSurfaceId, BrowserSessionId>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
@@ -472,6 +475,7 @@ export class BrowserRuntime implements NativePresentationSource {
       highestAttempt: (sessions) =>
         Math.max(0, ...sessions.map((id) => this.sessions.get(id)?.poolAttachment ?? 0)),
       dropped: () => this.poolDrops,
+      unthawed: () => this.poolUnthawed,
       detached: () =>
         [...this.sessions.values()]
           .filter((session) => session.poolDetached)
@@ -481,6 +485,7 @@ export class BrowserRuntime implements NativePresentationSource {
 
   private async retireForPool(options: BrowserPoolRuntimeOptions) {
     this.poolDrops = 0;
+    this.poolUnthawed = [];
     try {
       await withTimeout(
         (async () => {
@@ -563,12 +568,12 @@ export class BrowserRuntime implements NativePresentationSource {
         await this.setPoolLifecycle(live, "frozen");
       }
     } catch {
-      await this.thawPoolPages().catch(() => undefined);
+      await this.thawVetoed().catch(() => undefined);
       return ["page-lifecycle-unknown"];
     }
     const after = await boundedProbe("frozen");
     if (after.length) {
-      await this.thawPoolPages();
+      await this.thawVetoed();
       return after;
     }
     // Every live page of every session is kept; nothing a person could lose is ended.
@@ -622,6 +627,12 @@ export class BrowserRuntime implements NativePresentationSource {
       }
     }
     return failed;
+  }
+
+  /** A vetoed retire thaws its pages; one that cannot be thawed is closed and is a loss. */
+  private async thawVetoed(): Promise<void> {
+    for (const { surfaceId, sessionId } of await this.thawPoolPages())
+      if (sessionId) this.poolUnthawed.push({ sessionId, surfaceId, reason: "thaw-failed" });
   }
 
   /** A retained session is adopted only if its current channel is the given attempt's. */
