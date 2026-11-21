@@ -102,7 +102,7 @@ export async function installBrowserPoolSlot(
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("runnerId", "=", target.runnerId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (current) {
         if (!sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
@@ -142,7 +142,7 @@ export async function beginBrowserPoolPark(
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("runnerId", "=", target.runnerId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (!current || !sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
       if (current.intentId === intentId) return current;
@@ -232,7 +232,7 @@ export async function advanceBrowserPoolSlot(
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("runnerId", "=", slot.runnerId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (
         !current ||

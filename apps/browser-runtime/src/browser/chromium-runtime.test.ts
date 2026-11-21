@@ -84,18 +84,16 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: verifier,
     // This fixture owns a single blank document, with no downloads, workers or sites.
-    pool: { term: 1, controllerKey: keys.publicKey, probePage: async () => [] },
+    pool: { controllerKey: keys.publicKey, probePage: async () => [] },
   });
   cleanup.push(() => runtime.shutdown());
-  const fence = runtime.poolState()!.fence;
+  const signed = (request: BrowserPoolControl) =>
+    runtime.controlPool(request, sign(null, browserPoolControlBytes(request), keys.privateKey));
+  let fence = { slot: "slot", term: 1, instance: randomUUID(), epoch: 1 };
   const intent = { id: randomUUID(), sequence: 1 };
-  const control = (kind: BrowserPoolControl["kind"], overrides?: Partial<BrowserPoolControl>) => {
-    const request = { kind, fence, intent, ...overrides };
-    return runtime.controlPool(
-      request,
-      sign(null, browserPoolControlBytes(request), keys.privateKey),
-    );
-  };
+  const control = (kind: BrowserPoolControl["kind"], attempt?: number) =>
+    signed({ kind, fence, intent, ...(attempt ? { attempt } : {}) });
+  await signed({ kind: "install", fence });
   verifier.setClaims("first", { ...claims, pool: { ...fence, attachment: 1 } });
   const first = await runtime.attach("first", new FakeSink());
   const page = (await launch.mock.results[0]?.value)?.context.pages()[0];
@@ -113,29 +111,38 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
   const retired = await control("retire");
   expect(retired).toMatchObject({
     phase: "retired",
-    result: { dropped: [], retained: [expect.any(Object)] },
+    retired: { documents: [expect.any(Object)], sessions: [claims.sessionId] },
   });
-  const documents = retired.result!.retained;
+  const documents = retired.retired!.documents;
   await control("seal");
   await expect(control("release")).rejects.toThrow("park was committed");
-  await expect(control("adopt", { documents: [] })).rejects.toThrow("not ready");
-  const adoption = await control("adopt", { documents });
-  expect(adoption.fence.epoch).toBe(2);
-  expect(await control("adopt", { documents })).toEqual(adoption);
+  // The controller issues the next epoch on resume; adoption installs it.
+  const stale = fence;
+  fence = { ...fence, epoch: 2 };
+  const adoption = await control("adopt");
+  expect(adoption.fence?.epoch).toBe(2);
+  expect(await control("adopt")).toEqual(adoption);
+  verifier.setClaims("old", {
+    ...claims,
+    reattach: true,
+    initialNavigation: undefined,
+    pool: { ...stale, attachment: 2 },
+  });
+  await expect(runtime.attach("old", new FakeSink())).rejects.toThrow("authority has changed");
   verifier.setClaims("fresh", {
     ...claims,
     reattach: true,
-    pool: { ...adoption.fence, attachment: 2 },
+    initialNavigation: undefined,
+    pool: { ...fence, attachment: 2 },
   });
   const view = new FakeSink();
   const attached = await runtime.attach("fresh", view);
   const surfaceId = documents[0]!.surfaceId;
   expect(view.tabs.rows.get(surfaceId)?.documentId).toBe(documents[0]!.documentId);
+  const completed = await control("complete", 2);
+  expect(completed.adoption?.outcome).toEqual({ adopted: [claims.sessionId], lost: [] });
+  expect(await control("complete", 2)).toEqual(completed);
   const subscribe = JSON.stringify({ type: "stream.subscribe", surfaceId });
-  await expect(attached.handle(subscribe)).rejects.toThrow("parked");
-  const completed = await control("complete", { documents, fence: adoption.fence });
-  expect(completed.adoption?.outcome).toEqual({ adopted: documents, lost: [] });
-  expect(await control("complete", { documents, fence: adoption.fence })).toEqual(completed);
   await attached.handle(subscribe);
   await waitFor(() => view.frames.length > 0);
   expect(await page.targetId()).toBe(target);
