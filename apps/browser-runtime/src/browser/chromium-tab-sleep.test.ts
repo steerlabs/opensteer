@@ -598,7 +598,9 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   // If the removal attempt fails (the helper and the target close both refuse), confirmed session
   // end must refuse and keep the restore handle for retry.
   const handle = (
-    launched as unknown as { contextHandle: { closeTarget?: (id: string) => Promise<void> } }
+    launched as unknown as {
+      contextHandle: { closeTarget: ((id: string) => Promise<void>) | undefined };
+    }
   ).contextHandle;
   const closeTarget = handle.closeTarget;
   handle.closeTarget = async () => {
@@ -894,7 +896,9 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   // Fail one removal attempt (helper and target close) -> closeSurface must reject retryably,
   // keep the tab listed, emit no closed event.
   const handle = (
-    launched as unknown as { contextHandle: { closeTarget?: (id: string) => Promise<void> } }
+    launched as unknown as {
+      contextHandle: { closeTarget: ((id: string) => Promise<void>) | undefined };
+    }
   ).contextHandle;
   const closeTarget = handle.closeTarget;
   handle.closeTarget = async () => {
