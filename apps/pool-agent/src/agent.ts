@@ -649,7 +649,11 @@ export class PoolAgent {
    */
   async #prepareCreated(slotId: string, guest: BrowserPoolAgentGuestSpec): Promise<void> {
     try {
-      await this.#step("network", () => this.#driver.prepareSlot(slotId, guest.egress));
+      // Round E, E2: its host tools take the step's signal, and the number stays held until
+      // the prepare ended, so the removal below waits for it.
+      await this.#step("network", (signal) =>
+        this.#driver.prepareSlot(slotId, guest.egress, signal),
+      );
     } catch (error) {
       if (error instanceof DriverStateUncertain) this.#die(error);
       if (error instanceof DeadlineExceeded) {
