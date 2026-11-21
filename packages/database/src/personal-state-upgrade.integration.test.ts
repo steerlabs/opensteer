@@ -93,9 +93,9 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         inlineTranscriptMessagesMigrationName,
         agentGrantsMigrationName,
         agentSessionsMigrationName,
-        "0045_chrome_live_tabs_source",
+        "0046_chrome_live_tabs_source",
         agentDirectoryMigrationName,
-        "0047_shared_chrome_grants",
+        "0048_shared_chrome_grants",
         workHomeMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });

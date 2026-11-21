@@ -64,10 +64,10 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     inlineTranscriptMessagesMigrationName,
     agentGrantsMigrationName,
     agentSessionsMigrationName,
-    "0045_chrome_live_tabs_source",
+    "0046_chrome_live_tabs_source",
     agentDirectoryMigrationName,
-    "0047_shared_chrome_grants",
-    "0048_work_home",
+    "0048_shared_chrome_grants",
+    "0049_work_home",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

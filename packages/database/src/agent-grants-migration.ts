@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-export const agentGrantsMigrationName = "0043_agent_grants";
+export const agentGrantsMigrationName = "0044_agent_grants";
 
 /**
  * Connections carry one grant; everything that can execute later carries its connection. Existing

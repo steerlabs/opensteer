@@ -1967,9 +1967,9 @@ export interface AgentConnectionTable {
   grant: ColumnType<AgentGrant, AgentGrant | undefined, AgentGrant>;
   grantRevision: Generated<number>;
   consentVersion: Generated<number>;
-  /** SHA-256 of the signed client registration the person approved; null before 0043. */
+  /** SHA-256 of the signed client registration the person approved; null before 0044. */
   clientFingerprint: Generated<string | null>;
-  /** The redirect destination the person consented to; null before 0043. */
+  /** The redirect destination the person consented to; null before 0044. */
   redirectUri: Generated<string | null>;
   /** Contact was lost with a handed-off execution in this lineage while it was being stopped. */
   lastActionUncertainAt: Generated<Date | null>;
@@ -1986,7 +1986,7 @@ export interface AgentConnectionTable {
   cleanupCompletedAt: Generated<Date | null>;
   /** The person removed this revoked connection from their list. */
   removedAt: Generated<Date | null>;
-  /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0044. */
+  /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0045. */
   identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
   verificationWithdrawnAt: Generated<Date | null>;
 }

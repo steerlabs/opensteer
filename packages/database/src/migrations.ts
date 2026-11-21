@@ -615,7 +615,7 @@ export function migrationProvider(options?: {
               [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
-              "0045_chrome_live_tabs_source": {
+              "0046_chrome_live_tabs_source": {
                 async up(database: Kysely<unknown>) {
                   await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
                     database,
@@ -623,7 +623,7 @@ export function migrationProvider(options?: {
                 },
               },
               [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
-              "0047_shared_chrome_grants": {
+              "0048_shared_chrome_grants": {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table browser_source_pairings add column device_id text;
