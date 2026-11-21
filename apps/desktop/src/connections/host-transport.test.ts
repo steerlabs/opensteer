@@ -2137,6 +2137,108 @@ describe("DesktopHostTransport", () => {
     }
   });
 
+  it("records stream errors only for app-origin streams that fail before their body ends", async () => {
+    const personal = deployment("Mac mini", routeOrigin, "personal");
+    const other = deployment("Other Mac", "http://127.0.0.1:43111", "personal");
+    const deploymentId = personal.authority.document.deploymentId;
+    const catalog = catalogStore([personal, other], deploymentId);
+    const mode: { current: "stall" | "complete-body" } = { current: "stall" };
+    const started = Promise.withResolvers<void>();
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () => {
+          if (mode.current === "complete-body") {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode("{}"));
+                  controller.close();
+                },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+          started.resolve();
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("{"));
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json", "content-length": "128" },
+            },
+          );
+        },
+      },
+    });
+    try {
+      // 1. Main's own caller (no initiatorOrigin) failing mid-body leaves nothing in #streamErrors.
+      const mainRequestId = "00000000-0000-4000-8000-000000000101";
+      const mainResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": mainRequestId },
+        }),
+      );
+      await started.promise;
+      await catalog.select(other.authority.document.deploymentId);
+      await transport.selection();
+      await expect(mainResponse.text()).rejects.toThrow();
+      expect(await transport.takeStreamError(mainRequestId)).toBeNull();
+
+      // Re-select personal for the next two checks.
+      await catalog.select(deploymentId);
+      await transport.selection();
+
+      // 2. App-origin stream cancelled by cancelForwardedRequests leaves nothing in #streamErrors.
+      const cancelledId = "00000000-0000-4000-8000-000000000102";
+      const cancelledRequest = Object.assign(
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": cancelledId },
+        }),
+        { initiatorOrigin: "app://opensteer" },
+      );
+      const cancelledResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        cancelledRequest,
+      );
+      transport.cancelForwardedRequests();
+      await expect(cancelledResponse.text()).rejects.toThrow();
+      expect(await transport.takeStreamError(cancelledId)).toBeNull();
+
+      // 3. App-origin stream whose body already ended before post-body assertCurrent throws leaves nothing.
+      mode.current = "complete-body";
+      const finishedId = "00000000-0000-4000-8000-000000000103";
+      const finishedRequest = Object.assign(
+        new Request(`app://opensteer/host/${deploymentId}/v1/rpc/auth.config?input=%7B%7D`, {
+          headers: { "x-opensteer-desktop-request": finishedId },
+        }),
+        { initiatorOrigin: "app://opensteer" },
+      );
+      const finishedResponse = await transport.forward(
+        deploymentId,
+        "/v1/rpc/auth.config?input=%7B%7D",
+        finishedRequest,
+      );
+      const reader = finishedResponse.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toBe("{}");
+      const end = await reader.read();
+      expect(end.done).toBe(true);
+      // Close deployment connections right as the body ends so post-body assertCurrent throws.
+      transport.closeDeploymentConnections(deploymentId);
+      expect(await transport.takeStreamError(finishedId)).toBeNull();
+    } finally {
+      transport.dispose();
+    }
+  });
+
   /**
    * The regression this phase exists to fix: at the keyboard of the computer
    * that hosts a Personal Deployment, the attachment is `owner` and provider

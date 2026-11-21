@@ -43,6 +43,7 @@ import {
   DesktopCloseHostWebSocketInputSchema,
   DesktopDeploymentSelectionSchema,
   desktopHostRequestIdHeader,
+  desktopHostRouteOrigin,
   DesktopHostRequestIdSchema,
   DesktopHostTransportErrorCodeSchema,
   type DesktopHostTransportErrorCode,
@@ -430,15 +431,16 @@ export class DesktopHostTransport extends HostTransport {
     return transportFailure(error);
   }
 
-  #recordStreamError(id: string, path: string, error: unknown): void {
+  #recordStreamError(id: string, path: string, error: unknown, fromAppOrigin: boolean): void {
     this.#logRefusal(path, error);
+    if (!fromAppOrigin) return;
     const code =
       error instanceof HostTransportError
         ? DesktopHostTransportErrorCodeSchema.safeParse(error.code)
         : error instanceof HostRouteUnavailableError
           ? { success: true as const, data: "unreachable" as const }
           : { success: false as const };
-    if (!code.success) return;
+    if (!code.success || code.data === "cancelled") return;
     this.#streamErrors.set(id, code.data);
     if (this.#streamErrors.size > 256)
       this.#streamErrors.delete(this.#streamErrors.keys().next().value!);
@@ -528,11 +530,14 @@ export class DesktopHostTransport extends HostTransport {
     const command =
       pathname === "/v1/rpc/commands.dispatch" && body ? enrollmentCommand(body) : null;
     if (command) return this.#forwardEnrollment(transport, command, forwarded);
+    const fromAppOrigin =
+      ("initiatorOrigin" in request ? request.initiatorOrigin : undefined) ===
+      desktopHostRouteOrigin;
     const relayed = relay(
       transport,
       forwarded,
       (error) => this.#refused(path, error),
-      (error) => this.#recordStreamError(requestId, path, error),
+      (error) => this.#recordStreamError(requestId, path, error, fromAppOrigin),
     );
     relaying(relayed.settled);
     return relayed.response;
@@ -1163,11 +1168,13 @@ function relay(
 ): { readonly response: Promise<Response>; readonly settled: Promise<void> } {
   const ready = Promise.withResolvers<Response>();
   let headersSent = false;
+  let bodyEnded = false;
   const settled = transport
     .exchange(request, async (response, progress) => {
       const init = { status: response.status, headers: responseHeaders(response.headers) };
       if (!response.body || [204, 205, 304].includes(response.status)) {
         headersSent = true;
+        bodyEnded = true;
         ready.resolve(new Response(null, init));
         return;
       }
@@ -1178,10 +1185,12 @@ function relay(
       headersSent = true;
       ready.resolve(new Response(body, init));
       await done;
+      bodyEnded = true;
     })
     .catch((error: unknown) => {
-      if (headersSent) streamFailed(error);
-      else ready.resolve(refused(error));
+      if (headersSent) {
+        if (!bodyEnded) streamFailed(error);
+      } else ready.resolve(refused(error));
     });
   return { response: ready.promise, settled };
 }
