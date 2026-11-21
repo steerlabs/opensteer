@@ -1133,8 +1133,10 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
+    // Before Chromium writes its clean session, the map is brought current within a bound, and a
+    // map that still is not current is deleted rather than left beside that session.
+    await this.contextHandle.flushSidecarBeforeClose();
     this.contextHandle.markClosed();
-    // Before Chromium writes its clean session: a map that is not current must not survive it.
     await this.contextHandle.retireSidecarBeforeClose();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
@@ -1181,6 +1183,8 @@ const wakeDiscardedTabMs = 10_000;
 const sidecarFailureBound = 3;
 /** How long close waits for a map write in flight before deleting the map. */
 const sidecarCloseWaitMs = 500;
+/** How long close tries to bring a map that is not current up to date first. */
+const sidecarCloseFlushMs = 1_500;
 /** How long a claim waits for a parked run on its surface before giving the tab up. */
 const claimQueueWaitMs = 6_000;
 /** Looks at an arriving page that cannot be identified at once, about 300 ms apart, then closes it. */
@@ -2654,6 +2658,14 @@ class PlaywrightContextHandle implements BrowserContext {
       await this.flushSavedTabs().catch(() => undefined);
     }
     if (this.sidecarDirty && !this.closed) await this.deleteSidecarMap("flush-not-current");
+  }
+
+  /** A close's last write of a map that is not current, bounded; `retireSidecarBeforeClose` follows. */
+  async flushSidecarBeforeClose(): Promise<void> {
+    if (!this.lifecycle || !this.profileDirectory || this.closed || !this.sidecarDirty) return;
+    await withTimeout(this.flushSavedTabsOrDeleteMap(), sidecarCloseFlushMs, {
+      timeoutError: () => new Error("Tab map flush did not finish before close."),
+    }).catch(() => undefined);
   }
 
   /**
