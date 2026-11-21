@@ -125,8 +125,12 @@ for the repository settings.
 
 For manual runs, `RESTIC_REPOSITORY_FILE`, `RESTIC_PASSWORD_FILE`,
 `AWS_ACCESS_KEY_ID_FILE` and `AWS_SECRET_ACCESS_KEY_FILE` accept alternate file
-paths. `sudo opensteer-home backup` stops application services through the
-PostgreSQL dump, file reads, and encrypted restic upload. Downtime depends on
+paths. Before it stops anything, `sudo opensteer-home backup` checks for up to
+30 seconds that the repository can be reached and written. If it cannot, the
+backup fails with restic's own message and the Home keeps running. Otherwise it
+stops application services through the PostgreSQL dump, file reads, and
+encrypted restic upload, printing each step and the upload's progress. If it
+fails after stopping them, it starts them again and says so. Downtime depends on
 the data and repository. A scheduled attempt can fail, and an uploaded snapshot
 can exist even if the Account report fails. Keep the repository password and
 access credentials available independently of the original VM.

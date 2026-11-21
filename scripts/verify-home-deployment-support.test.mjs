@@ -332,6 +332,109 @@ function runRecovery(script) {
   );
 }
 
+function runHome(script) {
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      `
+    set -euo pipefail
+    OPENSTEER_HOME_DIR=$(mktemp -d)
+    export OPENSTEER_HOME_DIR
+    trap 'command rm -rf -- "$OPENSTEER_HOME_DIR"' EXIT
+    source deploy/home/common.sh
+    sync() { :; }
+    ${script}
+  `,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
+const backupHarness = (restic) => `
+    source deploy/home/backup.sh
+    backup_config() { :; }
+    restore_state() { volume_set=proof; identity_secrets="$home_dir"; }
+    compose() {
+      if [[ $1 == config ]]; then printf '%s' '{"name":"proof","services":{"gateway":{"environment":{"OPENSTEER_HOME_HOSTNAME":"home.example.test"}}}}'
+      else echo "compose $*"; fi
+    }
+    durable_marker() { :; }
+    postgres_tool() { echo database; }
+    start_pod() { echo started; }
+    touch "$home_dir/auth_secret" "$home_dir/environment_id"
+    action=backup
+    restic_container() {
+      ${restic}
+    }
+    backup_command backup
+`;
+
+await test("a backup whose repository cannot be reached fails before it stops the Home", () => {
+  const unreachable = runHome(
+    backupHarness(`
+      if [[ $1 == *"probe snapshots"* ]]; then
+        echo 'Fatal: unable to open config file: Stat: dial tcp 192.0.2.1:443: connect: connection refused' >&2
+        return 1
+      fi
+      echo "unexpected restic $*"`),
+  );
+  assert.notEqual(unreachable.status, 0);
+  assert.doesNotMatch(unreachable.stdout, /compose stop|database|started|unexpected/u);
+  assert.match(
+    unreachable.stdout,
+    /^Checking that the backup repository can be reached and written\.\n$/u,
+  );
+  assert.match(unreachable.stderr, /connection refused/u);
+  assert.match(
+    unreachable.stderr,
+    /The backup repository could not be reached or written\. The Home was not stopped\./u,
+  );
+});
+
+await test("a backup shows its progress and says it started the Home again after a late failure", () => {
+  const status = JSON.stringify({
+    message_type: "status",
+    percent_done: 0.5,
+    files_done: 3,
+    total_files: 6,
+  });
+  const summary = JSON.stringify({ message_type: "summary", snapshot_id: "0123abcd" });
+  const saved = runHome(
+    backupHarness(`
+      if [[ $1 == *"probe snapshots"* ]]; then return 0; fi
+      printf '%s\\n%s\\n' ${quote(status)} ${quote(summary)}`),
+  );
+  assert.equal(saved.status, 0, saved.stderr);
+  assert.equal(
+    saved.stdout,
+    [
+      "Checking that the backup repository can be reached and written.",
+      "Stopping Home services to capture the database and files together.",
+      "compose stop host gateway runner browser-runtime browser-egress channel-runtime",
+      "Saving the database.",
+      "Uploading the encrypted snapshot.",
+      "Uploaded 50% (3 of 6 files)",
+      "snapshot 0123abcd saved",
+      "Starting Home services.",
+      "started",
+      "",
+    ].join("\n"),
+  );
+  const failed = runHome(
+    backupHarness(`
+      if [[ $1 == *"probe snapshots"* ]]; then return 0; fi
+      echo 'Fatal: unable to save snapshot: connection reset by peer' >&2
+      return 1`),
+  );
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stdout, /compose stop .*\n.*started\n$/su);
+  assert.match(
+    failed.stderr,
+    /connection reset by peer\nThe backup did not finish after Home services were stopped\. Starting them again\.\nHome services were started again\.\n/u,
+  );
+});
+
 await test("restore rollback reselects the previous volume set before restarting the Home", () => {
   const output = runRecovery(`${restoreJournal}
     compose() { printf '%s %s\\n' "\${stage_project:-live}" "$*"; }

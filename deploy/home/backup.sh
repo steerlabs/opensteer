@@ -48,6 +48,14 @@ restic_script='
       restic --no-cache "$@"
     fi
   }
+  # restic retries an unreachable repository for many minutes; the check gives up after 30s.
+  probe() {
+    if [ -f /backups/ca.pem ]; then
+      timeout 30 restic --no-cache --cacert /backups/ca.pem "$@"
+    else
+      timeout 30 restic --no-cache "$@"
+    fi
+  }
 '
 
 postgres_tool() {
@@ -80,23 +88,41 @@ report_backup() {
   [[ $status == 204 ]] || fail "Backup saved. The Opensteer account refused the report (HTTP $status)."
 }
 
+# Reads the repository and takes and releases a restic lock in it, which writes to it, before
+# anything is stopped. restic's own message explains a failure.
+check_backup_repository() {
+  echo 'Checking that the backup repository can be reached and written.'
+  if ! restic_container "$restic_script"'
+    probe cat config >/dev/null || probe init >/dev/null || exit
+    probe snapshots --latest 1 >/dev/null
+  ' >&2; then
+    fail 'The backup repository could not be reached or written. The Home was not stopped.'
+  fi
+}
+
 backup_home() {
   local snapshot_id completed_at
+  check_backup_repository
   echo 'Stopping Home services to capture the database and files together.'
   durable_marker "$home_dir/backup.resume"
   resume_after_backup=true
   compose stop "${services[@]}"
+  echo 'Saving the database.'
   postgres_tool pg_dump --format=custom > "$staging/database.dump"
   cp "$identity_secrets/"{auth_secret,environment_id} "$staging/"
   volume_mounts /snapshot/volumes ,readonly
+  echo 'Uploading the encrypted snapshot.'
   restic_container "$restic_script"'
-    snapshot cat config >/dev/null 2>&1 || snapshot init >&2 || exit
+    export RESTIC_PROGRESS_FPS=0.2
     snapshot backup --json --host "$1" --tag opensteer-home \
       /snapshot/database.dump /snapshot/auth_secret /snapshot/environment_id /snapshot/volumes
-  ' "$hostname" > "$staging/restic-result.jsonl"
+  ' "$hostname" | tee "$staging/restic-result.jsonl" | jq --unbuffered -r '
+    select(.message_type == "status") |
+    "Uploaded \((.percent_done // 0) * 100 | floor)% (\(.files_done // 0) of \(.total_files // 0) files)"'
   completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   snapshot_id=$(jq -ser '.[] | select(.message_type == "summary") | .snapshot_id | select(test("^[0-9a-f]{8,64}$"))' "$staging/restic-result.jsonl")
   printf 'snapshot %s saved\n' "$snapshot_id"
+  echo 'Starting Home services.'
   start_pod
   rm -f -- "$home_dir/backup.resume"
   resume_after_backup=false
@@ -316,8 +342,10 @@ cleanup_backup() {
   fi
   rm -rf -- "$staging"
   if ${resume_after_backup:-false}; then
+    echo 'The backup did not finish after Home services were stopped. Starting them again.' >&2
     if start_pod; then
       rm -f -- "$home_dir/backup.resume"
+      echo 'Home services were started again.' >&2
     else
       echo 'Could not restart the Home after backup.' >&2
       result=1
