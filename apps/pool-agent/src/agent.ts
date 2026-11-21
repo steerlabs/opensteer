@@ -69,6 +69,11 @@ export interface PoolAgentOptions {
   readonly log?: (event: Readonly<Record<string, unknown>>) => void;
   /** Tests stop the agent dead at a named point, as a crash there would. */
   readonly checkpoint?: (point: string) => void;
+  /**
+   * A journal write failed or its outcome is uncertain: the agent stops serving and this is
+   * called. The daemon exits; the service manager starts it again and recovery reads the disk.
+   */
+  readonly fatal?: (error: unknown) => void;
 }
 
 interface Slot {
@@ -290,8 +295,7 @@ export class PoolAgent {
       await this.#kill(slot);
       if (slot.record.saved) await this.#driver.discard(slotId, slot.record.saved.id);
       await this.#driver.removeSlot(slotId);
-      this.#guardAlive();
-      await this.#journal.remove(slotId);
+      await this.#removeRecord(slotId);
       this.#slots.delete(slotId);
       this.#log({ event: "slot.deleted", slotId });
       return true;
@@ -574,8 +578,7 @@ export class PoolAgent {
       reason,
       message: messageOf(error),
     });
-    await this.#lose(slot);
-    return this.#store(slot, slot.record, refused(call.id, reason, slot.record));
+    return (await this.#lose(slot, { answer: { id: call.id, reason } }))!;
   }
 
   // ---- Parked guests: the idle save and the discard ----------------------------------------
@@ -706,13 +709,12 @@ export class PoolAgent {
     const record = slot.record;
     if (record.incarnation !== null && record.incarnation !== this.#incarnation) {
       // A host restart ended every VMM and re-keyed the saved-state array.
-      await this.#lose(slot, { incarnation: null });
-      if (record.pending?.kind === "call")
-        await this.#store(
-          slot,
-          slot.record,
-          refused(record.pending.call.id, "host-restarted", slot.record),
-        );
+      await this.#lose(slot, {
+        extra: { incarnation: null },
+        ...(record.pending?.kind === "call"
+          ? { answer: { id: record.pending.call.id, reason: "host-restarted" } }
+          : {}),
+      });
       return;
     }
     const pending = record.pending;
@@ -737,9 +739,9 @@ export class PoolAgent {
         await this.#store(slot, slot.record, refused(pending.call.id, "interrupted", slot.record));
         return;
       }
-      // A start, pause or resume that may have done part of its work: the guest is ended.
-      await this.#lose(slot);
-      await this.#store(slot, slot.record, refused(pending.call.id, "interrupted", slot.record));
+      // A start, pause or resume that may have done part of its work: the guest is ended, and
+      // its answer is stored in that same write.
+      await this.#lose(slot, { answer: { id: pending.call.id, reason: "interrupted" } });
       return;
     }
     if (pending.kind === "discard") {
@@ -811,7 +813,14 @@ export class PoolAgent {
    * Live state is gone or cannot be trusted: end every process, delete the saved state, and
    * leave the slot stopped. The instance is kept, so the next start is visibly a new one.
    */
-  async #lose(slot: Slot, extra: Partial<SlotRecord> = {}): Promise<void> {
+  async #lose(
+    slot: Slot,
+    options: {
+      readonly extra?: Partial<SlotRecord>;
+      /** Rule S1: the call this recovery answers, stored in the same write as the stop. */
+      readonly answer?: { readonly id: string; readonly reason: string };
+    } = {},
+  ): Promise<BrowserPoolAgentResult | undefined> {
     this.#unschedule(slot);
     await within(this.#deadlines.network, "Closing the guest network", () =>
       this.#driver.closeNetwork(slot.record.slotId),
@@ -827,16 +836,23 @@ export class PoolAgent {
     const saved = slot.record.saved;
     if (saved) await this.#driver.discard(slot.record.slotId, saved.id);
     const lost = slot.record.phase !== "stopped" || saved !== null;
-    await this.#commit(slot, {
+    const stopped: SlotRecord = {
       ...slot.record,
       phase: "stopped",
       epoch: lost ? null : slot.record.epoch,
       saved: null,
       jailId: null,
       pending: null,
-      ...extra,
+      ...options.extra,
       effects: lost ? bounded([...slot.record.effects, "lost"]) : slot.record.effects,
-    });
+    };
+    if (!options.answer) {
+      await this.#commit(slot, stopped);
+      return undefined;
+    }
+    const result = refused(options.answer.id, options.answer.reason, stopped);
+    await this.#commit(slot, this.#withResult(stopped, result));
+    return result;
   }
 
   /**
@@ -909,19 +925,24 @@ export class PoolAgent {
     result: BrowserPoolAgentResult,
     effect?: string,
   ): Promise<BrowserPoolAgentResult> {
+    await this.#commit(slot, this.#withResult(next, result, effect));
+    return result;
+  }
+
+  /** The record with this answer stored and no step open. */
+  #withResult(next: SlotRecord, result: BrowserPoolAgentResult, effect?: string): SlotRecord {
     const now = this.#now();
     const retention = this.#options.resultRetentionMs ?? 24 * 60 * 60_000;
     const results = [
       ...next.results.filter((entry) => now - entry.at < retention),
       { at: now, result },
     ];
-    await this.#commit(slot, {
+    return {
       ...next,
       pending: null,
       results: results.slice(-maximumResults),
       effects: effect ? bounded([...next.effects, effect]) : next.effects,
-    });
-    return result;
+    };
   }
 
   async #commit(slot: Slot, record: SlotRecord): Promise<void> {
@@ -929,9 +950,34 @@ export class PoolAgent {
     slot.record = record;
   }
 
+  /**
+   * Rule S2: a write that fails, before or after its rename, ends the agent. Nothing continues
+   * on an in-memory record the disk may not hold; the next agent reads what is on disk.
+   */
   async #write(record: SlotRecord): Promise<void> {
     this.#guardAlive();
-    await this.#journal.write(record);
+    try {
+      await this.#journal.write(record);
+    } catch (error) {
+      this.#die(error);
+    }
+  }
+
+  async #removeRecord(slotId: string): Promise<void> {
+    this.#guardAlive();
+    try {
+      await this.#journal.remove(slotId);
+    } catch (error) {
+      this.#die(error);
+    }
+  }
+
+  #die(error: unknown): never {
+    this.#dead = true;
+    this.close();
+    this.#log({ event: "agent.journal-failed", message: messageOf(error) });
+    this.#options.fatal?.(error);
+    throw new AgentCrashed("A journal write failed: the agent stops and recovery reads the disk.");
   }
 
   #guardAlive(): void {

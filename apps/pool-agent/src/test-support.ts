@@ -22,7 +22,7 @@ export interface TestPoolAgent {
   readonly directory: string;
   readonly url: string;
   /** Kills this agent (its timers and server) and starts a new one on the same journal and driver. */
-  restart(options?: Partial<PoolAgentOptions>): Promise<TestPoolAgent>;
+  restart(options?: TestPoolAgentOptions): Promise<TestPoolAgent>;
   close(): Promise<void>;
 }
 
@@ -65,14 +65,16 @@ export class FaultyJournal extends SlotJournal {
   }
 }
 
+export type TestPoolAgentOptions = Partial<PoolAgentOptions> & {
+  readonly directory?: string;
+  readonly driver?: FakeHypervisorDriver;
+  readonly faultyJournal?: boolean;
+  /** Armed before the agent starts, so its own recovery writes can fail. */
+  readonly journalFault?: { readonly when: "before" | "after"; readonly skip: number };
+};
+
 export async function startTestPoolAgent(
-  options: Partial<PoolAgentOptions> & {
-    readonly directory?: string;
-    readonly driver?: FakeHypervisorDriver;
-    readonly faultyJournal?: boolean;
-    /** Armed before the agent starts, so its own recovery writes can fail. */
-    readonly journalFault?: { readonly when: "before" | "after"; readonly skip: number };
-  } = {},
+  options: TestPoolAgentOptions = {},
 ): Promise<TestPoolAgent> {
   const directory = options.directory ?? (await mkdtemp(join(tmpdir(), "opensteer-pool-agent-")));
   const driver = options.driver ?? new FakeHypervisorDriver();

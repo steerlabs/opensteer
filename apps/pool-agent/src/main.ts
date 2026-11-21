@@ -29,6 +29,15 @@ async function main(): Promise<void> {
     saveAfterMs: config.saveAfterSeconds === null ? null : config.saveAfterSeconds * 1000,
     maxConcurrentSaves: config.maxConcurrentSaves,
     log,
+    // Rule S2: a failed journal write ends the process; systemd starts it again
+    // (Restart=always) and the new agent's recovery reads the disk. Guests keep running.
+    fatal: (error: unknown) => {
+      log({
+        event: "agent.fatal",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.exit(70);
+    },
     ...(crashAt
       ? {
           checkpoint: (point: string) => {
