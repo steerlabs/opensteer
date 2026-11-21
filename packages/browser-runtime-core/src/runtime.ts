@@ -309,6 +309,7 @@ export class BrowserRuntime implements NativePresentationSource {
         this.standardCdpBootId,
         () => this.retireForPool(pool),
         () => this.thawPoolPages(),
+        (documents) => this.completePoolAdoption(documents),
       );
     }
     this.pages = new PageOwnership({ onDiagnostic: options.onPageDiagnostic });
@@ -426,9 +427,17 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.pool.apply(control, signature);
   }
 
-  private requirePoolTraffic(claims?: BrowserAttachTicketClaims): void {
+  private requirePoolTraffic(claims?: BrowserAttachTicketClaims, adoptionAttach = false): void {
     if (this.pool) {
-      if (!this.pool.acceptsTraffic)
+      if (
+        !this.pool.acceptsTraffic &&
+        !(
+          adoptionAttach &&
+          claims?.reattach &&
+          claims.actor === "person" &&
+          this.pool.canAdopt(claims.sessionId)
+        )
+      )
         throw new BrowserRuntimeError("conflict", "The browser is parked.");
       if (claims) this.pool.checkFence(claims.pool);
     } else if (claims?.pool) {
@@ -573,6 +582,53 @@ export class BrowserRuntime implements NativePresentationSource {
       if (!live.page.isClosed()) await this.setPoolLifecycle(live, "active");
       this.frozenPages.delete(id);
     }
+  }
+
+  private async completePoolAdoption(documents: readonly BrowserPoolDocument[]) {
+    await this.lanes.drain();
+    const retained = this.pool?.state().adoption?.retained;
+    if (!retained) throw new BrowserRuntimeError("conflict", "Browser adoption is not active.");
+    const adopted: BrowserPoolDocument[] = [];
+    const lost: BrowserPoolDocument[] = [];
+    const sessionIds = new Set(retained.map((document) => document.sessionId));
+    for (const sessionId of sessionIds) {
+      const session = this.sessions.get(sessionId);
+      const expected = retained.filter((document) => document.sessionId === sessionId);
+      const allowed = new Set(
+        documents
+          .filter((document) => document.sessionId === sessionId)
+          .map((document) => document.surfaceId),
+      );
+      const records = new Map(
+        [...(session?.ledger.policyRecords() ?? [])]
+          .filter((record) => record.live && !record.live.page.isClosed())
+          .map((record) => [record.id, record]),
+      );
+      if (
+        session &&
+        !session.poolDetached &&
+        expected.length === records.size &&
+        expected.every((document) => {
+          const record = records.get(document.surfaceId);
+          return (
+            allowed.has(document.surfaceId) &&
+            record?.documentId === document.documentId &&
+            record.live?.commitSequence === document.pageRevision
+          );
+        })
+      ) {
+        adopted.push(...expected);
+      } else {
+        if (session) {
+          session.poolDetached = true;
+          await session.controller.detachForPool();
+          await this.detach(sessionId, session.generation, true, false, true);
+        }
+        lost.push(...expected);
+      }
+    }
+    await this.thawPoolPages();
+    return { adopted, lost };
   }
 
   prepare(): Promise<void> {
@@ -994,7 +1050,7 @@ export class BrowserRuntime implements NativePresentationSource {
       }
     };
     const verified = await wait(this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }));
-    this.requirePoolTraffic(verified);
+    this.requirePoolTraffic(verified, true);
     if (verified.standardCdp)
       throw new BrowserRuntimeError("forbidden", "This ticket is for the standard CDP endpoint.");
     const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
@@ -1019,7 +1075,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.lanes.run(hostKey, async () => {
       timing("lane-wait", queued);
       signal.throwIfAborted();
-      this.requirePoolTraffic(claims);
+      this.requirePoolTraffic(claims, true);
       if (this.shuttingDown || this.state === "closed") {
         throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
       }
@@ -1040,7 +1096,10 @@ export class BrowserRuntime implements NativePresentationSource {
         const held = this.sessions.get(claims.sessionId);
         if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
           throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
-        if (held?.poolDetached) return wait(this.reattachAfterPool(held, claims, sink, attachment));
+        if (held && (held.poolDetached || this.pool.canAdopt(claims.sessionId)))
+          return wait(this.reattachAfterPool(held, claims, sink, attachment));
+        if (!this.pool.acceptsTraffic)
+          throw new BrowserRuntimeError("not_found", "The retained Browser Session has ended.");
         if (held) held.poolAttachment = attachment;
       }
       if (claims.reattach && active?.sessionId !== claims.sessionId)
@@ -1304,6 +1363,11 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new BrowserRuntimeError("forbidden", "This ticket cannot adopt the retained session.");
 
     session.poolAttachment = attachment;
+    if (!session.poolDetached) {
+      session.poolDetached = true;
+      await session.controller.detachForPool();
+      await session.host.router.unregisterSession(session.sessionId, true);
+    }
     const [root, ...others] = session.ledger.resumeAfterRelayRestart();
     if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const router = session.host.router;

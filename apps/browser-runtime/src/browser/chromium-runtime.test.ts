@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -21,6 +21,8 @@ import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserController,
   BrowserRuntime,
+  browserPoolControlBytes,
+  type BrowserPoolControl,
   SessionFiles,
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
@@ -65,6 +67,91 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+
+it("adopts a frozen Chromium document, streams it, and edits its unsent draft", async () => {
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const launch = vi.spyOn(launcher, "launch");
+  const claims = validClaims({ actor: "person", creationOrigin: "person", tabRestoreVersion: 1 });
+  const keys = generateKeyPairSync("ed25519");
+  const verifier = new FakeTicketVerifier(claims);
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+    // This fixture owns a single blank document, with no downloads, workers or sites.
+    pool: { term: 1, controllerKey: keys.publicKey, probePage: async () => [] },
+  });
+  cleanup.push(() => runtime.shutdown());
+  const fence = runtime.poolState()!.fence;
+  const intent = { id: randomUUID(), sequence: 1 };
+  const control = (kind: BrowserPoolControl["kind"], overrides?: Partial<BrowserPoolControl>) => {
+    const request = { kind, fence, intent, ...overrides };
+    return runtime.controlPool(
+      request,
+      sign(null, browserPoolControlBytes(request), keys.privateKey),
+    );
+  };
+  verifier.setClaims("first", { ...claims, pool: { ...fence, attachment: 1 } });
+  const first = await runtime.attach("first", new FakeSink());
+  const page = (await launch.mock.results[0]?.value)?.context.pages()[0];
+  if (!page) throw new Error("Missing initial page");
+  const cdp = await page.cdp();
+  const target = await page.targetId();
+  await cdp.send("Runtime.evaluate", {
+    expression:
+      "document.body.innerHTML = '<input>'; document.querySelector('input').focus(); window.marker = 99;",
+  });
+  await cdp.send("Input.insertText", { text: "unsent draft" });
+  await first.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  const retired = await control("retire");
+  expect(retired).toMatchObject({
+    phase: "retired",
+    result: { dropped: [], retained: [expect.any(Object)] },
+  });
+  const documents = retired.result!.retained;
+  await control("seal");
+  await expect(control("release")).rejects.toThrow("park was committed");
+  await expect(control("adopt", { documents: [] })).rejects.toThrow("not ready");
+  const adoption = await control("adopt", { documents });
+  expect(adoption.fence.epoch).toBe(2);
+  expect(await control("adopt", { documents })).toEqual(adoption);
+  verifier.setClaims("fresh", {
+    ...claims,
+    reattach: true,
+    pool: { ...adoption.fence, attachment: 2 },
+  });
+  const view = new FakeSink();
+  const attached = await runtime.attach("fresh", view);
+  const surfaceId = documents[0]!.surfaceId;
+  expect(view.tabs.rows.get(surfaceId)?.documentId).toBe(documents[0]!.documentId);
+  const subscribe = JSON.stringify({ type: "stream.subscribe", surfaceId });
+  await expect(attached.handle(subscribe)).rejects.toThrow("parked");
+  const completed = await control("complete", { documents, fence: adoption.fence });
+  expect(completed.adoption?.outcome).toEqual({ adopted: documents, lost: [] });
+  expect(await control("complete", { documents, fence: adoption.fence })).toEqual(completed);
+  await attached.handle(subscribe);
+  await waitFor(() => view.frames.length > 0);
+  expect(await page.targetId()).toBe(target);
+  const draft = async () =>
+    evaluationValue(
+      await cdp.send("Runtime.evaluate", {
+        expression: "JSON.stringify([document.querySelector('input').value, window.marker])",
+        returnByValue: true,
+      }),
+    );
+  expect(await draft()).toBe('["unsent draft",99]');
+  await cdp.send("Input.insertText", { text: " edited" });
+  expect(await draft()).toBe('["unsent draft edited",99]');
+  expect(launch).toHaveBeenCalledTimes(1);
+});
+
 it("keeps the person's live page state through Stop and Resume", async () => {
   const launcher = new PlaywrightChromiumLauncher({
     chromiumSandbox: false,

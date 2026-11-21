@@ -23,9 +23,10 @@ export interface BrowserPoolRuntimeFence {
 }
 
 export interface BrowserPoolControl {
-  readonly kind: "retire" | "release";
+  readonly kind: "retire" | "release" | "seal" | "adopt" | "complete";
   readonly fence: BrowserPoolRuntimeFence;
   readonly intent: BrowserPoolIntent;
+  readonly documents?: readonly BrowserPoolDocument[];
 }
 
 export interface BrowserPoolDocument {
@@ -44,11 +45,38 @@ export interface BrowserPoolRetainedSet {
 export interface BrowserPoolRuntimeState {
   readonly fence: BrowserPoolRuntimeFence;
   readonly revision: number;
-  readonly phase: "running" | "retiring" | "retired" | "releasing";
+  readonly phase:
+    "running" | "retiring" | "retired" | "releasing" | "sealed" | "adopting" | "completing";
   readonly intent: BrowserPoolIntent | null;
   readonly cancelled: boolean;
   readonly result: BrowserPoolRetainedSet | null;
   readonly blockers: readonly string[];
+  readonly adoption: {
+    readonly until: number;
+    readonly retained: readonly BrowserPoolDocument[];
+    readonly completion: readonly BrowserPoolDocument[] | null;
+    readonly outcome: BrowserPoolAdoptionOutcome | null;
+  } | null;
+}
+
+export interface BrowserPoolAdoptionOutcome {
+  readonly adopted: readonly BrowserPoolDocument[];
+  readonly lost: readonly BrowserPoolDocument[];
+}
+
+function documentKeys(documents: readonly BrowserPoolDocument[]): string[] {
+  return documents
+    .map(({ sessionId, surfaceId, documentId, pageRevision, typed }) =>
+      JSON.stringify([sessionId, surfaceId, documentId, pageRevision, typed]),
+    )
+    .sort();
+}
+
+function sameDocuments(
+  left: readonly BrowserPoolDocument[],
+  right: readonly BrowserPoolDocument[],
+) {
+  return JSON.stringify(documentKeys(left)) === JSON.stringify(documentKeys(right));
 }
 
 export function browserPoolControlBytes(control: BrowserPoolControl): Buffer {
@@ -62,6 +90,7 @@ export function browserPoolControlBytes(control: BrowserPoolControl): Buffer {
       fence.epoch,
       intent.sequence,
       intent.id,
+      control.documents ? documentKeys(control.documents) : null,
     ]),
   );
 }
@@ -71,6 +100,9 @@ export class BrowserPoolRetirement {
   private readonly key: KeyObject;
   private readonly retire: () => Promise<BrowserPoolRetainedSet | readonly string[]>;
   private readonly release: () => Promise<void>;
+  private readonly complete: (
+    documents: readonly BrowserPoolDocument[],
+  ) => Promise<BrowserPoolAdoptionOutcome>;
   private current: BrowserPoolRuntimeState;
 
   constructor(
@@ -79,12 +111,14 @@ export class BrowserPoolRetirement {
     instance: string,
     retire: () => Promise<BrowserPoolRetainedSet | readonly string[]>,
     release: () => Promise<void>,
+    complete: (documents: readonly BrowserPoolDocument[]) => Promise<BrowserPoolAdoptionOutcome>,
   ) {
     if (key.type !== "public" || key.asymmetricKeyType !== "ed25519")
       throw new TypeError("The browser pool controller requires an Ed25519 public key.");
     this.key = key;
     this.retire = retire;
     this.release = release;
+    this.complete = complete;
     this.current = {
       fence: { term, instance, epoch: 1 },
       revision: 0,
@@ -93,6 +127,7 @@ export class BrowserPoolRetirement {
       cancelled: false,
       result: null,
       blockers: [],
+      adoption: null,
     };
   }
 
@@ -102,6 +137,16 @@ export class BrowserPoolRetirement {
 
   get acceptsTraffic(): boolean {
     return this.current.phase === "running";
+  }
+
+  canAdopt(sessionId: BrowserSessionId): boolean {
+    const adoption = this.current.adoption;
+    return (
+      this.current.phase === "adopting" &&
+      adoption !== null &&
+      adoption.until > Date.now() &&
+      adoption.retained.some((document) => document.sessionId === sessionId)
+    );
   }
 
   checkFence(fence: BrowserPoolRuntimeFence | undefined): void {
@@ -123,11 +168,22 @@ export class BrowserPoolRetirement {
     return this.lane.run(async () => {
       const { intent, kind } = request;
       const current = this.current;
-      if (
+      const sameIntent =
         current.intent?.id === intent.id &&
         current.intent.sequence === intent.sequence &&
         current.fence.term === request.fence.term &&
-        current.fence.instance === request.fence.instance &&
+        current.fence.instance === request.fence.instance;
+      if (
+        sameIntent &&
+        kind === "adopt" &&
+        current.adoption &&
+        request.fence.epoch + 1 === current.fence.epoch &&
+        request.documents &&
+        sameDocuments(request.documents, current.adoption.retained)
+      )
+        return this.state();
+      if (
+        sameIntent &&
         kind === "release" &&
         current.cancelled &&
         (request.fence.epoch === current.fence.epoch ||
@@ -154,11 +210,24 @@ export class BrowserPoolRetirement {
             throw new BrowserRuntimeError("conflict", "The browser park intent was cancelled.");
           return this.state();
         }
-        this.write({ intent, phase: "retiring", cancelled: false, result: null, blockers: [] });
+        this.write({
+          intent,
+          phase: "retiring",
+          cancelled: false,
+          result: null,
+          blockers: [],
+          adoption: null,
+        });
         const outcome = await this.retire();
         if ("retained" in outcome) this.write({ phase: "retired", result: outcome });
         else this.write({ phase: "running", blockers: outcome });
-      } else {
+      } else if (kind === "release") {
+        if (
+          current.phase === "sealed" ||
+          current.phase === "adopting" ||
+          (same && current.adoption)
+        )
+          throw new BrowserRuntimeError("conflict", "The browser park was committed.");
         if (same && current.phase !== "running") {
           this.write({ phase: "releasing" });
           await this.release();
@@ -175,7 +244,60 @@ export class BrowserPoolRetirement {
           cancelled: true,
           result: same ? current.result : null,
           blockers: [],
+          adoption: null,
         });
+      } else {
+        if (!same || !current.result || current.cancelled)
+          throw new BrowserRuntimeError("conflict", "The browser park intent is unresolved.");
+        if (kind === "seal" && (current.phase === "retired" || current.phase === "sealed")) {
+          if (current.phase === "retired") this.write({ phase: "sealed" });
+        } else if (
+          kind === "adopt" &&
+          current.phase === "sealed" &&
+          request.documents &&
+          sameDocuments(request.documents, current.result.retained)
+        ) {
+          this.write({
+            fence: { ...current.fence, epoch: current.fence.epoch + 1 },
+            phase: "adopting",
+            adoption: {
+              until: Date.now() + 30_000,
+              retained: current.result.retained,
+              completion: null,
+              outcome: null,
+            },
+          });
+        } else if (kind === "complete" && current.adoption && request.documents) {
+          const allowed = new Set(documentKeys(current.adoption.retained));
+          const expected = documentKeys(request.documents);
+          if (
+            expected.some((document) => !allowed.has(document)) ||
+            new Set(expected).size !== expected.length
+          )
+            throw new BrowserRuntimeError("conflict", "The browser adoption set has changed.");
+          if (current.adoption.completion) {
+            if (!sameDocuments(current.adoption.completion, request.documents))
+              throw new BrowserRuntimeError(
+                "conflict",
+                "The browser adoption has already completed.",
+              );
+            if (current.adoption.outcome) return this.state();
+          } else {
+            if (current.adoption.until <= Date.now())
+              throw new BrowserRuntimeError("conflict", "The browser adoption window expired.");
+            this.write({
+              phase: "completing",
+              adoption: { ...current.adoption, completion: request.documents },
+            });
+          }
+          const outcome = await this.complete(request.documents);
+          this.write({
+            phase: "running",
+            adoption: { ...current.adoption, completion: request.documents, outcome },
+          });
+        } else {
+          throw new BrowserRuntimeError("conflict", "The browser adoption is not ready.");
+        }
       }
       return this.state();
     });
