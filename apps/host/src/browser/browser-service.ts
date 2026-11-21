@@ -1110,8 +1110,13 @@ export class BrowserService {
     }
   }
 
-  /** The Home's per-session part of a pooled adoption; one session's failure is its own. */
+  /**
+   * The Home's per-session part of a pooled adoption; one session's failure is its own. Only a
+   * pooled target's coordinator calls it, so no ordinary Home reaches any of it.
+   */
   #poolAdopter(runnerId: RunnerId): BrowserPoolAdopter {
+    if (runnerId !== this.#managedPoolTestRunner)
+      throw new Error("Only the pooled target adopts retained sessions.");
     return {
       inventory: () =>
         [...this.#brokers]
