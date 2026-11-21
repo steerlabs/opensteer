@@ -3199,6 +3199,160 @@ describe("native Chromium profiles", () => {
     },
   );
 
+  it("removes a deadline-evicted tab on its surface's queue, after a parked discard that committed and then failed, and follows the replacement (C5)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfS = "srf_00000000-0000-4000-8000-00000000c501" as BrowserSurfaceId;
+    const surfU = "srf_00000000-0000-4000-8000-00000000c502" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfS, url: "https://c5-s.test/" },
+      { index: 1, surfaceId: surfU, url: "https://c5-u.test/" },
+    ]);
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const makePage = (id: string, url: string) => {
+      const state = { closed: false };
+      return {
+        state,
+        page: {
+          url: () => url,
+          isClosed: () => state.closed,
+          close: vi.fn(async () => {
+            state.closed = true;
+          }),
+          waitForLoadState: vi.fn(async () => undefined),
+          bringToFront: vi.fn(async () => undefined),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _opener: null,
+          _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+        } as unknown as Page,
+      };
+    };
+    const helper = makePage("target-c5-helper", "about:blank");
+    const pageS = makePage("target-c5-s", "https://c5-s.test/");
+    const row = (tabId: number, index: number, url: string, targetId: string | null) => ({
+      tabId,
+      windowId: 1,
+      index,
+      url,
+      title: "",
+      active: false,
+      discarded: false,
+      status: "unloaded",
+      targetId,
+    });
+    let tabs: ChromiumTabEntry[] = [
+      { ...row(1, 0, "about:blank", "target-c5-helper"), active: true, status: "complete" },
+      row(901, 1, "https://c5-s.test/", "target-c5-s"),
+      row(902, 2, "https://c5-u.test/", "target-c5-u"),
+    ];
+    let pagesNow: Page[] = [helper.page];
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => pagesNow.filter((p) => !p.isClosed()),
+      newPage: vi.fn(async () => helper.page),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async () => ({})),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    const discardGate = Promise.withResolvers<void>();
+    const removeUGate = Promise.withResolvers<void>();
+    let discardPending = false;
+    let removingU = false;
+    let removedBesideDiscard = false;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabIdDetailed")
+      .mockImplementation(async (tabId) => {
+        discardPending = true;
+        await discardGate.promise;
+        // Chromium committed the replacing discard (901 -> 951), then the helper call failed.
+        pageS.state.closed = true;
+        tabs = tabs.map((t) =>
+          t.tabId === tabId
+            ? {
+                ...t,
+                tabId: 951,
+                replacedFromTabIds: [901],
+                discarded: true,
+                status: "unloaded",
+                targetId: null,
+              }
+            : t,
+        );
+        discardPending = false;
+        throw new Error("Opensteer tab lifecycle helper call timed out.");
+      });
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        if (tabId === 902) {
+          removingU = true;
+          await removeUGate.promise;
+        }
+        // A tab in the middle of its discard cannot be removed.
+        if (tabId === 901 && discardPending) {
+          removedBesideDiscard = true;
+          return false;
+        }
+        const before = tabs.length;
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return tabs.length < before;
+      });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      await launched.context.sessionRestore!.reconcile(new Set([surfS, surfU]));
+
+      // Chromium's loader brings S alive; its parked discard starts and is held in the helper.
+      tabs = tabs.map((t) => (t.tabId === 901 ? { ...t, status: "complete" } : t));
+      pagesNow = [helper.page, pageS.page];
+      for (const handler of pageHandlers) handler(pageS.page);
+      await vi.waitFor(() => expect(discardPending).toBe(true), { timeout: 3_000, interval: 10 });
+
+      // Another restore session lists only S; its removal of U hangs, so its deadline passes.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const second = launched.context.sessionRestore!.reconcile(new Set([surfS]));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(removingU).toBe(true);
+      await vi.advanceTimersByTimeAsync(6_050);
+      vi.useRealTimers();
+      await second;
+
+      // U's removal ends and the timed-out body finishes while S's discard is still held.
+      removeUGate.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      discardGate.resolve();
+
+      // S's replacement 951 is removed: "901 is gone" was never taken as evidence.
+      await vi.waitFor(() => expect(tabs.map((t) => t.tabId)).toEqual([1]), {
+        timeout: 3_000,
+        interval: 25,
+      });
+      // And no removal of S began while its discard ran: they share the surface's queue.
+      expect(removedBesideDiscard).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      discardGate.resolve();
+      removeUGate.resolve();
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");

@@ -1562,6 +1562,8 @@ class PlaywrightContextHandle implements BrowserContext {
       replaceable
         ? locateTab(check, tabId, replaceable.epoch)
         : locateTab(check, tabId, check[0]?.helperEpoch);
+    // Following a replacement is not a failed attempt; a chain is short, and this bounds it.
+    let follows = 4;
     for (let attempt = 0; attempt < attempts; attempt++) {
       const removed = await this.lifecycle.removeByTabId(currentId).catch(() => false);
       const check = await this.lifecycle.inventory().catch(() => null);
@@ -1570,9 +1572,11 @@ class PlaywrightContextHandle implements BrowserContext {
         if (found.status === "gone") return true;
         // Removing this id succeeded, so it was not replaced before the removal.
         if (found.status === "unknown" && removed) return true;
-        if (found.status === "found") {
+        if (found.status === "found" && found.row.tabId !== currentId && follows-- > 0) {
           currentId = found.row.tabId;
           currentTargetId = found.row.targetId ?? currentTargetId;
+          attempt--;
+          continue;
         }
       }
       if (currentTargetId && this.closeTarget) {
@@ -1611,13 +1615,8 @@ class PlaywrightContextHandle implements BrowserContext {
     this.reconcileAbort?.abort();
     const abort = new AbortController();
     this.reconcileAbort = abort;
-    // Track any unlisted tab currently undergoing removal so a deadline timeout still cleans it up.
-    const inProgressRemoval = new Map<
-      number,
-      { targetId: string | null; epoch: string | undefined }
-    >();
     const work = this.reconcileTail.then(() =>
-      this.reconcileSavedTabsOnce(savedTabIds, abort.signal, inProgressRemoval),
+      this.reconcileSavedTabsOnce(savedTabIds, abort.signal),
     );
     this.reconcileTail = work.then(
       () => undefined,
@@ -1629,56 +1628,16 @@ class PlaywrightContextHandle implements BrowserContext {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        // Deadline passed (R5/B3): fence the timed-out body, evict remaining restored tabs
-        // so the session goes on opening tabs by address, and remove them in the background.
+        // Deadline passed (R5/B3, Rule B): fence the timed-out body and give up every restored tab
+        // nobody is claiming, so the session goes on opening tabs by address. Each one stays
+        // hidden and is removed on its own surface's queue, after any run there; a removal the
+        // body already started finishes inside that queue and records its own failure.
         abort.abort();
-        const toRemove: Array<{
-          tabId: number;
-          targetId: string | null;
-          epoch: string | undefined;
-        }> = [];
-        for (const [tabId, { targetId, epoch }] of inProgressRemoval) {
-          if (targetId) this.neverHandOffTargetIds.add(targetId);
-          toRemove.push({ tabId, targetId, epoch });
-        }
         for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
           if (this.claimingSurfaceIds.has(surfaceId)) continue;
-          this.restoredBySurfaceId.delete(surfaceId);
-          this.unclaimedRestoredTabs.delete(entry.tab.tabId);
-          if (entry.tab.targetId) {
-            this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
-            this.neverHandOffTargetIds.add(entry.tab.targetId);
-          }
-          toRemove.push({
-            tabId: entry.tab.tabId,
-            targetId: entry.tab.targetId,
-            epoch: entry.tab.helperEpoch,
-          });
+          void this.queueEviction(surfaceId, entry).catch(() => undefined);
         }
         this.parkedAutoDiscardArmed = true;
-        if (toRemove.length > 0 && !this.closed) {
-          this.reconcileTail = this.reconcileTail
-            .then(async () => {
-              for (const item of toRemove) {
-                if (this.closed) return;
-                const livePage = this.findLivePageForRestoredTab(item.tabId, item.targetId);
-                this.restoredPagesByTabId.delete(item.tabId);
-                if (livePage && !livePage.isClosed()) {
-                  await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
-                }
-                const confirmed = await this.removeTabWithEvidence(item.tabId, item.targetId, 3, {
-                  epoch: item.epoch,
-                });
-                if (confirmed) {
-                  if (item.targetId) this.neverHandOffTargetIds.delete(item.targetId);
-                } else {
-                  this.enqueuePendingRestoredRemoval(item.tabId, item.targetId, item.epoch);
-                }
-              }
-              this.scheduleSidecarWrite();
-            })
-            .catch(() => undefined);
-        }
         resolve();
       }, 6_000);
       timer.unref?.();
@@ -1704,7 +1663,6 @@ class PlaywrightContextHandle implements BrowserContext {
   private async reconcileSavedTabsOnce(
     savedTabIds: ReadonlySet<BrowserSurfaceId>,
     signal: AbortSignal,
-    inProgressRemoval: Map<number, { targetId: string | null; epoch: string | undefined }>,
   ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory || signal.aborted || this.closed) return;
     let failedRemovals = 0;
@@ -1717,32 +1675,7 @@ class PlaywrightContextHandle implements BrowserContext {
           if (signal.aborted || this.closed || this.claimingSurfaceIds.has(surfaceId)) return true;
           const latest = this.restoredBySurfaceId.get(surfaceId);
           if (!latest) return true;
-          this.restoredBySurfaceId.delete(surfaceId);
-          this.unclaimedRestoredTabs.delete(latest.tab.tabId);
-          if (latest.tab.targetId) this.unclaimedRestoredTargetIds.delete(latest.tab.targetId);
-          const livePage = this.findLivePageForRestoredTab(latest.tab.tabId, latest.tab.targetId);
-          this.restoredPagesByTabId.delete(latest.tab.tabId);
-          if (livePage && !livePage.isClosed()) {
-            await livePage.close({ runBeforeUnload: false }).catch(() => undefined);
-          }
-          inProgressRemoval.set(latest.tab.tabId, {
-            targetId: latest.tab.targetId,
-            epoch: latest.tab.helperEpoch,
-          });
-          const ok = await this.removeTabWithEvidence(latest.tab.tabId, latest.tab.targetId, 3, {
-            epoch: latest.tab.helperEpoch,
-          });
-          inProgressRemoval.delete(latest.tab.tabId);
-          if (ok) {
-            if (latest.tab.targetId) this.neverHandOffTargetIds.delete(latest.tab.targetId);
-            return true;
-          }
-          this.enqueuePendingRestoredRemoval(
-            latest.tab.tabId,
-            latest.tab.targetId,
-            latest.tab.helperEpoch,
-          );
-          return false;
+          return (await this.evictUnparkableRestoredTab(surfaceId, latest)) === 0;
         });
         if (!confirmed) failedRemovals++;
       } finally {
@@ -1776,11 +1709,14 @@ class PlaywrightContextHandle implements BrowserContext {
     const inventory = await this.lifecycle.inventory().catch(() => null);
     if (signal.aborted || this.closed) return 0;
     if (!inventory) {
+      // Not known is never "absent" (B2): give every unclaimed tab up now, remove on its queue.
       this.parkedAutoDiscardArmed = true;
+      const evictions: Promise<number>[] = [];
       for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
-        if (signal.aborted || this.closed) return 0;
-        failedRemovals += await this.evictUnparkableRestoredTab(surfaceId, entry);
+        if (this.claimingSurfaceIds.has(surfaceId)) continue;
+        evictions.push(this.queueEviction(surfaceId, entry));
       }
+      for (const failed of await Promise.all(evictions)) failedRemovals += failed;
       return failedRemovals;
     }
     for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
@@ -1788,7 +1724,7 @@ class PlaywrightContextHandle implements BrowserContext {
       if (this.claimingSurfaceIds.has(surfaceId)) continue;
       const where = locateTab(inventory, entry.tab.tabId, entry.tab.helperEpoch);
       if (where.status === "unknown") {
-        failedRemovals += await this.evictUnparkableRestoredTab(surfaceId, entry);
+        failedRemovals += await this.queueEviction(surfaceId, entry);
         continue;
       }
       const current = where.status === "found" ? where.row : undefined;
@@ -2445,7 +2381,7 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!entry) return null;
       this.restoredBySurfaceId.delete(surfaceId);
       if (url !== undefined && entry.tab.url !== url) {
-        await this.evictUnparkableRestoredTab(surfaceId, entry);
+        void this.queueEviction(surfaceId, entry).catch(() => undefined);
         return null;
       }
       try {
@@ -2458,7 +2394,7 @@ class PlaywrightContextHandle implements BrowserContext {
         own?.(handle);
         return handle;
       } catch {
-        await this.evictUnparkableRestoredTab(surfaceId, entry);
+        void this.queueEviction(surfaceId, entry).catch(() => undefined);
         return null;
       }
     } finally {
