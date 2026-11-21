@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
 import type { HostClient } from "../host/client.js";
+import { threadAgentPlace, type ThreadAgentPlace } from "../host/browser-agent-follow.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import type { TabStrip } from "../host/tab-strip.js";
 
@@ -38,6 +39,33 @@ export function useTab(hostClient: HostClient, tabId: string | null): Tab | unde
     () => (tabId === null ? undefined : tabs.get(tabId as TabId)),
     [tabs, tabId],
   );
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+/**
+ * The page, Mac app or phone screen a task's agent is working in now; the same object
+ * returns while that place and its name stay the same.
+ */
+export function useThreadAgentPlace(
+  hostClient: HostClient,
+  threadId: string | null,
+): ThreadAgentPlace | null {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const held = useMemo(() => ({ current: null as ThreadAgentPlace | null }), [threadId, tabs]);
+  const get = useCallback(() => {
+    const next = threadId === null ? null : threadAgentPlace({ tabs }, threadId);
+    const last = held.current;
+    if (
+      next === null ||
+      last === null ||
+      next.tabId !== last.tabId ||
+      next.kind !== last.kind ||
+      next.title !== last.title
+    )
+      held.current = next;
+    return held.current;
+  }, [held, tabs, threadId]);
   return useSyncExternalStore(subscribe, get, get);
 }
 

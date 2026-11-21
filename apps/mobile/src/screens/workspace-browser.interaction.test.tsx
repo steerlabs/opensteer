@@ -906,9 +906,11 @@ function viewerSurface(sessionId: string, tabId: string): BrowserViewerSurface |
 const liveFeed = { status: "live", error: null, frame: null } as const;
 
 /** Test route params: a tab's route, plus the browser a page test seeds it in. */
-type TestRoute = Omit<Partial<TabRoute>, "tabId"> & {
+type TestRoute = Omit<Partial<TabRoute>, "tabId" | "threadId"> & {
   readonly sessionId?: string;
   readonly tabId?: string;
+  /** Undefined says Tabs opened it: no conversation, not the default one. */
+  readonly threadId?: string | undefined;
 };
 
 /** The Host's activation: a page in the browser listing it, an app as itself. */
@@ -2540,8 +2542,9 @@ describe("a page beside its agent's thread", () => {
 /*
  * The status row under a page opened from a conversation. What can go wrong:
  * it speaks for whichever agent ranks first in the tab rather than the
- * conversation the page was opened from; its Stop reaches another Run; it
- * shows on a page opened from Tabs, or with nothing to say; it repeats a
+ * conversation the page was opened from; its Stop reaches another Run; opened
+ * from Tabs, it offers no Stop for the agent at work there; it shows with
+ * nothing to say; it repeats a
  * conversation already on screen beside the page; Answer answers anything
  * itself rather than returning to the conversation.
  */
@@ -2596,10 +2599,23 @@ describe("the status row", () => {
     expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
   });
 
-  it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", async () => {
-    const fromTabs = await openWatched(["thread-agent"], {});
-    expect(row(fromTabs.container)).toBeNull();
+  it("speaks on a page opened from Tabs for the agent at work in it, with that task's own Stop", async () => {
+    // Tabs names no conversation.
+    const fromTabs = await openWatched(["thread-agent"], { threadId: undefined });
+    // Tokyo trip ranks first but is idle; Compare hotels is the one at work here.
+    expect(row(fromTabs.container)).not.toBeNull();
+    expect(
+      row(fromTabs.container)!.querySelector('[aria-label="Compare hotels: Working"]'),
+    ).not.toBeNull();
+    press(row(fromTabs.container)!, "Stop this run");
+    expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
     for (const root of roots.splice(0)) act(() => root.unmount());
+    // Nobody at work and nothing waiting: nothing to say.
+    const quiet = await openWatched([], { threadId: undefined });
+    expect(row(quiet.container)).toBeNull();
+  });
+
+  it("says nothing while the conversation it was opened from has nothing to say", async () => {
     // Another agent at work in the tab is not this conversation at work.
     const idle = await openWatched(["thread-trip"]);
     expect(row(idle.container)).toBeNull();

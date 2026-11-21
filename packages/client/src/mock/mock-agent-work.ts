@@ -27,6 +27,10 @@ export const mockAgentWorkThreads = {
 export const mockAgentOperationRequestId = RequestIdSchema.parse(
   "req_00000000-0000-4000-8000-0000000000b1",
 );
+/** What the working agent asked with `ask_person`, with `question: true`. */
+export const mockAgentQuestionRequestId = RequestIdSchema.parse(
+  "req_00000000-0000-4000-8000-0000000000b2",
+);
 const studioMac = {
   id: DeviceIdSchema.parse("rnr_00000000-0000-4000-8000-0000000000c1"),
   name: "Studio Mac",
@@ -53,6 +57,11 @@ export function mockAgentWork(input: {
   readonly connections: readonly AgentConnection[];
   /** Long profile, device, tab and task names, and a Request without the agent's reason. */
   readonly long?: boolean;
+  /**
+   * The working agent also asks the person to sign in, as the Home words `ask_person`:
+   * the agent's own choices on the Request, and no direct operation in its parts.
+   */
+  readonly question?: boolean;
 }): {
   readonly threads: readonly ThreadSummary[];
   readonly requests: Readonly<Record<string, readonly Request[]>>;
@@ -328,6 +337,44 @@ export function mockAgentWork(input: {
     response: null,
     status: "pending",
   });
+  const question = RequestSchema.parse({
+    callId: "operation:aop_00000000-0000-4000-8000-000000000199",
+    cancellationReason: null,
+    createdAt: at(0.2),
+    id: mockAgentQuestionRequestId,
+    kind: "person.question",
+    mode: "durable",
+    originatingOccurrenceId: null,
+    originatingAgentSessionId: sessions.working,
+    originatingRunId: null,
+    originatingThreadId: mockAgentWorkThreads.working,
+    payload: { kind: "person.question" },
+    presentation: {
+      kind: "form",
+      title: "Connected agent Claude asks in Find flights to Lisbon",
+      detail:
+        "Enter passwords and codes only in the page.\n\nThe agent wrote:\n\n> Sign in to TAP Air Portugal\n> The site signed you out.",
+      fields: [
+        {
+          id: "question_1",
+          prompt: "Sign in to TAP Air Portugal in the Travel tab, then tap Done.",
+          choices: [
+            { label: "Done", value: "Done" },
+            { label: "Unable to do it", value: "Unable to do it" },
+          ],
+          custom: false,
+          multiSelect: false,
+          secret: false,
+        },
+      ],
+    },
+    requestedBy: input.userId,
+    requiredActor: "requester",
+    resolvedAt: null,
+    resolvedBy: null,
+    response: null,
+    status: "pending",
+  });
   return {
     threads: [
       task(
@@ -351,7 +398,10 @@ export function mockAgentWork(input: {
       task(mockAgentWorkThreads.stopped, "Renew the parking permit", "idle", 90),
       task(mockAgentWorkThreads.ended, "Compare running shoes", "idle", 45),
     ],
-    requests: { [mockAgentWorkThreads.waiting]: [request] },
+    requests: {
+      [mockAgentWorkThreads.waiting]: [request],
+      ...(input.question ? { [mockAgentWorkThreads.working]: [question] } : {}),
+    },
     operations: Object.values(slots).flatMap(({ operations, connection }) =>
       (operations ?? []).map((operation) => ({ connectionId: connection.id, operation })),
     ),

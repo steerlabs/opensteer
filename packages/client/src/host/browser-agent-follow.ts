@@ -1,4 +1,4 @@
-import type { TabId } from "@opensteer/core";
+import type { Tab, TabId, TabKind } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 
 /** One page tab, by its stable ID. */
@@ -26,6 +26,46 @@ export function browserThreadAgentTab(
     )
       best = { tabId: tab.tabId, at: tab.updatedAt };
   return best && { tabId: best.tabId };
+}
+
+/** The tab a task's agent is working in now, of any kind, with the name a link to it says. */
+export interface ThreadAgentPlace {
+  readonly tabId: TabId;
+  readonly kind: TabKind;
+  readonly title: string;
+}
+
+function placeTitle(tab: Tab): string {
+  const title = tab.title.trim();
+  if (title) return title;
+  switch (tab.kind) {
+    case "page":
+      return "the page";
+    case "window":
+      return tab.appName?.trim() || "the app";
+    case "phone":
+      return tab.computer.name.trim() || "the phone";
+    case "app":
+      return "the app";
+  }
+}
+
+/**
+ * The page, Mac app or phone screen a task holds that changed most recently: where its agent
+ * is working right now, for a link from the task to it. Holding is the Host's word.
+ */
+export function threadAgentPlace(
+  source: Pick<HostSnapshot, "tabs">,
+  threadId: string,
+): ThreadAgentPlace | null {
+  let best: Tab | null = null;
+  for (const tab of source.tabs.rows.values())
+    if (
+      tab.usedBy.some((holder) => holder.taskId === threadId) &&
+      (best === null || tab.updatedAt > best.updatedAt)
+    )
+      best = tab;
+  return best && { tabId: best.tabId, kind: best.kind, title: placeTitle(best) };
 }
 
 /** A busy agent never moves the page more than once a second. */

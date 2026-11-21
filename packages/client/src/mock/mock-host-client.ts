@@ -5053,7 +5053,7 @@ export class MockHostClient implements HostClient {
   }
 
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
-  mockAgentWork(options: { readonly long?: boolean } = {}): void {
+  mockAgentWork(options: { readonly long?: boolean; readonly question?: boolean } = {}): void {
     this.#state.mockAgentWork(options);
   }
 
@@ -7517,7 +7517,7 @@ class MockHostState {
     return true;
   }
 
-  mockAgentWork(options: { readonly long?: boolean } = {}): void {
+  mockAgentWork(options: { readonly long?: boolean; readonly question?: boolean } = {}): void {
     const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
     const user = this.snapshot.user;
     if (!template || !user) throw new Error("No task to copy.");
@@ -7527,6 +7527,7 @@ class MockHostState {
       template,
       connections: this.connections,
       ...(options.long ? { long: true } : {}),
+      ...(options.question ? { question: true } : {}),
     });
     this.#agentOperations = seed.operations;
     this.connections = this.connections.map((connection) =>

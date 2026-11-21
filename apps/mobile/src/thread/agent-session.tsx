@@ -1,7 +1,9 @@
 import {
+  deriveSurface,
   mutationIdempotencyKey,
   requestDecision,
-  threadInDirectory,
+  canRespondToRequests,
+  sessionQuestions,
   workWords,
   type HostClient,
   type HostSnapshot,
@@ -9,88 +11,39 @@ import {
   type OperationRequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import { useTaskActivity, useThreadTranscript } from "@opensteer/client/react";
-import { AgentSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useThreadAgentPlace,
+  useThreadAgentTab,
+  useThreadTranscript,
+} from "@opensteer/client/react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
 import { useScreenAction } from "../ui/client-feedback.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { useHostValue } from "../ui/mobile-client-context.js";
+import { useHostValue, useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import {
-  operationRequestsOf,
-  sessionRowOf,
-  sessionTaskOf,
-  type OperationRequestItem,
-} from "./agent-session-model.js";
+import { operationRequestsOf, type OperationRequestItem } from "./agent-session-model.js";
+import { useAgentSessionStop, useSessionThread } from "./agent-session-hooks.js";
+
+export { useSessionRow, useSessionTask } from "./agent-session-hooks.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
+import { QuestionCard } from "./waiting-questions.js";
 
-function useSessionThread(hostClient: HostClient | null, threadId: string) {
-  const select = useCallback(
-    (snapshot: HostSnapshot) => threadInDirectory(threadId, snapshot),
-    [threadId],
-  );
-  return useHostValue(hostClient, select, null);
-}
-
-/** A task's session view while a connected agent works it itself; null for any other task. */
-export function useSessionTask(
-  hostClient: HostClient | null,
-  threadId: string,
-): SessionTaskView | null {
-  const thread = useSessionThread(hostClient, threadId);
-  const operations = useTaskActivity(
-    hostClient,
-    threadId,
-    thread?.externalWork
-      ? `${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
-      : null,
-  );
-  return useMemo(
-    () => (thread === null ? null : sessionTaskOf({ threads: [thread] }, threadId, operations)),
-    [operations, thread, threadId],
-  );
-}
-
-/** A session task's row in Tasks: the agent's mark and what it is using; null for any other. */
-export function useSessionRow(
-  hostClient: HostClient | null,
-  threadId: string,
-): ReturnType<typeof sessionRowOf> {
-  const thread = useSessionThread(hostClient, threadId);
-  return useMemo(
-    () => (thread === null ? null : sessionRowOf({ threads: [thread] }, threadId)),
-    [thread, threadId],
-  );
-}
-
-const stopSpec = { label: "stop this agent", done: "stopped", happened: "it was stopped" } as const;
-
-/** Ends one agent session on one task, bound to the session the person saw. */
-export function useAgentSessionStop(hostClient: HostClient, threadId: string) {
-  return useScreenAction<string, void>(hostClient, `agent-session-stop:${threadId}`, {
-    ...stopSpec,
-    execute: async (sessionId) => {
-      await hostClient.dispatch({
-        type: "agent.session.stop",
-        threadId: ThreadIdSchema.parse(threadId),
-        agentSessionId: AgentSessionIdSchema.parse(sessionId),
-        idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
-      });
-    },
-  });
-}
+const selectUser = (snapshot: HostSnapshot) => snapshot.user;
 
 /**
- * A task a connected agent works itself: its activity as it happens, the Requests it opened,
- * and where the composer would be, the agent's state with Stop. Nobody types into another
- * agent's task.
+ * A task a connected agent works itself: its activity as it happens, the page or app it is
+ * using now, the Requests it opened (a direct operation's Allow once, and whatever it asked
+ * the person itself, with that question's own choices), and where the composer would be,
+ * the agent's state with Stop. Nobody types into another agent's task.
  */
 export function AgentSessionPane(props: {
+  readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly threadId: string;
   readonly title: string;
@@ -115,11 +68,53 @@ export function AgentSessionPane(props: {
     () => operationRequestsOf({ threads: thread ? [thread] : [] }, threadId, transcript.requests),
     [thread, threadId, transcript.requests],
   );
+  const questions = useMemo(() => sessionQuestions(transcript.requests), [transcript.requests]);
+  const user = useHostValue(hostClient, selectUser, null);
+  const canRespond = useHostValue(hostClient, canRespondToRequests, false);
+  // Where the agent works now, and the page its questions are about: the task's own tabs.
+  const place = useThreadAgentPlace(hostClient, threadId);
+  const page = useThreadAgentTab(hostClient, threadId);
+  const drafts = useMobileClient().drafts;
+  const showTab = useShowTab(props.deploymentId, threadId);
   const stop = useAgentSessionStop(hostClient, threadId);
   const activity = view.activity;
   return (
     <View style={styles.pane} testID="agent-session">
       <ScrollView contentContainerStyle={styles.content}>
+        {place === null || view.stop === null ? null : (
+          <PlaceLink
+            label={workWords("work.openPlace", { place: place.title })}
+            onPress={() => showTab(place.tabId)}
+            title={workWords("work.usingNow")}
+          />
+        )}
+        {user === null
+          ? null
+          : questions.map((request) => {
+              const surface = deriveSurface([request], user);
+              return surface === null ? null : (
+                <View
+                  key={request.id}
+                  style={styles.question}
+                  testID={`session-question:${request.id}`}
+                >
+                  {page === null ? null : (
+                    <OpenPageButton
+                      label={workWords("ask.openPage")}
+                      onPress={() => showTab(page.tabId)}
+                    />
+                  )}
+                  <QuestionCard
+                    canRespond={canRespond}
+                    deploymentId={props.deploymentId}
+                    drafts={drafts}
+                    hostClient={hostClient}
+                    surface={surface}
+                    userId={user.id}
+                  />
+                </View>
+              );
+            })}
         <AppText role="secondaryMedium" tone="muted">
           {workWords("work.activity")}
         </AppText>
@@ -313,6 +308,51 @@ export function OperationRequestCard(props: {
   );
 }
 
+/** Where the agent is working now, one tap from its task. */
+function PlaceLink(props: {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly title: string;
+}): ReactNode {
+  return (
+    <Pressable
+      accessibilityLabel={props.label}
+      accessibilityRole="link"
+      onPress={props.onPress}
+      style={styles.place}
+    >
+      <View style={styles.grow}>
+        <AppText role="caption" tone="muted">
+          {props.title}
+        </AppText>
+        <AppText numberOfLines={1} role="secondaryMedium" tone="ember">
+          {props.label}
+        </AppText>
+      </View>
+      <Symbol name="chevron.right" size={13} tint={color.textSoft} />
+    </Pressable>
+  );
+}
+
+/** The page a question is about, one tap away: the person signs in there, then answers. */
+function OpenPageButton(props: {
+  readonly label: string;
+  readonly onPress: () => void;
+}): ReactNode {
+  return (
+    <Pressable
+      accessibilityLabel={props.label}
+      accessibilityRole="link"
+      onPress={props.onPress}
+      style={styles.link}
+    >
+      <AppText role="secondaryMedium" tone="ember">
+        {props.label}
+      </AppText>
+    </Pressable>
+  );
+}
+
 function AnswerButton(props: {
   readonly busy: boolean;
   readonly label: string;
@@ -381,5 +421,16 @@ const styles = StyleSheet.create({
   link: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   operation: { alignItems: "flex-start", flexDirection: "row", gap: space[8] },
   pane: { flex: 1 },
+  place: {
+    alignItems: "center",
+    backgroundColor: color.surfaceRaised,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget,
+    paddingHorizontal: space[12],
+    paddingVertical: space[6],
+  },
+  question: { gap: space[4] },
   primary: { backgroundColor: color.emberWash, borderColor: color.emberLine },
 });

@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
-import { taskList, type PlaceAgents, type TaskRow } from "@opensteer/client/host";
+import {
+  mutationIdempotencyKey,
+  requestDecision,
+  taskList,
+  type PlaceAgents,
+  type TaskRow,
+} from "@opensteer/client/host";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -83,7 +89,13 @@ vi.mock("../ui/composer-action.js", () => ({
     </button>
   ),
 }));
-vi.mock("../thread/answer-pill.js", () => ({ AnswerPill: () => null }));
+vi.mock("../thread/answer-pill.js", () => ({
+  AnswerPill: (props: { label: string; onPress: () => void }) => (
+    <button aria-label={props.label} onClick={props.onPress}>
+      {props.label}
+    </button>
+  ),
+}));
 vi.mock("../browser/agent-marks.js", () => ({ AgentMarks: () => null }));
 vi.mock("../thread/task-status.js", () => ({ taskHeading: () => null }));
 
@@ -100,12 +112,12 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function seeded() {
+function seeded(options: { readonly question?: boolean } = {}) {
   host = new MockHostClient({
     latencyMs: 0,
     connections: mockConnectedAgents("seeded").connections,
   });
-  host.mockAgentWork();
+  host.mockAgentWork(options);
   state.client = host;
   return host;
 }
@@ -138,6 +150,7 @@ describe("Needs you on the phone", () => {
 });
 
 describe("a tab a connected agent uses, on the phone", () => {
+  const answered = vi.fn();
   function Status(props: {
     readonly client: MockHostClient;
     readonly agents: PlaceAgents;
@@ -147,7 +160,7 @@ describe("a tab a connected agent uses, on the phone", () => {
       usePlaceStatusRow({
         agents: props.agents,
         hostClient: props.client,
-        onAnswer: () => undefined,
+        onAnswer: answered,
         tabId: props.tabId,
         threadId: null,
       }) ?? <p>nothing</p>
@@ -183,6 +196,15 @@ describe("a tab a connected agent uses, on the phone", () => {
   it("says both of you on a tab the person shares", async () => {
     const client = seeded();
     const threadId = idOf(client, "Buy the phone case");
+    const request = client
+      .getSnapshot()
+      .waitingRequests.find((entry) => entry.request.originatingThreadId === threadId)!.request;
+    await client.dispatch({
+      type: "request.respond",
+      ...requestDecision(request),
+      response: { kind: "form", answers: { "operation-decision": ["deny"] } },
+      idempotencyKey: mutationIdempotencyKey(`request:${request.id}`),
+    });
     const page = await render(
       <Status
         agents={agentsOf(threadId, "Buy the phone case")}
@@ -193,6 +215,24 @@ describe("a tab a connected agent uses, on the phone", () => {
     expect(page.textContent).toContain(
       "You and Grok are using this page, for “Buy the phone case”",
     );
+  });
+
+  it("says when the agent needs the person, and Answer goes back to the task's Request", async () => {
+    const client = seeded({ question: true });
+    const threadId = idOf(client, "Find flights to Lisbon");
+    answered.mockClear();
+    const page = await render(
+      <Status
+        agents={agentsOf(threadId, "Find flights to Lisbon")}
+        client={client}
+        tabId="mock-tab-1-0"
+      />,
+    );
+    expect(page.textContent).toContain("Claude needs you");
+    await act(async () =>
+      [...page.querySelectorAll("button")].find((b) => b.textContent === "Answer")!.click(),
+    );
+    expect(answered).toHaveBeenCalledExactlyOnceWith(threadId);
   });
 });
 

@@ -414,6 +414,32 @@ export function operationDecisionField(request: RequestLike): string | null {
     : null;
 }
 
+/**
+ * What a connected agent asked the person itself (`ask_person`), apart from a direct
+ * operation's Allow once or Don't allow: the open ones, oldest first. They are answered with
+ * the choices the Request itself carries, on every client, like any other question.
+ */
+export function sessionQuestions<
+  R extends RequestLike & { readonly createdAt: string; readonly kind: string },
+>(requests: readonly R[]): readonly R[] {
+  return (
+    requests
+      .filter(
+        (request) =>
+          request.status === "pending" &&
+          Boolean(request.originatingAgentSessionId) &&
+          request.kind === "person.question" &&
+          request.presentation.kind === "form" &&
+          operationDecisionField(request) === null,
+      )
+      // Filtered first, so sorting in place sorts a copy: Hermes has no `toSorted`.
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+      )
+  );
+}
+
 export type OperationRequestState = "pending" | "allowed" | "denied" | "expired" | "withdrawn";
 
 export interface OperationRequestView {

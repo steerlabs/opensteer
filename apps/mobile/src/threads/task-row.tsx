@@ -44,7 +44,7 @@ import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { RowSubtitle, type ActionLineValue } from "../ui/action-line.js";
 import { screenAction, useScreenAction } from "../ui/client-feedback.js";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
-import { useSessionRow } from "../thread/agent-session.js";
+import { useSessionRow } from "../thread/agent-session-hooks.js";
 
 /**
  * One of the reader's tasks, as the sidebar, search and Done

@@ -4,6 +4,7 @@ import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
 import {
+  sessionQuestions,
   sessionSlotFromHome,
   operationRequestView,
   operationRow,
@@ -415,5 +416,33 @@ describe("what the Home itself reports for an agent's own work", () => {
       state: "expired",
       agent: { name: "Research agent" },
     });
+  });
+});
+
+describe("what a connected agent asks the person itself", () => {
+  const asked = mockAgentWork({
+    now,
+    userId: "usr_0192f4a1-0000-4000-8000-000000000001",
+    template: { id: "thr_00000000-0000-4000-8000-000000000001", title: "t" } as ThreadSummary,
+    connections,
+    question: true,
+  });
+  const question = asked.requests[mockAgentWorkThreads.working]![0]!;
+  const operation = asked.requests[mockAgentWorkThreads.waiting]![0]!;
+
+  it("is a question with its own choices, never a direct operation's Allow once", () => {
+    // The Home records ask_person with its presentation and no operation parts.
+    expect(question.agentOperation).toBeUndefined();
+    expect(operationRequestView({ request: question })).toBeNull();
+    expect(sessionQuestions([operation, question])).toEqual([question]);
+    expect(
+      sessionQuestions([question])[0]!.presentation.kind === "form" &&
+        sessionQuestions([question])[0]!.presentation.fields[0]!.choices?.map(({ label }) => label),
+    ).toEqual(["Done", "Unable to do it"]);
+  });
+
+  it("leaves an answered question and any other task's Request alone", () => {
+    expect(sessionQuestions([{ ...question, status: "fulfilled" }])).toEqual([]);
+    expect(sessionQuestions([{ ...question, originatingAgentSessionId: null }])).toEqual([]);
   });
 });

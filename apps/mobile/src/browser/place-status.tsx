@@ -1,6 +1,7 @@
 import { useThreadTranscript } from "@opensteer/client/react";
 import {
   canRespondToRequests,
+  requestsWaitingOn,
   samePlaceAgents,
   threadMark,
   threadWatch,
@@ -22,7 +23,7 @@ import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
-import { useAgentSessionStop } from "../thread/agent-session.js";
+import { useAgentSessionStop } from "../thread/agent-session-hooks.js";
 import { placeSessionLine } from "../thread/agent-session-model.js";
 
 /**
@@ -144,8 +145,10 @@ function sameWatch(left: ThreadWatch | null, right: ThreadWatch | null): boolean
  * The status row for the conversation a place was opened from, or null while
  * that conversation has nothing to say: it speaks for that conversation alone,
  * never for whichever agent ranks first in the place. A place opened from
- * Tabs, with no conversation, has none; nor does one whose conversation is
- * already on screen beside it.
+ * Tabs has no conversation: with `fromTabs` it speaks for the first of the
+ * place's agents that is at work or needs the person, acting first, with the
+ * same Stop its task has. One whose conversation is already on screen beside
+ * it has none.
  */
 export function usePlaceStatusRow(props: {
   /** The place's agents, whose mark the conversation wears while it is one of them. */
@@ -154,10 +157,30 @@ export function usePlaceStatusRow(props: {
   readonly onAnswer: (threadId: string) => void;
   /** The conversation the route carries, unless it is already on screen. */
   readonly threadId: string | null;
+  /** Opened from Tabs, with nothing on screen beside it: the place's own agent speaks. */
+  readonly fromTabs?: boolean;
   /** The tab shown, so a connected agent using it can be named with its task. */
   readonly tabId?: string | null;
 }): ReactNode {
-  const { agents, hostClient, onAnswer, threadId } = props;
+  const { agents, hostClient, onAnswer } = props;
+  const fromTabs = props.fromTabs === true && props.threadId === null;
+  const selectPlaceThread = useCallback(
+    (snapshot: HostSnapshot): string | null => {
+      if (!fromTabs) return null;
+      const busy = agents.agents.find(({ threadId }) => {
+        const status = snapshot.threads.find(({ id }) => id === threadId)?.status;
+        return (
+          status === "running" ||
+          status === "waiting" ||
+          requestsWaitingOn(snapshot.waitingRequests, threadId).length > 0
+        );
+      });
+      return busy?.threadId ?? null;
+    },
+    [agents, fromTabs],
+  );
+  const placeThread = useHostSelector(hostClient, selectPlaceThread);
+  const threadId = props.threadId ?? placeThread;
   const tabId = props.tabId ?? null;
   const threads = useHostSelector(hostClient, selectThreads);
   const sharedFromChrome = useHostSelector(
@@ -180,6 +203,14 @@ export function usePlaceStatusRow(props: {
     [threads, agents, tabId, sharedFromChrome],
   );
   const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
+  const sessionThreadId = session?.threadId ?? null;
+  const selectSessionNeedsYou = useCallback(
+    (snapshot: HostSnapshot): boolean =>
+      sessionThreadId !== null &&
+      requestsWaitingOn(snapshot.waitingRequests, sessionThreadId).length > 0,
+    [sessionThreadId],
+  );
+  const sessionNeedsYou = useHostSelector(hostClient, selectSessionNeedsYou);
   const transcript = useThreadTranscript(hostClient, threadId);
   const selectWatch = useCallback(
     (snapshot: HostSnapshot): ThreadWatch | null => {
@@ -237,6 +268,9 @@ export function usePlaceStatusRow(props: {
       session === null ? null : (
         <SessionStatusRow
           busy={sessionStop.running}
+          onAnswer={
+            sessionNeedsYou && session.stop !== null ? () => onAnswer(session.threadId) : null
+          }
           onStop={
             session.stop === null
               ? null
@@ -247,7 +281,7 @@ export function usePlaceStatusRow(props: {
           session={session}
         />
       ),
-    [session, sessionStop],
+    [onAnswer, session, sessionNeedsYou, sessionStop],
   );
   const runRow = useMemo(
     () =>
@@ -269,13 +303,19 @@ export function usePlaceStatusRow(props: {
 
 const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
-/** A connected agent using this tab, for which task, and the Stop that ends its session. */
+/**
+ * A connected agent using this tab, for which task, and the Stop that ends its session; while
+ * it waits on the person, that it needs them, with Answer back to the task's question.
+ */
 function SessionStatusRow(props: {
   readonly busy: boolean;
+  /** Returns to the task, where its question is answered; null while nothing waits. */
+  readonly onAnswer: (() => void) | null;
   readonly onStop: (() => void) | null;
   readonly session: NonNullable<ReturnType<typeof placeSessionLine>>;
 }): ReactNode {
   const { session } = props;
+  const needsYou = props.onAnswer !== null;
   return (
     <View style={styles.row} testID="place-status">
       <View accessibilityLiveRegion="polite" accessible style={styles.said}>
@@ -287,14 +327,21 @@ function SessionStatusRow(props: {
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
-          role="secondary"
-          style={styles.words}
+          role={needsYou ? "secondaryMedium" : "secondary"}
+          style={[styles.words, needsYou && styles.needsYou]}
           tone={props.onStop === null ? "muted" : "soft"}
         >
-          {session.line}
+          {needsYou ? workWords("tab.needsYou", { agent: session.agent.name }) : session.line}
         </AppText>
       </View>
-      {props.onStop === null ? null : (
+      {props.onAnswer !== null ? (
+        <AnswerPill
+          accessibilityHint="Returns to the task, where you answer it"
+          label={workWords("tab.answer")}
+          onPress={props.onAnswer}
+          tone="primary"
+        />
+      ) : props.onStop === null ? null : (
         <ComposerAction
           busy={props.busy}
           disabled={false}
