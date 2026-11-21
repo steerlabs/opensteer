@@ -67,7 +67,8 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   // The relay's question, on a socket only the relay's user (and root) may open.
   const relayUid = config.driver.network.relayUid;
   if (relayUid !== null) {
-    const path = "/run/opensteer-pool/relay.sock";
+    const path = "/run/opensteer-pool-relay/relay.sock";
+    // Its own directory: /run/opensteer-pool is root only.
     await mkdir(dirname(path), { recursive: true, mode: 0o711 });
     await rm(path, { force: true });
     const relayAuth = createRelayAuthServer((hello, clientKey) =>

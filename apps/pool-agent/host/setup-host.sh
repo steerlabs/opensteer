@@ -197,7 +197,7 @@ EOF
     cat > /etc/opensteer-pool-relay/relay.json <<EOF
 { "listen": { "host": "0.0.0.0", "port": $OSP_RELAY_PORT },
   "certificate": "/etc/opensteer-pool-relay/host-cert.pem",
-  "authSocket": "/run/opensteer-pool/relay.sock" }
+  "authSocket": "/run/opensteer-pool-relay/relay.sock" }
 EOF
     chmod 0644 /etc/opensteer-pool-relay/relay.json
     cat > /etc/systemd/system/opensteer-pool-relay.service <<EOF
