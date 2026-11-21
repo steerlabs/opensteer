@@ -1,0 +1,49 @@
+# Pool agent on a real host, second run (2026-11-21)
+
+After both reviews (state machine; isolation, setup, who may call, efficiency). Same shape as
+the first run: `pool-agent-run-2`, `n2-standard-8`, `us-central1-a`, nested virtualization, one
+thread per core (4 cores), four Local SSDs striped and encrypted, Ubuntu 24.04, Linux
+`7.0.0-1017-gcp`, no external address. Created 11:11:43Z, deleted 11:52:27Z. Tree `e81aa438b`;
+the second part ran with the fix in `301d1ec64` (below). Raw rows: run 2a
+[results-2026-11-21-run2a.jsonl](results-2026-11-21-run2a.jsonl) (all phases up to the first
+concurrent round), run 2b [results-2026-11-21-run2b.jsonl](results-2026-11-21-run2b.jsonl) (disk
+series, clock, concurrent and the new checks, after the fix).
+
+Found by this run: Firecracker refused one restore in the concurrent phase with "clock_realtime
+requested but not present in the snapshot state" (KVM records the realtime clock only while the
+host's master clock is stable); a failed load ends the VMM and the guest's live state. Fixed in
+`301d1ec64`: the restore no longer requests `clock_realtime`; the agent's vsock clock step, before
+any traffic, is the clock fix. The disk series, the clock and the concurrent phase were rerun.
+
+Median / p95 in ms, from the moment the Home's call was sent; first run beside it.
+
+| Series                          | First CDP reply | Edited frame  | Agent call | First run: reply / frame | Checks |
+| ------------------------------- | --------------- | ------------- | ---------- | ------------------------ | ------ |
+| Cold start (2a)                 | 2,039 / 2,144   | —             | 783        | 2,026 / —                | 10/10  |
+| Paused in memory (2a)           | 40.9 / 46.6     | 135 / 148     | 31.6       | 51.2 / 153               | 10/10  |
+| From disk, cache kept (2b)      | 359 / 764       | 672 / 1,265   | 140        | 299 / 635                | 10/10  |
+| From disk, cache dropped (2b)   | 704 / 839       | 1,029 / 1,255 | 341        | 627 / 937                | 10/10  |
+| Three wakes while two save (2b) | 2,441 / 3,374   | 3,364 / 3,777 | 1,213      | 1,492 / 2,657            | 9/9    |
+
+A wake from disk now starts the slot's proxy process at the wake, from its socket (review G6a):
+the agent's step for the network fell from 25 ms to 10 ms, and nothing waits for the process. The
+replies are slower than in the first run, most under concurrency: three restores, two saves and
+three Node processes starting on four cores. That is the measured cost of a parked slot holding no
+proxy process.
+
+Clock after a 60-second sleep: 18 ms behind in memory, 40 ms behind from disk (`kvm-clock`).
+HTTPS after a wake through the host-side egress proxy: 37/37 (2a) and 37/37 (2b).
+
+## The new checks
+
+| Check                                                                       | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup from scratch                                                          | every check `ok`, including THP defrag, `favordynmods`, swap in fstab, the five named CPU vulnerabilities (none "Vulnerable")                                                                                                                                                                                                                                                                                                                                                           |
+| A journal write fails with a guest alive (the slot's record made immutable) | the call is refused, the agent logs `agent.journal-failed` and `agent.fatal`, systemd restarts it (`agent.ready`); the guest's VMM is the same process (pid 21914 before and after), the slot is still running, CDP answers in 7.6 ms; once writable, pause and resume both apply                                                                                                                                                                                                       |
+| The saved-state array unmounted                                             | the agent refuses to start: "The saved-state array is not prepared (no array id at /srv/opensteer-pool/array-id)"; remounted, it starts                                                                                                                                                                                                                                                                                                                                                 |
+| The host ruleset flushed while two guests run                               | all five probes from inside the guest stayed blocked (metadata, the agent's port on the veth and on the host address, another guest's bridge, the internet); four of five probes from the proxy's namespace ran before the repair and stayed blocked (metadata, the agent's port twice, sshd); the fifth (another slot's bridge) overlapped the repair, blocked too. The agent re-applied both host tables 4.3 s after the flush; restarting nftables loads them again from the include |
+| 400 slots                                                                   | created one by one in 128.7 s; the agent ready with 400 slots in 1,386 / 1,372 / 1,340 ms (three restarts); a cold start among them 1,269 ms; deleted in 15.7 s                                                                                                                                                                                                                                                                                                                         |
+| Two saves at once against `memory.high`                                     | each save 2.8–4.1 s; the savers' memory cgroups counted 342 and 444 `high` events and 0 `max`, 0 `oom`, 0 `oom_kill`                                                                                                                                                                                                                                                                                                                                                                    |
+| Isolation from inside a guest (2a)                                          | 15 of 15 as in the first run (table in `RESULTS.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Agent killed at each of ten points (2a)                                     | the same as the first run: same answer twice, 0 writers, a cold start after                                                                                                                                                                                                                                                                                                                                                                                                             |
+| One limit over all guests                                                   | `guests/memory.max` = 30,283,517,952 bytes on a 31 GiB host                                                                                                                                                                                                                                                                                                                                                                                                                             |
