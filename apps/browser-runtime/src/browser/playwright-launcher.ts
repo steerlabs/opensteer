@@ -17,6 +17,7 @@ import {
   type BrowserLaunchRequest,
   type BrowserLauncher,
   type BrowserPage,
+  type BrowserRendererUsage,
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
@@ -53,6 +54,7 @@ import {
 } from "playwright-core";
 import { z } from "zod";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
+import { collectLinuxRendererUsage, type LinuxProcFs } from "./linux-renderer-usage.js";
 
 import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
 
@@ -88,6 +90,8 @@ interface PlaywrightChromiumLauncherOptions {
   environment?: Readonly<NodeJS.ProcessEnv>;
   executablePath: string;
   headless: boolean;
+  linuxProcFs?: LinuxProcFs;
+  platform?: NodeJS.Platform;
   proxyUrl?: string;
   preserveLoopbackBypass?: boolean;
 }
@@ -201,7 +205,9 @@ export async function probePasskeySecurityState(
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
   readonly hostCost = "process" as const;
+  readonly rendererUsage?: () => BrowserRendererUsage;
   private preparation: Promise<void> | undefined;
+  private readonly ownedBrowserPids = new Set<number>();
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
   private readonly nativeCloseFailures = new Set<string>();
   readonly localProfiles: LocalProfileEngine = {
@@ -252,6 +258,34 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     this.headless = options.headless;
     this.proxyUrl = options.proxyUrl;
     this.preserveLoopbackBypass = options.preserveLoopbackBypass === true;
+    const platform = options.platform ?? process.platform;
+    if (platform === "linux") {
+      const proc = options.linuxProcFs;
+      this.rendererUsage = () => collectLinuxRendererUsage(this.ownedBrowserPids, proc);
+    }
+  }
+
+  private trackBrowserProcess(child: ChildProcess | null | undefined): () => void {
+    const pid = child?.pid;
+    if (
+      !child ||
+      typeof pid !== "number" ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      return () => undefined;
+    }
+    this.ownedBrowserPids.add(pid);
+    const untrack = () => {
+      this.ownedBrowserPids.delete(pid);
+    };
+    child.once("exit", untrack);
+    return () => {
+      child.off("exit", untrack);
+      this.ownedBrowserPids.delete(pid);
+    };
   }
 
   private proxyTrafficArgs(): readonly string[] {
@@ -348,10 +382,16 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     await access(this.executablePath, constants.X_OK);
     await this.prepare();
     const browserServer = await this.startServer();
+    const untrackGuestProcess = this.trackBrowserProcess(
+      typeof browserServer.process === "function" ? browserServer.process() : null,
+    );
     let stopped: Promise<void> | undefined;
     const owner = {
       close: () => {
-        stopped ??= browserServer.kill().finally(() => signal?.removeEventListener("abort", abort));
+        stopped ??= browserServer.kill().finally(() => {
+          untrackGuestProcess();
+          signal?.removeEventListener("abort", abort);
+        });
         return stopped;
       },
     };
@@ -600,6 +640,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         ...this.args,
         `--user-data-dir=${directory}`,
         "--remote-debugging-pipe",
+        // ignoreDefaultArgs drops Playwright's --disable-field-trial-config; without it
+        // Chrome for Testing enables TrackEmptyRendererProcessesForReuse and holds closed
+        // tab renderers alive past TabSleeper's settle window.
+        "--disable-field-trial-config",
         // Guest already receives these from Playwright's defaults. Native launches
         // must not start Chromium's bundled extension workers on every cold open.
         "--disable-extensions",
@@ -647,9 +691,19 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         { cause },
       );
     }
+    const ownedPid = ownedProcess.pid;
     const exited = new Promise<void>((resolve) => {
-      if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) resolve();
-      else ownedProcess.once("exit", () => resolve());
+      if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) {
+        resolve();
+      } else {
+        if (typeof ownedPid === "number" && Number.isSafeInteger(ownedPid) && ownedPid > 0) {
+          this.ownedBrowserPids.add(ownedPid);
+        }
+        ownedProcess.once("exit", () => {
+          if (typeof ownedPid === "number") this.ownedBrowserPids.delete(ownedPid);
+          resolve();
+        });
+      }
     });
     timing("chromium-launch");
     const browser = context.browser();

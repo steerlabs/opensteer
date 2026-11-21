@@ -15,6 +15,7 @@ export const realBrowserTests = [
   "apps/browser-runtime/src/browser/chromium-clipboard.test.ts",
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",
   "apps/browser-runtime/src/browser/chromium-popup-follow.test.ts",
+  "apps/browser-runtime/src/browser/chromium-renderer-leak.test.ts",
   "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
   "apps/browser-runtime/src/browser/chromium-teardown.test.ts",
   "apps/browser-runtime/src/browser/chromium-viewport-capture.test.ts",

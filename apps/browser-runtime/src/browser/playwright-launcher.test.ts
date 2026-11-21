@@ -986,6 +986,7 @@ describe("native Chromium profiles", () => {
         expect.arrayContaining([
           `--user-data-dir=${directory}`,
           "--remote-debugging-pipe",
+          "--disable-field-trial-config",
           "--disable-extensions",
           "--disable-component-extensions-with-background-pages",
           "--disable-component-update",
@@ -1171,12 +1172,51 @@ describe("native Chromium profiles", () => {
     ).toThrow(/rejected/);
     expect(() => assertImportedCookies([{ ...cookie, expires: 1 }], [])).not.toThrow();
   });
+
+  it("exposes Linux rendererUsage tracked by owned native process lifetime and omits it on darwin", async () => {
+    const procFiles: Record<string, string> = {
+      "/proc/12345/stat": "12345 (chrome) S 1 12345 12345",
+      "/proc/12346/stat": "12346 (chrome) S 12345 12345 12345",
+      "/proc/12346/cmdline": "/opt/chrome\0--type=renderer\0",
+      "/proc/12346/status": "Name:\tchrome\nVmRSS:\t64000 kB\n",
+    };
+    const f = await nativeCloseFixture({
+      platform: "linux",
+      linuxProcFs: {
+        listPids: () => [12345, 12346],
+        readText: (filePath) => procFiles[filePath] ?? null,
+      },
+    });
+    const darwinLauncher = new PlaywrightChromiumLauncher({
+      executablePath: process.execPath,
+      headless: true,
+      chromiumSandbox: true,
+      platform: "darwin",
+    });
+    expect(darwinLauncher.rendererUsage).toBeUndefined();
+    expect(f.launcher.rendererUsage).toBeTypeOf("function");
+    expect(f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      expect(f.launcher.rendererUsage?.()).toEqual({
+        processes: 1,
+        bytes: 64000 * 1024,
+      });
+      f.exit();
+      expect(f.launcher.rendererUsage?.()).toEqual({ processes: 0, bytes: 0 });
+    } finally {
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(
   options: Pick<
     ConstructorParameters<typeof PlaywrightChromiumLauncher>[0],
-    "preserveLoopbackBypass" | "proxyUrl"
+    "linuxProcFs" | "platform" | "preserveLoopbackBypass" | "proxyUrl"
   > = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "native-close-"));
