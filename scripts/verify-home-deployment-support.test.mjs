@@ -21,6 +21,7 @@ import {
   assertBuildSpace,
   builderPlatforms,
   checkoutTemporaryDirectory,
+  installerContents,
   homeImageBuilds,
   platformSummary,
   quote,
@@ -227,7 +228,7 @@ await test("the Account fixture's public-looking address is local on Linux and f
   });
   assert.deepEqual(accountFixtureRoute(local, "11.1.2.3", 4000), {
     add: "ip address add 11.1.2.3/32 dev lo",
-    remove: "ip address del 11.1.2.3/32 dev lo",
+    remove: "ip address del 11.1.2.3/32 dev lo || true",
   });
   const colima = verifierTarget({
     env: {},
@@ -825,6 +826,18 @@ exit 0
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /Cannot write the manifest to .*\/work\/missing\/release\.json/u);
   assert.equal(existsSync(resolve(directory, "docker.log")), false, "it built before checking");
+});
+
+await test("the standalone installer's payload is read back file by file", (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "home-package-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const installer = resolve(directory, "opensteer-home-installer.sh");
+  execFileSync("bash", ["deploy/home/package-installer.sh", installer]);
+  const { script, files } = installerContents(installer);
+  assert.equal(files["common.sh"], readFileSync("deploy/home/common.sh", "utf8"));
+  assert.equal(files.version.trim(), JSON.parse(readFileSync("package.json", "utf8")).version);
+  assert.match(script, /^#!\/usr\/bin\/env bash\n/u);
+  assert.match(script, /\nbash "\$package\/install\.sh" "\$@"\n$/u);
 });
 
 await test("restore rollback reselects the previous volume set before restarting the Home", () => {

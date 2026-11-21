@@ -38,6 +38,7 @@ import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync
 import {
   accountFixtureRoute,
   assertBuildSpace,
+  installerContents,
   builderPlatforms,
   checkoutTemporaryDirectory,
   homeImageBuilds,
@@ -1044,7 +1045,7 @@ async function waitForSystemd(unit, successFile, expectedState, managed = true, 
  * Account fixture's certificate. A real Account has a public certificate; nothing else in the
  * recipe changes, as the BYO proof layers compose.proof.yaml onto its installed recipe.
  */
-function managedInstaller(directory, certificate) {
+function managedInstaller(directory, certificate, shipped) {
   const source = resolve(directory, "managed-source");
   const home = resolve(source, "deploy/home");
   mkdirSync(home, { recursive: true });
@@ -1065,19 +1066,23 @@ function managedInstaller(directory, certificate) {
   const common = readFileSync(resolve(home, "common.sh"), "utf8");
   const anchor = '-f "$home_dir/compose.yaml")';
   assert.ok(common.includes(anchor), "The Compose recipe anchor moved");
-  writeFileSync(
-    resolve(home, "common.sh"),
-    common.replace(anchor, `${anchor}\n  args+=(-f ${quote(layer)})`),
-  );
+  const layered = common.replace(anchor, `${anchor}\n  args+=(-f ${quote(layer)})`);
+  writeFileSync(resolve(home, "common.sh"), layered);
   const installer = resolve(directory, "account/opensteer-home-installer.sh");
   checked(
     result("bash", [resolve(home, "package-installer.sh"), installer]),
     "Managed installer packaging failed",
   );
+  // What the managed check installs is the shipped installer with that one line added.
+  const ship = installerContents(shipped);
+  const proof = installerContents(installer);
+  assert.equal(proof.script, ship.script);
+  assert.deepEqual(proof.files, { ...ship.files, "common.sh": layered });
+  assert.equal(ship.files["common.sh"], common);
   return installer;
 }
 
-async function managedProof(directory) {
+async function managedProof(directory, shipped) {
   const accountDirectory = resolve(directory, "account");
   mkdirSync(accountDirectory);
   const key = resolve(accountDirectory, "key.pem");
@@ -1105,7 +1110,7 @@ async function managedProof(directory) {
     ]),
     "Account fixture TLS generation failed",
   );
-  const bootPackage = managedInstaller(directory, certificate);
+  const bootPackage = managedInstaller(directory, certificate, shipped);
   const accountKeys = generateKeyPairSync("ed25519");
   const accountKeyId = `home-proof-${suffix}`;
   const jwks = {
@@ -1131,7 +1136,6 @@ async function managedProof(directory) {
     );
   const codes = new Map();
   const accessTokens = new Set();
-  const backupReports = [];
 
   const release = { version, images: managedImages() };
   const token = randomBytes(32).toString("base64url");
@@ -1226,10 +1230,9 @@ async function managedProof(directory) {
         assert.ok(homeCredentials(authorization), "Egress poll without the Home's credentials");
         return CloudComputerEgressResponseSchema.parse({});
       },
-      async reportBackupForHome(id, authorization, report) {
+      async reportBackupForHome(id, authorization) {
         assert.equal(id, cloudComputerId);
         assert.ok(homeCredentials(authorization), "Backup report without the Home's credentials");
-        backupReports.push(report.snapshotId);
       },
     },
     authenticator: {
@@ -1415,8 +1418,9 @@ async function managedProof(directory) {
   const specPath = `${vmDirectory}/boot.json`;
   const tokenPath = `${vmDirectory}/bootstrap-token`;
   try {
-    vm(accountRoute.add);
+    // Marked first, so a route added in part is still removed.
     accountRouted = true;
+    vm(accountRoute.add);
     vm(`ip address add ${feedAddress}/32 dev lo`);
     feedAddressAdded = true;
     vm(
@@ -2516,7 +2520,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     "managed installer retries completion, restores onto a fresh destination, and refuses mutable images",
     () => {
       managedPrepared = true;
-      return managedProof(checkoutTemp);
+      return managedProof(checkoutTemp, bootPackage);
     },
     Boolean(setupToken && bucketReady),
   );

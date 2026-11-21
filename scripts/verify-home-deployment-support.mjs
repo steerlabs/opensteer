@@ -1,4 +1,6 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 export function quote(value) {
@@ -131,7 +133,7 @@ export function accountFixtureRoute(target, address, port) {
   if (target.fixtureRoute === "local-address") {
     return {
       add: `ip address add ${address}/32 dev lo`,
-      remove: `ip address del ${address}/32 dev lo`,
+      remove: `ip address del ${address}/32 dev lo || true`,
     };
   }
   const rule = (chain) =>
@@ -140,8 +142,36 @@ export function accountFixtureRoute(target, address, port) {
 [[ -n $fixture ]]`;
   return {
     add: `${fixture}\niptables ${rule("-I OUTPUT")}\niptables ${rule("-I PREROUTING")}`,
-    remove: `${fixture}\niptables ${rule("-D OUTPUT")}\niptables ${rule("-D PREROUTING")}`,
+    remove: `${fixture}\niptables ${rule("-D OUTPUT")} || true\niptables ${rule("-D PREROUTING")} || true`,
   };
+}
+
+const payloadStart = "base64 -d <<'OPENSTEER_HOME_FILES' | tar -xzf - -C \"$package\"";
+
+/** A standalone installer's script around its payload, and the files in the payload. */
+export function installerContents(path) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(payloadStart);
+  const end = lines.indexOf("OPENSTEER_HOME_FILES", start + 1);
+  if (start < 0 || end < 0) throw new Error(`${path} is not a standalone Home installer`);
+  const directory = mkdtempSync(resolve(tmpdir(), "home-installer-"));
+  try {
+    const archive = resolve(directory, "payload.tgz");
+    writeFileSync(archive, Buffer.from(lines.slice(start + 1, end).join(""), "base64"));
+    const files = resolve(directory, "files");
+    mkdirSync(files);
+    execFileSync("tar", ["-xzf", archive, "-C", files]);
+    return {
+      script: [...lines.slice(0, start + 1), ...lines.slice(end)].join("\n"),
+      files: Object.fromEntries(
+        readdirSync(files)
+          .sort()
+          .map((name) => [name, readFileSync(resolve(files, name), "utf8")]),
+      ),
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 export function assertBuildSpace(location, dfOutput) {
