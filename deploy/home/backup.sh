@@ -93,7 +93,7 @@ report_backup() {
 check_backup_repository() {
   echo 'Checking that the backup repository can be reached and written.'
   if ! restic_container "$restic_script"'
-    probe cat config >/dev/null || probe init >/dev/null || exit
+    probe cat config >/dev/null 2>&1 || probe init >/dev/null || exit
     probe snapshots --latest 1 >/dev/null
   ' >&2; then
     fail 'The backup repository could not be reached or written. The Home was not stopped.'
