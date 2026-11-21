@@ -644,7 +644,7 @@ describe("Cloud Computer reconciliation", () => {
     const h = harness({ compute });
     h.status.desired = [{ ...home, region: null, serverType: null }];
     await h.pass();
-    expect(h.reports).toEqual([]);
+    expect(h.reports.map(({ phase }) => phase)).toEqual(["provisioning"]);
     const write = h.status.desired[0]?.pendingProviderWrites?.[0];
     expect(write).toMatchObject({ kind: "create", dispatched: true });
     const [operationPath] = [...compute.operations.entries()].find(
@@ -686,6 +686,48 @@ describe("Cloud Computer reconciliation", () => {
       expect.any(AbortSignal),
     );
   });
+
+  it.each(["create", "power-on"] as const)(
+    "reports an unknown Google %s as provisioning and applies the readiness deadline",
+    async (kind) => {
+      const compute = new ComputeFake();
+      const h = harness({ compute });
+      h.status.desired = [{ ...home }];
+      if (kind === "power-on") {
+        await h.pass();
+        [...compute.instances.values()][0]!.status = "TERMINATED";
+        compute.keepOperationsRunning = true;
+      } else {
+        compute.nextInsert = "late";
+      }
+      await h.pass();
+      expect(h.last()).toMatchObject({ phase: "provisioning", lastError: null });
+      expect(h.status.desired[0]?.pendingProviderWrites).toEqual([
+        expect.objectContaining({ kind, dispatched: true }),
+      ]);
+      const sent = compute.requests.filter(
+        ({ method, path }) =>
+          method === "POST" &&
+          (kind === "create" ? path === `${zonePath}/instances` : path.endsWith("/start")),
+      ).length;
+      h.status.now += 1000;
+      await h.restart();
+      expect(h.last()).toMatchObject({
+        phase: "failed",
+        lastError: "The Cloud Computer did not become ready before its deadline.",
+      });
+      expect(h.status.desired[0]?.pendingProviderWrites).toEqual([
+        expect.objectContaining({ kind, dispatched: true }),
+      ]);
+      expect(
+        compute.requests.filter(
+          ({ method, path }) =>
+            method === "POST" &&
+            (kind === "create" ? path === `${zonePath}/instances` : path.endsWith("/start")),
+        ),
+      ).toHaveLength(sent);
+    },
+  );
 
   it("refuses a second reconciler while a stale pass is blocked before creating a VM", async () => {
     const h = harness({ concurrency: 1 });

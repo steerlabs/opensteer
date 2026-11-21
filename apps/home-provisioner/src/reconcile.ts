@@ -69,7 +69,6 @@ export class Reconciler {
                 (firewall ??= provider.ensureFirewall(operationSignal, check)),
               signal,
             );
-            if (!report) continue;
             const key = JSON.stringify(report);
             if (this.#reports.get(computer.id) === key) continue;
             this.#reports.delete(computer.id);
@@ -149,7 +148,7 @@ export class Reconciler {
     computer: CloudComputerDesired,
     ensureFirewall: (signal: AbortSignal, check: () => Promise<void>) => Promise<number>,
     signal: AbortSignal,
-  ): Promise<CloudComputerReport | undefined> {
+  ): Promise<CloudComputerReport> {
     const { account, provider, dns, discover } = this.#options;
     const { id, generation, revision, state, hostname } = computer;
     let current: VmServer | undefined;
@@ -343,9 +342,8 @@ export class Reconciler {
       for (const write of pending.values()) {
         if (write.kind === "create" || write.kind === "power-on") await recover(write);
       }
-      if ([...pending.values()].some(({ kind }) => kind === "create")) {
-        return provider.canRecoverWrite ? undefined : unready("provisioning");
-      }
+      if ([...pending.values()].some(({ kind }) => kind === "create"))
+        return unready("provisioning");
       if (matching.length > 1)
         return report("failed", "The Cloud Computer has more than one server for this generation.");
       if (current?.status === "deleting") return unready("provisioning");
@@ -420,7 +418,7 @@ export class Reconciler {
         return unready("provisioning");
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on"))
-          return provider.canRecoverWrite ? undefined : unready("provisioning");
+          return unready("provisioning");
         await act((job) =>
           journal(
             "power-on",
@@ -430,14 +428,7 @@ export class Reconciler {
         );
         current = await provider.describe(server.id, signal, server.generation);
       }
-      if (current?.status !== "running") {
-        if (
-          provider.canRecoverWrite &&
-          [...pending.values()].some(({ kind }) => kind === "power-on")
-        )
-          return undefined;
-        return unready("provisioning");
-      }
+      if (current?.status !== "running") return unready("provisioning");
       const addresses = { ipv4: current.ipv4, ipv6: computer.ipv6Enabled ? current.ipv6 : null };
       if (!addresses.ipv4 && !addresses.ipv6) return unready("provisioning");
 
@@ -496,7 +487,10 @@ export class Reconciler {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
       this.#options.onError?.(error);
-      if (error instanceof ProviderOutcomeUnknown) return undefined;
+      if (error instanceof ProviderOutcomeUnknown)
+        return state === "active"
+          ? unready("provisioning")
+          : report(state === "deleted" ? "deleting" : "provisioning");
       return report("failed", failure);
     }
   }
