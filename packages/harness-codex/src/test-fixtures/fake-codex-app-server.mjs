@@ -63,10 +63,14 @@ const releasePath = process.argv
   ?.slice("--release-file=".length);
 // The fake answers as the Codex release this tree installs, so a version bump
 // never has to edit it; `version-mismatch` answers as a release nothing pins.
+// A smoke journey that copies this fixture outside `node_modules` writes `codex-version.txt` beside it.
+const copiedVersionUrl = new URL("./codex-version.txt", import.meta.url);
 const version =
   scenario === "version-mismatch"
     ? "0.0.0"
-    : createRequire(import.meta.url)("@openai/codex/package.json").version;
+    : existsSync(copiedVersionUrl)
+      ? readFileSync(copiedVersionUrl, "utf8").trim()
+      : createRequire(import.meta.url)("@openai/codex/package.json").version;
 // `codex --version` is how the Runner reads a person's own install.
 if (process.argv.includes("--version")) {
   writeFileSync(1, `codex-cli ${version}\n`);
