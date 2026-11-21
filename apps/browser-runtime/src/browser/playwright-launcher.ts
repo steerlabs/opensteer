@@ -1232,6 +1232,15 @@ function locateTab(
   return inventory[0]?.helperEpoch === epoch ? { status: "gone" } : { status: "unknown" };
 }
 
+/** Background removal attempts per tab, since it was last queued, before it is reported. */
+const removalRetryBound = 8;
+
+function reportUnconfirmedRemoval(kind: "restored" | "sleeping", attempts: number): void {
+  process.stderr.write(
+    `${JSON.stringify({ event: "browser-runtime.tab-removal-unconfirmed", kind, attempts })}\n`,
+  );
+}
+
 function syncOpenerOfPage(page: Page): Page | null {
   const opener = (page as unknown as { _opener?: Page | null })._opener;
   return opener && !opener.isClosed() ? opener : null;
@@ -2126,6 +2135,11 @@ class PlaywrightContextHandle implements BrowserContext {
         if (tracker.targetId) this.neverHandOffTargetIds.delete(tracker.targetId);
         this.neverHandOffTabIds.delete(tabId);
         this.pendingRestoredRemovals.delete(tabId);
+      } else if (tracker.attempts >= removalRetryBound) {
+        // Rule A: recorded as not removed, never retried silently forever. Its guards stay, so a
+        // page it loads later is still closed on arrival.
+        this.pendingRestoredRemovals.delete(tabId);
+        reportUnconfirmedRemoval("restored", tracker.attempts);
       }
     }
     if (this.pendingRestoredRemovals.size > 0 && !this.closed) {
@@ -2922,6 +2936,10 @@ class PlaywrightContextHandle implements BrowserContext {
         if (sleeping.state === "discarded") this.neverHandOffTabIds.delete(sleeping.tabId);
         this.sleepingTabs.delete(tokenId);
         this.pendingSleepingRemovals.delete(tokenId);
+      } else if (tracker.attempts >= removalRetryBound) {
+        // The token stays owned, so a later release or wake can try again; the background stops.
+        this.pendingSleepingRemovals.delete(tokenId);
+        reportUnconfirmedRemoval("sleeping", tracker.attempts);
       }
     }
     if (this.pendingSleepingRemovals.size > 0 && !this.closed) {

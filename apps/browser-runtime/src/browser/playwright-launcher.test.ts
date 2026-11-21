@@ -3504,6 +3504,121 @@ describe("native Chromium profiles", () => {
     },
   );
 
+  it("bounds background removal retries, reports the tab as not removed, and keeps its page from ever being handed off (H)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfX = "srf_00000000-0000-4000-8000-00000000d801" as BrowserSurfaceId;
+    await writeTabRestoreSidecar(f.directory, [
+      { index: 0, surfaceId: surfX, url: "https://stuck.test/" },
+    ]);
+    const pageHandlers: Array<(page: Page) => void> = [];
+    let lateClosed = false;
+    const late = {
+      url: () => "https://stuck.test/",
+      isClosed: () => lateClosed,
+      close: vi.fn(async () => {
+        lateClosed = true;
+      }),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _opener: null,
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-stuck" } }) },
+    } as unknown as Page;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => ({
+        url: () => "about:blank",
+        isClosed: () => false,
+        on: vi.fn(),
+        once: vi.fn(),
+        _connection: { toImpl: () => ({ delegate: { _targetId: "target-d8-helper" } }) },
+      })),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    const tabs: ChromiumTabEntry[] = [
+      {
+        tabId: 1,
+        windowId: 1,
+        index: 0,
+        url: "about:blank",
+        title: "",
+        active: true,
+        discarded: false,
+        status: "complete",
+        targetId: "target-d8-helper",
+      },
+      {
+        tabId: 801,
+        windowId: 1,
+        index: 1,
+        url: "https://stuck.test/",
+        title: "Stuck",
+        active: false,
+        discarded: false,
+        status: "unloaded",
+        targetId: "target-stuck",
+      },
+    ];
+    // Removal never takes: the tab stays listed whatever is asked.
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    let removeCalls = 0;
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async () => {
+        removeCalls++;
+        return false;
+      });
+    f.cdp.send.mockImplementation(async (method: string) => {
+      if (method === "Target.closeTarget") throw new Error("close refused");
+      return {};
+    });
+    const diagnostic = vi.spyOn(process.stderr, "write");
+    const unconfirmed = () =>
+      diagnostic.mock.calls.filter(([line]) =>
+        String(line).includes('"event":"browser-runtime.tab-removal-unconfirmed"'),
+      );
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const reconciling = launched.context.sessionRestore!.reconcile(new Set()).catch(
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await reconciling).toBeInstanceOf(Error);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(unconfirmed()).toHaveLength(1);
+      expect(String(unconfirmed()[0]![0])).toContain('"kind":"restored"');
+      const callsAtBound = removeCalls;
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      // Not retried silently forever.
+      expect(removeCalls).toBe(callsAtBound);
+      // Still guarded: a page the tab loads later is closed and never handed off.
+      for (const handler of pageHandlers) handler(late);
+      await vi.waitFor(() => expect(lateClosed).toBe(true), { timeout: 2_000, interval: 20 });
+      expect(handedOff).not.toContain("https://stuck.test/");
+    } finally {
+      vi.useRealTimers();
+      invSpy.mockRestore();
+      remSpy.mockRestore();
+      diagnostic.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
