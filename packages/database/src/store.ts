@@ -739,6 +739,7 @@ export class OpensteerStore {
     readonly origin: "agent" | "trigger";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
   }): Promise<BrowserSessionRecord> {
     return browserSessionStore.createBrowserSession(this.#database, input);
   }

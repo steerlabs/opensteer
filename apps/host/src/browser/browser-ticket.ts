@@ -25,6 +25,7 @@ interface IssueBrowserAttachTicketInput {
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly reattach?: true;
+  readonly pool?: BrowserAttachTicketClaims["pool"];
   readonly navigationAttributionVersion?: 1;
   readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
@@ -106,6 +107,7 @@ export class BrowserAttachTicketSigner {
           }
         : {}),
       ...(input.reattach ? { reattach: true } : {}),
+      ...(input.pool ? { pool: input.pool } : {}),
       ...(input.navigationAttributionVersion === 1 ? { navigationAttributionVersion: 1 } : {}),
       ...(input.popupFollowVersion === 1 ? { popupFollowVersion: 1 } : {}),
       ...(input.tabRestoreVersion

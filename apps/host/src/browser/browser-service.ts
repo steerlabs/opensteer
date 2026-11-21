@@ -171,6 +171,8 @@ import { z } from "zod";
 import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
+import type { BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
@@ -304,6 +306,7 @@ export interface BrowserSessionRepository {
     binding: BrowserTabOpenBinding;
     identityKey: string | null;
     runnerId: RunnerId;
+    pooled?: true;
   }): Promise<void>;
   settleBrowserTabOpen(binding: BrowserTabOpenBinding): Promise<void>;
   rememberedBrowserPlacement(ownerId: UserId, identityKey: string): Promise<RunnerId | null>;
@@ -394,6 +397,7 @@ export interface BrowserSessionRepository {
     readonly origin: "agent" | "trigger" | "person";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
   }): Promise<BrowserSessionRecord>;
   countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number>;
   /** One consistent read of a session's open tabs and Run eligibility; null if it is gone. */
@@ -522,6 +526,11 @@ export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
+  /** Available only on the in-process negotiated test target. */
+  readonly loopbackPool?: {
+    readonly gate: BrowserPoolGate;
+    readonly fence: () => BrowserPoolRuntimeFence;
+  };
   readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
   readonly stateImport?: boolean;
@@ -746,6 +755,7 @@ interface BrowserServiceOptions {
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
+  readonly managedPoolTestRunner?: RunnerId;
 }
 
 /**
@@ -940,12 +950,14 @@ export class BrowserService {
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
+  readonly #managedPoolTestRunner: RunnerId | undefined;
   readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
+    this.#managedPoolTestRunner = options.managedPoolTestRunner;
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
     this.#requireAgentVisibility = options.requireAgentVisibility ?? (async () => {});
     this.#detachRunnerAgents = options.detachRunnerAgents;
@@ -1631,7 +1643,9 @@ export class BrowserService {
       )
         throw this.#tabOpenRefusal(
           "browser-tab-open-outcome-unknown",
-          "Opening did not confirm its outcome. Retry this request to recover its original page.",
+          budget.pool
+            ? "Opening did not confirm its outcome. Inspect the browser before opening another page."
+            : "Opening did not confirm its outcome. Retry this request to recover its original page.",
         );
       if (budget.admitted) {
         const remaining = Math.max(1, expiresAt - Date.now());
@@ -1710,7 +1724,20 @@ export class BrowserService {
                 code: "conflict",
                 message: "Idempotency key already used.",
               });
-            if (binding.outcome.kind === "pending") budget.admitted = binding;
+            if (binding.outcome.kind === "pending") {
+              if (this.#managedPoolTestRunner) {
+                const bound = await this.#repository.getBrowserSessionForOwner(
+                  binding.chosenSessionId,
+                  ownerId,
+                );
+                if (!bound || bound.runnerId === this.#managedPoolTestRunner)
+                  throw this.#tabOpenRefusal(
+                    "browser-tab-open-outcome-unknown",
+                    "The original page outcome is unknown. Inspect the browser before opening another page.",
+                  );
+              }
+              budget.admitted = binding;
+            }
             return binding;
           }
           let record: BrowserSessionRecord | null = null;
@@ -1798,6 +1825,24 @@ export class BrowserService {
             );
             await this.#requireAgentAccess(runnerId);
           }
+          const pooled = this.#poolTabTarget(runnerId);
+          if (pooled) {
+            if (agent) throw unavailable("This browser cannot open a tab for an agent yet.");
+            const reservation = await pooled.gate.reserve(budget.signal);
+            budget.pool = { target: pooled, reservation };
+            budget.signal.throwIfAborted();
+            if (record) {
+              const current = await this.#repository.getBrowserSessionForOwner(record.id, ownerId);
+              if (
+                !current ||
+                current.runnerId !== runnerId ||
+                current.runtimeId !== record.runtimeId
+              )
+                throw unavailable("The browser session changed while waiting.");
+              this.#requireOpenableSession(current);
+              record = current;
+            }
+          }
           binding = {
             callerUserId: ownerId,
             idempotencyKey: command.idempotencyKey,
@@ -1809,9 +1854,18 @@ export class BrowserService {
               .digest("hex"),
             outcome: { kind: "pending" },
           };
+          if (!pooled) {
+            admitted = binding;
+            budget.admitted = binding;
+          }
+          await this.#repository.bindBrowserTabOpen({
+            binding,
+            identityKey,
+            runnerId,
+            ...(pooled ? { pooled: true } : {}),
+          });
           admitted = binding;
           budget.admitted = binding;
-          await this.#repository.bindBrowserTabOpen({ binding, identityKey, runnerId });
           budget.signal.throwIfAborted();
           if (opening) {
             let tabId: BrowserSurfaceId | undefined;
@@ -1889,7 +1943,11 @@ export class BrowserService {
         // Initial-start failures close their exact broker before reaching here.
         // An additional page can fail definitively only on the Runtime's reply;
         // a missing response retains its key and uncertain outcome.
-        if (admitted && (admitted.browserStarted || error instanceof BrowserCdpRefusal)) {
+        if (
+          admitted &&
+          (!budget.pool || !budget.pageRequested) &&
+          (admitted.browserStarted || error instanceof BrowserCdpRefusal)
+        ) {
           await this.#repository.settleBrowserTabOpen({
             ...admitted,
             outcome: { kind: "failed", reason: "failed" },
@@ -1902,6 +1960,8 @@ export class BrowserService {
               : this.#tabOpenFailure(settled, error);
         }
         throw error;
+      } finally {
+        budget.pool?.reservation.release();
       }
     });
   }
@@ -1998,7 +2058,7 @@ export class BrowserService {
             command.url && !agent
               ? broker.beginHistoryNavigation(ownerId, command.typed === true)
               : undefined;
-          budget.pageRequested = true;
+          if (!budget.pool) budget.pageRequested = true;
           const request = broker.requestCdp(
             {
               type: "cdp.command",
@@ -2013,6 +2073,7 @@ export class BrowserService {
                   operationAuthority: this.#signer.issue({
                     creationOrigin: agent ? "agent" : "person",
                     access: "read-write",
+                    ...(budget.pool ? { pool: budget.pool.target.fence() } : {}),
                     identity: { kind: "fresh" },
                     runtimeId: record.runtimeId,
                     sessionId: record.id,
@@ -2030,7 +2091,28 @@ export class BrowserService {
                 },
               },
             },
-            budget.confirmed ? budget.signal : undefined,
+            budget.confirmed || budget.pool ? budget.signal : undefined,
+            budget.pool
+              ? {
+                  recheck: async () => {
+                    const current = await this.#repository.getBrowserSessionForOwner(
+                      record.id,
+                      ownerId,
+                    );
+                    if (
+                      !current ||
+                      current.runnerId !== record.runnerId ||
+                      current.runtimeId !== record.runtimeId ||
+                      current.profileId !== record.profileId
+                    )
+                      throw unavailable("The browser session changed while waiting.");
+                    this.#requireOpenableSession(current);
+                  },
+                  submitted: () => {
+                    budget.pageRequested = true;
+                  },
+                }
+              : undefined,
           );
           // Awaited just after the lane releases; a rejection meanwhile is not unhandled.
           request.catch(() => undefined);
@@ -5569,6 +5651,10 @@ export class BrowserService {
           ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
           : "The selected Browser Runtime is not connected.",
       );
+    const pooled = this.#poolTabTarget(placement.runnerId);
+    const poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
+    if (pooled && (poolBudget?.pool?.target !== pooled || origin !== "person"))
+      throw unavailable("Open this pooled browser from a person tab.");
 
     const admit = async () => {
       const sessionId = input.sessionId ?? createBrowserSessionId();
@@ -5611,6 +5697,7 @@ export class BrowserService {
         profileId: profile?.id ?? null,
         runtimeId: target.runtimeId,
         ownerId: input.ownerId,
+        ...(pooled ? { pooled: true } : {}),
       });
       if (input.initialSurfaceId && this.#workspaceTabs) {
         const row = await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId);
@@ -5644,7 +5731,8 @@ export class BrowserService {
       const attachAuthority: Parameters<BrowserAttachTicketSigner["issue"]>[0] = {
         creationOrigin:
           origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
-        ...(target.actorClaim ? { actor: origin === "person" ? "person" : "agent" } : {}),
+        ...(target.actorClaim || pooled ? { actor: origin === "person" ? "person" : "agent" } : {}),
+        ...(pooled ? { pool: { ...pooled.fence(), attachment: 1 } } : {}),
         access: "read-write",
         ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
         ...(target.personFill && target.main === true && this.#personal
@@ -5700,7 +5788,7 @@ export class BrowserService {
       try {
         input.operationBudget?.signal.throwIfAborted();
         const reconnect =
-          attachAuthority.actor === "person"
+          attachAuthority.actor === "person" && !pooled
             ? {
                 prepare: async () => {
                   const broker = this.#brokers.get(sessionId);
@@ -5710,6 +5798,7 @@ export class BrowserService {
                 ticket: () => this.#signer.issue({ ...attachAuthority, reattach: true }),
               }
             : undefined;
+        if (pooled && poolBudget) poolBudget.pageRequested = true;
         socket = withoutDatabaseOperationSignal(() => target.connect(ticket, reconnect));
       } catch (error) {
         await this.#transitionBrowserSession({
@@ -5910,6 +5999,14 @@ export class BrowserService {
 
   #resolveTarget(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined {
     return this.#targetResolver?.resolve(placement);
+  }
+
+  #poolTabTarget(runnerId: RunnerId): BrowserRuntimeTarget["loopbackPool"] {
+    if (runnerId !== this.#managedPoolTestRunner) return undefined;
+    const target = this.#resolveTarget({ kind: "runner", runnerId });
+    if (!target?.main || !target.loopbackPool)
+      throw unavailable("The pooled browser target is unavailable.");
+    return target.loopbackPool;
   }
 
   /**
@@ -7385,7 +7482,11 @@ export class HostedBrowserBroker {
     }
   }
 
-  requestCdp(message: BrowserCdpRequest, signal?: AbortSignal): Promise<BrowserCdpResponse> {
+  requestCdp(
+    message: BrowserCdpRequest,
+    signal?: AbortSignal,
+    admission?: { recheck(): Promise<void>; submitted(): void },
+  ): Promise<BrowserCdpResponse> {
     signal?.throwIfAborted();
     const parsed = BrowserClientMessageSchema.parse(message) as BrowserCdpRequest;
     if (this.#settled || !this.#runtimeReady) {
@@ -7446,9 +7547,15 @@ export class HostedBrowserBroker {
       if (this.supportsScriptCancellation && parsed.replyBudget)
         signal?.addEventListener("abort", cancel, { once: true });
       this.#pendingCdpRequests.set(parsed.requestId, pending);
-      void this.#sendCommand(parsed, signal, () => {
-        pending.submitted = true;
-      }).catch((error) => {
+      void this.#sendCommand(
+        parsed,
+        signal,
+        () => {
+          pending.submitted = true;
+          admission?.submitted();
+        },
+        admission?.recheck,
+      ).catch((error) => {
         if (this.#pendingCdpRequests.get(parsed.requestId) !== pending) return;
         if (parsed.replyBudget && pending.submitted) {
           this.#socket.terminate();
@@ -8791,6 +8898,7 @@ export class HostedBrowserBroker {
     message: BrowserClientMessage,
     signal?: AbortSignal,
     onSubmit?: () => void,
+    recheck?: () => Promise<void>,
   ): Promise<void> {
     if (
       message.type === "navigation.reload" &&
@@ -8804,7 +8912,8 @@ export class HostedBrowserBroker {
         }),
       );
     const generation = this.#runtimeConnectionGeneration;
-    const operation = this.#commandTail.then(
+    const tail = recheck ? this.#commandTail.then(recheck) : this.#commandTail;
+    const operation = tail.then(
       () =>
         new Promise<void>((resolve, reject) => {
           signal?.throwIfAborted();
@@ -9580,6 +9689,10 @@ interface BrowserTabOpenBudget {
   readonly expiresAt: number;
   admitted?: BrowserTabOpenBinding;
   pageRequested?: boolean;
+  pool?: {
+    target: NonNullable<BrowserRuntimeTarget["loopbackPool"]>;
+    reservation: BrowserPoolReservation;
+  };
 }
 
 class BrowserCdpRefusal extends OpensteerError {

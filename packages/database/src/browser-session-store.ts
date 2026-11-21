@@ -1,4 +1,5 @@
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
+import { requireBrowserPoolAdmission } from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
@@ -407,10 +408,12 @@ export async function createBrowserSession(
     readonly origin: "agent" | "trigger" | "person";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
   },
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.pooled) await requireBrowserPoolAdmission(transaction, input.runnerId);
     await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) {
       await lockBrowserProfile(transaction, profileId);
@@ -1873,18 +1876,28 @@ export async function bindBrowserTabOpen(
     readonly binding: BrowserTabOpenBinding;
     readonly identityKey: string | null;
     readonly runnerId: RunnerId;
+    readonly pooled?: true;
   },
 ): Promise<void> {
-  await database
-    .insertInto("browserTabOpens")
-    .values({
-      ownerId: input.binding.callerUserId,
-      idempotencyKey: input.binding.idempotencyKey,
-      binding: input.binding,
-      identityKey: input.identityKey,
-      runnerId: input.runnerId,
-    })
-    .execute(databaseOperationOptions());
+  const insert = (target: Kysely<DatabaseSchema>) =>
+    target
+      .insertInto("browserTabOpens")
+      .values({
+        ownerId: input.binding.callerUserId,
+        idempotencyKey: input.binding.idempotencyKey,
+        binding: input.binding,
+        identityKey: input.identityKey,
+        runnerId: input.runnerId,
+      })
+      .execute(databaseOperationOptions());
+  if (input.pooled)
+    return commitPersonalMutation(database, async (tx) => {
+      await requireBrowserPoolAdmission(tx, input.runnerId);
+      // Pending pooled opens can still have an uncertain outcome. Keep that
+      // evidence for park recovery instead of pruning it in the admission write.
+      await insert(tx);
+    });
+  await insert(database);
   // Keep the guaranteed replay window and one successful placement preference per identity.
   await sql`
     with remembered as (
