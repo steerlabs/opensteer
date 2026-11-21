@@ -712,7 +712,7 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
   expect(browser2.context.pages()).toHaveLength(1);
   expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");
 
-  // Claim parked tab 4 later -> wakes with scroll & form state intact!
+  // Claim parked tab 4 later -> wakes with scroll state AND page policy script intact!
   await ledger2.openSurface({ surfaceId: surfaceIds[4]! });
   const live4 = ledger2.binding(surfaceIds[4]!)!;
   await waitLoaded(live4.cdp, "/article");
@@ -722,4 +722,16 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
     },
     { timeout: 5_000, interval: 100 },
   );
+  // Verify page policy script is active on both the initial restored tab and woken parked tab (R9).
+  for (const id of [surfaceIds[0]!, surfaceIds[4]!]) {
+    const live = ledger2.binding(id)!;
+    const policyMsg = await evalValue<string>(
+      live.cdp,
+      `Promise.race([
+        navigator.credentials.get({ publicKey: { challenge: new Uint8Array([1]) } }).then(() => "allowed", (e) => e.message),
+        new Promise((r) => setTimeout(() => r("HUNG_NO_POLICY"), 1000)),
+      ])`,
+    );
+    expect(policyMsg, `policy missing on ${id}`).toBe("Passkeys aren't available in this browser.");
+  }
 }, 60_000);

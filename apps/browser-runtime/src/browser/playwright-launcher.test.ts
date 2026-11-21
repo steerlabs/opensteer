@@ -1686,6 +1686,158 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("matches woken tabs strictly by targetId without stealing unrelated pages and clears closed tab URLs from sidecar (R9)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const pageHandlers: Array<(page: Page) => void> = [];
+    const closeListeners = new Map<string, Array<() => void>>();
+    const makePage = (id: string, url: string) => {
+      let closed = false;
+      closeListeners.set(id, []);
+      return {
+        emitClose: () => {
+          closed = true;
+          for (const fn of closeListeners.get(id) ?? []) fn();
+        },
+        page: {
+          url: () => url,
+          isClosed: () => closed,
+          close: vi.fn(async () => {
+            closed = true;
+            for (const fn of closeListeners.get(id) ?? []) fn();
+          }),
+          on: vi.fn((event: string, fn: () => void) => {
+            if (event === "close") closeListeners.get(id)!.push(fn);
+          }),
+          once: vi.fn((event: string, fn: () => void) => {
+            if (event === "close") closeListeners.get(id)!.push(fn);
+          }),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _connection: {
+            toImpl: () => ({ delegate: { _targetId: id } }),
+          },
+        } as unknown as Page,
+      };
+    };
+    const helper = makePage("target-helper", "about:blank");
+    const unrelated = makePage("target-unrelated", "https://unrelated.test/");
+    const realWoken = makePage("target-woken-55", "https://woken.test/");
+    let tabs: Array<{
+      tabId: number;
+      windowId: number;
+      index: number;
+      url: string;
+      title: string;
+      active: boolean;
+      discarded: boolean;
+      status: string;
+      targetId: string | null;
+    }> = [];
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => helper.page),
+      on: vi.fn((event: string, listener: (page: Page) => void) => {
+        if (event === "page") pageHandlers.push(listener);
+      }),
+    });
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const actSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId")
+      .mockImplementation(async (tabId) => {
+        // First emit an unrelated concurrent page (must NOT be stolen by activeWake!),
+        // then populate targetId for tabId 55 and emit the actual woken page!
+        tabs = [
+          {
+            tabId,
+            windowId: 1,
+            index: 0,
+            url: "https://woken.test/",
+            title: "Woken",
+            active: true,
+            discarded: false,
+            status: "complete",
+            targetId: "target-woken-55",
+          },
+          {
+            tabId: 56,
+            windowId: 1,
+            index: 1,
+            url: "https://unrelated.test/",
+            title: "Unrelated",
+            active: false,
+            discarded: false,
+            status: "complete",
+            targetId: "target-unrelated",
+          },
+        ];
+        queueMicrotask(() => {
+          for (const h of pageHandlers) h(unrelated.page);
+          setTimeout(() => {
+            for (const h of pageHandlers) h(realWoken.page);
+          }, 15);
+        });
+        return true;
+      });
+
+    // Seed sidecar so tab 55 is matched with targetId === null (unloaded at launch).
+    await writeTabRestoreSidecar(f.directory, [
+      {
+        index: 0,
+        surfaceId: "surface_00000000-0000-4000-8000-00000000r901",
+        url: "https://woken.test/",
+        lineageId: "lin-r9",
+      },
+    ]);
+    tabs = [
+      {
+        tabId: 55,
+        windowId: 1,
+        index: 0,
+        url: "https://woken.test/",
+        title: "Woken",
+        active: false,
+        discarded: true,
+        status: "unloaded",
+        targetId: null,
+      },
+    ];
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const handedOff: string[] = [];
+      launched.context.handOff((p) => handedOff.push(p.url()));
+
+      const claimed = await launched.context.sessionRestore!.claim(
+        "surface_00000000-0000-4000-8000-00000000r901" as never,
+        "https://woken.test/",
+        undefined,
+        "lin-r9",
+      );
+      expect(claimed?.url()).toBe("https://woken.test/");
+      await vi.waitFor(() => expect(handedOff).toContain("https://unrelated.test/"));
+
+      // Close the claimed tab -> its URL must leave opensteer-tabs.json immediately!
+      tabs = tabs.filter((t) => t.tabId !== 55);
+      realWoken.emitClose();
+      await launched.context.sessionRestore!.flush!();
+      const sidecarAfterClose = await readTabRestoreSidecar(f.directory);
+      expect(sidecarAfterClose.some((e) => e.url === "https://woken.test/")).toBe(false);
+    } finally {
+      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
+      invSpy.mockRestore();
+      actSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(

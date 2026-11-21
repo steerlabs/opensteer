@@ -1336,18 +1336,51 @@ class PlaywrightContextHandle implements BrowserContext {
       if (this.isHiddenPage(page)) return;
       const targetId = syncTargetIdOfPage(page);
       const opener = syncOpenerOfPage(page);
-      if (
-        this.activeWake &&
-        opener === null &&
-        this.creatingNewPage === 0 &&
-        (this.activeWake.expectedTargetId === null || this.activeWake.expectedTargetId === targetId)
-      ) {
+      if (this.activeWake && opener === null && this.creatingNewPage === 0) {
         const waiter = this.activeWake;
-        this.activeWake = null;
-        this.hiddenRestoredPages.delete(page);
-        this.claimedWakePages.add(page);
-        waiter.resolve(page);
-        return;
+        if (waiter.expectedTargetId !== null && targetId === waiter.expectedTargetId) {
+          this.activeWake = null;
+          this.hiddenRestoredPages.delete(page);
+          this.claimedWakePages.add(page);
+          waiter.resolve(page);
+          return;
+        }
+        if (waiter.expectedTargetId === null || targetId === null) {
+          // Verify identity strictly against expectedTargetId or Chromium's tabId inventory
+          // before claiming, so a concurrent unrelated page is never stolen by activeWake.
+          void (async () => {
+            const resolvedTargetId = targetId ?? (await this.targetIdOfPage(page));
+            let matched = false;
+            if (this.activeWake === waiter && resolvedTargetId) {
+              if (waiter.expectedTargetId !== null) {
+                matched = resolvedTargetId === waiter.expectedTargetId;
+              } else if (this.lifecycle) {
+                const inv = await this.lifecycle.inventory().catch(() => null);
+                const tabEntry = inv?.find((entry) => entry.tabId === waiter.tabId);
+                matched = tabEntry?.targetId === resolvedTargetId;
+              }
+            }
+            if (matched && this.activeWake === waiter) {
+              this.activeWake = null;
+              this.hiddenRestoredPages.delete(page);
+              this.claimedWakePages.add(page);
+              waiter.resolve(page);
+              return;
+            }
+            if (resolvedTargetId && this.neverHandOffTargetIds.has(resolvedTargetId)) {
+              this.hiddenRestoredPages.add(page);
+              if (!this.unclaimedRestoredTargetIds.has(resolvedTargetId)) {
+                void page.close({ runBeforeUnload: false }).catch(() => undefined);
+              }
+              return;
+            }
+            if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
+            const delayedHandle = this.wrap(page);
+            for (const listener of this.handOffs) listener(delayedHandle, delayedHandle.openerHandle);
+            for (const listener of this.pageListeners) listener(delayedHandle);
+          })();
+          return;
+        }
       }
       if (targetId && this.neverHandOffTargetIds.has(targetId)) {
         this.hiddenRestoredPages.add(page);
@@ -1827,6 +1860,30 @@ class PlaywrightContextHandle implements BrowserContext {
     return write;
   }
 
+  private async ensurePagePolicyOnRestoredPage(page: Page): Promise<void> {
+    if (page.isClosed()) return;
+    const script = browserPagePolicyScriptFor(this.providerConfig);
+    if (typeof page.addInitScript === "function") {
+      await withTimeout(page.addInitScript({ content: script }), 1_000, {
+        timeoutError: () => new Error("Page policy initScript timed out."),
+      }).catch(() => undefined);
+    }
+    const frames = typeof page.frames === "function" ? page.frames() : [];
+    await withTimeout(
+      Promise.allSettled(
+        frames.map((frame) =>
+          typeof frame.evaluate === "function"
+            ? frame.evaluate((source: string) => {
+                globalThis.eval(source);
+              }, script)
+            : Promise.resolve(),
+        ),
+      ),
+      1_000,
+      { timeoutError: () => new Error("Page policy sync timed out.") },
+    ).catch(() => undefined);
+  }
+
   private async claimRestoredTab(tab: ChromiumTabEntry): Promise<Page> {
     try {
       const cached = this.restoredPagesByTabId.get(tab.tabId);
@@ -1834,6 +1891,7 @@ class PlaywrightContextHandle implements BrowserContext {
       if (cached && !cached.isClosed()) {
         this.hiddenRestoredPages.delete(cached);
         this.claimedWakePages.add(cached);
+        await this.ensurePagePolicyOnRestoredPage(cached);
         return cached;
       }
       if (tab.targetId) {
@@ -1843,6 +1901,7 @@ class PlaywrightContextHandle implements BrowserContext {
           if (candidateTargetId === tab.targetId) {
             this.hiddenRestoredPages.delete(candidate);
             this.claimedWakePages.add(candidate);
+            await this.ensurePagePolicyOnRestoredPage(candidate);
             return candidate;
           }
         }
@@ -1850,6 +1909,7 @@ class PlaywrightContextHandle implements BrowserContext {
       const woken = await this.wakeDiscardedTab(tab.tabId);
       this.hiddenRestoredPages.delete(woken);
       this.claimedWakePages.add(woken);
+      await this.ensurePagePolicyOnRestoredPage(woken);
       return woken;
     } finally {
       this.unclaimedRestoredTabs.delete(tab.tabId);

@@ -12,6 +12,9 @@ export type BrowserPagePolicyConfig =
 export function installBrowserPagePolicy(config?: BrowserPagePolicyConfig): void {
   if (!config) {
     if (typeof CredentialsContainer === "undefined") return;
+    const absentMarker = Symbol.for("opensteerPagePolicyAbsent");
+    if (Object.hasOwn(CredentialsContainer.prototype, absentMarker)) return;
+    Object.defineProperty(CredentialsContainer.prototype, absentMarker, { value: true });
     // With the Blink WebAuth feature disabled, the native methods pend
     // instead of rejecting public-key requests, so refuse them here with a
     // named wrapper: a Proxy would stringify as an anonymous function.
