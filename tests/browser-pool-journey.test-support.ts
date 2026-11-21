@@ -274,7 +274,7 @@ export async function journey(
       deploymentId: task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
-      managedPoolTestRunner: task.runnerId,
+      pools: new Map([[task.runnerId, coordinator]]),
       tabs,
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
@@ -312,7 +312,6 @@ export async function journey(
         sharedControl: true,
         cdpBoundary: true,
         ...(guest.localProfileStorage ? { localProfileStorage: guest.localProfileStorage } : {}),
-        loopbackPool: coordinator,
         connect,
         // Standard CDP straight into the in-process runtime, with its recovery probe.
         standardCdpLineage: true,

@@ -1320,7 +1320,11 @@ it("ends the sessions with their note when the Runner does not come back before 
 });
 
 /** Every removal dependency but the store and the browser does nothing, as nothing else runs. */
-function removalDependencies(store: unknown, browser: unknown) {
+function removalDependencies(
+  store: unknown,
+  browser: unknown,
+  extra: Record<string, unknown> = {},
+) {
   const passive: unknown = new Proxy(function () {}, {
     get: (_target, property) => (property === "then" ? undefined : passive),
     apply: (_target, _this, args: unknown[]) => {
@@ -1328,7 +1332,7 @@ function removalDependencies(store: unknown, browser: unknown) {
       return typeof last === "function" ? (last as () => unknown)() : Promise.resolve(undefined);
     },
   });
-  const real: Record<string, unknown> = { store, browser };
+  const real: Record<string, unknown> = { store, browser, ...extra };
   return new Proxy(real, {
     get: (target, property: string) => (property in target ? target[property] : passive),
   }) as never;
@@ -1348,8 +1352,11 @@ it("ends a removed device's pooled sessions with their notes through the real re
       .execute();
     // The real route: the store's revocation ends the sessions in its own transaction, then the
     // removal's own steps.
+    // The revoke disconnects the Runner before the browser hears of the removal, as for real.
     await removeDevice(
-      removalDependencies(j.store, home.service),
+      removalDependencies(j.store, home.service, {
+        runners: { revoke: async () => j.runnerDown() },
+      }),
       await j.store.requireSelfDeviceId(j.task.runnerId),
       j.task.userId,
     );
@@ -1442,6 +1449,36 @@ it("gives each loss of a tab its own notice, reports only the newest, and clears
       .execute();
     expect((await report())?.pages).toHaveLength(100);
   } finally {
+    await j.close();
+  }
+});
+
+it("lets every service call made while the Runner is away wait for it, never refuse as unavailable", async () => {
+  const j = await journey("runner-away-calls");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("away"));
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    // A placement read reports the browser; it does not throw.
+    expect((await home.service.resourcePools([j.task.runnerId]))[0]).toMatchObject({
+      runnerId: j.task.runnerId,
+    });
+    // An attach, an open and an activate made now wait for the Runner.
+    const watching = j.viewer(home, sessionId, "watch");
+    const opening = home.service.openTab(j.task.userId, j.command("away-open"));
+    const activating = home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "away-activate",
+    );
+    j.runnerUp();
+    (await watching.attaching).close();
+    expect(await opening).toMatchObject({ tabId: expect.any(String) });
+    expect(await activating).toMatchObject({ kind: "page", sessionId });
+    expect((await j.row(sessionId))?.state).toBe("ready");
+  } finally {
+    j.runnerUp();
     await j.close();
   }
 });

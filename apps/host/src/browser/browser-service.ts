@@ -558,8 +558,6 @@ export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
-  /** Available only on the in-process negotiated test target. */
-  readonly loopbackPool?: BrowserPoolCoordinator;
   readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
   readonly stateImport?: boolean;
@@ -785,7 +783,8 @@ interface BrowserServiceOptions {
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
-  readonly managedPoolTestRunner?: RunnerId;
+  /** Each pooled Cloud Computer's coordinator, by its Runner; empty for an ordinary Home. */
+  readonly pools?: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
 }
 
 /**
@@ -980,7 +979,8 @@ export class BrowserService {
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
-  readonly #managedPoolTestRunner: RunnerId | undefined;
+  /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
+  readonly #pools: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<string, Set<AbortController>>();
   readonly #closing = new AbortController();
@@ -989,7 +989,7 @@ export class BrowserService {
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
-    this.#managedPoolTestRunner = options.managedPoolTestRunner;
+    this.#pools = options.pools ?? new Map();
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
     this.#requireAgentVisibility = options.requireAgentVisibility ?? (async () => {});
     this.#detachRunnerAgents = options.detachRunnerAgents;
@@ -1066,7 +1066,7 @@ export class BrowserService {
   }
 
   get usesPoolAdmission(): boolean {
-    return this.#managedPoolTestRunner !== undefined;
+    return this.#pools.size > 0;
   }
 
   isPlacementReady(runnerId: RunnerId, runtimeId: string): boolean {
@@ -1080,7 +1080,7 @@ export class BrowserService {
   }
 
   pooledDirectBrowser(runnerId: RunnerId) {
-    const pool = this.#poolTabTarget(runnerId);
+    const pool = this.#pool(runnerId);
     if (!pool) return undefined;
     return {
       identity: () => pool.identity(),
@@ -1106,15 +1106,13 @@ export class BrowserService {
 
   async initialize(): Promise<void> {
     if (this.#personal) {
-      if (this.#managedPoolTestRunner)
-        await this.#repository.failActiveBrowserSessions(undefined, this.#managedPoolTestRunner);
+      const pooled = [...this.#pools.keys()][0];
+      if (pooled) await this.#repository.failActiveBrowserSessions(undefined, pooled);
       else await this.#repository.failActiveBrowserSessions();
     }
     await this.pruneHistory();
-    const runnerId = this.#managedPoolTestRunner;
-    if (runnerId) {
+    for (const [runnerId, pool] of this.#pools) {
       // The gate stays closed until the state the sweep kept is recovered.
-      const pool = this.#poolTabTarget(runnerId)!;
       pool.setAdopter(this.#poolAdopter(runnerId));
       await pool.recover();
     }
@@ -1125,7 +1123,7 @@ export class BrowserService {
    * pooled target's coordinator calls it, so no ordinary Home reaches any of it.
    */
   #poolAdopter(runnerId: RunnerId): BrowserPoolAdopter {
-    if (runnerId !== this.#managedPoolTestRunner)
+    if (!this.#pools.has(runnerId))
       throw new Error("Only the pooled target adopts retained sessions.");
     return {
       inventory: () =>
@@ -1184,7 +1182,7 @@ export class BrowserService {
     fence: BrowserPoolRuntimeFence,
     attempt: number,
   ): Promise<readonly BrowserPoolSessionLoss[]> {
-    const pool = this.#poolTabTarget(runnerId);
+    const pool = this.#pool(runnerId);
     const target = this.#resolveTarget({ kind: "runner", runnerId });
     if (!pool || !target || this.#closed || !(this.#repository instanceof OpensteerStore))
       return [];
@@ -1770,7 +1768,7 @@ export class BrowserService {
     input: BrowserContextCandidateInput,
   ): Promise<BrowserContextCandidate> {
     const session = await this.#requireSession(ownerId, input.sessionId);
-    const pool = this.#poolTabTarget(session.runnerId);
+    const pool = this.#pool(session.runnerId);
     const signal = pool
       ? AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)])
       : undefined;
@@ -2123,12 +2121,12 @@ export class BrowserService {
                 message: "Idempotency key already used.",
               });
             if (binding.outcome.kind === "pending") {
-              if (this.#managedPoolTestRunner) {
+              if (this.#pools.size) {
                 const bound = await this.#repository.getBrowserSessionForOwner(
                   binding.chosenSessionId,
                   ownerId,
                 );
-                if (!bound || bound.runnerId === this.#managedPoolTestRunner)
+                if (!bound || this.#pools.has(bound.runnerId))
                   throw this.#tabOpenRefusal(
                     "browser-tab-open-outcome-unknown",
                     "The original page outcome is unknown. Inspect the browser before opening another page.",
@@ -2223,7 +2221,7 @@ export class BrowserService {
             );
             await this.#requireAgentAccess(runnerId);
           }
-          const pooled = this.#poolTabTarget(runnerId);
+          const pooled = this.#pool(runnerId);
           if (
             budget.browserSend &&
             !isDeepStrictEqual(budget.browserSend.target, pooled?.identity())
@@ -2727,9 +2725,11 @@ export class BrowserService {
     surfaceId: BrowserSurfaceId,
     witness?: { ownerId: UserId; row: TabRecord },
   ) {
-    if (!witness || !this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
+    if (!witness || !this.#pools.size || !(this.#repository instanceof OpensteerStore))
       throw unavailable("The pooled browser page has no durable close witness.");
-    const pool = this.#poolTabTarget(this.#managedPoolTestRunner);
+    const runnerId = (await this.#repository.getBrowserSessionForOwner(sessionId, witness.ownerId))
+      ?.runnerId;
+    const pool = runnerId ? this.#pools.get(runnerId) : undefined;
     if (!pool) return;
     const documentId = this.pageInventory(sessionId)?.records.get(surfaceId)?.documentId;
     if (!documentId) return;
@@ -3685,12 +3685,12 @@ export class BrowserService {
     state: async (ownerId, row) => (await this.#workspacePageStates(ownerId, [row])).get(row.id)!,
     activate: async (ownerId, row, _key, recoveryNoticeSeen) => {
       const pooledSession =
-        this.#managedPoolTestRunner && row.pageBinding
+        this.#pools.size && row.pageBinding
           ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
           : null;
       const pool =
         pooledSession && !isTerminal(pooledSession.state)
-          ? this.#poolTabTarget(pooledSession.runnerId)
+          ? this.#pool(pooledSession.runnerId)
           : undefined;
       const signal = pool
         ? AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)])
@@ -3732,8 +3732,7 @@ export class BrowserService {
         await this.pageTabs.admitted!(pool ? current : row);
         await broker?.markPersonUsed(row.id);
         const lost =
-          session.runnerId === this.#managedPoolTestRunner &&
-          this.#repository instanceof OpensteerStore
+          this.#pools.has(session.runnerId) && this.#repository instanceof OpensteerStore
             ? await nextBrowserPoolDocumentLoss(
                 this.#repository.database,
                 ownerId,
@@ -4018,7 +4017,7 @@ export class BrowserService {
               tabGeneration: row.generation,
               previousPageBinding: binding,
               dormantSurfaceIds: dormant,
-              ...(rowRunnerId === this.#managedPoolTestRunner && row.url === "about:blank"
+              ...(this.#pools.has(rowRunnerId) && row.url === "about:blank"
                 ? {}
                 : { initialUrl: row.url! }),
               placement: { kind: "runner", runnerId: rowRunnerId },
@@ -4085,10 +4084,10 @@ export class BrowserService {
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const existing =
-      this.#managedPoolTestRunner &&
+      this.#pools.size &&
       old &&
       (await this.#repository.getBrowserSessionForOwner(old.sessionId, agent.ownerId));
-    const pool = existing ? this.#poolTabTarget(existing.runnerId) : undefined;
+    const pool = existing ? this.#pool(existing.runnerId) : undefined;
     if (pool && existing) {
       await this.admitAgentBrowser(agent, "read-write", [existing]);
       await this.#requireAgentAccess(existing.runnerId);
@@ -4423,7 +4422,7 @@ export class BrowserService {
           message: "That tab is not available to this task.",
         });
       }
-      const pool = this.#poolTabTarget(record.runnerId);
+      const pool = this.#pool(record.runnerId);
       if (pool) await this.#requireAgentAccess(record.runnerId);
       const reservation = pool
         ? await this.#reserveAgentPool(pool.gate, input.agentBindingId, record.id, input.signal)
@@ -4658,7 +4657,7 @@ export class BrowserService {
     onClosed?: () => void,
   ) {
     const record = await this.#usableAgentSession(input, input.sessionId, false);
-    if (this.#poolTabTarget(record.runnerId))
+    if (this.#pool(record.runnerId))
       throw new BrowserCdpConnectionEnded("This browser action transport has no detach receipt.");
     return this.withRunnerAdmission(record.runnerId, () =>
       this.#attachActionsForAgent(input, onEvent, onClosed),
@@ -4803,7 +4802,7 @@ export class BrowserService {
         throw error;
       },
     );
-    const pooled = this.#poolTabTarget(record.runnerId);
+    const pooled = this.#pool(record.runnerId);
     try {
       const witness = input.operationWitness;
       if (
@@ -4853,12 +4852,12 @@ export class BrowserService {
     readonly authority: CdpAuthority;
     readonly browserSessionId: BrowserSessionId;
   }): Promise<BrowserPoolReservation | undefined> {
-    if (!this.#managedPoolTestRunner) return undefined;
+    if (!this.#pools.size) return undefined;
     const record = await this.#repository.getBrowserSessionForOwner(
       input.browserSessionId,
       input.authority.ownerId,
     );
-    const pooled = record && !isTerminal(record.state) && this.#poolTabTarget(record.runnerId);
+    const pooled = record && !isTerminal(record.state) && this.#pool(record.runnerId);
     if (!record || !pooled) return undefined;
     const { authority } = input;
     // Current access is checked from Home data before the wake: a refused caller wakes nothing.
@@ -4937,7 +4936,7 @@ export class BrowserService {
           claims.facts.seed,
         ),
       );
-      const pooled = this.#poolTabTarget(admitted.record.runnerId);
+      const pooled = this.#pool(admitted.record.runnerId);
       if (
         JSON.stringify(admitted.facts) !== JSON.stringify(claims.facts) ||
         admitted.mode !== claims.mode ||
@@ -5189,7 +5188,7 @@ export class BrowserService {
               if (pool) {
                 // A restart or a removal holds admission: no frame passes on a connection already
                 // attached either.
-                const phase = this.#poolTabTarget(record.runnerId!)?.gate.phase;
+                const phase = this.#pool(record.runnerId!)?.gate.phase;
                 if (phase === "restarting" || phase === "released")
                   throw new BrowserCdpConnectionEnded(
                     "This browser is restarting. Request a new attachment.",
@@ -5439,7 +5438,7 @@ export class BrowserService {
     const record = input.sessionId
       ? await this.#usableAgentSession(input, input.sessionId, false)
       : await this.#followedAgentSession(input, false);
-    const pool = !input.browserSend && this.#poolTabTarget(record.runnerId);
+    const pool = !input.browserSend && this.#pool(record.runnerId);
     if (pool) {
       if (!(this.#repository instanceof OpensteerStore))
         throw new BrowserCdpConnectionEnded("This pooled connection has no durable attempt.");
@@ -5500,7 +5499,7 @@ export class BrowserService {
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const { record, broker } = await this.#admitAgentBackend(input, "cdp", !input.browserSend);
-    const pool = input.browserSend && this.#poolTabTarget(record.runnerId);
+    const pool = input.browserSend && this.#pool(record.runnerId);
     const pageWitness = (tabId: TabId) =>
       this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
     const expectedPage = pool && input.scriptTabId && (await pageWitness(input.scriptTabId));
@@ -6314,7 +6313,7 @@ export class BrowserService {
       if (!persisted) {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
-      const pool = this.#poolTabTarget(persisted.runnerId);
+      const pool = this.#pool(persisted.runnerId);
       if (pool && !isTerminal(persisted.state)) {
         if (!peer.isOpen() || !(await options.signedIn()))
           throw new OpensteerError({ code: "forbidden", message: "Browser access ended." });
@@ -6412,14 +6411,19 @@ export class BrowserService {
    * and the pages not kept until seen. Nothing for an ordinary Home, and no read either.
    */
   async resourcePools(runnerIds: readonly RunnerId[]): Promise<readonly BrowserPoolReportView[]> {
-    const runnerId = this.#managedPoolTestRunner;
-    if (!runnerId || !runnerIds.includes(runnerId) || !(this.#repository instanceof OpensteerStore))
-      return [];
-    const database = this.#repository.database;
+    if (!this.#pools.size || !(this.#repository instanceof OpensteerStore)) return [];
+    const reports: BrowserPoolReportView[] = [];
+    for (const runnerId of runnerIds)
+      if (this.#pools.has(runnerId)) reports.push(...(await this.#poolReport(runnerId)));
+    return reports;
+  }
+
+  async #poolReport(runnerId: RunnerId): Promise<readonly BrowserPoolReportView[]> {
+    const database = (this.#repository as OpensteerStore).database;
     const slot = await readBrowserPoolSlot(database, runnerId);
     // A removed device's slot waits only for its guest to stop: there is no browser to show.
     if (!slot || slot.phase === "releasing") return [];
-    const shown = this.#poolTabTarget(runnerId)?.report();
+    const shown = this.#pool(runnerId)?.report();
     const retained =
       (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
 
@@ -6458,7 +6462,6 @@ export class BrowserService {
     ];
   }
 
-  /** The owner's Restart browser on a pooled Cloud Computer browser. */
   /**
    * The owner's Restart browser on a pooled Cloud Computer browser. The owner is decided where
    * every person's authority is (`admitExecution`). Before the guest is replaced, every Standard
@@ -6470,11 +6473,11 @@ export class BrowserService {
     runnerId: RunnerId,
     idempotencyKey?: string,
   ): Promise<void> {
-    if (runnerId !== this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
+    if (!this.#pools.has(runnerId) || !(this.#repository instanceof OpensteerStore))
       throw new OpensteerError({ code: "not_found", message: "This browser does not restart." });
     const database = this.#repository.database;
     await admitExecution(database, { ownerUserId: ownerId, subject: { kind: "person" } });
-    const pool = this.#poolTabTarget(runnerId)!;
+    const pool = this.#pool(runnerId)!;
     const runtimeId = this.#resolveTarget({ kind: "runner", runnerId })?.runtimeId;
     await pool.restart({
       ...(idempotencyKey ? { key: idempotencyKey } : {}),
@@ -6496,7 +6499,7 @@ export class BrowserService {
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
   /** The person was shown a pooled browser's note: it leaves the report. Nothing elsewhere. */
   async poolNoticeSeen(ownerId: UserId, surfaceId: BrowserSurfaceId, noticeId: string) {
-    if (!this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
+    if (!this.#pools.size || !(this.#repository instanceof OpensteerStore))
       throw new OpensteerError({ code: "not_found", message: "This note is not here." });
     await seeBrowserPoolDocumentLoss(this.#repository.database, ownerId, surfaceId, noticeId);
   }
@@ -6509,8 +6512,7 @@ export class BrowserService {
     runnerId: RunnerId,
     ended: readonly BrowserSessionId[] = [],
   ): Promise<void> {
-    if (runnerId !== this.#managedPoolTestRunner) return;
-    await this.#poolTabTarget(runnerId)?.releaseDevice(ended);
+    await this.#pools.get(runnerId)?.releaseDevice(ended);
   }
 
   abandonSession(sessionId: BrowserSessionId): void {
@@ -6586,7 +6588,7 @@ export class BrowserService {
         ? null
         : await this.#repository.findActiveBrowserSessionForPerson(input.ownerId);
     if (existing) {
-      const pool = poolStart && this.#poolTabTarget(existing.runnerId);
+      const pool = poolStart && this.#pool(existing.runnerId);
       if (pool && poolStart) {
         const reservation = await this.#reservePool(pool.gate, poolStart.signal, existing.id);
         poolStart.pool = { target: pool, reservation };
@@ -6675,7 +6677,7 @@ export class BrowserService {
           ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
           : "The selected Browser Runtime is not connected.",
       );
-    const pooled = this.#poolTabTarget(placement.runnerId);
+    const pooled = this.#pool(placement.runnerId);
     let poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
     if (pooled && poolStart) {
       if (input.agentBindingId) {
@@ -6699,7 +6701,7 @@ export class BrowserService {
       poolStart.pool = { target: pooled, reservation };
       poolStart.signal.throwIfAborted();
       const current = this.#resolveTarget(placement);
-      if (current?.loopbackPool !== pooled || current.runtimeId !== target.runtimeId)
+      if (!current || current.runtimeId !== target.runtimeId)
         throw unavailable("The browser runtime changed while waiting.");
       target = current;
       poolBudget = poolStart;
@@ -7065,16 +7067,12 @@ export class BrowserService {
     return this.#targetResolver?.resolve(placement);
   }
 
-  #poolTabTarget(runnerId: RunnerId): BrowserRuntimeTarget["loopbackPool"] {
-    if (runnerId !== this.#managedPoolTestRunner) return undefined;
-    const target = this.#resolveTarget({ kind: "runner", runnerId });
-    if (!target?.main || !target.loopbackPool)
-      throw unavailable("The pooled browser target is unavailable.");
-    return target.loopbackPool;
+  #pool(runnerId: RunnerId | null | undefined): BrowserPoolCoordinator | undefined {
+    return runnerId ? this.#pools.get(runnerId) : undefined;
   }
 
   #poolStartBudget(upstream?: AbortSignal): BrowserTabOpenBudget | undefined {
-    if (!this.#managedPoolTestRunner) return undefined;
+    if (!this.#pools.size) return undefined;
     return {
       expiresAt: Date.now() + browserOpenWorkMs,
       signal: AbortSignal.any([
@@ -7390,7 +7388,7 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded(
           "Another task holds exclusive access to this browser profile.",
         );
-      const pool = this.#poolTabTarget(record.runnerId);
+      const pool = this.#pool(record.runnerId);
       const reservation = pool
         ? await pool.gate.reserve(
             AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
@@ -10931,7 +10929,7 @@ interface BrowserTabOpenBudget {
   admitted?: BrowserTabOpenBinding;
   pageRequested?: boolean;
   pool?: {
-    target: NonNullable<BrowserRuntimeTarget["loopbackPool"]>;
+    target: BrowserPoolCoordinator;
     reservation: BrowserPoolReservation;
   };
 }
