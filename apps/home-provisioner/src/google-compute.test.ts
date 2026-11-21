@@ -68,6 +68,7 @@ it("creates a Shielded VM once, with the exact instance ID, one address, and gat
         { key: "enable-oslogin", value: "TRUE" },
         { key: "block-project-ssh-keys", value: "TRUE" },
         { key: "disable-legacy-endpoints", value: "TRUE" },
+        { key: "serial-port-enable", value: "FALSE" },
         { key: "user-data", value: computeCreate.userData },
       ],
     },
@@ -84,7 +85,6 @@ it("creates a Shielded VM once, with the exact instance ID, one address, and gat
     ],
     networkInterfaces: [
       {
-        network: `${globalPath}/networks/home-net`,
         subnetwork: `${regionPath}/subnetworks/home-subnet`,
         stackType: "IPV4_ONLY",
         accessConfigs: [
@@ -98,8 +98,30 @@ it("creates a Shielded VM once, with the exact instance ID, one address, and gat
       },
     ],
   });
-  expect(fake.waitCalls).toEqual([1000, 1000, 1000]);
+  expect(fake.waitCalls).toEqual([1000, 1000, 1000, 1000]);
   expect(fake.addresses.size).toBe(1);
+});
+
+it("replays a Compute request ID before name checks and models intermediate instance states", async () => {
+  const fake = new ComputeFake();
+  const provider = fake.adapter();
+  const created = await provider.create(computeCreate, signal);
+  const [insert] = reqs(fake, "POST", `${zonePath}/instances`);
+  const requestId = insert!.query.get("requestId")!;
+  const response = await fake.fetch(
+    new URL(`https://compute.test/compute/v1/${zonePath}/instances?requestId=${requestId}`),
+    { method: "POST", headers: insert!.headers, body: JSON.stringify(insert!.body) },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(fake.started.get(requestId));
+  expect(fake.instances.size).toBe(1);
+  await provider.powerOff(created.id, signal);
+  await provider.powerOn(created.id, signal);
+  expect(fake.instanceStates).toEqual(
+    ["PROVISIONING", "STAGING", "RUNNING", "STOPPING", "TERMINATED", "STAGING", "RUNNING"].map(
+      (status) => ({ name: computeInstanceName, status }),
+    ),
+  );
 });
 
 it("finds a VM after a lost response and does not submit another insert", async () => {
@@ -157,7 +179,12 @@ it("pages Compute inventories without filters and selects journal operations loc
   await expect(provider.create(computeCreate, signal)).rejects.toBeInstanceOf(
     ProviderOutcomeUnknown,
   );
-  expect(await provider.listManaged(signal)).toEqual([]);
+  expect(await provider.listManaged(signal)).toEqual([
+    {
+      id: computeComputerId,
+      server: expect.objectContaining({ status: "transitioning" }),
+    },
+  ]);
   expect(await provider.listManagedAddresses(signal)).toEqual([
     { id: computeComputerId, generation: 3 },
   ]);
@@ -308,6 +335,7 @@ it("opens the metadata gate after the bootstrap clock starts, then scrubs only i
     { key: "enable-oslogin", value: "TRUE" },
     { key: "block-project-ssh-keys", value: "TRUE" },
     { key: "disable-legacy-endpoints", value: "TRUE" },
+    { key: "serial-port-enable", value: "FALSE" },
     { key: "unrelated", value: "keep" },
   ]);
   expect(await provider.updateBootstrap(ref, true, signal)).toBe(true);

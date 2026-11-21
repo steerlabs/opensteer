@@ -5,7 +5,7 @@ import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
-import { provisionerFailure, RemoteRequestError } from "./http.js";
+import { ProviderPlacementError, provisionerFailure, RemoteRequestError } from "./http.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       try {
         await reconciler.pass(shutdown.signal);
       } catch (error) {
+        if (error instanceof ProviderPlacementError) throw error;
         if (!shutdown.signal.aborted) logFailure(error);
         if (
           accountRefused(error) ||

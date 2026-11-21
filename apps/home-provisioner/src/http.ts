@@ -138,7 +138,11 @@ export class BootstrapScrubFailure extends Error {
   }
 }
 
+export class ProviderPlacementError extends Error {}
+
 export function provisionerFailure(error: unknown) {
+  if (error instanceof ProviderPlacementError)
+    return { event: "home-provisioner.provider.wrong-zone", message: error.message };
   if (error instanceof BootstrapScrubFailure)
     return { event: "home-provisioner.provider.bootstrap-scrub-failed" };
   if (error instanceof ProviderOutcomeUnknown)

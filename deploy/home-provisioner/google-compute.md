@@ -6,6 +6,9 @@ before the provisioner switches to Google. Give the new deployment its own
 Account desired state and DNS configuration if the existing deployment has
 Hetzner computers.
 
+The provisioner stops if it finds a managed VM anywhere else in the project.
+Keep the configured zone fixed while the project has managed VMs.
+
 ## Set up the project
 
 Set `PROJECT` to the Compute project, `REGION` to the zone's region, and
@@ -46,6 +49,15 @@ cluster.
    gcloud compute networks subnets create "$SUBNET" --project="$PROJECT" \
      --network="$NETWORK" --region="$REGION" --range=10.40.0.0/20 \
      --stack-type=IPV4_IPV6 --ipv6-access-type=EXTERNAL
+   ```
+
+   List every ingress rule in the VPC, including disabled rules. The only
+   rules should be `opensteer-cloud-computers-v4` and, for external dual
+   stack, `opensteer-cloud-computers-v6`.
+
+   ```sh
+   gcloud compute firewall-rules list --project="$PROJECT" \
+     --filter="network~'/networks/${NETWORK}$' AND direction=INGRESS"
    ```
 
 3. Check the regional static and in-use external IPv4 quotas. Budget one of
@@ -107,7 +119,6 @@ cluster.
      - compute.images.useReadOnly
      - compute.instances.create
      - compute.instances.delete
-     - compute.instances.deleteAccessConfig
      - compute.instances.get
      - compute.instances.list
      - compute.instances.setLabels
@@ -116,8 +127,6 @@ cluster.
      - compute.instances.start
      - compute.instances.stop
      - compute.networks.updatePolicy
-     - compute.networks.use
-     - compute.networks.useExternalIp
      - compute.regionOperations.get
      - compute.subnetworks.get
      - compute.subnetworks.use
@@ -133,6 +142,28 @@ cluster.
      --member="serviceAccount:$PROVISIONER_SA" \
      --role="projects/$PROJECT/roles/opensteerHomeProvisioner"
    ```
+
+   | Compute call                                 | Permissions                                                                                                                                                                                                                                                            |
+   | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `addresses.insert`                           | `compute.addresses.create`, `compute.addresses.setLabels`                                                                                                                                                                                                              |
+   | `addresses.get`                              | `compute.addresses.get`                                                                                                                                                                                                                                                |
+   | `addresses.list`                             | `compute.addresses.list`                                                                                                                                                                                                                                               |
+   | `addresses.delete`                           | `compute.addresses.delete`                                                                                                                                                                                                                                             |
+   | `firewalls.insert`                           | `compute.firewalls.create`, `compute.networks.updatePolicy`                                                                                                                                                                                                            |
+   | `firewalls.get`                              | `compute.firewalls.get`                                                                                                                                                                                                                                                |
+   | `globalOperations.get`                       | `compute.globalOperations.get`                                                                                                                                                                                                                                         |
+   | `instances.insert`                           | `compute.instances.create`, `compute.disks.create`, `compute.images.useReadOnly`, `compute.subnetworks.use`, `compute.subnetworks.useExternalIp`, `compute.addresses.use`, `compute.instances.setLabels`, `compute.instances.setMetadata`, `compute.instances.setTags` |
+   | `instances.get`                              | `compute.instances.get`                                                                                                                                                                                                                                                |
+   | `instances.list`, `instances.aggregatedList` | `compute.instances.list`                                                                                                                                                                                                                                               |
+   | `instances.start`                            | `compute.instances.start`                                                                                                                                                                                                                                              |
+   | `instances.stop`                             | `compute.instances.stop`                                                                                                                                                                                                                                               |
+   | `instances.delete`                           | `compute.instances.delete`                                                                                                                                                                                                                                             |
+   | `instances.setMetadata`                      | `compute.instances.setMetadata`                                                                                                                                                                                                                                        |
+   | `instances.setTags`                          | `compute.instances.setTags`                                                                                                                                                                                                                                            |
+   | `regionOperations.get`                       | `compute.regionOperations.get`                                                                                                                                                                                                                                         |
+   | `subnetworks.get`                            | `compute.subnetworks.get`                                                                                                                                                                                                                                              |
+   | `zoneOperations.get`                         | `compute.zoneOperations.get`                                                                                                                                                                                                                                           |
+   | `zoneOperations.list`                        | `compute.zoneOperations.list`                                                                                                                                                                                                                                          |
 
    The default Ubuntu image is public. If using a private image in another
    project, grant `compute.images.useReadOnly` on that image as well. Home VMs

@@ -43,7 +43,7 @@ type Instance = {
 type Address = { name: string; labels: Labels; address: string };
 type Operation = {
   name: string;
-  status: "RUNNING" | "DONE";
+  status: "PENDING" | "RUNNING" | "DONE";
   clientOperationId: string;
   operationType?: string | undefined;
   targetId?: string;
@@ -65,7 +65,16 @@ export class ComputeFake {
   readonly instances = new Map<string, Instance>();
   readonly addresses = new Map<string, Address>();
   readonly firewalls = new Map<string, unknown>();
-  readonly operations = new Map<string, { operation: Operation; finish: () => void }>();
+  readonly operations = new Map<
+    string,
+    {
+      operation: Operation;
+      finish: () => void;
+      advance: (() => void) | undefined;
+    }
+  >();
+  readonly otherZones = new Map<string, Instance[]>();
+  readonly instanceStates: { name: string; status: string }[] = [];
   readonly started = new Map<string, Operation>();
   readonly waitCalls: number[] = [];
   metadataCalls = 0;
@@ -118,12 +127,25 @@ export class ComputeFake {
     if (url.hostname !== "compute.test") throw new Error("Unexpected test endpoint");
     if (this.rejectComputeToken || headers.get("authorization") !== `Bearer ${this.token}`)
       return json({}, 401);
+    const original = method !== "GET" && this.started.get(req.query.get("requestId") ?? "");
+    if (original) return json(original);
     if (path.endsWith("/subnetworks/home-subnet"))
       return json({
         network: `https://compute.googleapis.com/compute/v1/${globalPath}/networks/home-net`,
         ...(this.dualStack ? { stackType: "IPV4_IPV6", ipv6AccessType: "EXTERNAL" } : {}),
       });
     if (path.includes("/operations")) return this.#operationRequest(req);
+    if (path === "projects/test-project/aggregated/instances") {
+      const zones: [string, Instance[]][] = [
+        ["zones/us-central1-a", [...this.instances.values()]],
+        ...this.otherZones,
+      ];
+      const page = this.#slice(zones, req.query);
+      return json({
+        ...page,
+        items: Object.fromEntries(page.items.map(([zone, instances]) => [zone, { instances }])),
+      });
+    }
     if (path.startsWith(`${globalPath}/firewalls`)) return this.#firewallRequest(req);
     if (path.startsWith(`${regionPath}/addresses`)) return this.#addressRequest(req);
     if (path.startsWith(`${zonePath}/instances`)) return this.#instanceRequest(req);
@@ -131,13 +153,17 @@ export class ComputeFake {
   };
 
   #page<T>(items: T[], query: URLSearchParams) {
+    return json(this.#slice(items, query));
+  }
+
+  #slice<T>(items: T[], query: URLSearchParams) {
     const offset = Number(query.get("pageToken") ?? 0);
-    return json({
+    return {
       items: items.slice(offset, offset + this.pageSize),
       ...(offset + this.pageSize < items.length
         ? { nextPageToken: String(offset + this.pageSize) }
         : {}),
-    });
+    };
   }
 
   #operationRequest(req: RecordedRequest) {
@@ -149,7 +175,13 @@ export class ComputeFake {
     }
     const found = this.operations.get(req.path);
     if (!found) return json({}, 404);
-    if (!this.keepOperationsRunning) this.complete(req.path);
+    if (!this.keepOperationsRunning) {
+      if (found.advance) {
+        found.advance();
+        found.advance = undefined;
+        found.operation.status = "RUNNING";
+      } else this.complete(req.path);
+    }
     return json(found.operation);
   }
 
@@ -161,20 +193,24 @@ export class ComputeFake {
     }
   }
 
-  #start(req: RecordedRequest, scope: string, finish: () => void, result: Partial<Operation> = {}) {
+  #start(
+    req: RecordedRequest,
+    scope: string,
+    finish: () => void,
+    result: Partial<Operation> = {},
+    advance?: () => void,
+  ) {
     const clientOperationId = req.query.get("requestId");
     if (!clientOperationId || !/^[0-9a-f-]{36}$/u.test(clientOperationId))
       throw new Error("Missing requestId");
-    const previous = this.started.get(clientOperationId);
-    if (previous) return previous;
     const operation: Operation = {
       name: `operation-${++this.#nextOperation}`,
-      status: "RUNNING",
+      status: advance ? "PENDING" : "RUNNING",
       clientOperationId,
       ...result,
     };
     this.started.set(clientOperationId, operation);
-    this.operations.set(`${scope}/operations/${operation.name}`, { operation, finish });
+    this.operations.set(`${scope}/operations/${operation.name}`, { operation, advance, finish });
     return operation;
   }
 
@@ -245,14 +281,17 @@ export class ComputeFake {
         zonePath,
         () => {
           if (req.method === "DELETE") this.instances.delete(current.name);
-          else if (action === "start") current.status = "RUNNING";
-          else if (action === "stop") current.status = "TERMINATED";
+          else if (action === "start") this.#setStatus(current, "RUNNING");
+          else if (action === "stop") this.#setStatus(current, "TERMINATED");
           else if (action === "setTags") current.tags = req.body as Instance["tags"];
           else if (action === "setMetadata") {
             current.metadata = { ...(req.body as Metadata), fingerprint: "changed" };
           } else throw new Error(`Unexpected Compute action ${action}`);
         },
         { targetId: current.id, operationType: req.method === "DELETE" ? "delete" : action },
+        action === "start" || action === "stop"
+          ? () => this.#setStatus(current, action === "start" ? "STAGING" : "STOPPING")
+          : undefined,
       ),
     );
   }
@@ -267,32 +306,40 @@ export class ComputeFake {
     this.nextInsert = undefined;
     if (behavior === "quota") return json({ message: "quota exceeded" }, 403);
     const id = String(this.#nextId--);
+    const vm: Instance = {
+      ...body,
+      id,
+      status: "PROVISIONING",
+      tags: { ...body.tags, fingerprint: "tags-test" },
+      metadata: { ...body.metadata, fingerprint: "metadata-test" },
+      networkInterfaces: body.networkInterfaces.map((nic) => ({
+        ...nic,
+        name: "nic0",
+        ...(nic.ipv6AccessConfigs ? { ipv6AccessConfigs: [{ externalIpv6: computeIpv6 }] } : {}),
+      })),
+    };
+    if (behavior !== "failure") {
+      this.instances.set(body.name, vm);
+      this.#setStatus(vm, "PROVISIONING");
+    }
     const operation = this.#start(
       req,
       zonePath,
       () => {
-        if (behavior === "failure") return;
-        this.instances.set(body.name, {
-          ...body,
-          id,
-          status: "RUNNING",
-          tags: { ...body.tags, fingerprint: "tags-test" },
-          metadata: { ...body.metadata, fingerprint: "metadata-test" },
-          networkInterfaces: body.networkInterfaces.map((nic) => ({
-            ...nic,
-            name: "nic0",
-            ...(nic.ipv6AccessConfigs
-              ? { ipv6AccessConfigs: [{ externalIpv6: computeIpv6 }] }
-              : {}),
-          })),
-        });
+        if (behavior !== "failure") this.#setStatus(vm, "RUNNING");
       },
       behavior === "failure"
         ? { targetId: id, httpErrorStatusCode: 400, error: { errors: [{ code: "FAILED" }] } }
         : { targetId: id },
+      behavior !== "failure" ? () => this.#setStatus(vm, "STAGING") : undefined,
     );
     if (behavior === "lost") this.complete(`${zonePath}/operations/${operation.name}`);
     if (behavior === "lost" || behavior === "late") throw new Error("lost Compute reply");
     return json(operation);
+  }
+
+  #setStatus(instance: Instance, status: string) {
+    instance.status = status;
+    this.instanceStates.push({ name: instance.name, status });
   }
 }

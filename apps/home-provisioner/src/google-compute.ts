@@ -14,6 +14,7 @@ import { type ComputeAccessToken, googleMetadataAccessToken } from "./google-aut
 import {
   json,
   ProviderOutcomeUnknown,
+  ProviderPlacementError,
   ProviderWriteRejected,
   RemoteRequestError,
   request,
@@ -320,6 +321,39 @@ export class GoogleCompute implements VmProvider {
     return [...found.values()];
   }
 
+  async validatePlacement(signal: AbortSignal) {
+    const page = z.object({
+      items: z
+        .record(
+          z.string(),
+          z.object({
+            instances: z
+              .array(z.object({ name: resourceName, labels: labels.default({}) }))
+              .default([]),
+            warning: z.object({ code: z.string() }).optional(),
+          }),
+        )
+        .default({}),
+      nextPageToken: z.string().min(1).optional(),
+      unreachables: z.array(z.string()).default([]),
+    });
+    for await (const result of this.#pages(`${this.#project}/aggregated/instances`, page, signal)) {
+      if (result.unreachables.length)
+        throw refused("internal", "Compute Engine did not report every zone");
+      for (const [scope, { instances, warning }] of Object.entries(result.items)) {
+        if (warning && warning.code !== "NO_RESULTS_ON_PAGE")
+          throw refused("internal", "Compute Engine did not report every zone");
+        if (scope === `zones/${this.#options.zone}`) continue;
+        const other = instances.find(({ labels }) => labels[managedLabel] === managedBy);
+        if (other) {
+          throw new ProviderPlacementError(
+            `Managed Compute instance ${other.name} is in ${scope}, outside configured zone ${this.#options.zone}.`,
+          );
+        }
+      }
+    }
+  }
+
   async #instances(signal: AbortSignal) {
     return this.#list(`${this.#zone}/instances`, instance, signal);
   }
@@ -340,19 +374,27 @@ export class GoogleCompute implements VmProvider {
       nextPageToken: z.string().min(1).optional(),
     });
     const records: T[] = [];
+    for await (const result of this.#pages(path, page, signal)) records.push(...result.items);
+    return records;
+  }
+
+  async *#pages<T extends { nextPageToken?: string | undefined }>(
+    path: string,
+    schema: z.ZodType<T>,
+    signal: AbortSignal,
+  ) {
     const cursors = new Set<string>();
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ maxResults: "100" });
       if (cursor) query.set("pageToken", cursor);
-      const response = await this.#request(`${path}?${query}`, page, signal);
-      records.push(...response.items);
+      const response = await this.#request(`${path}?${query}`, schema, signal);
+      yield response;
       cursor = response.nextPageToken;
       if (cursor && cursors.has(cursor))
         throw refused("internal", "Invalid Google Compute pagination");
       if (cursor) cursors.add(cursor);
     } while (cursor);
-    return records;
   }
 
   async create(input: CreateVm, signal: AbortSignal, check?: Check) {
@@ -401,6 +443,7 @@ export class GoogleCompute implements VmProvider {
               { key: "enable-oslogin", value: "TRUE" },
               { key: "block-project-ssh-keys", value: "TRUE" },
               { key: "disable-legacy-endpoints", value: "TRUE" },
+              { key: "serial-port-enable", value: "FALSE" },
               { key: "user-data", value: input.userData },
             ],
           },
@@ -417,7 +460,6 @@ export class GoogleCompute implements VmProvider {
           ],
           networkInterfaces: [
             {
-              network: this.#network,
               subnetwork: this.#subnet,
               stackType: dualStack ? "IPV4_IPV6" : "IPV4_ONLY",
               accessConfigs: [

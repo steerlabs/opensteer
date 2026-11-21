@@ -45,6 +45,7 @@ export interface ExpectedVm {
 }
 
 export interface VmProvider {
+  validatePlacement?(signal: AbortSignal): Promise<void>;
   ensureFirewall(signal: AbortSignal, check?: () => Promise<void>): Promise<number>;
   ensureFirewallAttached(
     server: VmServer,

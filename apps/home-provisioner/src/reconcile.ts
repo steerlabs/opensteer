@@ -49,6 +49,7 @@ export class Reconciler {
     const abort = new AbortController();
     const signal = AbortSignal.any([shutdown, abort.signal]);
     await account.acquire(signal);
+    await provider.validatePlacement?.(signal);
     const desired = await account.desired(signal);
     const ids = new Set(desired.map(({ id }) => id));
     for (const id of this.#reports.keys()) if (!ids.has(id)) this.#reports.delete(id);
@@ -292,7 +293,13 @@ export class Reconciler {
       for (const write of pending.values()) {
         if (
           (write.kind === "create" &&
-            servers.some((server) => server.generation === write.generation)) ||
+            servers.some(
+              (server) =>
+                server.generation === write.generation &&
+                (!provider.canRecoverWrite ||
+                  server.status === "running" ||
+                  server.status === "off"),
+            )) ||
           (write.kind === "power-on" &&
             servers.some(
               (server) =>
@@ -307,6 +314,18 @@ export class Reconciler {
         const power = (async () => {
           let settled = true;
           for (const server of servers) {
+            if (
+              provider.canRecoverWrite &&
+              server.status === "transitioning" &&
+              [...pending.values()].some(
+                (write) =>
+                  (write.kind === "create" && write.generation === server.generation) ||
+                  (write.kind === "power-on" && write.serverRef === server.id),
+              )
+            ) {
+              settled = false;
+              continue;
+            }
             if (state === "suspended" && server.status === "off") continue;
             if (server.status !== "deleting") {
               if (state === "deleted")

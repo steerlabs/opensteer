@@ -7,7 +7,7 @@ import {
   type CloudComputerReport,
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
-import { BootstrapScrubFailure, RemoteRequestError } from "./http.js";
+import { BootstrapScrubFailure, provisionerFailure, RemoteRequestError } from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
@@ -554,6 +554,7 @@ describe("Cloud Computer reconciliation", () => {
       "enable-oslogin",
       "block-project-ssh-keys",
       "disable-legacy-endpoints",
+      "serial-port-enable",
     ]);
   });
 
@@ -645,6 +646,7 @@ describe("Cloud Computer reconciliation", () => {
     h.status.desired = [{ ...home, region: null, serverType: null }];
     await h.pass();
     expect(h.reports.map(({ phase }) => phase)).toEqual(["provisioning"]);
+    expect([...compute.instances.values()][0]?.status).toBe("PROVISIONING");
     const write = h.status.desired[0]?.pendingProviderWrites?.[0];
     expect(write).toMatchObject({ kind: "create", dispatched: true });
     const [operationPath] = [...compute.operations.entries()].find(
@@ -657,12 +659,39 @@ describe("Cloud Computer reconciliation", () => {
     await h.restart();
     expect(h.last()?.phase).toBe("deleting");
     expect(compute.addresses.size).toBe(1);
+    expect(compute.requests.filter(({ method }) => method === "DELETE")).toEqual([]);
     compute.complete(operationPath);
     await h.pass();
     expect(h.last()?.phase).toBe("deleted");
     expect(compute.instances.size).toBe(0);
     expect(compute.addresses.size).toBe(0);
     expect(h.dns.ensureRecords).not.toHaveBeenCalled();
+  });
+
+  it("stops before writes when a later Compute inventory page shows a managed VM in another zone", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    const [instance] = compute.instances.values();
+    compute.instances.clear();
+    compute.otherZones.set("zones/us-east1-b", [instance!]);
+    compute.pageSize = 1;
+    const start = compute.requests.length;
+    const message = `Managed Compute instance ${instance!.name} is in zones/us-east1-b, outside configured zone us-central1-a.`;
+    const error = await h.restart().catch((error: unknown) => error);
+    expect(provisionerFailure(error)).toEqual({
+      event: "home-provisioner.provider.wrong-zone",
+      message,
+    });
+    const requests = compute.requests.slice(start);
+    expect(requests.map(({ path }) => path)).toEqual([
+      "projects/test-project/aggregated/instances",
+      "projects/test-project/aggregated/instances",
+    ]);
+    expect(requests[1]?.query.get("pageToken")).toBe("1");
+    expect(requests.every(({ method }) => method === "GET")).toBe(true);
+    expect(h.account.desired).toHaveBeenCalledOnce();
   });
 
   it("sweeps an address-only Google orphan after the grace period and a fresh Account check", async () => {
