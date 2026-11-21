@@ -238,8 +238,14 @@ export class FirecrackerDriver implements HypervisorDriver {
       .map(([slotId]) => slotId);
   }
 
-  async reviveProxy(slotId: string): Promise<boolean> {
-    return reviveEgress(this.#require(slotId));
+  async reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<boolean> {
+    const index = this.#require(slotId);
+    return reviveEgress(
+      { ...this.#config.egress, debug: this.#config.egressLog === true },
+      index,
+      this.#config.egressUidBase + index,
+      egress,
+    );
   }
 
   async slotsKnown(): Promise<readonly string[]> {

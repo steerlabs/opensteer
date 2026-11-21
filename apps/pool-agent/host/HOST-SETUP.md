@@ -113,7 +113,8 @@ Bounds (round D, D1):
 - systemd's crash protection stays on: five starts in 120 s, with a restart delay that backs
   off from 1 s to 30 s (with a 30 s window that backoff never tripped the limit, run 5). The agent's own stops reset the counter, so only the proxy's own failures
   count. A proxy that trips the limit stays down, with its socket, until the slot's next start
-  or wake brings it back; meanwhile that guest has no network, nothing else is affected, and the
+  or wake, which defines the socket again whenever it is not listening (a stop in between
+  resets the failure and systemd unloads the transient socket); meanwhile that guest has no network, nothing else is affected, and the
   slot's status says `proxy: "down"`.
 
 ## Agent configuration

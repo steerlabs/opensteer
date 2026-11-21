@@ -40,6 +40,7 @@ import {
   type GuestBoot,
   type GuestProcessState,
   type HypervisorDriver,
+  type SlotEgress,
 } from "./driver.js";
 import {
   isTombstone,
@@ -334,8 +335,8 @@ export class PoolAgent {
   }
 
   /** Round D, D1: a proxy that tripped its limit comes back at the slot's start or wake. */
-  async #reviveProxy(slotId: string): Promise<void> {
-    if (await this.#step("network", () => this.#driver.reviveProxy(slotId))) {
+  async #reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<void> {
+    if (await this.#step("network", () => this.#driver.reviveProxy(slotId, egress))) {
       this.#proxiesDown.delete(slotId);
       this.#log({ event: "proxy.revived", slotId });
     }
@@ -771,7 +772,7 @@ export class PoolAgent {
       await this.#step("network", () =>
         this.#driver.prepareSlot(before.slotId, before.guest.egress),
       );
-      await this.#reviveProxy(before.slotId);
+      await this.#reviveProxy(before.slotId, before.guest.egress);
       // Nobody else may write the profile: every earlier process of the slot is gone first.
       await this.#kill(slot);
       await within(this.#deadlines.network, "Closing the guest network", () =>
@@ -901,7 +902,7 @@ export class PoolAgent {
       await this.#step("network", () =>
         this.#driver.prepareSlot(before.slotId, before.guest.egress),
       );
-      await this.#reviveProxy(before.slotId);
+      await this.#reviveProxy(before.slotId, before.guest.egress);
       step("prepare");
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),

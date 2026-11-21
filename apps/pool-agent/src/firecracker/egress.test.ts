@@ -7,17 +7,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: { command: string; args: readonly string[] }[] = [];
+let socketActive = false;
 vi.mock("./exec.js", () => ({
   run: async (command: string, args: readonly string[]) => {
     calls.push({ command, args });
-    return "inactive\n";
+    return args[0] === "is-active" && socketActive ? "active\n" : "inactive\n";
   },
 }));
 
-const { defineEgress, sleepEgress } = await import("./egress.js");
+const { defineEgress, reviveEgress, sleepEgress } = await import("./egress.js");
 
 beforeEach(() => {
   calls.length = 0;
+  socketActive = false;
 });
 
 describe("a slot's proxy unit (round D, D1)", () => {
@@ -44,5 +46,31 @@ describe("a slot's proxy unit (round D, D1)", () => {
     expect(commands).toContain(
       "systemctl reset-failed opensteer-pool-egress-3.service opensteer-pool-egress-3.socket",
     );
+  });
+
+  // Found on run 5's host: a tripped proxy fails its socket too, and the agent's stop of the
+  // slot resets it, which unloads the transient socket. At the next start nothing was "failed"
+  // any more, so the socket was never brought back and the guest had no proxy.
+  it("brings a tripped proxy's socket back at the slot's next start, even after a stop", async () => {
+    expect(await reviveEgress({ node: "/node", main: "/main.js" }, 3, 300_003, undefined)).toBe(
+      true,
+    );
+    const unit = calls.find((call) => call.command === "systemd-run")?.args;
+    expect(unit).toEqual(
+      expect.arrayContaining([
+        "--unit=opensteer-pool-egress-3.service",
+        "--property=StartLimitBurst=5",
+      ]),
+    );
+  });
+
+  it("leaves a listening socket alone", async () => {
+    socketActive = true;
+    expect(await reviveEgress({ node: "/node", main: "/main.js" }, 3, 300_003, undefined)).toBe(
+      false,
+    );
+    expect(calls.map((call) => [call.command, ...call.args].join(" "))).toEqual([
+      "systemctl is-active opensteer-pool-egress-3.socket",
+    ]);
   });
 });

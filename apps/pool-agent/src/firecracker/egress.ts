@@ -163,18 +163,20 @@ export async function sleepEgress(index: number): Promise<void> {
 }
 
 /**
- * At a slot's start or wake: a proxy that tripped its start limit (and took its socket down)
- * gets its socket back. True if it was down.
+ * At a slot's start or wake: a proxy that tripped its start limit took its socket down with it,
+ * and once that failure is reset (the agent's own stop of the slot does) systemd unloads the
+ * transient socket. Whichever it is, a socket that is not listening is defined again. True if
+ * it was down. Found on run 5's host: bringing back only a socket still marked failed left a
+ * slot that had been stopped in between with no proxy.
  */
-export async function reviveEgress(index: number): Promise<boolean> {
-  const failed = await run("systemctl", ["is-failed", egressSocket(index), egressUnit(index)], {
-    allow: [1, 3, 4],
-  });
-  if (!failed.split("\n").some((line) => line.trim() === "failed")) return false;
-  await run("systemctl", ["reset-failed", egressUnit(index), egressSocket(index)], {
-    allow: [1, 5],
-  });
-  await run("systemctl", ["start", egressSocket(index)]);
+export async function reviveEgress(
+  program: EgressProgram,
+  index: number,
+  uid: number,
+  upstream: SlotEgress | undefined,
+): Promise<boolean> {
+  if (await egressDefined(index)) return false;
+  await defineEgress(program, index, uid, upstream);
   return true;
 }
 
