@@ -308,3 +308,55 @@ it("refreshes attention while the popover is open and stops when the popover hid
     vi.useRealTimers();
   }
 });
+
+it("refreshes the Home on reopen even when panel show reports hidden or does not emit", async () => {
+  vi.useFakeTimers();
+  const { menuBar, popover, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+
+    // macOS NSPanel can emit "show" before becoming visible (or while deactivated).
+    const originalShow = popover.show;
+    popover.show = () => {
+      popover.emit("show");
+    };
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+    // Must not leak the 15s open-popover refresh timer when the window stayed hidden.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    // Or omit "show" entirely on reopen.
+    popover.show = () => {};
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+    popover.show = originalShow;
+  } finally {
+    menuBar.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("refreshes the Home after Stop and Resume finish from the popover", async () => {
+  const { actions, call, menuBar, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+
+    await call(menuBarChannels.stop);
+    expect(actions.stop).toHaveBeenCalledOnce();
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    await call(menuBarChannels.resume);
+    expect(actions.resume).toHaveBeenCalledOnce();
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+  } finally {
+    menuBar.dispose();
+  }
+});

@@ -146,6 +146,7 @@ export class DesktopMenuBar {
   #tray: Tray | null = null;
   #popover: BrowserWindow | null = null;
   #refreshTimer: ReturnType<typeof setInterval> | undefined;
+  #refreshGeneration = 0;
   #loaded: Promise<void> | null = null;
   #glyph = "";
   #detach: (() => void) | null = null;
@@ -192,8 +193,13 @@ export class DesktopMenuBar {
       return;
     }
     if (popover.isDestroyed()) return;
+    const before = this.#refreshGeneration;
     popover.show();
     popover.focus();
+    if (this.#refreshGeneration === before) {
+      this.#pushStatus();
+      void this.#options.service.refresh().catch(() => undefined);
+    }
   }
 
   #stopRefreshing(): void {
@@ -246,6 +252,7 @@ export class DesktopMenuBar {
       if (this.#popover !== popover || popover.isDestroyed()) return;
       this.#pushStatus();
       if (!popover.isVisible()) return;
+      this.#refreshGeneration += 1;
       void this.#options.service.refresh().catch(() => undefined);
       this.#refreshTimer ??= setInterval(() => {
         void this.#options.service.refresh().catch(() => undefined);
@@ -346,8 +353,20 @@ export class DesktopMenuBar {
       this.#popover?.hide();
       await actions.openRow(target);
     });
-    handle(menuBarChannels.stop, () => actions.stop());
-    handle(menuBarChannels.resume, () => actions.resume());
+    handle(menuBarChannels.stop, async () => {
+      try {
+        await actions.stop();
+      } finally {
+        void service.refresh().catch(() => undefined);
+      }
+    });
+    handle(menuBarChannels.resume, async () => {
+      try {
+        await actions.resume();
+      } finally {
+        void service.refresh().catch(() => undefined);
+      }
+    });
     handle(menuBarChannels.setOpenAtLogin, async (input) => {
       await actions.setOpenAtLogin(z.boolean().parse(input));
       service.changed();
