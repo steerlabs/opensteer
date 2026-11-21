@@ -145,10 +145,11 @@ it.skipIf(Boolean(reportPath))(
         return done;
       });
     close.unshift(() => refreshing.mockRestore());
-    // The memory pass's provisioning drain is work the start leaves running: it is counted on no
-    // path. The fixture once held the first statement of its two passes at the start, which
-    // always ran inside the start while the rest of each pass raced its end; they are no longer
-    // listed.
+    // MemoryPassService's provisioning drain (`reconcileMissing`, run by its DeadlineDrain) is
+    // work the start leaves running: it is counted on no path. The fixture once held the first
+    // statement of its two passes at the start (`select "owner_id" from "personal_settings"`),
+    // which always ran inside the start while the rest of each pass raced its end; those two are
+    // deliberately not listed, so a raw trace of a start shows two statements more.
     const reconcile = MemoryPassService.prototype.reconcileMissing;
     const reconciling = vi
       .spyOn(MemoryPassService.prototype, "reconcileMissing")
