@@ -157,7 +157,12 @@ export async function journey(
     .where("id", "=", task.runnerId)
     .execute();
   const slotId = `slot-${key}`;
-  const controller = new FakeBrowserPoolController({ slotId, term: 1 });
+  // The loopback runtime outlives a start: the controller sees what it holds.
+  const controller = new FakeBrowserPoolController({
+    slotId,
+    term: 1,
+    guest: () => guest.poolState()?.fence ?? null,
+  });
   const tickets = generateKeyPairSync("ed25519");
   let launched: LaunchedBrowser | undefined;
   const launcher = real

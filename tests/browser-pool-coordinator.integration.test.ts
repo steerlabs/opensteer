@@ -85,6 +85,8 @@ async function poolFixture(
     term: 1,
     ...(options.now ? { now: options.now } : {}),
     ...(options.freshGuests ? { freshGuests: true } : {}),
+    // The loopback runtime outlives a start: the controller sees what it holds.
+    guest: () => runtime.poolState()?.fence ?? null,
   });
   const page = new FakePage();
   const verifier = new FakeTicketVerifier();
@@ -321,6 +323,30 @@ async function parkAndWake(f: Awaited<ReturnType<typeof poolFixture>>, home = f.
   woken.release();
   return home;
 }
+
+it("starts again after an install that never reached the runtime, and installs the next one", async () => {
+  const f = await poolFixture("install-lost");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    // The restart's install is lost on its way: the runtime still holds the first fence.
+    f.runtimeFaults.push({ kind: "install", fault: "request" });
+    await withTimeout(home.restart(), 10_000, {
+      timeoutError: () => new Error("The restart is wedged on the lost install."),
+    });
+    const status = await f.controller.status("slot-install-lost", 1);
+    expect(f.runtime.poolState()).toMatchObject({
+      phase: "running",
+      fence: { slot: "slot-install-lost", term: 1, instance: status.instance, epoch: 1 },
+    });
+    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
 
 it("installs the controller's fence before any traffic and never reads it from the guest", async () => {
   const f = await poolFixture("install");

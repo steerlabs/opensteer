@@ -162,9 +162,10 @@ function sameIntent(a: BrowserPoolIntent | null, b: BrowserPoolIntent | undefine
 }
 
 /**
- * The runtime half of a park. Every transition is signed by the controller, serialized and
- * idempotent: a repeat returns the current state, and a late control of a released intent is
- * refused. No phase depends on the Home coming back: an adoption ends by itself at its window.
+ * The runtime half of a park. Every transition is signed by the controller and serialized. A
+ * control already applied, or an older one, is superseded; a step of the same intent signed
+ * again returns the state it reached; a late control of a released intent is refused. No phase
+ * depends on the Home coming back: an adoption ends by itself at its window.
  */
 export class BrowserPoolRuntimeControl {
   private readonly lane = new AsyncMutex();
@@ -232,7 +233,7 @@ export class BrowserPoolRuntimeControl {
 
   private async transition(request: BrowserPoolControl): Promise<BrowserPoolRuntimeState> {
     const current = this.current;
-    const { kind, fence, intent } = request;
+    const { fence } = request;
     // Ordered by (term, sequence): a control already applied, or an older one, never applies.
     const high = this.high;
     if (
@@ -247,34 +248,46 @@ export class BrowserPoolRuntimeControl {
       request.expect === null ? current.fence !== null : !sameFence(current.fence, request.expect)
     )
       throw new BrowserRuntimeError("conflict", "The browser pool fence is not the expected one.");
+    // Every check comes before the mark moves: a refused control never supersedes an earlier
+    // one that would apply.
+    const step = this.admit(request);
     this.high = { term: fence.term, sequence: request.sequence };
+    return step();
+  }
+
+  /** The checks of one control, with nothing changed; then what it does. */
+  private admit(
+    request: BrowserPoolControl,
+  ): () => BrowserPoolRuntimeState | Promise<BrowserPoolRuntimeState> {
+    const current = this.current;
+    const { kind, fence, intent } = request;
     if (kind === "install") {
-      if (sameFence(current.fence, fence)) return this.state();
-      if (current.fence && (fence.slot !== current.fence.slot || fence.term < current.fence.term))
+      // A start is a new instance: its fence moves forward, never back and never in place.
+      if (
+        current.fence &&
+        (fence.slot !== current.fence.slot ||
+          fence.term < current.fence.term ||
+          sameFence(current.fence, fence))
+      )
         throw new BrowserRuntimeError("conflict", "The browser pool fence moved backwards.");
-      // A fresh instance is a newly started guest: discard every live page first.
-      if (current.fence) await this.hooks.discard();
-      this.stopExpiry();
-      this.write({
-        fence,
-        phase: "running",
-        intent: null,
-        cancelled: false,
-        retired: null,
-        blockers: [],
-        adoption: null,
-      });
-      return this.state();
+      return async () => {
+        // A fresh instance is a newly started guest: discard every live page first.
+        if (current.fence) await this.hooks.discard();
+        this.stopExpiry();
+        this.write({
+          fence,
+          phase: "running",
+          intent: null,
+          cancelled: false,
+          retired: null,
+          blockers: [],
+          adoption: null,
+        });
+        return this.state();
+      };
     }
     if (kind === "adopt") {
       // The controller issues the next epoch on resume; adoption installs it.
-      if (sameFence(current.fence, fence) && current.phase === "adopting") return this.state();
-      if (
-        current.phase === "running" &&
-        sameFence(current.fence, fence) &&
-        current.adoption?.cause === "resume"
-      )
-        return this.state();
       if (
         current.phase !== "sealed" ||
         !current.fence ||
@@ -285,8 +298,10 @@ export class BrowserPoolRuntimeControl {
         fence.epoch <= current.fence.epoch
       )
         throw new BrowserRuntimeError("conflict", "The browser adoption is not ready.");
-      this.write({ fence, ...this.openAdoption("resume") });
-      return this.state();
+      return () => {
+        this.write({ fence, ...this.openAdoption("resume") });
+        return this.state();
+      };
     }
     this.checkFence(fence);
     if (!intent || !Number.isSafeInteger(intent.sequence) || intent.sequence < 1 || !intent.id)
@@ -301,78 +316,82 @@ export class BrowserPoolRuntimeControl {
     const same = sameIntent(previous, intent);
     if (!same && current.phase !== "running")
       throw new BrowserRuntimeError("conflict", "Another browser park intent is unresolved.");
+    // A step of the same intent, signed again, returns the state it already reached.
     switch (kind) {
-      case "retire": {
-        if (same) {
-          if (current.cancelled)
-            throw new BrowserRuntimeError("conflict", "The browser park intent was cancelled.");
-          return this.state();
-        }
-        this.write({
-          intent,
-          phase: "retiring",
-          cancelled: false,
-          retired: null,
-          blockers: [],
-          adoption: null,
-        });
-        let outcome: BrowserPoolRetirement | readonly string[];
-        try {
-          outcome = await this.hooks.retire();
-        } catch {
-          // Some sessions may already be detached: the only way back is an adoption.
-          outcome = ["retire-failed"];
-          if (this.current.phase === "retiring") {
-            this.write({ blockers: outcome });
-            return this.state();
-          }
-        }
-        if ("documents" in outcome) this.write({ phase: "retired", retired: outcome });
-        else this.write({ phase: "running", blockers: outcome });
-        return this.state();
-      }
-      case "release": {
+      case "retire":
+        if (same && current.cancelled)
+          throw new BrowserRuntimeError("conflict", "The browser park intent was cancelled.");
+        return same ? () => this.state() : () => this.retire(intent);
+      case "release":
         if (current.phase === "sealed" || (same && current.adoption?.cause === "resume"))
           throw new BrowserRuntimeError("conflict", "The browser park was committed.");
-        if (same && current.phase === "adopting") return this.state();
-        if (same && (current.phase === "retiring" || current.phase === "retired")) {
-          // Make every retained page reachable again: the Home reattaches, then completes.
-          this.write({ cancelled: true, ...this.openAdoption("release") });
+        if (same && current.phase === "adopting") return () => this.state();
+        return () => {
+          if (same && (current.phase === "retiring" || current.phase === "retired"))
+            // Make every retained page reachable again: the Home reattaches, then completes.
+            this.write({ cancelled: true, ...this.openAdoption("release") });
+          // Records cancellation even when the retire has not arrived.
+          else
+            this.write({
+              intent,
+              phase: "running",
+              cancelled: true,
+              ...(same ? {} : { retired: null, blockers: [], adoption: null }),
+            });
           return this.state();
-        }
-        // Records cancellation even when the retire has not arrived.
-        this.write({
-          intent,
-          phase: "running",
-          cancelled: true,
-          ...(same ? {} : { retired: null, blockers: [], adoption: null }),
-        });
-        return this.state();
-      }
-      case "seal": {
+        };
+      case "seal":
         if (!same || current.cancelled)
           throw new BrowserRuntimeError("conflict", "The browser park intent is unresolved.");
-        if (current.phase === "sealed") return this.state();
+        if (current.phase === "sealed") return () => this.state();
         if (current.phase !== "retired")
           throw new BrowserRuntimeError("conflict", "The browser is not retired.");
-        this.write({ phase: "sealed" });
-        return this.state();
-      }
+        return () => {
+          this.write({ phase: "sealed" });
+          return this.state();
+        };
       case "complete": {
         const adoption = current.adoption;
         if (!same || !adoption)
           throw new BrowserRuntimeError("conflict", "The browser adoption is not active.");
-        if (adoption.outcome) return this.state();
+        if (adoption.outcome) return () => this.state();
         const attempt = request.attempt;
         if (!Number.isSafeInteger(attempt) || attempt! < 1)
           throw new BrowserRuntimeError("bad_message", "The adoption attempt is invalid.");
         if (attempt! < this.hooks.highestAttempt(adoption.sessions))
           throw new BrowserRuntimeError("conflict", "A newer adoption attempt exists.");
-        await this.finish(attempt!, "not-reattached");
-        return this.state();
+        return async () => {
+          await this.finish(attempt!, "not-reattached");
+          return this.state();
+        };
       }
     }
     throw new BrowserRuntimeError("bad_message", "Unknown browser pool control.");
+  }
+
+  private async retire(intent: BrowserPoolIntent): Promise<BrowserPoolRuntimeState> {
+    this.write({
+      intent,
+      phase: "retiring",
+      cancelled: false,
+      retired: null,
+      blockers: [],
+      adoption: null,
+    });
+    let outcome: BrowserPoolRetirement | readonly string[];
+    try {
+      outcome = await this.hooks.retire();
+    } catch {
+      // Some sessions may already be detached: the only way back is an adoption.
+      outcome = ["retire-failed"];
+      if (this.current.phase === "retiring") {
+        this.write({ blockers: outcome });
+        return this.state();
+      }
+    }
+    if ("documents" in outcome) this.write({ phase: "retired", retired: outcome });
+    else this.write({ phase: "running", blockers: outcome });
+    return this.state();
   }
 
   private openAdoption(cause: "resume" | "release"): Partial<BrowserPoolRuntimeState> {

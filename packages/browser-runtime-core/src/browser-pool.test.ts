@@ -155,6 +155,35 @@ it("refuses every send until the controller installs a fence, and refuses a fenc
   }
 });
 
+it("refuses a control before it moves the high-water mark, so an earlier one that applies still does", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    await f.open();
+    const intent = { id: "intent-1", sequence: 1 };
+    const retire = f.issue({ kind: "retire", fence: f.fence(), intent });
+    const seal = f.issue({ kind: "seal", fence: f.fence(), intent });
+    // The seal arrives first, before its retire: refused, and nothing is superseded by it.
+    await expect(seal.apply()).rejects.toThrow("unresolved");
+    await expect(retire.apply()).resolves.toMatchObject({ phase: "retired" });
+    await expect(seal.apply()).resolves.toMatchObject({ phase: "sealed" });
+    // Signed again, a step of the same intent returns the state it reached.
+    await expect(f.controls("seal")).resolves.toMatchObject({ phase: "sealed" });
+    // An install of the fence already installed is refused, and discards nothing.
+    await expect(
+      f.signed({
+        kind: "install",
+        fence: f.fence(),
+        sequence: 100,
+        expect: f.fence(),
+      }),
+    ).rejects.toThrow("moved backwards");
+    expect(f.runtime.poolState()).toMatchObject({ phase: "sealed", fence: f.fence() });
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
 it("records cancellation before retire arrives and rejects superseded controls", async () => {
   const f = await fixture();
   try {
