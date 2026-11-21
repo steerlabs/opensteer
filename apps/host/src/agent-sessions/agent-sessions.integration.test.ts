@@ -5,6 +5,7 @@ import {
   BackgroundModelChoiceSchema,
   BrowserSessionIdSchema,
   DeviceIdSchema,
+  OpensteerError,
   HarnessIdSchema,
   ToolBlockedError,
   agentSessionIdleMs,
@@ -18,6 +19,7 @@ import {
 } from "@opensteer/core";
 import {
   AgentConnectionStore,
+  BrowserPoolAdmissionClosed,
   NotificationStore,
   installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
@@ -233,22 +235,20 @@ describeStore("an external agent's direct work through sessions", (it) => {
       const reserveCancelled = Promise.withResolvers<void>();
       const read = () => readBrowserPoolSlot(database, identity.runnerId);
       await installBrowserPoolSlot(database, identity);
-      // The driver parks without touching the slot row, so only the gate holds work back.
+      // The loop's facts without the slot row: only the gate holds work back. Demand on the
+      // parked browser starts one wake, as the loop would.
       const gate = new BrowserPoolGate();
-      gate.attach({
-        park: async () => "parked",
-        wake: async () => {
-          wakeStarted.resolve();
-          try {
-            await releaseWake.promise;
-            gate.settle("open");
-          } finally {
-            waking.resolve();
-          }
-        },
-      });
-      gate.settle("open");
-      expect(await gate.tryPark()).toBe("parked");
+      gate.set({ recovered: true, away: "parked", hold: null });
+      let woke = false;
+      gate.onChange = () => {
+        if (woke || gate.away !== "parked" || !gate.demand) return;
+        woke = true;
+        gate.set({ away: "waking" });
+        wakeStarted.resolve();
+        void releaseWake.promise
+          .then(() => gate.set({ away: null }))
+          .finally(() => waking.resolve());
+      };
       const s = await setUp(storeFixture, `approved-pool-${cut}`, {
         run: f,
         accessMode: cut === "task-mode cut" ? "auto" : "approval-required",
@@ -369,6 +369,100 @@ describeStore("an external agent's direct work through sessions", (it) => {
       }
     });
   }
+
+  it("refuses a pooled send with nothing sent only for an admission or authority reason, and fails it for any other", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-unsent");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const s = await setUp(storeFixture, "pool-unsent", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: (signal) => gate.reserve(signal),
+      }),
+    });
+    const cases = [
+      {
+        // A closed admission: the device was removed, or the browser could not be reached.
+        error: new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent."),
+        status: "refused",
+        code: "computer_offline",
+        decision: { by: "refused", reason: "changed" },
+      },
+      {
+        // The page the call named changed: it reads as not found.
+        error: new OpensteerError({ code: "not_found", message: "This tab is unavailable." }),
+        status: "refused",
+        code: "not_found",
+        decision: { by: "refused", reason: "changed" },
+      },
+      {
+        // The authority recheck before a send.
+        error: new OperationOutcomeUnknown(
+          "The connected agent's access changed during this work.",
+        ),
+        status: "refused",
+        code: "access_changed",
+        decision: { by: "refused", reason: "authority" },
+      },
+      {
+        // The work's own conflict is not a refusal: it failed, with its own code.
+        error: new OpensteerError({
+          code: "conflict",
+          message: "This browser profile is already exclusively held.",
+        }),
+        status: "failed",
+        code: "conflict",
+        decision: { by: "full-access" },
+      },
+      {
+        // Nor is an error of the script's machinery.
+        error: new Error("The script runtime could not start."),
+        status: "failed",
+        code: "internal_error",
+        decision: { by: "full-access" },
+      },
+    ] as const;
+    for (const [index, entry] of cases.entries()) {
+      s.runBrowserScript.mockRejectedValueOnce(entry.error);
+      const result = await s.call("browser_use", { ...script, code: `print(${index})` });
+      expect(result, JSON.stringify(result.content)).toMatchObject({
+        isError: true,
+        structuredContent: { status: entry.status, error: { code: entry.code } },
+      });
+      // A refusal says nothing was sent; nothing says part of it may have happened.
+      expect(JSON.stringify(result.content)).not.toContain("may have happened");
+      if (entry.status === "refused" && entry.code !== "not_found")
+        expect(result.structuredContent).toMatchObject({
+          error: { next: expect.stringContaining("Nothing was sent.") },
+        });
+      expect(JSON.stringify(result.content)).not.toContain("runner_offline");
+      const operation = await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "decision", "handedOffAt"])
+        .where("id", "=", (result.structuredContent as { operationId: never }).operationId)
+        .executeTakeFirstOrThrow();
+      expect(operation).toMatchObject({
+        state: entry.status,
+        outcome: entry.status,
+        decision: entry.decision,
+        handedOffAt: expect.any(Date),
+      });
+    }
+    expect(gate.held).toBe(0);
+  });
 
   it("records a fake background model's allow decision before executing an Auto effect", async ({
     storeFixture,

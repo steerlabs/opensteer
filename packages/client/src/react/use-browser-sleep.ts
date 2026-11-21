@@ -3,6 +3,7 @@ import {
   browserReturnNotes,
   browserSleepFromHome,
   browserWakeSteps,
+  noteKey,
   type BrowserSleep,
   type BrowserTabNote,
   type BrowserTabReturn,
@@ -65,12 +66,12 @@ export function useBrowserSleep(
   useSyncExternalStore(notes.subscribe, notes.version, notes.version);
   const note = computerId && tabId ? notes.note(computerId, tabId, view.tab) : null;
   const tab = view.tab;
-  const noteKey =
-    note && tab.kind !== "kept" ? JSON.stringify([computerId, tabId, tab.kind, tab.startAt]) : null;
+  const key =
+    note && tab.kind !== "kept" && computerId && tabId ? noteKey(computerId, tabId, tab) : null;
   const seen = useCallback(() => {
     if (computerId && tabId) notes.seen(computerId, tabId, tab);
   }, [computerId, notes, tab, tabId]);
-  return { browser: view.browser, tab, elapsedMs, note, noteKey, seen };
+  return { browser: view.browser, tab, elapsedMs, note, noteKey: key, seen };
 }
 
 /**

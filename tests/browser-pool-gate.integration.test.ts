@@ -221,6 +221,56 @@ it("lets a lost relay reply veto only until the relay deadline, and prunes it th
   }
 });
 
+it("prunes a pooled browser's notes after seven days, seen or not, and keeps a newer unseen one", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("notes-retention");
+    const target = {
+      runnerId: task.runnerId,
+      runtimeId: "runtime",
+      slotId: "slot",
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    const slot = await installBrowserPoolSlot(fixture.database, target);
+    const note = async (surfaceId: string, days: number, seen: boolean) => {
+      await fixture.database
+        .insertInto("browserPoolDocumentLosses")
+        .values({
+          intentId: randomUUID(),
+          runnerId: task.runnerId,
+          ownerId: task.userId,
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+          documentId: null,
+          reason: "person",
+        })
+        .execute();
+      // Lost, and seen if it was, this many days ago.
+      await sql`
+        update browser_pool_document_losses
+        set lost_at = now() - make_interval(days => ${days}),
+            noticed_at = case when ${seen}::boolean then now() - make_interval(days => ${days}) end
+        where surface_id = ${surfaceId}
+      `.execute(fixture.database);
+    };
+    await note("srf_unseen_old", 8, false);
+    await note("srf_seen_old", 8, true);
+    await note("srf_unseen_new", 1, false);
+    await note("srf_seen_new", 1, true);
+    await pruneBrowserPoolBookkeeping(fixture.database, slot);
+    const kept = await fixture.database
+      .selectFrom("browserPoolDocumentLosses")
+      .select("surfaceId")
+      .orderBy("surfaceId")
+      .execute();
+    expect(kept.map(({ surfaceId }) => surfaceId)).toEqual(["srf_seen_new", "srf_unseen_new"]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 it("keeps lost pooled relay replies in D after the transport ends", async () => {
   const fixture = await createStoreFixture();
   try {
@@ -431,6 +481,211 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
     await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 5_000 });
     expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
   } finally {
+    await j.close();
+  }
+});
+
+it("keeps the person's tab the person's through a Home restart while parked, then a wake", async () => {
+  const j = await journey("person-use-restart");
+  try {
+    let home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("used"));
+    await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "person-uses",
+    );
+    const personUsed = () =>
+      [
+        ...(
+          j.guest as unknown as {
+            sessions: Map<
+              string,
+              { ledger: { policyRecords(): Iterable<{ id: string; personUsed: boolean }> } }
+            >;
+          }
+        ).sessions
+          .get(sessionId)!
+          .ledger.policyRecords(),
+      ].find((record) => record.id === tabId)?.personUsed;
+    await vi.waitFor(() => expect(personUsed()).toBe(true));
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    // The Home restarts while parked; its own record of who used which tab starts empty.
+    home = await j.restartHome(home);
+    // A watch viewer wakes it: watching is not use, so nothing new marks the tab.
+    const watching = j.viewer(home, sessionId, "watch");
+    const attached = await watching.attaching;
+    attached.close();
+    expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    // The guest kept it: the tab is still the person's.
+    expect(personUsed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("holds a viewer's protection, queued after the park intent, in the adopted runtime before its first frame", async () => {
+  // The retire waits in its frozen probe: the park intent has committed and the old broker is
+  // still there when the viewer arrives.
+  const inProbe = Promise.withResolvers<void>();
+  const probe = Promise.withResolvers<void>();
+  let holding = false;
+  const j = await journey("protection-after-intent", {
+    probePage: async (_page, phase) => {
+      if (holding && phase === "frozen") {
+        inProbe.resolve();
+        await probe.promise;
+      }
+      return [];
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("protect"));
+    await j.draft();
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    holding = true;
+    const parking = home.coordinator.tryPark();
+    await inProbe.promise;
+    // A control viewer attaches after the intent: its protection (viewed) is queued, not sent.
+    const viewed = () =>
+      (
+        j.guest as unknown as {
+          sleeper: { poolState(id: string): { viewed: readonly string[] } | null };
+        }
+      ).sleeper.poolState(sessionId)?.viewed ?? [];
+    let atFirstFrame: readonly string[] | undefined;
+    const watching = j.viewer(home, sessionId, "control", () => {
+      atFirstFrame = [...viewed()];
+    });
+    holding = false;
+    probe.resolve();
+    expect(await parking).toBe("parked");
+    // The viewer's demand wakes and adopts the browser; before its first frame passes, the
+    // adopted runtime already holds the protection.
+    const attached = await watching.attaching;
+    try {
+      await attached.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
+        false,
+      );
+      await vi.waitFor(() => expect(watching.frames.length).toBeGreaterThan(0), {
+        timeout: 10_000,
+      });
+      expect(atFirstFrame).toContain(tabId);
+      expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    } finally {
+      attached.close();
+    }
+  } finally {
+    probe.resolve();
+    await j.close();
+  }
+});
+
+it("keeps a running browser's sessions through a Home crash and reattaches them", async () => {
+  const j = await journey("home-crash-running");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("crash"));
+    const page = await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    // The Home dies while the browser runs, and starts again: the start-up sweep keeps the
+    // pooled session, and the loop reattaches it inside its window.
+    const next = await j.crashHome(home);
+    await vi.waitFor(() => expect(next.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    expect(page.page.isClosed()).toBe(false);
+    expect(await page.value()).toBe('["unsent draft",99]');
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("finishes a removal a Home crash interrupted after the revocation, with the notes", async () => {
+  const j = await journey("removal-crash");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("removal"));
+    await j.draft();
+    await j.database
+      .updateTable("runners")
+      .set({ kind: "managed" })
+      .where("id", "=", j.task.runnerId)
+      .execute();
+    // The revocation commits; the Home dies before the browser hears of it.
+    const removed = await j.store.revokeRunner(j.task.runnerId, j.task.userId, {
+      allowDeployment: true,
+    });
+    expect(removed.closedBrowserSessions).toContain(sessionId);
+    const next = await j.crashHome(home);
+    await next.coordinator.released();
+    expect(next.coordinator.gate.phase).toBe("released");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId, reason: "device-removed" },
+    ]);
+    expect(await j.slot()).toBeUndefined();
+    expect(j.controller.effects).toEqual(["start", "stop"]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("restarts through the service while a park is retiring, with no reconnect after it", async () => {
+  const inProbe = Promise.withResolvers<void>();
+  const probe = Promise.withResolvers<void>();
+  let holding = false;
+  const j = await journey("restart-retiring", {
+    probePage: async (_page, phase) => {
+      if (holding && phase === "frozen") {
+        inProbe.resolve();
+        await probe.promise;
+      }
+      return [];
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("retiring"));
+    await j.draft();
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    holding = true;
+    const parking = home.coordinator.tryPark();
+    await inProbe.promise;
+    const asked = Date.now();
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "r-1");
+    holding = false;
+    probe.resolve();
+    await parking;
+    await restarting;
+    // The retiring broker's close was the park's own, never a lost channel: nothing waits for it.
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect(Date.now() - asked).toBeLessThan(10_000);
+    expect((await j.row(sessionId))?.state).toBe("failed");
+  } finally {
+    probe.resolve();
+    await j.close();
+  }
+});
+
+it("lets a Stop during a reconnect end that session's wait at once", async () => {
+  const j = await journey("stop-reconnect");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-reconnect"));
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    const stopped = Date.now();
+    await home.service.stop(j.task.userId, sessionId);
+    // The stopped session no longer needs a channel: the gate does not hold for its window.
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 5_000 });
+    expect(Date.now() - stopped).toBeLessThan(5_000);
+    expect((await j.row(sessionId))?.state).toBe("closed");
+  } finally {
+    j.runnerUp();
     await j.close();
   }
 });
@@ -681,11 +936,7 @@ it("says once that a page could not be kept when the saved state expired, and re
     j.controller.observe({ phase: "stopped", savedState: null, epoch: null });
     const row = await j.tabs.get(j.task.userId, tabId);
     const restored = await home.service.pageTabs.activate(j.task.userId, row!, "activate-lost");
-    expect(restored).toMatchObject({
-      kind: "page",
-      surfaceId: tabId,
-      recoveryNotice: "This page was reloaded because its live state could not be kept.",
-    });
+    expect(restored).toMatchObject({ kind: "page", surfaceId: tabId });
     expect(restored.kind === "page" && restored.sessionId).not.toBe(sessionId);
     expect(page.page.isClosed()).toBe(true);
     expect((await j.row(sessionId))?.state).toBe("failed");
@@ -693,20 +944,24 @@ it("says once that a page could not be kept when the saved state expired, and re
       restored.kind === "page" &&
         home.service.pageInventory(restored.sessionId)?.records.get(tabId)?.documentId,
     ).not.toBe(original);
-    // The reply that carried the notice may not have reached the person: until the client
-    // says it showed it, every activation carries it again.
-    const activate = (key: string, seen?: string) =>
+    // The report that carried the note may not have reached the person: until the client says
+    // it showed it, every report, after every activation, carries it again.
+    const activate = (key: string) =>
       j.tabs
         .get(j.task.userId, tabId)
-        .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key, seen));
-    const retried = await activate("activate-retry");
-    expect(retried).toMatchObject({ recoveryNotice: expect.any(String) });
-    const noticeId = restored.kind === "page" ? restored.recoveryNoticeId : undefined;
-    expect(noticeId).toEqual(expect.any(String));
-    expect(retried.kind === "page" && retried.recoveryNoticeId).toBe(noticeId);
-    const again = await activate("activate-again", noticeId);
-    expect(again).not.toHaveProperty("recoveryNotice");
-    expect(await activate("activate-later")).not.toHaveProperty("recoveryNotice");
+        .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key));
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    const reloaded = (noticeId: unknown) => [
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
+    ];
+    expect((await report())?.pages).toEqual(reloaded(expect.any(String)));
+    const noticeId = (await report())?.pages?.[0]?.noticeId;
+    await activate("activate-retry");
+    expect((await report())?.pages).toEqual(reloaded(noticeId));
+    await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
+    expect(await report()).not.toHaveProperty("pages");
+    await activate("activate-later");
+    expect(await report()).not.toHaveProperty("pages");
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, surfaceId: tabId, documentId: original, noticedAt: expect.any(Date) },
     ]);
@@ -1049,6 +1304,20 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
       };
     };
     closeApp = () => app.close();
+    // The Trigger's attachment cleanup fails after doing its work: the session it owns still ends.
+    const attach = home.service.attachCdpForAgent.bind(home.service);
+    const failingCleanup = vi
+      .spyOn(home.service, "attachCdpForAgent")
+      .mockImplementation(async (...args) => {
+        const attached = await attach(...args);
+        return {
+          ...attached,
+          pooledClose: async () => {
+            await attached.pooledClose?.();
+            throw new Error("The attachment cleanup failed.");
+          },
+        };
+      });
     const triggerBrowser = await connect(
       "trigger-token-0123456789abcdef",
       hostInternalRoutePaths.triggerCdp,
@@ -1057,6 +1326,7 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
     expect((await j.row(triggerBrowser.session))?.origin).toBe("trigger");
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     await triggerBrowser.close();
+    failingCleanup.mockRestore();
     expect(await home.coordinator.tryPark()).toBe("parked");
     const watchBrowser = await connect(
       "watch-token-0123456789abcdef",
@@ -1206,7 +1476,11 @@ it("ends the sessions with their note when the Runner does not come back before 
 });
 
 /** Every removal dependency but the store and the browser does nothing, as nothing else runs. */
-function removalDependencies(store: unknown, browser: unknown) {
+function removalDependencies(
+  store: unknown,
+  browser: unknown,
+  extra: Record<string, unknown> = {},
+) {
   const passive: unknown = new Proxy(function () {}, {
     get: (_target, property) => (property === "then" ? undefined : passive),
     apply: (_target, _this, args: unknown[]) => {
@@ -1214,7 +1488,7 @@ function removalDependencies(store: unknown, browser: unknown) {
       return typeof last === "function" ? (last as () => unknown)() : Promise.resolve(undefined);
     },
   });
-  const real: Record<string, unknown> = { store, browser };
+  const real: Record<string, unknown> = { store, browser, ...extra };
   return new Proxy(real, {
     get: (target, property: string) => (property in target ? target[property] : passive),
   }) as never;
@@ -1234,8 +1508,11 @@ it("ends a removed device's pooled sessions with their notes through the real re
       .execute();
     // The real route: the store's revocation ends the sessions in its own transaction, then the
     // removal's own steps.
+    // The revoke disconnects the Runner before the browser hears of the removal, as for real.
     await removeDevice(
-      removalDependencies(j.store, home.service),
+      removalDependencies(j.store, home.service, {
+        runners: { revoke: async () => j.runnerDown() },
+      }),
       await j.store.requireSelfDeviceId(j.task.runnerId),
       j.task.userId,
     );
@@ -1332,6 +1609,36 @@ it("gives each loss of a tab its own notice, reports only the newest, and clears
   }
 });
 
+it("lets every service call made while the Runner is away wait for it, never refuse as unavailable", async () => {
+  const j = await journey("runner-away-calls");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("away"));
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    // A placement read reports the browser; it does not throw.
+    expect((await home.service.resourcePools([j.task.runnerId]))[0]).toMatchObject({
+      runnerId: j.task.runnerId,
+    });
+    // An attach, an open and an activate made now wait for the Runner.
+    const watching = j.viewer(home, sessionId, "watch");
+    const opening = home.service.openTab(j.task.userId, j.command("away-open"));
+    const activating = home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "away-activate",
+    );
+    j.runnerUp();
+    (await watching.attaching).close();
+    expect(await opening).toMatchObject({ tabId: expect.any(String) });
+    expect(await activating).toMatchObject({ kind: "page", sessionId });
+    expect((await j.row(sessionId))?.state).toBe("ready");
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("counts the failed starts of a restart in the report, and clears the count once one starts", async () => {
   const j = await journey("failed-starts");
   try {
@@ -1401,26 +1708,19 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
     });
     expect(restarted).not.toHaveProperty("failures");
     expect((await j.row(sessionId))?.state).toBe("failed");
-    // Reopened, the page came back by reloading; once seen, it is no longer reported.
-    const reopened = await home.service.pageTabs.activate(
+    // Reopened, the page came back by reloading, under the same note; once seen, it is no
+    // longer reported.
+    const noticeId = (await report())?.pages?.[0]?.noticeId;
+    expect(noticeId).toEqual(expect.any(String));
+    await home.service.pageTabs.activate(
       j.task.userId,
       (await j.tabs.get(j.task.userId, tabId))!,
       "report-reopen",
     );
     expect((await report())?.pages).toEqual([
-      {
-        surfaceId: tabId,
-        noticeId: reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
-        outcome: "reloaded",
-        typed: false,
-      },
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
     ]);
-    await home.service.pageTabs.activate(
-      j.task.userId,
-      (await j.tabs.get(j.task.userId, tabId))!,
-      "report-seen",
-      reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
-    );
+    await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
     expect(await report()).not.toHaveProperty("pages");
   } finally {
     await j.close();

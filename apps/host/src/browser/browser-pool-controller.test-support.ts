@@ -31,6 +31,12 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
 
   /** Each started guest has a new runtime of its own, which holds no fence before its install. */
   readonly #freshGuests: boolean;
+  /**
+   * The fence the guest's runtime holds now, for a controller that sees its guest (loopback,
+   * where the runtime outlives a start). Every control names it, so an install that never
+   * reached the runtime does not leave the next one naming a fence the runtime never held.
+   */
+  readonly #guest: (() => BrowserPoolControl["fence"] | null) | undefined;
 
   constructor(options: {
     slotId: string;
@@ -38,8 +44,10 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
     retentionMs?: number;
     now?: () => number;
     freshGuests?: boolean;
+    guest?: () => BrowserPoolControl["fence"] | null;
   }) {
     this.#freshGuests = options.freshGuests === true;
+    this.#guest = options.guest;
     const keys = generateKeyPairSync("ed25519");
     this.publicKey = keys.publicKey;
     this.#privateKey = keys.privateKey;
@@ -159,7 +167,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
           id: call.id,
           applied: true,
           status: current,
-          ...this.#signed({ ...control, expect: this.#installed }),
+          ...this.#signed({ ...control, expect: this.#held() }),
         };
         break;
       }
@@ -187,7 +195,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
           kind: "adopt",
           fence: this.#fence(),
           intent: call.intent,
-          expect: this.#installed,
+          expect: this.#held(),
         });
         this.#installed = this.#fence();
         result = { id: call.id, applied: true, status: this.#status, ...signed };
@@ -210,7 +218,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
         const signed = this.#signed({
           kind: "install",
           fence: this.#fence(),
-          expect: this.#freshGuests ? null : this.#installed,
+          expect: this.#freshGuests ? null : this.#held(),
         });
         this.#installed = this.#fence();
         result = { id: call.id, applied: true, status: this.#status, ...signed };
@@ -220,6 +228,10 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
     this.log.push(call.kind === "sign" ? `sign:${call.control!.kind}` : call.kind);
     this.#results.set(call.id, result);
     return result;
+  }
+
+  #held() {
+    return this.#guest ? this.#guest() : this.#installed;
   }
 
   #fence() {

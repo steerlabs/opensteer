@@ -351,24 +351,34 @@ export class BrowserToolHandlers {
       )
         throw tabNotFound();
       const { sessionId, lineageId } = row.pageBinding;
+      // Null: its session is being reattached and its document is not known yet.
       const document = pool.pageDocument(sessionId, tabId);
-      if (!document) throw tabNotFound();
-      return JSON.stringify([row.generation, sessionId, lineageId, document]);
+      if (document === undefined) throw tabNotFound();
+      return { tab: JSON.stringify([row.generation, sessionId, lineageId]), document };
     };
-    const generation = target.tabId ? await witness(target.tabId) : null;
+    const seen = target.tabId ? await witness(target.tabId) : null;
+    // A document not known when the call began is bound at the first check that knows it, once
+    // the session is back; from then on, and at every send, it is compared as always.
+    let document = seen?.document ?? null;
     return {
       ...pool,
-      generation,
+      generation: seen
+        ? JSON.stringify([...(JSON.parse(seen.tab) as unknown[]), seen.document])
+        : null,
       recheckTarget: async () => {
         const profile = (await this.#ports.profiles(caller.userId)).find(
           ({ id }) => id === target.profileId,
         );
         if (
           profile?.home?.runnerId !== target.runnerId ||
-          (await this.#ports.requireDevice(target.runnerId)) !== target.operation.device?.id ||
-          (target.tabId && (await witness(target.tabId)) !== generation)
+          (await this.#ports.requireDevice(target.runnerId)) !== target.operation.device?.id
         )
           throw tabNotFound();
+        if (!target.tabId || !seen) return;
+        const now = await witness(target.tabId);
+        if (now.tab !== seen.tab || (document !== null && now.document !== document))
+          throw tabNotFound();
+        document ??= now.document;
       },
     };
   }

@@ -1138,6 +1138,7 @@ export async function refuseUnsentHandedOffAgentOperation(
   database: Kysely<DatabaseSchema>,
   id: AgentOperationId,
   message: string,
+  reason: "authority" | "changed" | "stopped",
 ): Promise<boolean> {
   const now = new Date();
   const row = await database
@@ -1150,7 +1151,7 @@ export async function refuseUnsentHandedOffAgentOperation(
       updatedAt: now,
       decision: jsonValue({
         by: "refused",
-        reason: "authority",
+        reason,
         message,
       } satisfies AgentOperationDecision),
     })

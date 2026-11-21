@@ -27,7 +27,12 @@ export type BrowserPoolControllerCallRow = Selectable<DatabaseSchema["browserPoo
 export interface BrowserPoolSessionLoss {
   readonly sessionId: BrowserSessionId;
   readonly reason: string;
-  readonly surfaces: readonly { readonly surfaceId: string; readonly documentId: string | null }[];
+  readonly surfaces: readonly {
+    readonly surfaceId: string;
+    readonly documentId: string | null;
+    /** Known typed text that was not sent; written with the loss. */
+    readonly typed?: boolean;
+  }[];
   /** False for a tab lost inside a session that was otherwise adopted. */
   readonly endSession?: boolean;
 }
@@ -224,6 +229,7 @@ export interface BrowserPoolSlotChange {
     Partial<Pick<BrowserPoolTargetIdentity, "slotId" | "term">>;
   readonly lastStart?: BrowserPoolSlot["lastStart"];
   readonly failedStarts?: number;
+  readonly restartKeys?: readonly string[];
 }
 
 /**
@@ -269,6 +275,9 @@ export async function advanceBrowserPoolSlot(
           ...(next.fence ? next.fence : {}),
           ...(next.lastStart !== undefined ? { lastStart: next.lastStart } : {}),
           ...(next.failedStarts !== undefined ? { failedStarts: next.failedStarts } : {}),
+          ...(next.restartKeys !== undefined
+            ? { restartKeys: sql<readonly string[]>`${JSON.stringify(next.restartKeys)}::jsonb` }
+            : {}),
           ...(next.phase !== current.phase ? { phaseSince: new Date() } : {}),
         })
         .where("runnerId", "=", slot.runnerId)
@@ -303,7 +312,7 @@ async function recordBrowserPoolLosses(
     const noteId = randomUUID();
     const notes = losses.flatMap(({ sessionId, reason, surfaces }) => {
       return ownerId && known.has(sessionId)
-        ? surfaces.map(({ surfaceId, documentId }) => ({
+        ? surfaces.map(({ surfaceId, documentId, typed }) => ({
             intentId: noteId,
             runnerId: slot.runnerId,
             ownerId,
@@ -311,6 +320,7 @@ async function recordBrowserPoolLosses(
             surfaceId: surfaceId as BrowserSurfaceId,
             documentId,
             reason,
+            typed: typed === true,
           }))
         : [];
     });
@@ -466,26 +476,33 @@ export async function recordBrowserPoolControllerCall(
     await insert(database);
     return;
   }
-  await database.transaction().execute(async (tx) => {
-    const open = await tx
-      .selectFrom("browserPoolControllerCalls")
-      .select("id")
-      .where("runnerId", "=", call.runnerId)
-      .where("settledAt", "is", null)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    for (const { id } of open)
-      await tx
-        .updateTable("browserPoolControllerCalls")
-        .set({
-          result: { id, applied: false, reason: "replaced", status: closeOpen },
-          settledAt: new Date(),
-        })
-        .where("id", "=", id)
+  // Under the deployment fence, as the release that deletes these rows is.
+  await commitPersonalMutation(
+    database,
+    async (tx) => {
+      const open = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("runnerId", "=", call.runnerId)
+        .where("settledAt", "is", null)
+        .orderBy("id")
+        .forNoKeyUpdate()
         .execute();
-    await insert(tx);
-  });
+      // The guest is replaced: whether an open call applied is not known, and never claimed.
+      for (const { id } of open)
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id, outcome: "unknown", reason: "superseded", status: closeOpen },
+            settledAt: new Date(),
+          })
+          .where("id", "=", id)
+          .execute();
+      await insert(tx);
+    },
+    undefined,
+    "non-retrying",
+  );
 }
 
 export async function settleBrowserPoolControllerCall(
@@ -589,6 +606,47 @@ export async function listBrowserPoolRuntimeSessions(
   return rows.map(({ id }) => id);
 }
 
+/**
+ * A pooled Runner that was revoked (a removal the Home did not finish): the sessions that
+ * revocation ended, which the release still owes a note. Undefined while the Runner stands.
+ */
+export async function readBrowserPoolRevocation(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<readonly BrowserSessionId[] | undefined> {
+  const runner = await database
+    .selectFrom("runners")
+    .select("revokedAt")
+    .where("id", "=", runnerId)
+    .executeTakeFirst();
+  if (!runner?.revokedAt) return undefined;
+  const ended = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", runnerId)
+    .where("closedAt", "=", runner.revokedAt)
+    .orderBy("id")
+    .execute();
+  return ended.map(({ id }) => id);
+}
+
+/** The ready sessions of this runtime: the ones a channel can be missing from. */
+export async function listBrowserPoolReadySessions(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+  runtimeId: string,
+): Promise<readonly BrowserSessionId[]> {
+  const rows = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", runnerId)
+    .where("runtimeId", "=", runtimeId)
+    .where("state", "=", "ready")
+    .orderBy("id")
+    .execute();
+  return rows.map(({ id }) => id);
+}
+
 export function listBrowserPoolDocumentLosses(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
@@ -651,25 +709,6 @@ export async function seeBrowserPoolDocumentLoss(
   });
 }
 
-/** The newest notice of this tab the person has not seen, after marking `seen` seen. */
-export async function nextBrowserPoolDocumentLoss(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-  surfaceId: BrowserSurfaceId,
-  seen?: string,
-): Promise<{ readonly id: string; readonly reason: string } | undefined> {
-  if (seen) await seeBrowserPoolDocumentLoss(database, ownerId, surfaceId, seen);
-  const row = await database
-    .selectFrom("browserPoolDocumentLosses")
-    .select(["intentId", "reason"])
-    .where("ownerId", "=", ownerId)
-    .where("surfaceId", "=", surfaceId)
-    .where("noticedAt", "is", null)
-    .orderBy("lostAt", "desc")
-    .executeTakeFirst();
-  return row ? { id: row.intentId, reason: row.reason } : undefined;
-}
-
 /** At most this many notices reach a pool report: the newest unseen one of each tab. */
 export const browserPoolReportedNotices = 100;
 
@@ -680,7 +719,7 @@ export async function listBrowserPoolReportedNotices(
 ) {
   const newest = database
     .selectFrom("browserPoolDocumentLosses")
-    .select(["surfaceId", "sessionId", "intentId", "lostAt"])
+    .select(["surfaceId", "sessionId", "intentId", "typed", "lostAt"])
     .distinctOn("surfaceId")
     .where("runnerId", "=", runnerId)
     .where("noticedAt", "is", null)
@@ -726,10 +765,16 @@ export async function pruneBrowserPoolBookkeeping(
       ]),
     )
     .execute();
+  // A seen note ages out from when it was seen; one never seen, from when it was written.
   await database
     .deleteFrom("browserPoolDocumentLosses")
     .where("runnerId", "=", slot.runnerId)
-    .where("noticedAt", "<", before)
+    .where((eb) =>
+      eb.or([
+        eb("noticedAt", "<", before),
+        eb.and([eb("noticedAt", "is", null), eb(sql<Date>`lost_at`, "<", before)]),
+      ]),
+    )
     .execute();
 }
 
