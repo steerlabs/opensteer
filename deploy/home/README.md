@@ -282,7 +282,12 @@ release version stamped into the immutable images.
 The verifier installs with `--local`. The Colima proof runs
 `pnpm exec tsx scripts/verify-home-deployment.mjs` from the worktree. The BYO
 path uses `--prepare`. The managed path uses the standalone installer, real
-Account HTTP route handlers, and Colima's systemd. The verifier checks for
+Account HTTP route handlers, and Colima's systemd. Its Account stand-in boots the
+Home with `managedHome`, claims each generation with a signed assertion checked
+against its JWKS, and signs the owner in through its OIDC provider, on a
+public-looking address that exists only on that machine. The Home trusts the
+stand-in's certificate through one Compose layer the verifier adds to the
+installer bundle it builds. The verifier checks for
 50 GiB free on the Mac and on Colima's Docker filesystems before building. It
 builds each image once, removes its test projects and image tags, and caps its
 own BuildKit cache at 12 GB and removes the build daemon container. The
