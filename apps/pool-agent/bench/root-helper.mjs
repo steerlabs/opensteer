@@ -69,11 +69,12 @@ async function run(command) {
 rmSync(socketPath, { force: true });
 const server = createServer((socket) => {
   let text = "";
-  socket.on("data", async (chunk) => {
+  socket.on("data", (chunk) => {
     text += chunk.toString("utf8");
     if (!text.includes("\n")) return;
-    const answer = await run(JSON.parse(text)).catch((error) => ({ error: String(error) }));
-    socket.end(JSON.stringify(answer));
+    void run(JSON.parse(text))
+      .catch((error) => ({ error: String(error) }))
+      .then((answer) => socket.end(JSON.stringify(answer)));
   });
 });
 // The socket is created mode 0600, then given to the relay user alone.
