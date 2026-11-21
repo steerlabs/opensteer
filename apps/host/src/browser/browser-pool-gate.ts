@@ -113,7 +113,11 @@ export class BrowserPoolGate {
     this.slot = slot;
     const phase = slot?.phase;
     this.setPhase(
-      !phase || phase === "running" ? "open" : phase === "parked" ? "parked" : "closed",
+      !phase || phase === "running"
+        ? "open"
+        : phase === "parked" || phase === "waking"
+          ? "parked"
+          : "closed",
     );
   }
 

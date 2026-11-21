@@ -2394,6 +2394,7 @@ export interface DatabaseSchema {
     epoch: number;
     intentSequence: number;
     intentId: string;
+    attachmentGeneration: number;
     phase: "running" | "preparing" | "parked" | "waking";
     retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
   };

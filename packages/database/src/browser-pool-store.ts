@@ -103,6 +103,7 @@ export async function beginBrowserPoolPark(
         ...target,
         intentId,
         intentSequence: (current?.intentSequence ?? 0) + 1,
+        attachmentGeneration: current?.attachmentGeneration ?? 1,
         phase: "preparing",
         retained: null,
       } as const;
@@ -121,7 +122,8 @@ export async function beginBrowserPoolPark(
 export async function advanceBrowserPoolSlot(
   database: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
-  next: Pick<BrowserPoolSlot, "phase" | "epoch" | "retained">,
+  next: Pick<BrowserPoolSlot, "phase" | "epoch" | "retained"> &
+    Partial<Pick<BrowserPoolSlot, "attachmentGeneration">>,
 ): Promise<BrowserPoolSlot> {
   return commitPersonalMutation(
     database,
@@ -132,13 +134,14 @@ export async function advanceBrowserPoolSlot(
         !sameRuntime(current, slot) ||
         current.intentId !== slot.intentId ||
         current.intentSequence !== slot.intentSequence ||
+        current.attachmentGeneration !== slot.attachmentGeneration ||
         current.phase !== slot.phase
       )
         throw new BrowserPoolAdmissionClosed();
-      const { phase, epoch, retained } = next;
+      const { phase, epoch, retained, attachmentGeneration = slot.attachmentGeneration } = next;
       return tx
         .updateTable("browserPoolSlots")
-        .set({ phase, epoch, retained })
+        .set({ phase, epoch, retained, attachmentGeneration })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirstOrThrow();

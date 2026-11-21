@@ -12,7 +12,11 @@ import {
   createStoreFixture,
   personalBrowserRepository,
 } from "../packages/database/src/store.integration.test-support.js";
-import { BrowserSessionIdSchema, type InitialPageReady } from "../packages/protocol/src/browser.js";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  type InitialPageReady,
+} from "../packages/protocol/src/browser.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -230,15 +234,22 @@ class TestRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
 }
 
 it("opens a person tab through the Home after a pooled runtime resumes", () =>
-  ownerTabJourney(false));
+  ownerTabJourney("empty"));
 it("rebuilds the owner broker after a parked BrowserService restart and edits the original draft", () =>
-  ownerTabJourney(true));
+  ownerTabJourney("restore"));
 it("stops a parked session while its viewer waits and never reattaches it", () =>
-  ownerTabJourney(true, true));
+  ownerTabJourney("stop"));
 it("activates a retained workspace tab after waiting for its pooled browser", () =>
-  ownerTabJourney(true, false, true));
+  ownerTabJourney("activate"));
+it("wakes only for a visible owner context read and keeps a parked sign-in lookup non-waking", () =>
+  ownerTabJourney("context"));
+it("reconciles an interrupted adoption with the original epoch and one physical resume", () =>
+  ownerTabJourney("recover-adoption"));
 
-async function ownerTabJourney(restart: boolean, stopWaiting = false, activate = false) {
+async function ownerTabJourney(
+  mode: "empty" | "restore" | "stop" | "activate" | "context" | "recover-adoption",
+) {
+  const restart = mode !== "empty";
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-route-"));
   let runtime: BrowserRuntime | undefined;
@@ -300,6 +311,7 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
     const calls: string[] = [];
     let lostPauseRequest = false;
     let lostResumeReply = false;
+    let interruptAdoption = mode === "recover-adoption";
     const resumeSeen = Promise.withResolvers<void>();
     const poolOptions: Parameters<typeof createLoopbackBrowserPool>[0] = {
       database,
@@ -333,14 +345,19 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
       },
       ...(restart
         ? {
-            adopt: (documents, fence, attachment) =>
-              browser!.adoptPooledOwnerDocuments(
+            adopt: async (documents, fence, attachment) => {
+              if (interruptAdoption) {
+                interruptAdoption = false;
+                throw new Error("The Home disappeared after M10");
+              }
+              return browser!.adoptPooledOwnerDocuments(
                 task.userId,
                 task.runnerId,
                 documents,
                 fence,
                 attachment,
-              ),
+              );
+            },
           }
         : {}),
     };
@@ -437,10 +454,37 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
       const parking = await negotiated.gate.tryPark();
       expect(parking, JSON.stringify(guest.poolState())).toBe("parked");
       await service.close();
-      const restarted = await startHome();
+      let restarted = await startHome();
       expect((await store.getBrowserSessionForOwner(sessionId, task.userId))?.state).toBe("ready");
       expect(calls).toEqual(["attach", "pause"]);
-      if (activate) {
+      if (mode === "context") {
+        await expect(
+          restarted.service.signInTarget({ ownerId: task.userId, sessionId, tabId }),
+        ).resolves.toBeNull();
+        await expect(
+          restarted.service.readContextCandidate(task.userId, {
+            sessionId,
+            tabId: BrowserSurfaceIdSchema.parse(`bsf_${randomUUID()}`),
+          }),
+        ).rejects.toMatchObject({ code: "not_found" });
+        expect(calls).toEqual(["attach", "pause"]);
+        const reading = restarted.service.readContextCandidate(task.userId, { sessionId, tabId });
+        await Promise.race([
+          resumeSeen.promise,
+          reading.then(() => {
+            throw new Error("The context read completed before physical resume.");
+          }),
+        ]);
+        expect(calls).toEqual(["attach", "pause", "resume"]);
+        allowResume.resolve();
+        await expect(reading).resolves.toMatchObject({
+          sessionId,
+          tabId,
+          documentId: original?.documentId,
+        });
+        return;
+      }
+      if (mode === "activate") {
         const activating = restarted.service.pageTabs.activate(task.userId, tab!);
         await Promise.race([
           resumeSeen.promise,
@@ -458,21 +502,23 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
       }
       let open = true;
       const frames: Buffer[] = [];
-      const attaching = restarted.service.attach(
-        task.userId,
-        sessionId,
-        {
-          id: "restored-owner",
-          isOpen: () => open,
-          close: () => {
-            open = false;
+      const attachViewer = () =>
+        restarted.service.attach(
+          task.userId,
+          sessionId,
+          {
+            id: "restored-owner",
+            isOpen: () => open,
+            close: () => {
+              open = false;
+            },
+            send: async (data, binary) => {
+              if (binary && Buffer.isBuffer(data)) frames.push(data);
+            },
           },
-          send: async (data, binary) => {
-            if (binary && Buffer.isBuffer(data)) frames.push(data);
-          },
-        },
-        { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
-      );
+          { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
+        );
+      let attaching = attachViewer();
       void attaching.catch(() => undefined);
       await Promise.race([
         resumeSeen.promise,
@@ -481,7 +527,7 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
         }),
       ]);
       expect(calls).toEqual(["attach", "pause", "resume"]);
-      if (stopWaiting) {
+      if (mode === "stop") {
         await restarted.service.stop(task.userId, sessionId);
         await expect(attaching).rejects.toThrow("stopped this browser");
         expect(calls).toEqual(["attach", "pause", "resume"]);
@@ -496,6 +542,21 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false, activate =
         return;
       }
       allowResume.resolve();
+      if (mode === "recover-adoption") {
+        await expect(attaching).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+        const interrupted = guest.poolState();
+        expect(interrupted).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
+        expect(await readBrowserPoolSlot(database, task.runnerId)).toMatchObject({
+          phase: "waking",
+          epoch: 1,
+          attachmentGeneration: 2,
+        });
+        await restarted.service.close();
+        restarted = await startHome();
+        attaching = attachViewer();
+        expect(calls).toEqual(["attach", "pause", "resume"]);
+        expect(guest.poolState()?.adoption?.until).toBe(interrupted?.adoption?.until);
+      }
       const viewer = await attaching;
       try {
         await viewer.handle(

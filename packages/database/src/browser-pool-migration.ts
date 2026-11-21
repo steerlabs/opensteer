@@ -13,6 +13,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       epoch integer not null check (epoch > 0),
       intent_sequence integer not null check (intent_sequence > 0),
       intent_id uuid not null,
+      attachment_generation integer not null check (attachment_generation > 0),
       phase text not null check (phase in ('running', 'preparing', 'parked', 'waking')),
       retained jsonb
     )

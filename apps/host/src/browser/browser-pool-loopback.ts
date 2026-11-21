@@ -152,18 +152,25 @@ export async function createLoopbackBrowserPool(input: {
     park,
     abortPark,
     wake: async (slot) => {
-      const waking = await advance(slot, "waking");
+      const waking = slot.phase === "waking" ? slot : await advance(slot, "waking");
       await drivePhysical(waking, "resume");
       const documents = state().result?.retained;
       if (!documents || !isDeepStrictEqual(waking.retained?.retained, documents))
         throw new BrowserPoolAdmissionClosed();
       const adoption = await driveRuntime(waking, "adopt", documents);
+      if (adoption.phase !== "adopting") throw new BrowserPoolAdmissionClosed();
+      const attaching = await advanceBrowserPoolSlot(database, waking, {
+        phase: "waking",
+        epoch: waking.epoch,
+        retained: waking.retained,
+        attachmentGeneration: waking.attachmentGeneration + 1,
+      });
       const admitted =
-        (await input.adopt?.(documents, adoption.fence, waking.intentSequence + 1)) ?? [];
+        (await input.adopt?.(documents, adoption.fence, attaching.attachmentGeneration)) ?? [];
       const completed = await driveRuntime(waking, "complete", admitted, adoption.fence.epoch);
       if (completed.phase !== "running" || !completed.adoption?.outcome)
         throw new BrowserPoolAdmissionClosed();
-      return advanceBrowserPoolSlot(database, waking, {
+      return advanceBrowserPoolSlot(database, attaching, {
         phase: "running",
         epoch: completed.fence.epoch,
         retained: { ...waking.retained, ...completed.adoption.outcome },
@@ -174,12 +181,17 @@ export async function createLoopbackBrowserPool(input: {
   const observed = await status();
   const runtimeState = state();
   if (slot) {
+    const resumingAdoption =
+      slot.phase === "waking" &&
+      runtimeState.intent?.id === slot.intentId &&
+      runtimeState.fence.epoch === slot.epoch + 1 &&
+      runtimeState.phase === "adopting";
     if (
       slot.runtimeId !== target.runtimeId ||
       slot.slotId !== target.slotId ||
       slot.term !== target.term ||
       slot.instanceId !== target.instanceId ||
-      slot.epoch !== runtimeState.fence.epoch
+      (slot.epoch !== runtimeState.fence.epoch && !resumingAdoption)
     )
       throw new BrowserPoolAdmissionClosed();
     if (slot.phase === "preparing") {
@@ -196,6 +208,16 @@ export async function createLoopbackBrowserPool(input: {
         observed.lastOperation !== `${slot.intentId}:pause` ||
         runtimeState.phase !== "sealed" ||
         runtimeState.intent?.id !== slot.intentId
+      )
+        throw new BrowserPoolAdmissionClosed();
+    } else if (slot.phase === "waking") {
+      const paused =
+        observed.phase === "paused" && observed.lastOperation === `${slot.intentId}:pause`;
+      const resumed =
+        observed.phase === "running" && observed.lastOperation === `${slot.intentId}:resume`;
+      if (
+        runtimeState.intent?.id !== slot.intentId ||
+        (resumingAdoption ? !resumed : runtimeState.phase !== "sealed" || (!paused && !resumed))
       )
         throw new BrowserPoolAdmissionClosed();
     } else if (
