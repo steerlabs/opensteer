@@ -31,6 +31,7 @@ import type {
 import { slotKey } from "../agent.js";
 import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
+import { requireEncryptedArray } from "./array.js";
 import { SlotNumbers } from "./slot-numbers.js";
 import {
   egressActive,
@@ -63,7 +64,10 @@ export interface FirecrackerDriverConfig {
   readonly savedRoot: string;
   /** The driver's own small state (slot numbers), on durable disk. */
   readonly stateDirectory: string;
-  /** Written by host setup when the array was created and keyed; gone after a reboot. */
+  /**
+   * On the array itself, written by host setup when the array was created and keyed; it is
+   * gone with the array's key after a reboot. The agent refuses to start without it.
+   */
   readonly arrayIdFile: string;
   readonly cgroupBase?: string | undefined;
   /** Each slot gets uid/gid `slotUidBase + index` for its VMM and `egressUidBase + index` for its proxy. */
@@ -86,6 +90,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   #cgroups!: GuestCgroups;
   #numbers!: SlotNumbers;
   #fingerprint = "";
+  #arrayId: string | undefined;
   readonly #egress = new Map<string, SlotEgress | undefined>();
   readonly #pendingEgress = new Map<string, Promise<void>>();
 
@@ -98,16 +103,16 @@ export class FirecrackerDriver implements HypervisorDriver {
     this.#cgroups = await GuestCgroups.delegate(this.#config.cgroupBase);
     this.#numbers = new SlotNumbers(this.#config.stateDirectory);
     await this.#numbers.load();
-    for (const directory of [this.#config.jailRoot, this.#config.savedRoot])
-      await mkdir(directory, { recursive: true, mode: 0o700 });
+    // Review G3: never write guest memory anywhere but the encrypted array.
+    this.#arrayId = await requireEncryptedArray(this.#config);
     await applyHostTable(this.#config.network);
     this.#fingerprint = await this.#computeFingerprint();
   }
 
   async incarnation(): Promise<string> {
     const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
-    const array = (await readFile(this.#config.arrayIdFile, "utf8").catch(() => "none")).trim();
-    return `${boot}/${array}`;
+    if (!this.#arrayId) throw new Error("The driver was not opened on the saved-state array.");
+    return `${boot}/${this.#arrayId}`;
   }
 
   async fingerprint(): Promise<string> {

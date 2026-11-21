@@ -193,7 +193,10 @@ EOF
 
 saved_state_array() {
     install -d -m 0700 "$RUN"
-    if mountpoint -q "$ARRAY"; then return; fi
+    if mountpoint -q "$ARRAY"; then
+        install -d -m 0700 -o root -g root "$ARRAY/jail" "$ARRAY/saved"
+        return
+    fi
     # shellcheck disable=SC2206
     local disks=($OSP_LOCAL_SSDS)
     [[ -e ${disks[0]} ]] || die "no Local SSD found at $OSP_LOCAL_SSDS"
@@ -218,8 +221,10 @@ saved_state_array() {
     install -d -m 0700 "$ARRAY"
     mount -o noatime,nosuid "/dev/mapper/$MAPPER" "$ARRAY"
     chmod 0700 "$ARRAY"
-    uuidgen > "$RUN/array-id"
-    chmod 0600 "$RUN/array-id"
+    # On the array itself: the agent checks its roots share this file's encrypted filesystem.
+    install -d -m 0700 -o root -g root "$ARRAY/jail" "$ARRAY/saved"
+    uuidgen > "$ARRAY/array-id"
+    chmod 0600 "$ARRAY/array-id"
     log "saved-state array ready on $device"
 }
 

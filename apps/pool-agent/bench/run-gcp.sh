@@ -79,7 +79,7 @@ agent() {
     "jailRoot": "/srv/opensteer-pool/jail",
     "savedRoot": "/srv/opensteer-pool/saved",
     "stateDirectory": "/var/lib/opensteer-pool/driver",
-    "arrayIdFile": "/run/opensteer-pool/array-id",
+    "arrayIdFile": "/srv/opensteer-pool/array-id",
     "slotUidBase": 200000,
     "egressUidBase": 300000,
     "egress": { "node": "/opt/opensteer-pool/node/bin/node", "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js" },
