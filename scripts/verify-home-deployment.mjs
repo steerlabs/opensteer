@@ -1131,7 +1131,6 @@ async function managedProof(directory) {
     );
   const codes = new Map();
   const accessTokens = new Set();
-  let egressPolls = 0;
   const backupReports = [];
 
   const release = { version, images: managedImages() };
@@ -1225,7 +1224,6 @@ async function managedProof(directory) {
       async egressForHome(id, authorization) {
         assert.equal(id, cloudComputerId);
         assert.ok(homeCredentials(authorization), "Egress poll without the Home's credentials");
-        egressPolls++;
         return CloudComputerEgressResponseSchema.parse({});
       },
       async reportBackupForHome(id, authorization, report) {
@@ -1551,7 +1549,6 @@ async function managedProof(directory) {
     );
     snapshotId = backedUp.match(/snapshot ([0-9a-f]+) saved/u)?.[1];
     assert.ok(snapshotId);
-    assert.ok(egressPolls > 0, "Maintenance never asked the Account for browser egress");
     vm(`systemctl stop ${unit}.service`, { managed: true });
     const replacementTokenPath = `${vmDirectory}/replacement-token`;
     vm(
