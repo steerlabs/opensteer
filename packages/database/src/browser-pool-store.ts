@@ -436,7 +436,11 @@ export async function finishBrowserPoolRelease(
   );
 }
 
-/** Journal row written before a controller call is sent. */
+/**
+ * Journal row written before a controller call is sent. With `closeOpen`, every call still open
+ * for this Runner is closed in the same write, with what the status read showed: a call that
+ * replaces the guest leaves nothing for a later recovery to replay against the new one.
+ */
 export async function recordBrowserPoolControllerCall(
   database: Kysely<DatabaseSchema>,
   call: {
@@ -448,12 +452,38 @@ export async function recordBrowserPoolControllerCall(
     readonly kind: string;
     readonly request: Readonly<Record<string, unknown>>;
   },
+  closeOpen?: Readonly<Record<string, unknown>>,
 ): Promise<void> {
-  await database
-    .insertInto("browserPoolControllerCalls")
-    .values({ ...call, result: null, settledAt: null })
-    .onConflict((conflict) => conflict.column("id").doNothing())
-    .execute();
+  const insert = (executor: Kysely<DatabaseSchema>) =>
+    executor
+      .insertInto("browserPoolControllerCalls")
+      .values({ ...call, result: null, settledAt: null })
+      .onConflict((conflict) => conflict.column("id").doNothing())
+      .execute();
+  if (!closeOpen) {
+    await insert(database);
+    return;
+  }
+  await database.transaction().execute(async (tx) => {
+    const open = await tx
+      .selectFrom("browserPoolControllerCalls")
+      .select("id")
+      .where("runnerId", "=", call.runnerId)
+      .where("settledAt", "is", null)
+      .orderBy("id")
+      .forUpdate()
+      .execute();
+    for (const { id } of open)
+      await tx
+        .updateTable("browserPoolControllerCalls")
+        .set({
+          result: { id, applied: false, reason: "replaced", status: closeOpen },
+          settledAt: new Date(),
+        })
+        .where("id", "=", id)
+        .execute();
+    await insert(tx);
+  });
 }
 
 export async function settleBrowserPoolControllerCall(

@@ -67,7 +67,12 @@ class Crash {
 
 async function poolFixture(
   key: string,
-  options: { adoptionWindowMs?: number; now?: () => number } = {},
+  options: {
+    adoptionWindowMs?: number;
+    now?: () => number;
+    /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
+    freshGuests?: boolean;
+  } = {},
 ) {
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
@@ -76,20 +81,35 @@ async function poolFixture(
     slotId: `slot-${key}`,
     term: 1,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.freshGuests ? { freshGuests: true } : {}),
   });
   const page = new FakePage();
   const verifier = new FakeTicketVerifier();
-  const runtime = new BrowserRuntime({
-    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
-    runtimeId: "pool-runtime",
-    sessionFilesRoot: testSessionFilesRoot(),
-    ticketVerifier: verifier,
-    pool: {
-      controllerKey: controller.publicKey,
-      probePage: async () => [],
-      ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
-    },
-  });
+  const newRuntime = () =>
+    new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+      runtimeId: "pool-runtime",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+      pool: {
+        controllerKey: controller.publicKey,
+        probePage: async () => [],
+        ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
+      },
+    });
+  let runtime = newRuntime();
+  if (options.freshGuests) {
+    const apply = controller.apply.bind(controller);
+    controller.apply = async (call) => {
+      const result = await apply(call);
+      if (call.kind === "start" && result.applied) {
+        const old = runtime;
+        runtime = newRuntime();
+        await old.shutdown().catch(() => undefined);
+      }
+      return result;
+    };
+  }
   const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
   const claims = freshClaims({
     sessionId,
@@ -252,7 +272,9 @@ async function poolFixture(
     task,
     database,
     controller,
-    runtime,
+    get runtime() {
+      return runtime;
+    },
     page,
     sessionId,
     home,
@@ -1201,6 +1223,52 @@ it("ages out finished calls, the last intent's included once the slot runs again
       .where("settledAt", "is not", null)
       .execute();
     await vi.waitFor(async () => expect(await calls()).toEqual([]), { timeout: 3_000 });
+  } finally {
+    await f.close();
+  }
+});
+
+it("closes an open resume when a discard replaces the guest, so no later recovery replays it", async () => {
+  const f = await poolFixture("resume-ack-lost", { freshGuests: true });
+  try {
+    // Every acknowledgement of the resume is lost: its row stays open while the guest resumed.
+    const settle = async (id: string, result: Readonly<Record<string, unknown>>) => {
+      const row = await f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select("kind")
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+      if (row.kind === "resume") throw new Error("The journal acknowledgement was lost.");
+      await f.database
+        .updateTable("browserPoolControllerCalls")
+        .set({ result, settledAt: new Date() })
+        .where("id", "=", id)
+        .where("settledAt", "is", null)
+        .execute();
+    };
+    const home = f.home(undefined, f.controller, { testHooks: { settleCall: settle } });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const woken = await home.gate.reserve(AbortSignal.timeout(15_000));
+    woken.release();
+    // The ladder reached its last rung: a fresh guest replaced the resumed one.
+    expect(f.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+    const open = () =>
+      f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select(["kind", "result"])
+        .where("runnerId", "=", f.task.runnerId)
+        .where("settledAt", "is", null)
+        .execute();
+    expect(await open()).toEqual([]);
+    // A later Home's recovery has nothing to replay against the new guest: still one guest.
+    home.close();
+    const next = f.home();
+    await next.recover();
+    expect(f.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+    expect(next.gate.phase).toBe("open");
+    expect(await open()).toEqual([]);
   } finally {
     await f.close();
   }

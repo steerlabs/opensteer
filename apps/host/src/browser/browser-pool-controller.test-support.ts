@@ -29,7 +29,17 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
   #now: () => number;
   unreachable = false;
 
-  constructor(options: { slotId: string; term: number; retentionMs?: number; now?: () => number }) {
+  /** Each started guest has a new runtime of its own, which holds no fence before its install. */
+  readonly #freshGuests: boolean;
+
+  constructor(options: {
+    slotId: string;
+    term: number;
+    retentionMs?: number;
+    now?: () => number;
+    freshGuests?: boolean;
+  }) {
+    this.#freshGuests = options.freshGuests === true;
     const keys = generateKeyPairSync("ed25519");
     this.publicKey = keys.publicKey;
     this.#privateKey = keys.privateKey;
@@ -200,7 +210,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
         const signed = this.#signed({
           kind: "install",
           fence: this.#fence(),
-          expect: this.#installed,
+          expect: this.#freshGuests ? null : this.#installed,
         });
         this.#installed = this.#fence();
         result = { id: call.id, applied: true, status: this.#status, ...signed };

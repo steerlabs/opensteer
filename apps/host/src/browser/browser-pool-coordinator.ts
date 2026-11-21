@@ -311,7 +311,7 @@ export class BrowserPoolCoordinator {
       // status that reads stopped is evidence.
       const status = await this.#status();
       if (status.phase !== "stopped") {
-        const stopped = await this.#call(slot, "stop", status);
+        const stopped = await this.#call(slot, "stop", status, true);
         if (!stopped.applied && stopped.status.phase !== "stopped")
           throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
       }
@@ -396,10 +396,12 @@ export class BrowserPoolCoordinator {
     return this.#journal.status(this.#options.slotId, this.#options.term);
   }
 
+  /** `replacing`: this call replaces the guest, and closes every open journal row with `status`. */
   async #call(
     slot: BrowserPoolSlot | undefined,
     kind: "start" | "pause" | "resume" | "stop",
     status: BrowserPoolPhysicalStatus,
+    replacing = false,
   ): Promise<BrowserPoolControllerResult> {
     return this.#journal.call(
       {
@@ -412,6 +414,7 @@ export class BrowserPoolCoordinator {
           : {}),
       },
       slot?.intentId ?? null,
+      replacing ? status : undefined,
     );
   }
 
@@ -810,12 +813,15 @@ export class BrowserPoolCoordinator {
 
   async #startFresh(slot: BrowserPoolSlot, reason: string): Promise<void> {
     let status = await this.#status();
+    // The first call of a replacement closes every open row: nothing old is replayed later.
+    let replacing = true;
     if (status.phase !== "stopped") {
-      const stopped = await this.#call(slot, "stop", status);
+      const stopped = await this.#call(slot, "stop", status, replacing);
+      replacing = false;
       if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
       status = stopped.status;
     }
-    const started = await this.#call(slot, "start", status);
+    const started = await this.#call(slot, "start", status, replacing);
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
     const { state } = await this.#deliver(started.control, started.signature);
@@ -966,12 +972,14 @@ export class BrowserPoolCoordinator {
    * the controller reports is stopped and a fresh one started; its fence is the controller's.
    */
   async #install(status: BrowserPoolPhysicalStatus) {
+    let replacing = true;
     if (status.phase !== "stopped") {
-      const stopped = await this.#call(undefined, "stop", status);
+      const stopped = await this.#call(undefined, "stop", status, replacing);
+      replacing = false;
       if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
       status = stopped.status;
     }
-    const started = await this.#call(undefined, "start", status);
+    const started = await this.#call(undefined, "start", status, replacing);
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
     const { state: installed } = await this.#deliver(started.control, started.signature);

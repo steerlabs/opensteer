@@ -84,9 +84,11 @@ export function expectationOf(status: BrowserPoolPhysicalStatus): BrowserPoolPhy
 }
 
 /**
- * Every call has its own journal row, written before it is sent and settled with the stored
- * result. A lost request and a lost reply are told apart by asking for the stored result; an
- * open row is delivered again with the same id, never with a new one.
+ * Rule I: every call that changes the guest carries its expected predecessor and has its own
+ * journal row, written before it is sent and settled with the stored result. A lost request and a
+ * lost reply are told apart by asking for the stored result; an open row is delivered again with
+ * the same id, never with a new one. Status and result reads carry no predecessor and get no
+ * journal row: they change nothing (the lead's exception to rule I).
  */
 export class BrowserPoolControllerJournal {
   readonly #database: Kysely<DatabaseSchema>;
@@ -119,20 +121,30 @@ export class BrowserPoolControllerJournal {
     });
   }
 
+  /**
+   * Journals the call, then sends it. `closeOpen` is the status the caller read before a call
+   * that replaces the guest (a discard, a restart, a removal): every open row is closed with it
+   * in the same write.
+   */
   async call(
     input: Omit<BrowserPoolControllerCall, "id">,
     intentId: string | null,
+    closeOpen?: BrowserPoolPhysicalStatus,
   ): Promise<BrowserPoolControllerResult> {
     const call: BrowserPoolControllerCall = { id: randomUUID(), ...input };
-    await recordBrowserPoolControllerCall(this.#database, {
-      id: call.id,
-      runnerId: this.#runnerId,
-      slotId: call.slotId,
-      term: call.term,
-      intentId,
-      kind: call.kind,
-      request: call as unknown as Record<string, unknown>,
-    });
+    await recordBrowserPoolControllerCall(
+      this.#database,
+      {
+        id: call.id,
+        runnerId: this.#runnerId,
+        slotId: call.slotId,
+        term: call.term,
+        intentId,
+        kind: call.kind,
+        request: call as unknown as Record<string, unknown>,
+      },
+      closeOpen as unknown as Record<string, unknown> | undefined,
+    );
     return this.#deliver(call);
   }
 
@@ -154,10 +166,13 @@ export class BrowserPoolControllerJournal {
     try {
       result = await bounded(this.#controller.apply(call));
     } catch (error) {
-      // A lost reply has a stored result; a lost request has none and is sent again.
-      result = await bounded(this.#controller.result(call.slotId, call.term, call.id)).catch(
-        () => null,
-      );
+      // A lost reply has a stored result; a lost request has none and is sent again. A lookup
+      // that failed is not knowing, never absence: the call fails and is settled later by id.
+      try {
+        result = await bounded(this.#controller.result(call.slotId, call.term, call.id));
+      } catch {
+        throw error;
+      }
       if (!result) {
         try {
           result = await bounded(this.#controller.apply(call));
