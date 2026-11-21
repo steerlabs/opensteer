@@ -63,13 +63,16 @@ describe("E2: a step that timed out is drained before its slot's lane is release
     f.driver.sockets.delete(slotId);
     let release!: () => void;
     f.driver.gate("reviveProxy", new Promise<void>((resolve) => (release = resolve)));
+    let gaveUp = false;
     const starting = f.call("start").then(
-      (result) => result,
-      (error: unknown) => error,
+      (result) => ((gaveUp = true), result),
+      (error: unknown) => ((gaveUp = true), error),
     );
     await expect.poll(() => f.driver.operations.includes(`reviveProxy:${slotId}`)).toBe(true);
-    // Well past the step's deadline: the start has given up on the revive.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Past the step's deadline: the start gave up on the revive (it answered, or it drains).
+    await vi.waitFor(() =>
+      expect(gaveUp || f.events.some((event) => event.event === "step.draining")).toBe(true),
+    );
     const deleting = f.agent.agent.deleteSlot(slotId);
     // The delete removes the slot now if nothing holds the slot's lane any more.
     await vi
