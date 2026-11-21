@@ -1291,7 +1291,7 @@ export class SurfaceLedger {
       (own) =>
         options.surfaceId && this.savedLineageId && this.context.sessionRestore
           ? this.context.sessionRestore
-              .claim(options.surfaceId, undefined, own)
+              .claim(options.surfaceId, undefined, own, this.savedLineageId)
               .then((restored) => restored ?? this.context.createPage({ own }))
           : this.context.createPage({ own }),
     );

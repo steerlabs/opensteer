@@ -1159,8 +1159,9 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     if (lifecycle && profileDirectory) {
       this.sessionRestore = {
-        claim: (surfaceId, url, own) => this.claimSavedRestoredTab(surfaceId, url, own),
-        reconcile: (savedTabIds) => this.reconcileSavedTabs(savedTabIds),
+        claim: (surfaceId, url, own, lineageId) =>
+          this.claimSavedRestoredTab(surfaceId, url, own, lineageId),
+        reconcile: (savedTabIds, lineageId) => this.reconcileSavedTabs(savedTabIds, lineageId),
         trackSavedTab: (surfaceId, page, lineageId) => this.trackSavedTab(surfaceId, page, lineageId),
         flush: () => this.flushSavedTabs(),
       };
@@ -1295,10 +1296,13 @@ class PlaywrightContextHandle implements BrowserContext {
     return removed;
   }
 
-  private async reconcileSavedTabs(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void> {
+  private async reconcileSavedTabs(
+    savedTabIds: ReadonlySet<BrowserSurfaceId>,
+    lineageId?: string,
+  ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory) return;
     for (const [surfaceId, entry] of [...this.restoredBySurfaceId.entries()]) {
-      if (savedTabIds.has(surfaceId)) continue;
+      if (savedTabIds.has(surfaceId) && (!lineageId || entry.lineageId === lineageId)) continue;
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
@@ -1312,11 +1316,15 @@ class PlaywrightContextHandle implements BrowserContext {
     surfaceId: BrowserSurfaceId,
     url?: string,
     own?: (page: BrowserPage) => void,
+    lineageId?: string,
   ): Promise<BrowserPage | null> {
     const entry = this.restoredBySurfaceId.get(surfaceId);
     if (!entry || !this.lifecycle) return null;
     this.restoredBySurfaceId.delete(surfaceId);
-    if (url !== undefined && entry.tab.url !== url) {
+    if (
+      (url !== undefined && entry.tab.url !== url) ||
+      (lineageId !== undefined && entry.lineageId !== lineageId)
+    ) {
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
       if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
       this.restoredPagesByTabId.delete(entry.tab.tabId);

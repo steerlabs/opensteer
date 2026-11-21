@@ -177,22 +177,20 @@ export function matchRestoredTabs(
   const excludedTabIds = new Set<number>();
   const consumedSidecarIndices = new Set<number>();
   const sameLength = orderedRestored.length === orderedSidecar.length;
+  const stripUrlsEqual =
+    sameLength && orderedRestored.every((tab, index) => tab.url === orderedSidecar[index]!.url);
 
   // Pass 1: exact strip position + URL match on the UNFILTERED sidecar.
   const minLength = Math.min(orderedRestored.length, orderedSidecar.length);
-  let prefixAligned = true;
   for (let i = 0; i < minLength; i++) {
     const restored = orderedRestored[i]!;
     const sidecar = orderedSidecar[i]!;
-    if (restored.url !== sidecar.url) {
-      prefixAligned = false;
-      continue;
-    }
+    if (restored.url !== sidecar.url) continue;
     const isDuplicateUrl =
       (sidecarUrlCounts.get(sidecar.url) ?? 0) > 1 ||
       (restoredUrlCounts.get(restored.url) ?? 0) > 1;
-    // Duplicate URLs require an unshifted strip so a SIGKILL insertion cannot swap tabs.
-    if (isDuplicateUrl && (!sameLength || !prefixAligned)) continue;
+    // Duplicate URLs require the entire strip to match URL-for-URL so a shift never swaps tabs.
+    if (isDuplicateUrl && !stripUrlsEqual) continue;
     consumedSidecarIndices.add(i);
     const eligible =
       (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&

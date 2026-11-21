@@ -466,3 +466,76 @@ it("recovers session tabs including duplicate URLs after a SIGKILL crash", async
     "step-4-confirmed",
   );
 });
+
+it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home while down", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-f5-dup-delete-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const dupUrl = `${server.originForSite(1)}/article`;
+
+  const browser1 = await launcher.launch(request);
+  const ledger1 = new SurfaceLedger(browser1.context, { savedLineageId: "profile-f5" });
+  await ledger1.start();
+
+  await ledger1.openSurface({ surfaceId: surfDupA });
+  const aLive = ledger1.binding(surfDupA)!;
+  await aLive.cdp.send("Page.navigate", { url: dupUrl });
+  await waitLoaded(aLive.cdp, "/article");
+  await evalValue(aLive.cdp, "window.scrollTo(0, 1100)");
+
+  await ledger1.openSurface({ surfaceId: surfDupB });
+  const bLive = ledger1.binding(surfDupB)!;
+  await bLive.cdp.send("Page.navigate", { url: dupUrl });
+  await waitLoaded(bLive.cdp, "/article");
+  await evalValue(bLive.cdp, "window.scrollTo(0, 2900)");
+
+  await browser1.context.sessionRestore!.flush!();
+  await vi.waitFor(
+    async () => {
+      const files = await readdir(path.join(directory, "Default", "Sessions")).catch(() => []);
+      const sf = files.filter((n) => n.startsWith("Session_"));
+      expect(sf.length).toBeGreaterThan(0);
+      const sizes = await Promise.all(
+        sf.map((n) => stat(path.join(directory, "Default", "Sessions", n)).then((s) => s.size)),
+      );
+      expect(Math.max(...sizes)).toBeGreaterThan(0);
+    },
+    { timeout: 10_000, interval: 100 },
+  );
+  await ledger1.close();
+  await browser1.close();
+
+  // Cold restart with ONLY surfDupB remaining in Home (surfDupA deleted while down).
+  const browser2 = await launcher.launch(request);
+  cleanup.push(() => browser2.close());
+  await browser2.context.sessionRestore!.reconcile(
+    new Set<BrowserSurfaceId>([surfDupB]),
+    "profile-f5",
+  );
+
+  const internal2 = browser2 as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const invAfter = await internal2.contextHandle.lifecycle.inventory();
+  expect(invAfter.filter((t) => t.url === dupUrl)).toHaveLength(1);
+
+  const ledger2 = new SurfaceLedger(browser2.context, { savedLineageId: "profile-f5" });
+  await ledger2.start();
+  cleanup.push(() => ledger2.close());
+
+  await ledger2.openSurface({ surfaceId: surfDupB });
+  const bRestored = ledger2.binding(surfDupB)!;
+  expect(bRestored.page.restoredFromSession).toBe(true);
+  await waitLoaded(bRestored.cdp, "/article");
+  await vi.waitFor(
+    async () => expect(await evalValue<number>(bRestored.cdp, "window.scrollY")).toBe(2900),
+    { timeout: 3_000, interval: 50 },
+  );
+});

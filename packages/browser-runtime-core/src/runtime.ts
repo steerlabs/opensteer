@@ -963,9 +963,9 @@ export class BrowserRuntime implements NativePresentationSource {
               restoreSurfaceId ?? null,
               "open-failed",
               (own) =>
-                restoreSurfaceId && context.sessionRestore
+                restoreSurfaceId && savedLineageId && context.sessionRestore
                   ? context.sessionRestore
-                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own)
+                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own, savedLineageId)
                       .then((restored) => restored ?? context.createPage({ own }))
                   : context.createPage({ own }),
             );
@@ -975,13 +975,13 @@ export class BrowserRuntime implements NativePresentationSource {
           if (createdHost && host.browser.context.sessionRestore) {
             const sessionRestore = host.browser.context.sessionRestore;
             const targetHost = host;
-            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId) {
+            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId && savedLineageId) {
               const fallbackKeep = new Set<BrowserSurfaceId>([claims.initialSurfaceId]);
               targetHost.restoreReconcileTimer = setTimeout(() => {
                 targetHost.restoreReconcileTimer = undefined;
                 if (targetHost.restoredReconciled) return;
                 targetHost.restoredReconciled = true;
-                void sessionRestore.reconcile(fallbackKeep).catch(() => undefined);
+                void sessionRestore.reconcile(fallbackKeep, savedLineageId).catch(() => undefined);
               }, 5_000);
               targetHost.restoreReconcileTimer.unref?.();
             } else {
@@ -1123,7 +1123,9 @@ export class BrowserRuntime implements NativePresentationSource {
         }
         if (!stateHost.restoredReconciled) {
           stateHost.restoredReconciled = true;
-          await hostBrowser.context.sessionRestore?.reconcile(savedTabIds);
+          const lineageId =
+            claims.identity.kind === "profile-local" ? claims.identity.binding.profileId : undefined;
+          await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
         }
       },
       loginAuthority: this.loginAuthority,
