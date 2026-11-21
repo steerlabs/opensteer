@@ -190,7 +190,7 @@ var errNoField = wire.Fail(wire.AccessibilityUnavailable)
 func (s *screenSession) readFocus(ctx context.Context) (focusedField, error) {
 	backend, ok := s.backend.(editingBackend)
 	if !ok {
-		return focusedField{}, errNoField
+		return focusedField{}, wire.Fail(wire.AccessibilityUnavailable)
 	}
 	focus, err := backend.Focus(ctx)
 	if err != nil {
@@ -203,7 +203,7 @@ func (s *screenSession) readFocus(ctx context.Context) (focusedField, error) {
 		return focusedField{}, errSensitive
 	}
 	if focus.Secure != "no" {
-		return focusedField{}, errNoField
+		return focusedField{}, wire.Fail(wire.AccessibilityUnavailable)
 	}
 	if focus.Editable == "no" {
 		return focusedField{}, errNoField

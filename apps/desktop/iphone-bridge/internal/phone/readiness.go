@@ -76,10 +76,10 @@ func (s *Session) capabilities() wire.Capabilities {
 		result.IndexedTargets = reasonPointer(wire.GeometryUnavailable)
 	}
 	if s.mediaAvailable {
-		result.LiveVideo = available(true, deviceInfoService, DisplayService)
-		if result.LiveVideo == nil && s.state.Rotation == nil {
-			result.LiveVideo = reasonPointer(wire.GeometryUnavailable)
-		}
+		// Opening a Live View stream stays available while sleeping or locked so a
+		// person can open a shielded view and wake the phone; pixels remain withheld
+		// until displayPrivacy sees an unlocked, awake, non-Opensteer screen.
+		result.LiveVideo = available(false, deviceInfoService, DisplayService)
 	}
 	result.Wake = available(false, deviceInfoService, hidService)
 	if result.Wake == nil {

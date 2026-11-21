@@ -169,7 +169,7 @@ func TestDisplayCapabilitiesFollowServicesAndPrivacyState(t *testing.T) {
 	s.state.Display = "off"
 	s.state.Lock = "locked"
 	caps = s.capabilities()
-	if caps.Wake != nil || caps.LiveVideo == nil || *caps.LiveVideo != wire.PhoneLocked {
-		t.Fatal("capabilities do not admit wake while withholding locked content")
+	if caps.Wake != nil || caps.LiveVideo != nil || caps.Act == nil || *caps.Act != wire.PhoneLocked || caps.Clear == nil || *caps.Clear != wire.PhoneLocked {
+		t.Fatalf("sleeping/locked capabilities should allow opening a shielded view and wake while withholding act/clear: %+v", caps)
 	}
 }

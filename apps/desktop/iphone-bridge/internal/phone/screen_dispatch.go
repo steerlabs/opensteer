@@ -228,8 +228,8 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 				s.hideDisplay("protected", "target-unavailable")
 				return nil, err
 			}
-			f := s.foreground(ctx)
-			s.applyPrivacy(state, f)
+			f, fgKnown := s.foregroundChecked(ctx)
+			s.applyPrivacy(state, f, fgKnown)
 			if f != nil && f.AppID == opensteerAppID {
 				return nil, wire.Fail(wire.Unsupported)
 			}

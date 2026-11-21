@@ -71,7 +71,10 @@ func (p pasteboard) set(ctx context.Context, items []interface{}, guard func() e
 	if err != nil {
 		return clipboardSnapshot{}, err
 	}
-	snapshot, _ := decodeClipboard(reply)
+	snapshot, err := decodeClipboard(reply)
+	if err != nil {
+		return clipboardSnapshot{}, err
+	}
 	return snapshot, nil
 }
 func decodeClipboard(reply map[string]interface{}) (clipboardSnapshot, error) {
@@ -152,29 +155,36 @@ func pasteTransaction(ctx context.Context, clipboard phonePasteboard, text strin
 	if err := guard(); err != nil {
 		return err
 	}
-	// Never overwrite a confidential or unreadable clipboard that cannot be restored.
+	// Never overwrite a confidential, unreadable, or untracked clipboard that cannot be restored.
 	previous, err := clipboard.pull(ctx)
 	if err != nil {
 		return err
 	}
-	items := textClipboard(text)
-	staged, err := clipboard.set(ctx, items, guard)
-	if err != nil {
-		return err
+	if !previous.hasChange {
+		return wire.Fail(wire.UnsupportedText)
 	}
 	restoreItems := previous.items
 	if restoreItems == nil {
 		restoreItems = []interface{}{}
 	}
-	if staged.hasChange && previous.hasChange && staged.change == previous.change+1 {
-		defer func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-			defer cancel()
-			current, err := clipboard.pull(cleanup)
-			if err == nil && current.hasChange && current.change == staged.change && reflect.DeepEqual(current.items, items) {
-				_, _ = clipboard.set(cleanup, restoreItems, func() error { return nil })
-			}
-		}()
+	items := textClipboard(text)
+	restore := func(expectedChange uint64) {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		current, pullErr := clipboard.pull(cleanup)
+		if pullErr == nil && current.hasChange && current.change == expectedChange && reflect.DeepEqual(current.items, items) {
+			_, _ = clipboard.set(cleanup, restoreItems, func() error { return nil })
+		}
 	}
+	staged, err := clipboard.set(ctx, items, guard)
+	if err != nil {
+		restore(previous.change + 1)
+		return err
+	}
+	if !staged.hasChange || staged.change != previous.change+1 {
+		restore(previous.change + 1)
+		return wire.Fail(wire.UnsupportedText)
+	}
+	defer restore(staged.change)
 	return insert()
 }

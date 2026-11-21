@@ -26,6 +26,7 @@ type runtimeScreen struct {
 	dials       int
 	wakeOnPress bool
 	focus       []focusedField
+	focusErr    error
 	clipboard   *runtimeClipboard
 }
 
@@ -45,8 +46,11 @@ func (f *runtimeScreen) HID(context.Context) (xpcChannel, error) {
 	return f.channel, nil
 }
 func (f *runtimeScreen) Focus(context.Context) (focusedField, error) {
+	if f.focusErr != nil {
+		return focusedField{}, f.focusErr
+	}
 	if len(f.focus) == 0 {
-		return focusedField{}, nil
+		return focusedField{}, errNoField
 	}
 	value := f.focus[0]
 	f.focus = f.focus[1:]
@@ -87,10 +91,12 @@ func TestPersistentHIDReuseAndReconnect(t *testing.T) {
 }
 
 type runtimeClipboard struct {
-	current    clipboardSnapshot
-	writes     int
-	pulls      int
-	concurrent bool
+	current         clipboardSnapshot
+	writes          int
+	pulls           int
+	concurrent      bool
+	omitSetChange   bool
+	setErrAfterSave error
 }
 
 func (c *runtimeClipboard) pull(context.Context) (clipboardSnapshot, error) {
@@ -108,7 +114,14 @@ func (c *runtimeClipboard) set(_ context.Context, items []interface{}, guard fun
 	c.current.items = items
 	c.current.change++
 	c.writes++
-	return c.current, nil
+	if c.setErrAfterSave != nil && c.writes == 1 {
+		return clipboardSnapshot{}, c.setErrAfterSave
+	}
+	reply := c.current
+	if c.omitSetChange && c.writes == 1 {
+		reply.hasChange = false
+	}
+	return reply, nil
 }
 
 func TestHybridTypingAndClear(t *testing.T) {
@@ -242,6 +255,7 @@ type fixtureMedia struct {
 	frame     *MediaFrame
 	profile   [2]int
 	hidden    []string
+	resumes   int
 	refreshes int
 	stopped   bool
 }
@@ -262,12 +276,13 @@ func (f *fixtureMedia) UpdateDemand(w, h int)                         { f.profil
 func (f *fixtureMedia) RequestKeyframe()                              { f.refreshes++ }
 func (f *fixtureMedia) LatestFrame(time.Duration) (*MediaFrame, bool) { return f.frame, f.frame != nil }
 func (f *fixtureMedia) SetPrivacyHidden(_ string, reason string)      { f.hidden = append(f.hidden, reason) }
-func (f *fixtureMedia) ResumeVisible(uint64, int)                     {}
+func (f *fixtureMedia) ResumeVisible(uint64, int)                     { f.resumes++ }
 func (f *fixtureMedia) Stop(context.Context) error                    { f.stopped = true; return f.socket.Close() }
 
 func TestDisplayLifecycleAndOwnerInput(t *testing.T) {
 	ctx := context.Background()
 	screen, backend, _ := screenFixture(t)
+	screen.backend = &runtimeScreen{fixtureScreen: backend}
 	root, err := os.MkdirTemp("/tmp", "ib-")
 	if err != nil {
 		t.Fatal(err)
@@ -403,8 +418,90 @@ func TestDisplayStartsProtectedWithScreenOff(t *testing.T) {
 		t.Fatal("screen-off session started visible")
 	}
 	backend.state.Display = "on"
-	screen.applyPrivacy(backend.state, &Foreground{AppID: opensteerAppID})
+	screen.applyPrivacy(backend.state, &Foreground{AppID: opensteerAppID}, true)
 	if screen.display.hidden != "protected" || media.hidden[len(media.hidden)-1] != "opensteer-app" {
 		t.Fatal("Opensteer display was not protected")
+	}
+	// A failed foreground lookup (foregroundKnown=false) must never lift the privacy shield.
+	resumesBefore := media.resumes
+	screen.applyPrivacy(backend.state, nil, false)
+	if screen.display.hidden != "protected" || media.resumes != resumesBefore {
+		t.Fatal("unknown foreground app lifted the privacy shield")
+	}
+	// Even during observe, a failed foreground read keeps the stream protected.
+	backend.foregroundReads = []*Foreground{nil, nil, nil}
+	include := false
+	if _, err := screen.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay); err != nil {
+		t.Fatal(err)
+	}
+	if screen.display.hidden != "protected" || media.resumes != resumesBefore {
+		t.Fatal("observe with failed foreground lookup lifted the privacy shield")
+	}
+	// Once a foreground check succeeds and confirms a non-Opensteer app, the stream resumes.
+	screen.applyPrivacy(backend.state, &Foreground{AppID: "com.apple.Preferences"}, true)
+	if screen.display.hidden != "" || media.resumes != resumesBefore+1 {
+		t.Fatal("verified non-Opensteer foreground app did not resume display")
+	}
+}
+
+func TestKeysRefusedWhenFocusCheckFailsOrIsUnknown(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		focus    []focusedField
+		focusErr error
+	}{
+		{"accessibility-failure", nil, wire.Fail(wire.AccessibilityUnavailable)},
+		{"unknown-security", []focusedField{{ID: 1, Secure: "unknown", Editable: "yes"}, {ID: 1, Secure: "unknown", Editable: "yes"}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, b, p := screenFixture(t)
+			s.backend = &runtimeScreen{fixtureScreen: b, focus: tc.focus, focusErr: tc.focusErr}
+			defer s.close()
+			code, key := "KeyA", "a"
+			if err := s.ownerKeyEvent(ctx, wire.DisplayInputEvent{Kind: "key", Action: "down", Code: &code, Key: &key}, okay); err == nil {
+				t.Fatal("owner key bypassed failed/unknown focus check")
+			}
+			p.Actions = []wire.Action{{Kind: "key", Key: "a"}}
+			if _, err := s.perform(ctx, p, okay, noWait); err == nil {
+				t.Fatal("agent key bypassed failed/unknown focus check")
+			}
+			if len(b.channel.sent) != 0 {
+				t.Fatalf("refused keys sent %d HID events", len(b.channel.sent))
+			}
+		})
+	}
+}
+
+func TestPasteboardMissingChangeCountAndBadSetReply(t *testing.T) {
+	ctx := context.Background()
+	// Missing changeCount on initial pull must fail before touching the clipboard.
+	untrackedPull := &runtimeClipboard{current: clipboardSnapshot{items: textClipboard("original"), hasChange: false}}
+	inserted := false
+	err := pasteTransaction(ctx, untrackedPull, "staged", okay, func() error { inserted = true; return nil })
+	failure(t, err, wire.UnsupportedText, "not-started")
+	if untrackedPull.writes != 0 || inserted || !reflect.DeepEqual(untrackedPull.current.items, textClipboard("original")) {
+		t.Fatal("untracked saved clipboard was overwritten")
+	}
+
+	// Missing changeCount on set reply must refuse insert and restore the original clipboard.
+	untrackedSet := &runtimeClipboard{current: clipboardSnapshot{items: textClipboard("original"), change: 5, hasChange: true}, omitSetChange: true}
+	err = pasteTransaction(ctx, untrackedSet, "staged", okay, func() error { inserted = true; return nil })
+	failure(t, err, wire.UnsupportedText, "not-started")
+	if inserted || untrackedSet.writes != 2 || !reflect.DeepEqual(untrackedSet.current.items, textClipboard("original")) {
+		t.Fatalf("missing set changeCount skipped cleanup: inserted=%v writes=%d", inserted, untrackedSet.writes)
+	}
+
+	// Unreadable SET_REPLY in pasteboard.set must return an error, and pasteTransaction restores.
+	badSet := &fixtureChannel{reply: map[string]interface{}{"command": "SET_REPLY"}}
+	client := pasteboard{open: func(_ context.Context, _ string) (xpcChannel, error) { return badSet, nil }}
+	if _, err := client.set(ctx, textClipboard("staged"), okay); err == nil {
+		t.Fatal("pasteboard.set ignored unreadable reply")
+	}
+	failedSet := &runtimeClipboard{current: clipboardSnapshot{items: textClipboard("original"), change: 9, hasChange: true}, setErrAfterSave: wire.Fail(wire.UnsupportedText)}
+	err = pasteTransaction(ctx, failedSet, "staged", okay, func() error { inserted = true; return nil })
+	failure(t, err, wire.UnsupportedText, "not-started")
+	if inserted || failedSet.writes != 2 || !reflect.DeepEqual(failedSet.current.items, textClipboard("original")) {
+		t.Fatalf("failed set reply skipped cleanup: inserted=%v writes=%d", inserted, failedSet.writes)
 	}
 }

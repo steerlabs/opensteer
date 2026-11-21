@@ -2,6 +2,7 @@ package phone
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/danielpaulus/go-ios/ios/xpc"
@@ -125,7 +126,7 @@ func physicalKey(code, key string) uint64 {
 }
 func (s *screenSession) ownerKeyEvent(ctx context.Context, event wire.DisplayInputEvent, guard func() error) error {
 	if event.Action == "down" {
-		if _, err := s.readFocus(ctx); err != nil && err != errNoField {
+		if _, err := s.readFocus(ctx); err != nil && !errors.Is(err, errNoField) {
 			return err
 		}
 	}
@@ -360,8 +361,8 @@ func (s *screenSession) displayInput(ctx context.Context, d *displaySession, geo
 		s.hideDisplay("protected", "target-unavailable")
 		return err
 	}
-	f := s.foreground(ctx)
-	s.applyPrivacy(state, f)
+	f, fgKnown := s.foregroundChecked(ctx)
+	s.applyPrivacy(state, f, fgKnown)
 	if err := state.safe(); err != nil {
 		return err
 	}

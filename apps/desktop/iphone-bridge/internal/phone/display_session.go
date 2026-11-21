@@ -126,7 +126,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 	if err != nil {
 		return wire.DisplayStartResult{}, err
 	}
-	foreground := s.foreground(ctx)
+	foreground, foregroundKnown := s.foregroundChecked(ctx)
 	rotation := 0
 	if state.Rotation != nil {
 		rotation = *state.Rotation
@@ -168,7 +168,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 			_ = d.stop()
 		}
 	}()
-	if state, reason := displayPrivacy(state, foreground); state != "" {
+	if state, reason := displayPrivacy(state, foreground, foregroundKnown); state != "" {
 		d.hide(state, reason)
 	}
 	sock, err := d.pipeline.Start(ctx)
@@ -187,7 +187,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 	if err != nil {
 		return wire.DisplayStartResult{}, err
 	}
-	foreground = s.foreground(ctx)
+	foreground, foregroundKnown = s.foregroundChecked(ctx)
 	if err := guard(); err != nil {
 		return wire.DisplayStartResult{}, err
 	}
@@ -214,7 +214,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 		})
 	}
 	s.displayMu.Unlock()
-	s.applyPrivacy(state, foreground)
+	s.applyPrivacy(state, foreground, foregroundKnown)
 	go s.monitorDisplay(monitorCtx, d, fence)
 	started = true
 	return wire.DisplayStartResult{SocketPath: sock}, nil
@@ -280,9 +280,11 @@ func (s *screenSession) monitorDisplay(life context.Context, d *displaySession, 
 		ctx, cancel := context.WithTimeout(life, 750*time.Millisecond)
 		state, err := s.backend.State(ctx)
 		var f *Foreground
+		fgKnown := false
 		if err == nil && state.screenBlocker() == "" {
 			var foregroundErr error
 			f, foregroundErr = s.backend.Foreground(ctx)
+			fgKnown = foregroundErr == nil
 			if foregroundErr != nil {
 				// Fail closed when foreground app identity cannot be verified.
 				state = unknownState()
@@ -293,7 +295,7 @@ func (s *screenSession) monitorDisplay(life context.Context, d *displaySession, 
 			state = unknownState()
 		}
 		if life.Err() == nil {
-			s.applyPrivacySample(state, f, &sample)
+			s.applyPrivacySample(state, f, fgKnown, &sample)
 		}
 	}
 }
@@ -320,10 +322,10 @@ func (s *screenSession) invalidateObservation() {
 	s.observation = nil
 	s.mu.Unlock()
 }
-func (s *screenSession) applyPrivacy(state DeviceState, foreground *Foreground) {
-	s.applyPrivacySample(state, foreground, nil)
+func (s *screenSession) applyPrivacy(state DeviceState, foreground *Foreground, foregroundKnown bool) {
+	s.applyPrivacySample(state, foreground, foregroundKnown, nil)
 }
-func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foreground, revision *uint64) {
+func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foreground, foregroundKnown bool, revision *uint64) {
 	s.displayMu.Lock()
 	if revision != nil && *revision != s.privacyRevision {
 		s.displayMu.Unlock()
@@ -342,7 +344,7 @@ func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foregr
 		d.powerPending = false
 		d.powerPendingUntil = time.Time{}
 	}
-	hidden, reason := displayPrivacy(state, foreground)
+	hidden, reason := displayPrivacy(state, foreground, foregroundKnown)
 	if d.ending {
 		hidden, reason = "protected", "session-ended"
 	} else if d.powerPending {
@@ -371,7 +373,7 @@ func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foregr
 	}
 }
 
-func displayPrivacy(state DeviceState, foreground *Foreground) (string, string) {
+func displayPrivacy(state DeviceState, foreground *Foreground, foregroundKnown bool) (string, string) {
 	switch {
 	case state.Display == "off":
 		return "screen-off", "locked-screen"
@@ -381,6 +383,8 @@ func displayPrivacy(state DeviceState, foreground *Foreground) (string, string) 
 		return "protected", "target-unavailable"
 	case foreground != nil && foreground.AppID == opensteerAppID:
 		return "protected", "opensteer-app"
+	case !foregroundKnown:
+		return "protected", "target-unavailable"
 	}
 	return "", ""
 }
@@ -439,7 +443,8 @@ func (s *screenSession) setPower(ctx context.Context, state DeviceState, action 
 			}
 			s.displayMu.Unlock()
 			if fresh, stateErr := s.backend.State(ctx); stateErr == nil {
-				s.applyPrivacy(fresh, s.foreground(ctx))
+				f, fgKnown := s.foregroundChecked(ctx)
+				s.applyPrivacy(fresh, f, fgKnown)
 			}
 		}
 		return err
@@ -456,7 +461,8 @@ func (s *screenSession) setPower(ctx context.Context, state DeviceState, action 
 	for i := 0; i < 5; i++ {
 		state, err := s.backend.State(ctx)
 		if err == nil && state.Display == "on" {
-			s.applyPrivacy(state, s.foreground(ctx))
+			f, fgKnown := s.foregroundChecked(ctx)
+			s.applyPrivacy(state, f, fgKnown)
 			return nil
 		}
 		if err := wait(ctx, 100*time.Millisecond); err != nil {

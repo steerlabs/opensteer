@@ -155,8 +155,8 @@ func (s *screenSession) perform(ctx context.Context, p *wire.PerformParams, guar
 			s.hideDisplay("protected", "target-unavailable")
 			return fail(err)
 		}
-		foreground := s.foreground(ctx)
-		s.applyPrivacy(state, foreground)
+		foreground, fgKnown := s.foregroundChecked(ctx)
+		s.applyPrivacy(state, foreground, fgKnown)
 		if foreground != nil && foreground.AppID == opensteerAppID {
 			return fail(wire.Fail(wire.Unsupported))
 		}
@@ -220,7 +220,7 @@ func (s *screenSession) perform(ctx context.Context, p *wire.PerformParams, guar
 			}
 		case "key":
 			_, err = s.readFocus(ctx)
-			if err == nil || err == errNoField {
+			if err == nil || errors.Is(err, errNoField) {
 				err = s.pressKey(ctx, a.Key, a.Modifiers, check)
 			}
 		default:

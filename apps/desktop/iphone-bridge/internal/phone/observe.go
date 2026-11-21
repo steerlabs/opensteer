@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -108,18 +109,25 @@ func (n nativeScreen) Focus(ctx context.Context) (focusedField, error) {
 	if err := state.safe(); err != nil {
 		return focusedField{}, err
 	}
-	if foreground, _ := n.Foreground(ctx); foreground != nil && foreground.AppID == opensteerAppID {
+	foreground, err := n.Foreground(ctx)
+	if err != nil {
+		return focusedField{}, Classify(err, wire.NativeServiceFailed)
+	}
+	if foreground != nil && foreground.AppID == opensteerAppID {
 		return focusedField{}, errSensitive
 	}
 	focus, err := readHubFocus(ctx, n.dial, state.viewport, state.DisplayID)
 	if err != nil {
-		return focusedField{}, errNoField
+		if errors.Is(err, errNoField) {
+			return focusedField{}, errNoField
+		}
+		return focusedField{}, Classify(err, wire.AccessibilityUnavailable)
 	}
 	if focus.Secure == "yes" {
 		return focusedField{}, errSensitive
 	}
 	if focus.Secure != "no" {
-		return focusedField{}, errNoField
+		return focusedField{}, wire.Fail(wire.AccessibilityUnavailable)
 	}
 	return focus, nil
 }
@@ -287,13 +295,15 @@ func (s *screenSession) close() {
 	s.closeInput()
 }
 
-// foreground reads the front app for a label; failures only mean "unknown".
-func (s *screenSession) foreground(ctx context.Context) *Foreground {
+// foregroundChecked reads the front app and reports whether the lookup itself succeeded.
+// Privacy callers fail closed when known is false so a failed lookup cannot lift a shield.
+func (s *screenSession) foregroundChecked(ctx context.Context) (*Foreground, bool) {
 	f, err := s.backend.Foreground(ctx)
 	if err != nil {
 		slog.Debug("bridge.native-error", "reason", string(Classify(err, wire.NativeServiceFailed).Code))
+		return nil, false
 	}
-	return f
+	return f, true
 }
 
 // settleForeground keeps Opensteer's own screen private if any reading saw it.
@@ -329,14 +339,14 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 		return nil, err
 	}
 	if reason := before.screenBlocker(); reason != "" {
-		s.applyPrivacy(before, nil)
+		s.applyPrivacy(before, nil, false)
 		if err := guard(); err != nil {
 			return nil, err
 		}
 		return s.screenStatus(p, before, reason), nil
 	}
-	first := s.foreground(ctx)
-	s.applyPrivacy(before, first)
+	first, firstKnown := s.foregroundChecked(ctx)
+	s.applyPrivacy(before, first, firstKnown)
 	private := first != nil && first.AppID == opensteerAppID
 	var jpegData []byte
 	var g Geometry
@@ -364,9 +374,10 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	last := first
 	ax := unavailableAX()
 	if !private {
-		last = s.foreground(ctx)
+		var lastKnown bool
+		last, lastKnown = s.foregroundChecked(ctx)
 		if last != nil && last.AppID == opensteerAppID {
-			s.applyPrivacy(before, last)
+			s.applyPrivacy(before, last, lastKnown)
 		} else {
 			axCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			var snapshot AXSnapshot
@@ -387,7 +398,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	foreground := settleForeground(first, last, ax.Foreground)
 	private = foreground != nil && foreground.AppID == opensteerAppID
 	if private {
-		s.applyPrivacy(before, foreground)
+		s.applyPrivacy(before, foreground, true)
 		ax = unavailableAX()
 		if g.Width == 0 {
 			// Private observations retain only the minimum valid geometry.
@@ -419,16 +430,18 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 		s.hideDisplay("protected", "target-unavailable")
 		return nil, err
 	}
+	finalKnown := private
 	if !private {
-		final := s.foreground(ctx)
+		var final *Foreground
+		final, finalKnown = s.foregroundChecked(ctx)
 		if final != nil && final.AppID == opensteerAppID {
-			foreground, private, ax = final, true, unavailableAX()
+			foreground, private, ax, finalKnown = final, true, unavailableAX(), true
 		} else if final != nil && foreground != nil && final.AppID != foreground.AppID {
-			s.applyPrivacy(after, final)
+			s.applyPrivacy(after, final, finalKnown)
 			return nil, wire.Fail(wire.StaleObservation)
 		}
 	}
-	s.applyPrivacy(after, foreground)
+	s.applyPrivacy(after, foreground, finalKnown)
 	if err := guard(); err != nil {
 		return nil, err
 	}
