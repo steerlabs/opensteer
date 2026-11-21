@@ -561,7 +561,11 @@ async function homeStop(): Promise<void> {
   let liveViewSnapshots = 0;
   const liveClient = new HttpHostClient({
     baseUrl: home.origin,
-    fetch: (input, init) => home.fetch(input, init ?? {}),
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", home.origin);
+      return home.fetch(input, { ...init, headers });
+    },
     reconnectBaseDelayMs: 100,
     reconnectMaxDelayMs: 500,
     webSocketFactory: (url): WebSocketClient => {
