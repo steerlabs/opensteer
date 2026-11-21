@@ -39,6 +39,8 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   const staticKeyIds = new Set(publicKeys.keys());
   const relayKeyIds = new Set<string>();
   const ticketVerifier = await Ed25519AttachTicketVerifier.create({
+    // A pooled runtime's tickets carry the pool fence they were issued under.
+    ...(config.pool ? { pooled: true as const } : {}),
     replayLedgerPath: defaultAttachTicketReplayLedgerPath(config.profileRoot),
     resolvePublicKey: (keyId) => publicKeys.get(keyId) ?? null,
   });
@@ -52,7 +54,9 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     executablePath: config.executablePath,
     headless: config.headless,
     ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
-    preserveLoopbackBypass: config.bridgeToken !== undefined && config.relay === undefined,
+    // A pool guest's pages reach nothing in the guest itself: only its slot's proxy.
+    preserveLoopbackBypass:
+      config.bridgeToken !== undefined && config.relay === undefined && config.pool === undefined,
   });
   await launcher.prepare();
   const runtimeOptions: BrowserRuntimeOptions = {
@@ -73,6 +77,17 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     runtimeId: config.runtimeId,
     sessionFilesRoot: sessionFilesRoot(config.profileRoot),
     ticketVerifier,
+    // A pool guest (pool-runtime-in-guest.md, decision 2): the control is built from the boot
+    // values, with the floor as its starting high-water mark.
+    ...(config.pool
+      ? {
+          pool: {
+            controllerKey: config.pool.controllerKey,
+            probePage: async () => [],
+            boot: { slot: config.pool.slot, floor: config.pool.floor },
+          },
+        }
+      : {}),
   };
   const runtime = new BrowserRuntime(runtimeOptions);
   const server = new BrowserRuntimeServer({

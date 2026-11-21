@@ -35,6 +35,7 @@ import { z } from "zod";
 import type { BrowserControllerSink } from "./browser/controller.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import type { BrowserAttachment, BrowserRuntime } from "./runtime.js";
+import type { BrowserPoolControl } from "./browser-pool.js";
 import { encodeBrowserFrame, type BrowserFrame } from "./stream/frame.js";
 
 const standardCdpRequest = z.strictObject({
@@ -89,6 +90,15 @@ export class BrowserRuntimeServer {
       if (request.method === "GET" && request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
         response.end(JSON.stringify(this.runtime.health()));
+        return;
+      }
+      // A pooled runtime's signed controls arrive over the bridge (pool-runtime-in-guest.md):
+      // the bridge token gates them, the controller's signature authorizes them.
+      if (safePathname(request)?.startsWith("/v1/pool/")) {
+        void this.poolControl(request, response).catch(() => {
+          if (!response.headersSent) response.writeHead(400);
+          response.end();
+        });
         return;
       }
       if (safePathname(request)?.startsWith("/v1/local-profiles")) {
@@ -184,6 +194,49 @@ export class BrowserRuntimeServer {
       throw new Error("The browser attach key IDs are not unique.");
     }
     if (!this.runtime.pooled) bridge.updateAttachKeys(keys);
+  }
+
+  private async poolControl(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const token = request.headers["x-opensteer-browser-bridge-token"];
+    if (
+      !this.relayBridge ||
+      !this.runtime.pooled ||
+      typeof token !== "string" ||
+      token.length > 4096 ||
+      !safeTokenEqual(token, this.relayBridge.token)
+    ) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    const reply = (status: number, body: unknown) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (request.method === "GET" && request.url === "/v1/pool/state")
+      return reply(200, { state: this.runtime.poolState() });
+    if (request.method !== "POST" || request.url !== "/v1/pool/control") return reply(404, {});
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      size += bytes.byteLength;
+      if (size > 16 * 1024) throw new Error("The pool control exceeds its limit.");
+      chunks.push(bytes);
+    }
+    const { control, signature } = PoolControlRequestSchema.parse(
+      JSON.parse(Buffer.concat(chunks).toString("utf8")),
+    );
+    try {
+      const state = await this.runtime.controlPool(
+        control as BrowserPoolControl,
+        Buffer.from(signature, "base64"),
+      );
+      reply(200, { state });
+    } catch (error) {
+      const failure = toBrowserRuntimeError(error);
+      reply(409, { code: failure.code, message: failure.message, state: this.runtime.poolState() });
+    }
   }
 
   private async profileMaintenance(
@@ -658,3 +711,25 @@ function sendProtocolError(sink: BrowserControllerSink, error: BrowserRuntimeErr
     type: "browser.error",
   });
 }
+
+const PoolFenceSchema = z.strictObject({
+  slot: z.string().min(1).max(256),
+  term: z.number().int().positive(),
+  instance: z.string().min(1).max(256),
+  epoch: z.number().int().positive(),
+});
+
+/** A signed pool control as the Home relays it; the signature decides, the shape only bounds. */
+const PoolControlRequestSchema = z.strictObject({
+  control: z.strictObject({
+    kind: z.enum(["install", "retire", "release", "seal", "adopt", "complete"]),
+    fence: PoolFenceSchema,
+    intent: z
+      .strictObject({ id: z.string().min(1).max(256), sequence: z.number().int().positive() })
+      .optional(),
+    attempt: z.number().int().positive().optional(),
+    sequence: z.number().int().positive(),
+    expect: PoolFenceSchema.nullable(),
+  }),
+  signature: z.string().max(512),
+});
