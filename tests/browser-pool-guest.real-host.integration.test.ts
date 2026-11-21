@@ -260,6 +260,10 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       state: parts.runtime.poolState()?.phase,
     });
     expect(parts.runtime.poolState()).toMatchObject({ phase: "running" });
+    // Round D, D3: two keys. The relay presents its own key, not the host's signing key, so a
+    // Home that pinned the host key in its place refuses the relay before sending anything.
+    expect(hostKey.equals(relayHostKey)).toBe(false);
+    expect(await refusal(openPoolRelay(endpoint({ relayHostKey: hostKey })))).toBe("relay-key");
     // The Runner's side: its browser relay over the bridge, which reaches the guest by tunnels.
     const bridge = new LocalBrowserRuntimeBridge({
       transport: parts.transport,
@@ -441,7 +445,18 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         maximumBytes: 64 * 1024,
       });
       emit({ kind: "proof-sandbox", status: sandbox.status, report: JSON.parse(sandbox.text) });
-      expect(JSON.parse(sandbox.text)).toMatchObject({ sandboxed: true });
+      // Evidence, not a gate (D4): read from the running browser's renderers.
+      const report = JSON.parse(sandbox.text) as {
+        sandboxed: boolean;
+        renderers: { seccomp: number; noNewPrivs: boolean; nspid: number[] }[];
+      };
+      expect(report.sandboxed).toBe(true);
+      expect(report.renderers.length).toBeGreaterThan(0);
+      for (const renderer of report.renderers) {
+        expect(renderer).toMatchObject({ seccomp: 2, noNewPrivs: true });
+        // A pid namespace of its own (its pid is known in at least two namespaces).
+        expect(renderer.nspid.length).toBeGreaterThanOrEqual(2);
+      }
       emit({ kind: "proof-pages", person: recordOf(person.sessionId, person.tabId).slice(0, 300) });
       await vi.waitFor(
         () => expect(recordOf(saved.sessionId, saved.tabId)).toContain("Example Domain"),
@@ -588,6 +603,12 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         outcome: slot?.outcome ?? null,
       });
       expect(slot).toMatchObject({ phase: "running", epoch: 2 });
+      // Round D, D3: three sessions adopted, none lost.
+      const outcome = slot?.outcome as { adopted?: string[]; lost?: unknown[] } | null | undefined;
+      expect(outcome?.lost).toEqual([]);
+      expect([...(outcome?.adopted ?? [])].sort()).toEqual(
+        [person.sessionId, agent.sessionId, saved.sessionId].sort(),
+      );
       // An HTTPS request from a page after the wake.
       // (The agent's Run let go before the park, so this page is a person's.)
       const https = await service.openTab(task.userId, {
@@ -650,6 +671,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     expect(replay).toMatch(/superseded/u);
     expect(channel.poolState()?.phase).toBe("uninstalled");
     emit({ kind: "proof-errors", errors: [...new Set(errors)].slice(0, 20) });
+    // Round D, D3: the Home saw no coordinator error.
+    expect(errors).toEqual([]);
     await admin({ op: "delete", slotId, term });
     await fixture.close();
   }, 900_000);

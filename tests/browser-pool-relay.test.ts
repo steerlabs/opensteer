@@ -73,7 +73,10 @@ afterEach(async () => {
 
 async function relayFixture() {
   const directory = mkdtempSync(join(tmpdir(), "opensteer-pool-relay-"));
-  const host = identity(directory, "host");
+  // Two key pairs, as on a host (round D, D3): the relay's own TLS key, and the host's signing
+  // key, which only the agent holds.
+  const host = identity(directory, "relay");
+  const signing = identity(directory, "host-signing");
   const home = identity(directory, "home-relay");
   const other = identity(directory, "other-relay");
   const agent: TestPoolAgent = await startTestPoolAgent({ saveAfterMs: null });
@@ -148,6 +151,8 @@ async function relayFixture() {
     endpoint,
     call,
     host,
+    signing,
+    directory,
     other,
     controlKey,
     asked: () => asked,
@@ -155,9 +160,12 @@ async function relayFixture() {
   };
 }
 
-const refusal = (promise: Promise<unknown>) =>
+const refusal = (promise: Promise<{ socket: { destroy(): void } }>) =>
   promise.then(
-    () => "opened",
+    (tunnel) => {
+      tunnel.socket.destroy();
+      return "opened";
+    },
     (error: unknown) => (error instanceof PoolRelayRefused ? error.code : String(error)),
   );
 
@@ -220,6 +228,26 @@ describe("the relay", () => {
     const impostor: KeyObject = f.other.publicKey;
     expect(await refusal(openPoolRelay(f.endpoint({ relayHostKey: impostor })))).toBe("relay-key");
     expect(f.asked()).toBe(0);
+  });
+
+  it("refuses a relay that presents the host's signing key instead of its own", async () => {
+    const f = await relayFixture();
+    await f.call("start");
+    expect(f.signing.publicKey.equals(f.host.publicKey)).toBe(false);
+    // A relay process that somehow held the host key, presenting it.
+    const impostor = createRelayServer({
+      key: f.signing.key,
+      certificate: f.signing.certificate,
+      authorize: async (hello, clientKey) => f.agent.agent.authorizeRelay(hello, clientKey),
+    });
+    await new Promise<void>((resolve) => impostor.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve) => impostor.close(() => resolve())));
+    const port = (impostor.address() as AddressInfo).port;
+    expect(await refusal(openPoolRelay(f.endpoint({ port })))).toBe("relay-key");
+    // The same Home pinning the host key would have trusted it: the pins are distinct.
+    expect(
+      await refusal(openPoolRelay(f.endpoint({ port, relayHostKey: f.signing.publicKey }))),
+    ).toBe("opened");
   });
 
   it("rejects a grant not signed by the slot's control key", async () => {
