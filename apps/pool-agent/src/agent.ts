@@ -663,20 +663,27 @@ export class PoolAgent {
       const homeKey = parsePublicKey(input.homeKey);
       if (input.relayKey) parsePublicKey(input.relayKey);
       if (input.ticketKey) parsePublicKey(input.ticketKey.spki);
-      // The old Home's queued calls are fenced before anything is ended.
+      // The old Home's queued calls are fenced before anything is ended. Round E, E1: and
+      // again once the new keys are in place, because a call authenticated under the old key
+      // while the guest was being stopped carries the generation of that window. Nothing
+      // admitted under the old key acts after the replacement, whether or not it finished.
       slot.keyGeneration += 1;
-      await this.#settle(slot);
-      await this.#lose(slot, {
-        extra: {
-          term: input.term,
-          homeKey: input.homeKey,
-          relayKey,
-          ticketKey,
-          bridgeToken: null,
-          results: [],
-        },
-      });
-      slot.homeKey = homeKey;
+      try {
+        await this.#settle(slot);
+        await this.#lose(slot, {
+          extra: {
+            term: input.term,
+            homeKey: input.homeKey,
+            relayKey,
+            ticketKey,
+            bridgeToken: null,
+            results: [],
+          },
+        });
+      } finally {
+        if (slot.record.homeKey === input.homeKey) slot.homeKey = homeKey;
+        slot.keyGeneration += 1;
+      }
       this.#log({ event: "slot.key-replaced", slotId: input.slotId, term: input.term });
       return this.#summary(slot);
     });
