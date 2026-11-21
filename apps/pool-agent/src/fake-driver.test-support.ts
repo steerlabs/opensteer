@@ -174,6 +174,10 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.networks.clear();
   }
 
+  async slotsKnown(): Promise<readonly string[]> {
+    return [...this.prepared];
+  }
+
   async removeSlot(slotId: string): Promise<void> {
     this.removed.push(slotId);
     this.prepared.delete(slotId);

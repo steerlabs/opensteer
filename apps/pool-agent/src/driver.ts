@@ -85,6 +85,8 @@ export interface HypervisorDriver {
    * host-wide lock.
    */
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
+  /** Every slot that holds a number (and so a namespace and proxy) on this host. */
+  slotsKnown(): Promise<readonly string[]>;
   /** Removes everything prepareSlot made. Idempotent. */
   removeSlot(slotId: string): Promise<void>;
   /** Where the relay's user reaches the slot's bridge port (through its namespace). */

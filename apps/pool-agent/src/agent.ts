@@ -269,6 +269,14 @@ export class PoolAgent {
         })),
       ),
     );
+    // A crash between a create's number and its journal write leaves a number, a namespace and
+    // a proxy socket no slot owns: they are removed before anything is served.
+    const owned = new Set(this.#slots.keys());
+    for (const slotId of await this.#step("verify", () => this.#driver.slotsKnown()))
+      if (!owned.has(slotId)) {
+        await this.#step("network", () => this.#driver.removeSlot(slotId));
+        this.#log({ event: "slot.orphan-released", slotId });
+      }
     await mapLimit(this.#live(), 16, (slot) => slot.lane.run(() => this.#settle(slot)));
     const swept = await this.#step("sweep", () =>
       this.#driver.sweep(
@@ -565,6 +573,7 @@ export class PoolAgent {
       },
     );
     await this.#prepareCreated(input.slotId, input.guest);
+    this.#checkpoint("create:prepared");
     await this.#write(record);
     const slot = this.#load(record);
     this.#tombstones.delete(input.slotId);

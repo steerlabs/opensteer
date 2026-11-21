@@ -80,3 +80,31 @@ describe("D2: a Home's keys for a slot are one set", () => {
     );
   });
 });
+
+describe("orphan slot numbers", () => {
+  it("releases a slot's number and network that a crash left between allocating and journalling", async () => {
+    let crashAt: string | undefined = "create:prepared";
+    const agent = await startTestPoolAgent({
+      saveAfterMs: null,
+      checkpoint: (point) => {
+        if (point === crashAt) throw new Error(`crash at ${point}`);
+      },
+    });
+    open.push(agent);
+    await expect(
+      agent.agent.createSlot({
+        slotId: "orphan",
+        term: 1,
+        homeKey: homeKeyPair().spki,
+        guest: testGuest,
+      }),
+    ).rejects.toThrow();
+    expect(agent.driver.prepared.has("orphan")).toBe(true);
+    crashAt = undefined;
+    const restarted = await agent.restart();
+    open.splice(open.indexOf(agent), 1, restarted);
+    expect(restarted.driver.removed).toContain("orphan");
+    expect(restarted.driver.prepared.has("orphan")).toBe(false);
+    expect(restarted.agent.slotIds()).not.toContain("orphan");
+  });
+});

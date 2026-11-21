@@ -223,6 +223,10 @@ export class FirecrackerDriver implements HypervisorDriver {
     this.#verified.add(index);
   }
 
+  async slotsKnown(): Promise<readonly string[]> {
+    return this.#numbers.entries().map(([slotId]) => slotId);
+  }
+
   async removeSlot(slotId: string): Promise<void> {
     // The number is freed only after everything that used it is gone.
     await this.#numbers.release(slotId, async (index) => {
