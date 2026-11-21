@@ -12,7 +12,7 @@ import {
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
 import type { ThreadId } from "../packages/core/src/index.js";
-import type { TabRecord } from "../packages/database/src/index.js";
+import { listBrowserPoolDocumentLosses, type TabRecord } from "../packages/database/src/index.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
@@ -172,60 +172,90 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
   }
 });
 
-it("records a send dispatched and unanswered when the Runner's channel drops as unknown, and never sends it again", async () => {
-  const j = await journey("direct-unknown", { profile: true, channelDeadlineMs: 1_500 });
+/** A connected agent's unanswered command on a saved profile's page, then the Runner's channel drops. */
+async function unansweredAtChannelLoss(key: string, channelDeadlineMs: number) {
+  const j = await journey(key, { profile: true, channelDeadlineMs });
+  const home = await j.startHome();
+  const { session } = await home.service.start({
+    ownerId: j.task.userId,
+    profileId: j.profile!.id,
+  });
+  const [tab] = await home.service.savedPages(j.task.userId, session.id);
+  if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+  const page = await j.draft();
+  const work = await directWork(j, () => home);
+  const read = `return await page.js("document.querySelector('input').value")`;
+  const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+  expect(bound.isError, text(bound)).not.toBe(true);
+  const sent = async () =>
+    (
+      await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+        expression: "window.__sent ?? 0",
+        returnByValue: true,
+      })
+    ).result.value;
+  const document = home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId;
+  // The page receives the command and never answers it.
+  const hanging = work.use(
+    `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
+  );
+  await vi.waitFor(async () => expect(await sent()).toBe(1));
+  j.runnerDown();
+  // The agent hears that the Home lost track of it, never that it failed.
+  const result = await hanging;
+  expect(result.structuredContent, text(result)).toMatchObject({ status: "unknown" });
+  const operations = () =>
+    j.database
+      .selectFrom("agentOperations")
+      .select(["state", "outcome"])
+      .orderBy("createdAt", "asc")
+      .execute();
+  const settled = [
+    { state: "completed", outcome: "completed" },
+    { state: "unknown", outcome: "unknown" },
+  ];
+  expect(await operations()).toEqual(settled);
+  return { j, home, session, tab, page, work, read, sent, document, operations, settled };
+}
+
+it("keeps a session whose unanswered command was settled unknown when the Runner's channel dropped, and the Runner came back in time", async () => {
+  const w = await unansweredAtChannelLoss("direct-unknown", 20_000);
   try {
-    const home = await j.startHome();
-    const { session } = await home.service.start({
-      ownerId: j.task.userId,
-      profileId: j.profile!.id,
-    });
-    const [tab] = await home.service.savedPages(j.task.userId, session.id);
-    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
-    const page = await j.draft();
-    const work = await directWork(j, () => home);
-    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
-    expect(bound.isError, text(bound)).not.toBe(true);
-    const sent = async () =>
-      (
-        await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
-          expression: "window.__sent ?? 0",
-          returnByValue: true,
-        })
-      ).result.value;
-    // The page receives the command and does not answer it.
-    const hanging = work.use(
-      `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
-    );
-    await vi.waitFor(async () => expect(await sent()).toBe(1));
-    j.runnerDown();
-    // The agent hears that the Home lost track of it, never that it failed.
-    const result = await hanging;
-    expect(result.structuredContent, text(result)).toMatchObject({ status: "unknown" });
-    const operations = () =>
-      j.database
-        .selectFrom("agentOperations")
-        .select(["state", "outcome"])
-        .orderBy("createdAt", "asc")
-        .execute();
-    const settled = [
-      { state: "completed", outcome: "completed" },
-      { state: "unknown", outcome: "unknown" },
-    ];
-    expect(await operations()).toEqual(settled);
-    expect(await sent()).toBe(1);
-    // The Runner comes back. The kept page still holds the unanswered command, so the session
-    // is not handed to a new attachment under it: it ends with its note, as an ordinary Home's
-    // would, and nothing is sent again or recorded otherwise.
-    j.runnerUp();
-    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
-    await vi.waitFor(async () => expect((await j.row(session.id))?.state).toBe("failed"), {
+    // The Runner comes back inside the window: the same page is reattached and usable, and the
+    // command is never sent again.
+    w.j.runnerUp();
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
       timeout: 10_000,
     });
-    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 10_000 });
-    expect(await operations()).toEqual(settled);
+    expect((await w.j.row(w.session.id))?.state).toBe("ready");
+    expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
+      w.document,
+    );
+    const again = await w.work.use(w.read);
+    expect(again.isError, text(again)).not.toBe(true);
+    expect(text(again)).toContain("unsent draft");
+    expect(await w.sent()).toBe(1);
+    expect((await w.operations()).slice(0, 2)).toEqual(w.settled);
   } finally {
-    await j.close();
+    await w.j.close();
+  }
+});
+
+it("ends a session whose unanswered command was settled unknown with its note when the Runner does not come back", async () => {
+  const w = await unansweredAtChannelLoss("direct-unknown-gone", 1_500);
+  try {
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
+      timeout: 10_000,
+    });
+    expect((await w.j.row(w.session.id))?.state).toBe("failed");
+    expect(
+      await listBrowserPoolDocumentLosses(w.j.database, w.j.task.userId, w.tab.id),
+    ).toMatchObject([{ sessionId: w.session.id, surfaceId: w.tab.id, reason: "not-adopted" }]);
+    await vi.waitFor(() => expect(w.page.page.isClosed()).toBe(true), { timeout: 10_000 });
+    expect(await w.operations()).toEqual(w.settled);
+  } finally {
+    w.j.runnerUp();
+    await w.j.close();
   }
 });
 

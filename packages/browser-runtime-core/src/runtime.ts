@@ -140,6 +140,8 @@ interface ActiveSession {
   poolAttachment?: number;
   /** A pooled session whose channel was lost: kept until its Home reattaches or the deadline. */
   channelLostUntil?: ReturnType<typeof setTimeout>;
+  /** When the lost channel's reconnect window ends; a failed reattach keeps this deadline. */
+  channelLostDeadline?: number;
 }
 
 interface FreshHostIdentity {
@@ -1393,7 +1395,8 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new BrowserRuntimeError("forbidden", "This ticket cannot adopt the retained session.");
 
     session.poolAttachment = attachment;
-    const channelLost = session.channelLostUntil !== undefined;
+    const channelLostDeadline =
+      session.channelLostUntil !== undefined ? session.channelLostDeadline : undefined;
     clearTimeout(session.channelLostUntil);
     delete session.channelLostUntil;
     if (!session.poolDetached) {
@@ -1407,8 +1410,6 @@ export class BrowserRuntime implements NativePresentationSource {
     try {
       const [root, ...others] = session.ledger.resumeAfterRelayRestart();
       if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-      // Refused while a command sent before the channel was lost still holds a kept page: the
-      // router never hands a target to new work under old work.
       router.registerSession(
         session.sessionId,
         root,
@@ -1426,17 +1427,10 @@ export class BrowserRuntime implements NativePresentationSource {
         ...(registered ? [() => router.unregisterSession(session.sessionId)] : []),
       ]);
       session.ledger.suspendForPool(() => this.poolDrops++);
-      // A reattach after a lost channel that did not take ends the session now, as its deadline
-      // would: nothing else will reattach it. An adoption keeps it for its window.
-      if (channelLost) {
-        const generation = session.generation;
-        session.channelLostUntil = setTimeout(() => {
-          void this.detach(session.sessionId, generation, false, false, true).catch(
-            () => undefined,
-          );
-        }, 0);
-        session.channelLostUntil.unref();
-      }
+      // A reattach after a lost channel that did not take leaves the session detached until the
+      // same deadline, for the Home's next attempt; an adoption keeps it for its window.
+      if (channelLostDeadline !== undefined)
+        this.armChannelDeadline(session, session.generation, channelLostDeadline);
       throw error;
     }
     session.controller = controller;
@@ -1452,6 +1446,19 @@ export class BrowserRuntime implements NativePresentationSource {
       undefined,
       this.poolTrafficFor(session, generation),
     );
+  }
+
+  /** Ends a detached session whose lost channel did not come back by `at`. */
+  private armChannelDeadline(session: ActiveSession, generation: number, at: number): void {
+    clearTimeout(session.channelLostUntil);
+    session.channelLostDeadline = at;
+    session.channelLostUntil = setTimeout(
+      () => {
+        void this.detach(session.sessionId, generation, false, false, true).catch(() => undefined);
+      },
+      Math.max(0, at - Date.now()),
+    );
+    session.channelLostUntil.unref();
   }
 
   private createController(
@@ -1813,17 +1820,15 @@ export class BrowserRuntime implements NativePresentationSource {
         // until the Home reattaches the session or the reconnect deadline ends it. A command
         // already sent may never answer in a kept page, so its routing ends without waiting
         // for it: its outcome is unknown, and a late answer reaches no one.
+        // The same command gives up its claim on the kept pages, so the Home's reattach can take
+        // them at once; it is never sent again.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId),
+          () => active.host.router.unregisterSession(sessionId, false, true),
         ]);
-        clearTimeout(active.channelLostUntil);
-        active.channelLostUntil = setTimeout(() => {
-          void this.detach(sessionId, generation, false, false, true).catch(() => undefined);
-        }, this.poolChannelDeadlineMs);
-        active.channelLostUntil.unref();
+        this.armChannelDeadline(active, generation, Date.now() + this.poolChannelDeadlineMs);
         return;
       }
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
@@ -1833,7 +1838,7 @@ export class BrowserRuntime implements NativePresentationSource {
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId),
+          () => active.host.router.unregisterSession(sessionId, false, true),
         ]);
         return;
       }

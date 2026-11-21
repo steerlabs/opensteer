@@ -1315,13 +1315,18 @@ export class BrowserService {
     });
     this.#brokers.set(sessionId, broker);
     if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
+    let stopped = false;
     try {
       await withTimeout(broker.ready(), this.#connectTimeoutMs, {
         timeoutError: () => new Error("The retained browser session did not reattach."),
       });
-      // Stop may have closed the row while the channel attached: then it is not adopted.
-      if (!(await stillReady()))
+      // Stop may have closed the row while the channel attached: then it is not adopted, and
+      // the channel is ended before this returns.
+      if (!(await stillReady())) {
+        stopped = true;
+        await broker.abort("The retained browser session was stopped while it reattached.");
         throw new Error("The retained browser session was stopped while it reattached.");
+      }
       const live = this.pageInventory(sessionId)?.records;
       const losses: { surfaceId: string; documentId: string | null }[] = [];
       for (const document of documents.filter((document) => document.sessionId === sessionId)) {
@@ -1355,7 +1360,10 @@ export class BrowserService {
         ? [{ sessionId, reason: "document-changed", surfaces: losses, endSession: false }]
         : [];
     } catch (error) {
-      void broker.abort("The retained browser session did not reattach.").catch(() => undefined);
+      if (!stopped)
+        await broker
+          .detachPooled("The retained browser session did not reattach.")
+          .catch(() => undefined);
       throw error;
     } finally {
       adopting.active = false;
@@ -8777,6 +8785,21 @@ export class HostedBrowserBroker {
     await waitForSocketClose(this.#socket, 5_000);
     await this.#runtimeFrameTail;
     await this.#finish("closed", 1000, "Browser session closed");
+  }
+
+  /**
+   * A pooled reattach that did not take: this broker goes, and the session's row stays for the
+   * next attempt inside its window or the end its deadline records with a note.
+   */
+  async detachPooled(reason: string): Promise<void> {
+    this.#failure ??= reason;
+    if (
+      this.#socket.readyState === WebSocket.CONNECTING ||
+      this.#socket.readyState === WebSocket.OPEN
+    )
+      this.#socket.terminate();
+    await this.#runtimeFrameTail;
+    await this.#finish("pooled", 1011, "Browser Runtime disconnected");
   }
 
   async abort(reason: string): Promise<void> {
