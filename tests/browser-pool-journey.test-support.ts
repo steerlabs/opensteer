@@ -395,6 +395,8 @@ export async function journey(
   ) => {
     let open = true;
     const frames: Buffer[] = [];
+    /** Every text message the viewer was sent, parsed. */
+    const messages: Record<string, unknown>[] = [];
     const waiting: { count: number; resolve: () => void }[] = [];
     /** Resolves once a frame arrives after the first `count`: on the stream, not on a clock. */
     const next = (count: number) =>
@@ -411,6 +413,10 @@ export async function journey(
           open = false;
         },
         send: async (data, binary) => {
+          if (!binary && typeof data === "string")
+            messages.push(JSON.parse(data) as Record<string, unknown>);
+          else if (!binary && Buffer.isBuffer(data))
+            messages.push(JSON.parse(data.toString()) as Record<string, unknown>);
           if (binary && Buffer.isBuffer(data)) {
             if (!frames.length) onFrame?.();
             frames.push(data);
@@ -423,7 +429,7 @@ export async function journey(
       { authSessionId: createId("authSession"), mode, signedIn: async () => true },
     );
     void attaching.catch(() => undefined);
-    return { attaching, frames, next };
+    return { attaching, frames, next, messages };
   };
   const close = async () => {
     try {

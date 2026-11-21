@@ -9768,9 +9768,15 @@ export class HostedBrowserBroker {
         outlet.frameWindow === frameWindow
       )
         return Promise.resolve();
+      // A viewer's queued input is cancelled when it stops showing its tab (another tab, or none;
+      // a closed socket cancels too). A change of picture options on the same tab changes the
+      // meaning of nothing queued: keys carry no picture coordinates, a pointer or wheel event
+      // names its capture and geometry revisions and the runtime refuses it when they moved, and
+      // `frames`, `frameWindow` and `captureRegion` only choose and pace this viewer's pictures.
       if (
         outlet.mode === "control" &&
         outlet.subscription !== null &&
+        outlet.surfaceId !== surfaceId &&
         this.#snapshot?.inputLanesVersion === 1
       )
         void this.#sendCommand({

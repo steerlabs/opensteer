@@ -644,6 +644,82 @@ for (const away of ["within", "past"] as const)
     }
   });
 
+for (const change of ["same tab, other picture options", "the viewer leaves the tab"] as const)
+  it(`${change === "the viewer leaves the tab" ? "cancels the keys queued for a tab its viewer leaves, as not applied" : "keeps keys queued behind a slow page through a same-tab change of picture options, in order"}`, async () => {
+    const j = await journey(`queued-${change === "the viewer leaves the tab" ? "leave" : "same"}`);
+    try {
+      const home = await j.startHome();
+      const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("queued"));
+      const page = await j.draft();
+      const watching = j.viewer(home, sessionId, "control");
+      const attached = await watching.attaching;
+      try {
+        const send = (message: Record<string, unknown>) =>
+          attached.handle(Buffer.from(JSON.stringify(message)), false);
+        await send({ type: "stream.subscribe", surfaceId: tabId });
+        await watching.next(0);
+        // The page is busy: the first key waits on it, the rest queue behind it in the runtime.
+        void page.cdp
+          .send("Runtime.evaluate", {
+            expression: "{ const until = Date.now() + 1500; while (Date.now() < until) {} }",
+          })
+          .catch(() => undefined);
+        for (const text of ["a", "b", "c", "d"])
+          for (const action of ["down", "up"])
+            await send({
+              type: "input.key",
+              surfaceId: tabId,
+              key: text,
+              code: `Key${text.toUpperCase()}`,
+              modifiers: [],
+              text,
+              action,
+            });
+        if (change === "the viewer leaves the tab")
+          await send({ type: "stream.unsubscribe", surfaceId: tabId });
+        // Other region and pacing options on the same tab, and back again.
+        else {
+          await send({
+            type: "stream.subscribe",
+            surfaceId: tabId,
+            captureRegion: true,
+            frameWindow: 1,
+          });
+          await send({ type: "stream.subscribe", surfaceId: tabId });
+        }
+        if (change === "same tab, other picture options") {
+          // Every key reaches the page, in the order it was typed.
+          await until(async () => expect(await page.value()).toBe('["unsent draftabcd",99]'));
+          expect(
+            watching.messages.filter(
+              (message) =>
+                (message.error as { reason?: string } | undefined)?.reason ===
+                "browser-input-canceled",
+            ),
+          ).toEqual([]);
+        } else {
+          // What had not started is refused, and said so; it never reaches the page.
+          await until(() =>
+            expect(
+              watching.messages.some(
+                (message) =>
+                  (message.error as { reason?: string } | undefined)?.reason ===
+                  "browser-input-canceled",
+              ),
+            ).toBe(true),
+          );
+          await until(async () =>
+            expect(await page.value()).toMatch(/^\["unsent draft[a]?",99\]$/u),
+          );
+        }
+      } finally {
+        attached.close();
+      }
+    } finally {
+      await j.close();
+    }
+  });
+
 it("finishes a removal a Home crash interrupted after the revocation, with the notes", async () => {
   const j = await journey("removal-crash");
   try {
