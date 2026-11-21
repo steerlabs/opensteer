@@ -174,7 +174,7 @@ describe("personal wire compatibility", () => {
           since: "2026-11-21T00:00:00.000Z",
           start: { reason: "expired", at: "start-1" },
           failures: 0,
-          pages: [{ surfaceId: "surface_a", outcome: "lost", typed: true }],
+          pages: [{ surfaceId: "surface_a", outcome: "lost", typed: "yes" }],
         },
       ],
     };

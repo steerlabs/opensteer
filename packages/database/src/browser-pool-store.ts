@@ -30,7 +30,7 @@ export interface BrowserPoolSessionLoss {
   readonly surfaces: readonly {
     readonly surfaceId: string;
     readonly documentId: string | null;
-    /** Known typed text that was not sent; written with the loss. */
+    /** Typed text that was not sent, when known; written with the loss. Absent: not known. */
     readonly typed?: boolean;
   }[];
   /** False for a tab lost inside a session that was otherwise adopted. */
@@ -326,7 +326,7 @@ async function recordBrowserPoolLosses(
             surfaceId: surfaceId as BrowserSurfaceId,
             documentId,
             reason,
-            typed: typed === true,
+            typed: typed ?? null,
           }))
         : [];
     });

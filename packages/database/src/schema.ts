@@ -2430,8 +2430,11 @@ export interface DatabaseSchema {
     surfaceId: BrowserSurfaceId;
     documentId: string | null;
     reason: string;
-    /** The page held typed text that was not sent, as known when the loss was written. */
-    typed: Generated<boolean>;
+    /**
+     * The page held typed text that was not sent, as known when the loss was written; null: not
+     * known (a running page, a partial thaw).
+     */
+    typed: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
     lostAt: Generated<Timestamp>;
     noticedAt: Timestamp | null;
   };

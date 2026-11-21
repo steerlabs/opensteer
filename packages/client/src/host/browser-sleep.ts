@@ -72,8 +72,8 @@ export interface BrowserPoolReport {
         readonly noticeId?: string | undefined;
         /** "reloaded": opened again from its address. "lost": could not be brought back. */
         readonly outcome: "reloaded" | "lost";
-        /** `BrowserPoolDocument.typed`: the page held typed text that was not sent. */
-        readonly typed: boolean;
+        /** Whether the page held typed text that was not sent: yes, no, or not known. */
+        readonly typed: BrowserTabTyped;
       }[]
     | undefined;
 }
@@ -109,12 +109,15 @@ export type BrowserSleep =
       readonly repeated: boolean;
     };
 
+/** Whether a page held typed text that was not sent: known yes, known no, or not known. */
+export type BrowserTabTyped = "yes" | "no" | "unknown";
+
 /** How one tab came back. */
 export type BrowserTabReturn =
   | { readonly kind: "kept" }
   | {
       readonly kind: "reloaded";
-      readonly typed: boolean;
+      readonly typed: BrowserTabTyped;
       readonly reason: BrowserStartReason | null;
       /** The start this note is about; null when the Home did not say. */
       readonly startAt: string | null;
@@ -123,7 +126,7 @@ export type BrowserTabReturn =
     }
   | {
       readonly kind: "lost";
-      readonly typed: boolean;
+      readonly typed: BrowserTabTyped;
       readonly startAt: string | null;
       readonly noticeId?: string;
     };
@@ -325,18 +328,23 @@ export function browserTabNote(
   options: { readonly reasonSaid?: boolean } = {},
 ): BrowserTabNote | null {
   if (tab.kind === "kept") return null;
-  if (tab.kind === "lost") {
-    const detail = tab.typed
-      ? "It didn’t come back as you left it, and text you hadn’t sent is gone. Reload to open it again."
-      : "It didn’t come back as you left it. Reload to open it again.";
+  // Firm only when the page is known to have held unsent text; a soft word when it is not known.
+  if (tab.kind === "lost")
     return {
       title: "This page couldn’t be restored",
-      detail,
-      line: tab.typed
-        ? "This page couldn’t be restored, and text you hadn’t sent is gone. Reload to open it again."
-        : "This page couldn’t be restored as you left it. Reload to open it again.",
+      detail:
+        tab.typed === "yes"
+          ? "It didn’t come back as you left it, and text you hadn’t sent is gone. Reload to open it again."
+          : tab.typed === "unknown"
+            ? "It didn’t come back as you left it. Check anything you were typing, then reload to open it again."
+            : "It didn’t come back as you left it. Reload to open it again.",
+      line:
+        tab.typed === "yes"
+          ? "This page couldn’t be restored, and text you hadn’t sent is gone. Reload to open it again."
+          : tab.typed === "unknown"
+            ? "This page couldn’t be restored as you left it. Check anything you were typing."
+            : "This page couldn’t be restored as you left it. Reload to open it again.",
     };
-  }
   const reason = options.reasonSaid ? null : tab.reason;
   // Why, said once: only a reason the person would not otherwise know or expect is named.
   const restarted =
@@ -350,12 +358,18 @@ export function browserTabNote(
         : { subject: "Your browser restarted", because: "your browser restarted" };
   return {
     title: "This page reloaded",
-    detail: tab.typed
-      ? `${restarted.subject}, so text you hadn’t sent may be gone.`
-      : `${restarted.subject}.`,
-    line: tab.typed
-      ? `This page reloaded because ${restarted.because}. Check anything you were typing.`
-      : `This page reloaded because ${restarted.because}.`,
+    detail:
+      tab.typed === "yes"
+        ? `${restarted.subject}, and text you hadn’t sent is gone.`
+        : tab.typed === "unknown"
+          ? `${restarted.subject}, so text you hadn’t sent may be gone.`
+          : `${restarted.subject}.`,
+    line:
+      tab.typed === "yes"
+        ? `This page reloaded because ${restarted.because}. Text you hadn’t sent is gone.`
+        : tab.typed === "unknown"
+          ? `This page reloaded because ${restarted.because}. Check anything you were typing.`
+          : `This page reloaded because ${restarted.because}.`,
   };
 }
 

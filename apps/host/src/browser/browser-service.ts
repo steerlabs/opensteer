@@ -6455,7 +6455,12 @@ export class BrowserService {
           surfaceId,
           noticeId: intentId,
           outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
-          typed,
+          typed:
+            typed === true
+              ? ("yes" as const)
+              : typed === false
+                ? ("no" as const)
+                : ("unknown" as const),
         };
       }),
     );

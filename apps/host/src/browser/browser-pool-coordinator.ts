@@ -1386,7 +1386,10 @@ function retainedOf(slot: BrowserPoolSlot | undefined): Retained | undefined {
 }
 
 function surfacesOf(retained: Retained, sessionId: BrowserSessionId) {
-  return retained.documents
-    .filter((document) => document.sessionId === sessionId)
-    .map(({ surfaceId, documentId, typed }) => ({ surfaceId, documentId, typed: typed === true }));
+  return (
+    retained.documents
+      .filter((document) => document.sessionId === sessionId)
+      // The park's manifest says for each page whether it held typed text: known yes or no.
+      .map(({ surfaceId, documentId, typed }) => ({ surfaceId, documentId, typed: typed === true }))
+  );
 }

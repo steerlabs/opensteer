@@ -952,7 +952,7 @@ it("says once that a page could not be kept when the saved state expired, and re
         .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key));
     const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
     const reloaded = (noticeId: unknown) => [
-      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: "no" },
     ];
     expect((await report())?.pages).toEqual(reloaded(expect.any(String)));
     const noticeId = (await report())?.pages?.[0]?.noticeId;
@@ -1704,7 +1704,7 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
     expect(restarted).toMatchObject({
       phase: "running",
       start: { reason: "person", at: expect.any(String) },
-      pages: [{ surfaceId: tabId, outcome: "lost", typed: false }],
+      pages: [{ surfaceId: tabId, outcome: "lost", typed: "unknown" }],
     });
     expect(restarted).not.toHaveProperty("failures");
     expect((await j.row(sessionId))?.state).toBe("failed");
@@ -1718,7 +1718,7 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
       "report-reopen",
     );
     expect((await report())?.pages).toEqual([
-      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: "unknown" },
     ]);
     await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
     expect(await report()).not.toHaveProperty("pages");

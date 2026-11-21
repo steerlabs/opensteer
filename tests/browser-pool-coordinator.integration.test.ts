@@ -1262,7 +1262,8 @@ it("claims nothing typed for a page a restart of the running browser loses after
     await home.restart();
     expect((await f.row())?.state).toBe("failed");
     expect(await listBrowserPoolDocumentLosses(f.database, f.task.userId, surfaceId)).toEqual([
-      expect.objectContaining({ reason: "person", typed: false }),
+      // Not known, never "no": the running page's last park is not what it holds now.
+      expect.objectContaining({ reason: "person", typed: null }),
     ]);
   } finally {
     await f.close();
