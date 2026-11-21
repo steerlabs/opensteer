@@ -217,6 +217,28 @@ describe("SessionCdpRouter", () => {
     await router.close();
   });
 
+  it("refuses a standard CDP client that names a surface with a Host tab method (C8)", async () => {
+    const backend = new FakeBackend();
+    const page = { targetId: "owned", type: "page" };
+    backend.targetInfos = [page];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", page.targetId, async () => true, "/files/a");
+    const client = router.openStandardClient("a", { wholeContext: false });
+    const named = { surfaceId: "srf_00000000-0000-4000-8000-00000000c801" };
+    await expect(
+      client.send({ method: "Opensteer.openTab", parameters: named }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const child = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: page.targetId, flatten: true },
+    })) as { sessionId: string };
+    await expect(
+      client.send({ method: "Opensteer.openTab", parameters: named, ...child }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(backend.commands.some((command) => command.method.startsWith("Opensteer."))).toBe(false);
+    await router.close();
+  });
+
   it("gives a browser CDP alias the same confined root in session mode", async () => {
     const backend = new FakeBackend();
     const page = { targetId: "owned", type: "page" };

@@ -3968,6 +3968,10 @@ export class BrowserController {
         );
         origin = authority.creationOrigin;
       }
+      // A surface id names a person's saved tab, whose restored page this open may claim. Only
+      // the Home names one, for the person; an open carrying an agent's authority never may.
+      if (origin === "agent" && parameters?.surfaceId !== undefined)
+        throw new BrowserRuntimeError("forbidden", "This operation is reserved for the Host.");
       if (remaining <= 0)
         throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
       const opening = new AbortController();

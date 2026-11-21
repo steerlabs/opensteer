@@ -8257,6 +8257,20 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
     code: "forbidden",
   });
+  // C8: naming a person's saved tab, to claim its restored page, is refused and never forwarded.
+  const beforeNamed = runtime.receivedCommands().length;
+  await expect(
+    cdp.request({
+      method: "Opensteer.openTab",
+      parameters: { surfaceId: "srf_00000000-0000-4000-8000-00000000c801" },
+    }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  expect(
+    runtime
+      .receivedCommands()
+      .slice(beforeNamed)
+      .some((m) => m.type === "cdp.command" && m.command.method === "Opensteer.openTab"),
+  ).toBe(false);
   cdp.close();
 });
 
