@@ -2664,6 +2664,9 @@ export async function createHostServer(
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
+      case "browser.pool.restart":
+        await dependencies.browser.restartPooledBrowser(userId, command.runnerId as RunnerId);
+        return { type: command.type };
     }
     throw new OpensteerError({
       code: "not_found",

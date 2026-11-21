@@ -593,9 +593,6 @@ export class HttpHostClient {
   readonly openTab = this.#tabsClient.openTab;
   readonly closeTabs = this.#tabsClient.closeTabs;
   readonly reopenTab = this.#tabsClient.reopenTab;
-  /** No Home can restart a Cloud Computer's browser yet: refused, and nothing changes. */
-  readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
-    Promise.reject(new BrowserRestartUnavailable());
   readonly activateTab = this.#tabsClient.activateTab;
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
@@ -1031,6 +1028,26 @@ export class HttpHostClient {
   /** Writes saved personal state now, for a page about to be hidden or unloaded. */
   flushSavedState() {
     this.#stream.flushCheckpoints();
+  }
+
+  /**
+   * Sent only to a Home that reports this pooled browser; any other is refused here, and a
+   * Home's own refusal reads as the same fixed refusal. Nothing changed in either case.
+   */
+  async restartPooledBrowser(computerId: string): Promise<void> {
+    if (!this.#snapshot.browserPools?.some((pool) => pool.runnerId === computerId))
+      throw new BrowserRestartUnavailable();
+    try {
+      await this.dispatch({
+        type: "browser.pool.restart",
+        runnerId: computerId,
+        idempotencyKey: globalThis.crypto.randomUUID(),
+      });
+    } catch (error) {
+      const { code } = classifyClientFailure(error);
+      if (code === "not_found" || code === "forbidden") throw new BrowserRestartUnavailable();
+      throw error;
+    }
   }
 
   async dispatch(

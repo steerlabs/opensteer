@@ -500,6 +500,22 @@ integration("Host browser broker vertical", () => {
       { headers: sessionHeaders },
     );
     expect(stopped.status).toBe(200);
+    // Restart browser is for a pooled Cloud Computer browser only: this Home has none, and
+    // refuses in the fixed words with nothing changed.
+    const restart = await testRpcRequest(
+      origin,
+      "commands.dispatch",
+      {
+        idempotencyKey: "browser-pool-restart-1",
+        runnerId: browserRuntime.runnerId,
+        type: "browser.pool.restart",
+      },
+      { headers: sessionHeaders },
+    );
+    expect(await restart.json()).toMatchObject({
+      ok: false,
+      error: { code: "not_found", message: "This browser does not restart." },
+    });
     const revocationViewer = await openBrowserSocket(
       `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${freshSession.session.id}/connect?mode=watch`,
       { cookie, origin },
