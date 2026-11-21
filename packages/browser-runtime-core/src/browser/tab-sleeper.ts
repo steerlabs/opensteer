@@ -515,8 +515,7 @@ export class TabSleeper {
     ) {
       this.ineffectiveReclaims = 0;
     } else if (reading === null) {
-      // Unknown reading falls back to estimate; do not penalize backoff on transient read failure.
-      this.ineffectiveReclaims = 0;
+      // Not known is neither a failure nor a success (Rule C): the count is left as it was.
     } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
       this.ineffectiveReclaims = 0;
       this.pressureBackoffUntil = now + rendererSampleMs;
