@@ -6,17 +6,18 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$source_dir/common.sh"
 
 usage() {
-  printf '%s\n' "Usage: install.sh [--local] [--prepare] [--manifest FILE] HOSTNAME" \
+  printf '%s\n' "Usage: install.sh [--local] [--local-images] [--prepare] [--manifest FILE] HOSTNAME" \
     "       install.sh [--local] [--prepare] --boot-spec BOOT_SPEC.json --bootstrap-token-file FILE"
   exit 2
 }
 
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail "Run the Home installer as root on a Linux Docker host."
-local_tls=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
+local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
 while (($#)); do
   case "$1" in
     --resume-managed) resume_managed=true; shift ;;
     --local) local_tls=true; shift ;;
+    --local-images) local_images=true; shift ;;
     --prepare) prepare=true; shift ;;
     --managed|--boot-spec) (($# >= 2)) || usage; managed=$2; shift 2 ;;
     --bootstrap-token-file) (($# >= 2)) || usage; token_path=$2; shift 2 ;;
@@ -43,7 +44,7 @@ if $resume_managed; then
   if [[ ${OPENSTEER_HOME_LOCAL_TLS:-false} == true ]]; then local_tls=true; fi
 fi
 if [[ -n $managed ]]; then
-  [[ -z $hostname && -z $manifest && -n $token_path ]] || usage
+  [[ -z $hostname && -z $manifest && -n $token_path ]] && ! $local_images || usage
   [[ $token_path == /* ]] || token_path="$PWD/$token_path"
   if ! $resume_managed && ! $prepare; then
     lock_home
@@ -286,10 +287,15 @@ if [[ -f "$staging/config.env" ]]; then
   sync -f "$home_dir"
   publish_file "$staging/config.env" "$home_dir/config.env"
 fi
+if $local_images; then
+  touch "$home_dir/local-images"
+elif [[ -z $managed && -n $manifest ]]; then
+  rm -f -- "$home_dir/local-images"
+fi
 if $prepare; then
   install_sandbox_policies
 else
-  compose pull --quiet
+  fetch_release_images
   if $resume_managed; then check_release_stamps "$home_dir/images.env"; fi
   install_sandbox_policies
   if $resume_managed; then

@@ -4,8 +4,16 @@ A Home has one public HTTPS hostname. Point its DNS record at the VM and make TC
 and 443 reachable. Ubuntu 24.04 LTS with systemd is the managed installation base.
 Bring-your-own Linux hosts need Docker Engine, Compose v2, Bash, coreutils, curl,
 ca-certificates, jq, OpenSSL, util-linux and iptables with IPv4 and IPv6 support.
+On Ubuntu 24.04:
 
-From a release checkout, run:
+```bash
+sudo apt-get update && sudo apt-get install docker.io docker-compose-v2 docker-buildx jq git
+```
+
+Install from a release checkout (`git clone` of the release tag), with the Home's
+six images taken one of two ways.
+
+**Published images.** Run:
 
 ```bash
 sudo bash deploy/home/install.sh --manifest /root/opensteer-home-release.json home.example.com
@@ -13,7 +21,25 @@ sudo bash deploy/home/install.sh --manifest /root/opensteer-home-release.json ho
 
 The manifest has a release `version` and an `images` map with the six Home image
 references. Use repository digests for immutable releases. A version-only
-manifest selects that version's `ghcr.io/steerlabs/opensteer-home-*` tags.
+manifest selects that version's `ghcr.io/steerlabs/opensteer-home-*` tags. Only
+the Opensteer release owner publishes them; when the registry refuses the pull,
+that version is not published there, so build the images instead.
+
+**Images built on this server.** From the checkout, run:
+
+```bash
+sudo bash deploy/home/build-images.sh /root/opensteer-home-release.json
+sudo bash deploy/home/install.sh --local-images --manifest /root/opensteer-home-release.json home.example.com
+```
+
+`build-images.sh` builds the six images from the checkout for this server's
+architecture and writes a manifest that names them by digest where Docker can
+address a local image that way, and otherwise by the release version's tag.
+`--local-images` installs the images already on the server without pulling them,
+checks that each carries the manifest's release version, and pulls only
+PostgreSQL. To update such a Home, build the new release's checkout the same way
+and run `sudo opensteer-home update /root/opensteer-home-release.json`.
+
 Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` at install time or in
 `/etc/opensteer-home/config.env` to supply a release feed for the hourly updater.
 Managed installations enable the update timer only with an Account-supplied

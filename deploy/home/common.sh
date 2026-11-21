@@ -315,6 +315,26 @@ claimed_state() {
   jq -er '.data.setupState | select(. == "complete" or . == "required")' <<< "$config"
 }
 
+# Fetches a release's images. A Home installed with --local-images uses the six Home images
+# already on this machine (deploy/home/build-images.sh builds them) and checks their release
+# stamps instead of pulling them; PostgreSQL is still pulled.
+fetch_release_images() {
+  local selector=${1:-$home_dir/images.env} config service image missing=()
+  if [[ ! -f "$home_dir/local-images" ]]; then
+    release_env="$selector" compose pull --quiet
+    return
+  fi
+  release_env="$selector" compose pull --quiet postgres
+  config=$(release_env="$selector" compose config --format json) || return
+  for service in "${services[@]}"; do
+    image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
+    docker image inspect "$image" >/dev/null 2>&1 || missing+=("$image")
+  done
+  ((${#missing[@]} == 0)) ||
+    fail "These Home images are not on this machine: ${missing[*]}. Build them with: sudo bash deploy/home/build-images.sh MANIFEST.json"
+  check_release_stamps "$selector"
+}
+
 print_setup_link() {
   local host
   host=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME)

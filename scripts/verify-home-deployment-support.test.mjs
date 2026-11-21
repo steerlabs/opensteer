@@ -351,6 +351,43 @@ function runHome(script) {
   );
 }
 
+await test("a Home installed with local images checks the machine's images instead of pulling them", () => {
+  const composeConfig = JSON.stringify({
+    services: Object.fromEntries(
+      ["host", "gateway", "runner", "browser-runtime", "browser-egress", "channel-runtime"].map(
+        (service) => [service, { image: `local/opensteer-home-${service}:1.2.3` }],
+      ),
+    ),
+  });
+  const stubs = `
+    compose() {
+      if [[ $1 == config ]]; then printf '%s' ${quote(composeConfig)}; else echo "compose $*"; fi
+    }
+    check_release_stamps() { echo "stamps $1"; }
+  `;
+  const pulled = runHome(`${stubs}
+    docker() { echo "docker $*"; }
+    fetch_release_images "$home_dir/images.env"`);
+  assert.equal(pulled.status, 0, pulled.stderr);
+  assert.equal(pulled.stdout, "compose pull --quiet\n");
+  const local = runHome(`${stubs}
+    touch "$home_dir/local-images"
+    docker() { [[ $1 == image && $2 == inspect ]]; }
+    fetch_release_images "$home_dir/images.env"`);
+  assert.equal(local.status, 0, local.stderr);
+  assert.match(local.stdout, /^compose pull --quiet postgres\nstamps \/.*\/images\.env\n$/u);
+  const missing = runHome(`${stubs}
+    touch "$home_dir/local-images"
+    docker() { [[ $3 != local/opensteer-home-runner:1.2.3 && $3 != local/opensteer-home-host:1.2.3 ]]; }
+    fetch_release_images "$home_dir/images.env"`);
+  assert.notEqual(missing.status, 0);
+  assert.match(
+    missing.stderr,
+    /These Home images are not on this machine: local\/opensteer-home-host:1\.2\.3 local\/opensteer-home-runner:1\.2\.3\. Build them with: sudo bash deploy\/home\/build-images\.sh/u,
+  );
+  assert.doesNotMatch(missing.stdout, /stamps/u);
+});
+
 const backupHarness = (restic) => `
     source deploy/home/backup.sh
     backup_config() { :; }
