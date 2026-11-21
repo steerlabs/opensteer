@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -147,16 +147,14 @@ async function getHelperWorker(context, timeoutMs = 10_000) {
   while (Date.now() < deadline) {
     const sw = context.serviceWorkers().find((w) => w.url().endsWith("/sw.js"));
     if (sw) {
-      const ready = await sw.evaluate(() => typeof globalThis.__opensteer === "object").catch(() => false);
+      const ready = await sw
+        .evaluate(() => typeof globalThis.__opensteer === "object")
+        .catch(() => false);
       if (ready) return sw;
     }
     await delay(50);
   }
   throw new Error("Helper extension service worker never became ready on context.serviceWorkers()");
-}
-
-async function evalHelper(sw, expr) {
-  return await sw.evaluate(expr);
 }
 
 async function startFixtureServer() {
@@ -189,7 +187,8 @@ async function startFixtureServer() {
     clearRequests: () => {
       requests.length = 0;
     },
-    urlFor: (siteIdx, label) => `http://site-${siteIdx}.localhost:${port}/form-scroll?label=${label}`,
+    urlFor: (siteIdx, label) =>
+      `http://site-${siteIdx}.localhost:${port}/form-scroll?label=${label}`,
     close: () =>
       new Promise((resolve, reject) => {
         server.closeAllConnections();
@@ -202,7 +201,10 @@ async function runGate1ExtensionLifecycle(extDir) {
   const dir = await mkdtemp(path.join(tmpdir(), "os-gate1-"));
   removedDirs.push(dir);
   await mkdir(path.join(dir, "Default"), { recursive: true });
-  await writeFile(path.join(dir, "Default", "Preferences"), JSON.stringify({ session: { restore_on_startup: 1 } }));
+  await writeFile(
+    path.join(dir, "Default", "Preferences"),
+    JSON.stringify({ session: { restore_on_startup: 1 } }),
+  );
   const context = await chromium.launchPersistentContext(dir, {
     executablePath: chromium.executablePath(),
     ignoreDefaultArgs: true,
@@ -290,10 +292,15 @@ async function runGate1ExtensionLifecycle(extDir) {
 }
 
 async function runGate2DiscardWake(server, extDir, { webContentsDiscard }) {
-  const dir = await mkdtemp(path.join(tmpdir(), `os-gate2-${webContentsDiscard ? "wcd-" : "def-"}`));
+  const dir = await mkdtemp(
+    path.join(tmpdir(), `os-gate2-${webContentsDiscard ? "wcd-" : "def-"}`),
+  );
   removedDirs.push(dir);
   await mkdir(path.join(dir, "Default"), { recursive: true });
-  await writeFile(path.join(dir, "Default", "Preferences"), JSON.stringify({ session: { restore_on_startup: 1 } }));
+  await writeFile(
+    path.join(dir, "Default", "Preferences"),
+    JSON.stringify({ session: { restore_on_startup: 1 } }),
+  );
   const context = await chromium.launchPersistentContext(dir, {
     executablePath: chromium.executablePath(),
     ignoreDefaultArgs: true,
@@ -347,7 +354,10 @@ async function runGate2DiscardWake(server, extDir, { webContentsDiscard }) {
       newPages.push(p);
     });
 
-    const discardRes = await sw.evaluate((id) => globalThis.__opensteer.discardByTabId(id), tabBefore.tabId);
+    const discardRes = await sw.evaluate(
+      (id) => globalThis.__opensteer.discardByTabId(id),
+      tabBefore.tabId,
+    );
     await delay(1000);
 
     const discardedRenderers = countDescendantRenderers(rootPid);
@@ -358,7 +368,10 @@ async function runGate2DiscardWake(server, extDir, { webContentsDiscard }) {
 
     // Now test waking the discarded tab!
     const t0 = performance.now();
-    const wakeRes = await sw.evaluate((id) => globalThis.__opensteer.activateByTabId(id), discardRes.newTabId);
+    const wakeRes = await sw.evaluate(
+      (id) => globalThis.__opensteer.activateByTabId(id),
+      discardRes.newTabId,
+    );
     await delay(500);
 
     const invAfterWake = await sw.evaluate(() => globalThis.__opensteer.inventory());
@@ -428,10 +441,15 @@ async function runGate2DiscardWake(server, extDir, { webContentsDiscard }) {
 async function runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard }) {
   const TOTAL = 70;
   const BATCH = 10;
-  const dir = await mkdtemp(path.join(tmpdir(), `os-gate3-70-${webContentsDiscard ? "wcd-" : "def-"}`));
+  const dir = await mkdtemp(
+    path.join(tmpdir(), `os-gate3-70-${webContentsDiscard ? "wcd-" : "def-"}`),
+  );
   removedDirs.push(dir);
   await mkdir(path.join(dir, "Default"), { recursive: true });
-  await writeFile(path.join(dir, "Default", "Preferences"), JSON.stringify({ session: { restore_on_startup: 1 } }));
+  await writeFile(
+    path.join(dir, "Default", "Preferences"),
+    JSON.stringify({ session: { restore_on_startup: 1 } }),
+  );
 
   // Phase 1: create 70 distinct-origin tabs, freeze + discard in waves of 10, close cleanly.
   const ctx1 = await chromium.launchPersistentContext(dir, {
@@ -506,7 +524,8 @@ async function runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard 
     const playwrightPagesCount = ctx2.pages().length;
 
     // Pick an unloaded tab and try waking it
-    const unloaded = inv2.find((t) => t.status === "unloaded" || t.discarded) ?? inv2[inv2.length - 1];
+    const unloaded =
+      inv2.find((t) => t.status === "unloaded" || t.discarded) ?? inv2[inv2.length - 1];
     let wokeCheck = null;
     if (unloaded) {
       const tWake = performance.now();
@@ -529,7 +548,11 @@ async function runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard 
           ...state,
         };
       } else {
-        wokeCheck = { index: unloaded.index, tabId: unloaded.tabId, error: "no-matching-playwright-page" };
+        wokeCheck = {
+          index: unloaded.index,
+          tabId: unloaded.tabId,
+          error: "no-matching-playwright-page",
+        };
       }
     }
 
@@ -551,7 +574,8 @@ async function runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard 
       launchSucceeded: false,
       elapsedMs: Math.round(performance.now() - tLaunch),
       launchError,
-      eagerServerRequestCount: server.requests.filter((r) => r.path.startsWith("/form-scroll")).length,
+      eagerServerRequestCount: server.requests.filter((r) => r.path.startsWith("/form-scroll"))
+        .length,
     };
   } finally {
     await ctx2?.close().catch(() => {});
@@ -569,20 +593,32 @@ async function main() {
     report.gate1 = await runGate1ExtensionLifecycle(extDir);
     console.log(JSON.stringify(report.gate1, null, 2));
 
-    console.log("\n=== Gate 2A: Discard & wake through Playwright (default mode, NO WebContentsDiscard) ===");
+    console.log(
+      "\n=== Gate 2A: Discard & wake through Playwright (default mode, NO WebContentsDiscard) ===",
+    );
     report.gate2Default = await runGate2DiscardWake(server, extDir, { webContentsDiscard: false });
     console.log(JSON.stringify(report.gate2Default, null, 2));
 
-    console.log("\n=== Gate 2B: Discard & wake through Playwright (WebContentsDiscard enabled) ===");
+    console.log(
+      "\n=== Gate 2B: Discard & wake through Playwright (WebContentsDiscard enabled) ===",
+    );
     report.gate2Wcd = await runGate2DiscardWake(server, extDir, { webContentsDiscard: true });
     console.log(JSON.stringify(report.gate2Wcd, null, 2));
 
-    console.log("\n=== Gate 3A: 70 restored unloaded tabs through launchPersistentContext (default mode) ===");
-    report.gate3Default = await runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard: false });
+    console.log(
+      "\n=== Gate 3A: 70 restored unloaded tabs through launchPersistentContext (default mode) ===",
+    );
+    report.gate3Default = await runGate3SeventyRestoredTabs(server, extDir, {
+      webContentsDiscard: false,
+    });
     console.log(JSON.stringify(report.gate3Default, null, 2));
 
-    console.log("\n=== Gate 3B: 70 restored unloaded tabs through launchPersistentContext (WebContentsDiscard) ===");
-    report.gate3Wcd = await runGate3SeventyRestoredTabs(server, extDir, { webContentsDiscard: true });
+    console.log(
+      "\n=== Gate 3B: 70 restored unloaded tabs through launchPersistentContext (WebContentsDiscard) ===",
+    );
+    report.gate3Wcd = await runGate3SeventyRestoredTabs(server, extDir, {
+      webContentsDiscard: true,
+    });
     console.log(JSON.stringify(report.gate3Wcd, null, 2));
 
     await writeFile(

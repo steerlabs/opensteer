@@ -260,6 +260,7 @@ it("sleeps native Chromium tabs by discarding, restores scroll/forms/SPA/session
     headless: true,
   });
   const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     playwrightContext: { process(): { pid: number } };
     contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
@@ -433,6 +434,7 @@ it("keeps POST result and playing media tabs awake via existing blockers on nati
     headless: true,
   });
   const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
   cleanup.push(() => ledger.close());
@@ -481,6 +483,7 @@ it("hides the helper extension from tab lists, session CDP, and connected agents
     headless: true,
   });
   const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
     contextHandle: { lifecycle: ChromiumTabLifecycleBridge };

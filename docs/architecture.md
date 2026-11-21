@@ -343,6 +343,13 @@ Pages are separated by lineage; signed-in state is not. The isolation boundary f
 sign-ins is the browser profile. A connected agent works only in profiles granted to it, never in
 Guest. Two agents granted the same profile share its signed-in state.
 
+On Linux and Opensteer Cloud Computers, a native browser profile keeps Chromium's own session files
+(`Default/Sessions/`) and a strip-order id/address sidecar (`opensteer-tabs.json`) inside the
+profile directory so tabs survive cold browser restarts with scroll, standard form controls,
+navigation history and `sessionStorage`, reconciled against the Home's tab list. A sleeping tab on
+Linux is discarded in Chromium (freeing its renderer while keeping its tab state) through a minimal
+internal helper extension that is never visible to tab lists, session CDP or connected agents.
+
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
 `tab_list` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a

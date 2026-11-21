@@ -491,6 +491,19 @@ export class SurfaceLedger {
     record.restore.bytes = 0;
     void Promise.resolve(this.context.releaseRestore?.(engine)).catch(() => undefined);
   }
+  /** Persists the current tab strip mapping (surfaceId + URL) into the profile sidecar. */
+  async persistRestoredTabMap(): Promise<void> {
+    if (!this.context.persistRestoredTabMap) return;
+    const entries = [...this.records.values()]
+      .filter((record) => record.announced && record.lease.state !== "closing")
+      .map((record) => ({
+        surfaceId: record.id,
+        url: record.live?.committedUrl ?? record.url,
+        targetId: record.live?.targetId ?? null,
+        restore: record.restore?.engine ?? null,
+      }));
+    await this.context.persistRestoredTabMap(entries);
+  }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
   noteSleepBlocker(id: BrowserSurfaceId, reason: SleepBlocker | null): void {
     const page = this.records.get(id)?.live?.page;
@@ -1273,7 +1286,11 @@ export class SurfaceLedger {
       this.session,
       options.surfaceId ?? null,
       "open-failed",
-      (own) => this.context.createPage({ own }),
+      (own) =>
+        this.context.createPage({
+          own,
+          ...(options.surfaceId ? { surfaceId: options.surfaceId } : {}),
+        }),
     );
     try {
       page = await withTimeout(creation.page, 18_000, {

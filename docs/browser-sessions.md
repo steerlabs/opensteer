@@ -39,10 +39,20 @@ using its memory budget and idle policy; missing Host state keeps it awake. Harn
 do not release a Run's hold. Watch alone never marks a tab as used by a person. Selecting a sleeping
 tab or explicitly resuming it as an agent wakes the existing record within its admitted session.
 
-Restore state stays in runtime memory, never a database, stream or log. Electron can restore more
-in-page state than other engines; phones and Playwright promise only a descriptor and URL reload.
-Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
-while the durable descriptor still permits reopening.
+Restore state stays in runtime memory or inside the browser profile itself, never a database, stream
+or log. On macOS, Electron captures navigation history with Blink page state and `sessionStorage` in
+runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), a sleeping tab in a
+native Chromium profile is discarded in place via Chromium's own tab lifecycle (`chrome.tabs.discard`,
+after freezing to flush Blink page state and detaching CDP) through a minimal bundled MV3 helper
+extension (`tabs` and `debugger` permissions only, hidden from tab lists, session CDP and connected
+agents); closing a sleeping tab removes it from Chromium. Native Chromium profiles keep Chromium's
+own `Default/Sessions/` files across browser restarts (plus an atomic `opensteer-tabs.json` sidecar
+holding strip indices, Home tab ids and addresses only, never typed text or page content), and
+reconcile restored tabs against the Home's authoritative tab list — closing unowned restored tabs
+and opening unmatched Home tabs by address. Passwords, `contenteditable` drafts, in-progress uploads,
+playing media position and arbitrary script memory are never promised; POST results and playing
+media stay awake during tab sleep. Phones and Guest sessions promise only a descriptor and URL
+reload.
 
 Each engine hands every native page to the runtime as soon as it has a handle. A page the runtime
 can attribute belongs to one session: its creator, its opener's, or the session that adopts a raw

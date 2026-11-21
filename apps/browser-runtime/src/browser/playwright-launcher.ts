@@ -8,6 +8,7 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
+import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
 import {
   BrowserRuntimeError,
   pageUnnameableReason,
@@ -60,9 +61,16 @@ import {
   ChromiumTabLifecycleBridge,
   ensureTabLifecycleExtension,
   isInternalExtensionUrl,
+  type ChromiumTabEntry,
 } from "./tab-lifecycle-extension.js";
 
-import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
+import {
+  flushNativeCookies,
+  initializeNativePreferences,
+  matchRestoredTabs,
+  readTabRestoreSidecar,
+  writeTabRestoreSidecar,
+} from "./native-profile-storage.js";
 
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
 import {
@@ -658,7 +666,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         "--disable-component-extensions-with-background-pages",
         "--disable-component-update",
         "--disable-background-networking",
-        "--no-startup-window",
         "--restore-last-session",
         "--no-first-run",
         "--no-default-browser-check",
@@ -809,7 +816,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
       });
-      if (context.pages().length) throw new Error("Chromium restored unauthorized tabs.");
       // Keep one private blank target only while this bounded profile host is warm.
       // Without it, closing the last tab also discards Chromium's warm renderer.
       const helper = await context.newPage();
@@ -820,6 +826,37 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         typeof context.serviceWorkers === "function"
           ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
           : undefined;
+      const restoredTabs: ChromiumTabEntry[] = [];
+      if (lifecycle) {
+        let helperTargetId: string | null = null;
+        try {
+          const helperCdp = await context.newCDPSession(helper);
+          try {
+            const info = (await helperCdp.send("Target.getTargetInfo")) as {
+              targetInfo?: { targetId?: unknown };
+            };
+            helperTargetId =
+              typeof info.targetInfo?.targetId === "string" ? info.targetInfo.targetId : null;
+          } finally {
+            await helperCdp.detach().catch(() => undefined);
+          }
+        } catch {
+          helperTargetId = null;
+        }
+        const initialInventory = await lifecycle.inventory().catch(() => []);
+        for (const tab of initialInventory) {
+          if (tab.targetId !== null && tab.targetId === helperTargetId) continue;
+          if (isInternalExtensionUrl(tab.url)) continue;
+          if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") {
+            await lifecycle.removeByTabId(tab.tabId).catch(() => undefined);
+            continue;
+          }
+          restoredTabs.push(tab);
+        }
+      }
+      // Snapshot every non-helper page present after inventory (including any restored
+      // tabs Chromium finished initializing during launch) so none leak before claiming.
+      const preHelperPages = new Set(context.pages().filter((page) => page !== helper));
       const launched = new PlaywrightLaunchedBrowser(
         owner,
         context,
@@ -831,6 +868,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         helper,
         true,
         lifecycle,
+        directory,
+        restoredTabs,
+        preHelperPages,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
@@ -871,6 +911,9 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     privatePage?: Page,
     dedicatedContext = false,
     lifecycle?: ChromiumTabLifecycleBridge,
+    profileDirectory?: string,
+    restoredTabs: readonly ChromiumTabEntry[] = [],
+    preHelperPages: ReadonlySet<Page> = new Set(),
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -884,6 +927,9 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       providerConfig,
       privatePage,
       lifecycle,
+      profileDirectory,
+      restoredTabs,
+      preHelperPages,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -1008,7 +1054,7 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly context: PlaywrightBrowserContext;
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
-  private readonly pageListeners = new Map<(page: BrowserPage) => void, (page: Page) => void>();
+  private readonly pageListeners = new Set<(page: BrowserPage) => void>();
   private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   /** Closes one page target through the browser's own debugger, around Playwright. */
   closeTarget: ((targetId: string) => Promise<void>) | undefined;
@@ -1018,9 +1064,16 @@ class PlaywrightContextHandle implements BrowserContext {
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
   readonly lifecycle: ChromiumTabLifecycleBridge | undefined;
+  private readonly profileDirectory: string | undefined;
   private readonly privatePage: Page | undefined;
   private readonly sleepingTabs = new Map<string, { tabId: number; url: string }>();
   private readonly claimedWakePages = new WeakSet<Page>();
+  private readonly hiddenRestoredPages = new WeakSet<Page>();
+  private readonly routingPages = new WeakSet<Page>();
+  private readonly unclaimedRestoredTabs = new Map<number, ChromiumTabEntry>();
+  private readonly unclaimedRestoredTargetIds = new Set<string>();
+  private readonly restoredPagesByTabId = new Map<number, Page>();
+  private readonly restoredBySurfaceId = new Map<BrowserSurfaceId, ChromiumTabEntry>();
   private readonly wakeWaiters = new Set<{
     readonly tabId: number;
     readonly expectedTargetId: string | null;
@@ -1034,15 +1087,30 @@ class PlaywrightContextHandle implements BrowserContext {
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
     lifecycle?: ChromiumTabLifecycleBridge,
+    profileDirectory?: string,
+    restoredTabs: readonly ChromiumTabEntry[] = [],
+    preHelperPages: ReadonlySet<Page> = new Set(),
   ) {
     this.privatePage = privatePage;
     this.lifecycle = lifecycle;
+    this.profileDirectory = profileDirectory;
     this.authenticator = authenticator;
     this.providerConfig = providerConfig;
     this.context = context;
+    for (const page of preHelperPages) {
+      if (page !== privatePage) this.hiddenRestoredPages.add(page);
+    }
+    for (const tab of restoredTabs) {
+      this.unclaimedRestoredTabs.set(tab.tabId, tab);
+      if (tab.targetId) this.unclaimedRestoredTargetIds.add(tab.targetId);
+    }
     context.on("close", () => {
       this.closed = true;
       this.sleepingTabs.clear();
+      this.unclaimedRestoredTabs.clear();
+      this.unclaimedRestoredTargetIds.clear();
+      this.restoredPagesByTabId.clear();
+      this.restoredBySurfaceId.clear();
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
@@ -1050,21 +1118,27 @@ class PlaywrightContextHandle implements BrowserContext {
     // event, in the same turn; one microtask later both are known.
     context.on("page", (page) => {
       if (this.isHiddenPage(page)) return;
-      if (this.wakeWaiters.size > 0) {
+      if (this.wakeWaiters.size > 0 || this.unclaimedRestoredTabs.size > 0) {
+        // Hide synchronously while routing so concurrent pages()/handOff() calls
+        // never expose an unclaimed restored or waking tab before classification.
+        this.routingPages.add(page);
         void this.routeOrHandOffPage(page);
         return;
       }
       const handle = this.wrap(page);
       queueMicrotask(() => {
-        if (this.claimedWakePages.has(page)) return;
+        if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
         for (const listener of this.handOffs) listener(handle, handle.openerHandle);
       });
+      for (const listener of this.pageListeners) listener(handle);
     });
     this.openDialogs = openDialogs;
   }
 
   private isHiddenPage(page: Page): boolean {
     if (page === this.privatePage) return true;
+    if (this.hiddenRestoredPages.has(page)) return true;
+    if (this.routingPages.has(page)) return true;
     const url = typeof page.url === "function" ? page.url() : "";
     return isInternalExtensionUrl(url);
   }
@@ -1090,26 +1164,157 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   private async routeOrHandOffPage(page: Page): Promise<void> {
-    const targetId = await this.targetIdOfPage(page);
-    if (targetId && this.wakeWaiters.size > 0) {
-      let matched = [...this.wakeWaiters].find((waiter) => waiter.expectedTargetId === targetId);
-      if (!matched && this.lifecycle) {
-        const inventory = await this.lifecycle.inventory().catch(() => []);
-        const tab = inventory.find((entry) => entry.targetId === targetId);
-        if (tab) {
-          matched = [...this.wakeWaiters].find((waiter) => waiter.tabId === tab.tabId);
+    try {
+      const targetId = await this.targetIdOfPage(page);
+      if (this.claimedWakePages.has(page)) return;
+      if (targetId && this.wakeWaiters.size > 0) {
+        let matched = [...this.wakeWaiters].find((waiter) => waiter.expectedTargetId === targetId);
+        if (!matched && this.lifecycle) {
+          const inventory = await this.lifecycle.inventory().catch(() => []);
+          const tab = inventory.find((entry) => entry.targetId === targetId);
+          if (tab) {
+            matched = [...this.wakeWaiters].find((waiter) => waiter.tabId === tab.tabId);
+          }
+        }
+        if (matched) {
+          this.wakeWaiters.delete(matched);
+          this.hiddenRestoredPages.delete(page);
+          this.routingPages.delete(page);
+          this.claimedWakePages.add(page);
+          matched.resolve(page);
+          return;
         }
       }
-      if (matched) {
-        this.wakeWaiters.delete(matched);
-        this.claimedWakePages.add(page);
-        matched.resolve(page);
-        return;
+      if (targetId && this.unclaimedRestoredTabs.size > 0) {
+        let restoredTab = [...this.unclaimedRestoredTabs.values()].find(
+          (entry) => entry.targetId === targetId,
+        );
+        if (!restoredTab && this.lifecycle) {
+          const inventory = await this.lifecycle.inventory().catch(() => []);
+          const liveEntry = inventory.find((entry) => entry.targetId === targetId);
+          if (liveEntry) restoredTab = this.unclaimedRestoredTabs.get(liveEntry.tabId);
+        }
+        if (restoredTab) {
+          this.hiddenRestoredPages.add(page);
+          this.routingPages.delete(page);
+          this.restoredPagesByTabId.set(restoredTab.tabId, page);
+          return;
+        }
       }
+      this.routingPages.delete(page);
+      if (page.isClosed() || this.isHiddenPage(page) || this.claimedWakePages.has(page)) return;
+      const handle = this.wrap(page);
+      for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+      for (const listener of this.pageListeners) listener(handle);
+    } finally {
+      this.routingPages.delete(page);
     }
-    if (page.isClosed() || this.isHiddenPage(page) || this.claimedWakePages.has(page)) return;
-    const handle = this.wrap(page);
-    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+  }
+
+  async reconcileRestoredTabs(
+    homeTabs: readonly { readonly surfaceId: BrowserSurfaceId; readonly url: string }[],
+  ): Promise<ReadonlySet<BrowserSurfaceId>> {
+    if (!this.lifecycle || !this.profileDirectory) return new Set();
+    const sidecar = await readTabRestoreSidecar(this.profileDirectory);
+    const { matched, orphans } = matchRestoredTabs(
+      [...this.unclaimedRestoredTabs.values()],
+      sidecar,
+      homeTabs,
+    );
+    for (const orphan of orphans) {
+      this.unclaimedRestoredTabs.delete(orphan.tabId);
+      if (orphan.targetId) this.unclaimedRestoredTargetIds.delete(orphan.targetId);
+      this.restoredPagesByTabId.delete(orphan.tabId);
+      await this.lifecycle.removeByTabId(orphan.tabId).catch(() => undefined);
+    }
+    this.restoredBySurfaceId.clear();
+    for (const [surfaceId, tab] of matched) {
+      this.restoredBySurfaceId.set(surfaceId as BrowserSurfaceId, tab);
+    }
+    return new Set(this.restoredBySurfaceId.keys());
+  }
+
+  async persistRestoredTabMap(
+    tabs: readonly {
+      readonly surfaceId: BrowserSurfaceId;
+      readonly url: string;
+      readonly targetId: string | null;
+      readonly restore: unknown;
+    }[],
+  ): Promise<void> {
+    if (!this.lifecycle || !this.profileDirectory) return;
+    const inventory = await this.lifecycle.inventory().catch(() => []);
+    const byTargetId = new Map<string, ChromiumTabEntry>();
+    const byTabId = new Map<number, ChromiumTabEntry>();
+    for (const entry of inventory) {
+      byTabId.set(entry.tabId, entry);
+      if (entry.targetId) byTargetId.set(entry.targetId, entry);
+    }
+    const mapped: Array<{
+      windowId: number;
+      stripIndex: number;
+      surfaceId: string;
+      url: string;
+    }> = [];
+    for (const tab of tabs) {
+      let entry: ChromiumTabEntry | undefined;
+      if (tab.targetId) entry = byTargetId.get(tab.targetId);
+      if (!entry) {
+        const discardRestore = parseChromiumDiscardRestore(tab.restore);
+        const sleeping = discardRestore ? this.sleepingTabs.get(discardRestore.tokenId) : undefined;
+        if (sleeping) entry = byTabId.get(sleeping.tabId);
+      }
+      if (!entry) continue;
+      mapped.push({
+        windowId: entry.windowId,
+        stripIndex: entry.index,
+        surfaceId: tab.surfaceId,
+        url: entry.url || tab.url,
+      });
+    }
+    mapped.sort((a, b) => a.windowId - b.windowId || a.stripIndex - b.stripIndex);
+    await writeTabRestoreSidecar(
+      this.profileDirectory,
+      mapped.map((item, index) => ({
+        index,
+        surfaceId: item.surfaceId,
+        url: item.url,
+      })),
+    );
+  }
+
+  private async claimRestoredTab(tab: ChromiumTabEntry): Promise<Page> {
+    try {
+      const cached = this.restoredPagesByTabId.get(tab.tabId);
+      this.restoredPagesByTabId.delete(tab.tabId);
+      if (cached && !cached.isClosed()) {
+        this.hiddenRestoredPages.delete(cached);
+        this.routingPages.delete(cached);
+        this.claimedWakePages.add(cached);
+        return cached;
+      }
+      if (tab.targetId) {
+        for (const candidate of this.context.pages()) {
+          if (candidate === this.privatePage || candidate.isClosed()) continue;
+          const candidateTargetId = await this.targetIdOfPage(candidate);
+          if (candidateTargetId === tab.targetId) {
+            this.hiddenRestoredPages.delete(candidate);
+            this.routingPages.delete(candidate);
+            this.claimedWakePages.add(candidate);
+            return candidate;
+          }
+        }
+      }
+      const woken = await this.wakeDiscardedTab(tab.tabId);
+      this.hiddenRestoredPages.delete(woken);
+      this.routingPages.delete(woken);
+      this.claimedWakePages.add(woken);
+      return woken;
+    } finally {
+      this.unclaimedRestoredTabs.delete(tab.tabId);
+      if (tab.targetId) this.unclaimedRestoredTargetIds.delete(tab.targetId);
+      this.restoredPagesByTabId.delete(tab.tabId);
+    }
   }
 
   async activatePrivateAnchor(): Promise<void> {
@@ -1149,11 +1354,22 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!activated) throw new Error("Chromium could not activate sleeping tab.");
 
       // Check existing Playwright pages in case the page already materialized.
+      const cached = this.restoredPagesByTabId.get(tabId);
+      if (cached && !cached.isClosed()) {
+        this.wakeWaiters.delete(waiter);
+        this.hiddenRestoredPages.delete(cached);
+        this.claimedWakePages.add(cached);
+        return cached;
+      }
       for (const candidate of this.context.pages()) {
-        if (this.isHiddenPage(candidate) || candidate.isClosed()) continue;
+        if (candidate === this.privatePage || candidate.isClosed()) continue;
+        if (isInternalExtensionUrl(typeof candidate.url === "function" ? candidate.url() : "")) {
+          continue;
+        }
         const candidateTargetId = await this.targetIdOfPage(candidate);
         if (candidateTargetId && candidateTargetId === entry.targetId) {
           this.wakeWaiters.delete(waiter);
+          this.hiddenRestoredPages.delete(candidate);
           this.claimedWakePages.add(candidate);
           return candidate;
         }
@@ -1186,6 +1402,7 @@ class PlaywrightContextHandle implements BrowserContext {
 
   async createPage(options?: {
     readonly restore?: unknown;
+    readonly surfaceId?: BrowserSurfaceId;
     readonly own?: (page: BrowserPage) => void;
   }): Promise<BrowserPage> {
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
@@ -1212,26 +1429,32 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       return fallback;
     }
+    const restoredTab = options?.surfaceId
+      ? this.restoredBySurfaceId.get(options.surfaceId)
+      : undefined;
+    if (restoredTab && this.lifecycle) {
+      this.restoredBySurfaceId.delete(options!.surfaceId!);
+      try {
+        const restoredPage = await this.claimRestoredTab(restoredTab);
+        const handle = this.wrap(restoredPage);
+        handle.restoredFromSession = true;
+        options?.own?.(handle);
+        return handle;
+      } catch {
+        await this.lifecycle.removeByTabId(restoredTab.tabId).catch(() => undefined);
+      }
+    }
     const handle = this.wrap(await this.context.newPage());
     options?.own?.(handle);
     return handle;
   }
 
   onPage(listener: (page: BrowserPage) => void): void {
-    const existing = this.pageListeners.get(listener);
-    if (existing) return;
-    const wrappedListener = (page: Page) => {
-      if (!this.isHiddenPage(page) && !this.claimedWakePages.has(page)) listener(this.wrap(page));
-    };
-    this.pageListeners.set(listener, wrappedListener);
-    this.context.on("page", wrappedListener);
+    this.pageListeners.add(listener);
   }
 
   offPage(listener: (page: BrowserPage) => void): void {
-    const wrappedListener = this.pageListeners.get(listener);
-    if (!wrappedListener) return;
     this.pageListeners.delete(listener);
-    this.context.off("page", wrappedListener);
   }
 
   isClosed(): boolean {
@@ -1289,6 +1512,7 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 
 class PlaywrightPageHandle implements BrowserPage {
   readonly captureRestore?: () => Promise<unknown | null>;
+  restoredFromSession = false;
   private pendingDiscard: {
     readonly tokenId: string;
     readonly tabId: number;

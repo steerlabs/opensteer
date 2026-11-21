@@ -1,11 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  createTempProfileDir,
-  launchChromium,
-  removeTempProfileDir,
-} from "./lib/cdp-browser.mjs";
+import { createTempProfileDir, launchChromium, removeTempProfileDir } from "./lib/cdp-browser.mjs";
 import { startFixtureServer } from "./lib/fixture-server.mjs";
 
 const removedDirs = [];
@@ -78,9 +74,7 @@ async function attachExtensionWorker(browser, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { targetInfos } = await browser.send("Target.getTargets");
-    const sw = targetInfos.find(
-      (t) => t.type === "service_worker" && t.url.endsWith("/sw.js"),
-    );
+    const sw = targetInfos.find((t) => t.type === "service_worker" && t.url.endsWith("/sw.js"));
     if (sw) {
       const sid = await browser.attach(sw.targetId);
       // Wait for sw.js top-level script to finish registering globalThis.__opensteer.
@@ -119,8 +113,8 @@ async function normalizeCrashExitType(userDataDir) {
     exit_type: prefs.profile?.exit_type,
     exited_cleanly: prefs.profile?.exited_cleanly,
   };
-  prefs.profile = { ...(prefs.profile ?? {}), exit_type: "Normal", exited_cleanly: true };
-  prefs.session = { ...(prefs.session ?? {}), restore_on_startup: 1 };
+  prefs.profile = { ...prefs.profile, exit_type: "Normal", exited_cleanly: true };
+  prefs.session = { ...prefs.session, restore_on_startup: 1 };
   await writeFile(prefPath, JSON.stringify(prefs));
   return previous;
 }
@@ -192,7 +186,10 @@ async function main() {
           spec.finalUrl = spec.url;
         }
         if (spec.ss) {
-          await b1.evalInSession(sid, `sessionStorage.setItem("wizard_step", ${JSON.stringify(spec.ss)})`);
+          await b1.evalInSession(
+            sid,
+            `sessionStorage.setItem("wizard_step", ${JSON.stringify(spec.ss)})`,
+          );
         }
         spec.targetId = targetId;
         await b1.detach(sid);
@@ -200,7 +197,8 @@ async function main() {
 
       // Close initial NTP tab and surf_closed tab
       for (const init of initialInv) {
-        if (init.targetId) await b1.send("Target.closeTarget", { targetId: init.targetId }).catch(() => {});
+        if (init.targetId)
+          await b1.send("Target.closeTarget", { targetId: init.targetId }).catch(() => {});
       }
       const closedSpec = specs.find((s) => s.closeMe);
       await b1.send("Target.closeTarget", { targetId: closedSpec.targetId });
@@ -310,7 +308,10 @@ async function main() {
         const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
           const ready = await b2
-            .evalInSession(sid, "document.readyState === 'complete' && location.href !== 'about:blank'")
+            .evalInSession(
+              sid,
+              "document.readyState === 'complete' && location.href !== 'about:blank'",
+            )
             .catch(() => false);
           if (ready) break;
           await delay(30);

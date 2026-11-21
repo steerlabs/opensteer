@@ -1,11 +1,7 @@
 import { readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  createTempProfileDir,
-  launchChromium,
-  removeTempProfileDir,
-} from "./lib/cdp-browser.mjs";
+import { createTempProfileDir, launchChromium, removeTempProfileDir } from "./lib/cdp-browser.mjs";
 import { startFixtureServer } from "./lib/fixture-server.mjs";
 
 const removedDirs = [];
@@ -125,7 +121,10 @@ async function populatePage(browser, sessionId, origin, kind) {
     const loaded = browser.waitForEvent(
       (method, _params, sid) => sid === sessionId && method === "Page.loadEventFired",
     );
-    await browser.evalInSession(sessionId, "setTimeout(() => document.getElementById('go').click(), 0); true");
+    await browser.evalInSession(
+      sessionId,
+      "setTimeout(() => document.getElementById('go').click(), 0); true",
+    );
     await loaded;
     await delay(150);
     return await inspectPage(browser, sessionId, kind);
@@ -280,15 +279,7 @@ async function inspectPage(browser, sessionId, kind, { testBack = false } = {}) 
   throw new Error(`Unknown kind: ${kind}`);
 }
 
-const PAGE_KINDS = [
-  "article",
-  "form",
-  "spa",
-  "sessionStorage",
-  "post",
-  "beforeunload",
-  "media",
-];
+const PAGE_KINDS = ["article", "form", "spa", "sessionStorage", "post", "beforeunload", "media"];
 
 /** Helper: call chrome://discards Mojo DetailsProvider from a private helper tab. */
 async function openDiscardsHelper(browser) {
@@ -368,13 +359,9 @@ async function runBaseline(server) {
         const sid = await browser.attach(targetId);
         const before = await populatePage(browser, sid, server.origin, kind);
         const savedUrl = await browser.evalInSession(sid, "location.href");
-        let dialogSeenOnClose = false;
         const offDlg = browser.onEvent((method, params, eventSid) => {
           if (eventSid === sid && method === "Page.javascriptDialogOpening") {
-            dialogSeenOnClose = true;
-            void browser
-              .send("Page.handleJavaScriptDialog", { accept: true }, sid)
-              .catch(() => {});
+            void browser.send("Page.handleJavaScriptDialog", { accept: true }, sid).catch(() => {});
           }
         });
         // Simulate current Linux sleep: closeTarget (with runBeforeUnload=false equivalent)
@@ -629,7 +616,11 @@ async function runOptionB(server, { crash = false } = {}) {
 
       // Notice we do NOT touch chrome://discards in Option B (uses stock prefs only).
       const closedSentinelCameBack = targets.some((t) => t.url.includes("closed-tab-sentinel"));
-      const restoredOrder = targets.map((t) => ({ targetId: t.targetId, url: t.url, title: t.title }));
+      const restoredOrder = targets.map((t) => ({
+        targetId: t.targetId,
+        url: t.url,
+        title: t.title,
+      }));
 
       const results = {};
       for (const item of openedOrder) {
@@ -961,10 +952,14 @@ async function main() {
     console.log("\n=== Running Option C (Tab Discard via chrome://discards, default) ===");
     out.optionCDefault = await runOptionC(server, { enableWebContentsDiscard: false });
 
-    console.log("\n=== Running Option C (Tab Discard via chrome://discards, WebContentsDiscard) ===");
+    console.log(
+      "\n=== Running Option C (Tab Discard via chrome://discards, WebContentsDiscard) ===",
+    );
     out.optionCWcd = await runOptionC(server, { enableWebContentsDiscard: true });
 
-    console.log("\n=== Running Hybrid C + B (Discard tabs, then restart with --restore-last-session) ===");
+    console.log(
+      "\n=== Running Hybrid C + B (Discard tabs, then restart with --restore-last-session) ===",
+    );
     out.hybridCPlusB = await runOptionC(server, {
       enableWebContentsDiscard: true,
       testRestartWhileDiscarded: true,

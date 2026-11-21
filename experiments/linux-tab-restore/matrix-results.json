@@ -11,10 +11,7 @@
         "scrollY": 0,
         "historyCount": 2
       },
-      "networkRequestsOnWake": [
-        "GET /article",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /article", "GET /favicon.ico"]
     },
     "form": {
       "before": {
@@ -35,10 +32,7 @@
         "contenteditable": "initial",
         "historyCount": 2
       },
-      "networkRequestsOnWake": [
-        "GET /form",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /form", "GET /favicon.ico"]
     },
     "spa": {
       "before": {
@@ -61,10 +55,7 @@
         "pathname": "/spa/step-3",
         "historyLength": 2,
         "state": null,
-        "cdpHistoryUrls": [
-          "about:blank",
-          "http://127.0.0.1:50730/spa/step-3"
-        ],
+        "cdpHistoryUrls": ["about:blank", "http://127.0.0.1:50730/spa/step-3"],
         "cdpCurrentIndex": 1,
         "afterBack": {
           "href": "about:blank",
@@ -73,11 +64,7 @@
           "popEvents": null
         }
       },
-      "networkRequestsOnWake": [
-        "GET /spa/step-3",
-        "GET /favicon.ico",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /spa/step-3", "GET /favicon.ico", "GET /favicon.ico"]
     },
     "sessionStorage": {
       "before": {
@@ -90,10 +77,7 @@
         "cartCount": null,
         "readAtLoad": null
       },
-      "networkRequestsOnWake": [
-        "GET /session-storage",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /session-storage", "GET /favicon.ico"]
     },
     "post": {
       "before": {
@@ -108,10 +92,7 @@
         "body": "",
         "nonce": "2"
       },
-      "networkRequestsOnWake": [
-        "GET /post-result",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /post-result", "GET /favicon.ico"]
     },
     "beforeunload": {
       "before": {
@@ -126,10 +107,7 @@
         "beforeUnloadFired": false,
         "handlerActive": true
       },
-      "networkRequestsOnWake": [
-        "GET /beforeunload",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /beforeunload", "GET /favicon.ico"]
     },
     "media": {
       "before": {
@@ -144,10 +122,7 @@
         "currentTime": 0,
         "playResult": null
       },
-      "networkRequestsOnWake": [
-        "GET /media",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /media", "GET /favicon.ico"]
     }
   },
   "optionA": {
@@ -163,10 +138,7 @@
         "historyCount": 2
       },
       "capturedBytes": 491,
-      "networkRequestsOnWake": [
-        "GET /article",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /article", "GET /favicon.ico"]
     },
     "form": {
       "before": {
@@ -188,10 +160,7 @@
         "historyCount": 2
       },
       "capturedBytes": 766,
-      "networkRequestsOnWake": [
-        "GET /form",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /form", "GET /favicon.ico"]
     },
     "spa": {
       "before": {
@@ -257,10 +226,7 @@
         "readAtLoad": "step-4-confirmed"
       },
       "capturedBytes": 575,
-      "networkRequestsOnWake": [
-        "GET /session-storage",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /session-storage", "GET /favicon.ico"]
     },
     "post": {
       "before": {
@@ -276,11 +242,7 @@
         "nonce": "4"
       },
       "capturedBytes": 653,
-      "networkRequestsOnWake": [
-        "GET /post-result",
-        "GET /favicon.ico",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /post-result", "GET /favicon.ico", "GET /favicon.ico"]
     },
     "beforeunload": {
       "before": {
@@ -296,10 +258,7 @@
         "handlerActive": true
       },
       "capturedBytes": 571,
-      "networkRequestsOnWake": [
-        "GET /beforeunload",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /beforeunload", "GET /favicon.ico"]
     },
     "media": {
       "before": {
@@ -315,18 +274,12 @@
         "playResult": null
       },
       "capturedBytes": 485,
-      "networkRequestsOnWake": [
-        "GET /media",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /media", "GET /favicon.ico"]
     }
   },
   "optionBClean": {
     "crash": false,
-    "sessionFiles": [
-      "Session_13439726147351986",
-      "Tabs_13439726147880598"
-    ],
+    "sessionFiles": ["Session_13439726147351986", "Tabs_13439726147880598"],
     "restoredCount": 7,
     "expectedCount": 7,
     "closedSentinelCameBack": false,
@@ -349,11 +302,7 @@
       "http://127.0.0.1:50730/session-storage"
     ],
     "orderPreserved": false,
-    "requestsRightAfterLaunch": [
-      "GET /favicon.ico",
-      "GET /favicon.ico",
-      "GET /favicon.ico"
-    ],
+    "requestsRightAfterLaunch": ["GET /favicon.ico", "GET /favicon.ico", "GET /favicon.ico"],
     "pages": {
       "article": {
         "before": {
@@ -387,9 +336,7 @@
           "contenteditable": "initial",
           "historyCount": 2
         },
-        "networkRequestsOnActivate": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnActivate": ["GET /favicon.ico"]
       },
       "spa": {
         "before": {
@@ -501,10 +448,7 @@
   },
   "optionBCrash": {
     "crash": true,
-    "sessionFiles": [
-      "Session_13439726155031008",
-      "Tabs_13439726157007154"
-    ],
+    "sessionFiles": ["Session_13439726155031008", "Tabs_13439726157007154"],
     "restoredCount": 7,
     "expectedCount": 7,
     "closedSentinelCameBack": false,
@@ -527,11 +471,7 @@
       "http://127.0.0.1:50730/session-storage"
     ],
     "orderPreserved": false,
-    "requestsRightAfterLaunch": [
-      "GET /favicon.ico",
-      "GET /favicon.ico",
-      "GET /favicon.ico"
-    ],
+    "requestsRightAfterLaunch": ["GET /favicon.ico", "GET /favicon.ico", "GET /favicon.ico"],
     "pages": {
       "article": {
         "before": {
@@ -565,9 +505,7 @@
           "contenteditable": "initial",
           "historyCount": 2
         },
-        "networkRequestsOnActivate": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnActivate": ["GET /favicon.ico"]
       },
       "spa": {
         "before": {
@@ -627,9 +565,7 @@
           "cartCount": null,
           "readAtLoad": null
         },
-        "networkRequestsOnActivate": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnActivate": ["GET /favicon.ico"]
       },
       "post": {
         "before": {
@@ -701,9 +637,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "2FA2ADF44C6F3E9948058C1E5DFD2205",
         "targetIdAfter": "4B24716CA684216C75B5C02BA86F5A31",
         "targetIdPreserved": false,
@@ -751,9 +685,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "0D0B444EEA979BCBB5659C0D5F8EB1F8",
         "targetIdAfter": "63B58AB574A4D50F1719D0CE11007D13",
         "targetIdPreserved": false,
@@ -775,9 +707,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "B5CE1434BB1F13D2DE93C309F62AC8A4",
         "targetIdAfter": "B136A707715B0EE85572591E4A2E0E14",
         "targetIdPreserved": false,
@@ -799,9 +729,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "37C49E556D786674BCA5C16D33E3D0E3",
         "targetIdAfter": "E6715101ADAF1AFC57C0F3C5645DD6E8",
         "targetIdPreserved": false,
@@ -849,10 +777,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible",
-          "Tab is playing audio"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible", "Tab is playing audio"],
         "targetIdBefore": "A1F645709D5A14002F68AB94B5185E3C",
         "targetIdAfter": "E4731C25D74A3F7E313374C4B14A249A",
         "targetIdPreserved": false,
@@ -883,9 +808,7 @@
           "historyCount": 2
         },
         "wakeMs": 42,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "form": {
         "before": {
@@ -907,9 +830,7 @@
           "historyCount": 2
         },
         "wakeMs": 43,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "spa": {
         "before": {
@@ -972,9 +893,7 @@
           "readAtLoad": "step-4-confirmed"
         },
         "wakeMs": 43,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "post": {
         "before": {
@@ -1006,9 +925,7 @@
           "handlerActive": true
         },
         "wakeMs": 42,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "media": {
         "before": {
@@ -1024,9 +941,7 @@
           "playResult": null
         },
         "wakeMs": 97,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       }
     }
   },
@@ -1053,9 +968,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "BFDD6B277B8AD9AE0B46D415BF681351",
         "targetIdAfter": "BFDD6B277B8AD9AE0B46D415BF681351",
         "targetIdPreserved": true,
@@ -1081,9 +994,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "AE176BBA252DD66B4378E1683FFCBB59",
         "targetIdAfter": "AE176BBA252DD66B4378E1683FFCBB59",
         "targetIdPreserved": true,
@@ -1094,9 +1005,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "9C8A8A36A86E13A201547D87494D3987",
         "targetIdAfter": "9C8A8A36A86E13A201547D87494D3987",
         "targetIdPreserved": true,
@@ -1107,9 +1016,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible"],
         "targetIdBefore": "50C805EBACE6B63950DE10AFBB380CA2",
         "targetIdAfter": "50C805EBACE6B63950DE10AFBB380CA2",
         "targetIdPreserved": true,
@@ -1135,10 +1042,7 @@
         "stateBefore": 0,
         "stateAfter": 5,
         "canDiscardUrgent": false,
-        "cannotDiscardReasonsUrgent": [
-          "Tab is recently visible",
-          "Tab is playing audio"
-        ],
+        "cannotDiscardReasonsUrgent": ["Tab is recently visible", "Tab is playing audio"],
         "targetIdBefore": "685C9596B46EFBF854FA954948C69675",
         "targetIdAfter": "685C9596B46EFBF854FA954948C69675",
         "targetIdPreserved": true,
@@ -1158,9 +1062,7 @@
           "historyCount": 2
         },
         "wakeMs": 46,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "form": {
         "before": {
@@ -1182,9 +1084,7 @@
           "historyCount": 2
         },
         "wakeMs": 47,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "spa": {
         "before": {
@@ -1253,9 +1153,7 @@
           "readAtLoad": "step-4-confirmed"
         },
         "wakeMs": 45,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "post": {
         "before": {
@@ -1287,9 +1185,7 @@
           "handlerActive": true
         },
         "wakeMs": 47,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "media": {
         "before": {
@@ -1305,9 +1201,7 @@
           "playResult": null
         },
         "wakeMs": 103,
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       }
     }
   },
@@ -1350,9 +1244,7 @@
           "contenteditable": "initial",
           "historyCount": 2
         },
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "spa": {
         "before": {
@@ -1412,9 +1304,7 @@
           "cartCount": "3",
           "readAtLoad": "step-4-confirmed"
         },
-        "networkRequestsOnWake": [
-          "GET /favicon.ico"
-        ]
+        "networkRequestsOnWake": ["GET /favicon.ico"]
       },
       "post": {
         "before": {
@@ -1563,10 +1453,7 @@
       "freezeCount": 1,
       "resumeCount": 1,
       "wakeMs": 0,
-      "networkRequestsOnWake": [
-        "GET /favicon.ico",
-        "GET /favicon.ico"
-      ]
+      "networkRequestsOnWake": ["GET /favicon.ico", "GET /favicon.ico"]
     },
     "sessionStorage": {
       "before": {

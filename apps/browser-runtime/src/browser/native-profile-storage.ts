@@ -1,38 +1,203 @@
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserCookieFromCdp } from "@opensteer/browser-profile/cookies";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CDPSession } from "playwright-core";
+import { z } from "zod";
+import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 
+export const tabRestoreSidecarFilename = "opensteer-tabs.json";
+
+const tabRestoreSidecarEntrySchema = z.object({
+  index: z.number().int().nonnegative(),
+  surfaceId: z.string().min(1),
+  url: z.string(),
+});
+
+const tabRestoreSidecarSchema = z.object({
+  version: z.literal(1),
+  tabs: z.array(tabRestoreSidecarEntrySchema),
+});
+
+export type TabRestoreSidecarEntry = z.infer<typeof tabRestoreSidecarEntrySchema>;
+
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(tempPath, content, { mode: 0o600 });
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Prepares Chromium's native profile Preferences while preserving Chromium's own
+ * `Default/Sessions/` files for cold-start session restore. When Chromium exited
+ * uncleanly (e.g. `SIGKILL` or host crash), resets `profile.exit_type` to
+ * `"Normal"` so `--restore-last-session` automatically restores the session
+ * instead of pausing on an unclean-exit recovery bubble.
+ */
 export async function initializeNativePreferences(directory: string): Promise<void> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
-  // The runtime holds the root lock and this profile's lifecycle lane, with no
-  // browser owning this directory. Chromium defers tab restore to the first
-  // window; Opensteer's durable tab descriptors are the only tab-restore authority.
-  const sessions = path.join(directory, "Default", "Sessions");
-  const records = await readdir(sessions, { withFileTypes: true }).catch((error) => {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  });
-  for (const record of records) {
-    if (
-      !/^(?:Session_.*|Tabs_.*|Current Session|Last Session|Current Tabs|Last Tabs)$/u.test(
-        record.name,
-      )
-    )
-      continue;
-    if (!record.isFile()) throw new Error("Chromium tab-restore record is not a regular file.");
-    await unlink(path.join(sessions, record.name));
-  }
-  await mkdir(path.join(directory, "Default"), { recursive: true, mode: 0o700 });
-  await writeFile(
-    path.join(directory, "Default", "Preferences"),
-    JSON.stringify({ session: { restore_on_startup: 1 } }),
-    { flag: "wx", mode: 0o600 },
-  ).catch((error) => {
+  const defaultDir = path.join(directory, "Default");
+  const preferencesPath = path.join(defaultDir, "Preferences");
+  await mkdir(defaultDir, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(preferencesPath, JSON.stringify({ session: { restore_on_startup: 1 } }), {
+      flag: "wx",
+      mode: 0o600,
+    });
+    return;
+  } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-  });
+  }
+
+  // Existing Preferences belong to Chromium; only normalize unclean-exit markers.
+  let raw: string;
+  try {
+    raw = await readFile(preferencesPath, "utf8");
+  } catch {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  const prefs = parsed as Record<string, unknown>;
+  const profile =
+    prefs.profile && typeof prefs.profile === "object" && !Array.isArray(prefs.profile)
+      ? (prefs.profile as Record<string, unknown>)
+      : null;
+  const unclean =
+    (typeof profile?.exit_type === "string" && profile.exit_type !== "Normal") ||
+    profile?.exited_cleanly === false;
+  if (!unclean) return;
+
+  const session =
+    prefs.session && typeof prefs.session === "object" && !Array.isArray(prefs.session)
+      ? (prefs.session as Record<string, unknown>)
+      : {};
+  const normalized = {
+    ...prefs,
+    profile: { ...profile, exit_type: "Normal", exited_cleanly: true },
+    session: { ...session, restore_on_startup: 1 },
+  };
+  await writeFileAtomic(preferencesPath, JSON.stringify(normalized));
+}
+
+export async function readTabRestoreSidecar(
+  directory: string,
+): Promise<readonly TabRestoreSidecarEntry[]> {
+  if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
+  const sidecarPath = path.join(directory, tabRestoreSidecarFilename);
+  let raw: string;
+  try {
+    raw = await readFile(sidecarPath, "utf8");
+  } catch {
+    return [];
+  }
+  try {
+    const parsed = tabRestoreSidecarSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return [];
+    return [...parsed.data.tabs].sort((a, b) => a.index - b.index);
+  } catch {
+    return [];
+  }
+}
+
+export async function writeTabRestoreSidecar(
+  directory: string,
+  entries: readonly TabRestoreSidecarEntry[],
+): Promise<void> {
+  if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
+  const sidecarPath = path.join(directory, tabRestoreSidecarFilename);
+  const normalized = [...entries]
+    .sort((a, b) => a.index - b.index)
+    .map((entry, index) => ({
+      index,
+      surfaceId: entry.surfaceId,
+      url: entry.url,
+    }));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFileAtomic(sidecarPath, JSON.stringify({ version: 1, tabs: normalized }));
+}
+
+export interface RestoredTabMatchResult {
+  readonly matched: ReadonlyMap<string, ChromiumTabEntry>;
+  readonly orphans: readonly ChromiumTabEntry[];
+  readonly missingSurfaceIds: readonly string[];
+}
+
+/**
+ * Matches Chromium's restored TabStripModel tabs against the Home's authoritative
+ * tab list using the profile's strip-order sidecar. Disambiguates duplicate URLs
+ * by relative strip index first, then falls back to URL order if a hard crash
+ * shifted indices. Any restored tab not owned by a Home tab is returned as an orphan.
+ */
+export function matchRestoredTabs(
+  restoredTabs: readonly ChromiumTabEntry[],
+  sidecarTabs: readonly TabRestoreSidecarEntry[],
+  homeTabs: readonly { readonly surfaceId: string; readonly url: string }[],
+): RestoredTabMatchResult {
+  const homeById = new Map(homeTabs.map((tab) => [tab.surfaceId, tab]));
+  const orderedRestored = [...restoredTabs].sort(
+    (a, b) => a.windowId - b.windowId || a.index - b.index,
+  );
+  const eligibleSidecar = [...sidecarTabs]
+    .filter((entry) => homeById.has(entry.surfaceId))
+    .sort((a, b) => a.index - b.index);
+
+  const matched = new Map<string, ChromiumTabEntry>();
+  const usedTabIds = new Set<number>();
+
+  // Pass 1: exact relative strip position + URL match (disambiguates duplicate URLs).
+  const minLength = Math.min(orderedRestored.length, eligibleSidecar.length);
+  for (let i = 0; i < minLength; i++) {
+    const restored = orderedRestored[i]!;
+    const sidecar = eligibleSidecar[i]!;
+    if (matched.has(sidecar.surfaceId) || usedTabIds.has(restored.tabId)) continue;
+    if (restored.url === sidecar.url) {
+      matched.set(sidecar.surfaceId, restored);
+      usedTabIds.add(restored.tabId);
+    }
+  }
+
+  // Pass 2: URL fallback for remaining sidecar entries (handles index shift after SIGKILL).
+  for (const sidecar of eligibleSidecar) {
+    if (matched.has(sidecar.surfaceId)) continue;
+    const candidate = orderedRestored.find(
+      (restored) => !usedTabIds.has(restored.tabId) && restored.url === sidecar.url,
+    );
+    if (candidate) {
+      matched.set(sidecar.surfaceId, candidate);
+      usedTabIds.add(candidate.tabId);
+    }
+  }
+
+  // Pass 3: URL fallback for Home tabs absent from the sidecar.
+  for (const home of homeTabs) {
+    if (matched.has(home.surfaceId)) continue;
+    const candidate = orderedRestored.find(
+      (restored) => !usedTabIds.has(restored.tabId) && restored.url === home.url,
+    );
+    if (candidate) {
+      matched.set(home.surfaceId, candidate);
+      usedTabIds.add(candidate.tabId);
+    }
+  }
+
+  const orphans = orderedRestored.filter((restored) => !usedTabIds.has(restored.tabId));
+  const missingSurfaceIds = homeTabs
+    .filter((home) => !matched.has(home.surfaceId))
+    .map((home) => home.surfaceId);
+
+  return { matched, orphans, missingSurfaceIds };
 }
 
 export function assertImportedCookies(

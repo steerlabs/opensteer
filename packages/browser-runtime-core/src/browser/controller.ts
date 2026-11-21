@@ -553,8 +553,9 @@ export class BrowserController {
     };
     if (!previous) {
       this.openedTabs.set(navigation.operationKey, { fingerprint, tabId: result.surfaceId });
-      // The engine already starts the initial blank document to create its renderer.
-      if (navigation.url === undefined) return result;
+      // The engine already starts the initial blank document to create its renderer,
+      // or restored the tab's document from Chromium's session files.
+      if (navigation.url === undefined || page.restoredFromSession) return result;
       const url = safeNavigationUrl(navigation.url);
       void this.ledger
         .navigate(
@@ -3958,10 +3959,12 @@ export class BrowserController {
         if (url !== undefined) {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
-          if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
-          if (message.replyBudget) await navigation;
-          else void navigation.catch(() => undefined);
+          if (!binding.page.restoredFromSession) {
+            if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
+            const navigation = this.ledger.navigate(tabId, url, message.navigationId);
+            if (message.replyBudget) await navigation;
+            else void navigation.catch(() => undefined);
+          }
         }
       }
       await this.drainTabs();

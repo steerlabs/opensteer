@@ -78,6 +78,7 @@ it("reaps renderer processes promptly after closing distinct-origin tabs in a na
     headless: true,
   });
   const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
   const playwrightContext = (
     launched as unknown as { playwrightContext: { process(): { pid: number } } }
   ).playwrightContext;

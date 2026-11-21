@@ -4,6 +4,7 @@ import type {
   BrowserCaptureDescriptor,
   BrowserEngine,
   BrowserSessionId,
+  BrowserSurfaceId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
 import type { PageEndReason } from "./page-ownership.js";
@@ -113,6 +114,8 @@ export interface BrowserPage {
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
   /** Opened behind its opener, as a ⌘-click opens a tab: nobody asked to look at it yet. */
   readonly openedInBackground?: boolean;
+  /** True when the page came back from the engine's own session restore with its document intact. */
+  readonly restoredFromSession?: boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */
@@ -144,10 +147,27 @@ export interface BrowserContext {
    */
   createPage(options?: {
     readonly restore?: unknown;
+    readonly surfaceId?: BrowserSurfaceId;
     readonly own?: (page: BrowserPage) => void;
   }): Promise<BrowserPage>;
   /** Releases engine-held resources for a sleeping tab that will not be woken (e.g. closed while asleep). */
   releaseRestore?(restore: unknown): Promise<void> | void;
+  /**
+   * Matches the engine's restored tabs against the Home's authoritative tab list,
+   * closing any restored tab no Home tab owns. Returns matched surface ids.
+   */
+  reconcileRestoredTabs?(
+    homeTabs: readonly { readonly surfaceId: BrowserSurfaceId; readonly url: string }[],
+  ): Promise<ReadonlySet<BrowserSurfaceId>>;
+  /** Persists the current surfaceId/address mapping for strip-order session restore. */
+  persistRestoredTabMap?(
+    tabs: readonly {
+      readonly surfaceId: BrowserSurfaceId;
+      readonly url: string;
+      readonly targetId: string | null;
+      readonly restore: unknown;
+    }[],
+  ): Promise<void>;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the

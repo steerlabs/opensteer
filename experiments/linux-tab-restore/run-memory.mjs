@@ -1,11 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  createTempProfileDir,
-  launchChromium,
-  removeTempProfileDir,
-} from "./lib/cdp-browser.mjs";
+import { createTempProfileDir, launchChromium, removeTempProfileDir } from "./lib/cdp-browser.mjs";
 import { startFixtureServer } from "./lib/fixture-server.mjs";
 
 const removedDirs = [];
@@ -260,7 +256,9 @@ async function runTenTabComparison(server, { enableWebContentsDiscard }) {
 
         // Close all 10 tabs to compare baseline-closed RSS and cold open+navigate wake time
         for (const tab of tabs) {
-          await browser.send("Target.closeTarget", { targetId: tab.afterDiscardTargetId }).catch(() => {});
+          await browser
+            .send("Target.closeTarget", { targetId: tab.afterDiscardTargetId })
+            .catch(() => {});
         }
         await delay(1500);
         const afterCloseMem = browser.measureProcessTreeMemory();

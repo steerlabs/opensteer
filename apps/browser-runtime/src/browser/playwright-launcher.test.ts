@@ -16,7 +16,13 @@ import {
   type Frame,
 } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
-import { assertImportedCookies } from "./native-profile-storage.js";
+import {
+  assertImportedCookies,
+  initializeNativePreferences,
+  matchRestoredTabs,
+  readTabRestoreSidecar,
+  writeTabRestoreSidecar,
+} from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
 import {
   createChromiumChildEnvironment,
@@ -971,7 +977,15 @@ describe("native Chromium profiles", () => {
         "Ending the originating attachment must preserve the warm native host",
       ).not.toHaveBeenCalled();
       expect(launcher.localProfiles.engine).toBe("chromium");
-      expect(await readdir(sessions)).toEqual(["retained"]);
+      expect((await readdir(sessions)).sort()).toEqual([
+        "Current Session",
+        "Current Tabs",
+        "Last Session",
+        "Last Tabs",
+        "Session_151",
+        "Tabs_151",
+        "retained",
+      ]);
       expect(await readFile(join(directory, "Default", "Cookies"), "utf8")).toBe("untouched");
       expect(disposable).not.toHaveBeenCalled();
       const options = persistent.mock.calls[0]![1]!;
@@ -993,7 +1007,6 @@ describe("native Chromium profiles", () => {
           "--disable-component-update",
           "--disable-background-networking",
           "--restore-last-session",
-          "--no-startup-window",
           "--headless=new",
           "--proxy-server=http://127.0.0.1:8123",
           "--proxy-bypass-list=<-loopback>",
@@ -1001,6 +1014,7 @@ describe("native Chromium profiles", () => {
           "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ]),
       );
+      expect(options.args).not.toContain("--no-startup-window");
       expect(options.args).not.toEqual(expect.arrayContaining(["--password-store=basic"]));
       expect(options.args).not.toEqual(expect.arrayContaining(["--use-mock-keychain"]));
       expect(options.args).not.toContain("--no-sandbox");
@@ -1210,6 +1224,69 @@ describe("native Chromium profiles", () => {
       f.exit();
       await launched?.close();
       await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes unclean Preferences exit_type, writes atomic tab sidecar, and matches duplicate URLs by strip order", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "os-sidecar-unit-"));
+    try {
+      await mkdir(join(directory, "Default"), { recursive: true });
+      await writeFile(
+        join(directory, "Default", "Preferences"),
+        JSON.stringify({
+          profile: { exit_type: "Crashed", exited_cleanly: false, name: "Default" },
+          other: 42,
+        }),
+      );
+      await initializeNativePreferences(directory);
+      expect(JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"))).toEqual(
+        {
+          profile: { exit_type: "Normal", exited_cleanly: true, name: "Default" },
+          session: { restore_on_startup: 1 },
+          other: 42,
+        },
+      );
+
+      await writeTabRestoreSidecar(directory, [
+        { index: 1, surfaceId: "surface_b", url: "https://example.test/doc" },
+        { index: 0, surfaceId: "surface_a", url: "https://example.test/doc" },
+      ]);
+      const sidecar = await readTabRestoreSidecar(directory);
+      expect(sidecar).toEqual([
+        { index: 0, surfaceId: "surface_a", url: "https://example.test/doc" },
+        { index: 1, surfaceId: "surface_b", url: "https://example.test/doc" },
+      ]);
+
+      const tab = (tabId: number, index: number, url: string) => ({
+        tabId,
+        windowId: 1,
+        index,
+        url,
+        title: "",
+        active: false,
+        discarded: true,
+        status: "unloaded",
+        targetId: `target_${tabId}`,
+      });
+      const result = matchRestoredTabs(
+        [
+          tab(10, 0, "https://example.test/doc"),
+          tab(11, 1, "https://example.test/doc"),
+          tab(12, 2, "https://orphan.test/"),
+        ],
+        sidecar,
+        [
+          { surfaceId: "surface_a", url: "https://example.test/doc" },
+          { surfaceId: "surface_b", url: "https://example.test/doc" },
+          { surfaceId: "surface_missing", url: "https://missing.test/" },
+        ],
+      );
+      expect(result.matched.get("surface_a")?.tabId).toBe(10);
+      expect(result.matched.get("surface_b")?.tabId).toBe(11);
+      expect(result.orphans.map((entry) => entry.tabId)).toEqual([12]);
+      expect(result.missingSurfaceIds).toEqual(["surface_missing"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

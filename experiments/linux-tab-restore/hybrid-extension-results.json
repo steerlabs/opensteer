@@ -77,9 +77,7 @@
     "restoredCount": 5,
     "expectedCount": 5,
     "indexOrderMatches": true,
-    "eagerRequestsBeforeActivate": [
-      "site-4.localhost:51606/spa/step-2"
-    ],
+    "eagerRequestsBeforeActivate": ["site-4.localhost:51606/spa/step-2"],
     "inventoryAfterCrash": [
       {
         "index": 0,
