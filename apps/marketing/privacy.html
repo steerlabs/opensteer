@@ -322,14 +322,13 @@
             </p>
             <p>
               If you have an Opensteer Cloud Computer, deleting your Opensteer account deletes it
-              too. We cancel its subscription first, so it won't renew; the rest of the period
-              already paid isn't refunded. Any payment Stripe takes after you ask is refunded in
-              full. Then we destroy the computer and its disk, destroy the backup key, which makes
-              its backups unreadable, and remove the stored backup data. Once the computer is gone
-              and any such payment is refunded, we delete your customer record at Stripe, with the
-              card saved on it, and then your Opensteer account. Deleting only the Cloud Computer
-              cancels its subscription and deletes the computer, its disk and its backups the same
-              way, and keeps your Opensteer account.
+              too, the same way as deleting only the Cloud Computer. Its subscription is cancelled,
+              so it won't renew; the rest of the period already paid isn't refunded. If Stripe takes
+              a payment after the moment you ask, we refund it in full. Your Opensteer account is
+              deleted at once, and we finish the rest after it: we destroy the computer and its
+              disk, destroy the backup key, which makes its backups unreadable, remove the stored
+              backup data, and delete your customer record at Stripe, with the card saved on it.
+              Deleting only the Cloud Computer does all of this and keeps your Opensteer account.
             </p>
             <p>
               Some billing records remain in our Account database after your Opensteer account is
