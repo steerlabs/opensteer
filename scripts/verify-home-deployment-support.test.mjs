@@ -351,6 +351,81 @@ function runHome(script) {
   );
 }
 
+const releaseManifest = (version, tag) =>
+  JSON.stringify({
+    version,
+    images: Object.fromEntries(
+      ["host", "gateway", "runner", "browser-runtime", "browser-egress", "channel-runtime"].map(
+        (service) => [service, `local/opensteer-home-${service}:${tag}`],
+      ),
+    ),
+  });
+
+await test("the installer run again installs a new manifest only on a Home that was never claimed", () => {
+  const setup = (state) => `
+    printf '%s\\n' ${quote(releaseManifest("1.0.0", "old"))} > "$home_dir/old.json"
+    printf '%s\\n' ${quote(releaseManifest("1.0.1", "new"))} > "$home_dir/new.json"
+    release_to_env "$home_dir/old.json" "$home_dir/images.env" false
+    cp "$home_dir/images.env" "$home_dir/images.before"
+    compose() {
+      case $1 in
+        ps) ${state === "running-claimed" || state === "running-unclaimed" ? "echo hostcontainer" : ":"} ;;
+        config) printf '%s' '{"volumes":{"postgres-data":{"name":"proof_postgres-data"}}}' ;;
+      esac
+    }
+    claimed_state() { echo ${state === "running-claimed" ? "complete" : "required"}; }
+    docker() { ${state === "stopped-with-database" ? "true" : "false"}; }
+  `;
+  const claimed = runHome(`${setup("running-claimed")}
+    (reinstall_release "$home_dir/new.json") || { cmp -s "$home_dir/images.env" "$home_dir/images.before" && echo unchanged; exit 3; }`);
+  assert.equal(claimed.status, 3);
+  assert.equal(claimed.stdout, "unchanged\n");
+  assert.match(
+    claimed.stderr,
+    /This Home is already claimed, so the installer will not replace its release\. Change its release with: sudo opensteer-home update \/.*\/new\.json\. Or remove it with: sudo opensteer-home uninstall --purge/u,
+  );
+  for (const state of ["running-unclaimed", "never-started"]) {
+    const applied = runHome(`${setup(state)}
+      reinstall_release "$home_dir/new.json"
+      cat "$home_dir/images.env"`);
+    assert.equal(applied.status, 0, applied.stderr);
+    assert.match(applied.stdout, /^This Home was never claimed\. Installing the release in /u);
+    assert.match(applied.stdout, /OPENSTEER_HOME_VERSION=1\.0\.1\n/u);
+    assert.match(applied.stdout, /OPENSTEER_HOME_HOST_IMAGE=local\/opensteer-home-host:new\n/u);
+  }
+  const unknown = runHome(`${setup("stopped-with-database")}
+    reinstall_release "$home_dir/new.json"`);
+  assert.notEqual(unknown.status, 0);
+  assert.match(
+    unknown.stderr,
+    /Could not tell whether this Home was claimed\. Start it with: sudo opensteer-home start\. Or remove it with: sudo opensteer-home uninstall --purge/u,
+  );
+});
+
+await test("the installer refuses --local-images for a managed boot and installs the operator command first", () => {
+  const installer = readFileSync("deploy/home/install.sh", "utf8");
+  const operator = installer.indexOf(
+    'install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home',
+  );
+  assert.ok(operator > 0);
+  for (const later of [
+    'release_to_env "$manifest"',
+    'publish_file "$staging/config.env"',
+    "fetch_release_images",
+  ])
+    assert.ok(
+      installer.indexOf(later) > operator,
+      `${later} runs before the operator command exists`,
+    );
+  assert.match(
+    installer,
+    /\[\[ -z \$hostname && -z \$manifest && -n \$token_path \]\] && ! \$local_images \|\| usage/u,
+  );
+  const home = readFileSync("deploy/home/opensteer-home", "utf8");
+  assert.match(home, /\$\{1:-\} == uninstall && -d \$home_dir/u);
+  assert.match(home, /if \[\[ -f "\$home_dir\/config\.env" \]\]; then compose down --volumes; fi/u);
+});
+
 await test("a Home installed with local images checks the machine's images instead of pulling them", () => {
   const composeConfig = JSON.stringify({
     services: Object.fromEntries(

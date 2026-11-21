@@ -335,6 +335,31 @@ fetch_release_images() {
   check_release_stamps "$selector"
 }
 
+# Whether an installed Home was ever claimed: its running Host says so, and a Home whose
+# database was never created was never claimed. Anything else needs the Home started.
+installed_claim_state() {
+  local volume
+  if [[ -n $(compose ps -q host 2>/dev/null) ]]; then
+    claimed_state
+    return
+  fi
+  volume=$(compose config --format json | jq -er '.volumes["postgres-data"].name') || return
+  if docker volume inspect "$volume" >/dev/null 2>&1; then return 1; fi
+  echo required
+}
+
+# The installer run again with a manifest installs it on a Home that was never claimed and
+# refuses a claimed Home, naming the commands that change or remove it.
+reinstall_release() {
+  local manifest=$1 state
+  state=$(installed_claim_state) ||
+    fail "Could not tell whether this Home was claimed. Start it with: sudo opensteer-home start. Or remove it with: sudo opensteer-home uninstall --purge"
+  [[ $state == required ]] ||
+    fail "This Home is already claimed, so the installer will not replace its release. Change its release with: sudo opensteer-home update $manifest. Or remove it with: sudo opensteer-home uninstall --purge"
+  release_to_env "$manifest" "$home_dir/images.env" false
+  echo "This Home was never claimed. Installing the release in $manifest."
+}
+
 print_setup_link() {
   local host
   host=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME)

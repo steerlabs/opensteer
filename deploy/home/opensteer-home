@@ -8,7 +8,9 @@ export OPENSTEER_HOME_DIR="$home_dir"
 source "$home_dir/common.sh"
 
 [[ $EUID == 0 ]] || fail "Run opensteer-home as root."
-[[ -f "$home_dir/config.env" ]] || fail "No Home configuration was found at $home_dir."
+# A failed first install can be removed before it wrote its configuration.
+[[ -f "$home_dir/config.env" || ( ${1:-} == uninstall && -d $home_dir ) ]] ||
+  fail "No Home configuration was found at $home_dir."
 
 # shellcheck source=deploy/home/backup.sh
 source "$home_dir/backup.sh"
@@ -116,13 +118,13 @@ case "${1:-}" in
     lock_home
     if [[ $# == 2 ]]; then
       echo 'Removing Home configuration, database, keys, agent work, and browser profiles.'
-      compose down --volumes
+      if [[ -f "$home_dir/config.env" ]]; then compose down --volumes; fi
       remove_runner_apparmor
       if [[ -f "$system_files.service" ]] &&
          grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
         rm -f -- "$system_files"{.service,-update.service,-update.timer,-backup.service,-backup.timer,-maintain.service,-maintain.timer}
-        if [[ $unit == opensteer-home ]]; then rm -f /usr/local/bin/opensteer-home; fi
       fi
+      if [[ $unit == opensteer-home ]]; then rm -f /usr/local/bin/opensteer-home; fi
       if [[ -f "$system_files-managed.service" ]] &&
          grep -Fxq "ExecStart=$home_dir/boot/install.sh --resume-managed" "$system_files-managed.service"; then
         rm -f -- "$system_files-managed.service"
@@ -132,7 +134,7 @@ case "${1:-}" in
       rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem,local-images}
       rmdir -- "$home_dir" 2>/dev/null || true
     else
-      compose down
+      if [[ -f "$home_dir/config.env" ]]; then compose down; fi
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;

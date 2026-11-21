@@ -12,7 +12,7 @@ usage() {
 }
 
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail "Run the Home installer as root on a Linux Docker host."
-local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
+local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false reinstalled=false
 while (($#)); do
   case "$1" in
     --resume-managed) resume_managed=true; shift ;;
@@ -133,6 +133,17 @@ install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
+# The operator command is in place before anything can fail, so a failed attempt is undone
+# with `opensteer-home uninstall --purge`.
+for name in compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
+  if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
+    install -m 0600 "$source_dir/$name" "$home_dir/$name"
+  fi
+done
+chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
+if ! $prepare && [[ $unit_prefix == opensteer-home ]]; then
+  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
+fi
 setup_code=''
 finish_managed_boot() {
   local outcome=$1 original
@@ -176,6 +187,11 @@ if [[ -f "$home_dir/config.env" ]]; then
   configured_host=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME)
   if [[ -n $managed ]]; then hostname=$(jq -er .hostname "$managed"); fi
   [[ $hostname == "$configured_host" ]] || fail "This installation already uses $configured_host."
+  if [[ -z $managed && -n $manifest ]]; then
+    reinstall_release "$manifest"
+    reinstalled=true
+    compose down
+  fi
 else
   if [[ -n $managed ]]; then
     hostname=$(jq -er .hostname "$managed")
@@ -274,12 +290,6 @@ else
   if $local_tls; then printf 'tls internal\n'; else printf '# Automatic public TLS\n'; fi > "$home_dir/tls.caddy"
 fi
 
-for name in compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
-  if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
-    install -m 0600 "$source_dir/$name" "$home_dir/$name"
-  fi
-done
-chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
 # Compose mounts it on every Home; a bring-your-own Home's stays empty.
 [[ -e "$home_dir/secrets/oidc_client_secret" ]] || : | save_secret "$home_dir/secrets/oidc_client_secret"
 chmod 0444 "$home_dir/tls.caddy"
@@ -324,9 +334,11 @@ else
   fi
   "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9
-  systemctl start "$unit_prefix.service"
+  if $reinstalled; then systemctl restart "$unit_prefix.service"; else systemctl start "$unit_prefix.service"; fi
 fi
 if [[ -z $managed && -f "$home_dir/setup-link.pending" ]]; then
   print_setup_link "$(cat "$home_dir/setup-link.pending")"
   rm -f -- "$home_dir/setup-link.pending"
+elif $reinstalled; then
+  echo 'The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.'
 fi

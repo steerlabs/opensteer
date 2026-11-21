@@ -48,6 +48,14 @@ The updater pulls before replacing services and retains prior image IDs for roll
 A release that migrates the database must remain compatible with the previous Host
 for image rollback to work.
 
+Running the installer again with `--manifest` on a server where a Home is
+installed installs that release only if the Home was never claimed. A claimed
+Home is refused; change its release with `sudo opensteer-home update
+MANIFEST.json`, or remove it with `sudo opensteer-home uninstall --purge`. If the
+Home is stopped and has data, start it with `sudo opensteer-home start` first. The
+installer puts `opensteer-home` in place before anything else, so an install that
+failed is removed with `sudo opensteer-home uninstall --purge`.
+
 Use the setup link printed by the installer to create the first owner. The link
 expires after 24 hours. `sudo opensteer-home setup-link` replaces it while the
 Home is unclaimed. `status` reports the release, service health and claim state.
