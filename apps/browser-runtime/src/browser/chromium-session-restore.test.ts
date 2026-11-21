@@ -530,12 +530,18 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
   await aLive.cdp.send("Page.navigate", { url: dupUrl });
   await waitLoaded(aLive.cdp, "/article");
   await evalValue(aLive.cdp, "window.scrollTo(0, 1100)");
+  await aLive.cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+  await aLive.cdp.send("Page.setWebLifecycleState", { state: "active" });
 
   await ledger1.openSurface({ surfaceId: surfDupB });
   const bLive = ledger1.binding(surfDupB)!;
   await bLive.cdp.send("Page.navigate", { url: dupUrl });
   await waitLoaded(bLive.cdp, "/article");
   await evalValue(bLive.cdp, "window.scrollTo(0, 2900)");
+  // Force Blink's throttled UpdateState IPC to flush scrollY=2900 into Chromium's
+  // NavigationEntry before Run 1 closes.
+  await bLive.cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+  await bLive.cdp.send("Page.setWebLifecycleState", { state: "active" });
 
   await browser1.context.sessionRestore!.flush!();
   await vi.waitFor(
