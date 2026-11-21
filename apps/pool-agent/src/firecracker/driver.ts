@@ -50,6 +50,7 @@ import { run, runUntil } from "./exec.js";
 import {
   applyHostTable,
   hostAddresses,
+  applySetupTable,
   hostTablePresent,
   hostVeth,
   namespaceName,
@@ -139,6 +140,7 @@ export class FirecrackerDriver implements HypervisorDriver {
     if (await hostTablePresent()) return false;
     this.#hostAddresses = await hostAddresses();
     await applyHostTable(this.#config.network);
+    await applySetupTable(this.#config.network);
     return true;
   }
 

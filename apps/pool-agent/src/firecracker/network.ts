@@ -7,6 +7,7 @@
  * namespace except the veth, so a guest's device state never names another slot.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { run } from "./exec.js";
@@ -166,10 +167,19 @@ export async function applyHostTable(config: NetworkConfig): Promise<void> {
   }
 }
 
-/** Whether the host table is still loaded (a flush or a reload of the system ruleset removes it). */
+/** Whether the host tables are still loaded (a flush of the system ruleset removes them). */
 export async function hostTablePresent(): Promise<boolean> {
-  const listed = await run("nft", ["list", "tables"]);
-  return listed.split("\n").some((line) => line.trim() === "table inet opensteer_pool");
+  const listed = new Set(
+    (await run("nft", ["list", "tables"])).split("\n").map((line) => line.trim()),
+  );
+  return listed.has("table inet opensteer_pool") && listed.has("table inet opensteer_pool_host");
+}
+
+/** Setup's own table (the agent's ports), re-loaded from its file when a flush removed it. */
+export async function applySetupTable(config: NetworkConfig): Promise<void> {
+  if (!config.nftDirectory) return;
+  const file = join(config.nftDirectory, "host.nft");
+  if (existsSync(file)) await run("nft", ["-f", file]);
 }
 
 /** The slot's namespace, TAP, veth and filter; repairs a missing piece, keeps a live one. */
