@@ -39,13 +39,17 @@ export function usePlaceWorkBadges(
   );
 }
 
-/** The listed Homes the Account says are Opensteer Cloud Computers, for a list of places. */
+/**
+ * The listed Homes the Account says are Opensteer Cloud Computers, for a list of places; null
+ * while the Account's read hasn't answered (or failed, or there is no Account here).
+ */
 export function usePlaceCloudComputers(
   bridge: OpensteerDesktopBridge | null | undefined,
-): ReadonlySet<string> {
+): ReadonlySet<string> | null {
   const account = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
   const views = useCloudComputer(account).views;
-  return useMemo(() => cloudComputerDeployments(views), [views]);
+  // Null until the Account answered: no list then says which Homes are not Cloud Computers.
+  return useMemo(() => (views === null ? null : cloudComputerDeployments(views)), [views]);
 }
 
 /** "Work · {organization}" for the listed Home that is a work Home, if any. */

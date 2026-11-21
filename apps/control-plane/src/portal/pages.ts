@@ -10,6 +10,7 @@ import {
   renderBrowserPage,
   statusPageBody,
   type BrowserPageFonts,
+  type BrowserPageIcon,
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
@@ -328,6 +329,19 @@ export function portalHomeBody(input: {
   </main>`;
 }
 
+/**
+ * How a row draws each kind of Home: its mark, and whether it says the kind in words (a
+ * Cloud Computer and a server do; a Mac and a team are told apart by their marks). A Home
+ * whose kind isn't known draws none.
+ */
+const placeMarks = {
+  personal: { icon: "laptop", said: false },
+  team: { icon: "server", said: false },
+  cloud: { icon: "cloud", said: true },
+  server: { icon: "server", said: true },
+  unknown: { icon: null, said: false },
+} as const satisfies Record<string, { icon: BrowserPageIcon | null; said: boolean }>;
+
 export type PlaceControl =
   | { readonly kind: "link"; readonly href: string }
   | { readonly kind: "none" }
@@ -350,7 +364,7 @@ export function placeRow(input: {
   readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "team" | "cloud";
+  readonly kind: "personal" | "team" | "cloud" | "server" | "unknown";
   readonly kindLabel: string;
   /** "Work · {organization}" on a Home an organization assigned. */
   readonly badge?: string | null;
@@ -377,12 +391,14 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
-  // A Cloud Computer says so in words, with its badge when an organization assigned it.
-  const kindLine =
-    input.kind === "cloud"
-      ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
-      : "";
-  const spoken = `<span class="visually-hidden">${escapeHtml(input.kindLabel)}${status ? `, ${escapeHtml(status.label)}` : ""}</span>`;
+  // A Cloud Computer or a server says so in words, a work Home with its organization's badge.
+  const kindLine = placeMarks[input.kind].said
+    ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
+    : "";
+  const spoken = `<span class="visually-hidden">${[input.kindLabel, status?.label]
+    .filter(Boolean)
+    .map((part) => escapeHtml(part!))
+    .join(", ")}</span>`;
   const sheetId = `remove-${input.id.replace(/[^\w-]/gu, "")}`;
   const confirm = input.remove?.confirm ?? {
     detail: "It leaves your list. Your access doesn’t change.",
@@ -398,7 +414,7 @@ export function placeRow(input: {
       </div>`
     : "";
   return `<li class="place ${open ? "place--open" : "place--still"}"${input.anchor ? ` id="${escapeHtml(input.anchor)}"` : ""}>
-    <span class="device">${icon(input.kind === "personal" ? "laptop" : input.kind === "cloud" ? "cloud" : "server")}${dot}</span>
+    <span class="device">${placeMarks[input.kind].icon === null ? "" : icon(placeMarks[input.kind].icon!)}${dot}</span>
     <span class="place__body">${control}${kindLine}${note}${spoken}</span>
     ${remove}${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
   </li>`;

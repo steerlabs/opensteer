@@ -1,4 +1,5 @@
 import { deviceWords } from "@opensteer/client/computers";
+import { isNetworkedHome } from "@opensteer/client/connections";
 import { hostNeedsUpdateLabel, placeStatus } from "@opensteer/protocol/deployment-status";
 import type {
   DeploymentAccessDeployment,
@@ -42,8 +43,11 @@ export interface PlaceRowContext {
   readonly facts?: ReadonlyMap<string, ComputerFacts>;
   /** Each work Home's badge, by Home. */
   readonly work?: ReadonlyMap<string, string>;
-  /** The Homes the Account says are Opensteer Cloud Computers, work Homes among them. */
-  readonly cloud?: ReadonlySet<string>;
+  /**
+   * The Homes the Account says are Opensteer Cloud Computers, work Homes among them; null
+   * while that is unknown (not read yet, the read failed, or no Account here).
+   */
+  readonly cloud?: ReadonlySet<string> | null;
 }
 
 /**
@@ -63,7 +67,8 @@ export function placeRows(
   }));
   const listed = new Set(snapshot.deployments.map(({ id }) => id));
   for (const entry of snapshot.unavailable) {
-    if (!listed.has(entry.deploymentId)) ranked.push({ rank: 9, row: unavailableRow(entry) });
+    if (!listed.has(entry.deploymentId))
+      ranked.push({ rank: 9, row: unavailableRow(entry, context) });
   }
   return ranked
     .sort((left, right) => left.rank - right.rank || left.row.name.localeCompare(right.row.name))
@@ -89,13 +94,17 @@ function placeRow(
     deployment.source === "account" && !signedIn
       ? deployment.statusInfo
       : deploymentConnectionStatusInfo(deployment);
-  // A Cloud Computer is never "Your computer" with a laptop: the Account says what it is.
-  const cloud = context.cloud?.has(deployment.id) === true && !deployment.onThisComputer;
+  const kind = homeKindOf(deployment, context);
   return {
     current,
     facts: context.facts?.get(deployment.id),
-    detail: cloud ? deviceWords("place.kind.cloud") : placeDetail(deployment, context),
-    icon: cloud ? "cloud" : deployment.kind === "personal" ? "laptop" : "server",
+    detail:
+      kind === "cloud"
+        ? deviceWords("place.kind.cloud")
+        : kind === "unknown"
+          ? originHost(deployment.canonicalOrigin)
+          : placeDetail(deployment, context),
+    icon: homeIcons[kind],
     id: deployment.id,
     name: deployment.name,
     opens: current || deployment.availableActions.includes("select"),
@@ -108,6 +117,39 @@ function placeRow(
     updatable: status.label === hostNeedsUpdateLabel,
     work: context.work?.get(deployment.id),
   };
+}
+
+type RowHomeKind = "mac" | "cloud" | "server" | "team" | "unknown";
+const homeIcons: Readonly<Record<RowHomeKind, IconName>> = {
+  mac: "laptop",
+  cloud: "cloud",
+  server: "server",
+  team: "server",
+  unknown: "globe",
+};
+
+/**
+ * What a row's Home is. A personal Home reached at its own HTTPS address is a Cloud Computer
+ * when the Account lists it as one and a server of the person's otherwise; while the Account
+ * cannot say, it has no kind rather than a wrong one. A Cloud Computer is never "Your
+ * computer" with a laptop.
+ */
+function homeKindOf(
+  deployment: Pick<
+    DeploymentAccessDeployment,
+    "canonicalOrigin" | "id" | "kind" | "onThisComputer"
+  >,
+  context: PlaceRowContext,
+): RowHomeKind {
+  if (deployment.onThisComputer) return "mac";
+  if (context.cloud?.has(deployment.id) === true) return "cloud";
+  if (deployment.kind !== "personal") return "team";
+  const networked = isNetworkedHome({
+    canonicalOrigin: deployment.canonicalOrigin,
+    deploymentShape: { kind: deployment.kind },
+  } as Parameters<typeof isNetworkedHome>[0]);
+  if (!networked) return "mac";
+  return context.cloud === null || context.cloud === undefined ? "unknown" : "server";
 }
 
 function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowContext): string {
@@ -127,11 +169,17 @@ function placeRank(deployment: DeploymentAccessDeployment): number {
   return deployment.source === "account" ? 3 : 6;
 }
 
-function unavailableRow(entry: DeploymentAccessUnavailable): PlaceRow {
+function unavailableRow(entry: DeploymentAccessUnavailable, context: PlaceRowContext): PlaceRow {
+  // A Home this app cannot reach is still named what the Account says it is.
+  const cloud = context.cloud?.has(entry.deploymentId) === true;
   return {
     current: false,
-    detail: entry.accountAccess === "member" ? "Shared with you" : "In your account",
-    icon: "server",
+    detail: cloud
+      ? deviceWords("place.kind.cloud")
+      : entry.accountAccess === "member"
+        ? "Shared with you"
+        : "In your account",
+    icon: cloud ? "cloud" : "server",
     id: entry.deploymentId,
     name: entry.name,
     opens: false,

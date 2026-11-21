@@ -155,16 +155,34 @@ describe("portal Deployment cards", () => {
   });
 
   it("calls a Cloud Computer a Cloud Computer, and a work Home's organization by name, never Team", () => {
-    // A Cloud Computer is reached at its own address, as a team server is.
-    const deployment = directoryDeployment(selfHostedDeployment());
+    // A Cloud Computer is a personal Home at its own address.
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
     const mine = deploymentCard(deployment, true, { organization: null });
     expect(mine).toContain("Cloud Computer");
     expect(mine).not.toContain(">Team<");
     expect(mine).toContain("M17.5 18.5"); // the cloud, not a server
     const work = deploymentCard(deployment, true, { organization: "Acme" });
     expect(work).toContain("Work · Acme · Cloud Computer");
-    // Without the Account's word for it, a canonical Home keeps the word it had.
-    expect(deploymentCard(deployment, true)).toContain(">Team<");
+    // A team's own server stays a team's.
+    expect(deploymentCard(directoryDeployment(selfHostedDeployment()), true)).toContain(">Team<");
+  });
+
+  it("calls a personal Home on a server a Server, with the server icon, never a team", () => {
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
+    const card = deploymentCard(deployment, true, "not-cloud");
+    expect(card).toContain(">Server<");
+    expect(card).not.toContain("Team");
+    expect(card).toContain('<rect x="4" y="4" width="16" height="7"'); // the server icon
+  });
+
+  it("names no kind it cannot know when the Account's Cloud Computers couldn't be read", () => {
+    const card = deploymentCard(directoryDeployment(personalHomeAtItsAddress()), true, "unknown");
+    for (const word of ["Team", "Server", "Cloud Computer"]) expect(card).not.toContain(word);
+    expect(card).not.toMatch(/<span class="device"><svg/u);
+    // A team's server is a team's whatever that read says.
+    expect(deploymentCard(directoryDeployment(selfHostedDeployment()), true, "unknown")).toContain(
+      ">Team<",
+    );
   });
 
   it("keeps removed member access unavailable even without a Host health observation", () => {
@@ -306,6 +324,21 @@ function selfHostedDeployment(
     name: "Primary Server",
     reachability: "canonical",
     updatedAt: "2026-08-21T12:00:00.000Z",
+  });
+}
+
+/** A personal Home listed at its own address: a server of the person's, or a Cloud Computer. */
+function personalHomeAtItsAddress(): AccountDeployment {
+  const deploymentId = createId("deployment");
+  const authority = authorityEnvelope(deploymentId, "personal");
+  return AccountDeploymentSchema.parse({
+    ...selfHostedDeployment(deploymentId),
+    authorityEnvelope: {
+      ...authority,
+      document: { ...authority.document, canonicalOrigin: "https://home.opensteer.test" },
+    },
+    canonicalOrigin: "https://home.opensteer.test",
+    name: "Home server",
   });
 }
 

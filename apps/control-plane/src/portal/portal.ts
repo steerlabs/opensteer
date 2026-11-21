@@ -19,6 +19,7 @@ import {
   ControlPlaneAccountIdSchema,
   IssueAccountHostSessionGrantResponseSchema,
   cloudWords,
+  isCanonicalPersonalHome,
   orgWords,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
@@ -207,11 +208,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     const [deployments, hostedTeams, computers] = await Promise.all([
       store.listDeployments(accountId),
       dependencies.hostedTeams?.listCreatedBy(accountId),
-      // Only to name each Home's kind: the list still draws when this read fails.
-      dependencies.cloudComputers?.listForAccount(accountId).catch(() => []) ?? [],
+      // Only to name each Home's kind: the list still draws when this read fails, and then
+      // names no kind it cannot know. A service with no Cloud Computers has none to list.
+      dependencies.cloudComputers?.listForAccount(accountId).catch(() => null) ?? [],
     ]);
     const cloud = new Map(
-      computers.flatMap((computer) =>
+      (computers ?? []).flatMap((computer) =>
         computer.deploymentId
           ? [[computer.deploymentId, { organization: computer.work?.organizationName ?? null }]]
           : [],
@@ -231,7 +233,11 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           ? { createHref: portalCreateHostedTeamPath, rows: hostedTeamRows(hostedTeams) }
           : null,
         rows: deployments.map((deployment, index) =>
-          deploymentCard(deployment, presence[index] === true, cloud.get(deployment.id) ?? null),
+          deploymentCard(
+            deployment,
+            presence[index] === true,
+            cloud.get(deployment.id) ?? (computers === null ? "unknown" : "not-cloud"),
+          ),
         ),
         signOutAction: portalSignOutPath,
         cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
@@ -764,10 +770,11 @@ export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
   present: boolean,
   /**
-   * The Account's own Cloud Computer for this Home, when it is one: how it is reached never
-   * says what it is, so a Cloud Computer or a work Home is never called "Team".
+   * What the Account's own read of Cloud Computers says of this Home: one of them (a work
+   * Home names its organization), none of them, or nothing known because the read failed.
+   * How a Home is reached never says what it is.
    */
-  cloud: { readonly organization: string | null } | null = null,
+  cloud: { readonly organization: string | null } | "not-cloud" | "unknown" = "not-cloud",
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
@@ -785,13 +792,7 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: cloud ? "cloud" : personal ? "personal" : "team",
-    kindLabel: cloud
-      ? cloudWords("cloud.shortTitle")
-      : deploymentKindLabel(personal ? "personal" : "team"),
-    badge: cloud?.organization
-      ? orgWords("org.work.badge", { organization: cloud.organization })
-      : null,
+    ...placeKind(deployment, cloud),
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,
@@ -803,6 +804,37 @@ export function deploymentCard(
         }
       : null,
   });
+}
+
+/**
+ * A Home's kind on its row. A Home reached through its Mac is the person's Mac; one at its own
+ * address that its signed record calls personal is a Cloud Computer when the Account lists it
+ * as one, and a server of theirs otherwise; anything else at its own address is a team's.
+ * When the Account's read failed, such a personal Home shows no kind rather than a wrong one.
+ */
+function placeKind(
+  deployment: AccountDeploymentDirectoryEntry,
+  cloud: { readonly organization: string | null } | "not-cloud" | "unknown",
+): {
+  readonly kind: "personal" | "team" | "cloud" | "server" | "unknown";
+  readonly kindLabel: string;
+  readonly badge: string | null;
+} {
+  if (typeof cloud === "object")
+    return {
+      kind: "cloud",
+      kindLabel: cloudWords("cloud.shortTitle"),
+      badge: cloud.organization
+        ? orgWords("org.work.badge", { organization: cloud.organization })
+        : null,
+    };
+  if (deployment.reachability === "routed")
+    return { kind: "personal", kindLabel: deploymentKindLabel("personal"), badge: null };
+  if (!isCanonicalPersonalHome(deployment))
+    return { kind: "team", kindLabel: deploymentKindLabel("team"), badge: null };
+  return cloud === "unknown"
+    ? { kind: "unknown", kindLabel: "", badge: null }
+    : { kind: "server", kindLabel: "Server", badge: null };
 }
 
 function currentAccountDeployment(deployment: AccountDeploymentDirectoryEntry) {

@@ -1,7 +1,7 @@
 import { createId } from "@opensteer/core";
 import { placeStatus } from "@opensteer/protocol/deployment-status";
 import type { DeploymentAccessSnapshot } from "@opensteer/protocol/desktop";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { placeRows } from "./places.js";
 
 it("offers an update only where this app holds a route to the computer", () => {
@@ -110,38 +110,68 @@ it("badges the Home an organization pays for, by the Home the Account pinned", (
   });
 });
 
-it("calls a Cloud Computer a Cloud Computer, with the cloud, never a laptop", () => {
+describe("what kind of Home a row is", () => {
   const cloud = createId("deployment");
   const mac = createId("deployment");
+  const server = createId("deployment");
   const here = createId("deployment");
-  const deployment = (id: string, name: string, onThisComputer = false) => ({
+  const gone = createId("deployment");
+  const deployment = (id: string, name: string, origin: string, onThisComputer = false) => ({
     id,
     name,
     kind: "personal",
     availableActions: ["select"],
-    canonicalOrigin: "https://w3r8.cloud.opensteer.example",
+    canonicalOrigin: origin,
     onThisComputer,
     accountAccess: "owner",
     source: "account",
     status: "idle",
     statusInfo: placeStatus.unavailable("host-too-old", name),
   });
-  const rows = placeRows(
-    {
-      account: { available: true, status: "signed-in" },
-      deployments: [
-        deployment(cloud, "Mine in the cloud"),
-        deployment(mac, "Studio"),
-        deployment(here, "Here", true),
-      ],
-      selectedDeploymentId: null,
-      unavailable: [],
-    } as unknown as DeploymentAccessSnapshot,
-    { thisComputer: "This Mac", cloud: new Set([cloud]) },
-  );
-  expect(Object.fromEntries(rows.map((row) => [row.name, [row.detail, row.icon]]))).toEqual({
-    "Mine in the cloud": ["Cloud Computer", "cloud"],
-    Studio: ["Your computer", "laptop"],
-    Here: ["This Mac", "laptop"],
+  const rows = (known: ReadonlySet<string> | null) =>
+    placeRows(
+      {
+        account: { available: true, status: "signed-in" },
+        deployments: [
+          deployment(cloud, "Mine in the cloud", "https://w3r8.cloud.opensteer.example"),
+          deployment(mac, "Studio", "http://127.0.0.1:4310"),
+          deployment(server, "Basement", "https://home.example.net"),
+          deployment(here, "Here", "http://127.0.0.1:4311", true),
+        ],
+        selectedDeploymentId: null,
+        unavailable: [
+          { accountAccess: "owner", deploymentId: gone, name: "Away", reason: "host-unavailable" },
+        ],
+      } as unknown as DeploymentAccessSnapshot,
+      { thisComputer: "This Mac", cloud: known },
+    );
+  const kinds = (list: ReturnType<typeof rows>) =>
+    Object.fromEntries(list.map((row) => [row.name, [row.detail, row.icon]]));
+
+  it("calls a Cloud Computer a Cloud Computer, with the cloud, never a laptop", () => {
+    expect(kinds(rows(new Set([cloud, gone])))).toEqual({
+      "Mine in the cloud": ["Cloud Computer", "cloud"],
+      Studio: ["Your computer", "laptop"],
+      Basement: ["Your computer", "server"],
+      Here: ["This Mac", "laptop"],
+      // A Home this app cannot reach is named what the Account says it is, too.
+      Away: ["Cloud Computer", "cloud"],
+    });
+  });
+
+  it("gives a personal Home on a server the server icon, and no kind while the Account can't say", () => {
+    expect(kinds(rows(new Set()))).toMatchObject({
+      "Mine in the cloud": ["Your computer", "server"],
+      Basement: ["Your computer", "server"],
+      Away: ["In your account", "server"],
+    });
+    // The read failed or hasn't answered: an address and no kind, never a wrong one.
+    expect(kinds(rows(null))).toMatchObject({
+      "Mine in the cloud": ["w3r8.cloud.opensteer.example", "globe"],
+      Basement: ["home.example.net", "globe"],
+      // A Mac is a Mac whatever that read says.
+      Studio: ["Your computer", "laptop"],
+      Here: ["This Mac", "laptop"],
+    });
   });
 });
