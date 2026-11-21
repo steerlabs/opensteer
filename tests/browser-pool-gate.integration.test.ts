@@ -1177,6 +1177,77 @@ it("ends a removed device's pooled sessions with their notes through the real re
   }
 });
 
+it("gives each loss of a tab its own notice, reports only the newest, and clears it once seen", async () => {
+  const j = await journey("notices");
+  try {
+    const home = await j.startHome();
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    const { tabId } = await home.service.openTab(j.task.userId, j.command("notices"));
+    // The tab is lost twice: a restart, a reopen, and another restart.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "restart-1");
+    await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "reopen",
+    );
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "restart-2");
+    const notes = await j.database
+      .selectFrom("browserPoolDocumentLosses")
+      .select(["intentId", "lostAt"])
+      .where("surfaceId", "=", tabId)
+      .orderBy("lostAt", "desc")
+      .execute();
+    expect(notes).toHaveLength(2);
+    expect(new Set(notes.map(({ intentId }) => intentId)).size).toBe(2);
+    // Only the newest unseen notice of the tab is reported, with its id.
+    const shown = (await report())?.pages?.filter(({ surfaceId }) => surfaceId === tabId);
+    expect(shown).toEqual([
+      expect.objectContaining({ surfaceId: tabId, noticeId: notes[0]!.intentId }),
+    ]);
+    const revision = async () =>
+      (
+        (
+          await j.database
+            .selectFrom("clientSyncState")
+            .select("resourceRevisions")
+            .executeTakeFirstOrThrow()
+        ).resourceRevisions as Record<string, string>
+      )["browser-placement"];
+    const before = await revision();
+    // Seen: it and the older one leave the report, and subscribed readers are told.
+    await home.service.poolNoticeSeen(j.task.userId, tabId, notes[0]!.intentId);
+    expect(((await report())?.pages ?? []).map(({ surfaceId }) => surfaceId)).not.toContain(tabId);
+    expect(await revision()).not.toBe(before);
+    expect(
+      await j.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select("noticedAt")
+        .where("surfaceId", "=", tabId)
+        .where("noticedAt", "is", null)
+        .execute(),
+    ).toEqual([]);
+    // However many tabs wait, the report stays bounded well under the protocol's limit.
+    const owner = j.task.userId;
+    await j.database
+      .insertInto("browserPoolDocumentLosses")
+      .values(
+        Array.from({ length: 150 }, (_, index) => ({
+          intentId: randomUUID(),
+          runnerId: j.task.runnerId,
+          ownerId: owner,
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          surfaceId: BrowserSurfaceIdSchema.parse(`srf_backlog_${index}`),
+          documentId: null,
+          reason: "person",
+        })),
+      )
+      .execute();
+    expect((await report())?.pages).toHaveLength(100);
+  } finally {
+    await j.close();
+  }
+});
+
 it("counts the failed starts of a restart in the report, and clears the count once one starts", async () => {
   const j = await journey("failed-starts");
   try {
@@ -1253,7 +1324,12 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
       "report-reopen",
     );
     expect((await report())?.pages).toEqual([
-      { surfaceId: tabId, outcome: "reloaded", typed: false },
+      {
+        surfaceId: tabId,
+        noticeId: reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
+        outcome: "reloaded",
+        typed: false,
+      },
     ]);
     await home.service.pageTabs.activate(
       j.task.userId,

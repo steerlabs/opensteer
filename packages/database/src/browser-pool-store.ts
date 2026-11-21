@@ -299,8 +299,8 @@ async function recordBrowserPoolLosses(
       .orderBy("id")
       .execute();
     const known = new Set(sessions.map(({ id }) => id));
-    // A loss outside a park (a lost Runner channel, a removed device) has its own note id.
-    const noteId = slot.intentId ?? randomUUID();
+    // Every loss has its own notice id: a later loss on the same tab is a new notice.
+    const noteId = randomUUID();
     const notes = losses.flatMap(({ sessionId, reason, surfaces }) => {
       return ownerId && known.has(sessionId)
         ? surfaces.map(({ surfaceId, documentId }) => ({
@@ -605,30 +605,92 @@ export function listBrowserPoolDocumentLosses(
  * The person sees a loss once. A notice stays until the client says it showed it (by its id);
  * a reply lost on the way is answered with the same notice again.
  */
+/**
+ * The person was shown this notice: it, and every older unseen notice of the same tab, are seen.
+ * Clients reading the pool report drop the note.
+ */
+export async function seeBrowserPoolDocumentLoss(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  surfaceId: BrowserSurfaceId,
+  seen: string,
+): Promise<void> {
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    // Compared in the database: the seen notice's time keeps its full precision.
+    const rows = await tx
+      .selectFrom("browserPoolDocumentLosses")
+      .select(["intentId", "surfaceId"])
+      .where("ownerId", "=", ownerId)
+      .where("surfaceId", "=", surfaceId)
+      .where("noticedAt", "is", null)
+      .where(
+        sql<boolean>`lost_at <= (
+          select seen.lost_at from browser_pool_document_losses seen
+          where seen.owner_id = ${ownerId} and seen.surface_id = ${surfaceId}
+            and seen.intent_id::text = ${seen}
+        )`,
+      )
+      .orderBy("intentId")
+      .forUpdate()
+      .execute();
+    if (!rows.length) return;
+    mutation.bumpResource("browser-placement");
+    await tx
+      .updateTable("browserPoolDocumentLosses")
+      .set({ noticedAt: new Date() })
+      .where("ownerId", "=", ownerId)
+      .where("surfaceId", "=", surfaceId)
+      .where(
+        "intentId",
+        "in",
+        rows.map(({ intentId }) => intentId),
+      )
+      .execute();
+  });
+}
+
+/** The newest notice of this tab the person has not seen, after marking `seen` seen. */
 export async function nextBrowserPoolDocumentLoss(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
   surfaceId: BrowserSurfaceId,
   seen?: string,
 ): Promise<{ readonly id: string; readonly reason: string } | undefined> {
-  if (seen)
-    await database
-      .updateTable("browserPoolDocumentLosses")
-      .set({ noticedAt: new Date() })
-      .where("ownerId", "=", ownerId)
-      .where("surfaceId", "=", surfaceId)
-      .where(sql<string>`intent_id::text`, "=", seen)
-      .where("noticedAt", "is", null)
-      .execute();
+  if (seen) await seeBrowserPoolDocumentLoss(database, ownerId, surfaceId, seen);
   const row = await database
     .selectFrom("browserPoolDocumentLosses")
     .select(["intentId", "reason"])
     .where("ownerId", "=", ownerId)
     .where("surfaceId", "=", surfaceId)
     .where("noticedAt", "is", null)
-    .orderBy("lostAt")
+    .orderBy("lostAt", "desc")
     .executeTakeFirst();
   return row ? { id: row.intentId, reason: row.reason } : undefined;
+}
+
+/** At most this many notices reach a pool report: the newest unseen one of each tab. */
+export const browserPoolReportedNotices = 100;
+
+/** The newest unseen notice of each tab of this Runner, newest first, bounded. */
+export async function listBrowserPoolReportedNotices(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+) {
+  const newest = database
+    .selectFrom("browserPoolDocumentLosses")
+    .select(["surfaceId", "sessionId", "intentId", "lostAt"])
+    .distinctOn("surfaceId")
+    .where("runnerId", "=", runnerId)
+    .where("noticedAt", "is", null)
+    .orderBy("surfaceId")
+    .orderBy("lostAt", "desc")
+    .as("newest");
+  return database
+    .selectFrom(newest)
+    .selectAll()
+    .orderBy("lostAt", "desc")
+    .limit(browserPoolReportedNotices)
+    .execute();
 }
 
 /**

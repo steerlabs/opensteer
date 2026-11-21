@@ -189,6 +189,8 @@ import {
   listBrowserPoolRuntimeSessions,
   readBrowserPoolOwner,
   readBrowserPoolSlot,
+  listBrowserPoolReportedNotices,
+  seeBrowserPoolDocumentLoss,
   readBrowserPoolSessionLineage,
   type BrowserPoolSessionLoss,
   type BrowserPoolTargetIdentity,
@@ -6422,22 +6424,19 @@ export class BrowserService {
       (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
 
     const start = slot.lastStart as { reason?: string; id?: string } | null;
-    const losses = await database
-      .selectFrom("browserPoolDocumentLosses")
-      .select(["surfaceId", "sessionId"])
-      .where("runnerId", "=", runnerId)
-      .where("noticedAt", "is", null)
-      .orderBy("lostAt")
-      .execute();
+    // The newest unseen notice of each tab, bounded well under the protocol's limit; older
+    // unseen ones fall to retention.
+    const losses = await listBrowserPoolReportedNotices(database, runnerId);
     const owner = await readBrowserPoolOwner(database);
     const pages = await Promise.all(
-      losses.map(async ({ surfaceId, sessionId }) => {
+      losses.map(async ({ surfaceId, sessionId, intentId }) => {
         const tab = owner ? await this.#workspaceTabs?.get(owner, surfaceId) : null;
         // Reopened in another session: it came back by reloading. Otherwise it is lost.
         const reloaded =
           tab?.pageBinding?.sessionId !== undefined && tab.pageBinding.sessionId !== sessionId;
         return {
           surfaceId,
+          noticeId: intentId,
           outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
           typed: retained.some(
             (document) => document.surfaceId === surfaceId && document.typed === true,
@@ -6495,6 +6494,13 @@ export class BrowserService {
   }
 
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
+  /** The person was shown a pooled browser's note: it leaves the report. Nothing elsewhere. */
+  async poolNoticeSeen(ownerId: UserId, surfaceId: BrowserSurfaceId, noticeId: string) {
+    if (!this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
+      throw new OpensteerError({ code: "not_found", message: "This note is not here." });
+    await seeBrowserPoolDocumentLoss(this.#repository.database, ownerId, surfaceId, noticeId);
+  }
+
   /**
    * A removed device's pooled browser: `ended` are the sessions its revocation already ended,
    * which get their notes with the rest. An ordinary Home returns before any read.

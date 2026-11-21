@@ -1525,6 +1525,8 @@ export const BrowserPoolReportSchema = z.object({
     .array(
       z.object({
         surfaceId: z.string().min(1).max(200),
+        /** The notice's id: a client sends it back once the person has seen the note. */
+        noticeId: z.string().min(1).max(200).optional(),
         outcome: z.enum(["reloaded", "lost"]),
         typed: z.boolean(),
       }),

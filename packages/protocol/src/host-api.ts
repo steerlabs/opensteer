@@ -1165,6 +1165,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     runnerId: z.string().min(1).max(200),
     type: z.literal("browser.pool.restart"),
   }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    surfaceId: z.string().min(1).max(200),
+    noticeId: z.string().min(1).max(200),
+    type: z.literal("browser.pool.notice.seen"),
+  }),
   /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1487,6 +1493,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.pool.restart") }),
+  z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
   z.object({

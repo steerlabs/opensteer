@@ -163,6 +163,7 @@ import {
   AgentPhoneHostTargetSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
@@ -2663,6 +2664,13 @@ export async function createHostServer(
         return handleAppCommand(dependencies.apps, command, userId);
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
+        return { type: command.type };
+      case "browser.pool.notice.seen":
+        await dependencies.browser.poolNoticeSeen(
+          userId,
+          BrowserSurfaceIdSchema.parse(command.surfaceId),
+          command.noticeId,
+        );
         return { type: command.type };
       case "browser.pool.restart":
         await dependencies.browser.restartPooledBrowser(

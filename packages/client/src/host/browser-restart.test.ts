@@ -3,7 +3,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mockBrowserPoolReport } from "../mock/browser-sleep-fixtures.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
-import { BrowserRestartUnavailable, restartPooledBrowser } from "./browser-sleep.js";
+import {
+  BrowserRestartUnavailable,
+  browserReturnNotes,
+  browserSleepFromHome,
+  restartPooledBrowser,
+  type BrowserPoolReport,
+} from "./browser-sleep.js";
 import { HttpHostClient } from "./host-session-client.js";
 
 const disposals: (() => void)[] = [];
@@ -12,11 +18,19 @@ afterEach(() => {
 });
 
 /** A personal Home whose answer to `browser.pool.restart` the test chooses. */
-function home(pooled: string | undefined, answer: () => unknown) {
+function home(
+  pooled: string | undefined,
+  answer: () => unknown,
+  report?: (runnerId: string) => BrowserPoolReport,
+) {
   const mock = new MockHostClient({ latencyMs: 0 });
-  if (pooled) mock.setBrowserPools([mockBrowserPoolReport("awake", pooled, "srf_page")]);
+  if (pooled)
+    mock.setBrowserPools([
+      report ? report(pooled) : mockBrowserPoolReport("awake", pooled, "srf_page"),
+    ]);
   const host = new MockPersonalHost(mock);
   const restarts: unknown[] = [];
+  const seen: unknown[] = [];
   const client = new HttpHostClient({
     baseUrl: "http://scoped-host",
     fetch: async (input, init) => {
@@ -28,6 +42,10 @@ function home(pooled: string | undefined, answer: () => unknown) {
           restarts.push(command);
           return Response.json(answer());
         }
+        if (command.type === "browser.pool.notice.seen") {
+          seen.push(command);
+          return Response.json({ ok: true, data: { type: command.type } });
+        }
       }
       return host.fetch(input, init);
     },
@@ -37,7 +55,7 @@ function home(pooled: string | undefined, answer: () => unknown) {
     () => client.dispose(),
     () => host.dispose(),
   );
-  return { client, restarts };
+  return { client, restarts, seen };
 }
 
 const refusal = (code: string) => ({
@@ -102,4 +120,37 @@ it("keeps any other failure as itself, so the screen says it did not happen", as
   const failure = await restartPooledBrowser(client, "rnr_cloud").catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(BrowserRestartUnavailable);
   expect(failure).toBeInstanceOf(Error);
+});
+
+it("tells the Home of a seen note it gave an id, and of no other", async () => {
+  const withNotice = (runnerId: string): BrowserPoolReport => ({
+    ...mockBrowserPoolReport("awake", runnerId, "srf_page"),
+    pages: [
+      { surfaceId: "srf_page", noticeId: "notice-1", outcome: "reloaded", typed: false },
+      { surfaceId: "srf_other", outcome: "lost", typed: false },
+    ],
+  });
+  const { client, seen } = home("rnr_cloud", () => undefined, withNotice);
+  await client.load();
+  await vi.waitFor(() => expect(client.getSnapshot().browserPools).toHaveLength(1));
+  const notes = browserReturnNotes(client);
+  const view = (tabId: string) =>
+    browserSleepFromHome(client.getSnapshot().browserPools, "rnr_cloud", tabId).tab;
+  notes.seen("rnr_cloud", "srf_page", view("srf_page"));
+  // A note the Home gave no id stays this client's own.
+  notes.seen("rnr_cloud", "srf_other", view("srf_other"));
+  await vi.waitFor(() =>
+    expect(seen).toEqual([
+      {
+        type: "browser.pool.notice.seen",
+        surfaceId: "srf_page",
+        noticeId: "notice-1",
+        idempotencyKey: expect.any(String),
+      },
+    ]),
+  );
+  // Seen once, said once.
+  notes.seen("rnr_cloud", "srf_page", view("srf_page"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(seen).toHaveLength(1);
 });

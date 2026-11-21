@@ -1050,6 +1050,25 @@ export class HttpHostClient {
     }
   }
 
+  /**
+   * The person was shown a pooled browser's note: the Home is told, so it leaves the report for
+   * every client. Sent only for a note this Home's report carries; nothing otherwise.
+   */
+  async browserNoticeSeen(computerId: string, tabId: string, noticeId: string): Promise<void> {
+    const carried = this.#snapshot.browserPools?.some(
+      (pool) =>
+        pool.runnerId === computerId &&
+        pool.pages?.some((page) => page.surfaceId === tabId && page.noticeId === noticeId),
+    );
+    if (!carried) return;
+    await this.dispatch({
+      type: "browser.pool.notice.seen",
+      surfaceId: tabId,
+      noticeId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
