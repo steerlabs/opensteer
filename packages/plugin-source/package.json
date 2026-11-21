@@ -15,7 +15,7 @@
   "dependencies": {
     "@opensteer/plugin-engine-sdk": "workspace:*",
     "effect": "4.1.4",
-    "isomorphic-git": "1.37.4"
+    "isomorphic-git": "1.38.6"
   },
   "devDependencies": {
     "@opensteer/plugin-engine-app-source": "workspace:*",
