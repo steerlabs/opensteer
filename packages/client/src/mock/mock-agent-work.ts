@@ -62,6 +62,8 @@ export function mockAgentWork(input: {
    * the agent's own choices on the Request, and no direct operation in its parts.
    */
   readonly question?: boolean;
+  /** The labels the agent offered on that question; Done and Unable to do it when absent. */
+  readonly questionChoices?: readonly string[];
 }): {
   readonly threads: readonly ThreadSummary[];
   readonly requests: Readonly<Record<string, readonly Request[]>>;
@@ -358,10 +360,11 @@ export function mockAgentWork(input: {
         {
           id: "question_1",
           prompt: "Sign in to TAP Air Portugal in the Travel tab, then tap Done.",
-          choices: [
-            { label: "Done", value: "Done" },
-            { label: "Unable to do it", value: "Unable to do it" },
-          ],
+          // As the Home writes ask_person: each label is its own value.
+          choices: (input.questionChoices ?? ["Done", "Unable to do it"]).map((label) => ({
+            label,
+            value: label,
+          })),
           custom: false,
           multiSelect: false,
           secret: false,

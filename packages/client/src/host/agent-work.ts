@@ -399,19 +399,17 @@ type RequestLike = {
 };
 
 /** The field a direct operation's Request asks on, or null for any other Request. */
+/**
+ * The field a direct operation's approval is answered on, or null for any other Request. Only
+ * the Home says a Request is an approval, by naming that field in its operation parts: a
+ * question whose answers happen to read allow and deny is still a question. Every Home that
+ * opens these Requests names the field; no released Home opens them at all.
+ */
 export function operationDecisionField(request: RequestLike): string | null {
   if (!request.originatingAgentSessionId || request.presentation.kind !== "form") return null;
-  // The Home names its decision field; older Homes are recognised by their two answers.
   const named = request.agentOperation?.decisionFieldId;
-  if (named) return request.presentation.fields.some(({ id }) => id === named) ? named : null;
-  const [field, ...rest] = request.presentation.fields;
-  if (!field || rest.length > 0) return null;
-  const values = new Set(field.choices?.map(({ value }) => value) ?? []);
-  return values.size === 2 &&
-    values.has(operationAnswerValues.allow) &&
-    values.has(operationAnswerValues.deny)
-    ? field.id
-    : null;
+  if (!named) return null;
+  return request.presentation.fields.some(({ id }) => id === named) ? named : null;
 }
 
 /**

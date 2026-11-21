@@ -4,6 +4,7 @@ import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
 import {
+  operationDecisionField,
   sessionQuestions,
   sessionSlotFromHome,
   operationRequestView,
@@ -301,16 +302,20 @@ describe("the Request a direct operation opens", () => {
     );
   });
 
-  it("shows the Home's own text when the parts aren't sent, and never splits it", () => {
-    const view = operationRequestView({
-      request: { ...request, agentOperation: undefined },
-      session,
-    })!;
-    expect(view.summary).toBe(request.presentation.detail);
-    expect(view.context).toBeNull();
-    expect(view.agentWords).toBeNull();
-    expect(view.calls).toBeNull();
-    expect(view.agent.name).toBe("Grok");
+  it("takes a Request for an approval only when the Home names its decision field", () => {
+    // The same two answers without the Home's operation parts: not an approval.
+    expect(
+      operationRequestView({ request: { ...request, agentOperation: undefined }, session }),
+    ).toBeNull();
+    expect(operationDecisionField({ ...request, agentOperation: undefined })).toBeNull();
+    // The parts name a field the form doesn't have: not an approval either.
+    expect(
+      operationDecisionField({
+        ...request,
+        agentOperation: { ...request.agentOperation!, decisionFieldId: "elsewhere" },
+      }),
+    ).toBeNull();
+    expect(operationDecisionField(request)).toBe("operation-decision");
   });
 
   it("says allowed, not allowed, expired and no longer needed", () => {
@@ -441,6 +446,30 @@ describe("what a connected agent asks the person itself", () => {
       "Done",
       "Unable to do it",
     ]);
+  });
+
+  it("is a question in its own words even when the agent offers allow and deny", () => {
+    if (question.presentation.kind !== "form") throw new Error("not a form");
+    const field = question.presentation.fields[0]!;
+    const lookalike = {
+      ...question,
+      presentation: {
+        ...question.presentation,
+        fields: [
+          {
+            ...field,
+            choices: [
+              { label: "allow", value: "allow" },
+              { label: "deny", value: "deny" },
+            ],
+          },
+        ],
+      },
+    };
+    // Only the Home says a Request is an operation approval, never the look of its answers.
+    expect(operationDecisionField(lookalike)).toBeNull();
+    expect(operationRequestView({ request: lookalike })).toBeNull();
+    expect(sessionQuestions([lookalike])).toEqual([lookalike]);
   });
 
   it("leaves an answered question and any other task's Request alone", () => {
