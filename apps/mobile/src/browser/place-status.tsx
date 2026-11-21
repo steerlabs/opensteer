@@ -47,11 +47,11 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   const [stop, setStop] = useState<{ readonly runId: string; readonly failed: boolean } | null>(
     null,
   );
-  const runId = watch.kind === "working" ? watch.runId : null;
+  // Waiting on the person is still work under way: its Run keeps its Stop beside Answer.
+  const runId = watch.runId;
   // A Stop belongs to the Run it was pressed for.
   const pressed = stop !== null && stop.runId === runId ? stop : null;
-  const busy =
-    (pressed !== null && !pressed.failed) || (watch.kind === "working" && watch.stopping);
+  const busy = (pressed !== null && !pressed.failed) || watch.stopping;
   const onStop = () => {
     if (runId === null || busy || !props.canRespond) return;
     setStop({ failed: false, runId });
@@ -93,7 +93,8 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
           onPress={props.onAnswer}
           tone="primary"
         />
-      ) : (
+      ) : null}
+      {runId === null ? null : (
         <ComposerAction
           busy={busy}
           disabled={!props.canRespond}
@@ -135,10 +136,9 @@ const styles = StyleSheet.create({
 /** The two watches say the same thing: the row need not draw again. */
 function sameWatch(left: ThreadWatch | null, right: ThreadWatch | null): boolean {
   if (left === null || right === null) return left === right;
-  if (left.kind === "needs-you" || right.kind === "needs-you") return left.kind === right.kind;
-  return (
-    left.runId === right.runId && left.stopping === right.stopping && left.words === right.words
-  );
+  if (left.kind !== right.kind) return false;
+  if (left.runId !== right.runId || left.stopping !== right.stopping) return false;
+  return left.kind === "needs-you" || right.kind === "needs-you" || left.words === right.words;
 }
 
 /**
@@ -305,7 +305,7 @@ const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
 /**
  * A connected agent using this tab, for which task, and the Stop that ends its session; while
- * it waits on the person, that it needs them, with Answer back to the task's question.
+ * it waits on the person, Answer back to the task's question beside that Stop.
  */
 function SessionStatusRow(props: {
   readonly busy: boolean;
@@ -340,7 +340,8 @@ function SessionStatusRow(props: {
           onPress={props.onAnswer}
           tone="primary"
         />
-      ) : props.onStop === null ? null : (
+      ) : null}
+      {props.onStop === null ? null : (
         <ComposerAction
           busy={props.busy}
           disabled={false}

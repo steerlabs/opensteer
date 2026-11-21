@@ -271,7 +271,7 @@ export function OperationRequestPanel({
 
 /**
  * On a tab a connected agent's own task uses: who, for which task, and Stop. While the task
- * waits on the person, it says so, with Answer back to the Request in the task.
+ * waits on the person, Answer back to the Request in the task stands beside that Stop.
  */
 export function TabAgentStatus({
   tabId,
@@ -293,11 +293,11 @@ export function TabAgentStatus({
   const waiting =
     occupant && line.stop ? requestsWaitingOn(snapshot.waitingRequests, occupant.threadId) : [];
   const asked = waiting[0]?.request ?? null;
-  if (asked && occupant && workspace) {
-    const needsYou = workWords("tab.needsYou", { agent: sessionAgent(slot?.connection).name });
-    return (
-      <div className="tab-agent-status tab-agent-status--needs-you" role="status">
-        <span>{line.line}</span>
+  const needsYou = workWords("tab.needsYou", { agent: sessionAgent(slot?.connection).name });
+  return (
+    <div className={`tab-agent-status${asked ? " tab-agent-status--needs-you" : ""}`} role="status">
+      <span>{line.line}</span>
+      {asked && occupant && workspace ? (
         <button
           aria-label={`${needsYou}. ${workWords("tab.answer")}`}
           className="btn btn--small btn--primary"
@@ -311,12 +311,8 @@ export function TabAgentStatus({
         >
           {workWords("tab.answer")}
         </button>
-      </div>
-    );
-  }
-  return (
-    <div className="tab-agent-status" role="status">
-      <span>{line.line}</span>
+      ) : null}
+      {/* A question waiting takes nothing from the row: Stop stays beside Answer. */}
       {line.stop ? (
         <button
           className="btn btn--small"

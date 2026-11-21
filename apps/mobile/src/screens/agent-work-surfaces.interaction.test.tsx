@@ -202,10 +202,11 @@ describe("a tab a connected agent uses, on the phone", () => {
     );
   });
 
-  it("says when the agent needs the person, and Answer goes back to the task's Request", async () => {
+  it("offers Answer and Stop both while the agent waits on the person", async () => {
     const client = seeded({ question: true });
     const threadId = idOf(client, "Find flights to Lisbon");
     answered.mockClear();
+    const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(
       <Status
         agents={agentsOf(threadId, "Find flights to Lisbon")}
@@ -214,12 +215,17 @@ describe("a tab a connected agent uses, on the phone", () => {
       />,
     );
     expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
-    // Answer takes Stop's place while the agent waits on the person.
-    expect(page.textContent).not.toContain("Stop Claude");
     await act(async () =>
       [...page.querySelectorAll("button")].find((b) => b.textContent === "Answer")!.click(),
     );
     expect(answered).toHaveBeenCalledExactlyOnceWith(threadId);
+    // The question takes nothing from the row: its Stop still ends that same session.
+    await act(async () =>
+      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop Claude")!.click(),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent.session.stop", threadId }),
+    );
   });
 });
 

@@ -115,8 +115,16 @@ describe("a tab a connected agent uses", () => {
         "You and Grok are using this page, for “Buy the phone case”",
       ),
     );
-    // Grok waits on the person's Allow once: Answer takes Stop's place, back to the Request.
+    // Grok waits on the person's Allow once: Answer back to the Request, and Stop beside it.
     expect(button("Answer")?.getAttribute("aria-label")).toBe("Grok needs you. Answer");
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () => button("Stop")!.click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId: mockAgentWorkThreads.waiting,
+      }),
+    );
   });
 });
 
@@ -147,6 +155,8 @@ describe("what a connected agent asks the person itself", () => {
       ),
     );
     expect(button("Answer")?.getAttribute("aria-label")).toBe("Claude needs you. Answer");
+    // Stop stays beside Answer while the question waits.
+    expect(document.querySelector(".tab-agent-status")?.textContent).toContain("Stop");
     await act(async () => button("Answer")!.click());
     await vi.waitFor(() =>
       expect(document.querySelector(".request-card")?.textContent).toContain(

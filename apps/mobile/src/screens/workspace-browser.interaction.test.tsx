@@ -2635,6 +2635,16 @@ describe("the status row", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
+  it("keeps Stop beside Answer while the conversation's Run waits on the person", async () => {
+    const { container } = await openWatched(["thread-agent"], { threadId: "thread-agent" }, [
+      "thread-agent",
+    ]);
+    expect(row(container)?.textContent).toContain("Needs you");
+    expect(element(row(container)!, "Answer")).not.toBeNull();
+    press(row(container)!, "Stop this run");
+    expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
+  });
+
   it("leaves the row out while its conversation is beside the page, and only then", async () => {
     state.pair = { height: 1000, width: 744 };
     const working = ["thread-trip", "thread-agent"];
