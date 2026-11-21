@@ -1,10 +1,9 @@
 import { useMemo } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
+  cloudComputerDeployments,
   cloudWords,
   orgWords,
-  workAuditExcluded,
-  workAuditRecordKinds,
   workHomeBadges,
   type CloudComputerStepView,
   type WorkHomeCard,
@@ -13,12 +12,15 @@ import { useCloudComputer } from "@opensteer/client/react";
 import { useShell } from "../../app-shell.js";
 import { CopyBlock } from "../../copy-block.js";
 import { Icon } from "../../icon.js";
-import { SectionHeader, SettingsGroup, SettingsRow } from "../primitives.js";
+import { SettingsGroup, SettingsRow } from "../primitives.js";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { cloudComputerAccountFor, useCloudComputerAccount } from "./cloud-computer.js";
 
-export const workHomeSeePath = (assignmentId: string) =>
-  `/settings/account/cloud-computer/work/${encodeURIComponent(assignmentId)}`;
+/**
+ * "What {organization} can see": one page, read from the work Home itself, so it is shown
+ * from inside that Home (on the web too, where no Account read of work Homes exists).
+ */
+export const workHomeSeePath = "/settings/work";
 
 /** The person's work Homes, from the same one read as their Cloud Computer screen. */
 export function useWorkHomes(): readonly WorkHomeCard[] {
@@ -35,6 +37,19 @@ export function usePlaceWorkBadges(
     () => new Map([...workHomeBadges(work)].map(([id, card]) => [id, card.badge])),
     [work],
   );
+}
+
+/**
+ * The listed Homes the Account says are Opensteer Cloud Computers, for a list of places; null
+ * while the Account's read hasn't answered (or failed, or there is no Account here).
+ */
+export function usePlaceCloudComputers(
+  bridge: OpensteerDesktopBridge | null | undefined,
+): ReadonlySet<string> | null {
+  const account = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
+  const views = useCloudComputer(account).views;
+  // Null until the Account answered: no list then says which Homes are not Cloud Computers.
+  return useMemo(() => (views === null ? null : cloudComputerDeployments(views)), [views]);
 }
 
 /** "Work · {organization}" for the listed Home that is a work Home, if any. */
@@ -89,7 +104,8 @@ export function WorkHomeCards({ cards }: { readonly cards: readonly WorkHomeCard
 }
 
 function WorkHomeCardView({ card }: { readonly card: WorkHomeCard }) {
-  const { deploymentAccess, desktopBridge } = useShell();
+  const { deploymentAccess, desktopBridge, snapshot } = useShell();
+  const here = card.deploymentId !== null && card.deploymentId === snapshot.deploymentId;
   const navigate = useNavigate();
   const listed =
     card.deploymentId === null
@@ -169,14 +185,17 @@ function WorkHomeCardView({ card }: { readonly card: WorkHomeCard }) {
             title={`${line.title}: ${line.value}`}
           />
         ))}
-        <SettingsRow
-          title={card.seeTitle}
-          action={
-            <Link className="btn btn--small" to={workHomeSeePath(card.assignmentId)}>
-              {orgWords("org.open")}
-            </Link>
-          }
-        />
+        {/* Read from inside the work Home: shown here only while it is the Home open. */}
+        {here ? (
+          <SettingsRow
+            title={card.seeTitle}
+            action={
+              <Link className="btn btn--small" to={workHomeSeePath}>
+                {orgWords("org.open")}
+              </Link>
+            }
+          />
+        ) : null}
       </div>
     </section>
   );
@@ -190,64 +209,11 @@ export function WorkHomeRow({ card }: { readonly card: WorkHomeCard }) {
         title={<WorkBadge card={card} />}
         detail={card.managed}
         action={
-          <Link className="btn btn--small" to={workHomeSeePath(card.assignmentId)}>
+          <Link className="btn btn--small" to={workHomeSeePath}>
             {card.seeTitle}
           </Link>
         }
       />
     </SettingsGroup>
-  );
-}
-
-/**
- * What the organization can see of this work Home, read from the record schema the
- * Home sends, and what never leaves it.
- */
-export function WorkHomeSeePage() {
-  const { assignmentId } = useParams();
-  const work = useWorkHomes();
-  const card = work.find((entry) => entry.assignmentId === assignmentId) ?? null;
-  const back = (
-    <Link className="settings-link connected-agent__back" to="/settings/account/cloud-computer">
-      <Icon name="chevron-left" />
-      {cloudWords("cloud.shortTitle")}
-    </Link>
-  );
-  if (!card)
-    return (
-      <>
-        {back}
-        <p role="status">{cloudWords("cloud.loading")}</p>
-      </>
-    );
-  const organization = card.organizationName;
-  return (
-    <>
-      {back}
-      <SectionHeader title={card.seeTitle} lead={orgWords("org.work.see.lead", { organization })} />
-      <SettingsGroup heading={orgWords("org.work.see.sees", { organization })} headingId="work-see">
-        <SettingsRow title={orgWords("org.work.see.status")} />
-        <SettingsRow title={orgWords("org.work.see.policy")} />
-        <SettingsRow
-          title={orgWords("org.work.see.records")}
-          detail={
-            <ul className="work-see__list">
-              {workAuditRecordKinds.map(({ kind, words }) => (
-                <li key={kind}>{words}</li>
-              ))}
-            </ul>
-          }
-        />
-      </SettingsGroup>
-      <SettingsGroup
-        heading={orgWords("org.work.see.never", { organization })}
-        headingId="work-never"
-      >
-        {workAuditExcluded.map((item) => (
-          <SettingsRow key={item} title={item} />
-        ))}
-        <SettingsRow title={orgWords("org.work.see.personal")} />
-      </SettingsGroup>
-    </>
   );
 }

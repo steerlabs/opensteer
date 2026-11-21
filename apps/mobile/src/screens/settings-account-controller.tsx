@@ -3,7 +3,7 @@ import { useClientRead, usePersonalRemoteAccess, useRemoteAccess } from "@openst
 import { createClientRead } from "@opensteer/client/reads";
 import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
-import { cloudWords } from "@opensteer/client/computers";
+import { cloudComputerEntryDetail, cloudWords } from "@opensteer/client/computers";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
@@ -26,6 +26,7 @@ import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js
 import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-remote-access.js";
 import { homeAccountLinkSections, useHomeAccountLink } from "./settings-home-account-link.js";
 import { useSettingsHost } from "./use-settings-host.js";
+import { usePhoneHome } from "../computers/home-kind.js";
 
 /** Account: who you are, using this computer from anywhere, and where you're signed in. */
 export function AccountSettingsController(props: { readonly sessionId?: string } = {}): ReactNode {
@@ -55,6 +56,11 @@ function AccountSettingsContent(props: {
   const snapshot = useSettingsHost(host);
   // A Home on its own server has no Remote access: its Account link has its own card.
   const networked = snapshot?.identityConfig?.exposure === "networked";
+  const home = usePhoneHome({
+    exposure: snapshot?.identityConfig?.exposure,
+    homeKind: snapshot?.identityConfig?.homeKind,
+    deploymentId: selection.deploymentId,
+  });
   const homeLink = useHomeAccountLink(snapshot !== null ? host : null, networked);
   const remote = usePersonalRemoteAccess(snapshot !== null && !networked ? host : null);
   const sessionsRead = useMemo(
@@ -339,7 +345,7 @@ function AccountSettingsContent(props: {
         key: "cloud-computer",
         kind: "button",
         label: cloudWords("cloud.entry.title"),
-        detail: cloudWords("cloud.entry.detail"),
+        detail: cloudComputerEntryDetail(home.kind.kind),
         symbol: "cloud",
         opens: true,
         onPress: () => navigation.navigate("CloudComputer"),

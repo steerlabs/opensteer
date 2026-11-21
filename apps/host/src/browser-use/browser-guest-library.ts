@@ -14,7 +14,6 @@ const encode = JSON.stringify;
 const ErrorValue = Error;
 const hasOwn = Object.hasOwn;
 const decode = JSON.parse;
-const charCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
 const substring = Function.prototype.call.bind(String.prototype.slice);
 const asString = String;
 const isInteger = Number.isSafeInteger;
@@ -28,18 +27,6 @@ globalThis.__browserCodec = (mode, value) => {
     return [cdpCode === undefined ? limit(code, 128) : "cdp-error", limit(value?.message, 8192) ?? limit(asString(value), 8192),
       limit(value?.next, 2000), cdpCode];
   }
-  let bytes = 0;
-  for (let i = 0; i < value.length; i++) {
-    const c = charCodeAt(value, i);
-    if (c <= 127) bytes++;
-    else if (c <= 2047) bytes += 2;
-    else if (c >= 55296 && c <= 56319 && charCodeAt(value, i + 1) >= 56320 && charCodeAt(value, i + 1) <= 57343) {
-      i++;
-      bytes += 4;
-    } else bytes += c >= 55296 && c <= 57343 ? 9 : 3;
-    if (bytes > mode) return 0;
-  }
-  return bytes;
 };
 
 async function call(operation, target = null, args = {}) {

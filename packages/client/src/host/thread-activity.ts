@@ -124,7 +124,12 @@ function nextQueuedRun(input: ThreadStopTargetInput): RunQueueEntry | null {
  * what its Run is doing, with the Run its Stop reaches. Null otherwise.
  */
 export type ThreadWatch =
-  | { readonly kind: "needs-you" }
+  | {
+      readonly kind: "needs-you";
+      /** The Run still at work while the question waits, which Stop reaches; null for none. */
+      readonly runId: string | null;
+      readonly stopping: boolean;
+    }
   | {
       readonly kind: "working";
       readonly runId: string;
@@ -139,13 +144,21 @@ export function threadWatch(
     readonly waitingRequests: readonly WaitingRequest[];
   },
 ): ThreadWatch | null {
-  if (requestsWaitingOn(input.waitingRequests, input.thread.id).length > 0)
-    return { kind: "needs-you" };
-  if (input.thread.status !== "running" && input.thread.status !== "waiting") return null;
+  const live = input.thread.status === "running" || input.thread.status === "waiting";
+  if (requestsWaitingOn(input.waitingRequests, input.thread.id).length > 0) {
+    // Answering is one way on; stopping stays the other, from the same row.
+    const waiting = live ? threadStopTarget(input) : null;
+    return {
+      kind: "needs-you",
+      runId: waiting?.id ?? null,
+      stopping: waiting !== null && threadActivity(input) === "stopping",
+    };
+  }
+  if (!live) return null;
   const target = threadStopTarget(input);
   if (target === null) return null;
   const activity = threadActivity(input);
-  const live = liveWords(input.entries, input.thread.inputQueuePaused ?? false);
+  const words = liveWords(input.entries, input.thread.inputQueuePaused ?? false);
   return {
     kind: "working",
     runId: target.id,
@@ -156,7 +169,7 @@ export function threadWatch(
         ? "Waiting on someone"
         : activity === "stopping"
           ? activityLabels.stopping
-          : (live ?? activityLabels[activity === "idle" ? "working" : activity]),
+          : (words ?? activityLabels[activity === "idle" ? "working" : activity]),
   };
 }
 

@@ -9,7 +9,7 @@ import { HostClientRequestError, isHostRefusal } from "./client.js";
 import { remoteAccessDisconnectWarning } from "./personal-remote-access.js";
 
 /**
- * "Use from anywhere": what to show and what to do next, for every surface.
+ * "Remote access": what to show and what to do next, for every surface.
  *
  * `remoteAccessView` is the whole presentation, read from live state each
  * time, so web, desktop and mobile say the same words. `RemoteAccessRunner`

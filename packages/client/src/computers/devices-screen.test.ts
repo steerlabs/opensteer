@@ -16,7 +16,7 @@ import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { cloudSuggestionQuietMs } from "./cloud-computer.js";
 import { computerStatus } from "./computers.js";
-import { deviceWords } from "./devices-copy.js";
+import { deviceWords, homeKeptWords } from "./devices-copy.js";
 import {
   asleepGateLine,
   asleepToolFailure,
@@ -25,6 +25,8 @@ import {
   cloudSuggestionVisible,
   deviceScreenRow,
   devicesScreen,
+  cloudComputerDeployments,
+  cloudComputerEntryDetail,
   homeKind,
   parseCloudSuggestionMemory,
   serverHomeFacts,
@@ -476,5 +478,44 @@ describe("a server Home's page", () => {
     expect(facts("member", true)).toBeNull();
     // An older Home says nothing: a personal Home has only an owner.
     expect(facts(undefined, true)).toBe("Signed in as owner");
+  });
+});
+
+describe("why the Home's own device can't be removed", () => {
+  it("names what the Home is, and calls only a Mac a Mac", () => {
+    expect(homeKeptWords("this-mac")).toBe(
+      "Your Opensteer lives on this Mac, so it can’t be removed.",
+    );
+    expect(homeKeptWords("mac")).toBe(homeKeptWords("this-mac"));
+    expect(homeKeptWords("cloud")).toBe(
+      "Your Opensteer lives on this Cloud Computer, so it can’t be removed.",
+    );
+    expect(homeKeptWords("work")).toBe(homeKeptWords("cloud"));
+    expect(homeKeptWords("server")).toBe(
+      "Your Opensteer lives on this server, so it can’t be removed.",
+    );
+  });
+});
+
+describe("which listed Homes are Cloud Computers", () => {
+  it("takes the Account's own Cloud Computers and work Homes, and nothing before it answers", () => {
+    expect([...cloudComputerDeployments(null)]).toEqual([]);
+    expect([
+      ...cloudComputerDeployments({
+        computers: [{ deploymentId: "dep_mine" }, { deploymentId: undefined }] as never,
+        work: [{ computer: { deploymentId: "dep_work" } }, { computer: null }] as never,
+      }),
+    ]).toEqual(["dep_mine", "dep_work"]);
+  });
+});
+
+describe("the Cloud Computer row in Settings", () => {
+  it("offers to keep agents working while a Mac sleeps only on a Mac", () => {
+    expect(cloudComputerEntryDetail("cloud")).toBe("Its status and address");
+    expect(cloudComputerEntryDetail("work")).toBe("Its status and address");
+    for (const kind of ["this-mac", "mac"] as const)
+      expect(cloudComputerEntryDetail(kind)).toBe("Keep agents working while your Mac sleeps");
+    // A server doesn't sleep as a Mac does.
+    expect(cloudComputerEntryDetail("server")).toBe("Your Opensteer, always on in the cloud.");
   });
 });

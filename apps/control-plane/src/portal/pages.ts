@@ -10,9 +10,11 @@ import {
   renderBrowserPage,
   statusPageBody,
   type BrowserPageFonts,
+  type BrowserPageIcon,
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
+import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
 import type { ConsentGrant } from "../account/account-oauth.js";
 
 /**
@@ -209,6 +211,10 @@ export function deleteAccountBody(input: {
   /** Teams still being set up, which deleting the Account cancels. */
   readonly settingUp: readonly string[];
   readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
+  /** The person has their own Cloud Computer, which is deleted with the Account. */
+  readonly cloudComputer?: boolean;
+  /** The organizations whose work Homes this person still holds, which keep the Account. */
+  readonly workHomes?: readonly string[];
 }): string {
   const list = (items: readonly string[]) =>
     `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -227,6 +233,17 @@ export function deleteAccountBody(input: {
       <a class="btn btn--block" href="/">Back</a>`,
     });
   }
+  const workHomes = input.workHomes ?? [];
+  if (workHomes.length > 0)
+    return card({
+      head,
+      content: `<div class="alert" role="alert"><p class="alert__title">Ask your organization admin to offboard your work Cloud Computer first</p><p class="lead">A work Home belongs to its organization, so deleting your account never deletes it. Once ${escapeHtml(workHomes.join(" and "))} offboards it, you can delete your account here.</p></div>
+      <p class="lead">Nothing has been deleted or turned off.</p>
+      <a class="btn btn--block" href="/">Back</a>`,
+    });
+  const cloud = input.cloudComputer
+    ? `<p class="lead">Your Cloud Computer is deleted with it. ${escapeHtml(cloudWords("cloud.delete.billing"))} Opensteer destroys the computer and its disk, including its browser profiles and tasks, deletes its backups, and deletes the payment details kept with Stripe for its subscription; Stripe keeps its own records of past payments. Your account itself is deleted at once.</p>`
+    : "";
   const computers = input.computers.length
     ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
     : "";
@@ -247,14 +264,21 @@ export function deleteAccountBody(input: {
     : "";
   return card({
     head,
-    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${settingUp}
+    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${cloud}${computers}${servers}${settingUp}
       <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep account</a><button class="btn btn--danger" type="submit">Delete account</button></div></form>`,
   });
 }
 
-export function accountDeletedBody(): string {
+export function accountDeletedBody(
+  input: {
+    /** A Cloud Computer was deleted with it; Opensteer finishes its deletion after the Account. */
+    readonly cloudComputer?: boolean;
+  } = {},
+): string {
   return statusPageBody({
-    detail: "You can close this window.",
+    detail: input.cloudComputer
+      ? `Opensteer is finishing your Cloud Computer’s deletion. ${cloudWords("cloud.delete.billing")} The computer, its disk, its backups and the payment details kept with Stripe for its subscription are deleted. You can close this window.`
+      : "You can close this window.",
     mark: "check",
     title: "Your Opensteer account is deleted",
     tone: "ok",
@@ -279,6 +303,10 @@ export function portalHomeBody(input: {
   readonly hostedTeams: { readonly createHref: string; readonly rows: readonly string[] } | null;
   readonly rows: readonly string[];
   readonly signOutAction: string;
+  /** The Cloud Computer page, when this Account service offers one. */
+  readonly cloudComputerHref?: string | null;
+  /** The organizations page, when this Account service has organizations. */
+  readonly organizationsHref?: string | null;
 }): string {
   const { account } = input;
   const label = account.displayName ?? account.email;
@@ -296,23 +324,45 @@ export function portalHomeBody(input: {
   const hosted = input.hostedTeams
     ? `<h2 class="section-title">Hosted teams</h2><ul class="places">${input.hostedTeams.rows.join("")}<li class="place place--add"><span class="device">${icon("plus")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.hostedTeams.createHref)}">Create a team</a></span></li></ul>`
     : "";
+  // A person who has no Mac, or works for an organization, starts from here too.
+  const more = [
+    input.cloudComputerHref
+      ? `<li class="place place--add"><span class="device">${icon("cloud")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.cloudComputerHref)}">${escapeHtml(cloudWords("cloud.title"))}</a></span></li>`
+      : "",
+    input.organizationsHref
+      ? `<li class="place place--add"><span class="device">${icon("person")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.organizationsHref)}">${escapeHtml(orgWords("org.title"))}</a></span></li>`
+      : "",
+  ].join("");
   if (input.rows.length === 0) {
     return `${masthead}<main class="column"><div class="empty">
       <span class="device">${icon("laptop")}</span>
       <h1 class="title title--page">Set up Opensteer</h1>
       <p class="lead">Opensteers you set up or join show up here.</p>
       ${input.desktopDownloadUrl ? `<a class="btn btn--primary" href="${escapeHtml(input.desktopDownloadUrl)}">${icon("download")}Get the desktop app</a>` : ""}
-    </div>${hosted}${fallbackSignOut}</main>`;
+    </div>${more ? `<ul class="places">${more}</ul>` : ""}${hosted}${fallbackSignOut}</main>`;
   }
   const download = input.desktopDownloadUrl
     ? `<li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li>`
     : "";
   return `${masthead}<main class="column">
     <h1 class="title title--page">Your Opensteers</h1>
-    <ul class="places">${input.rows.join("")}${download}</ul>
+    <ul class="places">${input.rows.join("")}${download}${more}</ul>
     ${hosted}${fallbackSignOut}
   </main>`;
 }
+
+/**
+ * How a row draws each kind of Home: its mark, and whether it says the kind in words (a
+ * Cloud Computer and a server do; a Mac and a team are told apart by their marks). A Home
+ * whose kind isn't known draws none.
+ */
+const placeMarks = {
+  personal: { icon: "laptop", said: false },
+  team: { icon: "server", said: false },
+  cloud: { icon: "cloud", said: true },
+  server: { icon: "server", said: true },
+  unknown: { icon: null, said: false },
+} as const satisfies Record<string, { icon: BrowserPageIcon | null; said: boolean }>;
 
 export type PlaceControl =
   | { readonly kind: "link"; readonly href: string }
@@ -336,8 +386,10 @@ export function placeRow(input: {
   readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "team";
+  readonly kind: "personal" | "team" | "cloud" | "server" | "unknown";
   readonly kindLabel: string;
+  /** "Work · {organization}" on a Home an organization assigned. */
+  readonly badge?: string | null;
   readonly name: string;
   readonly remove: {
     readonly action: string;
@@ -361,7 +413,14 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
-  const spoken = `<span class="visually-hidden">${escapeHtml(input.kindLabel)}${status ? `, ${escapeHtml(status.label)}` : ""}</span>`;
+  // A Cloud Computer or a server says so in words, a work Home with its organization's badge.
+  const kindLine = placeMarks[input.kind].said
+    ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
+    : "";
+  const spoken = `<span class="visually-hidden">${[input.kindLabel, status?.label]
+    .filter(Boolean)
+    .map((part) => escapeHtml(part!))
+    .join(", ")}</span>`;
   const sheetId = `remove-${input.id.replace(/[^\w-]/gu, "")}`;
   const confirm = input.remove?.confirm ?? {
     detail: "It leaves your list. Your access doesn’t change.",
@@ -377,8 +436,8 @@ export function placeRow(input: {
       </div>`
     : "";
   return `<li class="place ${open ? "place--open" : "place--still"}"${input.anchor ? ` id="${escapeHtml(input.anchor)}"` : ""}>
-    <span class="device">${icon(input.kind === "personal" ? "laptop" : "server")}${dot}</span>
-    <span class="place__body">${control}${note}${spoken}</span>
+    <span class="device">${placeMarks[input.kind].icon === null ? "" : icon(placeMarks[input.kind].icon!)}${dot}</span>
+    <span class="place__body">${control}${kindLine}${note}${spoken}</span>
     ${remove}${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
   </li>`;
 }

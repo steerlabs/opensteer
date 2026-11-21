@@ -237,7 +237,11 @@ function DevicePage(props: {
       />
     );
   }
-  const switchContext = { devicesAvailable, ...(thisDevice ? { noun: thisPhoneNoun } : {}) };
+  const switchContext = {
+    devicesAvailable,
+    homeKind,
+    ...(thisDevice ? { noun: thisPhoneNoun } : {}),
+  };
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
     if (access === null) return;
@@ -776,8 +780,8 @@ function DevicePage(props: {
   // A work Home says whose it is and what they can see; it is never offered a Cloud Computer.
   const work = isHome(machine) ? workHomeBadges(workHomes).get(props.deploymentId) : undefined;
   const cloud = work
-    ? homeWorkSection(work, (card) =>
-        navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
+    ? homeWorkSection(work, () =>
+        navigation.navigate("WorkHomePolicy", { deploymentId: props.deploymentId }),
       )
     : homeKind === "mac"
       ? homeCloudComputerSection({

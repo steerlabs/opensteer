@@ -38,7 +38,11 @@ export const devicesCopy = {
   "devices.switch.appsDetail": "See and control apps",
   "devices.switch.filesDetail": "Read files and run commands",
   "home.remoteAccess": "Remote access",
+  "place.kind.cloud": "Cloud Computer",
   "home.thisMac": "Running on this Mac",
+  "home.kept.mac": "Your Opensteer lives on this Mac, so it can’t be removed.",
+  "home.kept.server": "Your Opensteer lives on this server, so it can’t be removed.",
+  "home.kept.cloud": "Your Opensteer lives on this Cloud Computer, so it can’t be removed.",
   "home.address": "Address",
   "home.version": "Version",
   "home.owner": "Signed in as owner",
@@ -58,3 +62,19 @@ export function deviceWords(
     Object.hasOwn(values, key) ? String(values[key]) : whole,
   );
 }
+
+/**
+ * Why the Home's own device can't be removed, said of what it is: a Mac, a server, or a
+ * Cloud Computer (a work Home is one too). Never "this Mac" for a Home that isn't one.
+ */
+export function homeKeptWords(home: "this-mac" | "mac" | "server" | "cloud" | "work"): string {
+  return deviceWords(homeKept[home]);
+}
+
+const homeKept = {
+  "this-mac": "home.kept.mac",
+  mac: "home.kept.mac",
+  server: "home.kept.server",
+  cloud: "home.kept.cloud",
+  work: "home.kept.cloud",
+} as const satisfies Record<string, DevicesCopyId>;

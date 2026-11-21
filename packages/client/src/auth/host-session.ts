@@ -456,7 +456,7 @@ export class HostSession implements HostSessionRecovery {
       if (this.#localOwner.ownsHostSession(resolved)) return observation(resolved, "ready");
       throw new HostSessionError(
         "unavailable",
-        "That computer isn’t reachable from here. Turn on Use from anywhere on it, in Settings › Account.",
+        "That computer isn’t reachable from here. Turn on Remote access on it, in Settings › Account.",
       );
     }
 
@@ -522,7 +522,7 @@ export class HostSession implements HostSessionRecovery {
 
     throw new HostSessionError(
       "unavailable",
-      "That computer isn’t reachable from here. Turn on Use from anywhere on it, in Settings › Account.",
+      "That computer isn’t reachable from here. Turn on Remote access on it, in Settings › Account.",
     );
   }
 

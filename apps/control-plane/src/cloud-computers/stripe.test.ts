@@ -642,3 +642,47 @@ it("finds an ambiguous Checkout beyond the first twenty pages", async () => {
     provider.mockRestore();
   }
 });
+
+it("deletes a customer whose only subscriptions are cancelled, once, and keeps one with another", async () => {
+  const customers: Record<string, { deleted?: boolean }> = { cus_idle: {}, cus_live: {} };
+  // Without a status, Stripe lists the subscriptions on the customer that are not cancelled.
+  const live: Record<string, { id: string; status: string }[]> = {
+    cus_idle: [{ id: "sub_expired", status: "incomplete_expired" }],
+    cus_live: [{ id: "sub_other", status: "past_due" }],
+  };
+  const calls: string[] = [];
+  const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    if (url.pathname === "/v1/subscriptions") {
+      const customer = url.searchParams.get("customer")!;
+      expect(url.searchParams.has("status")).toBe(false);
+      calls.push(`${method} subscriptions ${customer}`);
+      return Response.json({ has_more: false, data: live[customer] });
+    }
+    const id = url.pathname.replace("/v1/customers/", "");
+    calls.push(`${method} ${id}`);
+    if (method === "DELETE") customers[id]!.deleted = true;
+    return Response.json({ id, ...(customers[id]!.deleted ? { deleted: true } : {}) });
+  });
+  try {
+    const stripe = new CloudComputerStripe({
+      key,
+      returnUrl: new URL("https://account.example.test"),
+    });
+    await stripe.deleteIdleCustomer("cus_idle");
+    await stripe.deleteIdleCustomer("cus_idle");
+    await stripe.deleteIdleCustomer("cus_live");
+    expect(calls).toEqual([
+      "GET cus_idle",
+      "GET subscriptions cus_idle",
+      "DELETE cus_idle",
+      "GET cus_idle",
+      "GET cus_live",
+      "GET subscriptions cus_live",
+    ]);
+    expect(customers).toEqual({ cus_idle: { deleted: true }, cus_live: {} });
+  } finally {
+    provider.mockRestore();
+  }
+});

@@ -6,7 +6,6 @@ import {
   type RunPlacePictureReport,
 } from "@opensteer/client/host";
 import {
-  computerUseStops,
   computerReasonWords,
   computerDisplayScope,
   computerDisplayAuthorityKey,
@@ -24,7 +23,6 @@ import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
   type ComputerAppIdentity,
-  type ComputerUseSessionSummary,
 } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -37,7 +35,7 @@ import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar
 import { PlaceVoiceDock, usePlaceStatus } from "../browser/place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
-import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
+import type { NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -722,81 +720,6 @@ export function ComputerDisplay({
  * More itself stays on the screen.
  */
 const phoneBarWithKeyboard = 370;
-
-export function ComputerTaskView(props: {
-  readonly appKey: string | null;
-  readonly active: boolean;
-  readonly onTyping: (typing: boolean) => void;
-  readonly hostClient: HostClient;
-  readonly computerSessionId: string;
-  readonly machineId: string;
-}) {
-  const machine = useHostSelector(props.hostClient, (snapshot) =>
-    snapshot.machines.find((value) => value.id === props.machineId),
-  );
-  const session = machine?.computerUse?.sessions.find(
-    (value) => value.sessionId === props.computerSessionId,
-  );
-  const phone = props.appKey === null;
-  const machineName = machine?.name ?? (phone ? "Your phone" : "Your Mac");
-  const app = session?.apps.find((app) => app.bundleId.toLowerCase() === props.appKey);
-  const windowTitle = session?.windows?.find((window) => window.appKey === props.appKey)?.title;
-  const label = phone
-    ? machineName
-    : [app?.displayName ?? "This app", windowTitle].filter(Boolean).join(" — ");
-  return machine &&
-    (machine.status === "needs-update" ||
-      machine.status === "updating" ||
-      machine.status === "update-pending") ? (
-    <View style={styles.stage}>
-      <AppText>
-        {machine.detail ??
-          `Update ${machine.phoneDisplay?.setup.location === "android-usb" ? "Agent Phone" : "Opensteer"} on ${label}.`}
-      </AppText>
-    </View>
-  ) : (
-    <ComputerDisplay
-      bar={{
-        app,
-        detail: phone ? null : machineName,
-        menu: session ? [stopMenuItem(props.hostClient, label, phone, session)] : [],
-        onTyping: props.onTyping,
-        title: phone ? machineName : (app?.displayName ?? "This app"),
-      }}
-      interactive={phone}
-      active={props.active}
-      hostClient={props.hostClient}
-      source={{
-        kind: "task-session",
-        sessionId: props.computerSessionId,
-        ...(props.appKey === null ? {} : { appKey: props.appKey }),
-      }}
-      phone={phone}
-      machineId={props.machineId}
-      label={label}
-    />
-  );
-}
-
-function stopMenuItem(
-  hostClient: HostClient,
-  label: string,
-  phone: boolean,
-  session: Pick<ComputerUseSessionSummary, "runId" | "sessionId">,
-): NativeMenuOption {
-  return {
-    destructive: true,
-    icon: "stop.circle",
-    id: "stop",
-    label: `Stop using ${phone ? "phone" : label}`,
-    onPress: () =>
-      computerUseStops(hostClient).stop({
-        machineName: label,
-        sessionId: session.sessionId,
-        runId: session.runId,
-      }),
-  };
-}
 
 /** A view this close to its expiry when it comes into sight is renewed at once. */
 const renewSoonMs = 90_000;
