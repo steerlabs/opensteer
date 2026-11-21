@@ -291,8 +291,7 @@ export class PersonalResources {
         const pools = await this.#dependencies.browser.resourcePools(ids);
         const byId = new Map(placements.map((placement) => [placement.runnerId, placement]));
         return page(rows, (selected) => {
-          // A pooled browser's report rides only the page that carries its Runner.
-          const shown = pools.filter((pool) => selected.some(({ id }) => id === pool.runnerId));
+          const shown = poolReportsForPage(pools, selected);
           return {
             kind,
             placements: selected.flatMap(({ id }) => {
@@ -505,4 +504,12 @@ export class PersonalResources {
         return { kind, available: await this.#browserAvailable(tx, ownerId) };
     }
   }
+}
+
+/** A pooled browser's report rides only the placement page that carries its Runner. */
+export function poolReportsForPage<Report extends { readonly runnerId: string }>(
+  pools: readonly Report[],
+  selected: readonly { readonly id: string }[],
+): Report[] {
+  return pools.filter((pool) => selected.some(({ id }) => id === pool.runnerId));
 }

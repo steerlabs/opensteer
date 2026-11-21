@@ -88,9 +88,6 @@ export const TabViewerSchema = z.discriminatedUnion("kind", [
     kind: z.literal("page"),
     sessionId: BrowserSessionIdSchema,
     surfaceId: BrowserSurfaceIdSchema,
-    recoveryNotice: z.string().min(1).max(1000).optional(),
-    /** Sent back in a later `tab.activate` once the person was shown the notice. */
-    recoveryNoticeId: z.string().min(1).max(200).optional(),
   }),
   z.object({ kind: z.literal("window"), view: ComputerViewSchema }),
   z.object({ kind: z.literal("phone"), view: ComputerViewSchema }),
@@ -124,8 +121,6 @@ export const TabCommandSchema = z.discriminatedUnion("type", [
     ...command,
     type: z.literal("tab.activate"),
     tabId,
-    /** The recovery notice this client showed the person; it is not shown again. */
-    recoveryNoticeSeen: z.string().min(1).max(200).optional(),
   }),
   TabOrganizeInputSchema.extend({ ...command, type: z.literal("tab.organize") }),
   TabGroupUpdateInputSchema.safeExtend({ ...command, type: z.literal("tab.group.update") }),

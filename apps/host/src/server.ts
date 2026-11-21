@@ -2621,12 +2621,7 @@ export async function createHostServer(
       case "tab.activate":
         return {
           type: command.type,
-          ...(await dependencies.tabs.activate(
-            userId,
-            command.tabId,
-            command.idempotencyKey,
-            command.recoveryNoticeSeen,
-          )),
+          ...(await dependencies.tabs.activate(userId, command.tabId, command.idempotencyKey)),
         };
       case "tab.organize": {
         const { type, idempotencyKey, ...input } = command;

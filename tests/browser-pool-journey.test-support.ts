@@ -142,6 +142,8 @@ export async function journey(
     readonly profile?: boolean;
     readonly runtimeFault?: ConstructorParameters<typeof BrowserPoolCoordinator>[0]["runtimeFault"];
     readonly channelDeadlineMs?: number;
+    /** The guest's page probe during a retire; a retire waits for it. */
+    readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
 ) {
   const real = options.chromium !== false;
@@ -155,7 +157,12 @@ export async function journey(
     .where("id", "=", task.runnerId)
     .execute();
   const slotId = `slot-${key}`;
-  const controller = new FakeBrowserPoolController({ slotId, term: 1 });
+  // The loopback runtime outlives a start: the controller sees what it holds.
+  const controller = new FakeBrowserPoolController({
+    slotId,
+    term: 1,
+    guest: () => guest.poolState()?.fence ?? null,
+  });
   const tickets = generateKeyPairSync("ed25519");
   let launched: LaunchedBrowser | undefined;
   const launcher = real
@@ -185,7 +192,7 @@ export async function journey(
     }),
     pool: {
       controllerKey: controller.publicKey,
-      probePage: async () => [],
+      probePage: options.probePage ?? (async () => []),
       ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
     },
   });
@@ -272,7 +279,7 @@ export async function journey(
       deploymentId: task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
-      managedPoolTestRunner: task.runnerId,
+      pools: new Map([[task.runnerId, coordinator]]),
       tabs,
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
@@ -310,7 +317,6 @@ export async function journey(
         sharedControl: true,
         cdpBoundary: true,
         ...(guest.localProfileStorage ? { localProfileStorage: guest.localProfileStorage } : {}),
-        loopbackPool: coordinator,
         connect,
         // Standard CDP straight into the in-process runtime, with its recovery probe.
         standardCdpLineage: true,
@@ -330,6 +336,13 @@ export async function journey(
     await home.service.close();
     home.coordinator.close();
     return startHome(channel);
+  };
+  /** The Home process dies: nothing is closed gracefully, every channel drops, and it starts. */
+  const crashHome = async (home: Home) => {
+    home.coordinator.close();
+    bridge.closeAll(1011, "home gone");
+    for (const connection of connections.splice(0)) connection.lose(1006, "home gone");
+    return startHome();
   };
   const command = (idempotencyKey: string) => ({
     type: "browser.tab.open" as const,
@@ -371,7 +384,12 @@ export async function journey(
       });
     return { page, cdp, targetId: await page.targetId(), value, rendered };
   };
-  const viewer = (home: Home, sessionId: string, mode: "control" | "watch" = "control") => {
+  const viewer = (
+    home: Home,
+    sessionId: string,
+    mode: "control" | "watch" = "control",
+    onFrame?: () => void,
+  ) => {
     let open = true;
     const frames: Buffer[] = [];
     const attaching = home.service.attach(
@@ -384,7 +402,10 @@ export async function journey(
           open = false;
         },
         send: async (data, binary) => {
-          if (binary && Buffer.isBuffer(data)) frames.push(data);
+          if (binary && Buffer.isBuffer(data)) {
+            if (!frames.length) onFrame?.();
+            frames.push(data);
+          }
         },
       },
       { authSessionId: createId("authSession"), mode, signedIn: async () => true },
@@ -440,6 +461,7 @@ export async function journey(
     signer,
     startHome,
     restartHome,
+    crashHome,
     command,
     draft,
     viewer,

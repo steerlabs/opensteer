@@ -175,8 +175,6 @@
       "select \"name\", \"timestamp\" from \"kysely_migration\"",
       "select \"origin\" from \"browser_history_icons\" order by \"profile_id\", \"origin\" for update",
       "select \"owner_id\" from \"personal_settings\"",
-      "select \"owner_id\" from \"personal_settings\"",
-      "select \"owner_id\" from \"personal_settings\"",
       "select \"owner_id\", \"owner_name\", \"owner_name_account\", \"owner_name_revision\" from \"personal_settings\" where \"singleton_key\" = $1 for no key update",
       "select \"owner_id\", \"owner_name\", \"owner_name_account\", \"owner_name_revision\" from \"personal_settings\" where \"singleton_key\" = $1 for no key update",
       "select \"personal_settings\".\"owner_name_set_at\", \"users\".\"display_name\", \"users\".\"email\" from \"personal_settings\" inner join \"users\" on \"users\".\"id\" = \"personal_settings\".\"owner_id\" where \"personal_settings\".\"singleton_key\" = $1",

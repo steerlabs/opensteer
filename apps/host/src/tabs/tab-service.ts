@@ -68,7 +68,6 @@ export interface PageTabsPort {
     ownerId: UserId,
     row: TabRecord,
     key: string,
-    recoveryNoticeSeen?: string,
   ): Promise<Extract<TabViewer, { kind: "page" }>>;
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
   bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
@@ -821,19 +820,12 @@ export class TabService implements TabServicePort {
     ownerId: UserId,
     tabId: TabId,
     key: string,
-    recoveryNoticeSeen?: string,
   ): Promise<{ tab: Tab; viewer: TabViewer }> {
     const actor = { kind: "person", ownerId } as const,
       row = await this.#row(actor, tabId);
     await this.options.authorize(actor, row, this.options.store.database);
     let viewer: TabViewer;
-    if (row.kind === "page")
-      viewer = await this.options.pages.activate(
-        ownerId,
-        row,
-        key,
-        ...(recoveryNoticeSeen ? [recoveryNoticeSeen] : []),
-      );
+    if (row.kind === "page") viewer = await this.options.pages.activate(ownerId, row, key);
     else if (row.kind === "app") {
       await this.options.apps.get(ownerId, row.appId!);
       viewer = { kind: "app", appId: row.appId! };

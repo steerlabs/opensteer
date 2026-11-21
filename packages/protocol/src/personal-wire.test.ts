@@ -190,10 +190,10 @@ describe("personal wire compatibility", () => {
     const viewer =
       '{"kind":"page","sessionId":"bsn_00000000-0000-4000-8000-000000000002","surfaceId":"surface_a"}';
     expect(JSON.stringify(TabViewerSchema.parse(JSON.parse(viewer)))).toBe(viewer);
-    // A current client sends the seen notice only to a Home that gave it one.
+    // A pooled browser's notes travel only in the placement report: an activation names none.
     expect(
       TabCommandSchema.safeParse({ ...JSON.parse(activate), recoveryNoticeSeen: "note-1" }).success,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps serving every app inside the window", () => {
