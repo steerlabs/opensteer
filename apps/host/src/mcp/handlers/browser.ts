@@ -281,6 +281,7 @@ export class BrowserToolHandlers {
     const connection = requireConnection(caller);
     const { tabId, profileId, taskId, reason } = input;
     const target = await this.#target(connection, { tabId, profileId });
+    const pooled = await this.#pooledTarget(connection, target);
     const where = target.operation.device ? ` on ${target.operation.device.name}` : "";
     const outcome = await requireDirectWork(this.#ports.sessions).run({
       ownerUserId: connection.userId,
@@ -291,7 +292,9 @@ export class BrowserToolHandlers {
       tool: "browser_connect",
       input,
       target: target.operation,
-      targetGeneration: target.generation === null ? null : String(target.generation),
+      targetGeneration:
+        pooled?.generation ?? (target.generation === null ? null : String(target.generation)),
+      ...(pooled ? { pooledBrowser: pooled } : {}),
       effect: "write",
       calls:
         target.profileId === null
@@ -300,7 +303,7 @@ export class BrowserToolHandlers {
       execute: async (context) => {
         await context.recheck();
         await this.#checkTab(connection, target);
-        return browserEffect(() => this.#attach(context, target));
+        return browserEffect(() => this.#attach(context, target, pooled?.recheckTarget));
       },
       summarize: (result) => ({ tabId: result.tabId, mode: result.mode }),
     });
@@ -370,7 +373,11 @@ export class BrowserToolHandlers {
     };
   }
 
-  async #attach(context: DirectOperationContext, target: BrowserTarget) {
+  async #attach(
+    context: DirectOperationContext,
+    target: BrowserTarget,
+    recheckPooledTarget?: () => Promise<void>,
+  ) {
     const actor = sessionActor(context);
     const tabId =
       target.tabId ??
@@ -417,6 +424,15 @@ export class BrowserToolHandlers {
             mode: context.mode,
             targetGeneration: target.generation,
           },
+          ...(recheckPooledTarget
+            ? {
+                recheckPooledTarget: async () => {
+                  await context.recheck();
+                  await recheckPooledTarget();
+                  context.signal.throwIfAborted();
+                },
+              }
+            : {}),
         });
       }
     } catch (error) {

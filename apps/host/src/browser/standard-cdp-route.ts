@@ -12,7 +12,12 @@ import { unversionedRoute } from "../server/unversioned-route.js";
 import { OpensteerError } from "@opensteer/core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
-import { standardCdpConnectPrefix, type StandardCdpTicketClaims } from "./standard-cdp-tickets.js";
+import {
+  standardCdpConnectPrefix,
+  type StandardCdpTicketClaims,
+  type StandardCdpUpgrade,
+  type StandardCdpPoolReservation,
+} from "./standard-cdp-tickets.js";
 import {
   RawCdpRequestSchema,
   standardCdpAdmissionMs,
@@ -35,7 +40,7 @@ export function registerStandardCdpRoute(
   browser: StandardCdpBrowser,
   chromeTabs?: ChromeSharedTabs,
 ): void {
-  const upgrades = new WeakMap<object, StandardCdpTicketClaims>();
+  const upgrades = new WeakMap<object, { upgrade: StandardCdpUpgrade; transferred?: () => void }>();
   const liveByBinding = new Map<string, number>();
   app.get(
     `${standardCdpConnectPrefix}:ticket`,
@@ -48,30 +53,49 @@ export function registerStandardCdpRoute(
           return;
         }
         const params = ticketParams.safeParse(request.params);
-        const claims = params.success
-          ? (browser.standardCdpTickets?.consume(params.data.ticket) ??
-            chromeTabs?.standardCdpTickets.consume(params.data.ticket))
+        const upgrade = params.success
+          ? (browser.standardCdpTickets?.consumeForUpgrade(params.data.ticket) ??
+            chromeTabs?.standardCdpTickets.consumeForUpgrade(params.data.ticket))
           : undefined;
-        if (!claims) {
+        if (!upgrade) {
           void reply
             .code(401)
             .send({ error: "This browser connection link is invalid or expired." });
           return;
         }
-        upgrades.set(request, claims);
+        const entry: { upgrade: StandardCdpUpgrade; transferred?: () => void } = { upgrade };
+        if (upgrade.pool) {
+          const { pool } = upgrade;
+          const end = () => {
+            upgrades.delete(request);
+            entry.transferred?.();
+            pool.release();
+          };
+          const socket = request.raw.socket;
+          socket.once("close", end);
+          reply.raw.once("finish", end);
+          entry.transferred = () => {
+            socket.off("close", end);
+            reply.raw.off("finish", end);
+          };
+        }
+        upgrades.set(request, entry);
         done();
       },
     },
     (socket, request) => {
-      const claims = upgrades.get(request);
+      const entry = upgrades.get(request);
       upgrades.delete(request);
-      if (!claims) {
+      if (!entry) {
         closeStandardSocket(socket, 1008, "Browser attachment refused");
         return;
       }
+      entry.transferred?.();
+      const { claims, pool } = entry.upgrade;
       const binding = claims.authority.agentBindingId;
       const live = liveByBinding.get(binding) ?? 0;
       if (live >= standardCdpMaxLivePerBinding) {
+        pool?.release();
         closeStandardSocket(socket, 1013, "Too many live browser connections for this task.");
         return;
       }
@@ -81,7 +105,12 @@ export function registerStandardCdpRoute(
         if (remaining) liveByBinding.set(binding, remaining);
         else liveByBinding.delete(binding);
       });
-      relayStandardCdp(socket, claims, claims.sharedChromeTab && chromeTabs ? chromeTabs : browser);
+      relayStandardCdp(
+        socket,
+        claims,
+        claims.sharedChromeTab && chromeTabs ? chromeTabs : browser,
+        pool,
+      );
     },
   );
 }
@@ -90,6 +119,7 @@ function relayStandardCdp(
   socket: WebSocket,
   claims: StandardCdpTicketClaims,
   browser: StandardCdpBrowser,
+  pool?: StandardCdpPoolReservation,
 ): void {
   const stopping = new AbortController();
   const pending = new Map<string, number>();
@@ -131,7 +161,9 @@ function relayStandardCdp(
     return checking;
   };
   const initial = new AbortController();
-  const opening = browser.attachStandardCdpForAgent(claims, stopping.signal, initial.signal);
+  const opening = pool
+    ? browser.attachStandardCdpForAgent(claims, stopping.signal, initial.signal, pool)
+    : browser.attachStandardCdpForAgent(claims, stopping.signal, initial.signal);
   void opening.then(
     (attached) => {
       if (initial.signal.aborted || stopping.signal.aborted) attached.close();

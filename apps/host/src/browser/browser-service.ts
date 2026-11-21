@@ -10,6 +10,7 @@ import {
   standardCdpConnectPrefix,
   type CdpAuthority,
   type StandardCdpFacts,
+  type StandardCdpPoolReservation,
   type StandardCdpTicketClaims,
 } from "./standard-cdp-tickets.js";
 import {
@@ -165,6 +166,7 @@ import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
@@ -4466,13 +4468,14 @@ export class BrowserService {
     readonly mode: StandardCdpMode;
     readonly ttl?: number;
     readonly seedTabId?: TabId;
+    readonly recheckPooledTarget?: () => Promise<void>;
     readonly operationWitness?: {
       readonly grantRevision: number;
       readonly mode: NonNullable<StandardCdpFacts["accessMode"]>;
       readonly targetGeneration: number | null;
     };
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: StandardCdpMode }> {
-    const { facts, mode } = await this.#standardCdpAdmission(input, input.seedTabId);
+    const { facts, mode, record } = await this.#standardCdpAdmission(input, input.seedTabId);
     const witness = input.operationWitness;
     if (
       witness &&
@@ -4485,14 +4488,40 @@ export class BrowserService {
       );
     if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
       throw new BrowserCdpConnectionEnded("This browser authority has ended.");
-    const ticket = this.standardCdpTickets.issue({ ...input, facts, mode });
-    return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
+    const pooled = this.#poolTabTarget(record.runnerId);
+    const reserve = pooled?.gate.holdOpen();
+    try {
+      let pool: StandardCdpPoolReservation | undefined;
+      if (pooled && reserve) {
+        if (!(this.#repository instanceof OpensteerStore) || !facts.agentConnectionId)
+          throw new BrowserCdpConnectionEnded("This pooled connection has no durable attempt.");
+        const documentId =
+          facts.seed &&
+          this.pageInventory(record.id)?.records.get(facts.seed.surfaceId)?.documentId;
+        if (facts.seed && !documentId)
+          throw new BrowserCdpConnectionEnded("This browser tab is no longer available.");
+        await input.recheckPooledTarget?.();
+        if (this.browserBindingEnded(input.authority.agentBindingId))
+          throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+        pool = {
+          target: pooled.identity(),
+          release: reserve.release,
+          ...(documentId ? { documentId } : {}),
+        };
+      }
+      const ticket = this.standardCdpTickets.issue({ ...input, facts, mode }, pool);
+      return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
+    } catch (error) {
+      reserve?.release();
+      throw error;
+    }
   }
 
   async attachStandardCdpForAgent(
     claims: StandardCdpTicketClaims,
     signal: AbortSignal,
     admission?: AbortSignal,
+    pool?: StandardCdpPoolReservation,
   ) {
     const id = randomUUID();
     const ending = new AbortController();
@@ -4504,8 +4533,10 @@ export class BrowserService {
       [...this.#standardCdpAttachments.values()].filter(
         (other) => other.claims.authority.agentBindingId === claims.authority.agentBindingId,
       ).length >= standardCdpMaxLivePerBinding
-    )
+    ) {
+      pool?.release();
       throw new BrowserCdpConnectionEnded("This task has too many live browser connections.");
+    }
     this.#standardCdpAttachments.set(id, entry);
     const life = AbortSignal.any([signal, ending.signal, this.#closing.signal]);
     life.addEventListener(
@@ -4532,6 +4563,7 @@ export class BrowserService {
         : undefined;
     let attemptRecorded = false;
     let handedOff = false;
+    let transportOwnsPool = false;
     const verify = async (check: AbortSignal, expiresAt: number, checkSeed = false) => {
       const checked = AbortSignal.any([life, check]);
       checked.throwIfAborted();
@@ -4542,9 +4574,12 @@ export class BrowserService {
           claims.facts.seed,
         ),
       );
+      const pooled = this.#poolTabTarget(admitted.record.runnerId);
       if (
         JSON.stringify(admitted.facts) !== JSON.stringify(claims.facts) ||
-        admitted.mode !== claims.mode
+        admitted.mode !== claims.mode ||
+        Boolean(pooled) !== Boolean(pool) ||
+        (pool && !isDeepStrictEqual(pooled?.identity(), pool.target))
       )
         throw new BrowserCdpConnectionEnded(
           "This browser authority changed. Request a new attachment.",
@@ -4560,6 +4595,8 @@ export class BrowserService {
       const expiresAt = Date.now() + standardCdpAdmissionMs;
       const admitted = await this.#standardCdpProfiles.run(claims.facts.profileId, async () => {
         const verified = await verify(deadline, expiresAt, true);
+        if (pool && (!attempts || !verified.target.standardCdpRecovery))
+          throw new BrowserCdpConnectionEnded("This pooled connection has no durable attempt.");
         const { profileId } = verified.facts;
         const current = profileId ? this.#standardCdpProfiles.held(profileId) : undefined;
         if (current)
@@ -4567,6 +4604,8 @@ export class BrowserService {
         const recovery =
           claims.mode === "whole-context" ? verified.target.standardCdpRecovery : undefined;
         const bootId = recovery ? await recovery.boot() : undefined;
+        if (pool && claims.mode === "whole-context" && bootId !== pool.target.instanceId)
+          throw new BrowserCdpConnectionEnded("The browser runtime changed.");
         deadline.throwIfAborted();
         recovery?.assertCurrent();
         const lease =
@@ -4616,6 +4655,8 @@ export class BrowserService {
             "This computer needs a newer version of Opensteer for a direct browser connection. You can still use browser_use.",
           );
         const runtimeBootId = await target.standardCdpRecovery.boot();
+        if (pool && runtimeBootId !== pool.target.instanceId)
+          throw new BrowserCdpConnectionEnded("The browser runtime changed.");
         deadline.throwIfAborted();
         attemptRecovery = {
           attachmentId: id,
@@ -4651,10 +4692,28 @@ export class BrowserService {
             "This computer has too many live browser connections.",
           );
         entry.runnerId = record.runnerId;
+        if (pool) {
+          await verify(deadline, expiresAt, true);
+          const document =
+            claims.facts.seed &&
+            this.pageInventory(record.id)?.records.get(claims.facts.seed.surfaceId)?.documentId;
+          if (document !== pool.documentId)
+            throw new BrowserCdpConnectionEnded("This browser page changed before attachment.");
+        }
         const ticket = this.#signer.issue({
           access: "read-write",
           creationOrigin: "agent",
-          ...(target.actorClaim ? { actor: "agent" } : {}),
+          ...(target.actorClaim || pool ? { actor: "agent" } : {}),
+          ...(pool
+            ? {
+                pool: {
+                  term: pool.target.term,
+                  instance: pool.target.instanceId,
+                  epoch: pool.target.epoch,
+                  attachment: 1,
+                },
+              }
+            : {}),
           standardCdp: mode,
           ...(attemptRecovery
             ? {
@@ -4690,25 +4749,46 @@ export class BrowserService {
         };
       });
       const transport = await opening;
-      const terminal = transport.contactLost
-        ? Promise.race([transport.settled, transport.contactLost])
-        : transport.settled;
-      void terminal
-        .then(async () => {
-          try {
-            if (claims.facts.seed) await this.#flushTabDescriptors(record.id, broker);
-          } finally {
-            this.#standardCdpAttachments.delete(id);
-          }
-        })
-        .catch(this.#onError);
-      if (attempts) {
-        void transport.settled.then(() => attempts.settled(record.id, id)).catch(this.#onError);
-        if (transport.contactLost)
-          void transport.contactLost.then(() => attempts.lost(record.id, id)).catch(this.#onError);
-      }
       const held = profileLease;
-      if (held) void transport.settled.then(() => releaseProfile(held)).catch(this.#onError);
+      if (pool && attempts) {
+        transportOwnsPool = true;
+        const settled = transport.settled.then(async () => {
+          await attempts.settled(record.id, id);
+          if (held) await releaseProfile(held);
+        });
+        const lost = transport.contactLost?.then(() => attempts.lost(record.id, id));
+        const recorded = lost ? Promise.race([settled, lost]) : settled;
+        void recorded
+          .then(async () => {
+            if (claims.facts.seed) await this.#flushTabDescriptors(record.id, broker);
+            this.#standardCdpAttachments.delete(id);
+            pool.release();
+          })
+          .catch(this.#onError);
+        void settled.catch(this.#onError);
+        void lost?.catch(this.#onError);
+      } else {
+        const terminal = transport.contactLost
+          ? Promise.race([transport.settled, transport.contactLost])
+          : transport.settled;
+        void terminal
+          .then(async () => {
+            try {
+              if (claims.facts.seed) await this.#flushTabDescriptors(record.id, broker);
+            } finally {
+              this.#standardCdpAttachments.delete(id);
+            }
+          })
+          .catch(this.#onError);
+        if (attempts) {
+          void transport.settled.then(() => attempts.settled(record.id, id)).catch(this.#onError);
+          if (transport.contactLost)
+            void transport.contactLost
+              .then(() => attempts.lost(record.id, id))
+              .catch(this.#onError);
+        }
+        if (held) void transport.settled.then(() => releaseProfile(held)).catch(this.#onError);
+      }
       const close = () => transport.close();
       if (life.aborted) close();
       else life.addEventListener("abort", close, { once: true });
@@ -4741,7 +4821,9 @@ export class BrowserService {
               const fences = [...(this.#pendingPageCloses.get(record.id)?.values() ?? [])].flatMap(
                 ({ fence }) => (fence ? [fence] : []),
               );
-              return fences.length ? { fences } : { work: transport.send(frame) };
+              if (fences.length) return { fences };
+              if (pool) await verify(AbortSignal.timeout(1_000), Date.now() + 1_000, true);
+              return { work: transport.send(frame) };
             });
             if (next.work) return next.work;
             await withTimeout(Promise.all(next.fences), agentRequestTimeoutMs, {
@@ -4754,11 +4836,12 @@ export class BrowserService {
     } catch (error) {
       this.#standardCdpAttachments.delete(id);
       entry.close("CDP attachment refused.");
-      if (attempts && attemptRecorded) {
+      if (attempts && attemptRecorded && !transportOwnsPool) {
         if (handedOff) await attempts.lost(claims.browserSessionId, id);
         else await attempts.settled(claims.browserSessionId, id);
       }
       if (profileLease && !handedOff) await releaseProfile(profileLease).catch(this.#onError);
+      if (!transportOwnsPool) pool?.release();
       throw error;
     }
   }
@@ -4784,6 +4867,12 @@ export class BrowserService {
   }
 
   lowerStandardCdpTaskMode(threadId: ThreadId, accessMode: StandardCdpAuthority["mode"]): void {
+    this.standardCdpTickets.revokePooled(
+      ({ facts }) =>
+        facts.threadId === threadId &&
+        !!facts.accessMode &&
+        !threadAccessModeAtMost(facts.accessMode, accessMode),
+    );
     for (const [
       id,
       {
@@ -5889,6 +5978,7 @@ export class BrowserService {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     this.#closing.abort(unavailable("The Host browser service is shutting down."));
+    this.standardCdpTickets.revokePooled(() => true);
     this.#onTabsChanged();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);

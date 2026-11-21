@@ -8,6 +8,8 @@ import {
 } from "@opensteer/core";
 import type { BrowserSessionId } from "@opensteer/protocol";
 import type { StandardCdpMode } from "@opensteer/protocol/standard-cdp";
+import type { BrowserPoolTargetIdentity } from "@opensteer/database";
+import type { BrowserPoolReservation } from "./browser-pool-gate.js";
 
 export const standardCdpConnectPrefix = "/v1/browser/connect/";
 
@@ -45,14 +47,28 @@ const ticketPattern = /^[A-Za-z0-9_-]{43}$/u;
 const maxTickets = 4_096;
 const maxTtl = 300_000;
 
+export interface StandardCdpPoolReservation extends BrowserPoolReservation {
+  readonly target: BrowserPoolTargetIdentity;
+  readonly documentId?: string;
+}
+
+interface StoredTicket {
+  claims: StandardCdpTicketClaims;
+  expiresAt: number;
+  pool?: StandardCdpPoolReservation;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+export interface StandardCdpUpgrade {
+  readonly claims: StandardCdpTicketClaims;
+  readonly pool?: StandardCdpPoolReservation;
+}
+
 export class StandardCdpTickets {
-  readonly #claims: Map<string, { claims: StandardCdpTicketClaims; expiresAt: number }>;
+  readonly #claims: Map<string, StoredTicket>;
   readonly #now: () => number;
 
-  constructor(
-    now = Date.now,
-    claims = new Map<string, { claims: StandardCdpTicketClaims; expiresAt: number }>(),
-  ) {
+  constructor(now = Date.now, claims = new Map<string, StoredTicket>()) {
     this.#now = now;
     this.#claims = claims;
   }
@@ -62,6 +78,7 @@ export class StandardCdpTickets {
       readonly authority: CdpAuthority;
       readonly ttl?: number;
     },
+    pool?: StandardCdpPoolReservation,
   ): string {
     const { ttl = 60_000, authority, browserSessionId, mode, facts, sharedChromeTab } = input;
     if (!Number.isSafeInteger(ttl) || ttl <= 0 || ttl > maxTtl)
@@ -73,14 +90,15 @@ export class StandardCdpTickets {
     const expiresAt = Math.min(now + ttl, authority.expiresAt ?? Infinity);
     if (expiresAt <= now)
       throw new OpensteerError({ code: "forbidden", message: "Browser authority expired." });
-    for (const [key, entry] of this.#claims) if (entry.expiresAt <= now) this.#claims.delete(key);
+    for (const [key, entry] of this.#claims) if (entry.expiresAt <= now) this.#discard(key, entry);
     if (this.#claims.size >= maxTickets)
       throw new OpensteerError({
         code: "conflict",
         message: "Too many pending browser connection links.",
       });
     const ticket = randomBytes(32).toString("base64url");
-    this.#claims.set(digest(ticket), {
+    const key = digest(ticket);
+    const entry: StoredTicket = {
       claims: Object.freeze({
         authority: Object.freeze({
           agentBindingId: authority.agentBindingId,
@@ -93,16 +111,37 @@ export class StandardCdpTickets {
         ...(sharedChromeTab ? { sharedChromeTab: Object.freeze({ ...sharedChromeTab }) } : {}),
       }),
       expiresAt,
-    });
+    };
+    if (pool) {
+      entry.pool = pool;
+      entry.timer = setTimeout(() => this.#discard(key, entry), expiresAt - now);
+      entry.timer.unref();
+    }
+    this.#claims.set(key, entry);
     return ticket;
   }
 
   consume(ticket: string): StandardCdpTicketClaims | undefined {
+    const upgrade = this.consumeForUpgrade(ticket);
+    if (upgrade?.pool) {
+      upgrade.pool.release();
+      return undefined;
+    }
+    return upgrade?.claims;
+  }
+
+  consumeForUpgrade(ticket: string): StandardCdpUpgrade | undefined {
     if (!ticketPattern.test(ticket)) return undefined;
     const key = digest(ticket);
     const entry = this.#claims.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= this.#now()) {
+      this.#discard(key, entry);
+      return undefined;
+    }
     this.#claims.delete(key);
-    return entry && entry.expiresAt > this.#now() ? entry.claims : undefined;
+    clearTimeout(entry.timer);
+    return { claims: entry.claims, ...(entry.pool ? { pool: entry.pool } : {}) };
   }
 
   bindingsForConnection(connectionId: string): Set<string> {
@@ -115,7 +154,19 @@ export class StandardCdpTickets {
 
   revoke(agentBindingId: string): void {
     for (const [key, entry] of this.#claims)
-      if (entry.claims.authority.agentBindingId === agentBindingId) this.#claims.delete(key);
+      if (entry.claims.authority.agentBindingId === agentBindingId) this.#discard(key, entry);
+  }
+
+  revokePooled(predicate: (claims: StandardCdpTicketClaims) => boolean): void {
+    for (const [key, entry] of this.#claims)
+      if (entry.pool && predicate(entry.claims)) this.#discard(key, entry);
+  }
+
+  #discard(key: string, entry: StoredTicket): void {
+    if (this.#claims.get(key) !== entry) return;
+    this.#claims.delete(key);
+    clearTimeout(entry.timer);
+    entry.pool?.release();
   }
 }
 
