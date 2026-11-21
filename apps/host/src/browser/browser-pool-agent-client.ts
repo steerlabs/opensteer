@@ -2,15 +2,9 @@
  * The Home's real controller: the pool agent on the slot's pool host, over a signed request and
  * a signed reply. Used only for a managed pooled target; a Home without one never builds it.
  */
-import { createPrivateKey, createPublicKey, randomUUID, type KeyObject } from "node:crypto";
+import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import {
-  browserPoolAgentReplyBytes,
-  browserPoolAgentRequestBytes,
-  browserPoolAgentSignatureHeader,
-  signBrowserPoolAgentBytes,
-  verifyBrowserPoolAgentBytes,
-  type BrowserPoolAgentEnvelope,
-  type BrowserPoolAgentReply,
+  callBrowserPoolAgent,
   type BrowserPoolAgentRequest,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import type {
@@ -19,6 +13,8 @@ import type {
   BrowserPoolPhysicalController,
   BrowserPoolPhysicalStatus,
 } from "./browser-pool-controller.js";
+
+export { BrowserPoolAgentUnavailable } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 
 export interface BrowserPoolAgentClientOptions {
   /** The agent's Home interface, such as `http://10.128.0.7:7310`. */
@@ -33,13 +29,8 @@ export interface BrowserPoolAgentClientOptions {
   readonly now?: () => number;
 }
 
-export class BrowserPoolAgentUnavailable extends Error {
-  override readonly name = "BrowserPoolAgentUnavailable";
-}
-
 export class BrowserPoolAgentClient implements BrowserPoolPhysicalController {
   readonly #options: BrowserPoolAgentClientOptions;
-  readonly #endpoint: string;
 
   constructor(options: BrowserPoolAgentClientOptions) {
     if (options.homeKey.type !== "private" || options.homeKey.asymmetricKeyType !== "ed25519")
@@ -47,12 +38,11 @@ export class BrowserPoolAgentClient implements BrowserPoolPhysicalController {
     if (options.agentKey.type !== "public" || options.agentKey.asymmetricKeyType !== "ed25519")
       throw new TypeError("The agent key must be an Ed25519 public key.");
     this.#options = options;
-    this.#endpoint = new URL("/v1", options.url).toString();
   }
 
   async status(slotId: string, term: number): Promise<BrowserPoolPhysicalStatus> {
     const reply = await this.#send(slotId, term, { op: "status" });
-    if (reply.op !== "status") throw unexpected(reply);
+    if (reply.op !== "status") throw new Error(`The pool agent answered ${reply.op}.`);
     return reply.status;
   }
 
@@ -62,72 +52,19 @@ export class BrowserPoolAgentClient implements BrowserPoolPhysicalController {
     id: string,
   ): Promise<BrowserPoolControllerResult | null> {
     const reply = await this.#send(slotId, term, { op: "result", id });
-    if (reply.op !== "result") throw unexpected(reply);
+    if (reply.op !== "result") throw new Error(`The pool agent answered ${reply.op}.`);
     return reply.result;
   }
 
   async apply(call: BrowserPoolControllerCall): Promise<BrowserPoolControllerResult> {
     const reply = await this.#send(call.slotId, call.term, { op: "apply", call });
-    if (reply.op !== "apply") throw unexpected(reply);
+    if (reply.op !== "apply") throw new Error(`The pool agent answered ${reply.op}.`);
     return reply.result;
   }
 
-  async #send(
-    slotId: string,
-    term: number,
-    request: BrowserPoolAgentRequest,
-  ): Promise<BrowserPoolAgentReply> {
-    const envelope: BrowserPoolAgentEnvelope = {
-      v: 1,
-      slotId,
-      term,
-      issuedAt: new Date((this.#options.now ?? Date.now)()).toISOString(),
-      nonce: randomUUID(),
-      request,
-    };
-    const bytes = browserPoolAgentRequestBytes(envelope);
-    const response = await (this.#options.fetch ?? fetch)(this.#endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [browserPoolAgentSignatureHeader]: signBrowserPoolAgentBytes(bytes, this.#options.homeKey),
-      },
-      body: JSON.stringify(envelope),
-      signal: AbortSignal.timeout(this.#options.timeoutMs ?? 60_000),
-      redirect: "error",
-    });
-    const text = await response.text();
-    let parsed: { reply?: BrowserPoolAgentReply; signature?: string };
-    try {
-      parsed = JSON.parse(text) as typeof parsed;
-    } catch {
-      throw new BrowserPoolAgentUnavailable(
-        `The pool agent answered ${response.status} without a reply.`,
-      );
-    }
-    const reply = parsed.reply;
-    if (!reply) throw new BrowserPoolAgentUnavailable("The pool agent answered without a reply.");
-    // An unsigned answer is never trusted, whatever it says; a refusal of the request is one.
-    if (
-      !parsed.signature ||
-      !verifyBrowserPoolAgentBytes(
-        browserPoolAgentReplyBytes(bytes, reply),
-        this.#options.agentKey,
-        parsed.signature,
-      )
-    ) {
-      const message = reply.op === "refused" ? `: ${reply.message}` : "";
-      throw new BrowserPoolAgentUnavailable(
-        `The pool agent's reply is not signed by the slot${message}`,
-      );
-    }
-    if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
-    return reply;
+  #send(slotId: string, term: number, request: BrowserPoolAgentRequest) {
+    return callBrowserPoolAgent(this.#options, slotId, term, request);
   }
-}
-
-function unexpected(reply: BrowserPoolAgentReply): Error {
-  return new BrowserPoolAgentUnavailable(`The pool agent answered ${reply.op}.`);
 }
 
 /** How a Home is told about a managed pooled target; absent for every other Home. */

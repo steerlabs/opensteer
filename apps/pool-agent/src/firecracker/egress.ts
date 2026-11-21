@@ -3,6 +3,7 @@
  * own unprivileged user in a transient systemd unit. It holds every outside connection, so a
  * parked guest holds none. Its output is discarded: what it would log is the person's browsing.
  */
+import { existsSync } from "node:fs";
 import type { SlotEgress } from "../driver.js";
 import { run } from "./exec.js";
 import { namespaceName, proxyAddress, proxyPort } from "./network.js";
@@ -53,6 +54,12 @@ export async function startEgress(
     `--uid=${uid}`,
     `--gid=${uid}`,
     `--property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
+    // The host's resolver stub is on the host's loopback, not the namespace's: the proxy
+    // resolves with the slot's own resolv.conf (and a slot hosts file, when one is given).
+    `--property=BindReadOnlyPaths=/etc/netns/${namespaceName(index)}/resolv.conf:/etc/resolv.conf`,
+    ...(existsSync(`/etc/netns/${namespaceName(index)}/hosts`)
+      ? [`--property=BindReadOnlyPaths=/etc/netns/${namespaceName(index)}/hosts:/etc/hosts`]
+      : []),
     "--property=Restart=always",
     "--property=RestartSec=1",
     "--property=NoNewPrivileges=yes",

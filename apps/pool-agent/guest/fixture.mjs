@@ -1,8 +1,9 @@
 // The measurement's guest workload (experiments/browser-pool/fixture.mjs on browser-pool-gcp,
-// a74266859), at the pool guest's address: fixture pages on the guest's loopback, a status
-// endpoint, and a relay from the guest address to Chromium's loopback CDP port.
-import { createServer } from "node:http";
-import { connect, createServer as createTcpServer } from "node:net";
+// a74266859) for a pool guest in bench mode: fixture pages on the guest's loopback, and on the
+// guest's bridge port (the only port its host side may reach) a status endpoint, isolation
+// probes and Chromium's CDP.
+import { createServer, request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -58,33 +59,81 @@ createServer((request, response) => {
     .end(workload(mib, rows, `Fixture tab ${tab}`));
 }).listen(8080, "127.0.0.1");
 
-createServer((request, response) => {
-  if (request.method === "POST" && (request.url === "/sync" || request.url === "/drop")) {
+// The bridge port (4312), the one port the host side may reach: status, probes, and CDP.
+const bridge = createServer((request, response) => {
+  const url = new URL(request.url, "http://guest");
+  if (request.method === "POST" && (url.pathname === "/sync" || url.pathname === "/drop")) {
     execFileSync("/opensteer/busybox", ["sync"]);
-    if (request.url === "/drop")
+    if (url.pathname === "/drop")
       execFileSync("/opensteer/busybox", ["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"]);
-  } else if (request.method !== "GET" || request.url !== "/status") {
-    response.writeHead(404).end();
+    response.writeHead(204).end();
     return;
   }
-  response.writeHead(200, { "Content-Type": "application/json" }).end(
-    JSON.stringify({
-      wallMs: Date.now(),
-      monotonicMs: Number(process.hrtime.bigint() / 1000000n),
-      boottimeSeconds: Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]),
-      clocksource: readFileSync(
-        "/sys/devices/system/clocksource/clocksource0/current_clocksource",
-        "utf8",
-      ).trim(),
-    }),
+  if (request.method === "GET" && url.pathname === "/status") {
+    response.writeHead(200, { "Content-Type": "application/json" }).end(
+      JSON.stringify({
+        wallMs: Date.now(),
+        monotonicMs: Number(process.hrtime.bigint() / 1000000n),
+        boottimeSeconds: Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]),
+        clocksource: readFileSync(
+          "/sys/devices/system/clocksource/clocksource0/current_clocksource",
+          "utf8",
+        ).trim(),
+      }),
+    );
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/probe") {
+    // Isolation checks from inside the guest: can a TCP connection be opened at all?
+    const host = url.searchParams.get("host") ?? "";
+    const port = Number(url.searchParams.get("port"));
+    const started = Date.now();
+    const socket = connect({ host, port, timeout: 1500 });
+    const answer = (result) => {
+      socket.destroy();
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ host, port, result, ms: Date.now() - started }));
+    };
+    socket.once("connect", () => answer("connected"));
+    socket.once("timeout", () => answer("timeout"));
+    socket.once("error", (error) => answer(error.code ?? "error"));
+    return;
+  }
+  // Everything else is CDP's HTTP endpoint on the guest's loopback.
+  const upstream = httpRequest(
+    {
+      host: "127.0.0.1",
+      port: 9222,
+      method: request.method,
+      path: request.url,
+      headers: { ...request.headers, host: "localhost:9222" },
+    },
+    (answer) => {
+      response.writeHead(answer.statusCode ?? 502, answer.headers);
+      answer.pipe(response);
+    },
   );
-}).listen(8009, guest);
-
-createTcpServer((client) => {
-  const upstream = connect(9222, "127.0.0.1");
+  upstream.on("error", () => response.writeHead(502).end());
+  request.pipe(upstream);
+});
+// A CDP WebSocket is passed through as bytes.
+bridge.on("upgrade", (request, client, head) => {
+  const upstream = connect(9222, "127.0.0.1", () => {
+    const lines = [`${request.method} ${request.url} HTTP/1.1`];
+    for (let i = 0; i < request.rawHeaders.length; i += 2) {
+      const name = request.rawHeaders[i];
+      lines.push(
+        `${name}: ${name.toLowerCase() === "host" ? "localhost:9222" : request.rawHeaders[i + 1]}`,
+      );
+    }
+    upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+    if (head.length) upstream.write(head);
+    client.pipe(upstream).pipe(client);
+  });
   client.on("error", () => upstream.destroy());
   upstream.on("error", () => client.destroy());
   client.on("close", () => upstream.destroy());
   upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
-}).listen(9222, guest);
+});
+bridge.listen(4312, guest);

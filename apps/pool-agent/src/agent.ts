@@ -944,6 +944,16 @@ export class PoolAgent {
       term: slot.record.term,
       controlKey: publicKeyOf(slot.controlKey),
       status: statusOf(slot.record),
+      ...(slot.record.phase === "paused" && slot.record.saved
+        ? {
+            parked: {
+              tier: slot.record.saved.tier,
+              ...(slot.record.saved.image?.writeMs === undefined
+                ? {}
+                : { writeMs: slot.record.saved.image.writeMs }),
+            },
+          }
+        : {}),
     };
   }
 

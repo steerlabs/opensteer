@@ -238,6 +238,7 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async snapshot(slotId: string, jailId: string, savedStateId: string): Promise<SavedImage> {
     const root = this.#root(jailId);
+    const began = performance.now();
     const memoryBytes = await this.#memoryBytes(jailId);
     const space = await statfs(this.#config.savedRoot);
     if (space.bavail * space.bsize < memoryBytes + minimumFreeMarginBytes)
@@ -266,6 +267,7 @@ export class FirecrackerDriver implements HypervisorDriver {
       files,
       fingerprint: this.#fingerprint,
       writtenAt: new Date().toISOString(),
+      writeMs: Math.round(performance.now() - began),
     };
   }
 

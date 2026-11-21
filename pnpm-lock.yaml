@@ -1165,6 +1165,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       tsup:
         specifier: 'catalog:'
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.11)(typescript@7.0.2)(yaml@2.9.1)

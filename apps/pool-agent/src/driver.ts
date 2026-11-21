@@ -26,6 +26,8 @@ export interface SavedImage {
   /** The host hardware and software the image can be loaded on. */
   readonly fingerprint: string;
   readonly writtenAt: string;
+  /** How long writing and syncing the image took. */
+  readonly writeMs?: number;
 }
 
 export interface SavedFile {

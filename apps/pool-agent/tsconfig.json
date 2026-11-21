@@ -7,5 +7,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "tsup.config.ts", "../../scripts/tsup-node-app.ts"]
+  "include": ["src", "bench", "tsup.config.ts", "../../scripts/tsup-node-app.ts"]
 }

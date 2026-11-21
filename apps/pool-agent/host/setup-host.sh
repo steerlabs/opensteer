@@ -92,7 +92,10 @@ install_users() {
 }
 
 install_units() {
-    install -d -m 0700 /etc/opensteer-pool "$STATE" "$STATE/journal" "$STATE/driver"
+    # The state root is traversable (the egress users read the egress tree in images/); the
+    # journal and driver state inside it are root-only.
+    install -d -m 0700 /etc/opensteer-pool "$STATE/journal" "$STATE/driver"
+    install -d -m 0711 "$STATE"
     install -d -m 0711 "$STATE/profiles"
     install -m 0755 "$0" "$OPT/setup-host.sh"
     cat > /etc/systemd/system/opensteer-pool-host.service <<EOF

@@ -4,7 +4,7 @@
  * Home (or by the provisioner, for slot administration), a reply by the slot's control key, so a
  * party on the path can neither act for the Home nor answer for the agent.
  */
-import { createHash, sign, verify, type KeyObject } from "node:crypto";
+import { createHash, randomUUID, sign, verify, type KeyObject } from "node:crypto";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { BrowserPoolControl, BrowserPoolIntent } from "./browser-pool.js";
 
@@ -136,6 +136,8 @@ export interface BrowserPoolAgentSlotSummary {
   /** SPKI DER, base64, of the slot's control key: the runtime and the Home verify with it. */
   readonly controlKey: string;
   readonly status: BrowserPoolAgentStatus;
+  /** For the provisioner only: where a parked guest is, and how long its save took. */
+  readonly parked?: { readonly tier: "memory" | "disk"; readonly writeMs?: number };
 }
 
 export type BrowserPoolAgentAdminReply =
@@ -182,3 +184,108 @@ export function verifyBrowserPoolAgentBytes(
 
 /** The header that carries a signature; the body is the envelope itself. */
 export const browserPoolAgentSignatureHeader = "x-opensteer-pool-signature";
+
+export class BrowserPoolAgentUnavailable extends Error {
+  override readonly name = "BrowserPoolAgentUnavailable";
+}
+
+export interface BrowserPoolAgentEndpoint {
+  /** Such as `http://10.128.0.7:7310`. */
+  readonly url: string;
+  readonly fetch?: typeof fetch;
+  readonly timeoutMs?: number;
+  readonly now?: () => number;
+}
+
+/**
+ * One signed request to the agent's Home interface. The reply must be signed by the slot's
+ * control key for exactly this request; anything else (an unsigned refusal included) throws.
+ */
+export async function callBrowserPoolAgent(
+  endpoint: BrowserPoolAgentEndpoint & {
+    readonly homeKey: KeyObject;
+    readonly agentKey: KeyObject;
+  },
+  slotId: string,
+  term: number,
+  request: BrowserPoolAgentRequest,
+): Promise<Exclude<BrowserPoolAgentReply, { op: "refused" }>> {
+  const envelope: BrowserPoolAgentEnvelope = {
+    v: 1,
+    slotId,
+    term,
+    issuedAt: new Date((endpoint.now ?? Date.now)()).toISOString(),
+    nonce: randomUUID(),
+    request,
+  };
+  const bytes = browserPoolAgentRequestBytes(envelope);
+  const parsed = await post<BrowserPoolAgentReply>(endpoint, bytes, envelope, endpoint.homeKey);
+  const reply = parsed.reply;
+  if (
+    !parsed.signature ||
+    !verifyBrowserPoolAgentBytes(
+      browserPoolAgentReplyBytes(bytes, reply),
+      endpoint.agentKey,
+      parsed.signature,
+    )
+  ) {
+    const message = reply.op === "refused" ? `: ${reply.message}` : ".";
+    throw new BrowserPoolAgentUnavailable(
+      `The pool agent's reply is not signed by the slot${message}`,
+    );
+  }
+  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
+  return reply;
+}
+
+/** One signed request to the agent's provisioner interface. */
+export async function callBrowserPoolAgentAdmin(
+  endpoint: BrowserPoolAgentEndpoint & { readonly provisionerKey: KeyObject },
+  request: BrowserPoolAgentAdminRequest,
+): Promise<Exclude<BrowserPoolAgentAdminReply, { op: "refused" }>> {
+  const envelope: BrowserPoolAgentAdminEnvelope = {
+    v: 1,
+    issuedAt: new Date((endpoint.now ?? Date.now)()).toISOString(),
+    nonce: randomUUID(),
+    request,
+  };
+  const bytes = browserPoolAgentAdminBytes(envelope);
+  const { reply } = await post<BrowserPoolAgentAdminReply>(
+    endpoint,
+    bytes,
+    envelope,
+    endpoint.provisionerKey,
+  );
+  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
+  return reply;
+}
+
+async function post<Reply>(
+  endpoint: BrowserPoolAgentEndpoint,
+  bytes: Buffer,
+  envelope: unknown,
+  key: KeyObject,
+): Promise<{ readonly reply: Reply; readonly signature?: string }> {
+  const response = await (endpoint.fetch ?? fetch)(new URL("/v1", endpoint.url), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [browserPoolAgentSignatureHeader]: signBrowserPoolAgentBytes(bytes, key),
+    },
+    body: JSON.stringify(envelope),
+    signal: AbortSignal.timeout(endpoint.timeoutMs ?? 60_000),
+    redirect: "error",
+  });
+  const text = await response.text();
+  let parsed: { reply?: Reply; signature?: string };
+  try {
+    parsed = JSON.parse(text) as typeof parsed;
+  } catch {
+    throw new BrowserPoolAgentUnavailable(
+      `The pool agent answered ${response.status} without a reply.`,
+    );
+  }
+  if (!parsed.reply)
+    throw new BrowserPoolAgentUnavailable("The pool agent answered without a reply.");
+  return parsed as { reply: Reply; signature?: string };
+}
