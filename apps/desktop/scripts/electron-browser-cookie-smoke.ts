@@ -109,83 +109,87 @@ const cookies: BrowserCookie[] = [
     value: "session",
   },
 ];
-let failed = false;
-try {
-  await app.whenReady();
-  await requireSmokeProtectedStorage();
-  const nativeRoot = path.join(root, "profiles");
-  const store = await LocalProfileStore.acquire(nativeRoot, "electron");
-  const binding = LocalProfileBindingSchema.parse({
-    version: 1,
-    deploymentId: "dep_00000000-0000-4000-8000-000000000001",
-    runnerId: "rnr_00000000-0000-4000-8000-000000000001",
-    profileId: "bpr_00000000-0000-4000-8000-000000000001",
-    bindingId: randomUUID(),
-    storageInstanceId: store.storageInstanceId,
-    engine: "electron",
-  });
-  const launcher = new ElectronBrowserLauncher({
-    downloads: smokeDesktopDownloads(),
-    localProfileRoot: nativeRoot,
-    pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
-  });
+async function main() {
+  let failed = false;
   try {
-    const directory = await store.provision(
-      binding,
-      false,
-      (parent, signal) => launcher.localProfiles.createFiles(parent, binding, signal),
-      new AbortController().signal,
-    );
-    const sessionId = createBrowserSessionId();
-    const request = {
-      sessionId,
-      partitionKey: `profile:${binding.profileId}` as const,
-      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
-      storage: { kind: "local" as const, binding, directory },
-    };
-    const browser = await launcher.launch(request);
-    await browser.profile!.admit();
-    const page = await browser.context.createPage();
-    await (
-      await page.cdp()
-    ).send("Network.setCookies", { cookies: cookies.map(browserCookieToCdp) });
-    await acquireElectronLocalProfile({
-      root: nativeRoot,
-      directory,
-      binding,
-      configure: () => {},
-    }).mirror.flush();
-    await assertCookies(browser, cookies);
-    await browser.close();
-    const reopened = await launcher.launch(request);
-    await reopened.profile!.admit();
-    await reopened.context.createPage();
-    await assertCookies(reopened, cookies);
-    await reopened.close();
-  } finally {
-    launcher.close();
-    await store.close();
-  }
-  const importRoot = path.join(root, "imports");
-  const importer = new ElectronBrowserLauncher({
-    downloads: smokeDesktopDownloads(),
-    localProfileRoot: importRoot,
-    pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
-  });
-  try {
-    const report = await runStateImportScenario({
+    await app.whenReady();
+    await requireSmokeProtectedStorage();
+    const nativeRoot = path.join(root, "profiles");
+    const store = await LocalProfileStore.acquire(nativeRoot, "electron");
+    const binding = LocalProfileBindingSchema.parse({
+      version: 1,
+      deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+      runnerId: "rnr_00000000-0000-4000-8000-000000000001",
+      profileId: "bpr_00000000-0000-4000-8000-000000000001",
+      bindingId: randomUUID(),
+      storageInstanceId: store.storageInstanceId,
       engine: "electron",
-      launcher: importer,
-      nativeRoot: importRoot,
     });
-    process.stdout.write(JSON.stringify(report) + "\n");
+    const launcher = new ElectronBrowserLauncher({
+      downloads: smokeDesktopDownloads(),
+      localProfileRoot: nativeRoot,
+      pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
+    });
+    try {
+      const directory = await store.provision(
+        binding,
+        false,
+        (parent, signal) => launcher.localProfiles.createFiles(parent, binding, signal),
+        new AbortController().signal,
+      );
+      const sessionId = createBrowserSessionId();
+      const request = {
+        sessionId,
+        partitionKey: `profile:${binding.profileId}` as const,
+        initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+        storage: { kind: "local" as const, binding, directory },
+      };
+      const browser = await launcher.launch(request);
+      await browser.profile!.admit();
+      const page = await browser.context.createPage();
+      await (
+        await page.cdp()
+      ).send("Network.setCookies", { cookies: cookies.map(browserCookieToCdp) });
+      await acquireElectronLocalProfile({
+        root: nativeRoot,
+        directory,
+        binding,
+        configure: () => {},
+      }).mirror.flush();
+      await assertCookies(browser, cookies);
+      await browser.close();
+      const reopened = await launcher.launch(request);
+      await reopened.profile!.admit();
+      await reopened.context.createPage();
+      await assertCookies(reopened, cookies);
+      await reopened.close();
+    } finally {
+      launcher.close();
+      await store.close();
+    }
+    const importRoot = path.join(root, "imports");
+    const importer = new ElectronBrowserLauncher({
+      downloads: smokeDesktopDownloads(),
+      localProfileRoot: importRoot,
+      pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
+    });
+    try {
+      const report = await runStateImportScenario({
+        engine: "electron",
+        launcher: importer,
+        nativeRoot: importRoot,
+      });
+      process.stdout.write(JSON.stringify(report) + "\n");
+    } finally {
+      importer.close();
+    }
+  } catch (error) {
+    failed = true;
+    process.stderr.write(String(error) + "\n");
   } finally {
-    importer.close();
+    await rm(root, { recursive: true, force: true });
+    app.exit(failed ? 1 : 0);
   }
-} catch (error) {
-  failed = true;
-  process.stderr.write(String(error) + "\n");
-} finally {
-  await rm(root, { recursive: true, force: true });
-  app.exit(failed ? 1 : 0);
 }
+
+void main();
