@@ -274,6 +274,8 @@ export class Reconciler {
         if (!(await act((job, check) => provider.updateBootstrap!(server.id, true, job, check))))
           throw new BootstrapScrubFailure();
       } catch (error) {
+        // Only the scrub's own failure is deferred; a stale lease or a refused Account is not.
+        if (error instanceof Superseded || accountRefused(error)) throw error;
         this.#options.onError?.(
           error instanceof BootstrapScrubFailure ? error : new BootstrapScrubFailure(error),
         );

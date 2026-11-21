@@ -639,6 +639,41 @@ describe("Cloud Computer reconciliation", () => {
     },
   );
 
+  it.each(["superseded", "refused"] as const)(
+    "does not hide a %s Account check inside the metadata scrub",
+    async (outcome) => {
+      const compute = new ComputeFake();
+      const adapter = compute.adapter();
+      const h = harness({ compute, adapter });
+      h.status.desired = [{ ...home }];
+      await h.pass();
+      h.pin();
+      await h.pass();
+      expect(h.last()?.phase).toBe("ready");
+      h.status.desired = [{ ...h.status.desired[0]!, bootstrapReceiptRecorded: true }];
+      const reports = h.reports.length;
+      const answer = vi.mocked(h.account.check).getMockImplementation()!;
+      let inScrub = false;
+      vi.mocked(h.account.check).mockImplementation(async (id, check, signal) => {
+        if (inScrub && check.operation === "mutate") {
+          if (outcome === "refused") throw new RemoteRequestError("Account", 403);
+          return false;
+        }
+        return answer(id, check, signal);
+      });
+      vi.spyOn(adapter, "updateBootstrap").mockImplementationOnce(async (_id, _r, _s, check) => {
+        inScrub = true;
+        await check?.();
+        return true;
+      });
+      if (outcome === "refused")
+        await expect(h.pass()).rejects.toMatchObject({ service: "Account", status: 403 });
+      else await h.pass();
+      expect(h.onError).not.toHaveBeenCalledWith(expect.any(BootstrapScrubFailure));
+      expect(h.reports).toHaveLength(reports);
+    },
+  );
+
   it("keeps a lost Google insert unknown and deletes its late VM and reservation", async () => {
     const compute = new ComputeFake();
     compute.nextInsert = "late";
