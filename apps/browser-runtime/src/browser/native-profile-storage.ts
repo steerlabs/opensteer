@@ -128,6 +128,14 @@ export async function writeTabRestoreSidecar(
   await writeFileAtomic(sidecarPath, JSON.stringify({ version: 3, tabs: normalized }));
 }
 
+export async function deleteTabRestoreSidecar(directory: string): Promise<void> {
+  if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
+  const sidecarPath = path.join(directory, tabRestoreSidecarFilename);
+  await unlink(sidecarPath).catch((error: unknown) => {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  });
+}
+
 export interface MatchedRestoredTab {
   readonly tab: ChromiumTabEntry;
 }

@@ -71,6 +71,7 @@ import {
 } from "./tab-lifecycle-extension.js";
 
 import {
+  deleteTabRestoreSidecar,
   flushNativeCookies,
   initializeNativePreferences,
   matchRestoredTabs,
@@ -1126,9 +1127,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
+    this.contextHandle.markClosed();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
         timeoutError: () => new Error("Browser CDP detach did not finish."),
+      }),
+      withTimeout(this.contextHandle.drainSidecar(), 500, {
+        timeoutError: () => new Error("Sidecar flush did not finish."),
       }),
     ]);
     const stopped = await Promise.allSettled([this.owner.close()]);
@@ -1270,6 +1275,9 @@ class PlaywrightContextHandle implements BrowserContext {
   private sidecarTail: Promise<void> = Promise.resolve();
   private sidecarDirty = false;
   private sidecarScheduled = false;
+  private sidecarVersion = 0;
+  private sidecarFailures = 0;
+  private sidecarRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private creatingNewPage = 0;
   private wakeTail: Promise<void> = Promise.resolve();
   private activeWake: {
@@ -1323,34 +1331,7 @@ class PlaywrightContextHandle implements BrowserContext {
       };
     }
     context.on("close", () => {
-      this.closed = true;
-      this.reconcileAbort?.abort();
-      this.reconcileAbort = undefined;
-      for (const wake of this.parkedDiscardWaiters.splice(0)) wake();
-      if (this.reconcileFallbackTimer) {
-        clearTimeout(this.reconcileFallbackTimer);
-        this.reconcileFallbackTimer = undefined;
-      }
-      if (this.pendingRemovalTimer) {
-        clearTimeout(this.pendingRemovalTimer);
-        this.pendingRemovalTimer = undefined;
-      }
-      if (this.pendingRestoredRemovalTimer) {
-        clearTimeout(this.pendingRestoredRemovalTimer);
-        this.pendingRestoredRemovalTimer = undefined;
-      }
-      this.pendingSleepingRemovals.clear();
-      this.pendingRestoredRemovals.clear();
-      this.sleepingTabs.clear();
-      this.unclaimedRestoredTabs.clear();
-      this.unclaimedRestoredTargetIds.clear();
-      this.neverHandOffTargetIds.clear();
-      this.restoredPagesByTabId.clear();
-      this.restoredBySurfaceId.clear();
-      this.claimingSurfaceIds.clear();
-      this.parkedDiscardTails.clear();
-      this.parkedAutoDiscardArmed = false;
-      this.savedTabsBySurfaceId.clear();
+      this.markClosed();
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
@@ -2258,15 +2239,72 @@ class PlaywrightContextHandle implements BrowserContext {
     this.scheduleSidecarWrite();
   }
 
+  markClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.reconcileAbort?.abort();
+    this.reconcileAbort = undefined;
+    for (const wake of this.parkedDiscardWaiters.splice(0)) wake();
+    if (this.reconcileFallbackTimer) {
+      clearTimeout(this.reconcileFallbackTimer);
+      this.reconcileFallbackTimer = undefined;
+    }
+    if (this.pendingRemovalTimer) {
+      clearTimeout(this.pendingRemovalTimer);
+      this.pendingRemovalTimer = undefined;
+    }
+    if (this.pendingRestoredRemovalTimer) {
+      clearTimeout(this.pendingRestoredRemovalTimer);
+      this.pendingRestoredRemovalTimer = undefined;
+    }
+    if (this.sidecarRetryTimer) {
+      clearTimeout(this.sidecarRetryTimer);
+      this.sidecarRetryTimer = undefined;
+    }
+    this.pendingSleepingRemovals.clear();
+    this.pendingRestoredRemovals.clear();
+    this.sleepingTabs.clear();
+    this.unclaimedRestoredTabs.clear();
+    this.unclaimedRestoredTargetIds.clear();
+    this.neverHandOffTargetIds.clear();
+    this.restoredPagesByTabId.clear();
+    this.restoredBySurfaceId.clear();
+    this.claimingSurfaceIds.clear();
+    this.parkedDiscardTails.clear();
+    this.parkedAutoDiscardArmed = false;
+    this.savedTabsBySurfaceId.clear();
+  }
+
+  drainSidecar(): Promise<void> {
+    return this.sidecarTail;
+  }
+
   private scheduleSidecarWrite(): void {
     if (!this.lifecycle || !this.profileDirectory || this.closed) return;
+    this.sidecarVersion++;
     this.sidecarDirty = true;
+    this.sidecarFailures = 0;
+    if (this.sidecarRetryTimer) {
+      clearTimeout(this.sidecarRetryTimer);
+      this.sidecarRetryTimer = undefined;
+    }
     if (this.sidecarScheduled) return;
     this.sidecarScheduled = true;
     queueMicrotask(() => {
       this.sidecarScheduled = false;
       void this.flushSavedTabs().catch(() => undefined);
     });
+  }
+
+  private scheduleSidecarRetry(): void {
+    if (this.closed || this.sidecarRetryTimer) return;
+    const delayMs = 100 * this.sidecarFailures;
+    this.sidecarRetryTimer = setTimeout(() => {
+      this.sidecarRetryTimer = undefined;
+      if (this.closed || !this.sidecarDirty) return;
+      void this.flushSavedTabs().catch(() => undefined);
+    }, delayMs);
+    this.sidecarRetryTimer.unref?.();
   }
 
   trackInFlightDiscard(operation: Promise<void>): void {
@@ -2284,9 +2322,27 @@ class PlaywrightContextHandle implements BrowserContext {
         await Promise.allSettled(this.inFlightDiscards);
       }
       if (!this.sidecarDirty || this.closed || !this.lifecycle || !this.profileDirectory) return;
-      this.sidecarDirty = false;
+      const writeVersion = this.sidecarVersion;
+      const handleFailure = async (): Promise<void> => {
+        if (this.closed || !this.profileDirectory) return;
+        this.sidecarDirty = true;
+        this.sidecarFailures++;
+        if (this.sidecarFailures < 3) {
+          this.scheduleSidecarRetry();
+          return;
+        }
+        // Cannot bring the sidecar current after bounded retries: delete the stale map so a
+        // later cold start matches nothing and opens by address instead of binding a stale slot.
+        this.sidecarDirty = false;
+        this.sidecarFailures = 0;
+        await deleteTabRestoreSidecar(this.profileDirectory).catch(() => undefined);
+      };
       const inventory = await this.lifecycle.inventory().catch(() => null);
-      if (!inventory) return;
+      if (this.closed) return;
+      if (!inventory) {
+        await handleFailure();
+        return;
+      }
       const byTargetId = new Map<string, { surfaceId: string; url: string }>();
       const byTabId = new Map<number, { surfaceId: string; url: string }>();
       for (const [surfaceId, saved] of this.savedTabsBySurfaceId) {
@@ -2343,7 +2399,18 @@ class PlaywrightContextHandle implements BrowserContext {
           });
         }
       }
-      await writeTabRestoreSidecar(this.profileDirectory, entries);
+      if (this.closed) return;
+      try {
+        await writeTabRestoreSidecar(this.profileDirectory, entries);
+        this.sidecarFailures = 0;
+        if (this.sidecarVersion === writeVersion) {
+          this.sidecarDirty = false;
+        } else {
+          this.scheduleSidecarWrite();
+        }
+      } catch {
+        await handleFailure();
+      }
     });
     this.sidecarTail = write.catch(() => undefined);
     return write;

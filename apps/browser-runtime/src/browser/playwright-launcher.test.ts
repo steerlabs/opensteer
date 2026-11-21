@@ -2408,6 +2408,154 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("retries failed sidecar map writes and deletes a stale map if it cannot be brought current (F1)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const surfP = "srf_00000000-0000-4000-8000-00000000f101" as BrowserSurfaceId;
+    let personUrl = "https://w.test/";
+    let navHandler: ((frame: unknown) => void) | undefined;
+    const mainFrame = {};
+    const personRawPage = {
+      url: () => personUrl,
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+      on: vi.fn((event: string, cb: (frame: unknown) => void) => {
+        if (event === "framenavigated") navHandler = cb;
+      }),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => mainFrame,
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f1-person" } }) },
+    } as unknown as Page;
+
+    const helperRawPage = {
+      url: () => "about:blank",
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f1-helper" } }) },
+    } as unknown as Page;
+
+    let tabs: Array<{
+      tabId: number;
+      windowId: number;
+      index: number;
+      url: string;
+      title: string;
+      active: boolean;
+      discarded: boolean;
+      status: string;
+      targetId: string | null;
+    }> = [];
+    let newPageCalls = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => (++newPageCalls === 1 ? helperRawPage : personRawPage)),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) => {
+          if (method === "Target.getTargetInfo")
+            return { targetInfo: { targetId: "target-f1-person", url: personUrl } };
+          return {};
+        }),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn(async () => undefined),
+      })),
+      on: vi.fn(),
+    });
+
+    let failInventoryCount = 0;
+    let failInventoryAlways = false;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => {
+        if (failInventoryAlways) throw new Error("inventory down permanently");
+        if (failInventoryCount > 0) {
+          failInventoryCount--;
+          throw new Error("transient inventory failure");
+        }
+        return tabs;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      const page = await launched.context.createPage();
+      tabs = [
+        {
+          tabId: 401,
+          windowId: 1,
+          index: 0,
+          url: "https://w.test/",
+          title: "P",
+          active: true,
+          discarded: false,
+          status: "complete",
+          targetId: "target-f1-person",
+        },
+      ];
+      launched.context.sessionRestore!.trackSavedTab(surfP, page);
+      await launched.context.sessionRestore!.flush!();
+      expect(await readTabRestoreSidecar(f.directory)).toEqual([
+        { index: 0, surfaceId: surfP, url: "https://w.test/" },
+      ]);
+
+      // Case 1: transient failure on navigation W -> Y + agent tab A at W:
+      // must stay dirty and retry until the map reflects [P: Y, A(null): W]!
+      personUrl = "https://y.test/";
+      tabs = [
+        { ...tabs[0]!, url: "https://y.test/" },
+        {
+          tabId: 402,
+          windowId: 1,
+          index: 1,
+          url: "https://w.test/",
+          title: "Agent",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-f1-agent",
+        },
+      ];
+      failInventoryCount = 1;
+      navHandler?.(mainFrame);
+      await vi.waitFor(
+        async () => {
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([
+            { index: 0, surfaceId: surfP, url: "https://y.test/" },
+            { index: 1, surfaceId: null, url: "https://w.test/" },
+          ]);
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+
+      // Case 2: persistent failure after P navigates Y -> Z:
+      // after bounded retries, stale map MUST be deleted so crash restore opens by address!
+      personUrl = "https://z.test/";
+      tabs = [{ ...tabs[0]!, url: "https://z.test/" }, tabs[1]!];
+      failInventoryAlways = true;
+      navHandler?.(mainFrame);
+      await vi.waitFor(
+        async () => {
+          expect(await readTabRestoreSidecar(f.directory)).toEqual([]);
+        },
+        { timeout: 4_000, interval: 25 },
+      );
+    } finally {
+      failInventoryAlways = false;
+      invSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(
