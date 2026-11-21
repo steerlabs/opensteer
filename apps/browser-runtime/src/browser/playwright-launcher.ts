@@ -1609,7 +1609,7 @@ class PlaywrightContextHandle implements BrowserContext {
         await this.activatePrivateAnchor();
       }
       if (current.status !== "unloaded" && current.targetId) {
-        await this.freezeRestoredTabBeforeDiscard(current.tabId, current.targetId);
+        await this.freezeRestoredTabBeforeDiscard(current.tabId, current.targetId, current.status);
       }
       const newTabId = await this.lifecycle.discardByTabId(current.tabId).catch(() => null);
       if (newTabId !== null) {
@@ -1678,17 +1678,46 @@ class PlaywrightContextHandle implements BrowserContext {
    * Flushes Blink's restored PageState (scroll, form controls) back into
    * Chromium's NavigationEntry before discarding an already-loaded parked tab.
    */
-  private async freezeRestoredTabBeforeDiscard(tabId: number, targetId: string): Promise<void> {
-    let page = this.restoredPagesByTabId.get(tabId);
-    if (!page || page.isClosed()) {
+  private async freezeRestoredTabBeforeDiscard(
+    tabId: number,
+    targetId: string,
+    status: string,
+  ): Promise<void> {
+    const findPage = (): Page | undefined => {
+      const cached = this.restoredPagesByTabId.get(tabId);
+      if (cached && !cached.isClosed()) return cached;
       for (const candidate of this.context.pages()) {
         if (candidate === this.privatePage || candidate.isClosed()) continue;
-        if (syncTargetIdOfPage(candidate) === targetId) {
-          page = candidate;
+        if (syncTargetIdOfPage(candidate) === targetId) return candidate;
+      }
+      return undefined;
+    };
+    let page = findPage();
+    if (status === "loading" || !page) {
+      // Chromium's BackgroundTabLoadingPolicy may have started loading a few restored tabs
+      // before reconcile runs. Bound the wait tightly so slow remote sites never stall
+      // reconciliation while fast pages finish restoring Blink FormController state before freeze.
+      const deadline = performance.now() + 500;
+      while (performance.now() < deadline) {
+        page = findPage();
+        if (page) {
+          const remaining = Math.max(25, Math.floor(deadline - performance.now()));
+          if (typeof page.waitForLoadState === "function") {
+            await page.waitForLoadState("load", { timeout: remaining }).catch(() => undefined);
+          }
           break;
         }
+        const inv = await this.lifecycle?.inventory().catch(() => null);
+        const entry = inv?.find((tab) => tab.tabId === tabId);
+        if (!entry || entry.discarded || entry.status === "unloaded") return;
+        if (entry.status === "complete") {
+          page = findPage();
+          if (page) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
       }
     }
+    page ??= findPage();
     if (!page || page.isClosed()) return;
     let session: PlaywrightCdpSession | undefined;
     try {
@@ -2094,15 +2123,15 @@ class PlaywrightContextHandle implements BrowserContext {
         }
         return true;
       }
-      return this.removeTabWithEvidence(tabId, null, 2);
+      return this.removeTabWithEvidence(tabId, null, 1);
     }
     if (sleeping.state === "unknown") {
       const probed = await this.resolveUnknownSleepingTabId(sleeping);
       if (probed.status === "absent") return true;
       if (probed.status === "unknown") return false;
-      return this.removeTabWithEvidence(probed.tabId, null, 2);
+      return this.removeTabWithEvidence(probed.tabId, null, 1);
     }
-    return this.removeTabWithEvidence(sleeping.tabId, null, 2);
+    return this.removeTabWithEvidence(sleeping.tabId, null, 1);
   }
 
   async releaseRestore(restore: unknown): Promise<boolean> {
