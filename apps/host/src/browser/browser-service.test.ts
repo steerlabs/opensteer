@@ -8269,7 +8269,7 @@ it("admits paged listing and exact resume only inside an agent's own session", a
     runtime
       .receivedCommands()
       .slice(beforeNamed)
-      .some((m) => m.type === "cdp.command" && m.command.method === "Opensteer.openTab"),
+      .some((m) => m.type === "cdp.command" && JSON.stringify(m).includes("Opensteer.openTab")),
   ).toBe(false);
   cdp.close();
 });
