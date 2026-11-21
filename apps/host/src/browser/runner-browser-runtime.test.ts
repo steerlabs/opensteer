@@ -506,6 +506,32 @@ it.each([
   },
 );
 
+it.each(["capability.grant", "browser.attach"] as const)(
+  "keeps the person's tab when the next boot attaches before the failed open mid-%s is handled",
+  async (phase) => {
+    const f = restartFixture();
+    try {
+      const first = f.boot();
+      const person = f.person();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      f.restart(first);
+      await turns();
+      const second = f.boot({ hold: (message) => message.type === phase });
+      await vi.waitFor(() => expect(second.held.map((message) => message.type)).toEqual([phase]));
+      // In one turn: the replacement restarts and the next boot attaches, before the open
+      // that was waiting on the replacement has seen its failure.
+      f.restart(second);
+      const third = f.boot();
+      await vi.waitFor(() => expect(person.connection.readyState).toBe(1));
+      expect(person.errors).toEqual([]);
+      expect(person.closes).toEqual([]);
+      expect(f.of(third, "browser.attach")).toHaveLength(1);
+    } finally {
+      f.close();
+    }
+  },
+);
+
 it("waits quietly for a replacement that boots seconds later", async () => {
   useDeadlineClock();
   const f = restartFixture();

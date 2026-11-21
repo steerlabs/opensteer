@@ -95,8 +95,9 @@ const maxQueuedFrameSurfaces = 128;
  * (`opened.close` before `handler.detach`,
  * `apps/runner/src/host/host-connection.ts`), and the runtime arms its timer
  * only after the tab's teardown. So the runtime's 20 s cannot start more than
- * one Runner-to-Host hop before this Host sees the loss. A reattach the router
- * has not sent within 15 s is abandoned, so one it does send reaches the
+ * one Runner-to-Host hop before this Host sees the loss. At 15 s the router
+ * gives the reconnect up, even with an attach sent and not yet answered. So
+ * every reattach it sends leaves within 15 s of the loss and reaches the
  * runtime within 20 s, provided the hop there and back takes under 5 s. A
  * restart whose reattach had already reached the runtime arms a new 20 s at the
  * next detach, so later restarts only add time.
@@ -144,6 +145,11 @@ interface RoutedChannel {
   reconnecting: boolean;
 }
 
+interface RestartWatch {
+  readonly fence: RunnerAuxiliaryFrameFence;
+  restarted: boolean;
+}
+
 interface RunnerBrowserRuntimeRouterOptions {
   readonly now?: () => number;
   readonly registry: RunnerBrowserRegistry;
@@ -188,18 +194,15 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     { fence: RunnerAuxiliaryFrameFence; complete: boolean; failed: boolean; profiles: Set<string> }
   >();
   /**
-   * Each Runner's newest browser stream, by fence value, as `onAttached` reported
-   * it, and whether it ended in a restart. A person's reconnect reads it to tell
-   * a restart from any other loss. The registry hands out a new object for the
-   * same stream on every heartbeat, so this never compares objects. The entry
-   * goes when another kind of loss ends that stream, and is replaced when the
-   * Runner's next stream attaches. A late loss of an older stream leaves it as
-   * it is.
+   * The streams a person's reconnect is using right now, by fence value, and
+   * whether each ended in a restart. A reconnect adds its watch in the same turn
+   * as it admits the stream, and removes it only once the open waiting on that
+   * stream has settled. The registry hands out a new object for the same stream
+   * on every heartbeat, and the next boot may attach before a failed open is
+   * handled, so a restart is never read from a stream object or from whichever
+   * stream is newest. Nothing is kept once no reconnect holds it.
    */
-  readonly #newestStream = new Map<
-    RunnerId,
-    { readonly fence: RunnerAuxiliaryFrameFence; restarted: boolean }
-  >();
+  readonly #restartWatches = new Set<RestartWatch>();
   readonly #localProfiles: RunnerBrowserRuntimeRouterOptions["localProfiles"];
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
   readonly #onPlacementChanged: RunnerBrowserRuntimeRouterOptions["onPlacementChanged"];
@@ -214,10 +217,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     this.#registry = options.registry;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? requestTimeoutMs;
     const hooks: RunnerBrowserHooks = {
-      onAttached: (stream) => {
-        this.#newestStream.set(stream.identity.runnerId, { fence: stream.fence, restarted: false });
-        this.#notifyAdmission(stream.identity.runnerId);
-      },
+      onAttached: (stream) => this.#notifyAdmission(stream.identity.runnerId),
       onFrame: (stream, frame) => this.#handleFrame(stream, frame.header, frame.frame),
       onLost: (stream, reason) => this.#handleDisconnect(stream, reason),
       onMessage: (stream, message) => this.#handleMessage(stream, message),
@@ -268,12 +268,22 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   waitForTarget(runnerId: RunnerId, signal: AbortSignal, oldBootId?: string): Promise<void> {
+    return this.#waitForAdmission(runnerId, signal, oldBootId, () => undefined);
+  }
+
+  /** Waits as `waitForTarget` does; `admitted` runs in the same turn the stream is admitted. */
+  #waitForAdmission<T>(
+    runnerId: RunnerId,
+    signal: AbortSignal,
+    oldBootId: string | undefined,
+    admitted: (stream: RunnerAuxiliaryStream) => T,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
-      const finish = (error?: unknown) => {
+      const finish = (error?: unknown, value?: T) => {
         this.#admissionWaiters.delete(check);
         signal.removeEventListener("abort", abort);
         if (error !== undefined) reject(error);
-        else resolve();
+        else resolve(value as T);
       };
       const abort = () => finish(signal.reason);
       const check = () => {
@@ -282,7 +292,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         const stream = this.#registry.stream(runnerId);
         if (!stream || (oldBootId !== undefined && stream.identity.bootId === oldBootId)) return;
         const reason = this.#admissionReason(stream);
-        if (!reason) finish();
+        if (!reason) finish(undefined, admitted(stream));
         else if (!this.pendingAdmission(runnerId)) finish(relayError(reason));
       };
       this.#admissionWaiters.add(check);
@@ -448,7 +458,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     }
     this.#pending.clear();
     this.#lateErasures.clear();
-    this.#newestStream.clear();
+    this.#restartWatches.clear();
     for (const channel of this.#channels.values()) {
       this.#dropChannel(channel, 1001, "Host browser router shutting down");
     }
@@ -495,7 +505,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     runtimeId: string,
     expectedFence: RunnerAuxiliaryFrameFence,
     ticket: string,
-    reconnecting = false,
+    restart?: RestartWatch,
   ): Promise<"opened" | "restarting" | "closed"> {
     let placementLease: PlacementCapabilityLease | undefined;
     let channel: RoutedChannel | undefined;
@@ -523,7 +533,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
         connection,
         lastSequence: -1,
         placementLease: activePlacementLease,
-        reconnecting,
+        reconnecting: restart !== undefined,
       };
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
@@ -562,8 +572,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     } catch (error) {
       const normalized = normalizeError(error);
       if (
-        reconnecting &&
-        this.#restartedStream(runnerId, expectedFence) &&
+        restart?.restarted === true &&
         !protocolRejection.has(normalized) &&
         connection.readyState === WebSocket.CONNECTING
       ) {
@@ -939,12 +948,9 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   }
 
   #handleDisconnect(stream: RunnerAuxiliaryStream, reason: RunnerStreamLossReason): void {
-    const runnerId = stream.identity.runnerId;
-    const newest = this.#newestStream.get(runnerId);
-    if (newest && sameRunnerAuxiliaryFence(newest.fence, stream.fence)) {
-      if (reason === "device-restarting") newest.restarted = true;
-      else this.#newestStream.delete(runnerId);
-    }
+    if (reason === "device-restarting")
+      for (const watch of this.#restartWatches)
+        if (sameRunnerAuxiliaryFence(watch.fence, stream.fence)) watch.restarted = true;
     for (const [id, late] of this.#lateErasures)
       if (sameRunnerAuxiliaryFence(late.fence, stream.fence)) this.#lateErasures.delete(id);
     if (
@@ -1023,32 +1029,42 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       await reconnect.prepare();
       while (true) {
         deadline.throwIfAborted();
-        await this.waitForTarget(lease.runnerId, deadline, previousBootId);
-        const stream = this.#registry.stream(lease.runnerId);
-        if (!stream) {
-          // The boot that ended the wait is already gone again.
-          const newest = this.#newestStream.get(lease.runnerId);
-          if (newest?.restarted && newest.fence.bootId !== previousBootId) {
-            previousBootId = newest.fence.bootId;
-            continue;
-          }
-          throw relayError("The browser computer could not reconnect the page.");
-        }
-        if (
-          stream.identity.modules.browser?.runtimeId !== lease.runtimeId ||
-          stream.identity.bootId === previousBootId
-        )
-          throw relayError("The browser computer could not reconnect the page.");
-        const outcome = await this.#open(
-          connection,
+        let watch = await this.#waitForAdmission(
           lease.runnerId,
-          lease.runtimeId,
-          stream.fence,
-          reconnect.ticket(),
-          true,
+          deadline,
+          previousBootId,
+          (stream) => this.#watchRestart(stream.fence),
         );
-        if (outcome !== "restarting") return;
-        previousBootId = stream.identity.bootId;
+        try {
+          const stream = this.#registry.stream(lease.runnerId);
+          if (!stream || !sameRunnerAuxiliaryFence(stream.fence, watch.fence)) {
+            // The boot that ended the wait is already gone again.
+            if (watch.restarted) {
+              previousBootId = watch.fence.bootId;
+              continue;
+            }
+            if (!stream) throw relayError("The browser computer could not reconnect the page.");
+            this.#restartWatches.delete(watch);
+            watch = this.#watchRestart(stream.fence);
+          }
+          if (
+            stream.identity.modules.browser?.runtimeId !== lease.runtimeId ||
+            stream.identity.bootId === previousBootId
+          )
+            throw relayError("The browser computer could not reconnect the page.");
+          const outcome = await this.#open(
+            connection,
+            lease.runnerId,
+            lease.runtimeId,
+            stream.fence,
+            reconnect.ticket(),
+            watch,
+          );
+          if (outcome !== "restarting") return;
+          previousBootId = stream.identity.bootId;
+        } finally {
+          this.#restartWatches.delete(watch);
+        }
       }
     } catch (error) {
       this.#failReconnect(connection, normalizeError(error));
@@ -1066,10 +1082,10 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     else connection.acceptClose(1011, "Browser stream could not reconnect");
   }
 
-  /** Whether the stream with this fence was its Runner's newest and ended in a restart. */
-  #restartedStream(runnerId: RunnerId, fence: RunnerAuxiliaryFrameFence): boolean {
-    const newest = this.#newestStream.get(runnerId);
-    return newest?.restarted === true && sameRunnerAuxiliaryFence(newest.fence, fence);
+  #watchRestart(fence: RunnerAuxiliaryFrameFence): RestartWatch {
+    const watch: RestartWatch = { fence, restarted: false };
+    this.#restartWatches.add(watch);
+    return watch;
   }
 
   async #closeChannel(channel: RoutedChannel, code: number, reason: string): Promise<void> {
