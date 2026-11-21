@@ -1451,6 +1451,46 @@ export class SurfaceLedger {
     this.agentCommandListeners.clear();
   }
 
+  private async releaseSleepingRestores(
+    records: readonly TabRecord[],
+    confirm: boolean,
+  ): Promise<boolean> {
+    const release = this.context.releaseRestore;
+    const pending = records.filter((record) => record.restore?.engine != null);
+    if (pending.length === 0) return true;
+    if (!release) {
+      for (const record of pending) {
+        if (record.restore) {
+          record.restore.engine = null;
+          record.restore.bytes = 0;
+        }
+      }
+      return true;
+    }
+    const results = await Promise.all(
+      pending.map(async (record) => {
+        const engine = record.restore?.engine;
+        if (engine == null) return true;
+        try {
+          const outcome = await withTimeout(
+            Promise.resolve(release.call(this.context, engine)),
+            pageCloseWaitMs,
+            { timeoutError: () => new Error("Restore cleanup is still running.") },
+          );
+          const released = outcome !== false;
+          if (released && record.restore?.engine === engine) {
+            record.restore.engine = null;
+            record.restore.bytes = 0;
+          }
+          return released;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    return confirm ? results.every(Boolean) : true;
+  }
+
   /**
    * Ends every page this session holds, tabs and pages not yet admitted alike;
    * pages the engine has not confirmed by the bound stay owned and retried.
@@ -1459,39 +1499,52 @@ export class SurfaceLedger {
     this.tearingDown = true;
     if (reason === "runtime-shutdown" && this.savedLineageId && this.context.sessionRestore) {
       // Preserve durable saved-lineage tabs for Chromium's orderly session exit;
-      // still end any non-durable (agent-origin) pages before browser.close().
+      // still end any non-durable (agent-origin) live or sleeping tabs before browser.close().
+      const records = [...this.records.values()];
       const keep = new Set(
-        [...this.records.values()]
+        records
           .filter((record): record is SurfaceRecord => isLive(record) && this.isSavedLineageTab(record))
           .map((record) => record.live.page),
       );
-      await this.pages.endOtherPages(this.session, keep, pageCloseWaitMs, reason).catch(() => undefined);
+      const nonDurable = records.filter((record) => !this.isSavedLineageTab(record));
+      await Promise.all([
+        this.pages.endOtherPages(this.session, keep, pageCloseWaitMs, reason).catch(() => undefined),
+        this.releaseSleepingRestores(nonDurable, false).catch(() => undefined),
+      ]);
       return;
     }
     const ended = withTimeout(this.pages.endSession(this.session, reason), pageCloseWaitMs, {
       timeoutError: () => new Error("Pages are still closing."),
     });
+    const restores = this.releaseSleepingRestores([...this.records.values()], confirm);
     if (confirm) {
-      const [_, confirmed] = await Promise.all([
+      const [_, confirmed, restoresConfirmed] = await Promise.all([
         ended,
         this.pages.endOtherPages(this.session, new Set(), pageCloseWaitMs, reason),
+        restores,
       ]);
-      if (!confirmed) throw new Error("Pages are still closing.");
-    } else await ended.catch(() => undefined);
+      if (!confirmed || !restoresConfirmed) throw new Error("Pages are still closing.");
+    } else {
+      await Promise.all([ended.catch(() => undefined), restores.catch(() => undefined)]);
+    }
   }
 
   async suspendForRelayRestart(): Promise<void> {
     this.tearingDown = true;
+    const records = [...this.records.values()];
     const keep = new Set(
-      [...this.records.values()]
+      records
         .filter((record): record is SurfaceRecord => isLive(record) && record.origin === "person")
         .map((record) => record.live.page),
     );
-    if (!(await this.pages.endOtherPages(this.session, keep, pageCloseWaitMs)))
-      throw new Error("Agent pages are still closing.");
+    const agentRecords = records.filter((record) => record.origin === "agent");
+    const [confirmed, restoresConfirmed] = await Promise.all([
+      this.pages.endOtherPages(this.session, keep, pageCloseWaitMs),
+      this.releaseSleepingRestores(agentRecords, true),
+    ]);
+    if (!confirmed || !restoresConfirmed) throw new Error("Agent pages are still closing.");
     // A copy: removing a record awaits, and records can be added meanwhile.
-    const records = [...this.records.values()];
-    for (const record of records) if (record.origin === "agent") await this.remove(record);
+    for (const record of agentRecords) await this.remove(record);
   }
 
   resumeAfterRelayRestart(): string[] {

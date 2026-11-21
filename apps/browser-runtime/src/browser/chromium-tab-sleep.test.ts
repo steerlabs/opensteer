@@ -559,3 +559,70 @@ it("hides the helper extension from tab lists, session CDP, and connected agents
   ).toBe(false);
   await wholeContextClient.close();
 });
+
+it("removes sleeping tabs with evidence on session end and cold restart brings none back", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-session-end-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const launched = await launcher.launch(request);
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  const url = `${server.originForSite(1)}/article`;
+  const surface = await ledger.openSurface({ origin: "agent" });
+  const live = ledger.binding(surface.id)!;
+  await live.cdp.send("Page.navigate", { url });
+  await waitLoaded(live.cdp, "/article");
+
+  expect(await ledger.sleep(surface.id, () => null)).toBe(true);
+  expect(ledger.stateOf(surface.id)).toBe("suspended");
+
+  // Confirm the sleeping tab is currently discarded in Chromium.
+  const invWhileAsleep = await lifecycle.inventory();
+  expect(invWhileAsleep.some((tab) => tab.url === url && tab.discarded)).toBe(true);
+
+  // If removal fails once, confirmed session end must refuse and keep the restore handle for retry.
+  const origRemove = lifecycle.removeByTabId.bind(lifecycle);
+  let failOnce = true;
+  const spy = vi.spyOn(lifecycle, "removeByTabId").mockImplementation(async (tabId) => {
+    if (failOnce) {
+      failOnce = false;
+      return false;
+    }
+    return origRemove(tabId);
+  });
+  await expect(ledger.closeOwnedPages("session-ended", true)).rejects.toThrow(
+    /Pages are still closing/,
+  );
+  spy.mockRestore();
+
+  // Retrying confirmed session end removes the sleeping tab from Chromium with evidence.
+  await ledger.closeOwnedPages("session-ended", true);
+  const invAfterEnd = await lifecycle.inventory();
+  expect(invAfterEnd.some((tab) => tab.url === url)).toBe(false);
+
+  // Cold restart must bring none of the ended session's sleeping tabs back.
+  await ledger.close();
+  await launched.close();
+  const restarted = await launcher.launch(request);
+  cleanup.push(() => restarted.close());
+  const internal2 = restarted as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const invAfterRestart = await internal2.contextHandle.lifecycle.inventory();
+  expect(invAfterRestart.some((tab) => tab.url === url)).toBe(false);
+});
