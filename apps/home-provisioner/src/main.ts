@@ -3,8 +3,9 @@ import { accountClient, accountRefused, workloadIdentityToken } from "./account.
 import { CloudflareDns } from "./cloudflare.js";
 import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
+import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
-import { provisionerFailure, RemoteRequestError } from "./http.js";
+import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -22,16 +23,31 @@ async function main(): Promise<void> {
     config.accountOrigin,
     workloadIdentityToken(config.accountOrigin.origin, http),
     http,
+    undefined,
+    config.provider === "google" ? "google" : undefined,
   );
   const reconciler = new Reconciler({
     account,
     onError: logFailure,
     orphanGraceMs: config.orphanGraceMs,
-    provider: new HetznerCloud({
-      ...http,
-      token: config.hetznerToken,
-      actionTimeoutMs: config.actionTimeoutMs,
-    }),
+    provider:
+      config.provider === "google"
+        ? new GoogleCompute({
+            ...http,
+            project: config.project,
+            zone: config.zone,
+            network: config.network,
+            subnet: config.subnet,
+            diskType: config.diskType,
+            diskSizeGb: config.diskSizeGb,
+            actionTimeoutMs: config.actionTimeoutMs,
+            log: (entry) => console.error(JSON.stringify(entry)),
+          })
+        : new HetznerCloud({
+            ...http,
+            token: config.hetznerToken,
+            actionTimeoutMs: config.actionTimeoutMs,
+          }),
     dns: new CloudflareDns({ ...http, token: config.cloudflareToken, zoneId: config.zoneId }),
     discover: discoverHome(http),
     accountOrigin: config.accountOrigin,
@@ -49,9 +65,13 @@ async function main(): Promise<void> {
     await account.acquire(shutdown.signal);
     console.log(JSON.stringify({ event: "home-provisioner.started" }));
     while (!shutdown.signal.aborted) {
+      let waitMs = config.intervalMs;
       try {
         await reconciler.pass(shutdown.signal);
       } catch (error) {
+        // A provider rate limit postpones the next pass until the provider accepts requests.
+        if (error instanceof ProviderRateLimited)
+          waitMs = Math.max(waitMs, error.retryAt - Date.now());
         if (!shutdown.signal.aborted) logFailure(error);
         if (
           accountRefused(error) ||
@@ -62,7 +82,7 @@ async function main(): Promise<void> {
           throw error;
       }
       if (!shutdown.signal.aborted) {
-        await delay(config.intervalMs, undefined, { signal: shutdown.signal }).catch(() => {});
+        await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});
       }
     }
   } finally {

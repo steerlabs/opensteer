@@ -38,13 +38,20 @@ export class TabToolHandlers {
     this.#sessions = sessions;
   }
 
-  async tab_list({ caller, input, operationKey }: ToolCall<"tab_list">) {
+  async tab_list({
+    caller,
+    input,
+    operationKey,
+    discoveryInput,
+    discoveryTab,
+  }: ToolCall<"tab_list">) {
     const { taskId, reason, operationKey: _key, operationId: _id, ...filters } = input;
     const list = async (tabActor: TabActor) => {
       const result = await this.#tabs.list(
         tabActor,
         filters,
         deviceVisibleTo(callerLineage(caller)?.grant),
+        discoveryTab,
       );
       return { ...result, tabs: result.tabs.map((tab) => tabForCaller(caller, tab)) };
     };
@@ -57,7 +64,8 @@ export class TabToolHandlers {
         reason,
         operationKey,
         tool: "tab_list",
-        input,
+        input: discoveryInput ? { discovery: discoveryInput, read: input } : input,
+        ...(discoveryInput ? { reportReplay: true } : {}),
         target: null,
         targetName: "Your tabs",
         effect: "read",

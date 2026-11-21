@@ -53,6 +53,8 @@ import {
   type TabId,
   type ThreadAccessMode,
 } from "../packages/core/src/index.js";
+import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
+import { ConnectionAuthenticator } from "../apps/host/src/mcp/connections/connection-authenticator.js";
 import { TabStore } from "../packages/database/src/tab-store.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import {
@@ -692,13 +694,31 @@ integration("a second agent on the person's computer", () => {
       const [otherTask] = other.tasks;
       const [otherTab] = other.tabs;
       // Listing: only its own.
-      const profiles = structured(await self.call("browser_profile_list"));
-      expect(JSON.stringify(profiles)).toContain(own.id);
-      expect(JSON.stringify(profiles)).not.toContain(otherProfile.id);
-      const tabs = await self.call("tab_list", {});
+      const shared = structured(await self.call("discover"));
+      expect(JSON.stringify(shared)).toContain(own.id);
+      expect(JSON.stringify(shared)).not.toContain(otherProfile.id);
+      const authenticated = await new ConnectionAuthenticator(
+        new AgentConnectionStore(home.host.store.database),
+      ).authenticate(self.bearer);
+      const unscoped = await home.host.tabs.list(
+        {
+          kind: "connection",
+          caller: {
+            ...authenticated,
+            kind: "connection",
+            key: `connection:${authenticated.connectionId}`,
+          },
+        },
+        {},
+      );
+      const [ownTab] = self === a ? work.a.tabs : work.b.tabs;
+      expect(unscoped.tabs.map(({ tabId }) => tabId)).toContain(ownTab);
+      expect(JSON.stringify(unscoped)).not.toContain(otherTab);
+
+      const tabs = await self.call("discover", { id: own.id });
+      expect(tabs.isError).toBeUndefined();
       expect(text(tabs)).not.toContain(otherTab);
-      const tasks = await self.call("opensteer_task_list", {});
-      expect(text(tasks)).not.toContain(otherTask);
+      expect(JSON.stringify(shared)).not.toContain(otherTask);
       // Reading, opening and attaching: refused exactly as for something that does not exist.
       const sameAsAbsent = async (
         name: string,
@@ -714,6 +734,9 @@ integration("a second agent on the person's computer", () => {
         { taskId: otherTask },
         { taskId: createId("thread") },
       );
+      await sameAsAbsent("discover", { id: otherTab }, { id: createId("tab") });
+      await sameAsAbsent("discover", { id: otherProfile.id }, { id: createId("browserProfile") });
+      await sameAsAbsent("discover", { id: otherTask }, { id: createId("thread") });
       await sameAsAbsent("browser_connect", { tabId: otherTab }, { tabId: createId("tab") });
       await sameAsAbsent(
         "browser_connect",
@@ -1150,12 +1173,12 @@ integration("a second agent on the person's computer", () => {
     const stopped = failure(await inFlight);
     expect(stopped.message).toBe("The person stopped this work.");
     // A call naming the stopped task is refused, and is never run.
-    const named = failure(await a.call("tab_list", { taskId: taskA }));
+    const named = failure(await a.call("discover", { id: profileA.id, taskId: taskA }));
     expect(named.message).toMatch(/^The person stopped this work\./u);
     // The next call that names no task is told once; the one after starts afresh.
-    const notice = failure(await a.call("tab_list", {}));
+    const notice = failure(await a.call("discover", { id: profileA.id }));
     expect(notice.message).toMatch(/^The person stopped this work\./u);
-    const fresh = await a.call("tab_list", {});
+    const fresh = await a.call("discover", { id: profileA.id });
     expect(fresh.isError).toBeUndefined();
     expect(structured(fresh).taskId).not.toBe(taskA);
     work.a.tasks.add(String(structured(fresh).taskId));
@@ -1163,7 +1186,7 @@ integration("a second agent on the person's computer", () => {
     await pageB!.reload();
     expect(await pageB!.locator("h1").innerText()).toBe("Signed in as Bob");
     expect(browserBDisconnected).toBe(false);
-    expect((await b.call("tab_list", {})).isError).toBeUndefined();
+    expect((await b.call("discover", { id: profileB.id })).isError).toBeUndefined();
   }, 180_000);
 
   it("on Disconnect, closes A's socket, refuses its next call and token, reaches Stopped, and B finishes", async () => {
@@ -1202,7 +1225,7 @@ integration("a second agent on the person's computer", () => {
     );
     await closedA;
     // The next call is refused, and the token no longer opens the Home.
-    await expect(a.call("tab_list", {})).rejects.toThrow();
+    await expect(a.call("discover", { id: profileA.id })).rejects.toThrow();
     const raw = await fetch(new URL(agentConnectionMcpPath, home.hostOrigin), {
       method: "POST",
       headers: {
@@ -1230,7 +1253,7 @@ integration("a second agent on the person's computer", () => {
     expect(await bWorking).toEqual(Array(5).fill("Signed in as Bob"));
     readByB.push(...(await bWorking));
     expect(browserBDisconnected).toBe(false);
-    const finished = await b.call("tab_list", {});
+    const finished = await b.call("discover", { id: profileB.id });
     expect(finished.isError).toBeUndefined();
     expect(text(finished)).toContain([...work.b.tabs][0]);
   }, 180_000);

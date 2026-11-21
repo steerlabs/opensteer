@@ -1,3 +1,4 @@
+import { discoverHandler } from "../apps/host/src/mcp/handlers/discover.js";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
@@ -562,6 +563,13 @@ async function proveChromeShares(
         },
       });
     const tabTools = new TabToolHandlers(tabs, sessions);
+    const discover = discoverHandler(
+      {
+        tab_list: (call) => tabTools.tab_list(call),
+        browser_profile_list: async () => ({ profiles: [], sites: [] }),
+      },
+      { tabs, browserSources: sources, store: fixture.store },
+    );
     const browserTools = new BrowserToolHandlers({
       sessions,
       sharedChromeTabs: liveTabs,
@@ -702,8 +710,28 @@ async function proveChromeShares(
     const denied = await session("No Chrome grant", false);
     expect(await liveTabs.listForBinding(denied.authority)).toEqual([]);
     expect(
-      await tabTools.tab_list({ caller: denied.caller, input: {}, operationKey: "denied-list" }),
-    ).toMatchObject({ status: "completed", tabs: [] });
+      await discover({
+        caller: denied.caller,
+        input: {},
+        operationKey: "denied-list",
+      }),
+    ).toEqual({ items: [], nextCursor: null });
+    const deniedRead = (id: string) =>
+      discover({
+        caller: denied.caller,
+        input: { id },
+        operationKey: "denied-source",
+      }).catch((error: unknown) => error);
+    const hidden = await deniedRead(sourceId);
+    expect(hidden).toMatchObject({ code: "not_found", message: "That item is unavailable." });
+    expect(hidden).toEqual(await deniedRead(createId("browserSource")));
+    expect(
+      await tabTools.tab_list({
+        caller: denied.caller,
+        input: {},
+        operationKey: "denied-all-tabs",
+      }),
+    ).toMatchObject({ status: "completed", operationId: expect.any(String), tabs: [] });
     const firstTab = TabIdSchema.parse(firstId);
     await expect(
       browserTools.browser_connect({
@@ -773,19 +801,25 @@ async function proveChromeShares(
     await expect(
       liveTabs.issueStandardCdpTicket({ authority: allowed.authority, tabId: otherId }),
     ).rejects.toThrow("Another agent");
-    const listing = await tabTools.tab_list({
+    expect(
+      await tabTools.tab_list({
+        caller: allowed.caller,
+        input: { query: "Hosting computer" },
+        operationKey: "granted-all-tabs",
+      }),
+    ).toMatchObject({
+      status: "completed",
+      tabs: [{ tabId: firstId, sharedByPerson: { sourceId, computerName: "Hosting computer" } }],
+    });
+    const listing = await discover({
       caller: allowed.caller,
-      input: { query: "Hosting computer" },
+      input: { id: sourceId, query: "Hosting computer" },
       operationKey: "granted-list",
     });
     expect(listing).toMatchObject({
       status: "completed",
-      tabs: [
-        expect.objectContaining({
-          tabId: firstId,
-          sharedByPerson: { sourceId, computerName: "Hosting computer" },
-        }),
-      ],
+      item: { id: sourceId, kind: "chrome-tabs", computer: "Hosting computer" },
+      items: [{ id: firstId, kind: "tab", computer: "Hosting computer", untrusted: true }],
     });
     const drive = () =>
       browserTools.browser_use({

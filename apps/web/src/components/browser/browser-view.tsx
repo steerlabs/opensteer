@@ -3,7 +3,12 @@ import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { useFreshPicture } from "./fresh-picture.js";
 import {
   browserSiteForTab,
+  browserRestartFailure,
   browserSiteLabel,
+  browserSleepWords,
+  browserStartFailure,
+  browserWakeLine,
+  restartPooledBrowser,
   type BrowserCommand,
   type BrowserFrameView,
   type BrowserSessionSummary,
@@ -14,6 +19,7 @@ import {
 } from "@opensteer/client/host";
 import {
   useBrowserPresentationWait,
+  useBrowserSleep,
   useBrowserViewerSurface,
   useHostSelector,
   useTab,
@@ -31,6 +37,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import type { ChromeConnectEnvironment } from "../chrome/chrome-environment.js";
+import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { LastPictureChip } from "../last-picture-chip.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
@@ -299,6 +306,19 @@ export function PlaceBrowserView({
   );
   const viewer = useSyncExternalStore(subscribeViewer, readViewer, readViewer);
   const picture = useFreshPicture(hostClient, sessionId, tabId, viewer);
+  // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
+  // nothing of it.
+  const sleep = useBrowserSleep(hostClient, tabId);
+  const pooled = sleep.browser.kind !== "not-pooled";
+  const [restartAsked, setRestartAsked] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const restartBrowser = () => {
+    if (sleep.browser.kind === "not-pooled") return;
+    setRestarting(true);
+    void restartPooledBrowser(hostClient, sleep.browser.computerId)
+      .catch((error: unknown) => toast.error(browserRestartFailure(error)))
+      .finally(() => setRestarting(false));
+  };
   const subscribePasskeys = useCallback(
     (listener: () => void) =>
       hostClient.browserPasskeys?.subscribe(sessionId, tabId, listener) ?? (() => {}),
@@ -630,6 +650,17 @@ export function PlaceBrowserView({
           label: "Profiles and agent access…",
           onSelect: manageProfiles,
         },
+        ...(pooled
+          ? [
+              {
+                detail: browserSleepWords.restartDetail,
+                disabled: restarting || sleep.browser.kind === "restarting",
+                icon: "repeat" as const,
+                label: browserSleepWords.restart,
+                onSelect: () => setRestartAsked(true),
+              },
+            ]
+          : []),
         {
           danger: true,
           disabled: !place,
@@ -642,22 +673,25 @@ export function PlaceBrowserView({
       ]
     : [];
 
+  const startFailure = browserStartFailure(sleep.browser);
   const ended = lastingReason
     ? { title: lastingReason, detail: null }
-    : activationError
-      ? { title: activationError, detail: null }
-      : dormant
-        ? null
-        : placeEnded(
-            session,
-            tabListed,
-            whole,
-            presentationError ??
-              (viewer.error ? presentClientIssue(viewer.error).title : null) ??
-              retentionError ??
-              mode.error ??
-              nativePresentation.error,
-          );
+    : startFailure
+      ? { title: startFailure.title, detail: startFailure.detail }
+      : activationError
+        ? { title: activationError, detail: null }
+        : dormant
+          ? null
+          : placeEnded(
+              session,
+              tabListed,
+              whole,
+              presentationError ??
+                (viewer.error ? presentClientIssue(viewer.error).title : null) ??
+                retentionError ??
+                mode.error ??
+                nativePresentation.error,
+            );
   const placement = nativePresentation.placement;
   const geometry = nativeBrowserGeometry(placement);
   const prePaint =
@@ -676,6 +710,29 @@ export function PlaceBrowserView({
   // can come back first.
   const stale = !picture.fresh && !native && !prePaint;
   const [stalePulse, setStalePulse] = useState(0);
+  // A tap or key on the picture while the browser wakes is not sent, and the picture says so.
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (!stale) setRefused(false);
+  }, [stale]);
+  const refuse = () => {
+    setStalePulse((count) => count + 1);
+    if (pooled) setRefused(true);
+  };
+  const wakeOnPicture =
+    pooled && stale
+      ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: true, refused })
+      : null;
+  const wakeAlone =
+    pooled && prePaint ? browserWakeLine(sleep.browser, sleep.elapsedMs, { picture: false }) : null;
+  // The note a tab that came back by reloading says once: until it is dismissed, the page is
+  // touched, or the person leaves it.
+  const shownNote = useRef<{ readonly key: string; readonly seen: () => void } | null>(null);
+  useEffect(() => {
+    const key = visible && sleep.note ? sleep.noteKey : null;
+    if (shownNote.current && shownNote.current.key !== key) shownNote.current.seen();
+    shownNote.current = key ? { key, seen: sleep.seen } : null;
+  }, [sleep.note, sleep.noteKey, sleep.seen, visible]);
 
   const fitLabel = placement
     ? `Fit page to view: ${tab?.sizedByAgent ? "an agent set" : "page is"} ${placement.viewport.width} × ${placement.viewport.height}`
@@ -817,6 +874,19 @@ export function PlaceBrowserView({
           }
         />
         {native ? null : <WebTabNotice hostClient={hostClient} />}
+        {sleep.note ? (
+          <div className="browser-return-note" role="status">
+            <p className="browser-return-note__text">{sleep.note.line}</p>
+            <button
+              aria-label={browserSleepWords.dismiss}
+              className="icon-btn browser-return-note__close"
+              onClick={sleep.seen}
+              type="button"
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        ) : null}
         <BrowserPasskeyBar
           key={passkey?.requestId ?? "notice"}
           state={passkey}
@@ -824,7 +894,13 @@ export function PlaceBrowserView({
             await hostClient.browserPasskeys?.continue(sessionId, tabId);
           }}
         />
-        <div className="browser-stage" data-native={native || undefined} ref={stageRef}>
+        <div
+          className="browser-stage"
+          data-native={native || undefined}
+          onKeyDownCapture={pooled && stale ? refuse : undefined}
+          onPointerDownCapture={sleep.note ? sleep.seen : undefined}
+          ref={stageRef}
+        >
           {live ? <PasswordSaveBubble target={savingTarget} /> : null}
           {!native && viewer.inputError ? (
             <div className="browser-action-error" role="status">
@@ -840,7 +916,16 @@ export function PlaceBrowserView({
                   Retry viewing
                 </button>
               ) : null}
-              {activationError && !lastingReason ? (
+              {startFailure && !lastingReason ? (
+                <button
+                  className="btn"
+                  disabled={restarting}
+                  onClick={restartBrowser}
+                  type="button"
+                >
+                  {restarting ? browserSleepWords.trying : browserSleepWords.tryAgain}
+                </button>
+              ) : activationError && !lastingReason ? (
                 <button className="btn" onClick={onRetry} type="button">
                   Try again
                 </button>
@@ -876,10 +961,15 @@ export function PlaceBrowserView({
                   stale ? (
                     <div
                       aria-hidden
-                      className="browser-stale"
-                      onPointerDown={() => setStalePulse((count) => count + 1)}
+                      className={
+                        wakeOnPicture?.dimNow ? "browser-stale browser-stale--now" : "browser-stale"
+                      }
+                      onPointerDown={refuse}
                     >
-                      <LastPictureChip pulse={stalePulse} />
+                      <LastPictureChip
+                        pulse={stalePulse}
+                        {...(wakeOnPicture ? { label: wakeOnPicture.text } : {})}
+                      />
                     </div>
                   ) : null
                 }
@@ -920,7 +1010,16 @@ export function PlaceBrowserView({
               />
             </>
           )}
-          {waiting ? (
+          {pooled && stale ? (
+            <p className="visually-hidden" role="status">
+              {wakeOnPicture?.text ?? ""}
+            </p>
+          ) : null}
+          {wakeAlone ? (
+            <div className="browser-status browser-status--wake" role="status">
+              {wakeAlone.text}
+            </div>
+          ) : waiting ? (
             <div className="browser-status" role="status">
               {connected && (dormant || session?.state === "starting")
                 ? "Starting browser…"
@@ -973,6 +1072,35 @@ export function PlaceBrowserView({
           site={site}
           url={url}
         />
+      ) : null}
+      {restartAsked ? (
+        <Dialog
+          title={browserSleepWords.restartTitle}
+          onClose={() => setRestartAsked(false)}
+          footer={
+            <>
+              <button
+                className="btn btn--ghost"
+                onClick={() => setRestartAsked(false)}
+                type="button"
+              >
+                {browserSleepWords.restartCancel}
+              </button>
+              <button
+                className="btn btn--danger"
+                onClick={() => {
+                  setRestartAsked(false);
+                  restartBrowser();
+                }}
+                type="button"
+              >
+                {browserSleepWords.restartConfirm}
+              </button>
+            </>
+          }
+        >
+          <p>{browserSleepWords.restartBody}</p>
+        </Dialog>
       ) : null}
     </>
   );

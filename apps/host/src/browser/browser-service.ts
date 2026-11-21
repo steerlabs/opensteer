@@ -228,6 +228,11 @@ const pageNoticeDelayMs = 250;
  * An agent CDP connection can no longer reach its Browser Session. The message
  * is written for the agent reading it and names its next step.
  */
+/** A connected agent's direct-work session, which finds tabs with `discover`, not `tab_list`. */
+function connectedAgentBinding(agentBindingId: string | undefined): boolean {
+  return agentBindingId?.startsWith("session:") === true;
+}
+
 export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
@@ -4583,7 +4588,9 @@ export class BrowserService {
     const broker = this.#brokers.get(record.id);
     if (!broker)
       throw new BrowserCdpConnectionEnded(
-        "This tab lost its browser connection. Use tab_list and Browser Harness openPage(tabId) to reconnect.",
+        connectedAgentBinding(input.agentBindingId)
+          ? "This tab lost its browser connection. Open it again with the same tabId; discover lists the tabs shared with you."
+          : "This tab lost its browser connection. Use tab_list and Browser Harness openPage(tabId) to reconnect.",
       );
     const backend: "cdp" | "actions" | undefined = broker.cdpBoundary
       ? "cdp"
@@ -7016,7 +7023,9 @@ export class BrowserService {
         )))
     )
       throw new BrowserCdpConnectionEnded(
-        "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
+        connectedAgentBinding(input.agentBindingId)
+          ? "This tab has ended or is unavailable. Use discover to find an open tab and pass its tabId."
+          : "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
       );
     return record;
   }
@@ -7145,7 +7154,9 @@ export class BrowserService {
       if (records.some((record) => !owned.has(record.id)))
         throw new OpensteerError({
           code: "forbidden",
-          message: "This tab is unavailable to this task. Use tab_list to find an open page tab.",
+          message: connectedAgentBinding(input.agentBindingId)
+            ? "This tab is unavailable to this task. Use discover to find an open tab and pass its tabId."
+            : "This tab is unavailable to this task. Use tab_list to find an open page tab.",
         });
       await Promise.all(
         [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>

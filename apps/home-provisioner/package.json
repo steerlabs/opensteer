@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsup",
     "start": "node dist/main.js",
-    "test": "vitest run",
+    "test": "vitest run --root ../.. apps/home-provisioner",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

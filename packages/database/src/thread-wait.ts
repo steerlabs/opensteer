@@ -14,6 +14,8 @@ import "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { messageFromRow } from "./thread-row-mappers.js";
+import { readPendingConnectionRequest } from "./request-agent-response.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 import { boundedSerializedPrefix } from "./message-window.js";
 
 /** A repeatable snapshot so a completion and its reply cannot be observed apart. */
@@ -26,6 +28,7 @@ export function readThreadWaitSnapshot(
     readonly afterSequence?: Sequence;
     readonly runId?: RunId;
     readonly assignmentId?: AssignmentId;
+    readonly connection?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ) {
   return withPersonalReadTransaction(
@@ -96,10 +99,14 @@ export function readThreadWaitSnapshot(
             .select("runs.id")
             .where("runs.assignmentId", "=", input.assignmentId!),
         );
-      const pendingRequest = await requestQuery
-        .orderBy("createdAt", "asc")
-        .limit(1)
-        .executeTakeFirst();
+      const pendingRequest = input.connection
+        ? await readPendingConnectionRequest(
+            tx,
+            input.connection,
+            input.threadId,
+            input.assignmentId,
+          )
+        : await requestQuery.orderBy("createdAt", "asc").limit(1).executeTakeFirst();
       return {
         ...(run
           ? {

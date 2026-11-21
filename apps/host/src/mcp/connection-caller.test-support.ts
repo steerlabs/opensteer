@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  agentGrantAccess,
   createId,
   ThreadIdSchema,
   type AgentGrant,
@@ -24,7 +25,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, expect } from "vitest";
-import { AgentCallerResolver } from "./agent-caller.js";
+import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import {
   ConnectionAuthenticator,
   connectionCredentialPrefix,
@@ -73,7 +74,16 @@ export async function serveMcp(
     /** The person's tab strip, as the task tools read it. */
     readonly tabs?: Pick<import("../tabs/ports.js").TabServicePort, "get">;
     /** The tab tools themselves, for direct work through agent sessions. */
+    readonly discoverSources?: Partial<
+      NonNullable<Parameters<typeof agentToolHandlers>[0]["discoverSources"]>
+    >;
+    readonly plugins?: Parameters<typeof agentToolHandlers>[0]["plugins"];
     readonly tabHandlers?: import("./handlers/tabs.js").TabToolHandlers;
+    readonly browserProfiles?: Awaited<
+      ReturnType<
+        import("./handlers/administration.js").AdministrationToolHandlers["browser_profile_list"]
+      >
+    >["profiles"];
     readonly administration?: import("./handlers/administration.js").AdministrationToolHandlers;
     readonly browser?: import("./handlers/browser.js").BrowserToolHandlers;
     readonly sessionPerson?: import("./handlers/session-person.js").SessionPersonTools;
@@ -229,6 +239,13 @@ export async function serveMcp(
       connections: new ConnectionAuthenticator(new AgentConnectionStore(store.database)),
     }),
     handlers: agentToolHandlers({
+      discoverSources: {
+        store,
+        tabs: { project: async () => ({ tabs: [], layout: { revision: 0, items: [] } }) },
+        browserSources: { grantableChromeTabs: async () => [] },
+        ...options.discoverSources,
+      },
+      ...(options.plugins ? { plugins: options.plugins } : {}),
       tabs: options.tabHandlers ?? ({} as never),
       ...(options.browser ? { browser: options.browser } : {}),
       ...(options.sessionPerson ? { sessionPerson: options.sessionPerson } : {}),
@@ -237,7 +254,22 @@ export async function serveMcp(
         (new Proxy(
           {},
           {
-            get: () => {
+            get: (_target, name) => {
+              if (name === "computer_list")
+                return async () => ({ computers: [], nextCursor: null });
+              // As the real listing does, a connection sees only the profiles its grant holds.
+              if (name === "browser_profile_list")
+                return async ({ caller }: { readonly caller: AgentCaller }) => ({
+                  profiles: (options.browserProfiles ?? []).filter(
+                    (profile) =>
+                      caller.kind !== "connection" ||
+                      agentGrantAccess(caller.grant, {
+                        kind: "browser-profile",
+                        profileId: profile.id,
+                      }),
+                  ),
+                  sites: [],
+                });
               throw new Error("Unexpected administration tool");
             },
           },
@@ -252,8 +284,11 @@ export async function serveMcp(
         store,
       ),
       apps: {
-        list: async (actor: { readonly caller: { readonly userId: UserId } }) =>
-          new AppStore(store.database).list(actor.caller.userId),
+        list: async (actor: Parameters<import("../apps/app-service.js").AppService["list"]>[0]) => {
+          if (actor.kind === "person") return new AppStore(store.database).list(actor.ownerId);
+          const ownerId = actor.kind === "run" ? actor.claims.requestedBy : actor.caller.userId;
+          return new AppStore(store.database).list(ownerId);
+        },
       } as never,
       teamRequestForRun: async () => null,
       personalContextForRun: async () => true,
@@ -262,6 +297,39 @@ export async function serveMcp(
     publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),
   });
   return url;
+}
+
+type ActiveRun = Awaited<
+  ReturnType<Awaited<ReturnType<typeof createStoreFixture>>["startRunFixture"]>
+>;
+export function fixtureRunScope(f: ActiveRun): import("../agents/run-tool-tokens.js").RunToolScope {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    aud: "opensteer-run-tools",
+    iss: "opensteer-host",
+    exp: now + 60,
+    iat: now,
+    jti: randomUUID(),
+    bindingGeneration: f.bindingGeneration,
+    environmentId: f.environmentId,
+    requestedBy: f.userId,
+    runId: f.runId,
+    runnerBootId: f.runnerBootId,
+    runnerId: f.runnerId,
+    threadId: f.threadId,
+  };
+}
+
+export async function runClient(url: URL, token = "test-run") {
+  const client = new Client({ name: "fixture-run", version: "1" });
+  clients.push(client);
+  await client.connect(
+    new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    }) as unknown as Transport,
+    { timeout: 5000 },
+  );
+  return client;
 }
 
 export async function connection(
@@ -311,14 +379,12 @@ export function errorText(result: Awaited<ReturnType<Client["callTool"]>>): stri
 
 export async function createTask(
   agent: Awaited<ReturnType<typeof connection>>,
-  f: Awaited<ReturnType<Awaited<ReturnType<typeof createStoreFixture>>["startRunFixture"]>>,
+  _fixture: Awaited<ReturnType<Awaited<ReturnType<typeof createStoreFixture>>["startRunFixture"]>>,
   key: string,
 ) {
   const result = await agent.client.callTool({
     name: "opensteer_task_create",
     arguments: {
-      aiAccountId: f.harnessInstance.id,
-      model: { ...testModelSelection, options: {} },
       title: `Lineage ${key}`,
       message: "Work on it",
       operationKey: key,
@@ -410,3 +476,17 @@ export const send = (agent: Awaited<ReturnType<typeof connection>>, taskId: stri
     name: "opensteer_task_send",
     arguments: { taskId, message: "More work", delivery: "queue", operationKey: key },
   });
+
+/** The SDK echoes the requested name for an unregistered tool. Everything else must match. */
+export async function expectUnknownTool(
+  client: Pick<Client, "listTools" | "callTool">,
+  name: string,
+  args: Record<string, unknown> = {},
+) {
+  expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(name);
+  const unknown = "opensteer_unknown_fixture_tool";
+  const result = await client.callTool({ name, arguments: args });
+  expect(result.isError).toBe(true);
+  const absent = await client.callTool({ name: unknown, arguments: args });
+  expect(JSON.stringify(result).replaceAll(name, unknown)).toBe(JSON.stringify(absent));
+}

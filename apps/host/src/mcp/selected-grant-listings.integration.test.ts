@@ -23,6 +23,7 @@ import { BrowserScriptConfinement, BrowserToolHandlers } from "./handlers/browse
 import { TabToolHandlers } from "./handlers/tabs.js";
 import { SessionPersonTools } from "./handlers/session-person.js";
 import type { TabServicePort } from "../tabs/ports.js";
+import { tabReadAuthority } from "../tabs/tab-authority.js";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { describeStore, enrollTestRunner } from "@opensteer/database/test-support/store";
 import { sql } from "kysely";
@@ -35,9 +36,10 @@ import {
 import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { compositeBackend } from "../plugins/engine-backend.js";
 import type { engineAccounts } from "../plugins/engine-accounts.js";
+import { PluginToolHandlers } from "./handlers/plugins.js";
 import { PluginAuthority } from "../plugins/plugin-authority.js";
 import type { ConnectionCaller } from "./agent-caller.js";
-import { connection, errorText, serveMcp } from "./connection-caller.test-support.js";
+import { connection, expectUnknownTool, serveMcp } from "./connection-caller.test-support.js";
 import { AdministrationToolHandlers } from "./handlers/administration.js";
 import { localServerToolHandlers } from "./handlers/local-servers.js";
 
@@ -114,7 +116,26 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       { identity: { displayName: "Calculator", bundleId: "com.apple.calculator" } },
       { identity: { displayName: "Mail", bundleId: "com.apple.mail" } },
     ];
+    const windows = Array.from({ length: 51 }, (_, index) =>
+      TabSchema.parse({
+        tabId: `window-${index}`,
+        kind: "window",
+        title: `Notes ${index}`,
+        computer: { computerId: granted, name: "Granted Mac" },
+        bundleId: "com.apple.Notes",
+        appName: "Notes",
+        groupId: null,
+        state: "open",
+        openedBy: "person",
+        usedBy: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+    );
     const url = await serveMcp(storeFixture, {
+      discoverSources: {
+        tabs: { project: async () => ({ tabs: windows, layout: { revision: 0, items: [] } }) },
+      },
       computerApps: {
         computerUseInventory: async () => inventory,
         installedComputerApps: (async (input: { offset: number; limit: number }) => ({
@@ -146,11 +167,13 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       },
     });
     const hidden = [other!, "Hidden Mac", "Safari", "Mail", mail!, otherPhone!, "Hidden Pixel"];
-    const overview = await agent.client.callTool({ name: "computer_apps", arguments: {} });
+    const overview = await agent.client.callTool({ name: "discover", arguments: {} });
     expect(overview.isError, JSON.stringify(overview.content)).not.toBe(true);
     expect(overview.structuredContent).toMatchObject({
-      computers: [{ computerId: granted, apps: [{ name: "Notes" }] }],
-      phones: [{ computerId: phone }],
+      items: [
+        { kind: "app", name: "Notes", use: { computerId: granted } },
+        { kind: "phone", id: phone },
+      ],
     });
     expect(names(overview, hidden)).toEqual([]);
 
@@ -160,8 +183,8 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     let cursor: string | null | undefined;
     do {
       const page = await agent.client.callTool({
-        name: "computer_apps",
-        arguments: { computerId: granted, limit: 1, ...(cursor ? { cursor } : {}) },
+        name: "discover",
+        arguments: { id: granted, ...(cursor ? { cursor } : {}) },
       });
       expect(page.isError, JSON.stringify(page.content)).not.toBe(true);
       pages.push(page.structuredContent);
@@ -169,23 +192,30 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     } while (cursor);
     expect(pages).toEqual([
       expect.objectContaining({
-        total: 1,
+        nextCursor: expect.any(String),
+        items: windows.slice(0, 50).map((tab) => expect.objectContaining({ id: tab.tabId })),
+      }),
+      expect.objectContaining({
         nextCursor: null,
-        computer: expect.objectContaining({ apps: [expect.objectContaining({ name: "Notes" })] }),
+        items: [
+          expect.objectContaining({ id: windows[50]!.tabId }),
+          expect.objectContaining({ name: "Notes", kind: "app" }),
+        ],
       }),
     ]);
     expect(names(pages, [...hidden, "Calculator"])).toEqual([]);
     // A Mac outside the grant reads exactly as one that does not exist.
     const foreign = await agent.client.callTool({
-      name: "computer_apps",
-      arguments: { computerId: other },
+      name: "discover",
+      arguments: { id: other },
     });
     const unknownId = DeviceIdSchema.parse(createId("device"));
     const unknown = await agent.client.callTool({
-      name: "computer_apps",
-      arguments: { computerId: unknownId },
+      name: "discover",
+      arguments: { id: unknownId },
     });
-    expect(errorText(foreign).replace(other!, "")).toBe(errorText(unknown).replace(unknownId, ""));
+    expect(JSON.stringify(foreign)).toBe(JSON.stringify(unknown));
+    expect(foreign.structuredContent).toMatchObject({ error: { code: "not_found", next: null } });
   });
 
   it("computer_list and browser_profile_list: only granted Devices and profiles, no shells or sign-in sites", async ({
@@ -400,6 +430,14 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     expect(phoneList.computers).toHaveLength(1);
     expect(names(phoneList, [hidden, "Hidden Mac"])).toEqual([]);
 
+    await storeFixture.database
+      .insertInto("browserProfiles")
+      .values([
+        { id: profile, ownerId: f.userId, homeRunnerId: f.runnerId, name: "Granted profile" },
+        { id: hiddenProfile, ownerId: f.userId, homeRunnerId: f.runnerId, name: "Hidden profile" },
+      ])
+      .execute();
+    const tabComputerId = await storeFixture.store.requireSelfDeviceId(f.runnerId);
     const hiddenTab = "hidden-tab-title-and-id";
     const shownTab = TabSchema.parse({
       tabId: "shared-profile-tab",
@@ -415,8 +453,35 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       url: "https://example.test/",
       profile: { profileId: profile, name: "Granted profile" },
     });
+    const privateTab = TabSchema.parse({
+      ...shownTab,
+      tabId: hiddenTab,
+      title: "Hidden page",
+      profile: { profileId: hiddenProfile, name: "Hidden profile" },
+    });
+    const list: TabServicePort["list"] = async (actor, _input, _mayName, select) => {
+      if (actor.kind !== "browser-binding") throw new Error("Expected a direct session");
+      const allowed = await tabReadAuthority(actor, storeFixture.database);
+      const tabs = [];
+      for (const tab of [shownTab, privateTab]) {
+        if (
+          (await allowed({
+            ownerId: f.userId,
+            id: tab.tabId,
+            kind: "page",
+            title: tab.title,
+            computerId: tabComputerId,
+            profileId: tab.profile!.profileId,
+            openedBy: { taskId: actor.threadId },
+          })) &&
+          (!select || select(tab))
+        )
+          tabs.push(tab);
+      }
+      return { tabs, groups: [], nextCursor: null };
+    };
     const tabs = {
-      list: async () => ({ tabs: [shownTab], groups: [], nextCursor: null }),
+      list,
       connectionTab: async (_actor: unknown, id: string) => {
         if (id !== shownTab.tabId)
           throw new OpensteerError({ code: "not_found", message: "Tab not found." });
@@ -496,29 +561,18 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     const offered = await agent.client.listTools();
     expect(offered.tools.map(({ name }) => name)).not.toContain("tab_open");
     expect(offered.tools.map(({ name }) => name)).not.toContain("tab_close");
-    expect(
-      offered.tools
-        .map(({ name }) => name)
-        .filter((name) => name.endsWith("_list") || name === "computer_apps")
-        .sort(),
-    ).toEqual(["browser_profile_list", "computer_apps", "computer_list", "tab_list"]);
-    const computersResult = await call("computer_list");
-    const profilesResult = await call("browser_profile_list");
-    const appsResult = await call("computer_apps");
-    const tabsResult = await call("tab_list");
-    expect(computersResult.structuredContent).toMatchObject({
-      computers: [{ computerId: phoneId, phoneDisplay: { setup: { location: "driver-mac" } } }],
-      nextCursor: null,
-    });
-    expect(profilesResult.structuredContent).toEqual({
-      profiles: [{ id: profile, name: "Granted profile", home: { reachable: true } }],
-      sites: [],
-    });
-    expect(appsResult.structuredContent).toMatchObject({
-      computers: [],
-      phones: [
+    for (const name of ["browser_profile_list", "computer_apps", "computer_list", "tab_list"])
+      await expectUnknownTool(agent.client, name);
+    const shared = await call("discover");
+    expect(shared.isError, toolErrors.map(String).join("\n")).not.toBe(true);
+    expect(shared.structuredContent).toMatchObject({
+      items: [
+        { id: profile, name: "Granted profile", kind: "browser-profile", reachable: true },
         {
-          computerId: phoneId,
+          id: phoneId,
+          kind: "phone",
+          phoneSetup: { location: "driver-mac" },
+          reachable: false,
           blocked: {
             code: "computer_stopped",
             message: "Agents are stopped on the Mac connected to Shared iPhone.",
@@ -526,14 +580,25 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         },
       ],
     });
-    expect(tabsResult.isError, toolErrors.map(String).join("\n")).not.toBe(true);
-    expect(tabsResult.structuredContent).toMatchObject({
+    const allTabs = await new TabToolHandlers(tabs, sessions).tab_list({
+      caller: selectedCaller(f.userId, agent.id, phoneGrant),
+      input: {},
+      operationKey: "all-selected-tabs",
+    });
+    expect(allTabs).toMatchObject({
       tabs: [{ tabId: shownTab.tabId }],
       groups: [],
       nextCursor: null,
     });
+    expect(names(allTabs, [hidden, hiddenProfile, hiddenTab, "Hidden Mac"])).toEqual([]);
+    const tabsResult = await call("discover", { id: profile });
+    expect(tabsResult.isError, toolErrors.map(String).join("\n")).not.toBe(true);
+    expect(tabsResult.structuredContent).toMatchObject({
+      items: [{ id: shownTab.tabId, kind: "tab", untrusted: true }],
+      nextCursor: null,
+    });
     const refusals = await Promise.all([
-      call("computer_apps", { computerId: hidden }),
+      call("discover", { id: hidden }),
       call("browser_connect", { profileId: hiddenProfile }),
       call("browser_connect", { profileId: profile }),
       call("browser_use", { profileId: hiddenProfile, code: "print(await pages())" }),
@@ -556,7 +621,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     expect(refusals[4]?.structuredContent).toMatchObject({ error: { code: "computer_stopped" } });
     expect(
       names(
-        [offered, computersResult, profilesResult, appsResult, tabsResult, ...refusals],
+        [offered, shared, tabsResult, ...refusals],
         [
           hidden,
           "Hidden Mac",
@@ -606,17 +671,81 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         ],
       },
     } as unknown as LocalServerRegistry["options"]);
-    const listed = await localServerToolHandlers(registry).local_server_list!({
-      caller: selectedCaller(f.userId, "local-servers", {
-        scope: "selected",
-        tasks: false,
-        resources: [
-          { kind: "plugin", target: { kind: "local-server", serverId: shown }, access: "read" },
-        ],
+    const grant: AgentGrant = {
+      scope: "selected",
+      tasks: false,
+      resources: [
+        { kind: "plugin", target: { kind: "local-server", serverId: shown }, access: "read" },
+      ],
+    };
+    const plugins = new PluginToolHandlers({
+      authority: new PluginAuthority({
+        store: storeFixture.store,
+        settings: { settings: async () => [] } as never,
+        owner: async () => f.userId,
       }),
+      service: { list: async () => [] } as never,
+      localProviders: {
+        providers: async () => [
+          {
+            id: `app_server_${shown}`,
+            slug: "shown-server",
+            name: "Shown server",
+            tools: [],
+            version: "fixture",
+          },
+          {
+            id: `app_server_${hidden}`,
+            slug: "hidden-server",
+            name: "Hidden server",
+            tools: [],
+            version: "fixture",
+          },
+        ],
+      },
+      settings: { settings: async () => [] } as never,
+      store: storeFixture.store,
+      executions: {} as never,
+      folder: () => {
+        throw new Error("Unexpected folder");
+      },
+      exportFiles: () => {
+        throw new Error("Unexpected export");
+      },
+    });
+    const url = await serveMcp(storeFixture, { plugins });
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant,
+    });
+    await expectUnknownTool(agent.client, "local_server_list");
+    const discovered = await agent.client.callTool({ name: "discover", arguments: {} });
+    expect(discovered.isError, JSON.stringify(discovered.content)).not.toBe(true);
+    expect(discovered.structuredContent).toMatchObject({
+      items: [{ id: 'tools["shown-server"]', name: "Shown server", kind: "plugin" }],
+      nextCursor: null,
+    });
+    expect(names(discovered, [hidden, "Hidden server", "hidden-server"])).toEqual([]);
+    const listed = await localServerToolHandlers(registry).local_server_list!({
+      caller: {
+        kind: "run",
+        userId: f.userId,
+        accessMode: "full-access",
+        key: `run:${f.runId}`,
+        thread: f.thread,
+        claims: {} as never,
+        agentConnection: {
+          agentConnectionId: agent.id,
+          grant,
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "full-access",
+        },
+      },
       input: {},
       operationKey: "local-servers",
-    } as never);
+    });
     expect(listed).toEqual({ servers: [expect.objectContaining({ name: "Shown server" })] });
     expect(names(listed, [hidden, "Hidden server", "plg_hidden"])).toEqual([]);
   });

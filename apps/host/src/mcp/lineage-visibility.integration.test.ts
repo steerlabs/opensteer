@@ -2,7 +2,6 @@ import {
   createId,
   DeviceIdSchema,
   TabIdSchema,
-  ThreadIdSchema,
   type AgentGrant,
   type ExecutionNodeId,
   type RunId,
@@ -27,6 +26,9 @@ import {
   connection,
   createTask,
   errorText,
+  expectUnknownTool,
+  fixtureRunScope,
+  runClient,
   queuedRun,
   serveMcp,
 } from "./connection-caller.test-support.js";
@@ -128,39 +130,51 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       });
     const ownedRequest = await request(own, ownRun.runId, "own-question");
     const hiddenRequest = await request(f.threadId, f.run.id, "owner-question");
-    const readRequest = (requestId: string) => call("opensteer_request_read", { requestId });
-    const ownRequest = await readRequest(ownedRequest.request.id);
+    const ownRequest = await call("opensteer_task_wait", { taskId: own });
     expect(ownRequest.isError, JSON.stringify(ownRequest.content)).not.toBe(true);
-    const hidden = await readRequest(hiddenRequest.request.id);
-    const missing = await readRequest(createId("request"));
-    expect(JSON.stringify(hidden)).toBe(JSON.stringify(missing));
-    expect(hidden).toMatchObject({
+    expect(ownRequest.structuredContent).toMatchObject({
+      pendingRequest: { id: ownedRequest.request.id },
+    });
+    await expectUnknownTool(agent.client, "opensteer_request_read", {
+      requestId: hiddenRequest.request.id,
+    });
+
+    const ownNode = await subagent(storeFixture, ownRun.runId);
+    const ownerNode = await subagent(storeFixture, f.run.id);
+    const scopedRun = await runClient(
+      await serveMcp(storeFixture, {
+        runScope: fixtureRunScope({ ...f, ...ownRun, threadId: own }),
+      }),
+    );
+    const runTool = (name: string, arguments_: Record<string, unknown>) =>
+      scopedRun.callTool({ name, arguments: arguments_ });
+    expect(
+      (await runTool("opensteer_subagent_read", { subagentId: ownNode })).structuredContent,
+    ).toMatchObject({ subagent: { id: ownNode } });
+    expect(await runTool("opensteer_subagent_read", { subagentId: ownerNode })).toEqual(
+      await runTool("opensteer_subagent_read", { subagentId: createId("executionNode") }),
+    );
+    const waitForTask = (taskId: ThreadId) =>
+      call("opensteer_task_wait", { taskId, timeoutMs: 250 });
+    expect(await waitForTask(f.threadId)).toEqual(await waitForTask(createId("thread")));
+    expect(
+      await runTool("opensteer_request_read", { requestId: hiddenRequest.request.id }),
+    ).toEqual(await runTool("opensteer_request_read", { requestId: createId("request") }));
+
+    for (const subagentId of [ownNode, ownerNode, createId("executionNode")])
+      await expectUnknownTool(agent.client, "opensteer_subagent_read", { subagentId });
+
+    const listed = await call("discover", { id: own });
+    expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true);
+    const unknownParent = await call("discover", { id: createId("thread") });
+    expect(unknownParent).toMatchObject({
       isError: true,
       structuredContent: {
         error: { code: "not_found", message: "That item is unavailable.", next: null },
       },
     });
-
-    // Subagents: the person's Run's subagent reads exactly like one that does not exist.
-    const ownNode = await subagent(storeFixture, ownRun.runId);
-    const ownerNode = await subagent(storeFixture, f.run.id);
-    const ownRead = await call("opensteer_subagent_read", { subagentId: ownNode });
-    expect(ownRead.isError, JSON.stringify(ownRead.content)).not.toBe(true);
-    const unknownNode = errorText(
-      await call("opensteer_subagent_read", { subagentId: createId("executionNode") }),
-    );
-    expect(errorText(await call("opensteer_subagent_read", { subagentId: ownerNode }))).toBe(
-      unknownNode,
-    );
-
-    // task_list: a parent task outside the lineage reads exactly like an unknown one.
-    const listed = await call("opensteer_task_list", { parentTaskId: own });
-    expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true);
-    const unknownParent = errorText(
-      await call("opensteer_task_list", { parentTaskId: ThreadIdSchema.parse(createId("thread")) }),
-    );
-    for (const parentTaskId of [f.threadId, foreign])
-      expect(errorText(await call("opensteer_task_list", { parentTaskId }))).toBe(unknownParent);
+    for (const id of [f.threadId, foreign])
+      expect(JSON.stringify(await call("discover", { id }))).toBe(JSON.stringify(unknownParent));
 
     // Delegations: a delegation whose child is in the lineage but whose parent is the person's.
     const delegated = await storeFixture.store.delegateThread({
@@ -179,16 +193,20 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       .set({ originConnectionId: agent.id })
       .where("id", "=", delegated.thread.id)
       .execute();
-    const status = await call("opensteer_delegation_status", {
+    await expectUnknownTool(agent.client, "opensteer_delegation_status", {
       delegationId: delegated.assignment.id,
     });
-    expect(errorText(status)).toBe("Task is unavailable");
-    // Indistinguishable from a delegation that does not exist.
+    const privateChild = await call("opensteer_task_wait", {
+      taskId: delegated.thread.id,
+      timeoutMs: 1,
+    });
+    expect(privateChild.structuredContent).not.toHaveProperty("task");
+    expect(JSON.stringify(privateChild)).not.toContain(delegated.assignment.id);
     expect(
-      errorText(
-        await call("opensteer_delegation_status", { delegationId: createId("delegation") }),
-      ),
-    ).toBe("Task is unavailable");
+      await runTool("opensteer_delegation_status", { delegationId: delegated.assignment.id }),
+    ).toEqual(
+      await runTool("opensteer_delegation_status", { delegationId: createId("delegation") }),
+    );
 
     // A Run of the connection's own task can delegate work the connection can follow.
     const child = await storeFixture.store.delegateThread({
@@ -204,17 +222,74 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     });
     const delegationId = child.assignment.id;
     const identifiers = { delegationId, taskId: child.thread.id, parentTaskId: own };
-    expect(
-      (await call("opensteer_delegation_status", { delegationId })).structuredContent,
-    ).toMatchObject({ ...identifiers, status: "open" });
+    expect((await waitForTask(child.thread.id)).structuredContent).toMatchObject({
+      task: { ...identifiers, status: "open" },
+    });
+
+    expect((await call("discover", { id: own })).structuredContent).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: child.thread.id, kind: "task", status: "open" }),
+      ]),
+    });
     await storeFixture.store.cancelAssignment({
       assignmentId: delegationId,
       requestedBy: f.userId,
       idempotencyKey: "lineage-delegation-cancelled",
     });
-    expect(
-      (await call("opensteer_delegation_wait", { delegationId })).structuredContent,
-    ).toMatchObject({ status: "settled", task: identifiers });
+    const inaccessible = await storeFixture.database
+      .selectFrom("delegations")
+      .selectAll()
+      .where("id", "=", delegationId)
+      .executeTakeFirstOrThrow();
+    const newerId = createId("delegation");
+    const newerRunId = createId("run");
+    // Model a retained assignment from a parent that the connection no longer shares.
+    const latest = await storeFixture.database
+      .selectFrom("runs")
+      .select([
+        "accessMode",
+        "activationInputId",
+        "causalChainId",
+        "threadId",
+        "environmentId",
+        "harnessInstanceId",
+        "modelSelection",
+        "requestedBy",
+        "actorPrincipalId",
+        "authoritySource",
+        "runOrdinal",
+        "seedInputId",
+      ])
+      .where("id", "=", child.run.id)
+      .executeTakeFirstOrThrow();
+    await storeFixture.database
+      .insertInto("runs")
+      .values({
+        ...latest,
+        id: newerRunId,
+        runOrdinal: latest.runOrdinal + 1,
+        providerSessionId: null,
+        replyTarget: null,
+        status: "completed",
+        completedAt: new Date(),
+      })
+      .execute();
+    await storeFixture.database
+      .insertInto("delegations")
+      .values({
+        ...inaccessible,
+        id: newerId,
+        parentRunId: f.runId,
+        parentThreadId: f.threadId,
+        childRunId: newerRunId,
+        createdAt: new Date(inaccessible.createdAt.getTime() + 1_000),
+        resultText: "private return from another assignment",
+      })
+      .execute();
+    const settled = await waitForTask(child.thread.id);
+    expect(settled.structuredContent).toMatchObject({ status: "settled", task: identifiers });
+    expect(settled.structuredContent).not.toHaveProperty("task.pendingRequests");
+    expect(JSON.stringify(settled)).not.toMatch(new RegExp(`${newerId}|private return`, "u"));
   });
 
   it("task_read's recent places and a tab's users show only the lineage's tasks", async ({

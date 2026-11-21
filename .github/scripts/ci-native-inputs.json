@@ -378,6 +378,7 @@
     "apps/host/src/mcp/handlers/browser.ts",
     "apps/host/src/mcp/handlers/devices.ts",
     "apps/host/src/mcp/handlers/direct.ts",
+    "apps/host/src/mcp/handlers/discover.ts",
     "apps/host/src/mcp/handlers/index.ts",
     "apps/host/src/mcp/handlers/local-servers.ts",
     "apps/host/src/mcp/handlers/plugins.ts",

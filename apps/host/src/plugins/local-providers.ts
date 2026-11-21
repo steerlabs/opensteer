@@ -159,7 +159,7 @@ export class LocalProviders {
     if (blocked) return { kind: "blocked", blocked };
     if (!tool || !callable)
       throw failure(
-        `${provider.name} has no tool ${input.tool} now; use plugin_search for current tools.`,
+        `${provider.name} has no tool ${input.tool} now; use ${caller.kind === "connection" ? "discover" : "plugin_search"} for current tools.`,
       );
     if (!input.input || typeof input.input !== "object" || Array.isArray(input.input))
       throw failure(`${input.tool} takes an object of arguments.`);
@@ -308,6 +308,7 @@ export class LocalProviders {
     callables: Awaited<ReturnType<IntegrationPlatformStore["listCallableTools"]>>,
     readOnlyConnections: ReadonlyMap<string, boolean>,
     canAsk: boolean,
+    lookup: "discover" | "plugin_search",
   ): Located {
     if (provider.blocked) return provider;
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
@@ -362,7 +363,7 @@ export class LocalProviders {
         blocked ?? {
           code: "unavailable",
           message: `${provider.name} has no usable ${tool.name} operation.`,
-          next: "Use plugin_search for current tools; continue other work.",
+          next: `Use ${lookup} for current tools; continue other work.`,
         },
       ] as const;
     });
@@ -567,7 +568,14 @@ export class LocalProviders {
     const assessed = metadataOnly
       ? located
       : located.map((provider) =>
-          this.#withToolBlockers(provider, inventory, callables, readOnlyConnections, canAsk),
+          this.#withToolBlockers(
+            provider,
+            inventory,
+            callables,
+            readOnlyConnections,
+            canAsk,
+            caller.kind === "connection" ? "discover" : "plugin_search",
+          ),
         );
     const providers = assessed
       .sort((left, right) => left.id.localeCompare(right.id))

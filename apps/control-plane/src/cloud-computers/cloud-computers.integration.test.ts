@@ -44,6 +44,7 @@ import {
   CloudComputerIdentitySchema,
   cloudComputerBackupReportPath,
   cloudComputerBootPath,
+  cloudComputerCheckPath,
   cloudComputerEgressPath,
   cloudComputerBootCompletePath,
   cloudComputerLeasePath,
@@ -53,6 +54,7 @@ import {
   cloudComputerStripeWebhookPath,
   cloudComputersDesiredPath,
   ControlPlaneAccountIdSchema,
+  GoogleComputeServerRefSchema,
   ManagedHomeClaimClaimsSchema,
   ManagedHomeClaimReceiptDocumentSchema,
   ManagedHomeClaimReceiptSchema,
@@ -649,10 +651,12 @@ integration("Cloud Computer Account service", () => {
     return { account, order, id };
   }
 
-  async function getDesired(id: CloudComputerDesired["id"]) {
+  async function getDesired(id: CloudComputerDesired["id"], provider?: "google") {
     const response = await http({
       method: "GET",
-      url: cloudComputersDesiredPath,
+      url: provider
+        ? `${cloudComputersDesiredPath}?provider=${provider}`
+        : cloudComputersDesiredPath,
       headers: leaseHeaders(),
     });
     expect(response.statusCode, response.body).toBe(200);
@@ -3591,6 +3595,65 @@ integration("Cloud Computer Account service", () => {
     expect(two.computers).toHaveLength(1);
     expect(two.next).toBeUndefined();
     expect([one.computers[0]?.id, two.computers[0]?.id]).toEqual([first.id, second.id].sort());
+  });
+
+  it("round-trips a Google instance ID and keeps the original desired wire readable", async () => {
+    const { id } = await buy();
+    const computer = (await getDesired(id, "google"))!;
+    expect(computer.bootstrapReceiptRecorded).toBe(false);
+    const ref = GoogleComputeServerRefSchema.parse(
+      `os-${id.replace("_", "-")}-${computer.generation}/18446744073709551615`,
+    );
+    expect(
+      (
+        await report(computer, {
+          phase: "provisioning",
+          providerServerId: null,
+          providerServerRef: ref,
+          observedIdentity: null,
+        })
+      ).json(),
+    ).toEqual({ recorded: true });
+    expect(await getDesired(id, "google")).toMatchObject({ providerServerRef: ref });
+    expect(await getDesired(id)).not.toHaveProperty("providerServerRef");
+    const token = randomUUID();
+    const check = (payload: CloudComputerCheck) =>
+      http({
+        method: "POST",
+        url: cloudComputerCheckPath(id),
+        headers: leaseHeaders(),
+        payload,
+      });
+    expect(
+      (
+        await check({
+          operation: "begin-provider-write",
+          revision: computer.revision,
+          write: { kind: "power-on", token, generation: computer.generation, serverRef: ref },
+        })
+      ).json(),
+    ).toEqual({ allowed: true });
+    expect((await getDesired(id, "google"))?.pendingProviderWrites?.[0]?.serverRef).toBe(ref);
+    expect((await getDesired(id))?.pendingProviderWrites?.[0]).not.toHaveProperty("serverRef");
+    expect((await check({ operation: "finish-provider-write", token })).json()).toEqual({
+      allowed: true,
+    });
+    const booted = CloudComputerBootResponseSchema.parse((await boot(computer)).json());
+    expect((await complete(computer)).statusCode).toBe(200);
+    expect((await boot(computer)).statusCode).toBe(401);
+    expect((await complete(computer)).statusCode).toBe(200);
+    expect(
+      (
+        await report((await getDesired(id, "google"))!, {
+          providerServerId: null,
+          providerServerRef: ref,
+        })
+      ).json(),
+    ).toEqual({ recorded: true });
+    expect((await getDesired(id, "google"))?.bootstrapReceiptRecorded).toBe(false);
+    const home = fakeHome({ hostname: computer.hostname, boot: booted });
+    expect(await claimer(home.fetch).runOnce()).toBe(1);
+    expect((await getDesired(id, "google"))?.bootstrapReceiptRecorded).toBe(true);
   });
 
   async function bootReplacement(id: CloudComputerDesired["id"], first: CloudComputerDesired) {

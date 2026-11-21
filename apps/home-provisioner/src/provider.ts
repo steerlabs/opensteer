@@ -1,6 +1,7 @@
 import type {
   CloudComputerId,
   CloudComputerProviderWrite,
+  GoogleComputeServerRef,
 } from "@opensteer/control-plane-protocol";
 
 export interface Addresses {
@@ -8,11 +9,19 @@ export interface Addresses {
   readonly ipv6: string | null;
 }
 
-export interface VmServer extends Addresses {
-  readonly id: number;
+export type VmServerId = number | GoogleComputeServerRef;
+
+export interface VmAddress {
+  readonly id: CloudComputerId;
+  readonly generation: number;
+}
+
+export interface VmServer<Id extends VmServerId = VmServerId> extends Addresses {
+  readonly id: Id;
   readonly generation: number;
   readonly status: "running" | "off" | "transitioning" | "deleting";
   readonly firewalls: readonly { id: number; status: "applied" | "pending" }[];
+  readonly bootstrapMetadata?: "pending" | "enabled" | "absent";
 }
 
 export interface CreateVm {
@@ -23,9 +32,21 @@ export interface CreateVm {
   readonly image: string | number;
   readonly userData: string;
   readonly firewallId: number;
+  readonly requestId?: string;
+}
+
+export interface ExpectedVm {
+  generation: number;
+  providerServerId?: number | undefined;
+  previousProviderServerId?: number | undefined;
+  providerServerRef?: GoogleComputeServerRef | undefined;
+  previousProviderServerRef?: GoogleComputeServerRef | undefined;
+  pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
 }
 
 export interface VmProvider {
+  /** Called once at the start of every reconciler pass, before any other provider call. */
+  beginPass?(signal: AbortSignal): Promise<void>;
   ensureFirewall(signal: AbortSignal, check?: () => Promise<void>): Promise<number>;
   ensureFirewallAttached(
     server: VmServer,
@@ -36,23 +57,41 @@ export interface VmProvider {
   find(
     id: CloudComputerId,
     signal: AbortSignal,
-    expected?: {
-      generation: number;
-      providerServerId?: number | undefined;
-      previousProviderServerId?: number | undefined;
-      pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
-    },
+    expected?: ExpectedVm,
   ): Promise<readonly VmServer[]>;
   listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; server: VmServer }[]>;
   create(input: CreateVm, signal: AbortSignal, check?: () => Promise<void>): Promise<VmServer>;
+  /**
+   * Acquires what a new machine needs that the provider may refuse (a reserved address), before
+   * the reconciler stops the machine it replaces.
+   */
+  prepareCreate?(input: VmAddress, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
   describe(
-    id: number,
+    id: VmServerId,
     signal: AbortSignal,
     knownGeneration?: number,
   ): Promise<VmServer | undefined>;
-  powerOn(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
-  powerOff(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
-  delete(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  powerOn(
+    id: VmServerId,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+    requestId?: string,
+  ): Promise<void>;
+  powerOff(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  delete(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  listManagedAddresses?(signal: AbortSignal): Promise<readonly VmAddress[]>;
+  releaseAddress?(
+    address: VmAddress,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
+  canRecoverWrite?(write: CloudComputerProviderWrite, signal: AbortSignal): Promise<boolean>;
+  updateBootstrap?(
+    id: VmServerId,
+    receiptRecorded: boolean,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
 }
 
 export type PublishDnsWrite = (

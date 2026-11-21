@@ -177,7 +177,7 @@ export class HetznerCloud implements VmProvider {
   }
 
   async ensureFirewallAttached(
-    server: VmServer,
+    server: VmServer<number>,
     firewallId: number,
     signal: AbortSignal,
     check?: () => Promise<void>,
@@ -209,7 +209,7 @@ export class HetznerCloud implements VmProvider {
       previousProviderServerId?: number | undefined;
       pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
     },
-  ): Promise<readonly VmServer[]> {
+  ): Promise<readonly VmServer<number>[]> {
     const found = new Map(
       (await this.#find(id, signal))
         .filter((entry) => managedServer(entry)?.id === id)
@@ -282,7 +282,7 @@ export class HetznerCloud implements VmProvider {
     input: CreateVm,
     signal: AbortSignal,
     check?: () => Promise<void>,
-  ): Promise<VmServer> {
+  ): Promise<VmServer<number>> {
     const name = serverName(input.id, input.generation);
     let created: z.infer<typeof serverCreated>;
     try {
@@ -331,7 +331,7 @@ export class HetznerCloud implements VmProvider {
     id: number,
     signal: AbortSignal,
     knownGeneration?: number,
-  ): Promise<VmServer | undefined> {
+  ): Promise<VmServer<number> | undefined> {
     const entry = await this.#describe(id, signal);
     return entry ? server(entry, knownGeneration) : undefined;
   }
@@ -497,7 +497,7 @@ function managedServer(input: HetznerVm) {
     : undefined;
 }
 
-function server(input: HetznerVm, knownGeneration?: number): VmServer {
+function server(input: HetznerVm, knownGeneration?: number): VmServer<number> {
   const generation = managedServer(input)?.generation ?? knownGeneration;
   if (generation === undefined)
     throw refused("conflict", "A Hetzner server has an invalid Cloud Computer identity");

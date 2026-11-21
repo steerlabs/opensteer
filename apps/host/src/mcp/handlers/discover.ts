@@ -3,6 +3,7 @@ import { discover, type DiscoverItem } from "@opensteer/agent-tools/discover";
 import {
   browser_profile_list,
   computer_apps,
+  computer_list,
   opensteer_plugin_list,
   opensteer_task_list,
   opensteer_task_read,
@@ -19,6 +20,7 @@ import {
   TabIdSchema,
   ThreadIdSchema,
   type Tab,
+  type ToolFailureReceipt,
 } from "@opensteer/core";
 import { authorizeTarget, type OpensteerStore } from "@opensteer/database";
 import { z } from "zod";
@@ -26,7 +28,7 @@ import { AgentOperationFailure } from "../../agent-sessions/agent-session-servic
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
 import { localToolPath } from "../../plugins/provider-names.js";
 import type { TabService } from "../../tabs/tab-service.js";
-import type { ConnectionCaller } from "../agent-caller.js";
+import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
 import { productToolOutput } from "../tool-output.js";
 import type { AgentToolHandlers } from "./types.js";
 
@@ -38,6 +40,9 @@ type LookupCall<Input> = {
   readonly operationKey: string;
   readonly signal?: AbortSignal;
   readonly checkLive?: () => Promise<void>;
+  readonly liveCaller?: () => Promise<AgentCaller>;
+  readonly discoveryInput?: DiscoverInput;
+  readonly discoveryTab?: (tab: Tab) => boolean;
 };
 
 type Lookups = Pick<
@@ -45,6 +50,7 @@ type Lookups = Pick<
   | "browser_profile_list"
   | "tab_list"
   | "computer_apps"
+  | "computer_list"
   | "opensteer_plugin_list"
   | "plugin_search"
   | "plugin_describe"
@@ -78,7 +84,34 @@ const skillIndex = z.object({
   skills: z.array(z.object({ name: z.string(), version: z.string(), revision: z.string() })),
 });
 const skillDocument = z.object({ content: z.string(), files: z.array(z.string()) });
-const receipt = discover.output.pick({ taskId: true, operationId: true, status: true });
+const receipt = discover.output.pick({
+  taskId: true,
+  operationId: true,
+  status: true,
+  next: true,
+  requestId: true,
+  summary: true,
+  replayed: true,
+});
+type ReadReceipt = z.output<typeof receipt>;
+
+function readOutcome(read: ReadReceipt) {
+  if (read.replayed)
+    return {
+      ...read,
+      next:
+        read.next ?? "This is the stored receipt. Make a fresh discovery call for current items.",
+    };
+  return read.status && read.status !== "completed" ? read : undefined;
+}
+
+function recordedMissing(read: ReadReceipt) {
+  if (!read.operationId) return unavailable();
+  return {
+    ...read,
+    error: { code: "not_found" as const, message: "That item is unavailable.", next: null },
+  };
+}
 const inventoryPageSize = 50;
 
 function unavailable(): never {
@@ -186,6 +219,7 @@ function documentItem(parts: z.output<typeof documentAddress>): DiscoverItem {
     id,
     kind: "document",
     name: parts[4] ?? parts[1],
+    revision: parts[3],
     untrusted: true,
     use: itemUse("discover", "id", id),
   };
@@ -211,19 +245,75 @@ export function discoverHandler(
   },
 ) {
   return async (call: DiscoverCall): Promise<z.output<typeof discover.output>> => {
+    // A recorded read's receipt stays with whatever this call returns, a later refusal included.
+    let recorded: { taskId: string; operationId: string } | undefined;
+    const remember = (read: ReadReceipt) => {
+      if (read.taskId && read.operationId)
+        recorded = { taskId: read.taskId, operationId: read.operationId };
+      return read;
+    };
+    try {
+      return await discoverFor(call, remember);
+    } catch (error) {
+      if (!recorded || error instanceof AgentOperationFailure) throw error;
+      throw new AgentOperationFailure(error, recorded as ToolFailureReceipt);
+    }
+  };
+  async function discoverFor(
+    call: DiscoverCall,
+    remember: (read: ReadReceipt) => ReadReceipt,
+  ): Promise<z.output<typeof discover.output>> {
     const { id, query, cursor, taskId } = call.input;
     const target = id === undefined ? null : address(id);
-    const families = agentGrantToolFamilies(call.caller.grant);
+    // One live check per call; every lookup of this call uses the caller it returned.
+    let live: Promise<ConnectionCaller> | undefined;
+    const currentCaller = () =>
+      (live ??= (async () => {
+        if (!call.liveCaller) {
+          await call.checkLive?.();
+          return call.caller;
+        }
+        const caller = await call.liveCaller();
+        if (caller.kind !== "connection" || caller.connectionId !== call.caller.connectionId)
+          return unavailable();
+        return caller;
+      })());
+    const families = agentGrantToolFamilies((await currentCaller()).grant);
     const scope = createHash("sha256")
       .update(JSON.stringify([call.caller.connectionId, id, query]))
       .digest("base64url");
-    const decoded = cursor && cursorEnvelope.safeParse(decode(cursor));
-    if (decoded && (!decoded.success || decoded.data[0] !== scope))
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Use the cursor with the same discover arguments.",
-      });
-    const position = decoded && decoded.success ? decoded.data[1] : undefined;
+    function cursorPosition() {
+      if (cursor === undefined) return undefined;
+      const decoded = cursorEnvelope.safeParse(
+        cursor.length > 0 && cursor.length <= 4096 ? decode(cursor) : undefined,
+      );
+      if (!decoded.success || decoded.data[0] !== scope)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Use the cursor with the same discover arguments.",
+        });
+      return decoded.data[1];
+    }
+    function detailPosition() {
+      const position = cursorPosition();
+      return position === undefined ? undefined : detailCursor.parse(position).after;
+    }
+    function recordedCursorError(read: ReadReceipt) {
+      try {
+        detailPosition();
+        return undefined;
+      } catch (cause) {
+        if (!read.operationId) throw cause;
+        return {
+          ...read,
+          error: {
+            code: "bad_request" as const,
+            message: "Use the cursor with the same discover arguments.",
+            next: null,
+          },
+        };
+      }
+    }
     const next = (value: unknown) => encode([scope, value]);
     const matches = (name: string) => !query || name.toLowerCase().includes(query.toLowerCase());
 
@@ -232,14 +322,25 @@ export function discoverHandler(
       input: Input,
       output: z.ZodType<Output>,
       project = (value: unknown) => value,
-      key = call.operationKey,
+      discoveryTab?: (tab: Tab) => boolean,
     ): Promise<Output> {
       if (!handler) return unavailable();
       try {
-        await call.checkLive?.();
-        return output.parse(project(await handler({ ...call, input, operationKey: key })));
+        const caller = await currentCaller();
+        return output.parse(
+          project(
+            await handler({
+              ...call,
+              caller,
+              input,
+              discoveryInput: call.input,
+              ...(discoveryTab ? { discoveryTab } : {}),
+            }),
+          ),
+        );
       } catch (error) {
-        const cause = error instanceof AgentOperationFailure ? error.cause : error;
+        if (error instanceof AgentOperationFailure) throw error;
+        const cause = error;
         if (
           cause instanceof OpensteerError &&
           (cause.code === "not_found" ||
@@ -266,9 +367,9 @@ export function discoverHandler(
         }),
       );
     const cachedTabs = async () =>
-      (await sources.tabs.project({ kind: "connection", caller: call.caller })).tabs;
+      (await sources.tabs.project({ kind: "connection", caller: await currentCaller() })).tabs;
     const chromeSources = async () => {
-      const { userId, connectionId } = call.caller;
+      const { userId, connectionId } = await currentCaller();
       const execution = await sources.store.admitExecution({
         ownerUserId: userId,
         subject: { kind: "connection", agentConnectionId: connectionId },
@@ -297,7 +398,7 @@ export function discoverHandler(
       lookup(
         lookups.computer_apps,
         { ...computer_apps.input.parse(input), ...(taskId ? { taskId } : {}) },
-        computer_apps.output,
+        computer_apps.output.extend({ replayed: receipt.shape.replayed }),
       );
     const appItem = (
       computerId: string,
@@ -313,18 +414,47 @@ export function discoverHandler(
       untrusted: true,
       use: itemUse("computer_use", "app", app.bundleId, computerId),
     });
-    const phoneItem = (phone: {
+    let phoneDisplays: Promise<Map<string, NonNullable<DiscoverItem["phoneSetup"]>>> | undefined;
+    async function readPhoneDisplays() {
+      const displays = new Map<string, NonNullable<DiscoverItem["phoneSetup"]>>();
+      if (!lookups.computer_list) return displays;
+      let cursor: string | null = null;
+      do {
+        const page: z.output<typeof computer_list.output> = await lookup(
+          lookups.computer_list,
+          { cursor: cursor ?? undefined },
+          computer_list.output,
+        );
+        for (const row of page.computers)
+          if (row.phoneDisplay) displays.set(row.computerId, row.phoneDisplay.setup);
+        cursor = page.nextCursor;
+      } while (cursor);
+      return displays;
+    }
+    const phoneItem = async (phone: {
       computerId: string;
       name: string;
+      definitionId: string;
       access?: "read" | "read-write" | undefined;
-    }): DiscoverItem => ({
-      id: phone.computerId,
-      kind: "phone",
-      name: phone.name,
-      reachable: phone.access !== undefined,
-      use: itemUse("computer_use", "computerId", phone.computerId),
-    });
+      blocked?: DiscoverItem["blocked"];
+    }): Promise<DiscoverItem> => {
+      const phoneSetup =
+        phone.definitionId === "iphone-screen"
+          ? (await (phoneDisplays ??= readPhoneDisplays())).get(phone.computerId)
+          : undefined;
+      return {
+        id: phone.computerId,
+        kind: "phone",
+        ...(phoneSetup ? { phoneSetup } : {}),
+        name: phone.name,
+        reachable: phone.access !== undefined && !phone.blocked,
+        ...(phone.access ? { access: phone.access === "read" ? "read-only" : "read-write" } : {}),
+        ...(phone.blocked ? { blocked: phone.blocked } : {}),
+        use: itemUse("computer_use", "computerId", phone.computerId),
+      };
+    };
     const pluginPage = async (after?: string) => {
+      if (!lookups.opensteer_plugin_list) return { items: [], cursor: null };
       const result = await lookup(
         lookups.opensteer_plugin_list,
         { cursor: after },
@@ -377,6 +507,7 @@ export function discoverHandler(
     });
 
     if (!target) {
+      const position = cursorPosition();
       const index =
         position === undefined
           ? { inventory: 0, plugins: "", tasks: "" }
@@ -401,7 +532,7 @@ export function discoverHandler(
         ...(devices?.computers ?? []).flatMap((computer) =>
           computer.apps.map((app) => appItem(computer.computerId, computer.name, app)),
         ),
-        ...(devices?.phones ?? []).map(phoneItem),
+        ...(await Promise.all((devices?.phones ?? []).map(phoneItem))),
       ].filter((entry) => matches(entry.name));
       const start = index.inventory ?? 0;
       const end = start + inventoryPageSize;
@@ -420,7 +551,6 @@ export function discoverHandler(
       };
     }
 
-    const after = position === undefined ? undefined : detailCursor.parse(position).after;
     if (
       target.kind === "browser-profile" ||
       target.kind === "chrome-tabs" ||
@@ -436,42 +566,30 @@ export function discoverHandler(
             ? (await chromeSources()).find((entry) => entry.id === target.id)
             : (await cachedTabs()).filter((tab) => tab.tabId === target.id).map(tabItem)[0];
       if (!item) return unavailable();
-      let tabCursor = after;
-      let session = taskId;
-      for (;;) {
-        const page = await lookup(
-          lookups.tab_list,
-          tab_list.input.parse({
-            ...(target.kind === "tab" ? {} : { kind: "page", query }),
-            cursor: tabCursor,
-            taskId: session,
-          }),
-          tab_list.output,
-          undefined,
-          tabCursor === after
-            ? call.operationKey
-            : call.operationKey +
-                ":" +
-                createHash("sha256")
-                  .update(tabCursor ?? "")
-                  .digest("base64url"),
-        );
-        const read = receipt.parse(page);
-        session = read.taskId;
-        if (read.status && read.status !== "completed") return { ...details([]), ...read };
-        const found =
-          page.tabs?.filter((tab) => {
-            if (target.kind === "tab") return tab.tabId === target.id;
-            if (target.kind === "chrome-tabs") return tab.sharedByPerson?.sourceId === target.id;
-            return tab.profile?.profileId === target.id;
-          }) ?? [];
-        if (target.kind === "tab" && found[0])
-          return { ...details([], null, tabItem(found[0])), ...read };
-        if (target.kind !== "tab" && (found.length || !page.nextCursor))
-          return { ...details(found.map(tabItem), page.nextCursor ?? null, item), ...read };
-        if (!page.nextCursor) return unavailable();
-        tabCursor = page.nextCursor;
-      }
+      const page = await lookup(
+        lookups.tab_list,
+        tab_list.input.parse({
+          ...(target.kind === "tab" ? {} : { kind: "page", query }),
+          cursor: detailPosition(),
+          taskId,
+        }),
+        tab_list.output.extend({ replayed: receipt.shape.replayed }),
+        undefined,
+        (tab) => {
+          if (target.kind === "tab") return tab.tabId === target.id;
+          if (target.kind === "chrome-tabs") return tab.sharedByPerson?.sourceId === target.id;
+          return tab.profile?.profileId === target.id;
+        },
+      );
+      const read = remember(receipt.parse(page));
+      const outcome = readOutcome(read);
+      if (outcome) return outcome;
+      const found = page.tabs ?? [];
+      if (target.kind === "tab")
+        return found[0]
+          ? { ...details([], null, tabItem(found[0])), ...read }
+          : recordedMissing(read);
+      return { ...details(found.map(tabItem), page.nextCursor ?? null, item), ...read };
     }
 
     if (target.kind === "device" || target.kind === "app" || target.kind === "phone-app") {
@@ -499,12 +617,14 @@ export function discoverHandler(
         if (!phone) return unavailable();
         const [, appId, search, offset] = target.parts;
         const page = await computers({ computerId: deviceId, query: search, cursor: offset });
+        const read = remember(receipt.parse(page));
+        const outcome = readOutcome(read);
+        if (outcome) return outcome;
         const app = page.apps?.find((entry) => entry.appId === appId);
-        if (!app) return unavailable();
-        return {
-          ...details([], null, phoneApp(app.appId, app.label, search, offset)),
-          ...receipt.parse(page),
-        };
+        if (!app) return recordedMissing(read);
+        const cursorError = recordedCursorError(read);
+        if (cursorError) return cursorError;
+        return { ...details([], null, phoneApp(app.appId, app.label, search, offset)), ...read };
       }
       if (target.kind === "app") {
         if (!machine) return unavailable();
@@ -512,9 +632,15 @@ export function discoverHandler(
         const page = cached
           ? undefined
           : await computers({ computerId: deviceId, query: target.bundleId.slice(0, 240) });
+        const read = page && remember(receipt.parse(page));
+        const outcome = read && readOutcome(read);
+        if (outcome) return outcome;
         const app =
           cached ?? page?.computer?.apps.find((entry) => entry.bundleId === target.bundleId);
-        if (!app) return unavailable();
+        if (!app) return read ? recordedMissing(read) : unavailable();
+        const cursorError = read && recordedCursorError(read);
+        if (cursorError) return cursorError;
+        const after = detailPosition();
         const item = appItem(deviceId, machine.name, app);
         const windows = (await cachedTabs()).filter(
           (tab) =>
@@ -534,36 +660,52 @@ export function discoverHandler(
           ...(page ? receipt.parse(page) : {}),
         };
       }
-      const page = await computers({
-        computerId: deviceId,
-        ...(query ? { query } : {}),
-        ...(after ? { cursor: after } : {}),
-      });
+      const after = detailPosition();
       const item: DiscoverItem = phone
-        ? phoneItem(phone)
+        ? await phoneItem(phone)
         : {
             id: deviceId,
             kind: "device",
             name: machine!.name,
             use: itemUse("discover", "id", deviceId),
           };
-      const apps = phone
-        ? (page.apps ?? []).map((app) => phoneApp(app.appId, app.label, query ?? "", after ?? "0"))
-        : (page.computer?.apps ?? []).map((entry) => appItem(deviceId, machine!.name, entry));
       const windows =
-        machine && !after
+        machine && !after?.startsWith("apps:")
           ? (await cachedTabs()).filter(
               (tab) =>
                 tab.kind === "window" && tab.computer.computerId === deviceId && matches(tab.title),
             )
           : [];
+      const start = machine && after?.startsWith("windows:") ? Number(after.slice(8)) : 0;
+      const windowPage = windows.slice(start, start + inventoryPageSize);
+      const end = start + windowPage.length;
+      if (windowPage.length === inventoryPageSize)
+        return details(
+          windowPage.map(tabItem),
+          end < windows.length ? `windows:${end}` : "apps:0",
+          item,
+        );
+
+      const offset = machine ? (after?.startsWith("apps:") ? after.slice(5) : undefined) : after;
+      const page = await computers({
+        computerId: deviceId,
+        ...(query ? { query } : {}),
+        ...(offset ? { cursor: offset } : {}),
+        ...(machine && windowPage.length ? { limit: inventoryPageSize - windowPage.length } : {}),
+      });
+      const read = remember(receipt.parse(page));
+      const outcome = readOutcome(read);
+      if (outcome) return outcome;
+      const apps = phone
+        ? (page.apps ?? []).map((app) => phoneApp(app.appId, app.label, query ?? "", offset ?? "0"))
+        : (page.computer?.apps ?? []).map((entry) => appItem(deviceId, machine!.name, entry));
       return {
         ...details(
-          [...apps, ...windows.slice(0, inventoryPageSize).map(tabItem)],
-          page.nextCursor ?? null,
+          [...windowPage.map(tabItem), ...apps],
+          page.nextCursor ? (machine ? `apps:${page.nextCursor}` : page.nextCursor) : null,
           item,
         ),
-        ...receipt.parse(page),
+        ...read,
       };
     }
 
@@ -575,7 +717,7 @@ export function discoverHandler(
         z.object({ task: z.object({ title: z.string().nullable(), status: z.string() }) }),
         productToolOutput,
       );
-      const page = await taskPage(after, target.id);
+      const page = await taskPage(detailPosition(), target.id);
       return details(
         page.items,
         page.cursor,
@@ -591,7 +733,8 @@ export function discoverHandler(
         plugin_describe.output,
       );
       const tool = found.items.find((entry) => entry.path === target.id);
-      if (!tool) return unavailable();
+      if (!tool || tool.blocked) return unavailable();
+      detailPosition();
       return details([], null, {
         ...toolItem(tool.path, tool.description),
         ...(tool.signature ? { signature: tool.signature } : {}),
@@ -621,6 +764,7 @@ export function discoverHandler(
             skillDocument,
           )
         : document;
+      detailPosition();
       const references = file
         ? []
         : document.files
@@ -630,6 +774,7 @@ export function discoverHandler(
     }
 
     const item = await findPlugin(target.id);
+    const after = detailPosition();
     const result = await lookup(
       lookups.plugin_search,
       {
@@ -640,9 +785,10 @@ export function discoverHandler(
       },
       plugin_search.output,
     );
-    const tools = result.items.map(({ path, description, input }): DiscoverItem => ({
+    const tools = result.items.map(({ path, description, input, blocked }): DiscoverItem => ({
       ...toolItem(path, description),
       ...(input ? { input } : {}),
+      ...(blocked ? { blocked, use: itemUse("discover", "id", target.id) } : {}),
     }));
     const documents =
       after || target.slug.startsWith("local-")
@@ -657,5 +803,5 @@ export function discoverHandler(
       result.next?.offset === undefined ? null : String(result.next.offset),
       item,
     );
-  };
+  }
 }

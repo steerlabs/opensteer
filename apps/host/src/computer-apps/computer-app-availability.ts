@@ -6,6 +6,8 @@ export function phoneDeviceUnavailableDetail(phone: {
   readonly definitionId?: PhoneDisplayDefinitionId | undefined;
   readonly availability?: DeviceAvailability | undefined;
   readonly connectedMacName?: string | undefined;
+  /** A connected agent reads this, not one of the person's own agents. */
+  readonly connection?: boolean | undefined;
 }): string | null {
   const reason = phone.availability?.reason?.kind;
   const mac = phone.connectedMacName;
@@ -25,7 +27,9 @@ export function phoneDeviceUnavailableDetail(phone: {
     case "driver-stopped":
       return `Agents are stopped on ${subject}. Wait until the person resumes them or continue other work.`;
     case "access-off":
-      return `Apps access is off on ${phone.name}. Use computer_access_request if needed.`;
+      return phone.connection
+        ? `Apps access is off on ${phone.name}. The person can turn it on in Opensteer.`
+        : `Apps access is off on ${phone.name}. Use computer_access_request if needed.`;
     case "trust-required":
     case "developer-mode-required":
     case "setup-required":
@@ -114,6 +118,7 @@ export function phoneAvailabilityDetail(input: {
   readonly phone: string;
   readonly runnerConnected: boolean;
   readonly status: MachineAppOperationStatus | readonly MachineAppOperationStatus[] | null;
+  readonly connection?: boolean | undefined;
 }): string | null {
   const unavailable = phoneDeviceUnavailableDetail({ ...input, name: input.phone });
   if (unavailable) return unavailable;

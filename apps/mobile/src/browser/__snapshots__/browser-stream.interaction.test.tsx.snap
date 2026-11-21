@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`a browser without a pool > draws its page and its last picture exactly as before 1`] = `
+{
+  "live": "<div><div><img alt="A page, example.com" src="data:image/jpeg;base64,/9j/"></div><div></div></div>",
+  "stale": "<div><div><img alt="A page, example.com" src="data:image/jpeg;base64,/9j/"></div><div></div><div><span>Last picture</span></div></div>",
+}
+`;

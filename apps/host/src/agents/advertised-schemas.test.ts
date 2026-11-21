@@ -1,5 +1,6 @@
 import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import { agentTools, connectionToolSchema } from "@opensteer/agent-tools";
+import { agentTools, connectionToolSchema, isRemovedConnectionTool } from "@opensteer/agent-tools";
+import { discover } from "@opensteer/agent-tools/discover";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { expect, it } from "vitest";
 import type { z } from "zod";
@@ -13,10 +14,10 @@ it.each(["run", "program", "connection"] as const)(
       name: string;
       inputSchema: Record<string, unknown>;
     }[];
-    const specs = agentTools.filter(
+    const specs = (kind === "connection" ? [...agentTools, discover] : agentTools).filter(
       (t) =>
         t.callers.some((c) => c === kind) &&
-        !(kind === "connection" && (t.name === "tab_open" || t.name === "tab_close")) &&
+        !(kind === "connection" && isRemovedConnectionTool(t.name)) &&
         ![
           "opensteer_team_file_download",
           "opensteer_team_read",

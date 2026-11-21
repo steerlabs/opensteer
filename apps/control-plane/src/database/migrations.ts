@@ -8,6 +8,7 @@ import { Migrator, type Migration, type MigrationResultSet } from "kysely/migrat
 import {
   cloudComputerBackupReportMigration,
   cloudComputerClaimMigration,
+  cloudComputerGoogleServerRefMigration,
   cloudComputersMigration,
 } from "../cloud-computers/migration.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
@@ -525,6 +526,7 @@ const migrationProvider = {
       "0031_cloud_computer_view": cloudComputerViewMigration,
       "0032_agent_directory": agentDirectoryMigration,
       "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
+      "0034_cloud_computer_google_server_ref": cloudComputerGoogleServerRefMigration,
     };
   },
 };

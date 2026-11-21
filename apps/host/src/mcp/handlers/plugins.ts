@@ -178,6 +178,7 @@ export class PluginToolHandlers {
                     requirements: plugin.requirements.accounts,
                     readiness: detail.readiness,
                     canRequestAccount: c.caller.kind === "run",
+                    connection: c.caller.kind === "connection",
                   })
                 : undefined;
             return {
@@ -233,6 +234,7 @@ export class PluginToolHandlers {
             name: entry.name,
             reason: entry.reason,
             canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+            connection: this.options.authority.caller(context.caller)?.kind === "connection",
             requirements: detail?.plugin.requirements.accounts ?? {},
             readiness: detail?.readiness ?? {},
           }),
@@ -303,7 +305,7 @@ export class PluginToolHandlers {
       if (!namespace)
         throw new OpensteerError({
           code: "bad_request",
-          message: "Supply the one plugin namespace from plugin_search.",
+          message: "Supply the one plugin namespace from discover.",
         });
       const matches = (await providers()).filter((item) => localToolPath(item.slug) === namespace);
       const provider = matches[0];

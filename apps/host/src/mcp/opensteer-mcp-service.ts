@@ -1,3 +1,4 @@
+import { discover } from "@opensteer/agent-tools/discover";
 import { presentPluginToolResult } from "../plugins/local-tool-results.js";
 import { productToolOutput } from "./tool-output.js";
 import { ComputerUseOutputSchema } from "@opensteer/agent-tools/outputs";
@@ -18,13 +19,14 @@ import {
   agentToolAnnotations,
   connectionInstructionsFor,
   connectionDirectTools,
-  computerAppsConnectionInput,
+  connectionTaskCreateInput,
   connectionTaskKind,
   connectionToolDescription,
   connectionToolSchema,
   pluginResumeConnectionOutput,
   agentToolFailureResult,
   agentToolRecordResult,
+  withoutUnofferedGuidance,
   requestToolNames,
   type AgentTool,
 } from "@opensteer/agent-tools";
@@ -72,10 +74,31 @@ import { failedScriptOutput } from "./handlers/direct.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 
+/**
+ * The tool a name resolves to for this caller. `discover` exists only for a connected agent;
+ * anyone else reads it exactly like a name that never existed.
+ */
+function toolNamed(name: string, caller?: AgentCaller): AgentTool | undefined {
+  if (name === "discover") return caller?.kind === "connection" ? discover : undefined;
+  return agentTools.find((spec) => spec.name === name);
+}
+/**
+ * A connected agent learns of a task's pending Requests only from `pendingRequest`, which the
+ * origin predicate chose; a task's count of them is never part of what it is told.
+ */
+function withoutRequestCounts(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutRequestCounts);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== "pendingRequests")
+      .map(([key, entry]) => [key, withoutRequestCounts(entry)]),
+  );
+}
 const requestTools = new Set<string>(requestToolNames);
 function parseToolInput(tool: AgentTool, caller: AgentCaller, value: unknown) {
-  return tool.name === "computer_apps" && caller.kind === "connection"
-    ? computerAppsConnectionInput.parse(value)
+  return caller.kind === "connection" && tool.name === "opensteer_task_create"
+    ? connectionTaskCreateInput.parse(value)
     : tool.input.parse(value);
 }
 
@@ -499,9 +522,10 @@ export class OpensteerMcpService {
     }));
     return server;
   }
+  /** The Run relay's input check; it has no connected caller, so `discover` is unknown here. */
   validateToolInput(name: string, value: unknown): unknown {
-    const tool = agentTools.find((spec) => spec.name === name);
-    if (!tool) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    const tool = toolNamed(name);
+    if (!tool) throw unknownTool();
     return tool.input.parse(value);
   }
 
@@ -516,7 +540,7 @@ export class OpensteerMcpService {
       readonly longRequestHold?: boolean;
     },
   ) {
-    const tool = agentTools.find((spec) => spec.name === name);
+    let tool = toolNamed(name);
     const present =
       name === "plugin_call" || name === "plugin_resume"
         ? presentPluginToolResult
@@ -529,6 +553,7 @@ export class OpensteerMcpService {
       if (!token) throw new Error("MCP authorization is missing");
       const currentCaller = identity.caller ?? (await this.options.callers.authenticate(token));
       failureCaller = currentCaller;
+      tool = toolNamed(name, currentCaller);
       const pluginHold =
         currentCaller.kind === "run" &&
         ["plugin_call", "plugin_execute", "plugin_resume"].includes(name) &&
@@ -547,7 +572,7 @@ export class OpensteerMcpService {
               steersAtAdmission: await this.options.requestHold.admit(currentCaller),
             }
           : null;
-      const result = await abortableToolResult(
+      const answered = await abortableToolResult(
         this.callTool(token, name, args, {
           caller: currentCaller,
           operationKey: identity.operationKey,
@@ -555,6 +580,14 @@ export class OpensteerMcpService {
         }),
         signal,
       );
+      // What Opensteer wrote for its own agents never names a tool this connection lacks.
+      const result =
+        currentCaller.kind === "connection" && typeof answered !== "string"
+          ? withoutUnofferedGuidance(
+              answered,
+              new Set((await this.#toolsFor(currentCaller)).map(({ name }) => name)),
+            )
+          : answered;
       // A text result is the whole answer, sent once as written.
       // Each result goes out once, in the shape a model reads best: text as
       // written, a provider's content (text, images, its error) as it came,
@@ -613,9 +646,15 @@ export class OpensteerMcpService {
         });
         if (held) return present(held.record);
       }
-      return present(result);
+      const presented = present(result);
+      return name === "discover" && "error" in result
+        ? { ...presented, isError: true as const }
+        : presented;
     } catch (error) {
-      const parsed = tool?.input.safeParse(args);
+      const parsed =
+        error instanceof OpensteerError && error.message === unknownToolMessage
+          ? undefined
+          : tool?.input.safeParse(args);
       const access =
         parsed?.success && tool && "readsOnly" in tool && tool.readsOnly?.(parsed.data as never)
           ? "read"
@@ -655,10 +694,12 @@ export class OpensteerMcpService {
       readonly caller?: AgentCaller;
     },
   ): Promise<Record<string, unknown> | string> {
-    const found = agentTools.find((spec) => spec.name === name);
-    if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
-    const tool = found;
+    if (!toolNamed(name) && name !== "discover") throw unknownTool();
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    const found = toolNamed(name, caller);
+    if (!found) throw unknownTool();
+    const tool = found;
+    if (caller.kind === "connection") await this.assertToolOffered(caller, name);
     const input = parseToolInput(tool, caller, value);
     if (!this.options.handlers[tool.name])
       throw new OpensteerError({
@@ -806,12 +847,17 @@ export class OpensteerMcpService {
       });
     };
     const invoke = async () => {
+      const liveCaller = async () => {
+        identity.signal?.throwIfAborted();
+        caller = await this.options.callers.authenticate(bearer);
+        await check();
+        return caller;
+      };
       const call: ToolCall<typeof tool.name> = {
         checkLive: async () => {
-          identity.signal?.throwIfAborted();
-          caller = await this.options.callers.authenticate(bearer);
-          await check();
+          await liveCaller();
         },
+        ...(tool.name === "discover" ? { liveCaller } : {}),
         caller,
         input,
         operationKey: key,
@@ -843,7 +889,11 @@ export class OpensteerMcpService {
             ...new Set(output.error.issues.map(({ path }) => path.join(".") || "(result)")),
           ].join(", ")}`,
         );
-      return output.data as Record<string, unknown> | string;
+      return (
+        caller.kind === "connection" && name.startsWith("opensteer_task_")
+          ? withoutRequestCounts(output.data)
+          : output.data
+      ) as Record<string, unknown> | string;
     };
     const perform = async () => {
       await check();
@@ -861,14 +911,12 @@ export class OpensteerMcpService {
    * authority now.
    */
   async authorizeReplay(caller: AgentCaller, name: string, value: unknown): Promise<void> {
-    const found = agentTools.find((spec) => spec.name === name);
-    if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    const found = toolNamed(name, caller);
+    if (!found) throw unknownTool();
     const tool = found;
+    if (caller.kind === "connection") await this.assertToolOffered(caller, name);
     const input = parseToolInput(tool, caller, value);
-    if (caller.kind === "connection") {
-      await this.assertToolOffered(caller, name);
-      await this.#assertConnectionTaskKind(caller, name, input);
-    }
+    if (caller.kind === "connection") await this.#assertConnectionTaskKind(caller, name, input);
     const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
     const targets = await this.#targets(caller, tool, input);
     const queue =
@@ -887,10 +935,9 @@ export class OpensteerMcpService {
     });
   }
   async assertToolOffered(caller: AgentCaller, name: string): Promise<void> {
-    if (!agentTools.some((spec) => spec.name === name))
-      throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
+    if (!toolNamed(name, caller)) throw unknownTool();
     if (!(await this.#toolsFor(caller)).some((spec) => spec.name === name))
-      throw unavailableTool(caller, name);
+      throw caller.kind === "connection" ? unknownTool() : unavailableTool(caller, name);
   }
   async #toolsFor(caller: AgentCaller) {
     const offered = toolsFor({
@@ -1042,7 +1089,14 @@ export class OpensteerMcpService {
   }
 }
 
+const unknownToolMessage = "Unknown Opensteer tool";
+
+function unknownTool() {
+  return new OpensteerError({ code: "not_found", message: unknownToolMessage });
+}
+
 function connectionNotFoundMessage(tool: string, message: string): string {
+  if (message === unknownToolMessage) return "That item is unavailable.";
   if (message === "Operation is unavailable.") return message;
   if (tool.startsWith("opensteer_automation_")) return "Automation not found";
   if (/^opensteer_(task|subagent|delegation)_/u.test(tool)) return "Task is unavailable";

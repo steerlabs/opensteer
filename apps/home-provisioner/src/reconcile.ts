@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { ProviderWriteRejected } from "./http.js";
+import {
+  BootstrapScrubFailure,
+  ProviderOutcomeUnknown,
+  ProviderRateLimited,
+  ProviderWriteRejected,
+} from "./http.js";
 import { refused } from "@opensteer/core";
 import type {
   CloudComputerCheck,
@@ -11,7 +16,7 @@ import type {
 import { accountRefused, type AccountApi } from "./account.js";
 import { renderUserData } from "./boot.js";
 import type { DiscoverHome } from "./discovery.js";
-import type { DnsProvider, VmProvider, VmServer } from "./provider.js";
+import type { DnsProvider, VmProvider, VmServer, VmServerId } from "./provider.js";
 
 type Failure = NonNullable<CloudComputerReport["lastError"]>;
 class Superseded extends Error {}
@@ -49,6 +54,7 @@ export class Reconciler {
     const abort = new AbortController();
     const signal = AbortSignal.any([shutdown, abort.signal]);
     await account.acquire(signal);
+    await provider.beginPass?.(signal);
     const desired = await account.desired(signal);
     const ids = new Set(desired.map(({ id }) => id));
     for (const id of this.#reports.keys()) if (!ids.has(id)) this.#reports.delete(id);
@@ -75,6 +81,11 @@ export class Reconciler {
             if (await account.report(report, signal)) this.#reports.set(computer.id, key);
           } catch (error) {
             if (error instanceof Superseded) continue;
+            if (error instanceof ProviderRateLimited) {
+              // Later, not failed: end the pass without reporting the computers it did not reach.
+              abort.abort(error);
+              return;
+            }
             if (accountRefused(error)) abort.abort(error);
             this.#options.onError?.(error);
             failed = true;
@@ -99,9 +110,10 @@ export class Reconciler {
 
   async #sweep(active: ReadonlySet<CloudComputerId>, signal: AbortSignal) {
     const { provider, dns, orphanGraceMs = 5 * 60_000 } = this.#options;
-    const [servers, records] = await Promise.all([
+    const [servers, records, addresses] = await Promise.all([
       provider.listManaged(signal),
       dns.listManaged(signal),
+      provider.listManagedAddresses?.(signal) ?? [],
     ]);
     const present = new Set<string>();
     const clean = async (
@@ -120,6 +132,8 @@ export class Reconciler {
         await action(job);
       } catch (error) {
         if (accountRefused(error)) throw error;
+        const limited = rateLimited(error);
+        if (limited) throw limited;
         if (!(error instanceof Superseded)) this.#options.onError?.(error);
       }
     };
@@ -132,6 +146,14 @@ export class Reconciler {
         await clean(`vm:${server.id}`, id, (job) =>
           provider.delete(server.id, job, () => this.#check(id, { operation: "orphan" }, job)),
         );
+    }
+    for (const address of addresses) {
+      const { id, generation } = address;
+      await clean(`address:${id}/${generation}`, id, async (job) => {
+        await provider.releaseAddress?.(address, job, () =>
+          this.#check(id, { operation: "orphan" }, job),
+        );
+      });
     }
     for (const key of this.#orphanSeen.keys()) if (!present.has(key)) this.#orphanSeen.delete(key);
   }
@@ -153,7 +175,10 @@ export class Reconciler {
       revision,
       phase,
       lastError,
-      providerServerId: phase === "deleted" ? null : (current?.id ?? null),
+      providerServerId: phase !== "deleted" && typeof current?.id === "number" ? current.id : null,
+      ...(phase !== "deleted" && typeof current?.id === "string"
+        ? { providerServerRef: current.id }
+        : {}),
       ipv4: phase === "deleted" ? null : (current?.ipv4 ?? null),
       ipv6: phase === "deleted" || !computer.ipv6Enabled ? null : (current?.ipv6 ?? null),
       observedIdentity: phase === "deleted" ? null : (computer.observedIdentity ?? null),
@@ -172,6 +197,12 @@ export class Reconciler {
     };
     const recover = async (write: CloudComputerProviderWrite) => {
       if (!write.recoverAfter || Date.parse(write.recoverAfter) > this.#now()) return;
+      if (
+        (write.kind === "create" || write.kind === "power-on") &&
+        provider.canRecoverWrite &&
+        !(await provider.canRecoverWrite(write, signal))
+      )
+        return;
       await this.#check(
         id,
         {
@@ -189,10 +220,16 @@ export class Reconciler {
     const journal = async <T>(
       kind: CloudComputerProviderWrite["kind"],
       action: (token: string, send: (job: AbortSignal) => Promise<void>) => Promise<T>,
-      serverId?: number,
+      serverId?: VmServerId,
     ): Promise<T> => {
       const token = randomUUID();
-      const write = { kind, token, generation, ...(serverId === undefined ? {} : { serverId }) };
+      const write = {
+        kind,
+        token,
+        generation,
+        ...(typeof serverId === "number" ? { serverId } : {}),
+        ...(typeof serverId === "string" ? { serverRef: serverId } : {}),
+      };
       await this.#check(id, { operation: "begin-provider-write", revision, write }, signal);
       pending.set(token, write);
       let result: T;
@@ -222,6 +259,42 @@ export class Reconciler {
       return action(job, check);
     };
     const withdraw = () => act((job, check) => dns.removeRecords(hostname, job, check, observe));
+    const releaseAddresses = async (beforeGeneration?: number) => {
+      if (!provider.listManagedAddresses || !provider.releaseAddress) return true;
+      let settled = true;
+      for (const address of await provider.listManagedAddresses(signal)) {
+        if (
+          address.id !== id ||
+          (beforeGeneration !== undefined && address.generation >= beforeGeneration)
+        )
+          continue;
+        if (!(await act((job, check) => provider.releaseAddress!(address, job, check))))
+          settled = false;
+      }
+      return settled;
+    };
+    const receiptRecorded = computer.bootstrapReceiptRecorded === true;
+    const scrubBootstrap = async (server: VmServer | undefined) => {
+      if (
+        !receiptRecorded ||
+        !server ||
+        server.bootstrapMetadata === "absent" ||
+        !provider.updateBootstrap
+      )
+        return;
+      try {
+        if (!(await act((job, check) => provider.updateBootstrap!(server.id, true, job, check))))
+          throw new BootstrapScrubFailure();
+      } catch (error) {
+        // Only the scrub's own failure is deferred; a stale lease or a refused Account is not.
+        if (error instanceof Superseded || accountRefused(error)) throw error;
+        const limited = rateLimited(error);
+        if (limited) throw limited;
+        this.#options.onError?.(
+          error instanceof BootstrapScrubFailure ? error : new BootstrapScrubFailure(error),
+        );
+      }
+    };
     let failure: Failure = "The Cloud Computer provider operation failed.";
 
     try {
@@ -236,9 +309,18 @@ export class Reconciler {
       for (const write of pending.values()) {
         if (
           (write.kind === "create" &&
-            servers.some((server) => server.generation === write.generation)) ||
+            servers.some(
+              (server) =>
+                server.generation === write.generation &&
+                (!provider.canRecoverWrite ||
+                  server.status === "running" ||
+                  server.status === "off"),
+            )) ||
           (write.kind === "power-on" &&
-            servers.some((server) => server.id === write.serverId && server.status === "running"))
+            servers.some(
+              (server) =>
+                server.id === (write.serverRef ?? write.serverId) && server.status === "running",
+            ))
         ) {
           await finish(write.token);
         }
@@ -248,6 +330,18 @@ export class Reconciler {
         const power = (async () => {
           let settled = true;
           for (const server of servers) {
+            if (
+              provider.canRecoverWrite &&
+              server.status === "transitioning" &&
+              [...pending.values()].some(
+                (write) =>
+                  (write.kind === "create" && write.generation === server.generation) ||
+                  (write.kind === "power-on" && write.serverRef === server.id),
+              )
+            ) {
+              settled = false;
+              continue;
+            }
             if (state === "suspended" && server.status === "off") continue;
             if (server.status !== "deleting") {
               if (state === "deleted")
@@ -276,8 +370,10 @@ export class Reconciler {
         if (vmResult.value) {
           for (const write of pending.values()) await recover(write);
         }
-        const settled = vmResult.value && !pending.size;
+        let settled = vmResult.value && !pending.size;
+        if (settled && state === "deleted") settled = await releaseAddresses();
         if (state === "deleted") return report(settled ? "deleted" : "deleting");
+        await scrubBootstrap(current);
         return report(settled ? "suspended" : "provisioning");
       }
 
@@ -301,6 +397,10 @@ export class Reconciler {
       if (current?.status === "deleting") return unready("provisioning");
       if (!current && !computer.bootstrapToken)
         return report("failed", "A bootstrap token is required to create this Cloud Computer.");
+      if (!current && computer.bootstrapToken && provider.prepareCreate) {
+        // Before anything happens to the machine being replaced.
+        await act((job, check) => provider.prepareCreate!({ id, generation }, job, check), true);
+      }
       if (previous.some((server) => server.status !== "off")) {
         for (const old of previous) {
           if (old.status === "deleting") return unready("provisioning");
@@ -316,17 +416,20 @@ export class Reconciler {
 
       const firewallId = await act((job, check) => ensureFirewall(job, check));
       if (!current && computer.bootstrapToken) {
-        const userData = renderUserData({
-          cloudComputerId: id,
-          hostname,
-          accountOrigin: this.#options.accountOrigin.origin,
-          installerUrl: computer.release.installerUrl,
-          installerSha256: computer.release.installerSha256,
-          bootstrapToken: computer.bootstrapToken,
-        });
+        const userData = renderUserData(
+          {
+            cloudComputerId: id,
+            hostname,
+            accountOrigin: this.#options.accountOrigin.origin,
+            installerUrl: computer.release.installerUrl,
+            installerSha256: computer.release.installerSha256,
+            bootstrapToken: computer.bootstrapToken,
+          },
+          provider.updateBootstrap !== undefined,
+        );
         current = await act(
           (job) =>
-            journal("create", (_token, send) =>
+            journal("create", (token, send) =>
               provider.create(
                 {
                   id,
@@ -336,6 +439,7 @@ export class Reconciler {
                   image: this.#options.image,
                   firewallId,
                   userData,
+                  requestId: token,
                 },
                 job,
                 () => send(job),
@@ -345,7 +449,7 @@ export class Reconciler {
         );
       }
       if (!current) return unready("provisioning");
-      if (computer.providerServerId !== current.id) {
+      if ((computer.providerServerRef ?? computer.providerServerId) !== current.id) {
         // Start the credential clock durably before the stopped VM can make a boot request.
         if (!(await account.report(report("provisioning"), signal))) throw new Superseded();
       }
@@ -357,13 +461,20 @@ export class Reconciler {
         ))
       )
         return unready("provisioning");
+      if (
+        !receiptRecorded &&
+        server.bootstrapMetadata === "pending" &&
+        provider.updateBootstrap &&
+        !(await act((job, check) => provider.updateBootstrap!(server.id, false, job, check)))
+      )
+        return unready("provisioning");
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on"))
           return unready("provisioning");
         await act((job) =>
           journal(
             "power-on",
-            (_token, send) => provider.powerOn(server.id, job, () => send(job)),
+            (token, send) => provider.powerOn(server.id, job, () => send(job), token),
             server.id,
           ),
         );
@@ -417,17 +528,56 @@ export class Reconciler {
       if (!replies.length || replies.some((identity) => !identity)) return unready("booting");
 
       failure = "The Cloud Computer provider operation failed.";
-      for (const old of computer.restoreSnapshot && !computer.replacementVerified ? [] : previous) {
-        if (old.status !== "deleting")
-          await act((job, check) => provider.delete(old.id, job, check));
-        if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
+      if (!computer.restoreSnapshot || computer.replacementVerified) {
+        for (const old of previous) {
+          if (old.status !== "deleting")
+            await act((job, check) => provider.delete(old.id, job, check));
+          if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
+        }
+        // Old generations' addresses are released once their machines are gone. This is
+        // cleanup of a verified Home: it is retried on the next pass and never holds it back.
+        if (generation > 1) {
+          try {
+            await releaseAddresses(generation);
+          } catch (error) {
+            if (error instanceof Superseded || accountRefused(error)) throw error;
+            const limited = rateLimited(error);
+            if (limited) throw limited;
+            this.#options.onError?.(error);
+          }
+        }
       }
+      await scrubBootstrap(current);
       return report("ready");
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
+      const limited = rateLimited(error);
+      if (limited) throw limited;
       this.#options.onError?.(error);
+      if (error instanceof ProviderOutcomeUnknown) {
+        if (state !== "active") return report(state === "deleted" ? "deleting" : "provisioning");
+        // An unobserved create or power-on, or a Home that has not booted: still provisioning,
+        // and the readiness deadline applies.
+        if (
+          !computer.bootCompleted ||
+          !computer.observedIdentity ||
+          [...pending.values()].some(({ kind }) => kind === "create" || kind === "power-on")
+        )
+          return unready("provisioning");
+        // This generation's Home booted; only a later write is unobserved. Report it as not
+        // confirmed this pass, never as a Home that missed its deadline.
+        return report("booting");
+      }
       return report("failed", failure);
     }
   }
+}
+
+/** A provider rate limit, whether a read met it or it refused a write before carrying it out. */
+function rateLimited(error: unknown): ProviderRateLimited | undefined {
+  if (error instanceof ProviderRateLimited) return error;
+  if (error instanceof ProviderWriteRejected && error.original instanceof ProviderRateLimited)
+    return error.original;
+  return undefined;
 }

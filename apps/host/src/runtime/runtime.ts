@@ -3419,6 +3419,7 @@ export async function createHostRuntime(
         localServers: localServerRegistry,
         apps,
         tabs: new TabToolHandlers(tabs, agentSessions),
+        discoverSources: { tabs, browserSources, store },
         browser: new BrowserToolHandlers({
           sessions: agentSessions,
           tabs,

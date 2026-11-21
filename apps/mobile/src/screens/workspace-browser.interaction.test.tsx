@@ -1,4 +1,5 @@
 import { scopedTranscriptFixture } from "@opensteer/client/test-support";
+import { mockBrowserPoolReport } from "@opensteer/client/mock";
 import { DeviceIdSchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 
@@ -3108,3 +3109,97 @@ it("fences a menu clipboard read when another page contact changes its destinati
 });
 
 vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));
+
+describe("a Cloud Computer's browser", () => {
+  /** What the Home reports about the browser holding the first page. */
+  function pooled(scene: Parameters<typeof mockBrowserPoolReport>[0]): HostSnapshot {
+    const raw = snapshot([session("chosen")]);
+    const tab = tabs.get(TabIdSchema.parse(firstPage.id));
+    if (tab?.kind !== "page") throw new Error("The first page is not listed");
+    return {
+      ...raw,
+      browserPools: [mockBrowserPoolReport(scene, tab.computer.computerId, firstPage.id)],
+    } as HostSnapshot;
+  }
+  const lastAlert = () => vi.mocked(Alert.alert).mock.calls.at(-1);
+
+  it("stands in for its page when it could not start, tabs and sign-ins kept", async () => {
+    vi.mocked(Alert.alert).mockClear();
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("failed");
+    await render();
+    expect(container.textContent).toContain("Your browser couldn’t start");
+    expect(container.textContent).toContain(
+      "Your tabs and sign-ins are kept. Try again in a moment.",
+    );
+    expect(container.textContent).not.toContain("Contact support");
+    await pressAsync(container, "Try again");
+    expect(lastAlert()?.slice(0, 2)).toEqual([
+      "Your browser couldn’t start",
+      "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+    ]);
+    state.snapshot = pooled("failed-again");
+    await render();
+    expect(container.textContent).toContain(
+      "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
+    );
+    expect(container.textContent).toContain("Contact support");
+  });
+
+  it("offers Restart browser in More, asks once with exactly what it does, and is refused plainly", async () => {
+    vi.mocked(Alert.alert).mockClear();
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    expect(menu().textContent).not.toContain("Restart browser");
+    state.snapshot = pooled("awake");
+    await render();
+    await pressAsync(menu(), "Restart browser");
+    const [title, body, buttons] = lastAlert() ?? [];
+    expect([title, body]).toEqual([
+      "Restart browser?",
+      "Every page in your Cloud Computer’s browser closes and opens again from its address. Your tabs and sign-ins stay. Anything typed and not sent may be lost.",
+    ]);
+    expect(buttons?.map(({ text, style }) => [text, style])).toEqual([
+      ["Cancel", "cancel"],
+      ["Restart browser", "destructive"],
+    ]);
+    await act(async () => buttons?.[1]?.onPress?.());
+    expect(lastAlert()?.slice(0, 2)).toEqual([
+      "Couldn’t restart your browser",
+      "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+    ]);
+    expect(container.textContent).not.toContain("Restarting");
+  });
+
+  it("says once that a page reloaded, and the note leaves when dismissed", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("reloaded-typed");
+    await render();
+    expect(container.textContent).toContain("This page reloaded");
+    expect(container.textContent).toContain(
+      "Your browser restarted, so text you hadn’t sent may be gone.",
+    );
+    await pressAsync(container, "Dismiss");
+    expect(container.textContent).not.toContain("This page reloaded");
+  });
+
+  it("tells a page that could not be restored apart from one that reloaded", async () => {
+    const { container, render } = await setup({ sessionId: "chosen" });
+    // The page is listed first, as a Home lists it before reporting its browser.
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    state.snapshot = pooled("lost");
+    await render();
+    expect(container.textContent).toContain("This page couldn’t be restored");
+    expect(container.textContent).toContain(
+      "It didn’t come back as you left it. Reload to open it again.",
+    );
+  });
+});

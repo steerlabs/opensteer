@@ -852,6 +852,17 @@ describe("Opensteer MCP spine", () => {
         product.opensteer_request_answer({ ...call, input: { ...call.input, action: "list" } });
       f.handlers.opensteer_request_withdraw = (call) => product.opensteer_request_withdraw(call);
       try {
+        if (token === "connection") {
+          const args = { operationKey: "list" };
+          const removed = await f.service.callToolResult(token, "opensteer_request_list", {}, args);
+          const absent = await f.service.callToolResult(token, "unknown", {}, args);
+          expect(JSON.stringify(removed)).toBe(JSON.stringify(absent));
+          expect(removed).toMatchObject({
+            isError: true,
+            structuredContent: { error: { code: "not_found" } },
+          });
+          return;
+        }
         const result = await f.service.callTool(
           token,
           "opensteer_request_list",
@@ -868,7 +879,7 @@ describe("Opensteer MCP spine", () => {
         expect(JSON.stringify(result)).not.toMatch(
           /private-payload|private-answer|presentation|payload|response/,
         );
-        if (token === "run") {
+        {
           const withdrawn = await f.service.callTool(
             token,
             "opensteer_request_withdraw",
@@ -918,7 +929,7 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("advertises personal owner tools for a full-access connection", async () => {
+  it("omits personal owner tools even for a full-access connection", async () => {
     const f = await httpFixture();
     f.options.callers.authenticate.mockImplementation(async (token) => {
       const caller = f.callers.get(token);
@@ -928,9 +939,10 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "connection");
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain("opensteer_defaults_update");
-      expect(names).toContain("computer_list");
-      expect(names).toContain("opensteer_request_list");
+      expect(names).not.toContain("opensteer_defaults_update");
+      expect(names).not.toContain("computer_list");
+      expect(names).not.toContain("opensteer_request_list");
+      expect(names).toContain("discover");
     } finally {
       await client.close();
       await f.service.close();
@@ -979,7 +991,146 @@ describe("Opensteer MCP spine", () => {
     }
   });
 
-  it("replays a completed computer_apps listing by operation ID for its connection only", async () => {
+  it("refuses every unoffered connection name before dispatch and replay can parse it", async () => {
+    const f = fixture();
+    const caller = f.callers.get("connection")!;
+    if (caller.kind !== "connection") throw new Error("Expected a connection");
+    const limited = {
+      ...caller,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    } as const;
+    const args = { invalid: ["malformed"], operationId: createId("agentOperation") };
+    const absent = await f.service.callToolResult("connection", "unknown", args, {
+      operationKey: "test",
+      caller: limited,
+    });
+    for (const name of ["computer_apps", "send_to_person", "browser_use", "saved_login_request"]) {
+      const actual = await f.service.callToolResult("connection", name, args, {
+        operationKey: "test",
+        caller: limited,
+      });
+      expect(JSON.stringify(actual)).toBe(JSON.stringify(absent));
+      await expect(f.service.authorizeReplay(limited, name, args)).rejects.toMatchObject({
+        code: "not_found",
+        message: "Unknown Opensteer tool",
+      });
+    }
+    expect(f.handlers.computer_apps).not.toHaveBeenCalled();
+    expect(f.personMessage).not.toHaveBeenCalled();
+    await f.service.close();
+  });
+
+  it("reads discover as a name that never existed for a Run or program", async () => {
+    const f = fixture();
+    const discover = vi.fn(async () => {
+      throw new Error("Unexpected discover");
+    });
+    (f.handlers as Record<string, unknown>).discover = discover;
+    // Arguments discover would refuse: an answer that parsed them would differ from unknown's.
+    const args = { id: 42, unexpected: true };
+    for (const token of ["run", "program"]) {
+      const options = { operationKey: `discover-${token}` };
+      const absent = await f.service.callToolResult(token, "unknown", args, options);
+      const named = await f.service.callToolResult(token, "discover", args, options);
+      expect(JSON.stringify(named)).toBe(JSON.stringify(absent));
+      expect(named).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found", message: "Unknown Opensteer tool" } },
+      });
+      await expect(f.service.callTool(token, "discover", args, options)).rejects.toMatchObject({
+        code: "not_found",
+        message: "Unknown Opensteer tool",
+      });
+      await expect(
+        f.service.authorizeReplay(f.callers.get(token)!, "discover", args),
+      ).rejects.toMatchObject({ code: "not_found", message: "Unknown Opensteer tool" });
+      await expect(
+        f.service.assertToolOffered(f.callers.get(token)!, "discover"),
+      ).rejects.toMatchObject({ code: "not_found", message: "Unknown Opensteer tool" });
+    }
+    expect(() => f.service.validateToolInput("discover", { id: 42 })).toThrow(
+      "Unknown Opensteer tool",
+    );
+    expect(discover).not.toHaveBeenCalled();
+    await f.service.close();
+  });
+
+  it("never gives a connection a task's count of pending Requests, from create, read or wait", async () => {
+    const f = fixture();
+    const task = (pendingRequests: number) => ({
+      assignmentId: null,
+      threadId: f.thread.id,
+      runId: null,
+      runStatus: null,
+      status: "open",
+      title: "Task",
+      objective: null,
+      result: null,
+      pendingRequests,
+      parentThreadId: null,
+      createdAt: new Date(0).toISOString(),
+      finishedAt: null,
+    });
+    const created = {
+      ...task(3),
+      wait: { status: "running", items: [], hasMore: false, task: task(2) },
+    };
+    (f.handlers as Record<string, unknown>).opensteer_task_create = vi.fn(async () => created);
+    const create = (token: string) =>
+      f.service.callToolResult(
+        token,
+        "opensteer_task_create",
+        { message: "Work", mode: "wait", operationKey: "same-create" },
+        { operationKey: `create-${token}` },
+      );
+    for (const attempt of ["first", "repeat"]) {
+      const connected = await create("connection");
+      expect(connected.isError, `${attempt}: ${JSON.stringify(connected.content)}`).not.toBe(true);
+      expect(JSON.stringify(connected)).not.toContain("pendingRequests");
+    }
+    // The person's own agents keep the count.
+    const own = await create("run");
+    expect(own.isError, JSON.stringify(own.content)).not.toBe(true);
+    expect(own.structuredContent).toMatchObject({
+      pendingRequests: 3,
+      wait: { task: { pendingRequests: 2 } },
+    });
+    await f.service.close();
+  });
+
+  it("projects only the id and kind of a pending Request during connection task wait", async () => {
+    const f = fixture();
+    const id = createId("request");
+    f.handlers.opensteer_task_wait = async () => ({
+      status: "running",
+      items: [],
+      hasMore: false,
+      pendingRequest: {
+        id,
+        kind: "person.question",
+        title: "Private title",
+        reason: "Private reason",
+        window: "Private window",
+        payload: { secret: "Do not leak" },
+      },
+    });
+    const result = await f.service.callToolResult(
+      "connection",
+      "opensteer_task_wait",
+      { taskId: f.thread.id },
+      { operationKey: "visible-request" },
+    );
+    expect(result.structuredContent).toEqual({
+      status: "running",
+      items: [],
+      hasMore: false,
+      pendingRequest: { id, kind: "person.question" },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/Private|Do not leak|secret/u);
+    await f.service.close();
+  });
+
+  it("does not look up or replay a removed computer_apps receipt", async () => {
     const f = fixture();
     const computerId = createId("device");
     const operationId = createId("agentOperation");
@@ -1007,22 +1158,24 @@ describe("Opensteer MCP spine", () => {
     });
     try {
       const args = { computerId, operationId };
-      await expect(
-        service.callTool("connection", "computer_apps", args, { operationKey: "new" }),
-      ).resolves.toEqual({
-        status: "completed",
-        operationId,
-        taskId: f.thread.id,
-        summary: { count: 3 },
+      const absent = await service.callToolResult("connection", "unknown", args, {
+        operationKey: "new",
       });
-      expect(query.where).toHaveBeenCalledWith("agentOperations.id", "=", operationId);
-      expect(query.where).toHaveBeenCalledWith("agentOperations.connectionId", "=", "mcn_test");
+      const removed = await service.callToolResult("connection", "computer_apps", args, {
+        operationKey: "new",
+      });
+      expect(JSON.stringify(removed)).toBe(JSON.stringify(absent));
+      expect(removed).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+      expect(query.where).not.toHaveBeenCalled();
       expect(f.handlers.computer_apps).not.toHaveBeenCalled();
       for (const caller of ["run", "program"])
         await expect(
           service.callTool(caller, "computer_apps", args, { operationKey: "new" }),
         ).rejects.toMatchObject({ issues: [expect.objectContaining({ keys: ["operationId"] })] });
-      expect(query.executeTakeFirst).toHaveBeenCalledOnce();
+      expect(query.executeTakeFirst).not.toHaveBeenCalled();
     } finally {
       await service.close();
       await f.service.close();
@@ -1244,7 +1397,8 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("opensteer_task_create");
       expect(names).toContain("opensteer_task_wait");
-      expect(names).toContain("browser_profile_list");
+      expect(names).toContain("discover");
+      expect(names).not.toContain("browser_profile_list");
       expect(names).not.toContain("browser_profile_remove");
       // A connected agent drives what it was granted itself, through its session.
       expect(names).toContain("computer_use");

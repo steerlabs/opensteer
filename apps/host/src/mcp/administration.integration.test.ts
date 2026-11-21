@@ -1,10 +1,14 @@
 import { createChannelId } from "@opensteer/channel-core";
 import {
   enrollTestRunner,
+  type StoreFixture,
+  testModelSelection,
+  testReadyHarnessCatalog,
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
 import { admitSettingsCaller, AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
 import { randomUUID } from "node:crypto";
@@ -25,7 +29,59 @@ import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
-async function mcp(dependencies: AdministrationDependencies, userId: UserId) {
+async function mcp(
+  dependencies: AdministrationDependencies,
+  fixture: Pick<
+    Awaited<ReturnType<StoreFixture["createRunFixture"]>>,
+    "userId" | "environmentId" | "runnerId" | "harnessInstance"
+  >,
+) {
+  const { userId, environmentId, runnerId, harnessInstance } = fixture;
+  const { store } = dependencies;
+  const { thread } = await store.createThread({
+    createdBy: userId,
+    environmentId,
+    harnessInstanceId: harnessInstance.id,
+    modelSelection: testModelSelection,
+    accessMode: "full-access",
+    title: "Administration",
+    idempotencyKey: randomUUID(),
+  });
+  const queued = await store.enqueueThreadInput({
+    threadId: thread.id,
+    requestedBy: userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Manage settings" }],
+    idempotencyKey: randomUUID(),
+  });
+  if (!queued.run) throw new Error("Administration Run did not queue");
+  const { runId, bindingGeneration, runnerBootId } = await startPersonalQueuedRunFixture(
+    store,
+    queued.run.id,
+  );
+  const epoch = Math.floor(Date.now() / 1000);
+  const native: AgentCaller = {
+    kind: "run",
+    key: `run:${runId}`,
+    userId,
+    accessMode: "full-access",
+    thread,
+    claims: {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      jti: randomUUID(),
+      exp: epoch + 60,
+      iat: epoch,
+      environmentId,
+      runnerId,
+      runId,
+      bindingGeneration,
+      runnerBootId,
+      requestedBy: userId,
+      threadId: thread.id,
+    },
+  };
   const connections = new AgentConnectionStore(dependencies.store.database);
   const connection = await connections.create({
     userId,
@@ -49,7 +105,7 @@ async function mcp(dependencies: AdministrationDependencies, userId: UserId) {
     new AdministrationToolHandlers(new AdministrationService(dependencies, vi.fn()), () => true),
   );
   const service = new OpensteerMcpService({
-    callers: { authenticate: async () => caller },
+    callers: { authenticate: async () => native },
     handlers: handlers as AgentToolHandlers,
     store: dependencies.store,
     publicUrl: new URL("http://127.0.0.1"),
@@ -57,6 +113,20 @@ async function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   return {
     connection,
     service,
+    expectRemoved: async (
+      name: string,
+      input: Record<string, unknown>,
+      operationKey = randomUUID(),
+    ) => {
+      const options = { operationKey, caller };
+      const removed = await service.callToolResult("token", name, input, options);
+      const unknown = await service.callToolResult("token", "unknown_fixture_tool", input, options);
+      expect(JSON.stringify(removed)).toBe(JSON.stringify(unknown));
+      expect(removed).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "not_found" } },
+      });
+    },
     call: async (name: string, input: Record<string, unknown>, operationKey = randomUUID()) => {
       const result = await service.callTool("token", name, input, { operationKey });
       if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
@@ -78,8 +148,10 @@ async function retryAfterPersonChange(
   different: Record<string, unknown>,
 ) {
   const key = randomUUID();
+  await agent.expectRemoved(name, input, key);
   const original = await agent.call(name, input, key);
   await change();
+  await agent.expectRemoved(name, input, key);
   const afterPerson = await observe();
   expect(await agent.call(name, input, key)).toEqual(original);
   expect(await observe()).toEqual(afterPerson);
@@ -103,23 +175,20 @@ describeStore("MCP administration", (it) => {
           store: fixture.store,
           realtime: { broadcast: vi.fn() },
         } as unknown as AdministrationDependencies,
-        run.userId,
+        run,
       );
       try {
         const key = randomUUID();
         const command = { computerId: run.runnerId, name: "Before" };
+        await agent.expectRemoved("computer_update", command, key);
         await agent.call("computer_update", command, key);
         await new AgentConnectionStore(fixture.database).update(run.userId, {
           connectionId: agent.connection.id,
           expectedRevision: 1,
           ...change,
         });
-        await expect(agent.call("computer_update", command, key)).rejects.toMatchObject({
-          code: "forbidden",
-        });
-        await expect(
-          agent.call("computer_update", { ...command, name: "After" }),
-        ).rejects.toMatchObject({ code: "forbidden" });
+        await agent.expectRemoved("computer_update", command, key);
+        await agent.expectRemoved("computer_update", { ...command, name: "After" });
         await expect(
           fixture.store.renameRunner(run.runnerId, run.userId, "After", {
             allowDeployment: true,
@@ -191,7 +260,13 @@ describeStore("MCP administration", (it) => {
         } as unknown as AdministrationDependencies,
         vi.fn(),
       );
-      const agent = await mcp(service.dependencies, run.userId);
+      // A Run may administer another account while it is working on its own.
+      await f.store.recordHarnessCatalogs({
+        catalogs: [testReadyHarnessCatalog(other.id)],
+        environmentId: run.environmentId,
+        expectedRevisions: new Map([[other.id, other.runtimeRevision]]),
+      });
+      const agent = await mcp(service.dependencies, { ...run, harnessInstance: other });
       const common = {
         environmentId: run.environmentId,
         harnessInstanceId: run.harnessInstance.id,
@@ -367,9 +442,10 @@ describeStore("MCP administration", (it) => {
         browserSources: { listState: async () => ({ sites: [] }) },
         realtime: rt.hub,
       } as unknown as AdministrationDependencies,
-      run.userId,
+      run,
     );
     try {
+      await agent.expectRemoved("browser_profile_list", {});
       const listed = await agent.call("browser_profile_list", {});
       expect(listed.profiles).toEqual([
         {
@@ -483,7 +559,7 @@ describeStore("MCP administration", (it) => {
         browserSources: { removeSite: sources.removeGrant.bind(sources) },
         realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
-      run.userId,
+      run,
     );
     try {
       await retryAfterPersonChange(
@@ -534,7 +610,7 @@ describeStore("MCP administration", (it) => {
           ) => f.store.endShellSession({ sessionId: id, reason, ...options }),
         },
       } as unknown as AdministrationDependencies,
-      run.userId,
+      run,
     );
     try {
       await retryAfterPersonChange(
@@ -647,7 +723,7 @@ describeStore("MCP administration", (it) => {
       .selectFrom("clientSyncState")
       .select("resourceRevisions")
       .executeTakeFirstOrThrow();
-    const agent = await mcp(deps as unknown as AdministrationDependencies, run.userId);
+    const agent = await mcp(deps as unknown as AdministrationDependencies, run);
     try {
       await retryAfterPersonChange(
         agent,
@@ -707,7 +783,7 @@ describeStore("MCP administration", (it) => {
         channels: { service: channels },
         realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
       } as unknown as AdministrationDependencies,
-      run.userId,
+      run,
     );
     try {
       const observe = () => channels.dashboard(run.userId);

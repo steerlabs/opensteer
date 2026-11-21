@@ -162,6 +162,7 @@ import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
+import { BrowserRestartUnavailable } from "./browser-sleep.js";
 import { ThreadStateProjection } from "./thread-state.js";
 
 type HostCapability = AuthorityHostCapability;
@@ -592,6 +593,9 @@ export class HttpHostClient {
   readonly openTab = this.#tabsClient.openTab;
   readonly closeTabs = this.#tabsClient.closeTabs;
   readonly reopenTab = this.#tabsClient.reopenTab;
+  /** No Home can restart a Cloud Computer's browser yet: refused, and nothing changes. */
+  readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
+    Promise.reject(new BrowserRestartUnavailable());
   readonly activateTab = this.#tabsClient.activateTab;
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;

@@ -5,7 +5,6 @@ import type { RunCaller } from "./agent-caller.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { agentTools } from "@opensteer/agent-tools";
 import {
   createBrowserSessionId,
   HarnessInstanceCatalogSchema,
@@ -50,6 +49,9 @@ import {
   connection,
   createTask,
   errorText,
+  expectUnknownTool,
+  fixtureRunScope,
+  runClient,
   ownerTask,
   queuedRun,
   send,
@@ -67,17 +69,24 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       accessMode: "full-access",
     });
     const listed = (await agent.client.listTools()).tools.map(({ name }) => name);
-    expect(listed).toEqual(
-      agentTools
-        .filter(
-          (tool) =>
-            tool.callers.includes("connection") &&
-            tool.name !== "tab_open" &&
-            tool.name !== "tab_close",
-        )
-        .map(({ name }) => name),
-    );
-    expect(listed).toContain("opensteer_task_update");
+    expect(listed.toSorted()).toEqual([
+      "ask_person",
+      "browser_connect",
+      "browser_use",
+      "card_request",
+      "computer_use",
+      "discover",
+      "opensteer_task_create",
+      "opensteer_task_interrupt",
+      "opensteer_task_read",
+      "opensteer_task_send",
+      "opensteer_task_wait",
+      "plugin_call",
+      "plugin_execute",
+      "plugin_resume",
+      "saved_login_request",
+    ]);
+    await expectUnknownTool(agent.client, "opensteer_task_update");
 
     const read = await agent.client.callTool({
       name: "opensteer_task_read",
@@ -91,6 +100,41 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     await expect(
       agent.client.callTool({ name: "opensteer_task_read", arguments: { taskId: f.thread.id } }),
     ).rejects.toThrow("Agent tools authorization is invalid or expired");
+  });
+
+  it("discovers all native tasks with Everything and only its own native lineage when selected", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("discovery-task-lineage");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+    });
+    const selected = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const own = await createTask(agent, f, "discover-own");
+    const theirs = await createTask(selected, f, "discover-other");
+    const direct = await beginAgentSession(storeFixture.database, {
+      userId: f.userId,
+      agentConnectionId: selected.id,
+    });
+    const ids = async (client: Client) => {
+      const result = await client.callTool({ name: "discover", arguments: {} });
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      return (result.structuredContent as { items: { id: string; kind: string }[] }).items
+        .filter(({ kind }) => kind === "task")
+        .map(({ id }) => id);
+    };
+    expect(await ids(agent.client)).toEqual([theirs, own, f.threadId]);
+    expect(await ids(selected.client)).toEqual([theirs]);
+    const read = async (id: string) =>
+      agent.client.callTool({ name: "discover", arguments: { id } });
+    expect((await read(theirs)).structuredContent).toMatchObject({ item: { id: theirs } });
+    expect(await read(direct.session.threadId)).toEqual(await read(createId("thread")));
   });
 
   it("keeps an approval-required connection out of full-access changes", async ({
@@ -148,8 +192,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const result = await agent.client.callTool({
       name: "opensteer_task_create",
       arguments: {
-        aiAccountId: f.harnessInstance.id,
-        model: { ...testModelSelection, options: {} },
         title: "External work",
         message: "Inspect the project",
         operationKey: "external-create",
@@ -179,22 +221,26 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(
       (await storeFixture.database.introspection.getTables()).map((t) => t.name),
     ).not.toContain("agent_tool_operations");
+    expect(JSON.stringify(result)).not.toContain("pendingRequests");
+    // A repeat reads the task again; the count it now has never reaches the connection.
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ pendingRequestCount: 2 })
+      .where("id", "=", threadId)
+      .execute();
     const replay = await agent.client.callTool({
       name: "opensteer_task_create",
       arguments: {
-        aiAccountId: f.harnessInstance.id,
-        model: { ...testModelSelection, options: {} },
         title: "External work",
         message: "Inspect the project",
         operationKey: "external-create",
       },
     });
     expect(replay.structuredContent).toEqual(result.structuredContent);
+    expect(JSON.stringify(replay)).not.toContain("pendingRequests");
     const conflicting = await agent.client.callTool({
       name: "opensteer_task_create",
       arguments: {
-        aiAccountId: f.harnessInstance.id,
-        model: { ...testModelSelection, options: {} },
         title: "External work",
         message: "Different",
         operationKey: "external-create",
@@ -311,7 +357,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       agent.client.callTool({
         name: "opensteer_task_create",
         arguments: {
-          aiAccountId: f.harnessInstance.id,
           title,
           message: "Inspect the project",
           operationKey: "defaults-retry",
@@ -330,7 +375,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-delegate-excluded");
-    const url = await serveMcp(storeFixture);
+    const url = await serveMcp(storeFixture, { runScope: fixtureRunScope(f) });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
@@ -364,15 +409,14 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           operationKey,
         },
       });
-    const accounts = await agent.client.callTool({
-      name: "opensteer_ai_account_list",
-      arguments: {},
-    });
+    await expectUnknownTool(agent.client, "opensteer_ai_account_list");
+    const native = await runClient(url);
+    const accounts = await native.callTool({ name: "opensteer_ai_account_list", arguments: {} });
     expect(accounts.isError, JSON.stringify(accounts.content)).not.toBe(true);
     expect(JSON.stringify(accounts.structuredContent)).toContain(second.id);
     expect(f.harnessInstance.isDefault).toBe(true);
     await exclude(f.harnessInstance.id, second.id);
-    expect(errorText(await call("all-excluded"))).toContain("Choose aiAccountId for the new task");
+    expect(errorText(await call("all-excluded"))).toContain("No default AI account is available");
     await exclude(f.harnessInstance.id);
     const started = await call("default-excluded");
     expect(started.isError, JSON.stringify(started.content)).not.toBe(true);
@@ -405,7 +449,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const other = await startDirect(foreign.id);
     const native = await createTask(agent, f, "person-agent-work");
     expect(
-      errorText(await agent.client.callTool({ name: "tab_list", arguments: { taskId: native } })),
+      errorText(await agent.client.callTool({ name: "discover", arguments: { taskId: native } })),
     ).toContain("Pass a direct-work taskId");
     expect(errorText(await send(agent, direct, "send-to-direct"))).toContain(
       "Pass a taskId for work run by one of the person's agents",
@@ -415,11 +459,17 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     );
   });
 
-  it("lets a connection inspect and update a task through shared domain commands", async ({
+  it("does not let a connection use the removed inspection and update tools", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-read-write");
-    const url = await serveMcp(storeFixture);
+    const toolErrors: unknown[] = [];
+    const url = await serveMcp(storeFixture, {
+      runScope: fixtureRunScope(f),
+      onToolError: (error, name) => toolErrors.push(`${name}: ${String(error)}`),
+    });
+    const native = await runClient(url);
+    const target = await ownerTask(storeFixture, f, "inspect-update");
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -431,39 +481,63 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       "app_list",
       "computer_apps",
     ]) {
-      const result = await agent.client.callTool({ name, arguments: {} });
-      expect(result.isError, `${name}: ${JSON.stringify(result.content)}`).not.toBe(true);
+      await expectUnknownTool(agent.client, name);
+      const result = await native.callTool({ name, arguments: {} });
+      expect(result.isError, `${name}: ${toolErrors.join("\n")}`).not.toBe(true);
     }
-    for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }]) {
-      const result = await agent.client.callTool({
-        name: "opensteer_task_update",
-        arguments: { taskId: f.thread.id, ...arguments_ },
+    for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }])
+      await expectUnknownTool(agent.client, "opensteer_task_update", {
+        taskId: f.thread.id,
+        ...arguments_,
       });
-      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-    }
     expect(await storeFixture.store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({
-      title: "Renamed",
+      title: f.thread.title,
       doneAt: null,
     });
+    for (const arguments_ of [{ title: "Renamed" }, { done: true }, { done: false }]) {
+      const result = await native.callTool({
+        name: "opensteer_task_update",
+        arguments: { taskId: target, ...arguments_ },
+      });
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      expect(await storeFixture.store.getThreadForOwner(target, f.userId)).toMatchObject({
+        title: "Renamed",
+        doneAt: arguments_.done === true ? expect.any(String) : null,
+      });
+    }
   });
 
-  it("uses the client's model error and enforces the connection ceiling for configure and interrupt", async ({
+  it("keeps model configuration unavailable while enforcing the connection ceiling for interrupt", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.createRunFixture("configure-connection");
-    const url = await serveMcp(storeFixture);
+    const source = await storeFixture.startRunFixture("configure-from-run");
+    const url = await serveMcp(storeFixture, { runScope: fixtureRunScope(source) });
+    const native = await runClient(url);
+    const configure = (modelSelection: unknown) =>
+      native.callTool({
+        name: "opensteer_task_configure",
+        arguments: { taskId: f.threadId, modelSelection },
+      });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
     });
     const unavailableModel = { providerId: "openai", modelId: "not-offered", options: {} };
-    const result = await agent.client.callTool({
-      name: "opensteer_task_configure",
-      arguments: { taskId: f.thread.id, modelSelection: unavailableModel },
+    await expectUnknownTool(agent.client, "opensteer_task_configure", {
+      taskId: f.thread.id,
+      modelSelection: unavailableModel,
     });
-    expect(errorText(result)).toBe(
+    expect(errorText(await configure(unavailableModel))).toBe(
       "The selected model is not available in this AI engine on this Runner",
     );
+    const configured = await configure(testModelSelection);
+    expect(configured.isError, JSON.stringify(configured.content)).not.toBe(true);
+    expect(configured.structuredContent).toMatchObject({
+      taskId: f.threadId,
+      aiAccountId: f.harnessInstance.id,
+      modelSelection: testModelSelection,
+    });
     const read = await agent.client.callTool({
       name: "opensteer_task_read",
       arguments: { taskId: f.thread.id },
@@ -475,15 +549,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         modelSelection: testModelSelection,
       },
     });
-    const changed = await agent.client.callTool({
-      name: "opensteer_task_configure",
-      arguments: {
-        taskId: f.thread.id,
-        modelSelection: { ...testModelSelection, options: {} },
-      },
-    });
-    expect(changed.isError, JSON.stringify(changed.content)).not.toBe(true);
-    expect(changed.structuredContent).toMatchObject({
+    await expectUnknownTool(agent.client, "opensteer_task_configure", {
+      taskId: f.thread.id,
       modelSelection: { ...testModelSelection, options: {} },
     });
     expect((await storeFixture.store.getThreadForOwner(f.thread.id, f.userId))?.accessMode).toBe(
@@ -494,97 +561,219 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       requestedBy: f.userId,
       accessMode: "full-access",
     });
+    await storeFixture.store.updateThreadAccessMode({
+      threadId: source.threadId,
+      requestedBy: f.userId,
+      accessMode: "approval-required",
+    });
+    expect(errorText(await configure(testModelSelection))).toContain("stronger access mode");
     const cautious = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
     });
-    for (const name of ["opensteer_task_configure", "opensteer_task_interrupt"]) {
-      expect(
-        errorText(
-          await cautious.client.callTool({
-            name,
-            arguments: {
-              taskId: f.thread.id,
-
-              ...(name === "opensteer_task_configure"
-                ? { modelSelection: testModelSelection }
-                : {}),
-            },
-          }),
-        ),
-      ).toContain("stronger access mode");
-    }
+    await expectUnknownTool(cautious.client, "opensteer_task_configure", {
+      taskId: f.thread.id,
+      modelSelection: testModelSelection,
+    });
+    expect(
+      errorText(
+        await cautious.client.callTool({
+          name: "opensteer_task_interrupt",
+          arguments: { taskId: f.thread.id },
+        }),
+      ),
+    ).toContain("stronger access mode");
   });
 
-  it("cancels, reorders, promotes and resumes the same durable queue through MCP", async ({
+  it("lets a Run reorder, cancel and steer only its own queued messages", async ({
     storeFixture,
   }) => {
-    const f = await storeFixture.startRunFixture("connection-queue");
-    const url = await serveMcp(storeFixture);
+    const a = await storeFixture.startRunFixture("queue-a");
+    const b = await storeFixture.startRunFixture("queue-b");
+    // The caller sorts after the target. Move and cancel must lock both in ID order.
+    const [target, first] = a.runId < b.runId ? [a, b] : [b, a];
+    const second = await storeFixture.startRunFixture("queue-second");
+    const url = await serveMcp(storeFixture, {
+      runScopes: {
+        first: fixtureRunScope(first),
+        second: fixtureRunScope(second),
+      },
+    });
+    const [native, other] = await Promise.all([runClient(url, "first"), runClient(url, "second")]);
     const agent = await connection(storeFixture.store, url, {
-      userId: f.userId,
+      userId: target.userId,
       accessMode: "full-access",
     });
-    const send = async (message: string) => {
-      const result = await agent.client.callTool({
+    const sendNative = async (message: string) => {
+      const result = await native.callTool({
         name: "opensteer_task_send",
-        arguments: { taskId: f.thread.id, delivery: "queue", message },
+        arguments: {
+          taskId: target.threadId,
+          delivery: "queue",
+          message,
+        },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
       return (result.structuredContent as { messageId: string }).messageId;
     };
-    const first = await send("First");
-    const second = await send("Second");
-    const other = await connection(storeFixture.store, url, {
+    const callQueue = (client: Client, action: string, args = {}) =>
+      client.callTool({
+        name: "opensteer_task_queue",
+        arguments: { taskId: target.threadId, action, ...args },
+      });
+    const firstId = await sendNative("First");
+    const secondId = await sendNative("Second");
+    expect(errorText(await callQueue(other, "cancel", { messageId: firstId }))).toBe(
+      "Only your own queued messages can be cancelled",
+    );
+    expect(
+      (await callQueue(native, "move", { messageId: secondId, beforeMessageId: firstId }))
+        .structuredContent,
+    ).toMatchObject({
+      items: [
+        {
+          messageId: secondId,
+          preview: "Second",
+          truncated: false,
+          author: { kind: "agent", taskId: first.threadId, runId: first.runId },
+        },
+        { messageId: firstId, preview: "First", truncated: false },
+      ],
+    });
+    expect(
+      (await callQueue(native, "cancel", { messageId: firstId })).structuredContent,
+    ).toMatchObject({ items: [{ messageId: secondId }] });
+    expect(
+      (await callQueue(native, "steer", { messageId: secondId, expectedRunId: target.runId }))
+        .structuredContent,
+    ).toMatchObject({ items: [] });
+    const long = await sendNative("x".repeat(1_000));
+    expect((await callQueue(native, "list")).structuredContent).toMatchObject({
+      items: [{ messageId: long, preview: "x".repeat(500), truncated: true }],
+    });
+    const connected = await send(agent, target.threadId, "external-queue-input");
+    expect(connected.isError).not.toBe(true);
+    const externalId = (connected.structuredContent as { messageId: string }).messageId;
+    expect((await callQueue(native, "list")).structuredContent).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          messageId: externalId,
+          author: { kind: "connection", connectionId: agent.id, displayName: "Test agent" },
+          canCancel: false,
+        }),
+      ]),
+    });
+    expect(errorText(await callQueue(native, "cancel", { messageId: externalId }))).toBe(
+      "Only your own queued messages can be cancelled",
+    );
+  });
+
+  it("keeps a paused queue paused when a connection sends work, until the person resumes it", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-queue");
+    const { store } = storeFixture;
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(store, url, {
       userId: f.userId,
       accessMode: "full-access",
     });
-    expect(
-      errorText(
-        await other.client.callTool({
-          name: "opensteer_task_queue",
-          arguments: { taskId: f.thread.id, action: "cancel", messageId: first },
-        }),
-      ),
-    ).toBe("Only your own queued messages can be cancelled");
-    const queue = async (action: string, args = {}) => {
-      const result = await agent.client.callTool({
-        name: action === "resume" ? "opensteer_task_resume" : "opensteer_task_queue",
-        arguments: { taskId: f.thread.id, ...(action === "resume" ? {} : { action }), ...args },
-      });
-      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-      return result.structuredContent;
-    };
-    expect(await queue("move", { messageId: second, beforeMessageId: first })).toMatchObject({
-      items: [
-        {
-          messageId: second,
-          preview: "Second",
-          truncated: false,
-          author: { kind: "connection", connectionId: agent.id },
-        },
-        { messageId: first },
-      ],
-    });
-    expect(await queue("cancel", { messageId: first })).toMatchObject({
-      items: [{ messageId: second }],
-    });
-    expect(await queue("steer", { messageId: second, expectedRunId: f.run.id })).toMatchObject({
-      items: [],
-    });
-    const long = await send("x".repeat(1000));
-    expect(await queue("list")).toMatchObject({
-      items: [{ messageId: long, preview: "x".repeat(500), truncated: true }],
-    });
-    await queue("cancel", { messageId: long });
+    const task = { taskId: f.thread.id };
     const stopped = await agent.client.callTool({
       name: "opensteer_task_interrupt",
-      arguments: { taskId: f.thread.id },
+      arguments: task,
     });
     expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
     expect(stopped.structuredContent).toMatchObject({ interruptedRunId: f.run.id });
-    expect(await queue("list")).toMatchObject({ paused: true });
-    expect(await queue("resume")).toMatchObject({ paused: false });
+    const queue = () =>
+      store.getThreadInputQueue({
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+      });
+    expect(await queue()).toMatchObject({ paused: true });
+    await expectUnknownTool(agent.client, "opensteer_task_resume", task);
+    await expectUnknownTool(agent.client, "opensteer_task_queue", { ...task, action: "resume" });
+    const sent = await send(agent, f.thread.id, "wait-while-paused");
+    expect(sent.isError).not.toBe(true);
+    expect(sent.structuredContent).toMatchObject({ disposition: "pending", runId: null });
+    expect(await queue()).toMatchObject({
+      paused: true,
+      items: [
+        {
+          message: {
+            id: (sent.structuredContent as { messageId: string }).messageId,
+            author: { kind: "connection", connectionId: agent.id },
+          },
+        },
+      ],
+    });
+    const report = await agent.client.callTool({
+      name: "opensteer_task_send",
+      arguments: {
+        ...task,
+        delivery: "report",
+        message: "A report while paused",
+      },
+    });
+    expect(report.isError, JSON.stringify(report.content)).not.toBe(true);
+    expect(report.structuredContent).toMatchObject({ runId: null });
+    const steer = await agent.client.callTool({
+      name: "opensteer_task_send",
+      arguments: {
+        ...task,
+        delivery: "steer",
+        message: "A steer while paused",
+      },
+    });
+    // The interrupt ended the turn, and steering never starts one while the queue waits.
+    expect(steer).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "conflict",
+          message: "Steer requires a compatible running turn. Use Queue to start a new turn.",
+        },
+      },
+    });
+    expect(await queue()).toMatchObject({ paused: true });
+    const interrupted = await storeFixture.database
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", f.threadId)
+      .execute();
+    expect(interrupted).toEqual([{ id: f.runId }]);
+    const created = await createTask(agent, f, "person-paused-task");
+    const pendingRun = await queuedRun(storeFixture, created);
+    await store.enqueueRunnerControl({
+      type: "run.interrupt",
+      requestedBy: f.userId,
+      threadId: created,
+      runId: pendingRun.id,
+      auditOwnerStop: true,
+      idempotencyKey: "person-pauses-created-task",
+    });
+    const newTaskQueue = () =>
+      store.getThreadInputQueue({ threadId: created, requestedBy: f.userId });
+    expect(await newTaskQueue()).toMatchObject({ paused: true });
+    expect(await createTask(agent, f, "person-paused-task")).toBe(created);
+    expect(await newTaskQueue()).toMatchObject({ paused: true });
+    expect(
+      await storeFixture.database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", created)
+        .execute(),
+    ).toEqual([{ id: pendingRun.id }]);
+    const separate = await createTask(agent, f, "new-task-with-other-queue-paused");
+    expect((await queuedRun(storeFixture, separate)).status).toBe("queued");
+    expect(created).not.toBe(f.threadId);
+    expect(await queue()).toMatchObject({ paused: true });
+    await store.resumeThreadInputQueue({
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "person-resumes",
+    });
+    expect(await queue()).toMatchObject({ paused: false });
   });
 
   it("waits on committed completion events, reports offline, times out, and releases disconnected waits", async ({
@@ -1001,10 +1190,10 @@ describeStore("connection grants and lineage", (it) => {
     ).toEqual([{ connectionId: agent.id }]);
     expect(await queuedRun(storeFixture, own)).toMatchObject({ connectionId: agent.id });
 
-    const listed = await agent.client.callTool({ name: "opensteer_task_list", arguments: {} });
+    const listed = await agent.client.callTool({ name: "discover", arguments: {} });
     expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true);
     expect(
-      (listed.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+      (listed.structuredContent as { items: { id: string }[] }).items.map(({ id }) => id),
     ).toEqual([own]);
     for (const name of ["opensteer_task_read", "opensteer_task_send", "opensteer_task_interrupt"])
       expect(
@@ -1041,25 +1230,20 @@ describeStore("connection grants and lineage", (it) => {
         },
       });
     const ownRun = await queuedRun(storeFixture, own);
-    await startPersonalQueuedRunFixture(store, ownRun.id);
+    const active = await startPersonalQueuedRunFixture(store, ownRun.id);
     const owned = await request(own, ownRun.id, "lineage");
     const owners = await request(f.thread.id, f.run.id, "owner");
-    const requests = await agent.client.callTool({
-      name: "opensteer_request_list",
-      arguments: {},
+    const pending = await agent.client.callTool({
+      name: "opensteer_task_wait",
+      arguments: { taskId: own },
     });
-    expect(requests.isError, JSON.stringify(requests.content)).not.toBe(true);
-    expect(
-      (requests.structuredContent as { requests: { id: string }[] }).requests.map(({ id }) => id),
-    ).toEqual([owned.request.id]);
-    expect(
-      errorText(
-        await agent.client.callTool({
-          name: "opensteer_request_read",
-          arguments: { requestId: owners.request.id },
-        }),
-      ),
-    ).toBe("That item is unavailable.");
+    expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true);
+    expect(pending.structuredContent).toMatchObject({ pendingRequest: { id: owned.request.id } });
+    expect(JSON.stringify(pending)).not.toContain(owners.request.id);
+    await expectUnknownTool(agent.client, "opensteer_request_list");
+    await expectUnknownTool(agent.client, "opensteer_request_read", {
+      requestId: owners.request.id,
+    });
 
     const triggers = new TriggerStore(database);
     const lineage = await triggers.create({
@@ -1077,16 +1261,22 @@ describeStore("connection grants and lineage", (it) => {
       { id: lineage.trigger.id, originConnectionId: agent.id },
       { id: owner.trigger.id, originConnectionId: null },
     ]);
-    const automations = await agent.client.callTool({
-      name: "opensteer_automation_list",
-      arguments: {},
-    });
-    expect(automations.isError, JSON.stringify(automations.content)).not.toBe(true);
+    await expectUnknownTool(agent.client, "opensteer_automation_list");
+    const scopedRun = await runClient(
+      await serveMcp(storeFixture, {
+        runScope: fixtureRunScope({ ...f, ...active, threadId: own }),
+      }),
+    );
+    const list = await scopedRun.callTool({ name: "opensteer_automation_list", arguments: {} });
+    expect(list.isError, JSON.stringify(list.content)).not.toBe(true);
     expect(
-      (automations.structuredContent as { automations: { id: string }[] }).automations.map(
-        ({ id }) => id,
-      ),
+      (list.structuredContent as { automations: { id: string }[] }).automations.map(({ id }) => id),
     ).toEqual([lineage.trigger.id]);
+    const requestIds = await scopedRun.callTool({ name: "opensteer_request_list", arguments: {} });
+    expect(requestIds.isError, JSON.stringify(requestIds.content)).not.toBe(true);
+    expect(
+      (requestIds.structuredContent as { requests: { id: string }[] }).requests.map(({ id }) => id),
+    ).toEqual([owned.request.id]);
     for (const [name, args] of [
       ["opensteer_automation_read", { automationId: owner.trigger.id }],
       ["opensteer_automation_control", { automationId: owner.trigger.id, action: "pause" }],
@@ -1099,9 +1289,7 @@ describeStore("connection grants and lineage", (it) => {
         },
       ],
     ] as const)
-      expect(errorText(await agent.client.callTool({ name, arguments: args }))).toContain(
-        "Automation not found",
-      );
+      await expectUnknownTool(agent.client, name, args);
     expect(
       await database
         .selectFrom("triggers")
@@ -1664,9 +1852,9 @@ describeStore("connection grants and lineage", (it) => {
         .where("type", "=", "run.interrupt")
         .execute(),
     ).toEqual([{ runId: firstRun.id }]);
-    await expect(
-      first.client.callTool({ name: "opensteer_task_list", arguments: {} }),
-    ).rejects.toThrow("Agent tools authorization is invalid or expired");
+    await expect(first.client.callTool({ name: "discover", arguments: {} })).rejects.toThrow(
+      "Agent tools authorization is invalid or expired",
+    );
     // Its Run was handed off and has not confirmed it ended: Stopping, and not removable yet.
     expect((await host.list()).find(({ id }) => id === first.id)).toMatchObject({
       state: "stopping",
@@ -1684,9 +1872,9 @@ describeStore("connection grants and lineage", (it) => {
       expect(
         await database.selectFrom("runs").select("status").where("id", "=", id).executeTakeFirst(),
       ).toEqual({ status: "running" });
-    const secondList = await second.client.callTool({ name: "opensteer_task_list", arguments: {} });
+    const secondList = await second.client.callTool({ name: "discover", arguments: {} });
     expect(
-      (secondList.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+      (secondList.structuredContent as { items: { id: string }[] }).items.map(({ id }) => id),
     ).toEqual([secondTask]);
     expect((await host.list()).find(({ id }) => id === second.id)).toMatchObject({
       state: "active",

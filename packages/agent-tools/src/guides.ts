@@ -1,9 +1,5 @@
 import type { AgentGrant } from "@opensteer/core";
-import {
-  connectionComputerKinds,
-  connectionDirectTools,
-  connectionHasChromeTabs,
-} from "./connection-tools.js";
+import { connectionDirectTools } from "./connection-tools.js";
 import { toolsFor } from "./tools-for.js";
 import type { RunToolCapabilities } from "./registry.js";
 import type { TaskPurpose } from "@opensteer/core";
@@ -132,16 +128,6 @@ export function connectionInstructionsFor(
   offered = toolsFor({ kind: "connection", grant, accessMode: "full-access" }),
 ): string {
   const names = new Set<string>(offered.map(({ name }) => name));
-  const { apps, phones } = connectionComputerKinds(grant);
-  const kinds = [
-    names.has("browser_profile_list") && "browser profiles (browser_profile_list)",
-    names.has("tab_list") && connectionHasChromeTabs(grant) && "shared Chrome tabs (tab_list)",
-    names.has("computer_apps") &&
-      (apps && phones ? "apps and phone screens" : apps ? "apps" : "phone screens") +
-        " (computer_apps)",
-    names.has("plugin_search") && "plugins (plugin_search)",
-    names.has("opensteer_task_create") && "the person's agents (opensteer_task_create)",
-  ].filter(Boolean);
   const direct = [
     names.has("browser_use") &&
       "browser_use for one script or browser_connect for a CDP endpoint (Playwright or Puppeteer)",
@@ -151,7 +137,9 @@ export function connectionInstructionsFor(
   const hasDirectWork = [...names].some((name) => connectionDirectTools.has(name));
   return [
     "Opensteer gives you access to what the person shares on their own devices. Only what they shared is available.",
-    ...(kinds.length ? [`Shared with you: ${kinds.join(", ")}.`] : []),
+    ...(names.has("discover")
+      ? ["Use discover to find what is shared and get IDs for the tools below."]
+      : []),
     ...(direct.length ? [`Do the work yourself: ${direct.join("; ")}.`] : []),
     ...(hasDirectWork
       ? [

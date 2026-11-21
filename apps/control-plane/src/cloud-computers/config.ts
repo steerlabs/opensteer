@@ -138,11 +138,30 @@ const hetznerLocationLabels = new Map([
   ["sin", "Singapore"],
 ]);
 
+const googleRegionLabels = new Map([
+  ["us-central1", "Council Bluffs, IA"],
+  ["us-east1", "Moncks Corner, SC"],
+  ["us-east4", "Ashburn, VA"],
+  ["us-west1", "The Dalles, OR"],
+  ["us-west2", "Los Angeles, CA"],
+  ["northamerica-northeast1", "Montréal"],
+  ["europe-west1", "St. Ghislain"],
+  ["europe-west2", "London"],
+  ["europe-west3", "Frankfurt"],
+  ["europe-west4", "Eemshaven"],
+  ["asia-east1", "Taiwan"],
+  ["asia-northeast1", "Tokyo"],
+  ["asia-southeast1", "Singapore"],
+  ["australia-southeast1", "Sydney"],
+]);
+
 export function cloudComputerRegion(
   id: string,
   config: Pick<CloudComputerConfig, "region" | "regionLabel">,
 ) {
   const label =
-    (id === config.region ? config.regionLabel : undefined) ?? hetznerLocationLabels.get(id);
+    (id === config.region ? config.regionLabel : undefined) ??
+    hetznerLocationLabels.get(id) ??
+    googleRegionLabels.get(id.replace(/-[a-z]$/u, ""));
   return label ? { id, label } : undefined;
 }

@@ -1,3 +1,4 @@
+import { discover } from "@opensteer/agent-tools/discover";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -94,6 +95,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     { triggerOrigins: async () => new Map() },
   );
   const handlers: AgentToolHandlers = {
+    discover: async () => unavailable(),
     opensteer_ai_account_list: async () => unavailable(),
     opensteer_ai_account_update: async () => unavailable(),
     opensteer_defaults_read: async () => unavailable(),
@@ -319,7 +321,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         index: number,
       ): Promise<CallToolResult> => {
         const original = await client.callTool({ name, arguments: args });
-        const definition = agentTools.find((tool) => tool.name === name);
+        const definition =
+          name === "discover" ? discover : agentTools.find((tool) => tool.name === name);
         const valid =
           !!definition &&
           offered.has(name) &&
@@ -609,6 +612,8 @@ function taskFixtureResult(
 
 function defaultResult(name: string): unknown {
   switch (name) {
+    case "discover":
+      return { items: [], nextCursor: null };
     case "plugin_search":
       return { items: [], namespaces: [], remaining: 0, next: null };
     case "computer_apps":

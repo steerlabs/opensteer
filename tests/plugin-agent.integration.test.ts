@@ -1,3 +1,5 @@
+import { discoverHandler } from "../apps/host/src/mcp/handlers/discover.js";
+import { localToolPath } from "../apps/host/src/plugins/provider-names.js";
 import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
@@ -163,6 +165,28 @@ async function call(
     : await mcp.callTool("token", name, input, { operationKey, caller });
   return record.parse(held ? record.parse(result).structuredContent : result);
 }
+async function expectRemoved(caller: AgentCaller, name: string, input: unknown) {
+  const unknown = await call(caller, "unknown_fixture_tool", input, true);
+  const removed = await call(caller, name, input, true);
+  expect(JSON.stringify(removed)).toBe(JSON.stringify(unknown));
+  expect(removed).toMatchObject({ error: { code: "not_found" } });
+}
+
+async function discoverDocument(caller: AgentCaller, slug: string, name: string) {
+  const listing = await call(caller, "discover", { id: localToolPath(slug) });
+  return z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        name: z.string(),
+        revision: z.string().optional(),
+      }),
+    )
+    .parse(listing.items)
+    .find((item) => item.kind === "document" && item.name === name);
+}
+
 async function pendingRequest(caller: RunCaller) {
   return vi.waitFor(
     async () => {
@@ -246,11 +270,23 @@ function createPluginMcp() {
       return exportPluginSource(homeFiles, d, f.files, authorize, signal);
     },
   });
+  const lookups = handlers.handlers();
+  const discover = discoverHandler(lookups, {
+    store,
+    tabs: { project: async () => ({ tabs: [], layout: { revision: 0, items: [] } }) },
+    browserSources: { grantableChromeTabs: async () => [] },
+  });
   return new OpensteerMcpService({
     callers: { authenticate: async () => current },
     store,
     publicUrl: new URL("http://127.0.0.1"),
-    handlers: handlers.handlers(),
+    handlers: {
+      ...lookups,
+      discover: (c) => {
+        if (c.caller.kind !== "connection") throw new Error("Expected a connection");
+        return discover({ ...c, caller: c.caller });
+      },
+    },
     pluginExecutions: executions,
   });
 }
@@ -619,34 +655,48 @@ test("connected discovery reads published data without running a plugin's linked
       database,
     );
     const caller = await connect("approval-required", "read-write", id);
-    expect(await call(caller, "plugin_search", { namespace: slug })).toMatchObject({ items: [] });
+    const namespace = localToolPath(slug);
+    const before = await call(caller, "discover", { id: namespace });
+    for (const resource of ["schedules", "workflows"] as const) {
+      expect(
+        await handlers.handlers().plugin_resources!({
+          caller,
+          input: { resource, pluginId: id },
+          operationKey: randomUUID(),
+        }),
+      ).toMatchObject({ definitions: null });
+    }
+    expect(
+      z
+        .array(z.object({ kind: z.string() }))
+        .parse(before.items)
+        .filter(({ kind }) => kind === "tool"),
+    ).toEqual([]);
     expect(discoveryWrites).toEqual([]);
     await call(await run(), "plugin_describe", { paths: [`tools[${JSON.stringify(slug)}].read`] });
     expect(discoveryWrites).toContainEqual({ path: "/discover-definition", method: "POST" });
     discoveryWrites = [];
     const path = `tools[${JSON.stringify(slug)}].read`;
-    expect(await call(caller, "plugin_search", { namespace: slug })).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ input: expect.any(String) })]),
+    expect(await call(caller, "discover", { id: namespace })).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: path, input: expect.any(String) }),
+      ]),
     });
-    expect(await call(caller, "plugin_describe", { paths: [path] })).toMatchObject({
-      items: [expect.objectContaining({ signature: expect.any(String) })],
+    expect(await call(caller, "discover", { id: path })).toMatchObject({
+      item: { id: path, signature: expect.any(String) },
     });
-    const list = await call(caller, "plugin_skills", { app: slug });
-    expect(list).toMatchObject({
-      skills: [expect.objectContaining({ name: "demo", revision: expect.any(String) })],
-    });
-    const [skill] = z
-      .array(z.object({ version: z.string(), revision: z.string() }))
-      .parse(list.skills);
-    expect(
-      await call(caller, "plugin_skills", { app: slug, name: "demo", ...skill }),
-    ).toMatchObject({
-      content: expect.stringContaining("Fixture instructions."),
+    const doc = await discoverDocument(caller, slug, "demo");
+    expect(doc).toMatchObject({ revision: expect.any(String) });
+    expect(doc).toBeDefined();
+    expect(await call(caller, "discover", { id: doc!.id })).toMatchObject({
+      item: {
+        text: expect.stringContaining("Fixture instructions."),
+        untrusted: true,
+        revision: doc!.revision,
+      },
     });
     for (const resource of ["schedules", "workflows"] as const)
-      expect(await call(caller, "plugin_resources", { resource, pluginId: id })).toMatchObject({
-        definitions: null,
-      });
+      await expectRemoved(caller, "plugin_resources", { resource, pluginId: id });
     expect(discoveryWrites).toEqual([]);
     expect(
       await database
@@ -668,20 +718,24 @@ test("connected discovery reads published data without running a plugin's linked
 test("connected plugin discovery and calls enforce the selected installation and read/write access", async () => {
   const reader = await connect("full-access", "read");
   const unshared = await connect("full-access");
-  expect(await call(unshared, "plugin_search", { namespace: "fixture" })).toMatchObject({
-    items: [],
-  });
-  await expect(call(unshared, "opensteer_plugin_list", {})).rejects.toMatchObject({
-    code: "forbidden",
-  });
+  const hidden = await call(unshared, "discover", { id: "tools.fixture" }, true);
+  expect(hidden).toMatchObject({ error: { code: "not_found", next: null } });
+  expect(JSON.stringify(hidden)).toBe(
+    JSON.stringify(await call(unshared, "discover", { id: "tools.missing" }, true)),
+  );
+  await expectRemoved(unshared, "opensteer_plugin_list", {});
   await expect(call(unshared, "plugin_call", readCall)).rejects.toMatchObject({
     message: "Plugin tool is unavailable to this caller.",
   });
-  const found = await call(reader, "plugin_search", { namespace: "fixture" });
-  const items = found.items as { path: string; input?: string }[];
-  expect(items.find(({ path }) => path === "tools.fixture.read")).toHaveProperty("input");
-  expect(items.find(({ path }) => path === "tools.fixture.reviewed")).toEqual({
-    path: "tools.fixture.reviewed",
+  const found = await call(reader, "discover", { id: "tools.fixture" });
+  const items = found.items as { id: string; input?: string }[];
+  expect(items.find(({ id }) => id === "tools.fixture.read")).toHaveProperty("input");
+  expect(items.find(({ id }) => id === "tools.fixture.reviewed")).toEqual({
+    kind: "tool",
+    name: "tools.fixture.reviewed",
+    untrusted: true,
+    use: { tool: "discover", argument: "id", value: "tools.fixture" },
+    id: "tools.fixture.reviewed",
     description: expect.any(String),
     blocked: expect.objectContaining({ code: "access_denied" }),
   });
@@ -3047,6 +3101,51 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
   for (const access of ["all", "read-only", "off"] as const) {
     await records.setAccess(personal.userId, plugin, access);
     for (const caller of callers) {
+      if (caller.kind === "connection") {
+        await expectRemoved(caller, "opensteer_plugin_catalog", { search: "fixture" });
+        await expectRemoved(caller, "plugin_resources", {
+          pluginId: plugin,
+          resource: "workflows",
+        });
+        expect(
+          await handlers.handlers().opensteer_plugin_catalog!({
+            caller,
+            input: { search: "fixture" },
+            operationKey: randomUUID(),
+          }),
+        ).toHaveProperty("items");
+        const history = await handlers.handlers().plugin_resources!({
+          caller,
+          input: { resource: "workflows", pluginId: plugin },
+          operationKey: randomUUID(),
+        });
+        expect(history).toMatchObject({
+          definitions: null,
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: started.id, status: "complete" }),
+          ]),
+        });
+        const { items: records } = z
+          .object({ items: z.array(z.record(z.string(), z.unknown())) })
+          .parse(history);
+        expect(records.filter((record) => "output" in record || "failure" in record)).toEqual([]);
+        await expectRemoved(caller, "opensteer_plugin_resource_update", {
+          pluginId: plugin,
+          change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },
+        });
+        if (access === "off") {
+          await expect(call(caller, "discover", { id: "tools.fixture" })).rejects.toMatchObject({
+            code: "not_found",
+          });
+        } else {
+          const doc = await discoverDocument(caller, "fixture", "demo");
+          expect(doc).toBeDefined();
+          expect(JSON.stringify(await call(caller, "discover", { id: doc!.id }))).toContain(
+            "Fixture skill",
+          );
+        }
+        continue;
+      }
       const catalog = call(caller, "opensteer_plugin_catalog", { search: "fixture" });
       if (caller.kind === "program") await expect(catalog).rejects.toThrow();
       else await expect(catalog).resolves.toHaveProperty("items");
@@ -3059,8 +3158,7 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
       });
       if (caller.kind === "program") await expect(resources).rejects.toThrow();
       else {
-        // Outputs reach the person's own agent; a connection, or any caller while off, reads
-        // only what ran, when and how it ended.
+        // Outputs reach the person's own agent when the plugin is on.
         const items = z
           .array(z.object({ id: z.string() }).passthrough())
           .parse(record.parse(await resources).items);

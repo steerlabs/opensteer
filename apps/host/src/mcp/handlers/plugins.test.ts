@@ -90,3 +90,40 @@ describe("opensteer_plugin_catalog", () => {
     }
   });
 });
+
+it("names discover, never a lookup it lacks, when a connection omits the namespace", async () => {
+  const handlers = new PluginToolHandlers({
+    sessions: () => ({}),
+    authority: {
+      admit: () => ({ caller: "agent:test", mode: "automatic" }),
+      scoped: (_caller: unknown, work: () => unknown) => work(),
+    },
+  } as unknown as PluginToolHandlers["options"]).handlers();
+  const connection = {
+    kind: "connection",
+    userId: "usr_test",
+    key: "connection:test",
+    connectionId: "test",
+    grant: { scope: "everything" },
+    grantRevision: 1,
+    accessMode: "full-access",
+  } as unknown as AgentCaller;
+  const refusal = await handlers.plugin_execute!({
+    caller: connection,
+    input: { code: "return 1" },
+    operationKey: "no-namespace",
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(refusal).toMatchObject({
+    code: "bad_request",
+    message: "Supply the one plugin namespace from discover.",
+  });
+  const shown = agentToolFailureResult(agentToolFailure(refusal, "write", undefined, true), {
+    tools: new Set(["discover", "plugin_call", "plugin_execute", "plugin_resume"]),
+  });
+  expect(shown.structuredContent.error.message).toBe(
+    "Supply the one plugin namespace from discover.",
+  );
+});

@@ -809,6 +809,7 @@ export async function agentThreadPageForOwner(
     readonly scopeId: string;
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
+    readonly nativeOnly?: boolean;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -837,6 +838,7 @@ export async function agentThreadPageForOwner(
       let base = transaction
         .selectFrom("threads")
         .where("threads.removedAt", "is", null)
+        .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
         .$if(since !== null, (query) =>
           query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
             join.onRef("changed.threadId", "=", "threads.id"),
@@ -1012,6 +1014,7 @@ export async function getThreadForOwner(
   threadId: ThreadId,
   ownerId: UserId,
   lineageConnectionId?: string,
+  nativeOnly?: boolean,
 ): Promise<Thread | null> {
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
@@ -1027,6 +1030,7 @@ export async function getThreadForOwner(
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
       .where("threads.removedAt", "is", null)
+      .$if(nativeOnly === true, (query) => query.where("threads.worker", "=", "native"))
       .$if(lineageConnectionId !== undefined, (query) =>
         query.where("threads.originConnectionId", "=", lineageConnectionId!),
       )
@@ -2162,13 +2166,27 @@ export async function steerThreadInput(
     return result;
   });
 }
+async function lockQueueCaller(
+  transaction: Transaction<DatabaseSchema>,
+  input: CancelThreadInputRequest | MoveThreadInputRequest,
+): Promise<void> {
+  // A Run caller and the target's active Runs are locked in one statement, in ID order. The
+  // Personal mutation fence keeps that set stable until the queue projection locks it again.
+  await lockThreadCaller(
+    transaction,
+    input.authority,
+    [],
+    false,
+    input.authority?.kind === "run" ? input.threadId : undefined,
+  );
+}
 export async function cancelThreadInput(
   database: Kysely<DatabaseSchema>,
   input: CancelThreadInputRequest,
 ): Promise<CancelledThreadInput> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    await lockThreadCaller(transaction, input.authority);
+    await lockQueueCaller(transaction, input);
     const result = await cancelThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
@@ -2182,7 +2200,7 @@ export async function moveThreadInput(
 ): Promise<MovedThreadInput> {
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    await lockThreadCaller(transaction, input.authority);
+    await lockQueueCaller(transaction, input);
     const result = await moveThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,

@@ -56,6 +56,7 @@ export interface TabServicePort {
     actor: TabActor,
     input: TabListInput,
     mayNameComputer?: (deviceId: DeviceId) => boolean,
+    select?: (tab: Tab) => boolean,
   ): Promise<TabListResult>;
   open(actor: TabActor, target: TabTarget, key: string): Promise<{ tab: Tab }>;
   close(

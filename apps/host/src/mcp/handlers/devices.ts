@@ -95,7 +95,7 @@ export class DeviceToolHandlers {
     if (!computerId)
       throw refused(
         "bad_request",
-        "Name the app or phone screen shared with you: computerId, and app for a Mac app, from computer_apps.",
+        "Name the app or phone screen shared with you: computerId, and app for a Mac app, from discover.",
       );
     if (code.length > requestOperationCallsMaxLength)
       throw refused(
@@ -439,7 +439,10 @@ export class DeviceToolHandlers {
         ),
         operationKey: call.operationKey,
         tool: "computer_apps",
-        input: call.input,
+        input: call.discoveryInput
+          ? { discovery: call.discoveryInput, read: call.input }
+          : call.input,
+        ...(call.discoveryInput ? { reportReplay: true } : {}),
         target: named?.target ?? null,
         targetName: name,
         targetGeneration: named?.generation ?? null,
