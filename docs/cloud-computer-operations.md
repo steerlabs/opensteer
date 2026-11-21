@@ -366,6 +366,11 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
   - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
   - The personal or organization page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates. An offboarded seat stops counting as assigned after the first two facts are confirmed. A free seat requires an independently reserved usable backup target.
+- **Account deletion**:
+  - The account deletion page says first that the person's Cloud Computer goes with the Account: the subscription is cancelled at once (`invoice_now=false`, `prorate=false`: nothing more is charged, and the rest of the period already paid isn't refunded), then the computer, disk and backups go.
+  - `AccountDeletionService.delete` records `users.deletion_requested_at` first. From then on checkout refuses the Account, an open checkout is expired, and one that pays anyway is refunded. Then each of the person's own Cloud Computers goes through the same Delete as above, so the subscription is cancelled before the machine is let go, with no second teardown.
+  - The Account's own records go only once every such machine is destroyed (`vmDestroyedAt`). Until then `DELETE /v1/account` answers `202 {"deleted":false,"pending":true}`, the page says the Account is being deleted, and the account service's one-minute pass finishes it. A Stripe failure stays pending until the billing pass cancels.
+  - A person with a work Home is refused until the organization offboards it. A work Home is never deleted with an Account.
 
 ## When something goes wrong
 

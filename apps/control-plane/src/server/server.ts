@@ -86,6 +86,8 @@ const ConsentFormSchema = z.strictObject({
 export async function createControlPlaneServer(
   dependencies: {
     readonly appleSignIn?: AppleSignInConfig;
+    /** Supplied by the runtime, which also finishes deletions that wait; built here otherwise. */
+    readonly accountDeletion?: AccountDeletionService;
     readonly appReviewSignIn?: boolean;
     readonly auth: ControlPlaneAuth;
     readonly authenticator: ControlPlaneAuthenticator;
@@ -192,18 +194,21 @@ export async function createControlPlaneServer(
   // Which one answered a request is decided by its Host header, before any
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
-  const accountDeletion = new AccountDeletionService({
-    ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
-    auth: dependencies.auth,
-    connectLifecycle: dependencies.connectLifecycle,
-    ...(dependencies.organizations
-      ? {
-          resolveOrganizationCheckouts: (account) =>
-            dependencies.organizations!.resolveAccountCheckouts(account),
-        }
-      : {}),
-    store: dependencies.store,
-  });
+  const accountDeletion =
+    dependencies.accountDeletion ??
+    new AccountDeletionService({
+      ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
+      auth: dependencies.auth,
+      ...(dependencies.cloudComputers ? { cloudComputers: dependencies.cloudComputers.store } : {}),
+      connectLifecycle: dependencies.connectLifecycle,
+      ...(dependencies.organizations
+        ? {
+            resolveOrganizationCheckouts: (account) =>
+              dependencies.organizations!.resolveAccountCheckouts(account),
+          }
+        : {}),
+      store: dependencies.store,
+    });
   const portal = dependencies.portalSessions
     ? createPortalRouter({
         accountDeletion,

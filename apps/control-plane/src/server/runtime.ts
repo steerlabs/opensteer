@@ -28,6 +28,7 @@ import { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import { portalCallbackUri, portalOAuthClientId, portalOAuthScopes } from "../portal/portal.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
+import { AccountDeletionService } from "../account/account-deletion.js";
 import { ApnsClient } from "../notifications/apns-client.js";
 import { FcmClient } from "../notifications/fcm-client.js";
 import {
@@ -155,8 +156,24 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       redirectUri: portalCallbackUri(config.portalOrigin),
       scopes: portalOAuthScopes,
     });
+    // One deletion service: the routes start a deletion, and the pass below finishes one that
+    // waits on its Cloud Computers to end.
+    const accountDeletion = new AccountDeletionService({
+      ...(appleSignIn ? { appleSignIn } : {}),
+      auth,
+      ...(cloudComputers ? { cloudComputers } : {}),
+      connectLifecycle,
+      ...(organizations
+        ? {
+            resolveOrganizationCheckouts: (account) =>
+              organizations.resolveAccountCheckouts(account),
+          }
+        : {}),
+      store,
+    });
     const server = await createControlPlaneServer(
       {
+        accountDeletion,
         ...(appleSignIn ? { appleSignIn } : {}),
         ...(config.appReview ? { appReviewSignIn: true } : {}),
         auth,
@@ -305,6 +322,21 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     backupTimer?.unref();
     runBackupErasure();
 
+    let deletionPass: Promise<void> | undefined;
+    const deletionError = (error: unknown) =>
+      server.log.error({ err: error }, "Account deletion is pending");
+    const runDeletion = () => {
+      deletionPass ??= accountDeletion
+        .finishPending(deletionError)
+        .catch(deletionError)
+        .finally(() => {
+          deletionPass = undefined;
+        });
+    };
+    const deletionTimer = setInterval(runDeletion, 60_000);
+    deletionTimer.unref();
+    runDeletion();
+
     let offboardingPass: Promise<void> | undefined;
     const offboardingError = () => server.log.error("Work Home offboarding is pending");
     const runOffboarding = () => {
@@ -339,6 +371,8 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           clearInterval(billingTimer);
           clearInterval(backupTimer);
           clearInterval(offboardingTimer);
+          clearInterval(deletionTimer);
+          await deletionPass;
           await billingPass;
           await offboardingPass;
           await backupPass;

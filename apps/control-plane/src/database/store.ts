@@ -1548,6 +1548,41 @@ export class ControlPlaneStore {
     return beginAccountDeletion(this.#database, accountId);
   }
 
+  /**
+   * Records that the person asked to delete this Account, once: from here no checkout charges
+   * it, and the deletion finishes later if it cannot now. Only the fenced attempt may record it.
+   */
+  async requestAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
+    await this.#database
+      .updateTable("users")
+      .set({ deletionRequestedAt: sql`coalesce(deletion_requested_at, now())` })
+      .where("id", "=", accountId)
+      .where("deletionAttemptId", "=", attemptId)
+      .execute();
+  }
+
+  /** Accounts whose person asked to delete them and that still wait on something to end. */
+  async accountsAwaitingDeletion(limit = 20): Promise<readonly ControlPlaneAccountId[]> {
+    const rows = await this.#database
+      .selectFrom("users")
+      .select("id")
+      .where("deletionRequestedAt", "is not", null)
+      .orderBy("deletionRequestedAt", "asc")
+      .limit(limit)
+      .execute();
+    return rows.map(({ id }) => ControlPlaneAccountIdSchema.parse(id));
+  }
+
+  /** When the person asked to delete this Account, or null when nobody has. */
+  async accountDeletionRequestedAt(accountId: ControlPlaneAccountId): Promise<Date | null> {
+    const row = await this.#database
+      .selectFrom("users")
+      .select("deletionRequestedAt")
+      .where("id", "=", accountId)
+      .executeTakeFirst();
+    return row?.deletionRequestedAt ?? null;
+  }
+
   renewAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
     return renewAccountDeletion(this.#database, accountId, attemptId);
   }

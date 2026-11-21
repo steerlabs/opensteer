@@ -78,6 +78,7 @@ import { digestSecret } from "@opensteer/shared/secretDigest";
 import { createLocalJWKSet, exportJWK, jwtVerify, SignJWT } from "jose";
 import { sql, type KyselyPlugin } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { AccountDeletionService } from "../account/account-deletion.js";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
 import { createControlPlaneDatabase } from "../database/database.js";
@@ -4016,6 +4017,129 @@ integration("Cloud Computer Account service", () => {
     });
     expect(logs.join("")).toContain("Could not interpret a paid Stripe Checkout Session");
     expect(logs.join("")).not.toContain("private-input");
+  });
+
+  describe("deleting an Account that has a Cloud Computer", () => {
+    const deleteAccount = (account: Awaited<ReturnType<typeof createAccount>>) =>
+      requestAs(account, "DELETE", "/v1/account");
+    const exists = async (id: ControlPlaneAccountId) =>
+      Boolean(
+        await database.selectFrom("users").select("id").where("id", "=", id).executeTakeFirst(),
+      );
+    // The pass the account service runs every minute, over the same stores.
+    const finishPending = async () => {
+      const errors: unknown[] = [];
+      await new AccountDeletionService({
+        auth,
+        cloudComputers: cloud,
+        connectLifecycle: new ConnectLifecycleService(database, {
+          delete: async () => undefined,
+          ensure: async () => undefined as never,
+          readConnectorToken: async () => undefined as never,
+          rotateConnectorToken: async () => undefined as never,
+        }),
+        store: directory,
+      }).finishPending((error) => errors.push(error));
+      expect(errors).toEqual([]);
+    };
+    const tearDown = async (id: CloudComputerDesired["id"]) => {
+      const deleting = (await getDesired(id))!;
+      expect(deleting.state).toBe("deleted");
+      expect(
+        (
+          await report(deleting, {
+            phase: "deleted",
+            providerServerId: null,
+            ipv4: null,
+            observedIdentity: null,
+          })
+        ).json(),
+      ).toEqual({ recorded: true });
+    };
+
+    it("cancels the subscription before anything else, tears the computer down, and goes only after", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      const asked = await deleteAccount(account);
+      expect(asked.statusCode, asked.body).toBe(202);
+      expect(asked.json()).toEqual({ deleted: false, pending: true });
+      // Cancelled at once, through the Cloud Computer's own Delete.
+      expect(stripe.cancel).toHaveBeenCalledExactlyOnceWith(order.subscription);
+      expect((await getDesired(id))?.state).toBe("deleted");
+      // The Account stays while its machine runs, and buys nothing meanwhile.
+      expect(await exists(account.id)).toBe(true);
+      const again = purchase(account.id);
+      const refused = await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+        requestId: again.requestId,
+      });
+      expect(refused.statusCode).not.toBe(200);
+      await finishPending();
+      expect(await exists(account.id)).toBe(true);
+      // The machine and disk are gone: now the Account's records go.
+      await tearDown(id);
+      await finishPending();
+      expect(await exists(account.id)).toBe(false);
+      expect(stripe.cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves no subscription charging when Stripe fails halfway", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      stripe.cancel.mockRejectedValueOnce(new Error("Stripe unavailable"));
+      const asked = await deleteAccount(account);
+      expect(asked.statusCode, asked.body).toBe(202);
+      // Not cancelled yet, so the machine isn't let go either.
+      expect((await getDesired(id))?.state).toBe("active");
+      expect(await exists(account.id)).toBe(true);
+      // The next billing pass cancels, and only then does the machine go.
+      await cloud.reconcileBilling(() => {
+        throw new Error("unexpected periodic billing failure");
+      });
+      expect(stripe.cancel).toHaveBeenLastCalledWith(order.subscription);
+      expect((await getDesired(id))?.state).toBe("deleted");
+      await tearDown(id);
+      await finishPending();
+      expect(await exists(account.id)).toBe(false);
+    });
+
+    it("keeps an Account whose work Home its organization hasn't offboarded, and changes nothing", async () => {
+      const admin = await createAccount();
+      const assignee = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      await invite(org.path, admin, assignee);
+      const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        requestId: randomUUID(),
+        accountId: assignee.id,
+      });
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      stripe.cancel.mockClear();
+      const refused = await deleteAccount(assignee);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.body).toContain("offboard your work Cloud Computer");
+      expect(stripe.cancel).not.toHaveBeenCalled();
+      expect(await exists(assignee.id)).toBe(true);
+      expect(
+        (
+          await database
+            .selectFrom("users")
+            .select("deletionRequestedAt")
+            .where("id", "=", assignee.id)
+            .executeTakeFirstOrThrow()
+        ).deletionRequestedAt,
+      ).toBeNull();
+    });
+
+    it("deletes an Account with no Cloud Computer at once, as before", async () => {
+      const account = await createAccount();
+      stripe.cancel.mockClear();
+      const deleted = await deleteAccount(account);
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(deleted.json()).toEqual({ deleted: true });
+      expect(await exists(account.id)).toBe(false);
+      expect(stripe.cancel).not.toHaveBeenCalled();
+    });
   });
 
   it("rate limits boot attempts and admits only signed Stripe webhooks", async () => {

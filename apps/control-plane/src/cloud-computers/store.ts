@@ -361,7 +361,7 @@ export class CloudComputerStore {
     const recovered = await this.#db.transaction().execute(async (tx) => {
       const owner = await tx
         .selectFrom("users")
-        .select("deletionFencedUntil")
+        .select(["deletionFencedUntil", "deletionRequestedAt"])
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
@@ -381,7 +381,7 @@ export class CloudComputerStore {
         .where("deletionRequestedAt", "is not", null)
         .where("tombstonedAt", "is", null)
         .executeTakeFirst();
-      const close = !owner || Boolean(deleting);
+      const close = !owner || owner.deletionRequestedAt !== null || Boolean(deleting);
       let session = await this.#options.stripe.findCheckout({
         accountId,
         requestId,
@@ -530,7 +530,7 @@ export class CloudComputerStore {
       }
       const owner = await tx
         .selectFrom("users")
-        .select("deletionFencedUntil")
+        .select(["deletionFencedUntil", "deletionRequestedAt"])
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
@@ -572,7 +572,8 @@ export class CloudComputerStore {
           await releaseCheckoutTarget(tx, accountId, requestId);
         }
       };
-      if (!owner || attempt.status === "expired") {
+      // Paid after the person asked to delete the Account: refunded, never fulfilled.
+      if (!owner || owner.deletionRequestedAt || attempt.status === "expired") {
         await refund();
         return;
       }
@@ -2273,6 +2274,28 @@ export class CloudComputerStore {
     );
   }
 
+  /**
+   * The person's own Cloud Computers that deleting their Account must end first, and how far
+   * each has gone: asked to delete, its subscription cancelled, its machine and disk gone.
+   * A work Home is the organization's and never listed here.
+   */
+  async accountDeletionState(accountId: ControlPlaneAccountId) {
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .select(["id", "billingStatus", "deletionRequestedAt", "state", "vmDestroyedAt"])
+      .where("accountId", "=", accountId)
+      .where("workAssignmentId", "is", null)
+      .where("tombstonedAt", "is", null)
+      .orderBy("id")
+      .execute();
+    return rows.map((row) => ({
+      id: CloudComputerIdSchema.parse(row.id),
+      deletionRequested: row.deletionRequestedAt !== null,
+      billingCanceled: row.billingStatus === "canceled",
+      machineGone: row.vmDestroyedAt !== null,
+    }));
+  }
+
   async mutate(
     id: CloudComputerId,
     action: Mutation,
@@ -3068,12 +3091,15 @@ function needsVm(row: Computer) {
 async function lockOwner(tx: TransactionDb, accountId: ControlPlaneAccountId, now: Date) {
   const owner = await tx
     .selectFrom("users")
-    .select(["id", "deletionFencedUntil"])
+    .select(["id", "deletionFencedUntil", "deletionRequestedAt"])
     .where("id", "=", accountId)
     .forNoKeyUpdate()
     .executeTakeFirst();
+  // An Account its person asked to delete buys nothing more, however long the deletion takes.
   return (
-    owner !== undefined && (owner.deletionFencedUntil === null || owner.deletionFencedUntil <= now)
+    owner !== undefined &&
+    owner.deletionRequestedAt === null &&
+    (owner.deletionFencedUntil === null || owner.deletionFencedUntil <= now)
   );
 }
 

@@ -211,6 +211,10 @@ export function deleteAccountBody(input: {
   /** Teams still being set up, which deleting the Account cancels. */
   readonly settingUp: readonly string[];
   readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
+  /** The person has their own Cloud Computer, which is deleted with the Account. */
+  readonly cloudComputer?: boolean;
+  /** The organizations whose work Homes this person still holds, which keep the Account. */
+  readonly workHomes?: readonly string[];
 }): string {
   const list = (items: readonly string[]) =>
     `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -229,6 +233,17 @@ export function deleteAccountBody(input: {
       <a class="btn btn--block" href="/">Back</a>`,
     });
   }
+  const workHomes = input.workHomes ?? [];
+  if (workHomes.length > 0)
+    return card({
+      head,
+      content: `<div class="alert" role="alert"><p class="alert__title">Ask your organization admin to offboard your work Cloud Computer first</p><p class="lead">A work Home belongs to its organization, so deleting your account never deletes it. Once ${escapeHtml(workHomes.join(" and "))} offboards it, you can delete your account here.</p></div>
+      <p class="lead">Nothing has been deleted or turned off.</p>
+      <a class="btn btn--block" href="/">Back</a>`,
+    });
+  const cloud = input.cloudComputer
+    ? `<p class="lead">Your Cloud Computer is deleted with it. Opensteer cancels its subscription first, so nothing more is charged; the rest of the period already paid isn’t refunded. Then Opensteer destroys the computer and its disk, including its browser profiles and tasks, makes its backups unreadable and removes them. Your account goes once the computer is gone.</p>`
+    : "";
   const computers = input.computers.length
     ? `<p class="lead">These computers lose remote access and leave your account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
     : "";
@@ -249,8 +264,23 @@ export function deleteAccountBody(input: {
     : "";
   return card({
     head,
-    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${settingUp}
+    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${cloud}${computers}${servers}${settingUp}
       <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep account</a><button class="btn btn--danger" type="submit">Delete account</button></div></form>`,
+  });
+}
+
+/**
+ * Asked and under way: the Account waits for its Cloud Computer to be gone, and says whether
+ * its subscription is cancelled yet.
+ */
+export function accountDeletionPendingBody(input: { readonly billingCanceled: boolean }): string {
+  return statusPageBody({
+    detail: input.billingCanceled
+      ? "Your Cloud Computer’s subscription is cancelled, so nothing more is charged. Opensteer is destroying the computer and its disk, then removes its backups. Your account goes once the computer is gone. You can close this window."
+      : "Opensteer is cancelling your Cloud Computer’s subscription with Stripe and keeps trying until Stripe confirms it. Then it destroys the computer and its disk and removes its backups. Your account goes once the computer is gone. You can close this window.",
+    mark: "clock",
+    title: "Your Opensteer account is being deleted",
+    tone: "ok",
   });
 }
 

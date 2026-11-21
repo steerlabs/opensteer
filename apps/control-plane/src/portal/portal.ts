@@ -55,6 +55,7 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import {
   accountDeletedBody,
+  accountDeletionPendingBody,
   browserPagePolicyWithScript,
   deleteAccountBody,
   hostedTeamAnchor,
@@ -280,11 +281,27 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     failed: boolean,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [owned, held, created] = await Promise.all([
+    const [owned, held, created, computers, ending, requestedAt] = await Promise.all([
       dependencies.store.ownedDeployments(accountId),
       dependencies.store.heldHostedTeams(accountId),
       dependencies.hostedTeams?.listCreatedBy(accountId) ?? [],
+      dependencies.cloudComputers?.listForAccount(accountId) ?? [],
+      dependencies.cloudComputers?.accountDeletionState(accountId) ?? [],
+      dependencies.store.accountDeletionRequestedAt(accountId),
     ]);
+    const live = computers.filter((computer) => computer.status !== "deleted");
+    const personal = live.some((computer) => !computer.work);
+    // Already asked: the deletion is under way, and asking again changes nothing.
+    if (requestedAt && !failed)
+      return sendBrowserPage(reply, {
+        body: accountDeletionPendingBody({
+          billingCanceled: ending.every((computer) => computer.billingCanceled),
+        }),
+        fonts,
+        layout: "plain",
+        title: "Account being deleted · Opensteer",
+      });
+    const cloudDeployments = new Set(computers.flatMap(({ deploymentId }) => deploymentId ?? []));
     return sendBrowserPage(reply, {
       body: deleteAccountBody({
         action: portalDeleteAccountPath,
@@ -299,7 +316,13 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
             (team) => team.stage !== "deleting" && !held.some((holding) => holding.id === team.id),
           )
           .map((team) => new URL(team.origin).host),
-        servers: owned.filter((deployment) => deployment.reachability !== "routed"),
+        // A Cloud Computer is said for itself, never as a server that stops signing people in.
+        servers: owned.filter(
+          (deployment) =>
+            deployment.reachability !== "routed" && !cloudDeployments.has(deployment.id),
+        ),
+        cloudComputer: personal,
+        workHomes: [...new Set(live.flatMap((computer) => computer.work?.organizationName ?? []))],
       }),
       fonts,
       layout: "card",
@@ -630,8 +653,9 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await provenSessionOrRedirect(request, reply);
         if (!session) return reply;
+        let outcome: Awaited<ReturnType<AccountDeletionService["delete"]>>;
         try {
-          await dependencies.accountDeletion.delete(
+          outcome = await dependencies.accountDeletion.delete(
             ControlPlaneAccountIdSchema.parse(session.accountId),
           );
         } catch (error) {
@@ -643,6 +667,13 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
             error.reason !== "hosted-teams-remain",
           );
         }
+        if (outcome.status === "pending")
+          return sendBrowserPage(reply.code(202), {
+            body: accountDeletionPendingBody({ billingCanceled: outcome.billingCanceled }),
+            fonts,
+            layout: "plain",
+            title: "Account being deleted · Opensteer",
+          });
         // Reading the session refreshed its cookie; only the expiry may reach the browser.
         void reply.removeHeader("set-cookie");
         appendSetCookie(reply, clearSessionCookie());

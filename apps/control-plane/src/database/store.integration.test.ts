@@ -1086,7 +1086,7 @@ integration("control-plane PostgreSQL boundary", () => {
     expect(revocations[0]?.body.get("token")).toBe("apple-refresh-token");
     expect(revocations[0]?.body.get("token_type_hint")).toBe("refresh_token");
 
-    await expect(deletion.delete(ownerId)).resolves.toBeUndefined();
+    await expect(deletion.delete(ownerId)).resolves.toEqual({ status: "deleted" });
   });
 
   it("requires a recent Account sign-in for the unrecoverable Account deletion", async ({
