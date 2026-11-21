@@ -6401,7 +6401,8 @@ export class BrowserService {
       return [];
     const database = this.#repository.database;
     const slot = await readBrowserPoolSlot(database, runnerId);
-    if (!slot) return [];
+    // A removed device's slot waits only for its guest to stop: there is no browser to show.
+    if (!slot || slot.phase === "releasing") return [];
     const shown = this.#poolTabTarget(runnerId)?.report();
     const retained =
       (slot.retained as { documents?: BrowserPoolDocument[] } | null)?.documents ?? [];
@@ -6457,9 +6458,16 @@ export class BrowserService {
   }
 
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
-  async poolDeviceRemoved(runnerId: RunnerId): Promise<void> {
+  /**
+   * A removed device's pooled browser: `ended` are the sessions its revocation already ended,
+   * which get their notes with the rest. An ordinary Home returns before any read.
+   */
+  async poolDeviceRemoved(
+    runnerId: RunnerId,
+    ended: readonly BrowserSessionId[] = [],
+  ): Promise<void> {
     if (runnerId !== this.#managedPoolTestRunner) return;
-    await this.#poolTabTarget(runnerId)?.releaseDevice();
+    await this.#poolTabTarget(runnerId)?.releaseDevice(ended);
   }
 
   abandonSession(sessionId: BrowserSessionId): void {

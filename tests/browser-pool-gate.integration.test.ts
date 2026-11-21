@@ -27,6 +27,7 @@ import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import {
   before,
@@ -1073,18 +1074,51 @@ it("ends the sessions with their note when the Runner does not come back before 
   }
 });
 
-it("ends a removed device's pooled sessions with evidence, releases its slot and never wakes it", async () => {
+/** Every removal dependency but the store and the browser does nothing, as nothing else runs. */
+function removalDependencies(store: unknown, browser: unknown) {
+  const passive: unknown = new Proxy(function () {}, {
+    get: (_target, property) => (property === "then" ? undefined : passive),
+    apply: (_target, _this, args: unknown[]) => {
+      const last = args.at(-1);
+      return typeof last === "function" ? (last as () => unknown)() : Promise.resolve(undefined);
+    },
+  });
+  const real: Record<string, unknown> = { store, browser };
+  return new Proxy(real, {
+    get: (target, property: string) => (property in target ? target[property] : passive),
+  }) as never;
+}
+
+it("ends a removed device's pooled sessions with their notes through the real removal, and never wakes it", async () => {
   const j = await journey("device-removed");
   try {
     const home = await j.startHome();
     const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("removed"));
     await j.draft();
-    await home.service.poolDeviceRemoved(j.task.runnerId);
-    expect(await j.slot()).toBeUndefined();
-    expect((await j.row(sessionId))?.state).toBe("failed");
+    // A Cloud Computer is a managed Runner, never the Home's own: it can be removed.
+    await j.database
+      .updateTable("runners")
+      .set({ kind: "managed" })
+      .where("id", "=", j.task.runnerId)
+      .execute();
+    // The real route: the store's revocation ends the sessions in its own transaction, then the
+    // removal's own steps.
+    await removeDevice(
+      removalDependencies(j.store, home.service),
+      await j.store.requireSelfDeviceId(j.task.runnerId),
+      j.task.userId,
+    );
+    const state = await j.database
+      .selectFrom("browserSessions")
+      .select("state")
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    expect(state.state).toBe("failed");
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, reason: "device-removed" },
     ]);
+    await home.coordinator.released();
+    expect(await j.slot()).toBeUndefined();
     expect(j.controller.effects).toEqual(["start", "stop"]);
     await expect(home.coordinator.gate.reserve(AbortSignal.timeout(1_000))).rejects.toThrow(
       "device was removed",

@@ -1110,6 +1110,102 @@ it("ends a reconnect whose reattach stalls by its deadline, with the session's e
   }
 });
 
+for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const)
+  it(`keeps a removed device's slot until its guest is known stopped when the ${fault}`, async () => {
+    const f = await poolFixture(`release-${fault}`);
+    try {
+      let failing = 3;
+      const physical: BrowserPoolPhysicalController = {
+        status: async (slot, term) => {
+          if (fault === "status-fails" && failing > 0) {
+            failing--;
+            throw new Error("The pool controller is unreachable.");
+          }
+          return f.controller.status(slot, term);
+        },
+        result: (slot, term, id) => f.controller.result(slot, term, id),
+        apply: async (call) => {
+          if (call.kind === "stop" && fault !== "status-fails" && failing > 0) {
+            failing--;
+            if (fault === "stop-throws") throw new Error("The stop request was lost.");
+            return {
+              id: call.id,
+              applied: false,
+              reason: "busy",
+              status: await f.controller.status(call.slotId, call.term),
+            };
+          }
+          return f.controller.apply(call);
+        },
+      };
+      const first = f.home();
+      await first.recover();
+      await f.openSession(first);
+      first.close();
+      let removing = f.home(undefined, physical);
+      await removing.recover();
+      const blocked = Promise.withResolvers<void>();
+      f.controller.hold("stop", () => blocked.promise);
+      failing = 1_000;
+      await removing.releaseDevice();
+      // The sessions ended with their note at once, admission is closed for good, and the row
+      // waits: none of the failures is evidence that the guest stopped.
+      expect((await f.row())?.state).toBe("failed");
+      expect(await f.slot()).toMatchObject({ phase: "releasing" });
+      expect(removing.gate.phase).toBe("released");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await f.slot()).toMatchObject({ phase: "releasing" });
+      expect(f.controller.effects).toEqual(["start"]);
+      // A Home restart resumes the stop; once it is known, the slot goes with its journal.
+      removing.close();
+      blocked.resolve();
+      failing = 2;
+      removing = f.home(undefined, physical);
+      await removing.recover();
+      expect(removing.gate.phase).toBe("released");
+      await vi.waitFor(async () => expect(await f.slot()).toBeUndefined(), { timeout: 5_000 });
+      expect(f.controller.effects).toEqual(["start", "stop"]);
+      expect(
+        await f.database
+          .selectFrom("browserPoolControllerCalls")
+          .select("id")
+          .where("runnerId", "=", f.task.runnerId)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+it("ages out finished calls, the last intent's included once the slot runs again, without being asked", async () => {
+  const f = await poolFixture("prune-idle");
+  try {
+    const home = f.home(undefined, f.controller, { pruneEveryMs: 50 });
+    await home.recover();
+    await f.openSession(home);
+    await parkAndWake(f, home);
+    const slot = await f.slot();
+    expect(slot).toMatchObject({ phase: "running", intentId: expect.any(String) });
+    const calls = () =>
+      f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select(["id", "intentId"])
+        .where("runnerId", "=", f.task.runnerId)
+        .execute();
+    expect((await calls()).some(({ intentId }) => intentId === slot!.intentId)).toBe(true);
+    // Everything finished long ago; nothing calls the cleanup here, the Home's own timer does.
+    await f.database
+      .updateTable("browserPoolControllerCalls")
+      .set({ settledAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) })
+      .where("runnerId", "=", f.task.runnerId)
+      .where("settledAt", "is not", null)
+      .execute();
+    await vi.waitFor(async () => expect(await calls()).toEqual([]), { timeout: 3_000 });
+  } finally {
+    await f.close();
+  }
+});
+
 it("ends a recovery that keeps failing at start in a discard and an open gate", async () => {
   const f = await poolFixture("startup-discard");
   try {

@@ -355,19 +355,81 @@ export async function recordBrowserPoolStartFailure(
   });
 }
 
-/** A removed device: its sessions end with their notes and the slot row goes with them. */
-export async function releaseBrowserPoolSlot(
+/**
+ * A removed device: its sessions end with their notes, and the slot is marked releasing, in one
+ * transaction. The row stays until the guest is known stopped (`finishBrowserPoolRelease`).
+ */
+export async function beginBrowserPoolRelease(
   database: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   losses: readonly BrowserPoolSessionLoss[],
-): Promise<void> {
-  await commitPersonalMutation(
+): Promise<BrowserPoolSlot | undefined> {
+  return commitPersonalMutation(
     database,
     async (tx, mutation) => {
       // Lock order: the slot first, then the notes, then the sessions.
       mutation.bumpResource("browser-placement");
-      await tx.deleteFrom("browserPoolSlots").where("runnerId", "=", slot.runnerId).execute();
+      const released = await tx
+        .updateTable("browserPoolSlots")
+        .set({ phase: "releasing", phaseSince: new Date() })
+        .where("runnerId", "=", slot.runnerId)
+        .returningAll()
+        .executeTakeFirst();
       await recordBrowserPoolLosses(tx, slot, losses);
+      return released;
+    },
+    undefined,
+    "non-retrying",
+  );
+}
+
+/** The removed device's guest is known stopped: the slot goes with its journal and relay rows. */
+export async function finishBrowserPoolRelease(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<void> {
+  await commitPersonalMutation(
+    database,
+    async (tx, mutation) => {
+      mutation.bumpResource("browser-placement");
+      await tx
+        .deleteFrom("browserPoolSlots")
+        .where("runnerId", "=", runnerId)
+        .where("phase", "=", "releasing")
+        .execute();
+      // Rows are locked in key order before they go, as every multi-row write here.
+      const calls = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .orderBy("id")
+        .forUpdate()
+        .execute();
+      if (calls.length)
+        await tx
+          .deleteFrom("browserPoolControllerCalls")
+          .where(
+            "id",
+            "in",
+            calls.map(({ id }) => id),
+          )
+          .execute();
+      const relays = await tx
+        .selectFrom("browserPoolRelays")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .orderBy("id")
+        .forUpdate()
+        .execute();
+      if (relays.length)
+        await tx
+          .deleteFrom("browserPoolRelays")
+          .where(
+            "id",
+            "in",
+            relays.map(({ id }) => id),
+          )
+          .execute();
     },
     undefined,
     "non-retrying",
@@ -553,7 +615,10 @@ export async function pruneBrowserPoolBookkeeping(
     .where("runnerId", "=", slot.runnerId)
     .where("settledAt", "is not", null)
     .where("settledAt", "<", before);
-  if (slot.intentId) calls = calls.where("intentId", "is distinct from", slot.intentId);
+  // The last intent's calls are kept only while it is still going; once the slot runs again they
+  // age out like the rest.
+  if (slot.intentId && slot.phase !== "running")
+    calls = calls.where("intentId", "is distinct from", slot.intentId);
   await calls.execute();
   await database
     .deleteFrom("browserPoolRelays")

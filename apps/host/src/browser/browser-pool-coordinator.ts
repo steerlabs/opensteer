@@ -16,7 +16,8 @@ import {
   pruneBrowserPoolBookkeeping,
   announceBrowserPool,
   recordBrowserPoolStartFailure,
-  releaseBrowserPoolSlot,
+  beginBrowserPoolRelease,
+  finishBrowserPoolRelease,
   readAppliedBrowserPoolControllerCall,
   readBrowserPoolSlot,
   type BrowserPoolSessionLoss,
@@ -76,6 +77,8 @@ export interface BrowserPoolCoordinatorOptions {
   readonly channelDeadlineMs?: number;
   /** Every controller call and runtime control has this deadline; then its outcome is read. */
   readonly callTimeoutMs?: number;
+  /** How often finished bookkeeping past its retention is removed, idle or not. */
+  readonly pruneEveryMs?: number;
   readonly onError?: (error: unknown) => void;
   /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
   readonly testHooks?: {
@@ -118,6 +121,11 @@ export class BrowserPoolCoordinator {
       options.callTimeoutMs,
       options.testHooks?.settleCall,
     );
+    // An idle browser's finished bookkeeping ages out too, not only on the paths that write.
+    this.#pruning = setInterval(() => {
+      void this.#prune();
+    }, options.pruneEveryMs ?? defaultPruneEveryMs);
+    this.#pruning.unref();
     this.gate.attach({
       park: (demanded) => this.#serial(() => this.#park(demanded)),
       wake: () =>
@@ -136,6 +144,20 @@ export class BrowserPoolCoordinator {
 
   close(): void {
     this.#closed = true;
+    clearInterval(this.#pruning);
+  }
+
+  readonly #pruning: ReturnType<typeof setInterval>;
+
+  async #prune(): Promise<void> {
+    if (this.#closed) return;
+    const slot = await readBrowserPoolSlot(this.#options.database, this.#options.runnerId).catch(
+      () => undefined,
+    );
+    if (slot && slot.phase !== "releasing")
+      await pruneBrowserPoolBookkeeping(this.#options.database, slot).catch((error: unknown) =>
+        this.#options.onError?.(error),
+      );
   }
 
   get runnerId(): RunnerId {
@@ -247,29 +269,64 @@ export class BrowserPoolCoordinator {
       if (this.#adopter?.live(sessionId)) this.#lost.delete(sessionId);
   }
 
-  /** The device was removed: the guest stops, every session ends with its note, the slot goes. */
-  releaseDevice(): Promise<void> {
+  /**
+   * The device was removed (R6). The gate is released for good at once; every session of the
+   * runtime, and each one the revocation already ended, ends with its note and the slot is marked
+   * releasing in one write. The row goes only with evidence the guest stopped, which a driver
+   * keeps asking for (and recovery resumes after a Home restart). Resolves once the notes are
+   * written; the stop is not awaited.
+   */
+  releaseDevice(ended: readonly BrowserSessionId[] = []): Promise<void> {
     this.gate.released();
-    return this.#serial(async () => {
-      const slot = await this.#read();
-      if (!slot) return;
-      const status = await this.#status().catch(() => undefined);
-      if (status && status.phase !== "stopped")
-        await this.#call(slot, "stop", status).catch((error: unknown) =>
-          this.#options.onError?.(error),
+    return this.#serial(() =>
+      this.#retry(async () => {
+        const slot = await this.#read();
+        if (!slot || slot.phase === "releasing") return;
+        const sessions = await listBrowserPoolRuntimeSessions(
+          this.#options.database,
+          slot.runnerId,
+          slot.runtimeId,
         );
-      const sessions = await listBrowserPoolRuntimeSessions(
-        this.#options.database,
-        slot.runnerId,
-        slot.runtimeId,
-      );
-      await releaseBrowserPoolSlot(
-        this.#options.database,
-        slot,
-        await this.#lossesOf(slot, sessions, "device-removed"),
-      );
-      this.#slot = undefined;
+        const all = [...new Set([...sessions, ...ended])];
+        this.#slot = await beginBrowserPoolRelease(
+          this.#options.database,
+          slot,
+          await this.#lossesOf(slot, all, "device-removed"),
+        );
+      }),
+    ).then(() => {
+      this.#driveRelease();
     });
+  }
+
+  #releasing: Promise<void> | undefined;
+
+  /** Asks for the stop until it is known to have happened, then lets the slot go. */
+  #driveRelease(): void {
+    if (this.#releasing) return;
+    this.#releasing = this.#retry(async () => {
+      const slot = await this.#read();
+      if (slot?.phase !== "releasing") return;
+      // A failed status read is not knowing, never "stopped" (R2); only an applied stop or a
+      // status that reads stopped is evidence.
+      const status = await this.#status();
+      if (status.phase !== "stopped") {
+        const stopped = await this.#call(slot, "stop", status);
+        if (!stopped.applied && stopped.status.phase !== "stopped")
+          throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
+      }
+      await finishBrowserPoolRelease(this.#options.database, slot.runnerId);
+      this.#slot = undefined;
+    })
+      .catch((error: unknown) => this.#options.onError?.(error))
+      .finally(() => {
+        this.#releasing = undefined;
+      });
+  }
+
+  /** Test seam: the release driver's end, when one runs. */
+  released(): Promise<void> {
+    return this.#releasing ?? Promise.resolve();
   }
 
   #serial<T>(work: () => Promise<T>): Promise<T> {
@@ -854,8 +911,14 @@ export class BrowserPoolCoordinator {
   // ---- Recovery ---------------------------------------------------------------------------
 
   async #recover(): Promise<void> {
-    await this.#journal.settleOpen();
     const slot = await this.#read();
+    if (slot?.phase === "releasing") {
+      // A removal a Home restart interrupted: admission never opens again; the stop goes on.
+      this.gate.released();
+      this.#driveRelease();
+      return;
+    }
+    await this.#journal.settleOpen();
     const status = await this.#status();
     const state = this.#state();
     if (!slot) return this.#install(status);
@@ -962,6 +1025,7 @@ function startReason(reason: string): "expired" | "host" | "person" {
   return "host";
 }
 const defaultCallTimeoutMs = 10_000;
+const defaultPruneEveryMs = 60 * 60_000;
 
 /** Every fence comparison: slot, term, instance and epoch alike. */
 function sameFence(a: BrowserPoolRuntimeFence | null, b: BrowserPoolRuntimeFence): boolean {
