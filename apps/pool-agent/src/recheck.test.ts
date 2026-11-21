@@ -4,8 +4,8 @@
  */
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { fixture, open } from "./review.test-support.js";
-import type { FaultyJournal } from "./test-support.js";
+import { callFor, fixture, open } from "./review.test-support.js";
+import { homeKeyPair, testGuest, type FaultyJournal } from "./test-support.js";
 
 afterEach(async () => {
   for (const agent of open.splice(0)) await agent.close().catch(() => undefined);
@@ -39,4 +39,29 @@ describe("finding 1: a save that fails does not spin", () => {
     expect(journal.writes - before).toBe(0);
     expect(f.events.filter((event) => event.event === "save.no-room")).toHaveLength(1);
   });
+});
+
+describe("finding 3: a host reboot with 400 slots does not fail the agent's start", () => {
+  it("starts within its deadline with nothing prepared, and prepares a slot when it starts", async () => {
+    const f = await fixture();
+    const home = homeKeyPair();
+    for (let index = 0; index < 400; index += 1)
+      await f.agent.agent.createSlot({
+        slotId: `many-${index}`,
+        term: 1,
+        homeKey: home.spki,
+        guest: testGuest,
+      });
+    f.driver.rebootHost();
+    // 400 slots one at a time would take 4 s; the start has 1 s.
+    f.driver.prepareMs = 10;
+    const began = performance.now();
+    await f.restart({ deadlines: { sweep: 1_000 } });
+    expect(performance.now() - began).toBeLessThan(1_000);
+    expect(f.driver.prepared.size).toBe(0);
+    const status = await f.agent.agent.status("many-7", 1);
+    expect(await f.agent.agent.apply(callFor(status, "start"))).toMatchObject({ applied: true });
+    expect([...f.driver.prepared]).toEqual(["many-7"]);
+    expect(f.driver.violations).toEqual([]);
+  }, 60_000);
 });

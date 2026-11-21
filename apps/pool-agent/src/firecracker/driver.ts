@@ -32,7 +32,6 @@ import { slotKey } from "../agent.js";
 import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
 import { requireEncryptedArray } from "./array.js";
-import { mapLimit } from "../lane.js";
 import { confine } from "./paths.js";
 import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
@@ -154,6 +153,12 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   // ---- Network ------------------------------------------------------------------------------
 
+  /** Slots whose namespace, veth, host user and proxy socket were found or made. */
+  readonly #present = new Set<number>();
+  /** Present slots whose namespace tables were also read since this agent started. */
+  readonly #verified = new Set<number>();
+
+  /** Re-check finding 3: three bulk reads, no repair, no per-slot command. */
   async prepareSlots(
     slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
   ): Promise<void> {
@@ -169,34 +174,42 @@ export class FirecrackerDriver implements HypervisorDriver {
         "--no-legend",
       ]),
     ]);
-    const present = new Set(namespaces.split("\n").map((line) => line.split(" ")[0]));
+    const names = new Set(namespaces.split("\n").map((line) => line.split(" ")[0]));
     const users = new Set(passwd.split("\n").map((line) => line.split(":")[2]));
-    const healthy = async (index: number) =>
-      present.has(namespaceName(index)) &&
-      links.includes(` ${hostVeth(index)}@`) &&
-      users.has(String(this.#config.egressUidBase + index)) &&
-      sockets.includes(egressSocket(index)) &&
-      (await namespaceTablesPresent(index));
-    await mapLimit(slots, 16, async ({ slotId, egress }) => {
+    for (const { slotId } of slots) {
       const index = this.#numbers.get(slotId);
-      if (index !== undefined && (await healthy(index))) return;
-      await this.prepareSlot(slotId, egress);
-    });
+      if (
+        index !== undefined &&
+        names.has(namespaceName(index)) &&
+        links.includes(` ${hostVeth(index)}@`) &&
+        users.has(String(this.#config.egressUidBase + index)) &&
+        sockets.includes(egressSocket(index))
+      )
+        this.#present.add(index);
+    }
   }
 
   async prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void> {
-    // Allocation, the namespace and the host user happen under the host-wide number lock; a
+    const known = this.#numbers.get(slotId);
+    if (known !== undefined && this.#verified.has(known)) return;
+    // Only the number and the host user (/etc/passwd) are made under the host-wide lock; a
     // failure releases a newly allocated number again.
-    await this.#numbers.allocate(slotId, async (index) => {
+    const index = await this.#numbers.allocate(slotId, (index) =>
+      ensureEgressUser(index, this.#config.egressUidBase + index),
+    );
+    if (!this.#present.has(index) || !(await namespaceTablesPresent(index))) {
       await prepareNamespace(index, this.#uid(index), this.#config.network, this.#hostAddresses);
-      await ensureEgressUser(index, this.#config.egressUidBase + index);
       await defineEgress(this.#config.egress, index, this.#config.egressUidBase + index, egress);
-    });
+      this.#present.add(index);
+    }
+    this.#verified.add(index);
   }
 
   async removeSlot(slotId: string): Promise<void> {
     // The number is freed only after everything that used it is gone.
     await this.#numbers.release(slotId, async (index) => {
+      this.#verified.delete(index);
+      this.#present.delete(index);
       await removeEgress(index);
       await removeNamespace(index);
     });

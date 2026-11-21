@@ -64,13 +64,18 @@ export interface HypervisorDriver {
   /** Refuses a guest whose host paths are not inside the roots configured for them. */
   confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void>;
   /**
-   * Prepares many slots at agent start (review G6c): what exists is read in bulk and only what
-   * is missing is repaired, with bounded parallelism.
+   * At agent start: learns in bulk which of these slots' networks exist, and makes or repairs
+   * none (re-check finding 3). A slot whose network is missing gets it from prepareSlot when it
+   * next starts or resumes.
    */
   prepareSlots(
     slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
   ): Promise<void>;
-  /** Prepares the slot's network namespace, TAP and host-side egress. Idempotent. */
+  /**
+   * The slot's number, network namespace, TAP and host-side egress. Idempotent, and cheap once
+   * the slot is known to be prepared. Only the number and the host user are made under the
+   * host-wide lock.
+   */
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
   /** Removes everything prepareSlot made. Idempotent. */
   removeSlot(slotId: string): Promise<void>;

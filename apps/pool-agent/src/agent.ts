@@ -229,10 +229,11 @@ export class PoolAgent {
       const slot = this.#load(record);
       this.#slots.set(record.slotId, slot);
     }
-    // A host restart removed every namespace: each slot's network is made again first.
-    // Review G6(c): many slots are ready in seconds: their network in bulk, then each slot's
-    // recovery with bounded parallelism (each still alone on its own lane).
-    await within(this.#deadlines.sweep, "Preparing every slot's network", () =>
+    // Re-check finding 3: the driver only learns, in bulk, which slots' networks exist. A host
+    // restart removed every namespace, and no guest survived it, so nothing is made here: a
+    // slot's network is made when it next starts or resumes. Then each slot's recovery runs with
+    // bounded parallelism (each still alone on its own lane).
+    await within(this.#deadlines.sweep, "Reading every slot's network", () =>
       this.#driver.prepareSlots(
         this.#live().map((slot) => ({
           slotId: slot.record.slotId,
@@ -554,6 +555,10 @@ export class PoolAgent {
     this.#checkpoint("start:journaled");
     try {
       await this.#ensureHost();
+      // Re-check finding 3: a slot's namespace and proxy socket are made when it next runs.
+      await this.#step("network", () =>
+        this.#driver.prepareSlot(before.slotId, before.guest.egress),
+      );
       // Nobody else may write the profile: every earlier process of the slot is gone first.
       await this.#kill(slot);
       await within(this.#deadlines.network, "Closing the guest network", () =>
@@ -672,6 +677,9 @@ export class PoolAgent {
     };
     try {
       await this.#ensureHost();
+      await this.#step("network", () =>
+        this.#driver.prepareSlot(before.slotId, before.guest.egress),
+      );
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),
       );

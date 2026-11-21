@@ -131,12 +131,30 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   async prepareSlots(
     slots: readonly { readonly slotId: string; readonly egress: SlotEgress | undefined }[],
   ): Promise<void> {
-    for (const { slotId, egress } of slots) await this.prepareSlot(slotId, egress);
+    // Only learns what exists: a slot's network is made when it next starts or resumes.
+    void slots;
   }
 
+  /** How long making one slot's namespace and proxy socket takes; one at a time, host-wide. */
+  prepareMs = 0;
+  #prepareLock: Promise<void> = Promise.resolve();
+
   async prepareSlot(slotId: string, _egress: SlotEgress | undefined): Promise<void> {
+    if (this.prepared.has(slotId)) return;
+    const turn = this.#prepareLock.then(async () => {
+      if (this.prepareMs) await new Promise((resolve) => setTimeout(resolve, this.prepareMs));
+    });
+    this.#prepareLock = turn.catch(() => undefined);
+    await turn;
     this.prepared.add(slotId);
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
+  }
+
+  /** A host reboot: no guest, no namespace, no proxy socket survives; files on disk do. */
+  rebootHost(): void {
+    this.processes.clear();
+    this.prepared.clear();
+    this.networks.clear();
   }
 
   async removeSlot(slotId: string): Promise<void> {
@@ -155,6 +173,8 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   }
 
   async boot(boot: GuestBoot, _signal: AbortSignal): Promise<void> {
+    if (!this.prepared.has(boot.slotId))
+      this.violations.push(`booted ${boot.slotId} without its network`);
     await this.#enter("boot", boot.slotId);
     this.#oneWriter(boot.slotId);
     this.processes.set(boot.jailId, {
@@ -228,6 +248,8 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   }
 
   async restore(boot: GuestBoot, image: SavedImage): Promise<void> {
+    if (!this.prepared.has(boot.slotId))
+      this.violations.push(`restored ${boot.slotId} without its network`);
     await this.#enter("restore", boot.slotId);
     const stored = this.images.get(image.savedStateId);
     if (!stored || !stored.intact) throw new Error("The image is missing or damaged.");
