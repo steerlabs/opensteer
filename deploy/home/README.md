@@ -160,9 +160,14 @@ can set `releaseManifestUrl` in the managed boot response to schedule updates.
 
 Generate the standalone cloud-init artifact with
 `bash deploy/home/package-installer.sh /path/to/opensteer-home-installer.sh`.
-Publish it with its SHA-256 and the six multi-architecture images from
-`deploy/container/docker-bake.hcl`'s `home` group. Publish the release manifest
-with the image digests. The Home Provisioner renders cloud-init user data. On the
+The installer bundles shell scripts and Compose files for both AMD64 and ARM64.
+The `home` Bake group in `deploy/container/docker-bake.hcl` defines six images
+for `linux/amd64` and `linux/arm64`. Inspect the resolved targets locally with
+`docker buildx bake -f deploy/container/docker-bake.hcl home --print`. The
+release publisher builds and pushes that group with `--push`, verifies both
+platforms in each registry manifest, and pins the six manifest-list digests in
+the Home release manifest. Publish the installer at the manifest's HTTPS URL
+with its SHA-256. The Home Provisioner renders cloud-init user data. On the
 VM, cloud-init writes `/root/opensteer-home-boot.json` and
 `/root/opensteer-home-bootstrap-token` and enables a systemd download unit. The
 unit downloads the installer, verifies its SHA-256, and passes the files to it
