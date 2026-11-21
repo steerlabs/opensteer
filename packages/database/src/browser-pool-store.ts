@@ -476,26 +476,33 @@ export async function recordBrowserPoolControllerCall(
     await insert(database);
     return;
   }
-  await database.transaction().execute(async (tx) => {
-    const open = await tx
-      .selectFrom("browserPoolControllerCalls")
-      .select("id")
-      .where("runnerId", "=", call.runnerId)
-      .where("settledAt", "is", null)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    for (const { id } of open)
-      await tx
-        .updateTable("browserPoolControllerCalls")
-        .set({
-          result: { id, applied: false, reason: "replaced", status: closeOpen },
-          settledAt: new Date(),
-        })
-        .where("id", "=", id)
+  // Under the deployment fence, as the release that deletes these rows is.
+  await commitPersonalMutation(
+    database,
+    async (tx) => {
+      const open = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("runnerId", "=", call.runnerId)
+        .where("settledAt", "is", null)
+        .orderBy("id")
+        .forNoKeyUpdate()
         .execute();
-    await insert(tx);
-  });
+      // The guest is replaced: whether an open call applied is not known, and never claimed.
+      for (const { id } of open)
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id, outcome: "unknown", reason: "superseded", status: closeOpen },
+            settledAt: new Date(),
+          })
+          .where("id", "=", id)
+          .execute();
+      await insert(tx);
+    },
+    undefined,
+    "non-retrying",
+  );
 }
 
 export async function settleBrowserPoolControllerCall(

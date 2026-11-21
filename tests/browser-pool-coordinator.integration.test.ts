@@ -1617,6 +1617,25 @@ it("closes an open resume when a discard replaces the guest, so no later recover
         .where("settledAt", "is", null)
         .execute();
     expect(await open()).toEqual([]);
+    // The resume did apply, so its row never says it did not: it was superseded, its outcome
+    // not known to the journal.
+    expect(
+      await f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select("result")
+        .where("runnerId", "=", f.task.runnerId)
+        .where("kind", "=", "resume")
+        .execute(),
+    ).toEqual([
+      {
+        result: {
+          id: expect.any(String),
+          outcome: "unknown",
+          reason: "superseded",
+          status: expect.any(Object),
+        },
+      },
+    ]);
     // A later Home's recovery has nothing to replay against the new guest: still one guest.
     home.close();
     const next = f.home();
