@@ -285,6 +285,12 @@ export class FirecrackerDriver implements HypervisorDriver {
     await helperCall(join(this.#root(jailId), "v.sock"), { kind: "time" }, signal);
   }
 
+  async saveRoom(_slotId: string, jailId: string): Promise<boolean> {
+    const memoryBytes = await this.#memoryBytes(jailId);
+    const space = await statfs(this.#config.savedRoot);
+    return this.#space.fits(space.bavail * space.bsize, memoryBytes + minimumFreeMarginBytes);
+  }
+
   async snapshot(
     slotId: string,
     jailId: string,

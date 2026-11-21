@@ -27,7 +27,12 @@ import type {
   BrowserPoolAgentStatus,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import { signBrowserPoolAgentBytes } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import type { GuestBoot, GuestProcessState, HypervisorDriver } from "./driver.js";
+import {
+  NoSaveRoom,
+  type GuestBoot,
+  type GuestProcessState,
+  type HypervisorDriver,
+} from "./driver.js";
 import type { PendingRecord, SlotJournal, SlotRecord } from "./journal.js";
 import { DeadlineExceeded, finishedWithin, Lane, mapLimit, Semaphore, within } from "./lane.js";
 
@@ -87,6 +92,10 @@ export interface PoolAgentOptions {
   readonly hostCheckMs?: number;
   /** How soon an unfinished step (a failed clean-up, a failed expiry) is tried again. */
   readonly retryMs?: number;
+  /** A failed idle save is tried again after this, doubling each time up to 30 minutes. */
+  readonly saveRetryMs?: number;
+  /** A save the array had no room for waits for space to change, or this long (30 minutes). */
+  readonly saveRoomRetryMs?: number;
   readonly deadlines?: Partial<PoolAgentDeadlines>;
   /** Events about slots and steps; never guest data. */
   readonly log?: (event: Readonly<Record<string, unknown>>) => void;
@@ -116,6 +125,17 @@ interface Slot {
   retryTimer: ReturnType<typeof setTimeout> | undefined;
   /** The last job failed: the next timed attempt waits at least the retry interval. */
   failedAt: number | undefined;
+  /** Idle saves of the current park that failed: the next one waits longer each time. */
+  saveFailure: SaveFailure | undefined;
+}
+
+interface SaveFailure {
+  readonly savedStateId: string;
+  readonly count: number;
+  /** performance.now() of the last failure. */
+  readonly at: number;
+  /** The array had no room: the space generation then; retried once space changed. */
+  readonly room: number | undefined;
 }
 
 /** Thrown by a test checkpoint: the agent is dead from here on and writes nothing more. */
@@ -157,6 +177,8 @@ export class PoolAgent {
   readonly #now: () => number;
   readonly #deadlines: PoolAgentDeadlines;
   readonly #saves: Semaphore;
+  /** Grows each time an image is deleted: a save that had no room may fit now. */
+  #spaceChanges = 0;
   readonly #slots = new Map<string, Slot>();
   /** Creates run one at a time: two creates of one id are one create. */
   readonly #admin = new Lane();
@@ -184,7 +206,12 @@ export class PoolAgent {
 
   /** Every driver step the agent awaits has a deadline. */
   #step<T>(name: keyof PoolAgentDeadlines, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    return within(this.#deadlines[name], `The ${name} step`, work);
+    const step = within(this.#deadlines[name], `The ${name} step`, work);
+    if (name !== "discard") return step;
+    return step.then((value) => {
+      this.#spaceFreed();
+      return value;
+    });
   }
 
   /**
@@ -806,7 +833,10 @@ export class PoolAgent {
     slot.expiryTimer.unref?.();
     const saveAfter = this.#options.saveAfterMs;
     if (saved.tier === "memory" && saveAfter !== null && saveAfter !== undefined) {
-      const saveIn = Date.parse(saved.parkedAt) + saveAfter - this.#now();
+      const saveIn = Math.max(
+        Date.parse(saved.parkedAt) + saveAfter - this.#now(),
+        this.#saveBackoff(slot, saved.id),
+      );
       slot.saveTimer = setTimeout(
         () => {
           void this.saveToDisk(slot.record.slotId, saved.id).catch((error: unknown) =>
@@ -817,6 +847,41 @@ export class PoolAgent {
       );
       slot.saveTimer.unref?.();
     }
+  }
+
+  /**
+   * Re-check finding 1: how long a failed save of this park waits before it is tried again. A
+   * failure doubles the wait from 30 s up to 30 minutes; a save the array had no room for is
+   * tried again once space changed (an image was deleted) or after 30 minutes.
+   */
+  #saveBackoff(slot: Slot, savedStateId: string): number {
+    const failure = slot.saveFailure;
+    if (!failure || failure.savedStateId !== savedStateId) return 0;
+    const maximum = 30 * 60_000;
+    const wait =
+      failure.room === undefined
+        ? Math.min(maximum, (this.#options.saveRetryMs ?? 30_000) * 2 ** (failure.count - 1))
+        : failure.room === this.#spaceChanges
+          ? (this.#options.saveRoomRetryMs ?? maximum)
+          : 0;
+    return Math.max(0, failure.at + wait - performance.now());
+  }
+
+  #saveFailed(slot: Slot, savedStateId: string, room: boolean): void {
+    const previous = slot.saveFailure;
+    slot.saveFailure = {
+      savedStateId,
+      count: previous?.savedStateId === savedStateId ? previous.count + 1 : 1,
+      at: performance.now(),
+      room: room ? this.#spaceChanges : undefined,
+    };
+  }
+
+  /** An image was deleted: saves waiting for room are tried again. */
+  #spaceFreed(): void {
+    this.#spaceChanges += 1;
+    for (const other of this.#slots.values())
+      if (other.saveFailure?.room !== undefined && !other.lane.busy) this.#schedule(other);
   }
 
   #unschedule(slot: Slot): void {
@@ -858,6 +923,14 @@ export class PoolAgent {
         await this.#settle(slot);
         if (!eligible()) return "skipped";
         const before = slot.record;
+        // Re-check finding 1: a save the array has no room for is not journaled or tried.
+        if (!(await this.#step("inspect", () => this.#driver.saveRoom(slotId, before.jailId!)))) {
+          const waiting = slot.saveFailure;
+          if (waiting?.savedStateId !== savedStateId || waiting.room !== this.#spaceChanges)
+            this.#log({ event: "save.no-room", slotId });
+          this.#saveFailed(slot, savedStateId, true);
+          return "skipped";
+        }
         await this.#commit(slot, {
           ...before,
           pending: { kind: "save", savedStateId, step: "writing", at: this.#iso() },
@@ -871,6 +944,7 @@ export class PoolAgent {
         } catch (error) {
           if (error instanceof AgentCrashed) throw error;
           this.#log({ event: "save.failed", slotId, message: messageOf(error) });
+          this.#saveFailed(slot, savedStateId, error instanceof NoSaveRoom);
           // Finding 3: a snapshot that ran out of time may still be writing. Its writer is
           // waited for, and ended with its VMM if it does not finish, before the image is
           // deleted and the slot released, so no image can appear afterwards.
@@ -914,6 +988,7 @@ export class PoolAgent {
         };
         await this.#commit(slot, next);
         this.#log({ event: "saved", slotId, savedStateId });
+        slot.saveFailure = undefined;
         return "saved";
       });
     } finally {
@@ -1126,6 +1201,7 @@ export class PoolAgent {
       expiryTimer: undefined,
       retryTimer: undefined,
       failedAt: undefined,
+      saveFailure: undefined,
     };
   }
 

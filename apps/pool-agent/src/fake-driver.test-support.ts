@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type {
-  GuestBoot,
-  GuestProcessState,
-  HypervisorDriver,
-  SavedImage,
-  SlotEgress,
+import {
+  NoSaveRoom,
+  type GuestBoot,
+  type GuestProcessState,
+  type HypervisorDriver,
+  type SavedImage,
+  type SlotEgress,
 } from "./driver.js";
 
 type Operation =
@@ -191,8 +192,17 @@ export class FakeHypervisorDriver implements HypervisorDriver {
    * The memory is captured when the call arrives; the image is published once the gate opens,
    * whatever the caller's signal says, as a Firecracker API call that was already sent would.
    */
+  /** Whether the saved-state array has room for an image. */
+  room = true;
+
+  async saveRoom(_slotId: string, jailId: string): Promise<boolean> {
+    this.#process(jailId, "paused");
+    return this.room;
+  }
+
   async snapshot(slotId: string, jailId: string, savedStateId: string): Promise<SavedImage> {
     const process = this.#process(jailId, "paused");
+    if (!this.room) throw new NoSaveRoom("The saved-state array has no room for this guest.");
     process.snapshotted = savedStateId;
     await this.#enter("snapshot", slotId);
     const image: SavedImage = {

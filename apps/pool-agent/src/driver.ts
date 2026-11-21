@@ -42,6 +42,11 @@ export interface SavedFile {
   readonly sha256: string | null;
 }
 
+/** The saved-state array cannot hold this guest's image now; nothing was written. */
+export class NoSaveRoom extends Error {
+  override readonly name = "NoSaveRoom";
+}
+
 export type GuestProcessState = "running" | "paused" | "absent" | "unknown";
 
 export interface HypervisorDriver {
@@ -81,6 +86,8 @@ export interface HypervisorDriver {
   /** Resumes vCPUs of a paused guest in the same process. */
   resume(slotId: string, jailId: string, signal: AbortSignal): Promise<void>;
   /** A full snapshot of a paused guest, written and synced; the guest stays paused. */
+  /** Whether the saved-state array has room for this guest's image now (nothing reserved). */
+  saveRoom(slotId: string, jailId: string): Promise<boolean>;
   snapshot(
     slotId: string,
     jailId: string,
