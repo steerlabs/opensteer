@@ -788,18 +788,27 @@ export class AgentSessionService {
       await pool.recheckTarget();
       signal.throwIfAborted();
       reservation = await pool.reserve(signal);
+      // A restart or a removal asks every holder to stop: the work ends and records its outcome.
+      const held = reservation.ended
+        ? AbortSignal.any([
+            signal,
+            abortedWith(reservation.ended, () =>
+              refused("conflict", "This browser is restarting or was removed."),
+            ),
+          ])
+        : signal;
       const identity = pool.identity();
       await pool.recheckTarget();
-      signal.throwIfAborted();
+      held.throwIfAborted();
       handed = await handOffAgentOperation(this.#store.database, {
         userId: operation.ownerUserId,
         agentConnectionId: operation.agentConnectionId,
         reviewed: row,
         grantTarget: operation.target?.grant,
-        pool: { target: identity, signal },
+        pool: { target: identity, signal: held },
       });
       if (!handed) throw refused("forbidden", "The connected agent's access changed or ended.");
-      return await this.#execute(operation, handed, taskId, bindingId, signal, {
+      return await this.#execute(operation, handed, taskId, bindingId, held, {
         deadline,
         identity,
         pool,
@@ -1058,4 +1067,12 @@ export function assertOperationArguments(
       reason: "operation-key-reused",
       message: "This operationKey already names a different call.",
     });
+}
+
+/** A signal that aborts with `reason()` when `source` does, for a refusal of our own words. */
+function abortedWith(source: AbortSignal, reason: () => unknown): AbortSignal {
+  const controller = new AbortController();
+  if (source.aborted) controller.abort(reason());
+  else source.addEventListener("abort", () => controller.abort(reason()), { once: true });
+  return controller.signal;
 }

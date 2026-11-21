@@ -233,22 +233,20 @@ describeStore("an external agent's direct work through sessions", (it) => {
       const reserveCancelled = Promise.withResolvers<void>();
       const read = () => readBrowserPoolSlot(database, identity.runnerId);
       await installBrowserPoolSlot(database, identity);
-      // The driver parks without touching the slot row, so only the gate holds work back.
+      // The loop's facts without the slot row: only the gate holds work back. Demand on the
+      // parked browser starts one wake, as the loop would.
       const gate = new BrowserPoolGate();
-      gate.attach({
-        park: async () => "parked",
-        wake: async () => {
-          wakeStarted.resolve();
-          try {
-            await releaseWake.promise;
-            gate.settle("open");
-          } finally {
-            waking.resolve();
-          }
-        },
-      });
-      gate.settle("open");
-      expect(await gate.tryPark()).toBe("parked");
+      gate.set({ recovered: true, away: "parked", hold: null });
+      let woke = false;
+      gate.onChange = () => {
+        if (woke || gate.away !== "parked" || !gate.demand) return;
+        woke = true;
+        gate.set({ away: "waking" });
+        wakeStarted.resolve();
+        void releaseWake.promise
+          .then(() => gate.set({ away: null }))
+          .finally(() => waking.resolve());
+      };
       const s = await setUp(storeFixture, `approved-pool-${cut}`, {
         run: f,
         accessMode: cut === "task-mode cut" ? "auto" : "approval-required",

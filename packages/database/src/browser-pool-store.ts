@@ -224,6 +224,7 @@ export interface BrowserPoolSlotChange {
     Partial<Pick<BrowserPoolTargetIdentity, "slotId" | "term">>;
   readonly lastStart?: BrowserPoolSlot["lastStart"];
   readonly failedStarts?: number;
+  readonly restartKeys?: readonly string[];
 }
 
 /**
@@ -269,6 +270,9 @@ export async function advanceBrowserPoolSlot(
           ...(next.fence ? next.fence : {}),
           ...(next.lastStart !== undefined ? { lastStart: next.lastStart } : {}),
           ...(next.failedStarts !== undefined ? { failedStarts: next.failedStarts } : {}),
+          ...(next.restartKeys !== undefined
+            ? { restartKeys: sql<readonly string[]>`${JSON.stringify(next.restartKeys)}::jsonb` }
+            : {}),
           ...(next.phase !== current.phase ? { phaseSince: new Date() } : {}),
         })
         .where("runnerId", "=", slot.runnerId)
@@ -584,6 +588,23 @@ export async function listBrowserPoolRuntimeSessions(
     .where("runnerId", "=", runnerId)
     .where("runtimeId", "=", runtimeId)
     .where("state", "in", ["starting", "ready", "closing"])
+    .orderBy("id")
+    .execute();
+  return rows.map(({ id }) => id);
+}
+
+/** The ready sessions of this runtime: the ones a channel can be missing from. */
+export async function listBrowserPoolReadySessions(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+  runtimeId: string,
+): Promise<readonly BrowserSessionId[]> {
+  const rows = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", runnerId)
+    .where("runtimeId", "=", runtimeId)
+    .where("state", "=", "ready")
     .orderBy("id")
     .execute();
   return rows.map(({ id }) => id);

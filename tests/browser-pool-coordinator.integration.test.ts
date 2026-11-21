@@ -30,6 +30,7 @@ import {
   browserPoolSlotIdentity,
   listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
+  listBrowserPoolReadySessions,
   requireBrowserPoolAdmission,
 } from "../packages/database/src/browser-pool-store.js";
 import {
@@ -129,20 +130,25 @@ async function poolFixture(
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
-    // As the Home's: a ready session with no live channel here.
-    orphans: async (_runtimeId) => {
-      const current = await getBrowserSessionForOwner(database, sessionId, task.userId);
-      return current && current.state === "ready" && !sinks.has(sessionId)
-        ? [
-            {
-              sessionId,
-              surfaces: [...surfaces].map((surfaceId) => ({ surfaceId, documentId: null })),
-            },
-          ]
-        : [];
+    // As the Home's: the ready sessions of the runtime with no channel here.
+    pagesOf: async (id) => (id === sessionId ? [...surfaces] : []),
+    withoutChannel: async (runtimeId) =>
+      (await listBrowserPoolReadySessions(database, task.runnerId, runtimeId)).filter(
+        (id) => !sinks.has(id),
+      ),
+    // As the Home's before a restart: every channel of the runtime is closed, its row kept.
+    quiesce: async () => {
+      for (const attachment of sinks.values()) await attachment.close().catch(() => undefined);
+      sinks.clear();
     },
-    reattach: async ({ sessions, fence, attempt, documents }) => {
-      if (stalled) await stalled;
+    reattach: async ({ sessions, fence, attempt, documents, signal }) => {
+      // A stall ends when the attempt's own signal does: nothing is left running after it.
+      if (stalled)
+        await Promise.race([
+          stalled,
+          new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve())),
+        ]);
+      if (signal?.aborted) return [];
       for (const id of sessions) {
         if (skip.has(id)) continue;
         const name = `reattach-${id}-${attempt}`;
@@ -535,8 +541,18 @@ for (const [point, when, ends] of crashes)
       dying.close();
       // The old process's sockets close with it.
       await f.crashSockets();
-      const next = f.home();
+      // A session the crash left without a channel gets the reconnect window, then ends with its
+      // note: a short window here.
+      const next = f.home(undefined, f.controller, { channelDeadlineMs: 300 });
       await next.recover();
+      if (ends === "failed")
+        await vi.waitFor(
+          async () => {
+            expect((await f.row())?.state).toBe("failed");
+            expect(next.gate.phase).not.toBe("reconnecting");
+          },
+          { timeout: 5_000 },
+        );
       expect(["open", "parked"]).toContain(next.gate.phase);
       if (next.gate.phase === "parked") {
         const woken = await next.gate.reserve(AbortSignal.timeout(10_000));

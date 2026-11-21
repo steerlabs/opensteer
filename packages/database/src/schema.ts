@@ -2405,6 +2405,8 @@ export interface DatabaseSchema {
     /** The last fresh start: why, when, and its id. */
     lastStart: JsonColumn<Readonly<Record<string, unknown>> | null>;
     failedStarts: ColumnType<number, number | undefined, number>;
+    /** The owner's restart keys already handled, newest first, bounded: a retry does nothing. */
+    restartKeys: ColumnType<readonly string[], readonly string[] | undefined, readonly string[]>;
   };
   browserPoolControllerCalls: {
     id: string;

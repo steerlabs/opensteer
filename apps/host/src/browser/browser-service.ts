@@ -190,6 +190,7 @@ import {
   readBrowserPoolOwner,
   readBrowserPoolSlot,
   listBrowserPoolReportedNotices,
+  listBrowserPoolReadySessions,
   seeBrowserPoolDocumentLoss,
   readBrowserPoolSessionLineage,
   type BrowserPoolSessionLoss,
@@ -1136,34 +1137,56 @@ export class BrowserService {
             })),
           ),
       live: (sessionId) => this.#brokers.get(sessionId)?.live === true,
-      orphans: async (runtimeId) => {
-        // No target is needed: a Runner that is away still has sessions to end.
+      pagesOf: async (sessionId) => {
         if (!(this.#repository instanceof OpensteerStore)) return [];
+        const owner = await readBrowserPoolOwner(this.#repository.database);
+        return owner ? (await this.savedPages(owner, sessionId)).map((tab) => tab.id) : [];
+      },
+      withoutChannel: async (runtimeId) => {
+        // No target is needed: a Runner that is away still has its sessions.
+        if (!(this.#repository instanceof OpensteerStore)) return [];
+        const ready = await listBrowserPoolReadySessions(
+          this.#repository.database,
+          runnerId,
+          runtimeId,
+        );
+        // A ready session whose broker is gone or no longer live has no channel here.
+        return ready.filter((sessionId) => !this.#brokers.get(sessionId)?.live);
+      },
+      quiesce: async () => {
+        if (!(this.#repository instanceof OpensteerStore)) return;
+        const runtimeId = this.#pools.get(runnerId)!.runtimeId;
         const sessions = await listBrowserPoolRuntimeSessions(
           this.#repository.database,
           runnerId,
           runtimeId,
         );
-        const owner = await readBrowserPoolOwner(this.#repository.database);
-        const orphans = sessions.filter((id) => !this.#brokers.get(id)?.live);
-        return Promise.all(
-          orphans.map(async (sessionId) => ({
-            sessionId,
-            surfaces: owner
-              ? (await this.savedPages(owner, sessionId).catch(() => [])).map((tab) => ({
-                  surfaceId: tab.id,
-                  documentId: null,
-                }))
-              : [],
-          })),
+        // An unredeemed ticket would hold the gate until it expires, or attach meanwhile.
+        this.standardCdpTickets.revokePooled((claims) =>
+          sessions.includes(claims.browserSessionId),
+        );
+        for (const entry of this.#standardCdpAttachments.values())
+          if (entry.runnerId === runnerId) entry.close("This browser is restarting.");
+        await Promise.all(
+          sessions.map((sessionId) =>
+            this.#brokers.get(sessionId)?.detachPooled("This browser is restarting."),
+          ),
         );
       },
-      reattach: async ({ sessions, documents, fence, attempt }) => {
+      reattach: async ({ sessions, documents, fence, attempt, signal }) => {
         const losses: BrowserPoolSessionLoss[] = [];
         for (const sessionId of sessions) {
+          if (signal?.aborted) break;
           try {
             losses.push(
-              ...(await this.#adoptPooledSession(runnerId, sessionId, documents, fence, attempt)),
+              ...(await this.#adoptPooledSession(
+                runnerId,
+                sessionId,
+                documents,
+                fence,
+                attempt,
+                signal,
+              )),
             );
           } catch (error) {
             // This session is not reattached; the runtime reports it lost, the rest proceed.
@@ -1181,6 +1204,7 @@ export class BrowserService {
     documents: readonly BrowserPoolDocument[],
     fence: BrowserPoolRuntimeFence,
     attempt: number,
+    signal?: AbortSignal,
   ): Promise<readonly BrowserPoolSessionLoss[]> {
     const pool = this.#pool(runnerId);
     const target = this.#resolveTarget({ kind: "runner", runnerId });
@@ -1325,6 +1349,7 @@ export class BrowserService {
     let stopped = false;
     try {
       await withTimeout(broker.ready(), this.#connectTimeoutMs, {
+        ...(signal ? { signal } : {}),
         timeoutError: () => new Error("The retained browser session did not reattach."),
       });
       // Stop may have closed the row while the channel attached: then it is not adopted, and
@@ -6477,23 +6502,7 @@ export class BrowserService {
       throw new OpensteerError({ code: "not_found", message: "This browser does not restart." });
     const database = this.#repository.database;
     await admitExecution(database, { ownerUserId: ownerId, subject: { kind: "person" } });
-    const pool = this.#pool(runnerId)!;
-    const runtimeId = this.#resolveTarget({ kind: "runner", runnerId })?.runtimeId;
-    await pool.restart({
-      ...(idempotencyKey ? { key: idempotencyKey } : {}),
-      close: async () => {
-        for (const entry of this.#standardCdpAttachments.values())
-          if (entry.runnerId === runnerId) entry.close("This browser is restarting.");
-        const sessions = runtimeId
-          ? await listBrowserPoolRuntimeSessions(database, runnerId, runtimeId)
-          : [];
-        await Promise.all(
-          sessions.map((sessionId) =>
-            this.#brokers.get(sessionId)?.detachPooled("This browser is restarting."),
-          ),
-        );
-      },
-    });
+    await this.#pool(runnerId)!.restart(idempotencyKey ? { key: idempotencyKey } : {});
   }
 
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
