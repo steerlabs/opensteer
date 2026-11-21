@@ -103,6 +103,13 @@ export type BrowserPoolAgentAdminRequest =
       /** SPKI DER, base64, of the Home's Ed25519 key. */
       readonly homeKey: string;
       readonly guest: BrowserPoolAgentGuestSpec;
+      /**
+       * SPKI DER, base64: the key a Home's Host and Runner present to the relay for this slot.
+       * It opens tunnels to the slot's bridge and nothing else. No relay without it.
+       */
+      readonly relayKey?: string;
+      /** The Home's attach-ticket key, which the guest's runtime alone trusts. */
+      readonly ticketKey?: { readonly keyId: string; readonly spki: string };
     }
   | {
       readonly op: "replace-key";

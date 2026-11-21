@@ -95,6 +95,10 @@ const adminSchema = z.strictObject({
       slotId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/u),
       term: z.number().int().positive(),
       homeKey: spki,
+      relayKey: spki.optional(),
+      ticketKey: z
+        .strictObject({ keyId: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/u), spki })
+        .optional(),
       guest: z.strictObject({
         vcpus: z.number().int().min(1).max(32),
         memoryMib: z.number().int().min(256).max(65_536),

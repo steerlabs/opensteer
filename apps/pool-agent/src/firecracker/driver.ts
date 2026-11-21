@@ -55,6 +55,8 @@ import {
   namespaceTablesPresent,
   guestMac,
   prepareNamespace,
+  proxyAddress,
+  proxyPort,
   removeNamespace,
   setGate,
   tapName,
@@ -298,6 +300,15 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async stepClock(_slotId: string, jailId: string, signal: AbortSignal): Promise<void> {
     await helperCall(join(this.#root(jailId), "v.sock"), { kind: "time" }, signal);
+  }
+
+  async deliverToken(
+    _slotId: string,
+    jailId: string,
+    token: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await helperCall(join(this.#root(jailId), "v.sock"), { kind: "token", token }, signal);
   }
 
   async saveRoom(_slotId: string, jailId: string): Promise<boolean> {
@@ -697,6 +708,8 @@ export class FirecrackerDriver implements HypervisorDriver {
       "clocksource=kvm-clock",
       "init=/opensteer/init",
       `opensteer.mode=${this.#config.guestMode}`,
+      // The one non-loopback proxy a pooled runtime accepts: its slot's, on the TAP's host side.
+      `opensteer.pool.proxy=${proxyAddress}:${proxyPort}`,
       ...parameters,
     ].join(" ");
   }

@@ -16,6 +16,8 @@ mkdir -p /dev/shm
 mount -t tmpfs -o size=512m,mode=1777 tmpfs /dev/shm
 mount -t tmpfs tmpfs /run
 mount -t tmpfs -o mode=1777 tmpfs /tmp
+# The agent writes the bridge token here over vsock, once the helper answers.
+mkdir -m 0711 /run/secrets
 /opensteer/helper &
 
 cmdline=$(cat /proc/cmdline)
@@ -28,7 +30,7 @@ param() {
 mode=$(param opensteer.mode || echo runtime)
 
 mount -o noatime /dev/vdb "$profile"
-mkdir -p /run/secrets /tmp/home
+mkdir -p /tmp/home
 chown 10001:10001 "$profile" /tmp/home
 chmod 0700 "$profile" /tmp/home
 
@@ -45,7 +47,10 @@ export OPENSTEER_BROWSER_PROXY_URL=http://172.16.0.1:3128
 OPENSTEER_BROWSER_POOL_SLOT=$(param opensteer.pool.slot || true)
 OPENSTEER_BROWSER_POOL_CONTROLLER_KEY=$(param opensteer.pool.key || true)
 OPENSTEER_BROWSER_POOL_FLOOR=$(param opensteer.pool.floor || true)
+OPENSTEER_BROWSER_POOL_TICKET_KEY=$(param opensteer.pool.ticket || true)
+OPENSTEER_BROWSER_POOL_PROXY=$(param opensteer.pool.proxy || true)
 export OPENSTEER_BROWSER_POOL_SLOT OPENSTEER_BROWSER_POOL_CONTROLLER_KEY OPENSTEER_BROWSER_POOL_FLOOR
+export OPENSTEER_BROWSER_POOL_TICKET_KEY OPENSTEER_BROWSER_POOL_PROXY
 
 cd /app
 if [ "$mode" = bench ]; then
@@ -69,8 +74,8 @@ else
     export OPENSTEER_CHROMIUM_SANDBOX=true
     install -d -m 0700 -o 10001 -g 10001 "$OPENSTEER_BROWSER_PROFILE_ROOT"
     umask 077
-    "$b" head -c 32 /dev/urandom | "$b" base64 > /run/secrets/browser_token
-    chown 10001:10001 /run/secrets/browser_token
+    # The token comes from the agent over vsock, never from the guest or its command line.
+    while [ ! -s /run/secrets/browser_token ]; do "$b" sleep 0.05; done
     export OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE=/run/secrets/browser_token
     setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs \
         node /usr/local/bin/opensteer-entrypoint.mjs node dist/main.js &

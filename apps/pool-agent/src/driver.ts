@@ -111,6 +111,11 @@ export interface HypervisorDriver {
   restore(boot: GuestBoot, image: SavedImage, signal: AbortSignal): Promise<void>;
   /** Steps the guest's wall clock from the host's; vCPUs must be running. */
   stepClock(slotId: string, jailId: string, signal: AbortSignal): Promise<void>;
+  /**
+   * Gives the guest its bridge token over the helper channel, never the command line
+   * (pool-runtime-in-guest.md, decision 3); vCPUs must be running.
+   */
+  deliverToken(slotId: string, jailId: string, token: string, signal: AbortSignal): Promise<void>;
   /** Whether the image is exactly as written and loadable here. Reads metadata only. */
   verify(slotId: string, image: SavedImage): Promise<boolean>;
   /** Deletes the image's files. Idempotent. */

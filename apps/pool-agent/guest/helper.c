@@ -5,6 +5,9 @@
 // sends nothing else, so the host never parses guest data.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include <linux/vm_sockets.h>
 #include <stdint.h>
 #include <string.h>
@@ -30,6 +33,23 @@ static int64_t le64(const unsigned char *bytes) {
   return (int64_t)value;
 }
 
+/*
+ * The instance's bridge token (pool-runtime-in-guest.md, decision 3): written to tmpfs for the
+ * runtime's user alone, replaced atomically. The same token after a restore rewrites the same
+ * file. It is never echoed back: the answer is the one fixed byte.
+ */
+static int store_token(const unsigned char *token) {
+  char hex[65];
+  for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", token[i]);
+  mkdir("/run/secrets", 0711);
+  int fd = open("/run/secrets/.browser_token", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0400);
+  if (fd < 0) return -1;
+  int ok = write(fd, hex, 64) == 64 && fchown(fd, 10001, 10001) == 0 && fchmod(fd, 0400) == 0;
+  if (close(fd) != 0) ok = 0;
+  if (!ok) return -1;
+  return rename("/run/secrets/.browser_token", "/run/secrets/browser_token");
+}
+
 static void serve(int client) {
   struct timeval limit = {.tv_sec = 2, .tv_usec = 0};
   setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof limit);
@@ -41,6 +61,11 @@ static void serve(int client) {
   } else if (command == 'S') {
     sync();
     ok = 1;
+  } else if (command == 'B') {
+    unsigned char token[32];
+    if (read_full(client, token, sizeof token) != 0) return;
+    ok = store_token(token) == 0;
+    memset(token, 0, sizeof token);
   } else if (command == 'T') {
     unsigned char payload[16];
     if (read_full(client, payload, sizeof payload) != 0) return;

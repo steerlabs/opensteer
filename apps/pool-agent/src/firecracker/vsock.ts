@@ -12,7 +12,9 @@ export type HelperCommand =
   | { readonly kind: "ping" }
   | { readonly kind: "sync" }
   /** The host time is read when the channel is open, just before it is written. */
-  | { readonly kind: "time" };
+  | { readonly kind: "time" }
+  /** The instance's bridge token: 32 bytes, never on the command line. */
+  | { readonly kind: "token"; readonly token: string };
 
 export function helperCall(
   udsPath: string,
@@ -68,6 +70,12 @@ export function helperCall(
 function encode(command: HelperCommand): Buffer {
   if (command.kind === "ping") return Buffer.from("P");
   if (command.kind === "sync") return Buffer.from("S");
+  if (command.kind === "token") {
+    const token = Buffer.from(command.token, "hex");
+    if (token.length !== 32 || token.toString("hex") !== command.token.toLowerCase())
+      throw new Error("A bridge token is 32 bytes of hex.");
+    return Buffer.concat([Buffer.from("B"), token]);
+  }
   const unixNs = hostNowNs();
   const message = Buffer.alloc(17);
   message.write("T", 0, "latin1");

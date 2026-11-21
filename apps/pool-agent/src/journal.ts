@@ -79,6 +79,15 @@ export interface SlotRecord {
   readonly results: readonly { readonly at: number; readonly result: BrowserPoolAgentResult }[];
   /** What changed physically, in order (bounded): diagnostics and tests. */
   readonly effects: readonly string[];
+  /** SPKI base64 of the key the slot's Home presents to the relay; no relay without it. */
+  readonly relayKey?: string | null;
+  /** `<keyId>:<SPKI base64>` of the Home's attach-ticket key, given to the guest at boot. */
+  readonly ticketKey?: string | null;
+  /**
+   * The bridge token of the current instance: made at each start, given to the guest over
+   * vsock after its boot and after every resume, and to the Home only in a signed answer.
+   */
+  readonly bridgeToken?: string | null;
   /** Only in a tombstone written before re-check finding 4, which kept the slot's keys. */
   readonly deletedAt?: string | null;
 }

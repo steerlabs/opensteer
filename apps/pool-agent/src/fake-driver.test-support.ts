@@ -152,6 +152,14 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
   }
 
+  /** The bridge token each jail was given, in order. */
+  readonly tokens = new Map<string, string[]>();
+
+  async deliverToken(_slotId: string, jailId: string, token: string): Promise<void> {
+    this.#process(jailId, "running");
+    this.tokens.set(jailId, [...(this.tokens.get(jailId) ?? []), token]);
+  }
+
   /** A host reboot: no guest, no namespace, no proxy socket survives; files on disk do. */
   rebootHost(): void {
     this.processes.clear();
@@ -175,7 +183,11 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.networks.set(slotId, "closed");
   }
 
+  /** Every boot and restore, as the agent described it. */
+  readonly boots: GuestBoot[] = [];
+
   async boot(boot: GuestBoot, _signal: AbortSignal): Promise<void> {
+    this.boots.push(boot);
     if (!this.prepared.has(boot.slotId))
       this.violations.push(`booted ${boot.slotId} without its network`);
     await this.#enter("boot", boot.slotId);
@@ -251,6 +263,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   }
 
   async restore(boot: GuestBoot, image: SavedImage): Promise<void> {
+    this.boots.push(boot);
     if (!this.prepared.has(boot.slotId))
       this.violations.push(`restored ${boot.slotId} without its network`);
     await this.#enter("restore", boot.slotId);

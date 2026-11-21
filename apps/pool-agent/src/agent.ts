@@ -9,6 +9,7 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  randomBytes,
   randomUUID,
   type KeyObject,
 } from "node:crypto";
@@ -435,6 +436,8 @@ export class PoolAgent {
     readonly term: number;
     readonly homeKey: string;
     readonly guest: BrowserPoolAgentGuestSpec;
+    readonly relayKey?: string;
+    readonly ticketKey?: { readonly keyId: string; readonly spki: string };
   }): Promise<BrowserPoolAgentSlotSummary> {
     return this.#admin.run(() => this.#create(input));
   }
@@ -444,6 +447,8 @@ export class PoolAgent {
     readonly term: number;
     readonly homeKey: string;
     readonly guest: BrowserPoolAgentGuestSpec;
+    readonly relayKey?: string;
+    readonly ticketKey?: { readonly keyId: string; readonly spki: string };
   }): Promise<BrowserPoolAgentSlotSummary> {
     const found = this.#slots.get(input.slotId);
     const existing = found && !found.deleted ? found : undefined;
@@ -459,6 +464,8 @@ export class PoolAgent {
       throw new SlotConflict("The slot exists with another key or term.");
     }
     parsePublicKey(input.homeKey);
+    if (input.relayKey) parsePublicKey(input.relayKey);
+    if (input.ticketKey) parsePublicKey(input.ticketKey.spki);
     if (!Number.isSafeInteger(input.term) || input.term < 1)
       throw new SlotConflict("The term must be a positive integer.");
     const { privateKey } = generateKeyPairSync("ed25519");
@@ -468,6 +475,9 @@ export class PoolAgent {
       term: input.term,
       homeKey: input.homeKey,
       controlKey: privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+      relayKey: input.relayKey ?? null,
+      ticketKey: input.ticketKey ? `${input.ticketKey.keyId}:${input.ticketKey.spki}` : null,
+      bridgeToken: null,
       guest: input.guest,
       createdAt: new Date(this.#now()).toISOString(),
       instance: null,
@@ -620,9 +630,12 @@ export class PoolAgent {
     const jailId = jailName(before.slotId, jailGeneration);
     const instance = randomUUID();
     const sequence = before.sequence + 1;
+    // A new instance has a new bridge token (pool-runtime-in-guest.md, decision 3).
+    const bridgeToken = randomBytes(32).toString("hex");
     await this.#commit(slot, {
       ...before,
       jailGeneration,
+      bridgeToken,
       pending: { kind: "call", call, step: "booting", at: this.#iso(), jailId },
     });
     this.#checkpoint("start:journaled");
@@ -639,6 +652,9 @@ export class PoolAgent {
       );
       await within(this.#deadlines.boot, "The guest boot", (signal) =>
         this.#driver.boot(this.#boot(slot, jailId, sequence), signal),
+      );
+      await within(this.#deadlines.clock, "The bridge token", (signal) =>
+        this.#driver.deliverToken(before.slotId, jailId, bridgeToken, signal),
       );
       this.#checkpoint("start:booted");
       await within(this.#deadlines.network, "Opening the guest network", () =>
@@ -785,6 +801,12 @@ export class PoolAgent {
         this.#driver.stepClock(before.slotId, jailId!, signal),
       );
       step("clock");
+      // The same instance keeps its token; it is given again after every resume, so a guest
+      // restored from disk has it from outside, as a freshly booted one does.
+      if (before.bridgeToken)
+        await within(this.#deadlines.clock, "The bridge token", (signal) =>
+          this.#driver.deliverToken(before.slotId, jailId!, before.bridgeToken!, signal),
+        );
       await within(this.#deadlines.network, "Opening the guest network", () =>
         this.#driver.openNetwork(before.slotId),
       );
@@ -1311,6 +1333,8 @@ export class PoolAgent {
         "opensteer.pool.key": publicKeyOf(slot.controlKey),
         // The runtime refuses any control at or below this: a replay of an old one included.
         "opensteer.pool.floor": `${record.term}.${nextSequence - 1}`,
+        // The one ticket key the guest's runtime trusts: its Home's. Public.
+        ...(record.ticketKey ? { "opensteer.pool.ticket": record.ticketKey } : {}),
       },
     };
   }
