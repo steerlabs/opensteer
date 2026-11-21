@@ -235,8 +235,10 @@ it("rebuilds the owner broker after a parked BrowserService restart and edits th
   ownerTabJourney(true));
 it("stops a parked session while its viewer waits and never reattaches it", () =>
   ownerTabJourney(true, true));
+it("activates a retained workspace tab after waiting for its pooled browser", () =>
+  ownerTabJourney(true, false, true));
 
-async function ownerTabJourney(restart: boolean, stopWaiting = false) {
+async function ownerTabJourney(restart: boolean, stopWaiting = false, activate = false) {
   const fixture = await createStoreFixture();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-route-"));
   let runtime: BrowserRuntime | undefined;
@@ -438,6 +440,22 @@ async function ownerTabJourney(restart: boolean, stopWaiting = false) {
       const restarted = await startHome();
       expect((await store.getBrowserSessionForOwner(sessionId, task.userId))?.state).toBe("ready");
       expect(calls).toEqual(["attach", "pause"]);
+      if (activate) {
+        const activating = restarted.service.pageTabs.activate(task.userId, tab!);
+        await Promise.race([
+          resumeSeen.promise,
+          activating.then(() => {
+            throw new Error("The tab activated before physical resume.");
+          }),
+        ]);
+        expect(calls).toEqual(["attach", "pause", "resume"]);
+        allowResume.resolve();
+        await expect(activating).resolves.toEqual({ kind: "page", sessionId, surfaceId: tabId });
+        expect(restarted.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
+          original?.documentId,
+        );
+        return;
+      }
       let open = true;
       const frames: Buffer[] = [];
       const attaching = restarted.service.attach(

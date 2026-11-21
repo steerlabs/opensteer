@@ -1093,6 +1093,8 @@ export class BrowserService {
           }),
         );
       const before = await tabWitness();
+      if (before.includes(null) && before.some((witness) => witness !== null))
+        throw unavailable("The browser closed one of its retained tabs while parked.");
       if (before.includes(null) || this.#closed) continue;
       const socket = target.connect(
         this.#signer.issue({
@@ -1117,6 +1119,10 @@ export class BrowserService {
         groupId: before[0]!.lineageId,
         profileId: null,
         tabRestoreVersion: true,
+        personTabGeneration: async (surfaceId) => {
+          const tab = await this.#workspaceTabs!.get(ownerId, surfaceId);
+          return tab?.pageBinding?.sessionId === sessionId ? tab.generation : null;
+        },
         historyWrite: () => {},
         readSessionState: () => this.#sessionState(sessionId),
         onPageChanged: () => this.#announcePresence(sessionId),
@@ -3314,18 +3320,46 @@ export class BrowserService {
     states: (ownerId, rows) => this.#workspacePageStates(ownerId, rows),
     state: async (ownerId, row) => (await this.#workspacePageStates(ownerId, [row])).get(row.id)!,
     activate: async (ownerId, row) => {
-      const session = await this.#restoreWorkspacePage(ownerId, row);
-      const broker = this.#brokers.get(session.id);
-      if (broker?.surfaceStateOf(row.id) === "suspended")
-        await broker.requestCdp({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: row.id } },
-        });
-      await this.#requireWorkspaceGeneration(ownerId, row);
-      await this.pageTabs.admitted!(row);
-      await broker?.markPersonUsed(row.id);
-      return { kind: "page", sessionId: session.id, surfaceId: row.id };
+      const pooledSession =
+        this.#managedPoolTestRunner && row.pageBinding
+          ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
+          : null;
+      const pool =
+        pooledSession && !isTerminal(pooledSession.state)
+          ? this.#poolTabTarget(pooledSession.runnerId)
+          : undefined;
+      const signal = pool
+        ? AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)])
+        : undefined;
+      const recheck = async () => {
+        signal?.throwIfAborted();
+        const current = await this.#requireWorkspaceGeneration(ownerId, row);
+        if (pool && current.pageBinding?.sessionId !== row.pageBinding?.sessionId)
+          throw new OpensteerError({ code: "not_found", message: "This tab has changed browser." });
+      };
+      if (pool) await recheck();
+      const reservation =
+        pool && signal ? await this.#reservePool(pool.gate, signal, pooledSession!.id) : undefined;
+      try {
+        const session = await this.#restoreWorkspacePage(ownerId, row, undefined, signal);
+        const broker = this.#brokers.get(session.id);
+        if (broker?.surfaceStateOf(row.id) === "suspended")
+          await broker.requestCdp(
+            {
+              type: "cdp.command",
+              requestId: randomUUID(),
+              command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: row.id } },
+            },
+            signal,
+            pool ? { recheck, submitted: () => {} } : undefined,
+          );
+        await recheck();
+        await this.pageTabs.admitted!(row);
+        await broker?.markPersonUsed(row.id);
+        return { kind: "page", sessionId: session.id, surfaceId: row.id };
+      } finally {
+        reservation?.release();
+      }
     },
     bind: (claims, row) => this.bindPage(claims, row),
     bindBrowserScript: (actor, row) => {
