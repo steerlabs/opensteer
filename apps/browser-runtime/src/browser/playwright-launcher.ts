@@ -824,12 +824,13 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       timing("cookie-target");
       const browserCdp = await browser.newBrowserCDPSession();
       timing("cdp");
-      const lifecycle =
+      const candidateLifecycle =
         typeof context.serviceWorkers === "function"
           ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
           : undefined;
+      let lifecycle: ChromiumTabLifecycleBridge | undefined;
       const matchedRestored = new Map<BrowserSurfaceId, MatchedRestoredTab>();
-      if (lifecycle) {
+      if (candidateLifecycle) {
         let helperTargetId: string | null = null;
         try {
           const helperCdp = await context.newCDPSession(helper);
@@ -845,30 +846,33 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         } catch {
           helperTargetId = null;
         }
-        const initialInventory = await lifecycle.inventory().catch(() => []);
-        const rawRestored: ChromiumTabEntry[] = [];
-        for (const tab of initialInventory) {
-          if (tab.targetId !== null && tab.targetId === helperTargetId) continue;
-          if (isInternalExtensionUrl(tab.url)) continue;
-          if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") {
-            await lifecycle.removeByTabId(tab.tabId).catch(() => undefined);
-            continue;
-          }
-          rawRestored.push(tab);
-        }
-        if (rawRestored.length > 0) {
-          const sidecar = await readTabRestoreSidecar(directory);
-          const { matched, orphans } = matchRestoredTabs(rawRestored, sidecar);
-          for (const orphan of orphans) {
-            const removed = await lifecycle.removeByTabId(orphan.tabId).catch(() => false);
-            if (!removed && orphan.targetId) {
-              await browserCdp
-                .send("Target.closeTarget", { targetId: orphan.targetId })
-                .catch(() => undefined);
+        const initialInventory = await candidateLifecycle.inventory().catch(() => null);
+        if (initialInventory !== null) {
+          lifecycle = candidateLifecycle;
+          const rawRestored: ChromiumTabEntry[] = [];
+          for (const tab of initialInventory) {
+            if (tab.targetId !== null && tab.targetId === helperTargetId) continue;
+            if (isInternalExtensionUrl(tab.url)) continue;
+            if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") {
+              await lifecycle.removeByTabId(tab.tabId).catch(() => undefined);
+              continue;
             }
+            rawRestored.push(tab);
           }
-          for (const [surfaceId, entry] of matched) {
-            matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
+          if (rawRestored.length > 0) {
+            const sidecar = await readTabRestoreSidecar(directory);
+            const { matched, orphans } = matchRestoredTabs(rawRestored, sidecar);
+            for (const orphan of orphans) {
+              const removed = await lifecycle.removeByTabId(orphan.tabId).catch(() => false);
+              if (!removed && orphan.targetId) {
+                await browserCdp
+                  .send("Target.closeTarget", { targetId: orphan.targetId })
+                  .catch(() => undefined);
+              }
+            }
+            for (const [surfaceId, entry] of matched) {
+              matchedRestored.set(surfaceId as BrowserSurfaceId, entry);
+            }
           }
         }
       }
@@ -1089,7 +1093,6 @@ class PlaywrightContextHandle implements BrowserContext {
     string,
     | {
         readonly state: "discarding";
-        readonly originalTabId: number;
         readonly url: string;
         readonly surfaceId?: BrowserSurfaceId;
         readonly lineageId?: string;
@@ -1496,7 +1499,6 @@ class PlaywrightContextHandle implements BrowserContext {
 
   beginSleepingTab(
     tokenId: string,
-    originalTabId: number,
     url: string,
     pageHandle: PlaywrightPageHandle | undefined,
     settled: Promise<number | null>,
@@ -1504,7 +1506,6 @@ class PlaywrightContextHandle implements BrowserContext {
     const saved = pageHandle ? this.savedSurfaceByPage.get(pageHandle) : undefined;
     this.sleepingTabs.set(tokenId, {
       state: "discarding",
-      originalTabId,
       url,
       settled,
       ...(saved ? { surfaceId: saved.surfaceId, lineageId: saved.lineageId } : {}),
@@ -1731,7 +1732,7 @@ class PlaywrightPageHandle implements BrowserPage {
   restoredFromSession = false;
   private pendingDiscard: {
     readonly tokenId: string;
-    readonly tabId: number;
+    readonly targetId: string;
     readonly url: string;
   } | null = null;
   private requestMethod = "GET";
@@ -2005,15 +2006,11 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
-  private async captureDiscardRestore(): Promise<ChromiumDiscardRestore | null> {
-    const lifecycle = this.contextHandle.lifecycle;
-    if (!lifecycle || this.closing || this.gone || this.page.isClosed()) return null;
-    const targetId = await this.targetId();
-    const tabId = await lifecycle.tabIdForTargetId(targetId);
-    if (tabId === null) return null;
+  private async captureDiscardRestore(): Promise<ChromiumDiscardRestore> {
+    const targetId = this.knownTargetId ?? (await this.targetId());
     const tokenId = randomUUID();
     const url = this.url();
-    this.pendingDiscard = { tokenId, tabId, url };
+    this.pendingDiscard = { tokenId, targetId, url };
     return { kind: "chromium-discard", tokenId, url };
   }
 
@@ -2054,21 +2051,29 @@ class PlaywrightPageHandle implements BrowserPage {
         const settled = Promise.withResolvers<number | null>();
         this.contextHandle.beginSleepingTab(
           sleepDiscard.tokenId,
-          sleepDiscard.tabId,
           sleepDiscard.url,
           this,
           settled.promise,
         );
         let newTabId: number | null = null;
         try {
-          await this.contextHandle.activatePrivateAnchor();
-          await this.freezeBeforeDiscard();
-          await this.cdpChannel?.detach();
-          if (!this.page.isClosed()) {
-            newTabId = await this.contextHandle.lifecycle
-              .discardByTabId(sleepDiscard.tabId)
-              .catch(() => null);
-            if (newTabId === null && !this.page.isClosed()) {
+          const inventory = await this.contextHandle.lifecycle.inventory().catch(() => null);
+          const tab = inventory?.find((entry) => entry.targetId === sleepDiscard.targetId);
+          if (tab) {
+            await this.contextHandle.activatePrivateAnchor();
+            await this.freezeBeforeDiscard();
+            await this.cdpChannel?.detach();
+            if (!this.page.isClosed()) {
+              newTabId = await this.contextHandle.lifecycle
+                .discardByTabId(tab.tabId)
+                .catch(() => null);
+              if (newTabId === null && !this.page.isClosed()) {
+                await this.page.close({ runBeforeUnload: false });
+              }
+            }
+          } else {
+            await this.cdpChannel?.detach();
+            if (!this.page.isClosed()) {
               await this.page.close({ runBeforeUnload: false });
             }
           }

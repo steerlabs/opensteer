@@ -626,3 +626,63 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   const invAfterRestart = await internal2.contextHandle.lifecycle.inventory();
   expect(invAfterRestart.some((tab) => tab.url === url)).toBe(false);
 });
+
+it("still sleeps and wakes by address without marking unrestorable when the helper fails during capture or discard", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-helper-fallback-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  // Tab 1: helper inventory / tabIdForTargetId throws during sleep -> must STILL sleep and wake by address!
+  const url1 = `${server.originForSite(1)}/article`;
+  const s1 = await ledger.openSurface();
+  const live1 = ledger.binding(s1.id)!;
+  await live1.cdp.send("Page.navigate", { url: url1 });
+  await waitLoaded(live1.cdp, "/article");
+
+  const invSpy = vi
+    .spyOn(lifecycle, "inventory")
+    .mockRejectedValue(new Error("Helper worker crashed"));
+  const tabIdSpy = vi
+    .spyOn(lifecycle, "tabIdForTargetId")
+    .mockRejectedValue(new Error("Helper worker crashed"));
+  expect(await ledger.sleep(s1.id, () => null)).toBe(true);
+  expect(ledger.stateOf(s1.id)).toBe("suspended");
+  const rec1 = [...ledger.policyRecords()].find((r) => r.id === s1.id)!;
+  expect(rec1.unrestorable).toBe(false);
+  invSpy.mockRestore();
+  tabIdSpy.mockRestore();
+
+  const woken1 = await ledger.wake(s1.id);
+  await waitLoaded(woken1.cdp, "/article");
+
+  // Tab 2: discardByTabId fails -> closes cleanly and wakes by address!
+  const url2 = `${server.originForSite(2)}/article`;
+  const s2 = await ledger.openSurface();
+  const live2 = ledger.binding(s2.id)!;
+  await live2.cdp.send("Page.navigate", { url: url2 });
+  await waitLoaded(live2.cdp, "/article");
+
+  const discardSpy = vi.spyOn(lifecycle, "discardByTabId").mockResolvedValue(null);
+  expect(await ledger.sleep(s2.id, () => null)).toBe(true);
+  expect(ledger.stateOf(s2.id)).toBe("suspended");
+  discardSpy.mockRestore();
+
+  const woken2 = await ledger.wake(s2.id);
+  await waitLoaded(woken2.cdp, "/article");
+});
