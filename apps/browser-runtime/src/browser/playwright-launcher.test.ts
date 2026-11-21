@@ -1506,6 +1506,186 @@ describe("native Chromium profiles", () => {
       await rm(f.directory, { recursive: true, force: true });
     }
   });
+
+  it("retries failed releaseRestore in the background until confirmed removed (R6) and retains unknown-outcome discards (R7)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const makeRawPage = () => {
+      let closed = false;
+      return {
+        markClosed: () => {
+          closed = true;
+        },
+        page: {
+          url: () => "https://sleeping.test/page",
+          isClosed: () => closed,
+          close: vi.fn(async () => {
+            closed = true;
+          }),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+          frames: () => [],
+          mainFrame: () => ({}),
+          _connection: {
+            toImpl: () => ({ delegate: { _targetId: "target-sleep-1" } }),
+          },
+        } as unknown as Page,
+      };
+    };
+    const raw1 = makeRawPage();
+    const raw2 = makeRawPage();
+    const helperPage = {
+      url: () => "about:blank",
+      isClosed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-helper" } }) },
+    } as unknown as Page;
+    let newPageCalls = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => {
+        newPageCalls++;
+        if (newPageCalls === 1) return helperPage;
+        return newPageCalls === 2 ? raw1.page : raw2.page;
+      }),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo"
+            ? { targetInfo: { targetId: "target-sleep-1" } }
+            : {},
+        ),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+
+    // Scenario A (R6): discard succeeds -> first releaseRestore fails -> returns false -> background retry confirms gone.
+    let tabs: Array<{
+      tabId: number;
+      windowId: number;
+      index: number;
+      url: string;
+      title: string;
+      active: boolean;
+      discarded: boolean;
+      status: string;
+      targetId: string | null;
+    }> = [];
+    let removeAttempts = 0;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => [...tabs]);
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
+      .mockImplementation(async () => {
+        raw1.markClosed();
+        tabs = [{ ...tabs[0]!, tabId: 202, discarded: true, status: "unloaded", targetId: null }];
+        return 202;
+      });
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removeAttempts++;
+        // Fail the first 2 attempts (initial releaseRestore call), succeed on background retry!
+        if (tabId === 202 && removeAttempts >= 3) {
+          tabs = [];
+          return true;
+        }
+        return false;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      tabs = [
+        {
+          tabId: 101,
+          windowId: 1,
+          index: 0,
+          url: "https://sleeping.test/page",
+          title: "Sleep",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-sleep-1",
+        },
+      ];
+      const page = await launched.context.createPage();
+      const token = await page.captureRestore!();
+      await page.close({ reason: "slept" });
+
+      // First releaseRestore fails and returns false so Stop/Disconnect stays "still closing".
+      expect(await launched.context.releaseRestore!(token)).toBe(false);
+      expect(tabs).toHaveLength(1);
+
+      // Background retry loop keeps trying and confirms the tab gone!
+      await vi.waitFor(
+        () => {
+          expect(tabs).toHaveLength(0);
+          expect(removeAttempts).toBeGreaterThanOrEqual(3);
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+
+      // Scenario B (R7): discardByTabId throws AND follow-up inventory fails while page closes ->
+      // unknown-outcome token is retained, and subsequent releaseRestore locates and removes it!
+      tabs = [
+        {
+          tabId: 303,
+          windowId: 1,
+          index: 1,
+          url: "https://sleeping.test/page",
+          title: "Unknown",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-sleep-1",
+        },
+      ];
+      let invCallCount = 0;
+      invSpy.mockImplementation(async () => {
+        invCallCount++;
+        // Call 1: pre-discard inventory succeeds; Call 2: immediate post-throw inventory FAILS!
+        if (invCallCount === 2) throw new Error("Helper worker temporarily dead");
+        return [...tabs];
+      });
+      discSpy.mockImplementationOnce(async () => {
+        // Chromium committed the discard (closing the page and creating discarded tab 404) before helper threw!
+        raw2.markClosed();
+        tabs = [{ ...tabs[0]!, tabId: 404, discarded: true, status: "unloaded", targetId: null }];
+        throw new Error("Helper call timed out");
+      });
+      remSpy.mockImplementation(async (tabId) => {
+        if (tabId === 404) {
+          tabs = [];
+          return true;
+        }
+        return false;
+      });
+
+      const page2 = await launched.context.createPage();
+      const token2 = await page2.captureRestore!();
+      await page2.close({ reason: "slept" });
+      expect(tabs.map((t) => t.tabId)).toEqual([404]);
+
+      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, finds 404, and removes it!
+      expect(await launched.context.releaseRestore!(token2)).toBe(true);
+      expect(tabs).toHaveLength(0);
+    } finally {
+      await launched?.context.sessionRestore?.flush?.().catch(() => undefined);
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function nativeCloseFixture(
