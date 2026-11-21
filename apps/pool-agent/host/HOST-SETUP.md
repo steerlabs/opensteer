@@ -108,8 +108,19 @@ Bounds (round D, D1):
 - The slice is counted inside the host's budget for guests: `guests/memory.max` is the host's
   memory less max(2 GiB, 10 %) less the slice. On an n2-standard-8 (32 GiB): 32 - 3.2 - 1.5 =
   27.3 GiB for guests, which holds 10 guests in memory at their `memory.high` of 2.5 GiB (25
-  GiB); their 10 proxies take at most 1280 MiB of the slice's 1536 MiB. A host is sized for 10
+  GiB); their 10 proxies take at most 1280 MiB of the slice's 1536 MiB. A host holds 10
   guests running or paused in memory; any number may be parked on disk.
+- The agent enforces that number (round E, E4), from the same arithmetic
+  (`apps/pool-agent/src/capacity.ts`): a start, or a wake from disk, is let in only if the
+  guest's `memory.high` fits in the guests' budget beside every guest already in memory and
+  its proxy fits in the slice (12 at 128 MiB). If it does not, guests paused in memory are saved
+  to disk first, oldest park first. If that is not enough (every guest in memory is running or
+  busy), the call is refused before anything is written, as `unavailable` ("try again
+  later"), which a Home's journal sends again later. No guest or proxy is ever let in that the
+  kernel would have to kill another for.
+- The slice as a whole has `CPUQuota` = a quarter of the host's cores, at least one core
+  (`setup-host.sh`: 200 % on an 8-core n2-standard-8). However many proxies are busy, the
+  guests, the agent and the relay keep three quarters of the host.
 - systemd's crash protection stays on: five starts in 120 s, with a restart delay that backs
   off from 1 s to 30 s (with a 30 s window that backoff never tripped the limit, run 5). The agent's own stops reset the counter, so only the proxy's own failures
   count. A proxy that trips the limit stays down, with its socket, until the slot's next start

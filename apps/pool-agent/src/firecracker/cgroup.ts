@@ -6,6 +6,9 @@
  */
 import { appendFile, mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { guestBudget } from "../capacity.js";
+
+export { guestBudget } from "../capacity.js";
 
 const mountPoint = "/sys/fs/cgroup";
 const controllers = "+cpu +memory +pids";
@@ -13,9 +16,12 @@ const controllers = "+cpu +memory +pids";
 export class GuestCgroups {
   /** Relative to the cgroup mount, such as `system.slice/opensteer-pool-agent.service`. */
   readonly #base: string;
+  /** The host's memory, as /proc/meminfo has it (round E, E4: the capacity is counted from it). */
+  readonly memoryTotal: number | undefined;
 
-  private constructor(base: string) {
+  private constructor(base: string, memoryTotal: number | undefined) {
     this.#base = base;
+    this.memoryTotal = memoryTotal;
   }
 
   /** Moves the agent into its own leaf and enables the controllers guests are limited by. */
@@ -41,7 +47,7 @@ export class GuestCgroups {
         join(absolute, "guests", "memory.max"),
         String(guestBudget(total, egressSliceBytes)),
       );
-    return new GuestCgroups(base);
+    return new GuestCgroups(base, total);
   }
 
   /** Moves one task (a VMM's kvm-pit kernel thread) into the VMM's cgroup. */
@@ -136,9 +142,4 @@ async function memoryTotal(): Promise<number | undefined> {
   const text = await readFile("/proc/meminfo", "utf8").catch(() => "");
   const kib = text.match(/^MemTotal:\s+([0-9]+) kB$/mu)?.[1];
   return kib ? Number(kib) * 1024 : undefined;
-}
-
-/** What all guests together may hold: the host less its own room and the proxies' slice. */
-export function guestBudget(totalBytes: number, egressSliceBytes: number): number {
-  return totalBytes - Math.max(2 * 1024 ** 3, Math.floor(totalBytes / 10)) - egressSliceBytes;
 }

@@ -42,6 +42,7 @@ import {
   type HypervisorDriver,
   type SlotEgress,
 } from "./driver.js";
+import { fits, guestCharge } from "./capacity.js";
 import {
   isTombstone,
   type JournalRecord,
@@ -195,6 +196,8 @@ export class PoolAgent {
   readonly #saves: Semaphore;
   /** Round D, D1: slots whose proxy is down, from the last host check. */
   #proxiesDown = new Set<string>();
+  /** Round E, E4: slots let into memory whose start or wake has not finished. */
+  readonly #admitting = new Set<string>();
   /** Deleted slots (re-check finding 4): no key of their own, and gone from #slots. */
   readonly #tombstones = new Map<
     string,
@@ -778,16 +781,84 @@ export class PoolAgent {
     if (refusal) return this.#store(slot, record, refused(call.id, refusal, record));
     switch (call.kind) {
       case "start":
-        return this.#start(slot, call);
+        return this.#admitted(slot, () => this.#start(slot, call));
       case "pause":
         return this.#pause(slot, call);
       case "resume":
-        return this.#resume(slot, call);
+        // A wake from memory keeps the memory it holds; a wake from disk needs room.
+        return slot.record.saved?.tier === "disk"
+          ? this.#admitted(slot, () => this.#resume(slot, call))
+          : this.#resume(slot, call);
       case "stop":
         return this.#stop(slot, call);
       case "sign":
         return this.#sign(slot, call);
     }
+  }
+
+  /**
+   * Round E, E4: a start or a wake from disk is let in only if its guest fits in the host's
+   * memory beside the guests already there (running, paused in memory, or being let in). If it
+   * does not, guests paused in memory are saved to disk first, oldest park first; if that is
+   * not enough it is refused before anything is written, as "not now" (`unavailable`), which a
+   * Home's journal already sends again later.
+   */
+  async #admitted<T>(slot: Slot, work: () => Promise<T>): Promise<T> {
+    const capacity = this.#driver.memoryCapacity();
+    if (!capacity) return work();
+    const slotId = slot.record.slotId;
+    const charge = guestCharge(slot.record.guest.memoryMib);
+    const tried = new Set<string>();
+    // Checked and reserved in one synchronous step: two starts never take the same room.
+    while (!fits(capacity, this.#inMemory(slot), charge)) {
+      const victim = [...this.#slots.values()]
+        .filter(
+          (other) =>
+            other !== slot &&
+            !other.deleted &&
+            !tried.has(other.record.slotId) &&
+            !this.#admitting.has(other.record.slotId) &&
+            other.record.phase === "paused" &&
+            other.record.saved?.tier === "memory" &&
+            other.demand === 0 &&
+            !other.lane.busy,
+        )
+        .sort((a, b) => Date.parse(a.record.saved!.parkedAt) - Date.parse(b.record.saved!.parkedAt))
+        .at(0);
+      if (!victim) {
+        this.#log({ event: "capacity.refused", slotId });
+        throw new AgentUnavailable(
+          "This host has no memory for another guest now; try again later.",
+        );
+      }
+      tried.add(victim.record.slotId);
+      this.#log({ event: "capacity.save", slotId, saving: victim.record.slotId });
+      await this.saveToDisk(victim.record.slotId, victim.record.saved!.id).catch((error: unknown) =>
+        this.#background(victim, error),
+      );
+    }
+    this.#admitting.add(slotId);
+    try {
+      return await work();
+    } finally {
+      this.#admitting.delete(slotId);
+    }
+  }
+
+  /** The charges of every other guest in memory: running, paused there, or being let in. */
+  #inMemory(except: Slot): number[] {
+    const charges: number[] = [];
+    for (const other of this.#slots.values()) {
+      if (other === except || other.deleted) continue;
+      const record = other.record;
+      if (
+        this.#admitting.has(record.slotId) ||
+        record.phase === "running" ||
+        (record.phase === "paused" && record.saved?.tier === "memory")
+      )
+        charges.push(guestCharge(record.guest.memoryMib));
+    }
+    return charges;
   }
 
   async #start(slot: Slot, call: BrowserPoolAgentCall): Promise<BrowserPoolAgentResult> {

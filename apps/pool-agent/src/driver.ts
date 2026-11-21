@@ -6,6 +6,7 @@
  */
 
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
+import type { HostCapacity } from "./capacity.js";
 
 export interface GuestBoot {
   readonly slotId: string;
@@ -67,6 +68,11 @@ export interface HypervisorDriver {
   incarnation(): Promise<string>;
   /** The hardware and software a saved image is bound to. */
   fingerprint(): Promise<string>;
+  /**
+   * Round E, E4: how much the host holds of guests in memory (running or paused there), or null
+   * when it sets no bound. The agent admits a start or a wake by it.
+   */
+  memoryCapacity(): HostCapacity | null;
   /** Re-applies the host's own rules if they are gone; true if it had to. */
   ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */

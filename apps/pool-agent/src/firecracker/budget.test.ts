@@ -1,25 +1,33 @@
 /**
- * Round D, D1: the slot proxies' slice counted inside the host's budget for guests, and how many
- * guests a host is sized for. An n2-standard-8 has 32 GiB.
+ * Round D, D1 and round E, E4: the slot proxies' slice counted inside the host's budget for
+ * guests, and how many guests a host holds in memory, by the arithmetic the agent admits a start
+ * or a wake by. An n2-standard-8 has 32 GiB.
  */
 import { describe, expect, it } from "vitest";
-import { guestBudget } from "./cgroup.js";
+import { fits, guestBudget, guestCharge, hostCapacity } from "../capacity.js";
 
 const mib = 1024 ** 2;
 const gib = 1024 ** 3;
 
 describe("the host's memory budget", () => {
-  it("leaves the host its room and the proxies' slice, and fits the guests it is sized for", () => {
+  it("leaves the host its room and the proxies' slice, and admits ten 2 GiB guests, not eleven", () => {
     const total = 32 * gib;
     const slice = 1536 * mib;
-    const budget = guestBudget(total, slice);
     // 32 GiB less 3.2 GiB for the host and 1.5 GiB for the proxies.
-    expect(budget).toBe(total - Math.floor(total / 10) - slice);
-    // A guest in memory is held to memory.high = its 2 GiB + 512 MiB: ten fit.
-    const perGuest = 2 * gib + 512 * mib;
-    const sized = Math.floor(budget / perGuest);
-    expect(sized).toBe(10);
-    // Ten guests' proxies at 128 MiB each stay inside the slice: 1280 MiB of 1536 MiB.
-    expect(sized * 128 * mib).toBeLessThanOrEqual(slice);
+    expect(guestBudget(total, slice)).toBe(total - Math.floor(total / 10) - slice);
+    const capacity = hostCapacity(total, slice, 128 * mib);
+    // A guest in memory is charged its memory.high = its 2 GiB + 512 MiB.
+    expect(guestCharge(2048)).toBe(2 * gib + 512 * mib);
+    const inMemory: number[] = [];
+    while (fits(capacity, inMemory, guestCharge(2048))) inMemory.push(guestCharge(2048));
+    expect(inMemory).toHaveLength(10);
+    // The slice holds twelve proxies at 128 MiB: the guests' budget is the bound that binds.
+    expect(capacity.proxies).toBe(12);
+  });
+
+  it("bounds the guests in memory by the proxies too", () => {
+    const capacity = { guestBytes: 100 * gib, proxies: 3 };
+    expect(fits(capacity, [1, 1], 1)).toBe(true);
+    expect(fits(capacity, [1, 1, 1], 1)).toBe(false);
   });
 });

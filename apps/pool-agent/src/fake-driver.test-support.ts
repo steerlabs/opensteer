@@ -7,6 +7,7 @@ import {
   type SavedImage,
   type SlotEgress,
 } from "./driver.js";
+import type { HostCapacity } from "./capacity.js";
 
 type Operation =
   | "boot"
@@ -111,6 +112,13 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   async fingerprint(): Promise<string> {
     return this.#fingerprint;
+  }
+
+  /** No bound unless a test sets one. */
+  capacity: HostCapacity | null = null;
+
+  memoryCapacity(): HostCapacity | null {
+    return this.capacity;
   }
 
   /** The host table was flushed: the next check re-applies it. */

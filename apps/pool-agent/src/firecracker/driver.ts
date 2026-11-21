@@ -36,6 +36,7 @@ import { confine } from "./paths.js";
 import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
 import { withStepSignal } from "../step-signal.js";
+import { guestCharge, hostCapacity, type HostCapacity } from "../capacity.js";
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   defineEgress,
@@ -119,6 +120,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   #arrayId: string | undefined;
   #hostAddresses: readonly string[] = [];
   readonly #space = new SpaceLedger();
+  #capacity: HostCapacity | null = null;
 
   readonly #log: (event: Readonly<Record<string, unknown>>) => void;
 
@@ -132,10 +134,13 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   /** Delegates the cgroup subtree, applies the host filter, and fingerprints this host. */
   async open(): Promise<void> {
-    this.#cgroups = await GuestCgroups.delegate(
-      this.#config.cgroupBase,
-      (this.#config.egressSliceMib ?? 1536) * 1024 * 1024,
-    );
+    const sliceBytes = (this.#config.egressSliceMib ?? 1536) * 1024 * 1024;
+    this.#cgroups = await GuestCgroups.delegate(this.#config.cgroupBase, sliceBytes);
+    // Round E, E4: the agent lets no more guests into memory than this budget holds.
+    const total = this.#cgroups.memoryTotal;
+    this.#capacity = total
+      ? hostCapacity(total, sliceBytes, (this.#config.egress.memoryMib ?? 128) * 1024 * 1024)
+      : null;
     await this.openSlotNumbers();
     // Review G3: never write guest memory anywhere but the encrypted array.
     this.#arrayId = await requireEncryptedArray(this.#config);
@@ -158,6 +163,10 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async fingerprint(): Promise<string> {
     return this.#fingerprint;
+  }
+
+  memoryCapacity(): HostCapacity | null {
+    return this.#capacity;
   }
 
   /** Review G4(a): the host table is re-applied when a flush or a reload removed it. */
@@ -693,7 +702,8 @@ export class FirecrackerDriver implements HypervisorDriver {
     const memoryBytes = (boot.memoryMib * 2 + 512) * 1024 * 1024;
     // Review G6(b): memory.high reclaims and slows a writer (a save's page cache) before
     // memory.max would end it; it sits where the guest and the VMM's own use end.
-    const memoryHigh = (boot.memoryMib + 512) * 1024 * 1024;
+    // Round E, E4: the same charge the agent admits a guest by.
+    const memoryHigh = guestCharge(boot.memoryMib);
     // Review G6(d): no file the VMM writes may grow past what it needs: its memory file, or its
     // profile disk, whichever is larger (a write past the limit inside the profile would fail).
     const profileBytes = (await stat(boot.profilePath)).size;
