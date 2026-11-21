@@ -29,6 +29,22 @@ import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
+import {
+  registerTriggerCdpBridge,
+  registerWatchCdpBridge,
+} from "../apps/host/src/browser/trigger-cdp-bridge.js";
+import { hostInternalRoutePaths } from "../apps/host/src/server/internal-routes.js";
+import { createRequire } from "node:module";
+
+/** Packages the Host depends on, resolved as the Host resolves them. */
+const requireFromHost = createRequire(new URL("../apps/host/package.json", import.meta.url));
+const { WebSocket } = requireFromHost("ws") as typeof import("ws");
+type FastifyLike = {
+  register(plugin: unknown): Promise<unknown>;
+  listen(options: { host: string; port: number }): Promise<string>;
+  close(): Promise<unknown>;
+  readonly server: { address(): unknown };
+};
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import {
   before,
@@ -923,6 +939,7 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
 
 it("parks under a running Trigger and a live Watch with no browser, and is vetoed while each holds one", async () => {
   const j = await journey("program-journey");
+  let closeApp: (() => Promise<unknown>) | undefined;
   try {
     const home = await j.startHome();
     const owner = { ownerId: j.task.userId, environmentId: j.task.environmentId };
@@ -957,34 +974,98 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
     // Programs that have not asked for a browser leave the park alone.
     expect(await home.coordinator.tryPark()).toBe("parked");
 
-    // Each program connects to its browser the way its CDP route does: the demand wakes it,
-    // the open connection vetoes the park, and once the route closed it the browser parks.
-    const connect = async (authority: typeof trigger) => {
-      const opened = await home.service.openAgentSession({ ...authority, fresh: true });
-      const cdp = await home.service.attachCdpForAgent(
-        { ...authority, sessionId: opened.session.id },
-        () => {},
-      );
+    // Each program connects through its real CDP route, over a WebSocket: the demand wakes the
+    // browser, the open connection vetoes the park, and once the program closes its socket the
+    // route lets go of the attachment and the session it owns, and the browser parks.
+    const fastify = requireFromHost("fastify") as (options: object) => FastifyLike;
+    const websocket = requireFromHost("@fastify/websocket") as unknown;
+    const app = fastify({ logger: false });
+    await app.register(websocket);
+    const scopes = new Map<string, unknown>([
+      [
+        "trigger-token-0123456789abcdef",
+        {
+          occurrenceId: occurrence.id,
+          environmentId: j.task.environmentId,
+          requestedBy: j.task.userId,
+        },
+      ],
+      [
+        "watch-token-0123456789abcdef",
+        {
+          activationId: activation!.id,
+          environmentId: j.task.environmentId,
+          createdBy: j.task.userId,
+          exp: Math.floor(Date.now() / 1000) + 3_600,
+        },
+      ],
+    ]);
+    const tokens = {
+      authenticate: async (token: string) => {
+        const scope = scopes.get(token);
+        if (!scope) throw new Error("Unknown token.");
+        return scope;
+      },
+    };
+    registerTriggerCdpBridge(app as never, home.service, tokens as never);
+    registerWatchCdpBridge(app as never, home.service, tokens as never);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const origin = `ws://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+    const connect = async (token: string, path: string, bindingId: string) => {
+      const socket = new WebSocket(`${origin}${path}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", () => resolve());
+        socket.once("error", reject);
+      });
+      // A command answered means the route has attached its owned session.
+      socket.send(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+      await new Promise<void>((resolve) => socket.once("message", () => resolve()));
+      const [session] = await j.database
+        .selectFrom("browserSessionAttachments")
+        .select("sessionId")
+        .where("agentBindingId", "=", bindingId)
+        .execute();
       return {
-        session: opened.session.id,
+        session: session!.sessionId,
         close: async () => {
-          cdp.close();
-          await home.service.closeTriggerSessionsForBinding(authority.agentBindingId);
-          await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+          socket.close();
+          await vi.waitFor(async () => {
+            expect(
+              await j.database
+                .selectFrom("browserSessionAttachments")
+                .select("sessionId")
+                .where("agentBindingId", "=", bindingId)
+                .execute(),
+            ).toEqual([]);
+            expect((await j.row(session!.sessionId))?.state).toBe("closed");
+            expect(home.coordinator.gate.held).toBe(0);
+          });
         },
       };
     };
-    const triggerBrowser = await connect(trigger);
+    closeApp = () => app.close();
+    const triggerBrowser = await connect(
+      "trigger-token-0123456789abcdef",
+      hostInternalRoutePaths.triggerCdp,
+      trigger.agentBindingId,
+    );
     expect((await j.row(triggerBrowser.session))?.origin).toBe("trigger");
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     await triggerBrowser.close();
     expect(await home.coordinator.tryPark()).toBe("parked");
-    const watchBrowser = await connect(watcher);
+    const watchBrowser = await connect(
+      "watch-token-0123456789abcdef",
+      hostInternalRoutePaths.watchCdp,
+      watcher.agentBindingId,
+    );
     expect(await home.coordinator.tryPark()).toBe("vetoed");
     await watchBrowser.close();
     expect(await home.coordinator.tryPark()).toBe("parked");
     expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume", "pause"]);
   } finally {
+    await closeApp?.();
     await j.close();
   }
 });

@@ -530,15 +530,18 @@ function attachCdpSocket<Scope>(
     poolWaiting?.abort(new BrowserCdpConnectionEnded("The browser connection ended."));
     if (expirationTimer) clearTimeout(expirationTimer);
     if (refusalTimer) clearTimeout(refusalTimer);
-    closing = attachmentPromise
-      .then(
-        (attachment) => attachment.close(),
-        () => undefined,
-      )
-      .then(async () => {
+    closing = (async () => {
+      try {
+        await attachmentPromise.then(
+          (attachment) => attachment.close(),
+          () => undefined,
+        );
+      } finally {
+        // The owned session ends even when the attachment's own cleanup failed.
         if (options.ownsSession && ownedSessionOpened)
           await options.browser.closeTriggerSessionsForBinding(authority.agentBindingId);
-      });
+      }
+    })();
     return closing;
   };
   socket.once("error", () => {
