@@ -100,8 +100,8 @@ export function registerCloudComputerRoutes(
   app.get(cloudComputersDesiredPath, async (request, reply) => {
     privateResponse(reply);
     await requireLease(request);
-    const { after, limit } = CloudComputerDesiredPageSchema.parse(request.query);
-    return CloudComputerDesiredResponseSchema.parse(await store.desired(after, limit));
+    const { after, limit, provider } = CloudComputerDesiredPageSchema.parse(request.query);
+    return CloudComputerDesiredResponseSchema.parse(await store.desired(after, limit, provider));
   });
 
   app.post(`${provisionerPath}/status`, async (request, reply) => {

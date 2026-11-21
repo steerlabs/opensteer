@@ -11,7 +11,7 @@ import type {
 import { accountRefused, type AccountApi } from "./account.js";
 import { renderUserData } from "./boot.js";
 import type { DiscoverHome } from "./discovery.js";
-import type { DnsProvider, VmProvider, VmServer } from "./provider.js";
+import type { DnsProvider, VmProvider, VmServer, VmServerId } from "./provider.js";
 
 type Failure = NonNullable<CloudComputerReport["lastError"]>;
 class Superseded extends Error {}
@@ -153,7 +153,10 @@ export class Reconciler {
       revision,
       phase,
       lastError,
-      providerServerId: phase === "deleted" ? null : (current?.id ?? null),
+      providerServerId: phase !== "deleted" && typeof current?.id === "number" ? current.id : null,
+      ...(phase !== "deleted" && typeof current?.id === "string"
+        ? { providerServerRef: current.id }
+        : {}),
       ipv4: phase === "deleted" ? null : (current?.ipv4 ?? null),
       ipv6: phase === "deleted" || !computer.ipv6Enabled ? null : (current?.ipv6 ?? null),
       observedIdentity: phase === "deleted" ? null : (computer.observedIdentity ?? null),
@@ -189,10 +192,16 @@ export class Reconciler {
     const journal = async <T>(
       kind: CloudComputerProviderWrite["kind"],
       action: (token: string, send: (job: AbortSignal) => Promise<void>) => Promise<T>,
-      serverId?: number,
+      serverId?: VmServerId,
     ): Promise<T> => {
       const token = randomUUID();
-      const write = { kind, token, generation, ...(serverId === undefined ? {} : { serverId }) };
+      const write = {
+        kind,
+        token,
+        generation,
+        ...(typeof serverId === "number" ? { serverId } : {}),
+        ...(typeof serverId === "string" ? { serverRef: serverId } : {}),
+      };
       await this.#check(id, { operation: "begin-provider-write", revision, write }, signal);
       pending.set(token, write);
       let result: T;
@@ -238,7 +247,10 @@ export class Reconciler {
           (write.kind === "create" &&
             servers.some((server) => server.generation === write.generation)) ||
           (write.kind === "power-on" &&
-            servers.some((server) => server.id === write.serverId && server.status === "running"))
+            servers.some(
+              (server) =>
+                server.id === (write.serverRef ?? write.serverId) && server.status === "running",
+            ))
         ) {
           await finish(write.token);
         }
@@ -345,7 +357,7 @@ export class Reconciler {
         );
       }
       if (!current) return unready("provisioning");
-      if (computer.providerServerId !== current.id) {
+      if ((computer.providerServerRef ?? computer.providerServerId) !== current.id) {
         // Start the credential clock durably before the stopped VM can make a boot request.
         if (!(await account.report(report("provisioning"), signal))) throw new Superseded();
       }

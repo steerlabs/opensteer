@@ -1,6 +1,7 @@
 import type {
   CloudComputerId,
   CloudComputerProviderWrite,
+  GoogleComputeServerRef,
 } from "@opensteer/control-plane-protocol";
 
 export interface Addresses {
@@ -8,8 +9,10 @@ export interface Addresses {
   readonly ipv6: string | null;
 }
 
-export interface VmServer extends Addresses {
-  readonly id: number;
+export type VmServerId = number | GoogleComputeServerRef;
+
+export interface VmServer<Id extends VmServerId = VmServerId> extends Addresses {
+  readonly id: Id;
   readonly generation: number;
   readonly status: "running" | "off" | "transitioning" | "deleting";
   readonly firewalls: readonly { id: number; status: "applied" | "pending" }[];
@@ -40,19 +43,21 @@ export interface VmProvider {
       generation: number;
       providerServerId?: number | undefined;
       previousProviderServerId?: number | undefined;
+      providerServerRef?: GoogleComputeServerRef | undefined;
+      previousProviderServerRef?: GoogleComputeServerRef | undefined;
       pendingProviderWrites?: CloudComputerProviderWrite[] | undefined;
     },
   ): Promise<readonly VmServer[]>;
   listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; server: VmServer }[]>;
   create(input: CreateVm, signal: AbortSignal, check?: () => Promise<void>): Promise<VmServer>;
   describe(
-    id: number,
+    id: VmServerId,
     signal: AbortSignal,
     knownGeneration?: number,
   ): Promise<VmServer | undefined>;
-  powerOn(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
-  powerOff(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
-  delete(id: number, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  powerOn(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  powerOff(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
+  delete(id: VmServerId, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
 }
 
 export type PublishDnsWrite = (
