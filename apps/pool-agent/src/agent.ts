@@ -441,9 +441,12 @@ export class PoolAgent {
     const slot = this.#require(call.slotId);
     this.#admit(slot, generation);
     if (call.kind === "resume") slot.demand += 1;
+    const arrived = performance.now();
+    let started = arrived;
     try {
       return structuredClone(
         await this.#run(slot, () => {
+          started = performance.now();
           // Checked again at the front of the lane: a key replaced or a slot deleted while
           // this call waited means it is not served, and it writes nothing.
           this.#admit(slot, generation);
@@ -451,7 +454,16 @@ export class PoolAgent {
         }),
       );
     } finally {
-      if (call.kind === "resume") slot.demand -= 1;
+      if (call.kind === "resume") {
+        slot.demand -= 1;
+        // Where a wake's time went, outside its steps: waiting for the slot's lane, and all of it.
+        this.#log({
+          event: "resume.call",
+          slotId: slot.record.slotId,
+          lane_ms: round(started - arrived),
+          total_ms: round(performance.now() - arrived),
+        });
+      }
     }
   }
 
@@ -799,6 +811,7 @@ export class PoolAgent {
       jailId = jailName(before.slotId, jailGeneration);
     }
     this.#unschedule(slot);
+    const consumedAt = performance.now();
     // The right to resume is consumed here, durably, before anything is loaded or thawed.
     await this.#commit(slot, {
       ...before,
@@ -812,7 +825,7 @@ export class PoolAgent {
       },
     });
     this.#checkpoint("resume:consumed");
-    const steps: Record<string, number> = {};
+    const steps: Record<string, number> = { journal: round(performance.now() - consumedAt) };
     let mark = performance.now();
     const step = (name: string) => {
       const at = performance.now();
@@ -821,9 +834,11 @@ export class PoolAgent {
     };
     try {
       await this.#ensureHost();
+      step("host");
       await this.#step("network", () =>
         this.#driver.prepareSlot(before.slotId, before.guest.egress),
       );
+      step("prepare");
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),
       );
@@ -859,6 +874,7 @@ export class PoolAgent {
         await within(this.#deadlines.clock, "The bridge token", (signal) =>
           this.#driver.deliverToken(before.slotId, jailId!, before.bridgeToken!, signal),
         );
+      step("token");
       await within(this.#deadlines.network, "Opening the guest network", () =>
         this.#driver.openNetwork(before.slotId),
       );
@@ -1637,4 +1653,8 @@ function messageOf(error: unknown): string {
 
 function tombstoneOf(record: SlotRecord, deletedAt: string): TombstoneRecord {
   return { v: 1, slotId: record.slotId, term: record.term, homeKey: record.homeKey, deletedAt };
+}
+
+function round(ms: number): number {
+  return Math.round(ms * 10) / 10;
 }

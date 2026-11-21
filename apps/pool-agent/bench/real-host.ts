@@ -781,6 +781,23 @@ async function restarts(slot: Slot, live: { cdp?: Cdp; workload?: Workload }) {
   }
 }
 
+/** The host's pressure stall totals in microseconds (PSI), "some" for CPU, both for I/O. */
+function pressure(): { cpu: number; io: number; ioFull: number } {
+  const total = (file: string, line: "some" | "full") =>
+    Number(
+      /total=(\d+)/u.exec(
+        readFileSync(file, "utf8")
+          .split("\n")
+          .find((entry) => entry.startsWith(line)) ?? "",
+      )?.[1] ?? 0,
+    );
+  return {
+    cpu: total("/proc/pressure/cpu", "some"),
+    io: total("/proc/pressure/io", "some"),
+    ioFull: total("/proc/pressure/io", "full"),
+  };
+}
+
 async function concurrent(slots: Slot[], rounds: number) {
   const live: { cdp: Cdp; workload: Workload }[] = [];
   for (const slot of slots) {
@@ -810,6 +827,10 @@ async function concurrent(slots: Slot[], rounds: number) {
     );
     // The two saves begin at the idle threshold; the three wakes start while they write.
     await sleep(options.saveAfterMs + 300);
+    // Item 3 of round 4: where a concurrent wake's time goes. The host's CPU and I/O pressure
+    // across the wakes, and the agent's own breakdown of each wake (lane, journal, steps).
+    const since = new Date().toISOString().replace("T", " ").slice(0, 19);
+    const pressureBefore = pressure();
     const start = now();
     const results = await Promise.all(
       wakers.map(async (slot, index) => {
@@ -821,7 +842,23 @@ async function concurrent(slots: Slot[], rounds: number) {
         });
       }),
     );
+    const pressureAfter = pressure();
     const saving = await Promise.all(savers.map((slot) => slot.summary()));
+    const agentLines = ((await helper({ cmd: "agent-events", since })).lines as string[])
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((event) => event.event === "resumed" || event.event === "resume.call");
+    emit({
+      kind: "concurrent-breakdown",
+      round,
+      wall_ms: Math.round(now() - start),
+      cpu_some_stall_ms: Math.round((pressureAfter.cpu - pressureBefore.cpu) / 1000),
+      io_some_stall_ms: Math.round((pressureAfter.io - pressureBefore.io) / 1000),
+      io_full_stall_ms: Math.round((pressureAfter.ioFull - pressureBefore.ioFull) / 1000),
+      wakers: wakers.map((slot) => ({
+        slot: slot.id,
+        agent: agentLines.filter((event) => event.slotId === slot.id),
+      })),
+    });
     for (const [index, { row, cdp }] of results.entries()) {
       emit({ ...row, savers_during: saving.map((summary) => summary?.parked?.tier ?? null) });
       live[index]!.cdp = cdp;
