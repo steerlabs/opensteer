@@ -1,6 +1,7 @@
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
+  browserRestartFailure,
   browserSleepWords,
   browserStartFailure,
   canRespondToRequests,
@@ -1006,10 +1007,7 @@ function BrowserTab(props: {
             setTrying(true);
             void restartPooledBrowser(hostClient, computerId)
               .catch((error: unknown) =>
-                Alert.alert(
-                  browserSleepWords.failedTitle,
-                  error instanceof Error ? error.message : String(error),
-                ),
+                Alert.alert(browserSleepWords.failedTitle, browserRestartFailure(error)),
               )
               .finally(() => setTrying(false));
           },

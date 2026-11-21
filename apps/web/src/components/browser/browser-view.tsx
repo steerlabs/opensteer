@@ -3,6 +3,7 @@ import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { useFreshPicture } from "./fresh-picture.js";
 import {
   browserSiteForTab,
+  browserRestartFailure,
   browserSiteLabel,
   browserSleepWords,
   browserStartFailure,
@@ -315,9 +316,7 @@ export function PlaceBrowserView({
     if (sleep.browser.kind === "not-pooled") return;
     setRestarting(true);
     void restartPooledBrowser(hostClient, sleep.browser.computerId)
-      .catch((error: unknown) =>
-        toast.error(error instanceof Error ? error.message : String(error)),
-      )
+      .catch((error: unknown) => toast.error(browserRestartFailure(error)))
       .finally(() => setRestarting(false));
   };
   const subscribePasskeys = useCallback(

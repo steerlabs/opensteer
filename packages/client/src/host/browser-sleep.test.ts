@@ -3,6 +3,7 @@ import { browserSleepScenes, mockBrowserPoolReport } from "../mock/browser-sleep
 import {
   BrowserRestartUnavailable,
   BrowserReturnNotes,
+  browserRestartFailure,
   browserNotPooled,
   browserSleepFromHome,
   browserSleepWords,
@@ -274,5 +275,16 @@ describe("the words", () => {
       expect(words).not.toMatch(/instantly|never reloads|always exactly|stays signed in|%/iu);
       expect(words).not.toMatch(/snapshot|micro-?VM|pool|cold start|park/iu);
     }
+  });
+});
+
+describe("a restart that did not happen", () => {
+  it("says so in fixed words, never the failure's own text", () => {
+    expect(browserRestartFailure(new BrowserRestartUnavailable())).toBe(
+      "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+    );
+    expect(browserRestartFailure(new Error("socket hang up ECONNRESET"))).toBe(
+      "Your browser wasn’t restarted. Try again in a moment.",
+    );
   });
 });

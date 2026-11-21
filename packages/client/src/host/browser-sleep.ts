@@ -293,6 +293,7 @@ export const browserSleepWords = {
   restartCancel: "Cancel",
   restartRefusedTitle: "Couldn’t restart your browser",
   restartRefused: "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
+  restartFailed: "Your browser wasn’t restarted. Try again in a moment.",
 
   dismiss: "Dismiss",
 } as const;
@@ -434,6 +435,16 @@ export class BrowserRestartUnavailable extends Error {
     super(browserSleepWords.restartRefused);
     this.name = "BrowserRestartUnavailable";
   }
+}
+
+/**
+ * What a refused or failed restart says, in fixed words: never the failure's own text. Nothing
+ * was changed when the Home refused; anything else may not have reached it.
+ */
+export function browserRestartFailure(error: unknown): string {
+  return error instanceof BrowserRestartUnavailable
+    ? browserSleepWords.restartRefused
+    : browserSleepWords.restartFailed;
 }
 
 /**

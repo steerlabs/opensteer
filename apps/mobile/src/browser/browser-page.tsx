@@ -10,6 +10,7 @@ import {
   useTabStrip,
 } from "@opensteer/client/react";
 import {
+  browserRestartFailure,
   browserSleepWords,
   passkeyNotice,
   passwordSaveResultMessage,
@@ -192,10 +193,7 @@ export function BrowserPage(props: {
     setRestarting(true);
     void restartPooledBrowser(hostClient, pooledComputer)
       .catch((error: unknown) =>
-        Alert.alert(
-          browserSleepWords.restartRefusedTitle,
-          error instanceof Error ? error.message : String(error),
-        ),
+        Alert.alert(browserSleepWords.restartRefusedTitle, browserRestartFailure(error)),
       )
       .finally(() => setRestarting(false));
   };
