@@ -50,15 +50,11 @@ import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
 import type { AccountProfiles } from "../account/account-profiles.js";
-import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import {
   hostedOAuthLaunchReturnTo,
   registerHostedOAuthBrokerRoutes,
 } from "../auth/hosted-oauth-broker-routes.js";
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
-import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import { registerHostedTeamProvisionerRoutes } from "../hosted-teams/provisioner-routes.js";
-import { registerHostedTeamAccountRoutes } from "../hosted-teams/account-routes.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
 const IssuedIdTokenSchema = z.object({ id_token: z.string().min(1) });
@@ -95,13 +91,6 @@ export async function createControlPlaneServer(
     readonly agentDirectory?: AgentDirectoryReader;
     readonly organizations?: OrganizationStore;
     readonly workHomeFetch?: typeof globalThis.fetch;
-    /** Teams Opensteer hosts, and the check that admits only their provisioner. */
-    readonly hostedTeams?: {
-      readonly store: HostedTeamStore;
-      readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
-      /** Wakes Account's setup of teams whose Host just started. */
-      readonly kickBootstrap?: () => void;
-    };
     readonly desktopDownloadUrl?: string;
     readonly iosAppUrl?: string;
     readonly androidAppUrl?: string;
@@ -112,7 +101,6 @@ export async function createControlPlaneServer(
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly portalSessions?: PortalSessionStore;
     readonly store: ControlPlaneStore;
-    readonly teamIdentityGrants?: TeamIdentityGrantService;
     readonly accountProfiles?: AccountProfiles;
   },
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
@@ -214,7 +202,6 @@ export async function createControlPlaneServer(
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
         fonts,
-        ...(dependencies.hostedTeams ? { hostedTeams: dependencies.hostedTeams.store } : {}),
         ...(dependencies.cloudComputers
           ? { cloudComputers: dependencies.cloudComputers.store }
           : {}),
@@ -253,19 +240,6 @@ export async function createControlPlaneServer(
       ...dependencies,
       organizations: dependencies.organizations,
       cloudComputers: dependencies.cloudComputers.store,
-    });
-  }
-  if (dependencies.hostedTeams) {
-    registerHostedTeamProvisionerRoutes(app, {
-      hostedTeams: dependencies.hostedTeams.store,
-      verifyProvisioner: dependencies.hostedTeams.verifyProvisioner,
-      ...(dependencies.hostedTeams.kickBootstrap
-        ? { kickBootstrap: dependencies.hostedTeams.kickBootstrap }
-        : {}),
-    });
-    registerHostedTeamAccountRoutes(app, {
-      authenticator: dependencies.authenticator,
-      hostedTeams: dependencies.hostedTeams.store,
     });
   }
   if (dependencies.hostedOAuthBroker) {

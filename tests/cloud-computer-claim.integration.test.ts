@@ -61,7 +61,7 @@ import { createControlPlaneDatabase } from "../apps/control-plane/src/database/d
 import { resetManagedCloudTables } from "../apps/control-plane/src/cloud-computers/reset.test-support.js";
 import { migrateControlPlaneToLatest } from "../apps/control-plane/src/database/migrations.js";
 import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
-import { googleServiceAccountVerifier } from "../apps/control-plane/src/hosted-teams/provisioner-routes.js";
+import { googleServiceAccountVerifier } from "../apps/control-plane/src/cloud-computers/provisioner-verifier.js";
 import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-computers/secret-cipher.js";
 import { OrganizationStore } from "../apps/control-plane/src/organizations/store.js";
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";

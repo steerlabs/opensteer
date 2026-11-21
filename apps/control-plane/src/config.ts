@@ -222,12 +222,6 @@ const AccountEnvironmentSchema = z
       .regex(/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/u)
       .optional(),
     OPENSTEER_FCM_SERVICE_ACCOUNT_JSON: FcmServiceAccountSchema.optional(),
-    OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL: z
-      .email()
-      .refine((value) => value.endsWith(".iam.gserviceaccount.com"), {
-        message: "Expected a Google service account email",
-      })
-      .optional(),
     OPENSTEER_CONTROL_PLANE_HOST: z.string().min(1).default("127.0.0.1"),
     OPENSTEER_CONTROL_PLANE_PORT: z.coerce.number().int().min(1).max(65_535).default(4142),
   })
@@ -282,11 +276,6 @@ export interface ControlPlaneConfig {
       readonly tokenUri: string;
     };
   };
-  /**
-   * Hosted team servers are offered only when the provisioner's Google service account is
-   * named; that identity alone may read desired teams and report their status.
-   */
-  readonly hostedTeams?: { readonly provisionerEmail: string };
   readonly cloudComputers?: CloudComputerConfig;
   readonly organizationOffer?: OrganizationOffer;
   readonly listenHost: string;
@@ -344,12 +333,6 @@ export function loadControlPlaneConfig(
     organizationOffer.portalConfigurationId === cloudComputers?.stripePortalConfigurationId
   )
     throw new Error("Organization billing requires a dedicated Stripe portal configuration");
-  if (
-    cloudComputers &&
-    cloudComputers.provisionerEmail === parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
-  ) {
-    throw new Error("Cloud Computer provisioner needs a distinct Google service account");
-  }
   if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
     throw new Error("Cloud Computers require an HTTPS Account origin");
   }
@@ -392,9 +375,6 @@ export function loadControlPlaneConfig(
     },
     nativeOAuthClients: opensteerAccountNativeOAuthClients,
     ...(pushConfig(parsed) ? { push: pushConfig(parsed)! } : {}),
-    ...(parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL
-      ? { hostedTeams: { provisionerEmail: parsed.OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL } }
-      : {}),
     listenHost: parsed.OPENSTEER_CONTROL_PLANE_HOST,
     listenPort: parsed.OPENSTEER_CONTROL_PLANE_PORT,
   } satisfies ControlPlaneConfig;

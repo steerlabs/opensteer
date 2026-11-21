@@ -70,10 +70,7 @@ import {
   abandonAccountDeletion,
   beginAccountDeletion,
   renewAccountDeletion,
-  deleteHostedTeams,
-  heldHostedTeams,
-  promoteReadyHostedTeams,
-} from "../hosted-teams/hosted-team-store.js";
+} from "../account/account-deletion-fence.js";
 import {
   createHostCredential,
   createOAuthClientSecret,
@@ -1278,7 +1275,6 @@ export class ControlPlaneStore {
           );
         }
       }
-      await promoteReadyHostedTeams(transaction, authority.deploymentId, accountId);
       return DirectoryProjectionResponseSchema.parse({
         accountId,
         generation: input.generation,
@@ -1556,16 +1552,10 @@ export class ControlPlaneStore {
     return abandonAccountDeletion(this.#database, accountId, attemptId);
   }
 
-  /** Hosted teams that keep this Account from being deleted until each is deleted or transferred. */
-  heldHostedTeams(accountId: ControlPlaneAccountId) {
-    return heldHostedTeams(this.#database, accountId);
-  }
-
   /**
-   * Removes the Account, the Deployments it owns and its hosted teams still being set up. Their
-   * Connect resources must already be revoked: a tunnel left behind would outlive every row that
-   * names it. Hosts learn nothing here, so they keep running and find out on their next call.
-   * A hosted team the Account still holds refuses it; `beginAccountDeletion` refuses that first.
+   * Removes the Account and the Deployments it owns. Their Connect resources must already be
+   * revoked: a tunnel left behind would outlive every row that names it. Hosts learn nothing here,
+   * so they keep running and find out on their next call.
    */
   async deleteAccount(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
@@ -1620,9 +1610,6 @@ export class ControlPlaneStore {
         // FOR UPDATE: Deleting the Account deletes the Deployments it owns.
         .forUpdate()
         .execute();
-      // Locked above, the Account can't be handed a team or have one adopted from here on.
-      if ((await heldHostedTeams(transaction, accountId)).length > 0)
-        throw new ControlPlaneError("conflict", "This Account still holds a team.");
       if (owned.length > 0) {
         // Locked, because a provision committing after a plain read would lose its row
         // to the cascade and leave its tunnel unrecorded.
@@ -1648,7 +1635,6 @@ export class ControlPlaneStore {
           .where("ownerAccountId", "=", accountId)
           .execute();
       }
-      await deleteHostedTeams(transaction, { creatorAccountId: accountId });
       await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("oauthConsents").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("authSessions").where("userId", "=", accountId).execute();

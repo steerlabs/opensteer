@@ -83,7 +83,7 @@ import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.
 import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
+import { googleServiceAccountVerifier } from "./provisioner-verifier.js";
 import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";

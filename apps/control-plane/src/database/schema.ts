@@ -41,11 +41,6 @@ import type {
   NotificationId,
   ThreadId,
 } from "@opensteer/core";
-import type {
-  HostedTeamId,
-  HostedTeamPhase,
-  HostedTeamState,
-} from "@opensteer/control-plane-protocol/hosted-teams";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -539,39 +534,6 @@ export interface NotificationDeliveryTable {
   completedAt: NullableTimestamp;
 }
 
-export interface HostedTeamTable {
-  id: HostedTeamId;
-  slug: string;
-  creatorAccountId: ControlPlaneAccountId | null;
-  state: HostedTeamState;
-  setupTokenDigest: string | null;
-  setupGeneration: number;
-  phase: HostedTeamPhase;
-  hostImage: string | null;
-  observedSetupGeneration: Generated<number>;
-  statusMessage: string | null;
-  statusReportedAt: NullableTimestamp;
-  suspendedReason: string | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  deletedAt: NullableTimestamp;
-  name: string | null;
-  createRequestId: string | null;
-  stage: Generated<HostedTeamStoredStage>;
-  stageMessage: string | null;
-  /** The plaintext first-owner setup token, sealed to this team and generation. */
-  sealedSetupToken: string | null;
-  deploymentId: DeploymentId | null;
-  bootstrapReceipt: JsonValue | null;
-  /** Bumped by each bootstrap claim, so a slower earlier attempt can never write. */
-  bootstrapAttempt: Generated<number>;
-  bootstrapNextAt: NullableTimestamp;
-  bootstrapLeaseUntil: NullableTimestamp;
-  configuringSince: NullableTimestamp;
-}
-
-export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
-
 export interface ControlPlaneDatabaseSchema {
   agentDirectoryState: AgentDirectoryStateTable;
   agentDirectoryEntries: AgentDirectoryEntryTable;
@@ -589,7 +551,6 @@ export interface ControlPlaneDatabaseSchema {
   cloudComputerCheckouts: CloudComputerCheckoutTable;
   cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
   cloudComputerStripeEvents: CloudComputerStripeEventTable;
-  hostedTeams: HostedTeamTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;
   users: UserTable;
   authAccounts: AuthAccountTable;

@@ -43,8 +43,7 @@ export class AccountDeletionService {
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
-    // Before anything is undone: a hosted team the Account holds refuses here, and from here on
-    // nothing can give it one.
+    // Before anything is undone: another attempt already deleting the Account refuses here.
     let attemptId: string;
     try {
       attemptId = await this.#store.beginAccountDeletion(accountId);
