@@ -6,7 +6,7 @@
     <title>Privacy Policy · Opensteer</title>
     <meta
       name="description"
-      content="How Opensteer handles information across the app on your computer, the phone app and our Account and Remote access services."
+      content="How Opensteer handles information across the app on your computer, the phone app, the Opensteer Cloud Computer and our Account and Remote access services."
     />
   </head>
   <body>
@@ -14,7 +14,7 @@
     <main class="page">
       <div class="wrap">
         <header class="doc__head">
-          <p class="page__eyebrow">Effective November 5, 2026</p>
+          <p class="page__eyebrow">Effective November 21, 2026</p>
           <h1>Privacy Policy</h1>
           <p class="page__lede">
             TrendUp AI, Inc. operates Opensteer. This policy explains how Opensteer handles
@@ -29,6 +29,8 @@
               <li>
                 <a href="#information-our-services-process">Information our services process</a>
               </li>
+              <li><a href="#opensteer-cloud-computer">Opensteer Cloud Computer</a></li>
+              <li><a href="#work-homes">Work Homes and organizations</a></li>
               <li><a href="#information-on-your-phone">Information on your phone</a></li>
               <li><a href="#optional-access-to-iphone-data">Optional access to iPhone data</a></li>
               <li><a href="#microphone-and-speech">Microphone and speech</a></li>
@@ -46,24 +48,26 @@
             </ol>
           </nav>
           <article class="prose">
-            <h2 id="your-computer-runs-the-work">Your computer runs the work</h2>
+            <h2 id="your-computer-runs-the-work">Where your work is kept</h2>
             <p>
-              Opensteer runs on your own computer. The iPhone and iPad app connects to that computer
-              so you can give agents instructions, follow their replies and respond to requests.
-              Your computer stores your Opensteer work, including conversations, project data and
-              connected-service configuration.
+              Your Opensteer Home keeps your work, including conversations, tasks, project data,
+              browser profiles and connected-service configuration. It runs on your own Mac, on a
+              server you run, or on an Opensteer Cloud Computer. A Home on your own Mac or server
+              keeps that work there, and our services don't receive it. The iPhone and iPad app
+              connects to your Home so you can give agents instructions, follow their replies and
+              respond to requests.
             </p>
             <p>
-              Our Account and connection services help you sign in, find your connected computers,
-              reach them and receive notifications. We do not provide a cloud-hosted computer or
-              agent workspace.
+              Our Account and connection services help you sign in, find your Homes and devices,
+              reach them and receive notifications. If you buy an Opensteer Cloud Computer, we also
+              run the computer your Home lives on, as described below.
             </p>
             <p>
               Agents use the AI services you configure. Instructions, attachments and information an
               agent reads can go to the AI service used for that task. That service's terms and
               privacy practices govern its processing, including retention and any use of data to
-              improve models. Keeping Opensteer on your own computer does not prevent the AI service
-              from receiving task data.
+              improve models. Wherever your Home runs, the AI service used for a task receives that
+              task's data.
             </p>
             <h2 id="information-our-services-process">Information our services process</h2>
             <p>
@@ -100,6 +104,45 @@
               sessions can retain IP addresses and user-agent information. Infrastructure providers
               may process connection metadata to operate and secure their services.
             </p>
+            <h2 id="opensteer-cloud-computer">Opensteer Cloud Computer</h2>
+            <p>
+              An Opensteer Cloud Computer is a server we run for one person. Your Home runs on it,
+              so your conversations, tasks, files, connected-service credentials and browser
+              profiles, including the sites you sign in to in its browser, are stored on its disk.
+              We rent the server from Hetzner Cloud or Google Cloud, in the region your Cloud
+              Computer page shows, and Cloudflare serves its address. Its browser loads public pages
+              through a proxy with a fixed IP address, from a proxy provider we contract, so that
+              provider carries that browser traffic. Saved passwords and cards from Opensteer
+              Passwords work only on a Home on your Mac.
+            </p>
+            <p>
+              Once a day the Cloud Computer makes an encrypted backup of its data to S3-compatible
+              object storage, in a space set aside for that computer. Our Account service creates
+              the encryption key and keeps it in Google Cloud Secret Manager; the Cloud Computer
+              receives it when it starts. Backups are kept while the Cloud Computer exists.
+            </p>
+            <p>Our operators run the machine, its disk and its backups, and can reach them.</p>
+            <p>
+              For each Cloud Computer, our Account service keeps the records needed to run and bill
+              it: its address and region, its server's identifiers and IP addresses, its browser's
+              IP address, when it last reported a backup, and its Stripe customer, subscription and
+              checkout references and billing status. Stripe processes your payment. We don't
+              receive your card details.
+            </p>
+
+            <h2 id="work-homes">Work Homes and organizations</h2>
+            <p>
+              An organization can assign you a work Home: a Cloud Computer it pays for and governs,
+              with you as its only owner. Our Account service keeps your membership and role,
+              invitations, and each work Home's assignment and policy. The organization sets limits
+              on what connected agents may do there and receives audit records of events, which our
+              Account service stores and which hold identifiers, kinds and times only: no addresses,
+              titles, scripts, results, messages, file names or labels. It can't sign in to your
+              work Home, answer its requests, watch it, or see its pages, messages, prompts or
+              files, and membership never gives it your personal Home or devices. You see the same
+              records in your work Home, under what your organization can see.
+            </p>
+
             <h2 id="information-on-your-phone">Information on your phone</h2>
             <p>
               The app keeps connection settings and credentials needed to reconnect. It can also
@@ -212,12 +255,16 @@
               Providers that operate our infrastructure, handle sign-in or deliver notifications
               process information needed for those functions. The Account deployment configuration
               uses Google Cloud infrastructure and Cloud SQL in the us-west1 region. Cloudflare
-              provides Remote access tunnels and routing. Apple and Google provide sign-in; Apple
-              delivers iOS push notifications. The website is hosted on Vercel. When configured, the
-              website uses PostHog for page views and interaction analytics, including its
-              session-recording features, and Crisp for optional support chat. Those website
-              features can process browser identifiers, page and interaction data, or information
-              you send to support. These website services are separate from the iPhone app.
+              provides Remote access tunnels and routing, and the addresses of Cloud Computers.
+              Apple and Google provide sign-in; Apple delivers iOS push notifications. Stripe
+              processes Cloud Computer payments. Hetzner Cloud or Google Cloud hosts Cloud
+              Computers, S3-compatible object storage keeps their encrypted backups, Google Cloud
+              Secret Manager keeps the backup keys, and a proxy provider carries their browsers'
+              traffic. The website is hosted on Vercel. When configured, the website uses PostHog
+              for page views and interaction analytics, including its session-recording features,
+              and Crisp for optional support chat. Those website features can process browser
+              identifiers, page and interaction data, or information you send to support. These
+              website services are separate from the iPhone app.
             </p>
             <p>
               Your chosen AI and connected-service providers also process information you instruct
@@ -268,12 +315,23 @@
               “Delete Account”. This opens the Account deletion page, where you may need to sign in
               again before confirming “Delete Account”. Deletion turns off Remote access for owned
               computers and removes the central Account, authentication and owned computer-directory
-              records; it does not erase databases on your computer. Manage that work on your
-              computer, and use each AI/connected-service provider's controls for data it holds. The
+              records; it does not erase databases on your own Mac or server. Manage that work
+              there, and use each AI/connected-service provider's controls for data it holds. The
               service attempts to revoke the stored Apple sign-in refresh token after Account
               deletion. If Apple revocation fails, Account deletion still completes; you can also
               remove Opensteer under Sign in with Apple in your Apple Account settings. Account
               deletion cascades to associated push devices, deliveries and OAuth broker records.
+            </p>
+            <p>
+              If you have an Opensteer Cloud Computer, deleting your account deletes it too. We
+              cancel its subscription first, so nothing more is charged, then destroy the computer
+              and its disk, destroy the backup key, which makes its backups unreadable, and remove
+              the stored backup data. Your account is deleted once the computer is gone. Deleting
+              only the Cloud Computer does the same and keeps your account. A record that the Cloud
+              Computer existed, with its identifiers, billing references and deletion dates, remains
+              in our Account database without your account. Stripe keeps its own records of your
+              payments under its policies. A work Home belongs to its organization, so it must be
+              offboarded by the organization before you can delete your account.
             </p>
             <h2 id="security-and-international-processing">
               Security and international processing
