@@ -171,6 +171,15 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     expect(third.structuredContent).toMatchObject({
       error: { message: "The browser page attachment has ended.", performed: [] },
     });
+    // Handed off, then the Home's own witness refused the script's page before any command left:
+    // the script's failure, with nothing performed, and never unknown, since nothing left.
+    expect(
+      await j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "handedOffAt"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "failed", outcome: "failed", handedOffAt: expect.any(Date) });
     expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume"]);
   } finally {
     await j.close();

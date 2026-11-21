@@ -35,7 +35,6 @@ import {
   readAgentOperation,
   refuseUnsentAgentOperation,
   refuseUnsentHandedOffAgentOperation,
-  BrowserPoolAdmissionClosed,
   reopenAgentOperation,
   respondToAgentOperation,
   settleAgentOperation,
@@ -929,15 +928,10 @@ export class AgentSessionService {
       } catch (error) {
         const ended =
           signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
-        // A pooled send refused before any command reached the wire (a cut, a recheck or a
-        // closed gate): nothing happened, so it is refused rather than failed or unknown.
-        if (
-          pooled &&
-          submitted === 0 &&
-          (ended !== null ||
-            error instanceof OperationOutcomeUnknown ||
-            error instanceof BrowserPoolAdmissionClosed)
-        ) {
+        // A pooled send refused before any command reached the wire (a cut, a recheck, a closed
+        // gate or a page that changed): nothing left the Home, so it is refused, never failed
+        // or unknown.
+        if (pooled && submitted === 0) {
           const reason = ended ?? (error instanceof OpensteerError ? error : null);
           const message =
             reason?.message ??

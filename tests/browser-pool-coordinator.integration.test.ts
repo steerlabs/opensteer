@@ -72,6 +72,8 @@ async function poolFixture(
     now?: () => number;
     /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
     freshGuests?: boolean;
+    /** The runtime's page probe during a retire; a retire waits for it. */
+    probePage?: () => Promise<readonly string[]>;
   } = {},
 ) {
   const fixture = await createStoreFixture();
@@ -93,7 +95,7 @@ async function poolFixture(
       ticketVerifier: verifier,
       pool: {
         controllerKey: controller.publicKey,
-        probePage: async () => [],
+        probePage: options.probePage ?? (async () => []),
         ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
       },
     });
@@ -207,9 +209,9 @@ async function poolFixture(
     homes.push(coordinator);
     return coordinator;
   };
-  const openSession = async (coordinator: BrowserPoolCoordinator) => {
+  const openSession = async (coordinator: BrowserPoolCoordinator, id = sessionId) => {
     await createBrowserSession(database, {
-      id: sessionId,
+      id,
       ownerId: task.userId,
       opener: { kind: "person", userId: task.userId },
       placementKey: "pool-test",
@@ -219,17 +221,17 @@ async function poolFixture(
       runtimeId: "pool-runtime",
       pooled: true,
     });
-    await transitionBrowserSession(database, { sessionId, state: "ready" });
-    verifier.setClaims("open", { ...claims, pool: coordinator.fence() });
+    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
+    verifier.setClaims(`open-${id}`, { ...claims, sessionId: id, pool: coordinator.fence() });
     const sink = new FakeSink();
-    const attachment = await runtime.attach("open", sink);
-    for (const id of sink.tabs.rows.keys()) surfaces.add(id);
+    const attachment = await runtime.attach(`open-${id}`, sink);
+    if (id === sessionId) for (const surface of sink.tabs.rows.keys()) surfaces.add(surface);
     await attachment.handle(
       JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
     );
-    sinks.set(sessionId, attachment);
+    sinks.set(id, attachment);
   };
-  const row = () => getBrowserSessionForOwner(database, sessionId, task.userId);
+  const row = (id = sessionId) => getBrowserSessionForOwner(database, id, task.userId);
   const slot = () => readBrowserPoolSlot(database, task.runnerId);
   const admitted = () =>
     commitPersonalMutation(database, async (tx) => {
@@ -279,6 +281,7 @@ async function poolFixture(
     sessionId,
     home,
     openSession,
+    sinks,
     row,
     slot,
     admitted,
@@ -632,7 +635,15 @@ it("recovers a retire that threw by release and adoption, then parks again", asy
 });
 
 it("recovers a runtime found retiring at a Home restart as not parked", async () => {
-  const f = await poolFixture("found-retiring");
+  // The retire's page probe waits here, so the runtime is still retiring when the Home restarts.
+  let probing = Promise.withResolvers<void>();
+  let blocked = false;
+  const f = await poolFixture("found-retiring", {
+    probePage: async () => {
+      if (blocked) await probing.promise;
+      return [];
+    },
+  });
   try {
     const home = f.home();
     await home.recover();
@@ -644,15 +655,35 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
       randomUUID(),
       () => false,
     );
-    const retired = await f.signed({
-      kind: "retire",
-      fence: f.runtime.poolState()!.fence!,
-      intent: { id: intent!.intentId!, sequence: intent!.intentSequence },
-    });
-    expect(retired.phase).toBe("retired");
+    blocked = true;
+    const retiring = f
+      .signed({
+        kind: "retire",
+        fence: f.runtime.poolState()!.fence!,
+        intent: { id: intent!.intentId!, sequence: intent!.intentSequence },
+      })
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("retiring"));
     home.close();
-    const next = f.home();
-    await next.recover();
+    const seen: string[] = [];
+    const next = f.home(undefined, f.controller, {
+      runtime: {
+        poolState: () => {
+          const state = f.runtime.poolState();
+          if (state) seen.push(state.phase);
+          return state;
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+      },
+    });
+    const recovering = next.recover();
+    // The new Home found it retiring; only then may the probe finish.
+    await vi.waitFor(() => expect(seen).toContain("retiring"));
+    blocked = false;
+    probing.resolve();
+    probing = Promise.withResolvers<void>();
+    await recovering;
+    await retiring;
     expect(next.gate.phase).toBe("open");
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 1 });
     expect(f.runtime.poolState()).toMatchObject({ phase: "running", cancelled: true });
@@ -660,6 +691,7 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
     expect((await f.row())?.state).toBe("ready");
     expect(f.page.isClosed()).toBe(false);
   } finally {
+    probing.resolve();
     await f.close();
   }
 });
@@ -1314,14 +1346,16 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
   }
 });
 
-it("reports a lost session whose end could not be confirmed without discarding the adoption", async () => {
+it("reports a lost session whose end could not be confirmed, and keeps the other session usable", async () => {
   const f = await poolFixture("end-unconfirmed");
   try {
     const home = f.home();
     await home.recover();
     await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
     expect(await home.tryPark()).toBe("parked");
-    // The session is not reattached, and ending it fails.
+    // The first session is not reattached, and ending it fails; the second is reattached.
     f.skip.add(f.sessionId);
     (f.runtime as unknown as { endPooledSession: () => Promise<void> }).endPooledSession =
       async () => {
@@ -1333,14 +1367,28 @@ it("reports a lost session whose end could not be confirmed without discarding t
       phase: "running",
       adoption: {
         outcome: {
-          adopted: [],
+          adopted: [other],
           lost: [{ sessionId: f.sessionId, reason: "not-reattached; end-unconfirmed" }],
         },
       },
     });
-    // No blanket discard: the controller saw no fresh start.
+    // No blanket discard: the controller saw no fresh start, and the other session works.
     expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
+    expect((await f.row(other))?.state).toBe("ready");
+    await expect(
+      f.sinks
+        .get(other)!
+        .handle(
+          JSON.stringify({
+            type: "session.state",
+            runs: 0,
+            personUsed: [],
+            viewed: [],
+            pinned: [],
+          }),
+        ),
+    ).resolves.toBeUndefined();
   } finally {
     await f.close();
   }
