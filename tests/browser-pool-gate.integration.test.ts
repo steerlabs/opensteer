@@ -830,3 +830,45 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
     await j.close();
   }
 });
+
+it("vetoes a park for a Trigger or Watch program with browser demand, and not for one without", async () => {
+  const fixture = await createStoreFixture();
+  try {
+    const task = await fixture.createRunFixture("program-demand");
+    const target = {
+      runnerId: task.runnerId,
+      runtimeId: "pool-runtime",
+      slotId: "slot",
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(fixture.database, target);
+    const begin = () => beginBrowserPoolPark(fixture.database, target, randomUUID(), () => false);
+    // A program that has not asked for a browser leaves nothing for D to see.
+    const intent = await begin();
+    expect(intent).toMatchObject({ phase: "preparing" });
+    await fixture.database
+      .updateTable("browserPoolSlots")
+      .set({ phase: "running" })
+      .where("runnerId", "=", task.runnerId)
+      .execute();
+    // A program's browser session vetoes while it is open; adoption does not rebuild it yet.
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await personalBrowserRepository(fixture.store).createBrowserSession({
+      ownerId: task.userId,
+      id: sessionId,
+      origin: "trigger",
+      placementKey: "pool-test",
+      profileId: null,
+      runnerId: task.runnerId,
+      runtimeId: target.runtimeId,
+    });
+    await fixture.store.transitionBrowserSession({ sessionId, state: "ready" });
+    expect(await begin()).toBeUndefined();
+    await fixture.store.transitionBrowserSession({ sessionId, state: "closed" });
+    expect(await begin()).toMatchObject({ phase: "preparing" });
+  } finally {
+    await fixture.close();
+  }
+});

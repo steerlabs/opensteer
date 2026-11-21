@@ -87,8 +87,17 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
     pool: { controllerKey: keys.publicKey, probePage: async () => [] },
   });
   cleanup.push(() => runtime.shutdown());
-  const signed = (request: BrowserPoolControl) =>
-    runtime.controlPool(request, sign(null, browserPoolControlBytes(request), keys.privateKey));
+  // Stands in for the controller: each control is numbered and names the fence it replaces.
+  let sequence = 0;
+  let held: BrowserPoolControl["expect"] = null;
+  const signed = (input: Omit<BrowserPoolControl, "sequence" | "expect">) => {
+    const request: BrowserPoolControl = { ...input, sequence: ++sequence, expect: held };
+    if (input.kind === "install" || input.kind === "adopt") held = input.fence;
+    return runtime.controlPool(
+      request,
+      sign(null, browserPoolControlBytes(request), keys.privateKey),
+    );
+  };
   let fence = { slot: "slot", term: 1, instance: randomUUID(), epoch: 1 };
   const intent = { id: randomUUID(), sequence: 1 };
   const control = (kind: BrowserPoolControl["kind"], attempt?: number) =>
