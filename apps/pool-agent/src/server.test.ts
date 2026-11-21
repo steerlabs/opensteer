@@ -71,15 +71,14 @@ it("refuses an unsigned request, one signed by another key, a stale one, and ano
   );
   expect(staleAnswer.status).toBe(400);
   expect(await staleAnswer.json()).toMatchObject({ reply: { code: "stale-request" } });
+  // An unknown slot is refused as unauthenticated: nobody learns which slots exist.
   const unknown = f.envelope({ slotId: "slot-x" });
-  expect(
-    (
-      await f.post(
-        unknown,
-        signBrowserPoolAgentBytes(browserPoolAgentRequestBytes(unknown), f.home.privateKey),
-      )
-    ).status,
-  ).toBe(404);
+  const unknownAnswer = await f.post(
+    unknown,
+    signBrowserPoolAgentBytes(browserPoolAgentRequestBytes(unknown), f.home.privateKey),
+  );
+  expect(unknownAnswer.status).toBe(401);
+  expect(await unknownAnswer.json()).toMatchObject({ reply: { code: "unauthenticated" } });
   // A body changed after signing is not the request that was signed.
   const signed = f.envelope();
   const signature = signBrowserPoolAgentBytes(

@@ -21,7 +21,13 @@ import {
   type BrowserPoolAgentRefusal,
   type BrowserPoolAgentReply,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import { AgentUnavailable, SlotConflict, SlotNotFound, type PoolAgent } from "./agent.js";
+import {
+  AgentUnavailable,
+  SlotConflict,
+  SlotFenced,
+  SlotNotFound,
+  type PoolAgent,
+} from "./agent.js";
 
 const maximumBodyBytes = 64 * 1024;
 
@@ -123,52 +129,64 @@ export function createHomeServer(options: PoolAgentServerOptions): Server {
         if (!parsed.success)
           return { status: 400, reply: refusal("bad-request", "The request is malformed.") };
         const envelope = parsed.data as BrowserPoolAgentEnvelope;
-        const slot = options.agent.homeKey(envelope.slotId);
-        if (!slot)
-          return {
-            status: 404,
-            reply: refusal("unknown-slot", "The pool agent does not know this slot."),
-          };
+        // The key, its term and its generation are read together. An unknown slot, another
+        // key, or another term all get the same answer: nobody learns which slots exist.
+        const authority = options.agent.authority(envelope.slotId);
         const bytes = browserPoolAgentRequestBytes(envelope);
-        if (!signature || !verifyBrowserPoolAgentBytes(bytes, slot.key, signature))
-          return {
-            status: 401,
-            reply: refusal("unauthenticated", "The request is not signed by this slot's Home."),
-          };
+        if (
+          !authority ||
+          !signature ||
+          envelope.term !== authority.term ||
+          !verifyBrowserPoolAgentBytes(bytes, authority.key, signature)
+        )
+          return { status: 401, reply: unauthenticated };
         if (Math.abs(now() - Date.parse(envelope.issuedAt)) > browserPoolAgentRequestWindowMs)
           return {
             status: 400,
             reply: refusal("stale-request", "The request is outside its time window."),
           };
         const controlKey = options.agent.controlKey(envelope.slotId)!;
-        const reply = await answer(options.agent, envelope);
+        // Its own Home is told, signed, that a deleted slot is gone: the guest's end is evidence.
+        const reply = authority.deleted
+          ? refusal("unknown-slot", "The slot was deleted.")
+          : await answer(options.agent, envelope, authority.generation);
         return { status: 200, reply, sign: { bytes, key: controlKey } };
       });
     }),
   );
 }
 
+const unauthenticated = refusal(
+  "unauthenticated",
+  "The request is not signed by this slot's Home for this term.",
+);
+
 async function answer(
   agent: PoolAgent,
   envelope: BrowserPoolAgentEnvelope,
+  generation: number,
 ): Promise<BrowserPoolAgentReply> {
   const request = envelope.request;
   try {
     switch (request.op) {
       case "status":
-        return { op: "status", status: await agent.status(envelope.slotId, envelope.term) };
+        return {
+          op: "status",
+          status: await agent.status(envelope.slotId, envelope.term, generation),
+        };
       case "result":
         return {
           op: "result",
-          result: await agent.result(envelope.slotId, envelope.term, request.id),
+          result: await agent.result(envelope.slotId, envelope.term, request.id, generation),
         };
       case "apply":
         if (request.call.slotId !== envelope.slotId || request.call.term !== envelope.term)
           return refusal("bad-request", "The call names another slot or term than its envelope.");
-        return { op: "apply", result: await agent.apply(request.call) };
+        return { op: "apply", result: await agent.apply(request.call, generation) };
     }
   } catch (error) {
-    if (error instanceof SlotNotFound) return refusal("unknown-slot", error.message);
+    if (error instanceof SlotNotFound) return refusal("unknown-slot", "The slot was deleted.");
+    if (error instanceof SlotFenced) return unauthenticated;
     if (error instanceof AgentUnavailable) return refusal("unavailable", error.message);
     // The step's outcome is settled by the next call for the slot; the caller reads it by id.
     return refusal("unavailable", "The pool agent could not finish the request.");

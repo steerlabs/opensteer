@@ -80,8 +80,10 @@ export type BrowserPoolAgentReply =
   | { readonly op: "refused"; readonly code: BrowserPoolAgentRefusal; readonly message: string };
 
 /**
- * A refusal of the request itself, before any slot state was read: the caller is not the
- * slot's Home, the envelope is stale or malformed, or the slot is not here. Nothing happened.
+ * A refusal of the request itself; nothing happened. `unauthenticated` (unsigned, 401) is also
+ * the answer for a slot this agent never had, so nobody learns which slots exist.
+ * `unknown-slot` is only ever sent signed, to the slot's own Home: the slot was deleted, its
+ * guest ended and its saved state erased.
  */
 export type BrowserPoolAgentRefusal =
   "unauthenticated" | "unknown-slot" | "stale-request" | "bad-request" | "unavailable";
@@ -189,6 +191,14 @@ export class BrowserPoolAgentUnavailable extends Error {
   override readonly name = "BrowserPoolAgentUnavailable";
 }
 
+/**
+ * The agent answered, signed by the slot's control key, that the slot was deleted. Unlike an
+ * unavailable agent this is evidence: the guest has ended and its saved state is erased.
+ */
+export class BrowserPoolAgentSlotDeleted extends Error {
+  override readonly name = "BrowserPoolAgentSlotDeleted";
+}
+
 export interface BrowserPoolAgentEndpoint {
   /** Such as `http://10.128.0.7:7310`. */
   readonly url: string;
@@ -234,7 +244,10 @@ export async function callBrowserPoolAgent(
       `The pool agent's reply is not signed by the slot${message}`,
     );
   }
-  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
+  if (reply.op === "refused") {
+    if (reply.code === "unknown-slot") throw new BrowserPoolAgentSlotDeleted(reply.message);
+    throw new BrowserPoolAgentUnavailable(reply.message);
+  }
   return reply;
 }
 

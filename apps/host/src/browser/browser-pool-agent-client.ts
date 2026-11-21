@@ -14,7 +14,15 @@ import type {
   BrowserPoolPhysicalStatus,
 } from "./browser-pool-controller.js";
 
-export { BrowserPoolAgentUnavailable } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
+/**
+ * `BrowserPoolAgentSlotDeleted`: a signed answer that the slot was deleted (the guest ended,
+ * its saved state erased); the coordinator can treat it as evidence of the end. Anything else
+ * that fails is `BrowserPoolAgentUnavailable`: the outcome is not known.
+ */
+export {
+  BrowserPoolAgentSlotDeleted,
+  BrowserPoolAgentUnavailable,
+} from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 
 export interface BrowserPoolAgentClientOptions {
   /** The agent's Home interface, such as `http://10.128.0.7:7310`. */

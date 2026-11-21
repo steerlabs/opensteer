@@ -1,6 +1,10 @@
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { BrowserPoolAgentClient } from "../apps/host/src/browser/browser-pool-agent-client.js";
+import {
+  BrowserPoolAgentClient,
+  BrowserPoolAgentSlotDeleted,
+  BrowserPoolAgentUnavailable,
+} from "../apps/host/src/browser/browser-pool-agent-client.js";
 import {
   homeKeyPair,
   startTestPoolAgent,
@@ -62,4 +66,20 @@ it("makes the client refuse a reply that is not signed by the slot's control key
     },
   });
   await expect(forged.status("slot-h", 1)).rejects.toThrow("not signed by the slot");
+});
+
+it("tells the Home, as its own outcome, that its slot was deleted", async () => {
+  const f = await fixture();
+  const client = new BrowserPoolAgentClient({
+    url: f.agent.url,
+    homeKey: f.home.privateKey,
+    agentKey: f.agentKey,
+  });
+  await f.agent.agent.deleteSlot("slot-h");
+  const outcome = await client.status("slot-h", 1).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPoolAgentSlotDeleted);
+  // A slot the agent never had reads like a bad signature, not like a deleted one.
+  const never = await client.status("slot-never", 1).catch((error: unknown) => error);
+  expect(never).toBeInstanceOf(BrowserPoolAgentUnavailable);
+  expect(never).not.toBeInstanceOf(BrowserPoolAgentSlotDeleted);
 });

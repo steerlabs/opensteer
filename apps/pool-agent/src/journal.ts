@@ -79,6 +79,11 @@ export interface SlotRecord {
   readonly results: readonly { readonly at: number; readonly result: BrowserPoolAgentResult }[];
   /** What changed physically, in order (bounded): diagnostics and tests. */
   readonly effects: readonly string[];
+  /**
+   * A deleted slot keeps a tombstone (its keys, no guest, no saved state) so its Home is told,
+   * signed, that the slot is gone; it is never served again and is forgotten after a while.
+   */
+  readonly deletedAt?: string | null;
 }
 
 const maximumRecordBytes = 4 * 1024 * 1024;

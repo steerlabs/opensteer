@@ -39,6 +39,13 @@ export interface PoolAgentDeadlines {
   readonly clock: number;
   readonly kill: number;
   readonly network: number;
+  readonly discard: number;
+  readonly verify: number;
+  /** How long a VMM whose API does not answer is asked again before its guest counts as lost. */
+  readonly inspect: number;
+  readonly sweep: number;
+  /** How long a save that ran out of time waits for its writer before the VMM is ended. */
+  readonly snapshotDrain: number;
 }
 
 export const defaultDeadlines: PoolAgentDeadlines = {
@@ -51,7 +58,15 @@ export const defaultDeadlines: PoolAgentDeadlines = {
   clock: 3_000,
   kill: 15_000,
   network: 5_000,
+  discard: 30_000,
+  verify: 10_000,
+  inspect: 3_000,
+  sweep: 60_000,
+  snapshotDrain: 30_000,
 };
+
+/** The binding limit on how long a parked guest's live state may be kept. */
+export const maximumRetentionMs = 24 * 60 * 60_000;
 
 export interface PoolAgentOptions {
   readonly journal: SlotJournal;
@@ -64,6 +79,10 @@ export interface PoolAgentOptions {
   readonly maxConcurrentSaves?: number;
   /** How long a call's stored result answers a repeat of the call. */
   readonly resultRetentionMs?: number;
+  /** How many stored answers a slot keeps (512). */
+  readonly maxResults?: number;
+  /** How soon an unfinished step (a failed clean-up, a failed expiry) is tried again. */
+  readonly retryMs?: number;
   readonly deadlines?: Partial<PoolAgentDeadlines>;
   /** Events about slots and steps; never guest data. */
   readonly log?: (event: Readonly<Record<string, unknown>>) => void;
@@ -81,6 +100,10 @@ interface Slot {
   readonly lane: Lane;
   controlKey: KeyObject;
   homeKey: KeyObject;
+  /** Grows with every Home key replacement: a request is served only by the key it was checked with. */
+  keyGeneration: number;
+  /** Deleted: nothing queued on this slot may act or write any more. */
+  deleted: boolean;
   /** Wakes waiting for this slot: an idle save yields to them. */
   demand: number;
   saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -95,6 +118,21 @@ export class AgentCrashed extends Error {
 export class SlotNotFound extends Error {
   override readonly name = "SlotNotFound";
 }
+
+/** The request was authenticated with a Home key this slot no longer has. */
+export class SlotFenced extends Error {
+  override readonly name = "SlotFenced";
+}
+
+/** What authenticates a request for a slot: its Home key, that key's term and generation. */
+export interface SlotAuthority {
+  readonly key: KeyObject;
+  readonly term: number;
+  readonly generation: number;
+  readonly deleted: boolean;
+}
+
+const tombstoneRetentionMs = 30 * 24 * 60 * 60_000;
 
 export class AgentUnavailable extends Error {
   override readonly name = "AgentUnavailable";
@@ -111,6 +149,8 @@ export class PoolAgent {
   readonly #deadlines: PoolAgentDeadlines;
   readonly #saves: Semaphore;
   readonly #slots = new Map<string, Slot>();
+  /** Creates run one at a time: two creates of one id are one create. */
+  readonly #admin = new Lane();
   #incarnation = "";
   #dead = false;
   #closed = false;
@@ -122,10 +162,19 @@ export class PoolAgent {
     this.#now = options.now ?? Date.now;
     this.#deadlines = { ...defaultDeadlines, ...options.deadlines };
     this.#saves = new Semaphore(options.maxConcurrentSaves ?? 2);
+    const retention = options.retentionMs ?? maximumRetentionMs;
+    // The setting may lower the limit, never raise it.
+    if (!(retention > 0 && retention <= maximumRetentionMs))
+      throw new RangeError("A parked guest's live state is kept at most 24 hours.");
   }
 
   get retentionMs(): number {
-    return this.#options.retentionMs ?? 24 * 60 * 60_000;
+    return this.#options.retentionMs ?? maximumRetentionMs;
+  }
+
+  /** Every driver step the agent awaits has a deadline. */
+  #step<T>(name: keyof PoolAgentDeadlines, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    return within(this.#deadlines[name], `The ${name} step`, work);
   }
 
   /**
@@ -136,16 +185,20 @@ export class PoolAgent {
     await this.#journal.open();
     this.#incarnation = await this.#driver.incarnation();
     for (const record of await this.#journal.list()) {
+      if (record.deletedAt && Date.parse(record.deletedAt) + tombstoneRetentionMs <= this.#now()) {
+        await this.#removeRecord(record.slotId);
+        continue;
+      }
       const slot = this.#load(record);
       this.#slots.set(record.slotId, slot);
     }
     // A host restart removed every namespace: each slot's network is made again first.
-    for (const slot of this.#slots.values())
+    for (const slot of this.#live())
       await this.#driver.prepareSlot(slot.record.slotId, slot.record.guest.egress);
-    for (const slot of this.#slots.values()) await slot.lane.run(() => this.#settle(slot));
+    for (const slot of this.#live()) await slot.lane.run(() => this.#settle(slot));
     const swept = await this.#driver.sweep(
       new Map(
-        [...this.#slots.values()].map((slot) => [
+        this.#live().map((slot) => [
           slot.record.slotId,
           {
             jailId: slot.record.jailId,
@@ -155,7 +208,11 @@ export class PoolAgent {
       ),
     );
     if (swept.length) this.#log({ event: "sweep", removed: swept });
-    for (const slot of this.#slots.values()) this.#schedule(slot);
+    for (const slot of this.#live()) this.#schedule(slot);
+  }
+
+  #live(): Slot[] {
+    return [...this.#slots.values()].filter((slot) => !slot.deleted);
   }
 
   /** Stops timers. The guests keep running: an agent restart is not a guest restart. */
@@ -165,13 +222,23 @@ export class PoolAgent {
   }
 
   slotIds(): readonly string[] {
-    return [...this.#slots.keys()];
+    return this.#live().map((slot) => slot.record.slotId);
   }
 
-  /** The Home's key for this slot, to authenticate a request. */
-  homeKey(slotId: string): { readonly key: KeyObject; readonly term: number } | undefined {
+  /**
+   * The Home key, its term and its generation, read together: the server authenticates with
+   * them, and the call is served only if the slot still has that generation when it acts.
+   */
+  authority(slotId: string): SlotAuthority | undefined {
     const slot = this.#slots.get(slotId);
-    return slot ? { key: slot.homeKey, term: slot.record.term } : undefined;
+    return slot
+      ? {
+          key: slot.homeKey,
+          term: slot.record.term,
+          generation: slot.keyGeneration,
+          deleted: slot.deleted,
+        }
+      : undefined;
   }
 
   controlKey(slotId: string): KeyObject | undefined {
@@ -185,32 +252,63 @@ export class PoolAgent {
 
   // ---- The controller interface ------------------------------------------------------------
 
-  async status(slotId: string, term: number): Promise<BrowserPoolAgentStatus> {
+  async status(slotId: string, term: number, generation?: number): Promise<BrowserPoolAgentStatus> {
     const slot = this.#require(slotId);
     if (term !== slot.record.term)
       throw new SlotNotFound("The pool agent does not know this slot and term.");
+    this.#admit(slot, generation);
     // A read never waits behind a long step: it reports what the journal holds now.
     if (slot.lane.busy) return statusOf(slot.record);
-    return slot.lane.run(async () => {
+    return this.#run(slot, async () => {
+      this.#admit(slot, generation);
       await this.#settle(slot);
       return statusOf(slot.record);
     });
   }
 
-  async result(slotId: string, term: number, id: string): Promise<BrowserPoolAgentResult | null> {
+  async result(
+    slotId: string,
+    term: number,
+    id: string,
+    generation?: number,
+  ): Promise<BrowserPoolAgentResult | null> {
     const slot = this.#slots.get(slotId);
     if (!slot || term !== slot.record.term) return null;
+    this.#admit(slot, generation);
     return structuredClone(stored(slot.record, id) ?? null);
   }
 
-  async apply(call: BrowserPoolAgentCall): Promise<BrowserPoolAgentResult> {
+  async apply(call: BrowserPoolAgentCall, generation?: number): Promise<BrowserPoolAgentResult> {
     const slot = this.#require(call.slotId);
+    this.#admit(slot, generation);
     if (call.kind === "resume") slot.demand += 1;
     try {
-      return structuredClone(await slot.lane.run(() => this.#apply(slot, call)));
+      return structuredClone(
+        await this.#run(slot, () => {
+          // Checked again at the front of the lane: a key replaced or a slot deleted while
+          // this call waited means it is not served, and it writes nothing.
+          this.#admit(slot, generation);
+          return this.#apply(slot, call);
+        }),
+      );
     } finally {
       if (call.kind === "resume") slot.demand -= 1;
     }
+  }
+
+  /** A deleted slot, or a request authenticated by a replaced Home key, is not served. */
+  #admit(slot: Slot, generation: number | undefined): void {
+    if (slot.deleted || this.#slots.get(slot.record.slotId) !== slot)
+      throw new SlotNotFound("The pool agent does not know this slot.");
+    if (generation !== undefined && generation !== slot.keyGeneration)
+      throw new SlotFenced("The request was signed by a Home key this slot no longer has.");
+  }
+
+  /** One job on the slot's lane; whatever its outcome, the slot's timers are armed again. */
+  #run<T>(slot: Slot, job: () => Promise<T>): Promise<T> {
+    return slot.lane.run(job).finally(() => {
+      if (!this.#dead && !slot.deleted) this.#schedule(slot);
+    });
   }
 
   // ---- Slot administration (the provisioner's interface) -----------------------------------
@@ -221,7 +319,17 @@ export class PoolAgent {
     readonly homeKey: string;
     readonly guest: BrowserPoolAgentGuestSpec;
   }): Promise<BrowserPoolAgentSlotSummary> {
-    const existing = this.#slots.get(input.slotId);
+    return this.#admin.run(() => this.#create(input));
+  }
+
+  async #create(input: {
+    readonly slotId: string;
+    readonly term: number;
+    readonly homeKey: string;
+    readonly guest: BrowserPoolAgentGuestSpec;
+  }): Promise<BrowserPoolAgentSlotSummary> {
+    const found = this.#slots.get(input.slotId);
+    const existing = found && !found.deleted ? found : undefined;
     if (existing) {
       // A repeated create with the same facts is the same create.
       if (existing.record.homeKey === input.homeKey && existing.record.term === input.term)
@@ -269,7 +377,8 @@ export class PoolAgent {
     readonly homeKey: string;
   }): Promise<BrowserPoolAgentSlotSummary> {
     const slot = this.#require(input.slotId);
-    return slot.lane.run(async () => {
+    return this.#run(slot, async () => {
+      this.#admit(slot, undefined);
       if (input.term === slot.record.term && input.homeKey === slot.record.homeKey)
         return this.#summary(slot);
       if (!Number.isSafeInteger(input.term) || input.term <= slot.record.term)
@@ -277,6 +386,7 @@ export class PoolAgent {
       const homeKey = parsePublicKey(input.homeKey);
       await this.#commit(slot, { ...slot.record, term: input.term, homeKey: input.homeKey });
       slot.homeKey = homeKey;
+      slot.keyGeneration += 1;
       this.#log({ event: "slot.key-replaced", slotId: input.slotId, term: input.term });
       return this.#summary(slot);
     });
@@ -289,21 +399,32 @@ export class PoolAgent {
    */
   async deleteSlot(slotId: string): Promise<boolean> {
     const slot = this.#slots.get(slotId);
-    if (!slot) return true;
+    if (!slot || slot.deleted) return true;
     return slot.lane.run(async () => {
+      if (slot.deleted) return true;
       this.#unschedule(slot);
       await this.#kill(slot);
-      if (slot.record.saved) await this.#driver.discard(slotId, slot.record.saved.id);
-      await this.#driver.removeSlot(slotId);
-      await this.#removeRecord(slotId);
-      this.#slots.delete(slotId);
+      if (slot.record.saved)
+        await this.#step("discard", () => this.#driver.discard(slotId, slot.record.saved!.id));
+      await this.#step("network", () => this.#driver.removeSlot(slotId));
+      // One write: the live record becomes a tombstone. From here nothing queued may act.
+      await this.#commit(slot, {
+        ...slot.record,
+        phase: "stopped",
+        saved: null,
+        jailId: null,
+        pending: null,
+        results: [],
+        deletedAt: this.#iso(),
+      });
+      slot.deleted = true;
       this.#log({ event: "slot.deleted", slotId });
       return true;
     });
   }
 
   summaries(): readonly BrowserPoolAgentSlotSummary[] {
-    return [...this.#slots.values()].map((slot) => this.#summary(slot));
+    return this.#live().map((slot) => this.#summary(slot));
   }
 
   // ---- Calls --------------------------------------------------------------------------------
@@ -877,6 +998,8 @@ export class PoolAgent {
         type: "pkcs8",
       }),
       homeKey: parsePublicKey(record.homeKey),
+      keyGeneration: 0,
+      deleted: !!record.deletedAt,
       demand: 0,
       saveTimer: undefined,
       expiryTimer: undefined,
@@ -998,7 +1121,7 @@ export class PoolAgent {
   #require(slotId: string): Slot {
     if (this.#dead) throw new AgentUnavailable("The agent is dead.");
     const slot = this.#slots.get(slotId);
-    if (!slot) throw new SlotNotFound("The pool agent does not know this slot.");
+    if (!slot || slot.deleted) throw new SlotNotFound("The pool agent does not know this slot.");
     return slot;
   }
 
