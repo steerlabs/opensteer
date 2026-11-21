@@ -28,6 +28,7 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
   acquireBrowserStandardCdpLease,
+  admitExecution,
   listBrowserStandardCdpLeases,
   releaseBrowserStandardCdpLease,
   executionAccess,
@@ -5178,6 +5179,13 @@ export class BrowserService {
               );
               if (fences.length) return { fences };
               if (pool) {
+                // A restart or a removal holds admission: no frame passes on a connection already
+                // attached either.
+                const phase = this.#poolTabTarget(record.runnerId!)?.gate.phase;
+                if (phase === "restarting" || phase === "released")
+                  throw new BrowserCdpConnectionEnded(
+                    "This browser is restarting. Request a new attachment.",
+                  );
                 await verify(AbortSignal.timeout(1_000), Date.now() + 1_000, true);
                 // The live document is compared at every frame, as at attach.
                 if (
@@ -6446,15 +6454,38 @@ export class BrowserService {
   }
 
   /** The owner's Restart browser on a pooled Cloud Computer browser. */
-  async restartPooledBrowser(ownerId: UserId, runnerId: RunnerId): Promise<void> {
+  /**
+   * The owner's Restart browser on a pooled Cloud Computer browser. The owner is decided where
+   * every person's authority is (`admitExecution`). Before the guest is replaced, every Standard
+   * CDP connection and broker of this computer is closed without ending its row, so each send
+   * already dispatched gets its outcome and the fresh start notes each session it ends.
+   */
+  async restartPooledBrowser(
+    ownerId: UserId,
+    runnerId: RunnerId,
+    idempotencyKey?: string,
+  ): Promise<void> {
     if (runnerId !== this.#managedPoolTestRunner || !(this.#repository instanceof OpensteerStore))
       throw new OpensteerError({ code: "not_found", message: "This browser does not restart." });
-    if ((await readBrowserPoolOwner(this.#repository.database)) !== ownerId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only the owner restarts this browser.",
-      });
-    await this.#poolTabTarget(runnerId)!.restart();
+    const database = this.#repository.database;
+    await admitExecution(database, { ownerUserId: ownerId, subject: { kind: "person" } });
+    const pool = this.#poolTabTarget(runnerId)!;
+    const runtimeId = this.#resolveTarget({ kind: "runner", runnerId })?.runtimeId;
+    await pool.restart({
+      ...(idempotencyKey ? { key: idempotencyKey } : {}),
+      close: async () => {
+        for (const entry of this.#standardCdpAttachments.values())
+          if (entry.runnerId === runnerId) entry.close("This browser is restarting.");
+        const sessions = runtimeId
+          ? await listBrowserPoolRuntimeSessions(database, runnerId, runtimeId)
+          : [];
+        await Promise.all(
+          sessions.map((sessionId) =>
+            this.#brokers.get(sessionId)?.detachPooled("This browser is restarting."),
+          ),
+        );
+      },
+    });
   }
 
   /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
@@ -8801,6 +8832,8 @@ export class HostedBrowserBroker {
    */
   async detachPooled(reason: string): Promise<void> {
     this.#failure ??= reason;
+    // The Home ends this channel itself: its close is not a lost channel.
+    this.#stopping = true;
     if (
       this.#socket.readyState === WebSocket.CONNECTING ||
       this.#socket.readyState === WebSocket.OPEN

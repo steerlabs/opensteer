@@ -259,6 +259,68 @@ it("ends a session whose unanswered command was settled unknown with its note wh
   }
 });
 
+it("restarts only once a command in flight has its recorded outcome, and once per idempotency key", async () => {
+  const j = await journey("direct-restart", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const page = await j.draft();
+    const work = await directWork(j, () => home);
+    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+    expect(bound.isError, text(bound)).not.toBe(true);
+    const hanging = work.use(`return await page.js("(window.__sent = 1, new Promise(() => {}))")`);
+    await vi.waitFor(async () => {
+      const sent = await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+        expression: "window.__sent ?? 0",
+        returnByValue: true,
+      });
+      expect(sent.result.value).toBe(1);
+    });
+    const latest = () =>
+      j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow();
+    expect(await latest()).toMatchObject({ state: "handed-off" });
+    // When the controller is asked to stop the guest, the command already has its outcome.
+    let atStop: unknown;
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    j.controller.hold("stop", async () => {
+      atStop = await latest();
+      reached.resolve();
+      await release.promise;
+    });
+    const asked = vi.spyOn(home.coordinator, "restart");
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
+    await reached.promise;
+    // A second restart asked while one runs joins it.
+    const joined = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-2");
+    await vi.waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
+    release.resolve();
+    await Promise.all([restarting, joined]);
+    expect(atStop).toEqual({ state: "unknown", outcome: "unknown" });
+    expect((await hanging).structuredContent).toMatchObject({ status: "unknown" });
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    expect((await j.row(session.id))?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tab.id)).toMatchObject([
+      { sessionId: session.id, reason: "person" },
+    ]);
+    // A retry after a lost response, with the same key: the first outcome, nothing discarded.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(home.coordinator.gate.phase).toBe("open");
+  } finally {
+    await j.close();
+  }
+});
+
 /** A connected agent that already used the profile, with the browser parked afterwards. */
 async function parkedAfterWork(key: string) {
   const j = await journey(key, { profile: true });

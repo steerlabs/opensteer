@@ -2665,7 +2665,11 @@ export async function createHostServer(
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
       case "browser.pool.restart":
-        await dependencies.browser.restartPooledBrowser(userId, command.runnerId as RunnerId);
+        await dependencies.browser.restartPooledBrowser(
+          userId,
+          command.runnerId as RunnerId,
+          command.idempotencyKey,
+        );
         return { type: command.type };
     }
     throw new OpensteerError({

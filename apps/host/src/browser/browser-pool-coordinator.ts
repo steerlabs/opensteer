@@ -777,12 +777,12 @@ export class BrowserPoolCoordinator {
   }
 
   /** The ladder's last rung: the live state is discarded and a fresh guest is started. */
-  async #discard(slot: BrowserPoolSlot, reason: string): Promise<void> {
+  async #discard(slot: BrowserPoolSlot, reason: string, key?: string): Promise<void> {
     const since = new Date();
     this.#display = { phase: reason === "person" ? "restarting" : "starting", since };
     await announceBrowserPool(this.#options.database).catch(() => undefined);
     try {
-      await this.#startFresh(slot, reason);
+      await this.#startFresh(slot, reason, key);
       this.#display = undefined;
     } catch (error) {
       // A fresh start that did not come up: the person sees it failed, and how often.
@@ -794,15 +794,30 @@ export class BrowserPoolCoordinator {
     }
   }
 
-  /** The owner's Restart browser: live and saved state are discarded and a fresh guest starts. */
-  restart(): Promise<void> {
-    // Admission is held from here until the fresh guest is installed (R1).
+  #restart: Promise<void> | undefined;
+
+  /**
+   * The owner's Restart browser. Admission is held from here until the fresh guest is installed
+   * (R1); `close` then ends the old runtime's attachments and brokers so every dispatched send
+   * has its recorded outcome, and the guest is replaced only once no admitted send is left. The
+   * same `key` returns the first restart's outcome; a restart asked while one runs joins it.
+   */
+  restart(input: { readonly key?: string; readonly close?: () => Promise<void> } = {}) {
+    if (this.#restart) return this.#restart;
     const done = this.gate.restarting();
-    return this.#serial(async () => {
+    const running = this.#serial(async () => {
       const slot = await this.#read();
       if (!slot) throw new BrowserPoolAdmissionClosed();
-      await this.#retry(() => this.#discard(slot, "person"));
-    }).finally(done);
+      if (input.key && (slot.lastStart as { key?: string } | null)?.key === input.key) return;
+      await input.close?.();
+      await this.gate.idle();
+      await this.#retry(() => this.#discard(slot, "person", input.key));
+    }).finally(() => {
+      done();
+      if (this.#restart === running) this.#restart = undefined;
+    });
+    this.#restart = running;
+    return running;
   }
 
   /** The phase a client shows: a fresh start or a restart in progress, or a failed start. */
@@ -811,7 +826,7 @@ export class BrowserPoolCoordinator {
     return this.#display;
   }
 
-  async #startFresh(slot: BrowserPoolSlot, reason: string): Promise<void> {
+  async #startFresh(slot: BrowserPoolSlot, reason: string, key?: string): Promise<void> {
     let status = await this.#status();
     // The first call of a replacement closes every open row: nothing old is replayed later.
     let replacing = true;
@@ -851,6 +866,7 @@ export class BrowserPoolCoordinator {
           reason: startReason(reason),
           at: new Date().toISOString(),
           id: randomUUID(),
+          ...(key ? { key } : {}),
         },
         failedStarts: 0,
       },

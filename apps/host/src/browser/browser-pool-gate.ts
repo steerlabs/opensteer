@@ -148,9 +148,17 @@ export class BrowserPoolGate {
       release: () => {
         if (released) return;
         released = true;
-        this.#active--;
+        if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
       },
     };
+  }
+
+  readonly #idle: (() => void)[] = [];
+
+  /** Resolves once no reservation is held: every admitted send has finished. */
+  idle(): Promise<void> {
+    if (this.#active === 0) return Promise.resolve();
+    return new Promise((resolve) => this.#idle.push(resolve));
   }
 
   async tryPark(): Promise<"parked" | "vetoed"> {
