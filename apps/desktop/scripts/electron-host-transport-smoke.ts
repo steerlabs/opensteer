@@ -542,6 +542,7 @@ async function run(): Promise<void> {
       revision: 3,
       selectedDeploymentId: connection.authority.document.deploymentId,
     };
+    await transport.selection();
     cases.push({ case: "attachment-fence", code: "deployment-changed" });
 
     const bridgeToken = randomBytes(32).toString("base64url");
@@ -615,6 +616,7 @@ async function run(): Promise<void> {
         revision: 5,
         selectedDeploymentId: connection.authority.document.deploymentId,
       };
+      await transport.selection();
       const binary = z
         .strictObject({
           code: z.literal("response-too-large"),
