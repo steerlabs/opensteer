@@ -5,7 +5,12 @@ import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
 } from "../apps/host/src/mcp/handlers/browser.js";
-import { connection, serveMcp } from "../apps/host/src/mcp/connection-caller.test-support.js";
+import {
+  commands,
+  connection,
+  serveMcp,
+} from "../apps/host/src/mcp/connection-caller.test-support.js";
+import type { ThreadId } from "../packages/core/src/index.js";
 import type { TabRecord } from "../packages/database/src/index.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 
@@ -144,5 +149,108 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume"]);
   } finally {
     await j.close();
+  }
+});
+
+/** A connected agent that already used the profile, with the browser parked afterwards. */
+async function parkedAfterWork(key: string) {
+  const j = await journey(key, { profile: true });
+  const home = await j.startHome();
+  const { session } = await home.service.start({
+    ownerId: j.task.userId,
+    profileId: j.profile!.id,
+  });
+  const [tab] = await home.service.savedPages(j.task.userId, session.id);
+  if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+  const page = await j.draft();
+  const work = await directWork(j, () => home);
+  const read = `return await page.js("document.querySelector('input').value")`;
+  const first = await work.use(
+    `globalThis.page = await openPage(${JSON.stringify(tab.id)}); ${read}`,
+  );
+  expect(first.isError, text(first)).not.toBe(true);
+  const taskId = (first.structuredContent as { taskId: ThreadId }).taskId;
+  await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+  expect(await home.coordinator.tryPark()).toBe("parked");
+  const connection = commands(j.fixture, j.task.userId, {
+    afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+  });
+  return { j, home, session, tab, page, work, read, taskId, connection };
+}
+
+const parkedEffects = ["start", "pause"];
+
+it("honours a Disconnect that arrives while the browser is parked, with its end shown and no wake", async () => {
+  const p = await parkedAfterWork("parked-disconnect");
+  try {
+    await p.connection.revoke(p.work.agent.id);
+    await p.j.store.driveConnectionCleanups();
+    // A validly parked browser has no outstanding attempt: Disconnect shows its end at once.
+    const [row] = (await p.connection.list()).filter(({ id }) => id === p.work.agent.id);
+    expect(row).toMatchObject({ state: "stopped" });
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+    const after = await p.work.use(p.read).catch((error: unknown) => error);
+    expect(after).toBeInstanceOf(Error);
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.page.value()).toBe('["unsent draft",99]');
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("honours a grant cut that arrives while the browser is parked, refusing before any wake", async () => {
+  const p = await parkedAfterWork("parked-grant");
+  try {
+    await p.connection.update(p.work.agent.id, {
+      grant: { scope: "selected", tasks: false, resources: [] },
+    });
+    // A connection names only what it holds: with no browser profile left, the tool is gone.
+    await expect(p.work.use(p.read)).rejects.toThrow("Method not found");
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("honours a mode cut that arrives while the browser is parked: the call waits for the person, not for a wake", async () => {
+  const p = await parkedAfterWork("parked-mode");
+  try {
+    await p.j.store.updateThreadAccessMode({
+      threadId: p.taskId,
+      requestedBy: p.j.task.userId,
+      accessMode: "approval-required",
+    });
+    await p.work.sessions.lowerTaskMode(p.taskId, "approval-required");
+    const after = await p.work.use(p.read);
+    expect(after.structuredContent).toMatchObject({ status: "pending" });
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("honours a Stop of the agent's task that arrives while the browser is parked, without a wake", async () => {
+  const p = await parkedAfterWork("parked-stop");
+  try {
+    const operation = await p.j.database
+      .selectFrom("agentOperations")
+      .select("sessionId")
+      .orderBy("createdAt", "desc")
+      .executeTakeFirstOrThrow();
+    await p.work.sessions.stopSession({
+      ownerUserId: p.j.task.userId,
+      sessionId: operation.sessionId,
+      threadId: p.taskId,
+    });
+    const after = await p.work.use(p.read);
+    expect(after.isError).toBe(true);
+    expect(text(after)).toContain("stopped");
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+  } finally {
+    await p.j.close();
   }
 });
