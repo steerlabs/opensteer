@@ -57,6 +57,121 @@ async function run(command) {
     }
     case "probe":
       return probe(command.host, command.port);
+    case "record-immutable": {
+      // Review S2 on a host: the slot's journal record cannot be replaced, so the next write fails.
+      const key = createHash("sha256").update(command.slotId).digest("hex");
+      const file = `/var/lib/opensteer-pool/journal/slot-${key}.json`;
+      execFileSync("chattr", [command.on ? "+i" : "-i", file]);
+      return { ok: true };
+    }
+    case "vmm-pids": {
+      const key = createHash("sha256").update(command.slotId).digest("hex").slice(0, 24);
+      const pids = [];
+      const walk = (directory) => {
+        if (!existsSync(directory)) return;
+        for (const pid of readFileSync(join(directory, "cgroup.procs"), "utf8")
+          .split("\n")
+          .filter(Boolean))
+          pids.push(pid);
+        for (const entry of readdirSync(directory, { withFileTypes: true }))
+          if (entry.isDirectory()) walk(join(directory, entry.name));
+      };
+      walk(join(agentCgroup, key));
+      return { pids };
+    }
+    case "memory-events": {
+      const key = createHash("sha256").update(command.slotId).digest("hex").slice(0, 24);
+      const text = readFileSync(join(agentCgroup, key, "memory.events"), "utf8");
+      return Object.fromEntries(
+        text
+          .trim()
+          .split("\n")
+          .map((line) => line.split(" "))
+          .map(([k, v]) => [k, Number(v)]),
+      );
+    }
+    case "agent-events": {
+      const text = execFileSync(
+        "journalctl",
+        ["-u", "opensteer-pool-agent", "--since", command.since, "-o", "cat", "--no-pager"],
+        { encoding: "utf8" },
+      );
+      return {
+        lines: text
+          .split("\n")
+          .filter((line) => line.startsWith("{"))
+          .slice(-400),
+      };
+    }
+    case "agent-state":
+      return {
+        state: execFileSync("systemctl", ["is-active", "opensteer-pool-agent"], {
+          encoding: "utf8",
+        }).trim(),
+      };
+    case "agent": {
+      for (const action of command.actions)
+        execFileSync("systemctl", [action, "opensteer-pool-agent"]);
+      return { ok: true };
+    }
+    case "agent-restart-timed": {
+      const started = performance.now();
+      execFileSync("systemctl", ["restart", "opensteer-pool-agent"]);
+      for (;;) {
+        const up = await probe("127.0.0.1", 7310);
+        if (up.result === "connected") return { ms: performance.now() - started };
+        if (performance.now() - started > 300_000) return { ms: null };
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    case "array": {
+      if (command.mount)
+        execFileSync("mount", [
+          "-o",
+          "noatime,nosuid",
+          "/dev/mapper/osp-saved",
+          "/srv/opensteer-pool",
+        ]);
+      else execFileSync("umount", ["/srv/opensteer-pool"]);
+      return { ok: true };
+    }
+    case "nft-flush":
+      execFileSync("nft", ["flush", "ruleset"]);
+      return { ok: true };
+    case "nft-tables":
+      return {
+        tables: execFileSync("nft", ["list", "tables"], { encoding: "utf8" }).trim().split("\n"),
+      };
+    case "nft-reload":
+      execFileSync("systemctl", ["restart", "nftables"]);
+      return {
+        tables: execFileSync("nft", ["list", "tables"], { encoding: "utf8" }).trim().split("\n"),
+      };
+    case "proxy-probe": {
+      try {
+        execFileSync("ip", [
+          "netns",
+          "exec",
+          `osp${command.index}`,
+          "nc",
+          "-z",
+          "-w",
+          "1",
+          command.host,
+          String(command.port),
+        ]);
+        return { result: "connected" };
+      } catch {
+        return { result: "blocked" };
+      }
+    }
+    case "make-profiles": {
+      for (let index = command.from; index < command.to; index += 1) {
+        const file = `/var/lib/opensteer-pool/profiles/bench-${index}.ext4`;
+        if (!existsSync(file)) execFileSync("truncate", ["-s", "256M", file]);
+      }
+      return { ok: true };
+    }
     case "facts": {
       const route = execFileSync("ip", ["-4", "route", "get", "1.1.1.1"], { encoding: "utf8" });
       return { hostAddress: route.match(/ src ([0-9.]+)/u)?.[1] };

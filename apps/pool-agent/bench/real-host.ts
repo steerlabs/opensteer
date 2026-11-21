@@ -823,7 +823,14 @@ async function concurrent(slots: Slot[], rounds: number) {
     }
     for (const [offset, slot] of savers.entries()) {
       const writeMs = await slot.waitForDisk();
-      emit({ kind: "concurrent-save", round, slot: slot.id, save_ms: writeMs });
+      const memory = await helper({ cmd: "memory-events", slotId: slot.id });
+      emit({
+        kind: "concurrent-save",
+        round,
+        slot: slot.id,
+        save_ms: writeMs,
+        memory_events: memory,
+      });
       const start2 = now();
       await slot.call("resume");
       const { row, cdp } = await observe(slot, start2, live[3 + offset]!.workload, {
@@ -835,6 +842,176 @@ async function concurrent(slots: Slot[], rounds: number) {
     }
   }
   for (const entry of live) entry.cdp.close();
+}
+
+/** Rule S2 on a host: a journal write fails, the agent ends and is restarted, guests stay alive. */
+async function journalFailure(slot: Slot) {
+  await slot.ensureStopped();
+  await slot.call("start");
+  (await firstReply(slot, now())).cdp.close();
+  const before = (await helper({ cmd: "vmm-pids", slotId: slot.id })).pids as string[];
+  const since = new Date().toISOString().replace("T", " ").slice(0, 19);
+  await helper({ cmd: "record-immutable", slotId: slot.id, on: true });
+  const failed = await slot.call("pause").then(
+    () => "applied",
+    (error: unknown) => `refused: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  await sleep(2_500);
+  await helper({ cmd: "record-immutable", slotId: slot.id, on: false });
+  await waitForAgent(slot);
+  const after = (await helper({ cmd: "vmm-pids", slotId: slot.id })).pids as string[];
+  const events = ((await helper({ cmd: "agent-events", since })).lines as string[]).map(
+    (line) => (JSON.parse(line) as { event?: string }).event,
+  );
+  const { cdp, ms } = await firstReply(slot, now());
+  cdp.close();
+  const status = await slot.status();
+  const paused = await slot.call("pause");
+  const resumed = await slot.call("resume");
+  emit({
+    kind: "journal-failure",
+    first_call: failed,
+    agent_events: events.filter((event) => event && /journal|fatal|ready|recover/u.test(event)),
+    vmm_pids_before: before,
+    vmm_pids_after: after,
+    guest_kept: before.length > 0 && before.join() === after.join(),
+    status_after: status.phase,
+    cdp_after_ms: ms,
+    pause_then_resume: [paused.result.applied, resumed.result.applied],
+    ok:
+      failed.startsWith("refused") && before.join() === after.join() && status.phase === "running",
+  });
+}
+
+/** G4(a) on a host: the host ruleset flushed while guests run opens no path; the agent repairs it. */
+async function flush(slots: Slot[]) {
+  const [own, other] = slots;
+  for (const slot of [own!, other!]) {
+    await slot.ensureStopped();
+    await slot.call("start");
+    (await firstReply(slot, now())).cdp.close();
+  }
+  const facts = await helper({ cmd: "facts" });
+  await helper({ cmd: "nft-flush" });
+  const flushedAt = now();
+  const tablesAfterFlush = (await helper({ cmd: "nft-tables" })).tables;
+  const guestProbes: [string, string, number][] = [
+    ["GCE metadata IPv4", "169.254.169.254", 80],
+    ["agent Home port via own veth", vethHost(own!.index), 7310],
+    ["agent Home port on host address", String(facts.hostAddress), 7310],
+    ["another guest's bridge", vethInside(other!.index), 4312],
+    ["internet direct", "1.1.1.1", 443],
+  ];
+  const proxyProbes: [string, string, number][] = [
+    ["GCE metadata IPv4", "169.254.169.254", 80],
+    ["agent Home port via veth", vethHost(own!.index), 7310],
+    ["agent Home port on host address", String(facts.hostAddress), 7310],
+    ["host sshd", String(facts.hostAddress), 22],
+    ["another slot's bridge", vethInside(other!.index), 4312],
+  ];
+  const results = await Promise.all([
+    ...guestProbes.map(async ([what, host, port]) => {
+      const response = await fetch(
+        `${own!.bridge}/probe?host=${encodeURIComponent(host)}&port=${port}`,
+        {
+          signal: AbortSignal.timeout(5000),
+        },
+      ).then(
+        (answer) => answer.json() as Promise<{ result: string }>,
+        (error: unknown) => ({ result: `bridge unreachable: ${String(error)}` }),
+      );
+      return { from: "guest", what, host, port, result: response.result };
+    }),
+    ...proxyProbes.map(async ([what, host, port]) => {
+      const response = await helper({ cmd: "proxy-probe", index: own!.index, host, port });
+      return { from: "proxy namespace", what, host, port, result: String(response.result) };
+    }),
+  ]);
+  const probeMs = now() - flushedAt;
+  for (const row of results)
+    emit({
+      kind: "flush-isolation",
+      ...row,
+      within_ms: Math.round(probeMs),
+      ok: row.result !== "connected",
+    });
+  let repairedMs: number | null = null;
+  for (let waited = 0; waited < 20_000; waited += 250) {
+    const tables = (await helper({ cmd: "nft-tables" })).tables as string[];
+    if (
+      tables.includes("table inet opensteer_pool") &&
+      tables.includes("table inet opensteer_pool_host")
+    ) {
+      repairedMs = Math.round(now() - flushedAt);
+      break;
+    }
+    await sleep(250);
+  }
+  const reload = (await helper({ cmd: "nft-reload" })).tables;
+  emit({
+    kind: "flush-repair",
+    tables_after_flush: tablesAfterFlush,
+    repaired_ms: repairedMs,
+    tables_after_nftables_restart: reload,
+  });
+  for (const slot of [own!, other!]) await slot.call("stop");
+}
+
+/** G3 on a host: with the saved-state array unmounted the agent refuses to start. */
+async function arrayUnmounted(slots: Slot[]) {
+  for (const slot of slots) await slot.ensureStopped();
+  const since = new Date().toISOString().replace("T", " ").slice(0, 19);
+  await helper({ cmd: "agent", actions: ["stop"] });
+  await helper({ cmd: "array", mount: false });
+  await helper({ cmd: "agent", actions: ["reset-failed", "start"] }).catch(() => undefined);
+  await sleep(6_000);
+  const state = (await helper({ cmd: "agent-state" }).catch(() => ({ state: "unknown" }))).state;
+  const lines = ((await helper({ cmd: "agent-events", since })).lines as string[]).filter((line) =>
+    line.includes("agent.failed"),
+  );
+  await helper({ cmd: "agent", actions: ["stop"] });
+  await helper({ cmd: "array", mount: true });
+  await helper({ cmd: "agent", actions: ["reset-failed", "start"] });
+  await waitForAgent(slots[0]!);
+  emit({
+    kind: "array-unmounted",
+    agent_state_while_unmounted: state,
+    refusal: lines.slice(-1)[0] ?? null,
+    ok: lines.some((line) => /saved-state array/u.test(line)),
+  });
+}
+
+/** G6(c) on a host: 400 slots, and how long the agent takes to be ready with them. */
+async function scale(existing: Slot[]) {
+  await helper({ cmd: "make-profiles", from: existing.length, to: 400 });
+  const extra = Array.from(
+    { length: 400 - existing.length },
+    (_, offset) => new Slot(`bench-${existing.length + offset}`, existing.length + offset),
+  );
+  const created = now();
+  for (const slot of extra) await slot.create();
+  const createMs = now() - created;
+  const restarts: (number | null)[] = [];
+  for (let sample = 0; sample < 3; sample += 1)
+    restarts.push((await helper({ cmd: "agent-restart-timed" })).ms as number | null);
+  await waitForAgent(existing[0]!);
+  // One guest still wakes normally among 400 slots.
+  const slot = existing[0]!;
+  await slot.ensureStopped();
+  await slot.call("start");
+  const reply = await firstReply(slot, now());
+  reply.cdp.close();
+  await slot.call("stop");
+  emit({
+    kind: "scale",
+    slots: 400,
+    create_ms: Math.round(createMs),
+    agent_ready_ms: restarts,
+    cold_start_among_400_ms: Math.round(reply.ms),
+  });
+  const deleted = now();
+  for (const extraSlot of extra) await admin({ op: "delete", slotId: extraSlot.id, term });
+  emit({ kind: "scale-cleanup", delete_ms: Math.round(now() - deleted) });
 }
 
 async function main() {
@@ -868,6 +1045,10 @@ async function main() {
   }
   if (options.phases.includes("restart")) await restarts(first!, live);
   if (options.phases.includes("concurrent")) await concurrent(slots, 3);
+  if (options.phases.includes("journal")) await journalFailure(slots[0]!);
+  if (options.phases.includes("flush")) await flush(slots);
+  if (options.phases.includes("array")) await arrayUnmounted(slots);
+  if (options.phases.includes("scale")) await scale(slots);
   emit({ kind: "done" });
 }
 

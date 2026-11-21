@@ -53,7 +53,9 @@ images() {
 
 agent() {
     install -d -m 0755 /opt/opensteer-pool/agent
-    install -m 0644 "$agent_dir/dist/main.js" /opt/opensteer-pool/agent/main.js
+    # The bench run installs the bench entry (the production daemon plus its crash hook, for the
+    # restart-in-a-transition checks); setup-host.sh never installs it.
+    install -m 0644 "$agent_dir/dist/bench-agent.mjs" /opt/opensteer-pool/agent/main.js
     install -d -m 0700 "$creds"
     install -d -m 0711 "$bench"
     local relay_uid; relay_uid=$(id -u opensteer-pool-relay)
