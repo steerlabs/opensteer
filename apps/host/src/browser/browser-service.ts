@@ -7787,7 +7787,8 @@ export class HostedBrowserBroker {
   /** The runtime announced this session's end: its close is not a lost channel. */
   #runtimeEnded = false;
   readonly #adoptedFromPool: boolean;
-  readonly #poolEnded = new AbortController();
+  /** A pooled broker's end, for sends waiting on admission; an ordinary broker has none. */
+  readonly #poolEnded: AbortController | undefined;
   readonly profileId: BrowserProfileId | null;
   readonly #historyWrite: HostedBrowserBrokerOptions["historyWrite"];
   readonly #historyNavigations = new Map<
@@ -8044,6 +8045,7 @@ export class HostedBrowserBroker {
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
     this.#poolAdmission = options.poolAdmission;
+    this.#poolEnded = options.poolAdmission ? new AbortController() : undefined;
     this.#onChannelLost = options.onChannelLost;
     this.#adoptedFromPool = options.adoptedFromPool === true;
     this.#personUse = options.personUse ?? { tabs: new Set(), ended: false };
@@ -10129,9 +10131,8 @@ export class HostedBrowserBroker {
     const admitted =
       admission && !poolHold
         ? this.#commandTail.then(async () => {
-            poolHold = await admission.wait(
-              signal ? AbortSignal.any([signal, this.#poolEnded.signal]) : this.#poolEnded.signal,
-            );
+            const ended = this.#poolEnded!.signal;
+            poolHold = await admission.wait(signal ? AbortSignal.any([signal, ended]) : ended);
           })
         : this.#commandTail;
     const generation = this.#runtimeConnectionGeneration;
@@ -10252,7 +10253,8 @@ export class HostedBrowserBroker {
     if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
     this.#sessionStateHold?.release();
     this.#sessionStateHold = undefined;
-    this.#poolEnded.abort(
+    // An ordinary broker allocates nothing for the pool here, and constructs no error.
+    this.#poolEnded?.abort(
       new OpensteerError({ code: "conflict", message: "Browser Runtime is not connected." }),
     );
     this.#historyNavigations.clear();

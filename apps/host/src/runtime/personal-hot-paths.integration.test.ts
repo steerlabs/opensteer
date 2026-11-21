@@ -201,6 +201,20 @@ it.skipIf(Boolean(reportPath))(
           throw new Error("Personal owner session expired");
         },
       });
+      // An ordinary Home's broker allocates nothing for the pool: no controller for a pooled
+      // end, so none of its closes constructs that end's error either.
+      const brokerControllers: string[] = [];
+      const Original = globalThis.AbortController;
+      globalThis.AbortController = class extends Original {
+        constructor() {
+          super();
+          const stack = new Error().stack ?? "";
+          if (/new HostedBrowserBroker/u.test(stack)) brokerControllers.push(stack);
+        }
+      };
+      close.unshift(() => {
+        globalThis.AbortController = Original;
+      });
       const target = { kind: "page", guest: true, url: "about:blank" } as const;
       const opened = (await record("person tab open", () =>
         rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
@@ -323,6 +337,7 @@ it.skipIf(Boolean(reportPath))(
         }),
       );
       expect(ran.status).toBe("completed");
+      expect(brokerControllers).toEqual([]);
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(
