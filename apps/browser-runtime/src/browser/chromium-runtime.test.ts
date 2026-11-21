@@ -130,7 +130,7 @@ it("adopts a frozen Chromium document, streams it, and edits its unsent draft", 
   fence = { ...fence, epoch: 2 };
   const adoption = await control("adopt");
   expect(adoption.fence?.epoch).toBe(2);
-  expect(await control("adopt")).toEqual(adoption);
+  await expect(control("adopt")).rejects.toThrow("The browser adoption is not ready.");
   verifier.setClaims("old", {
     ...claims,
     reattach: true,
