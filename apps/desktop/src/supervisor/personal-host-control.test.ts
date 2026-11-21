@@ -250,6 +250,53 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(requests).toBe(2);
   });
 
+  it("waits through a fresh Home that has not heard its Agent home yet, and says so", async () => {
+    const deployment = manifest();
+    const answers = [
+      () =>
+        json({
+          data: hostApi["personal.readiness.get"].success.parse({
+            ready: false,
+            pending: "agent-home",
+          }),
+          ok: true,
+        }),
+      // The owner check's own answer for a Home without Personal settings: not ready, retryable.
+      () =>
+        json(
+          {
+            error: {
+              code: "conflict",
+              message: "The hosting computer is not ready.",
+              retryable: true,
+            },
+            ok: false,
+          },
+          409,
+        ),
+      () => readiness(true),
+    ];
+    const pending: ("agent-home" | undefined)[] = [];
+    const control = new NativePersonalHostControl({
+      fetch: async () => answers.shift()!(),
+      pollIntervalMs: 1,
+      requestTimeoutMs: 1_000,
+    });
+
+    await expect(
+      control.waitForRunner(
+        hostOrigin,
+        deployment.deploymentId,
+        deployment.environmentId,
+        deployment.runnerId,
+        new AbortController().signal,
+        (value) => pending.push(value),
+      ),
+    ).resolves.toBeUndefined();
+    expect(answers).toEqual([]);
+    expect(pending).toEqual(["agent-home", undefined]);
+  });
+
   it.each([
     ["unreadable", () => json({ data: {}, ok: true }), "incompatible"],
     ["oversized", () => new Response("x".repeat(17 * 1_024 * 1_024)), "internal"],

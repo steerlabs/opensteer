@@ -663,6 +663,7 @@ export async function createHostRuntime(
     };
     const execution = {
       canExecute: (environmentId: EnvironmentId) => environmentId === personalConfig.environmentId,
+      initialized: () => initializedPersonal !== null,
       environmentFor: async (ownerId: UserId) =>
         (await personalExecution()).environmentFor(ownerId),
     };

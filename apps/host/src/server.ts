@@ -377,7 +377,13 @@ export interface HostServerDependencies {
   readonly deviceDrivers?: DeviceDriverManagementPort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
-  readonly execution: Pick<PersonalExecution, "canExecute">;
+  readonly execution: Pick<PersonalExecution, "canExecute"> & {
+    /**
+     * The Home has its owner, hosting computer and Personal settings in place, so it can
+     * answer the owner's reads. False while it waits for the hosting Runner's agent home.
+     */
+    readonly initialized: () => boolean;
+  };
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly connectionEffects?: ConnectionCommandEffects;
