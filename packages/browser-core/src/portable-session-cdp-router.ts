@@ -842,6 +842,17 @@ export class SessionCdpRouter {
           "forbidden",
           `${command.method} cannot be scoped to this CDP attachment.`,
         );
+    } else {
+      if (command.method === "Browser.setDownloadBehavior")
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Remote CDP cannot configure browser download destinations.",
+        );
+      if (command.method === "Browser.cancelDownload")
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Remote CDP does not manage browser downloads.",
+        );
     }
     if (this.#backend.scopeParameters && command.sessionId) {
       command = {

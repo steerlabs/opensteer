@@ -17,12 +17,15 @@ import {
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
 import { FakeTicketVerifier, validClaims } from "@opensteer/browser-runtime-core/test-support";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
+import {
+  bridgeMockPersonalRealtime,
+  handleMockPersonalRpc,
+} from "./test-support/mock-personal-host-server.js";
 import {
   BrowserClientMessageSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
-  hostApi,
   hostApiVersionHeader,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
@@ -143,6 +146,8 @@ let nativeWrites = 0;
 let inspectTarget: (() => Promise<unknown>) | undefined;
 let peer: WebSocket | undefined;
 const mock = new MockHostClient({ latencyMs: 0 });
+let personalHost: MockPersonalHost | undefined;
+let pageTabAlias: { readonly from: string; readonly to: string } | undefined;
 let launcher: ElectronBrowserLauncher | undefined;
 const token = "baseline-viewer-smoke-capability-0000000000000000";
 let fixtureOrigin = "";
@@ -231,19 +236,16 @@ const server = createServer((request, response) => {
       response.end();
       return;
     }
-    const url = new URL(request.url!, "http://fixture");
-    if (url.pathname.startsWith("/v1/rpc/")) {
-      const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-      if (!(name in hostApi)) throw new Error(`Unexpected RPC ${name}`);
-      let raw = url.searchParams.get("input") ?? "";
-      if (request.method !== "GET") {
-        for await (const chunk of request) raw += String(chunk);
-      }
-      const rpc = mock.rpc[name] as (input: never) => Promise<unknown>;
-      response.setHeader("Content-Type", "application/json");
-      response.end(JSON.stringify(await rpc(JSON.parse(raw || "{}") as never)));
+    if (
+      personalHost &&
+      (await handleMockPersonalRpc(
+        personalHost,
+        request,
+        response,
+        pageTabAlias ? { pageTabAlias } : undefined,
+      ))
+    )
       return;
-    }
     response.setHeader("Content-Type", "text/html");
     response.end(
       '<textarea id="editing-fixture" style="width:500px;height:200px"></textarea><script>window.keydowns=0;const t=document.querySelector("textarea");t.addEventListener("keydown",e=>{if(e.key.length===1&&!e.metaKey&&!e.ctrlKey){e.preventDefault();window.keydowns++;document.execCommand("insertText",false,e.key)}});window.nativeEvents=[];for(const type of ["keydown","beforeinput","input","copy","cut"])t.addEventListener(type,e=>nativeEvents.push({type,key:e.key,meta:e.metaKey,control:e.ctrlKey,inputType:e.inputType,value:t.value}));t.focus()</script>',
@@ -254,6 +256,12 @@ const server = createServer((request, response) => {
   });
 });
 server.on("upgrade", (request, socket, head) => {
+  if (request.url?.startsWith("/v1/realtime") && personalHost) {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      bridgeMockPersonalRealtime(personalHost!, ws, pageTabAlias ? { pageTabAlias } : undefined);
+    });
+    return;
+  }
   if (!request.url?.includes("/browser-sessions/")) {
     socket.destroy();
     return;
@@ -316,6 +324,7 @@ async function main() {
     });
     const browserLauncher = launcher;
     await mock.load();
+    personalHost = new MockPersonalHost(mock);
     const session = mock.getSnapshot().browserSessions[0];
     assert(session);
     server.listen(0, "127.0.0.1");
@@ -359,6 +368,11 @@ async function main() {
     assert.equal(browser?.clipboard, undefined);
     const surfaceId = tabStream.meta?.activeId;
     assert(surfaceId);
+    const mockPageTab = [...mock.getSnapshot().tabs.rows.values()].find(
+      (tab) => tab.kind === "page",
+    );
+    assert(mockPageTab);
+    pageTabAlias = { from: mockPageTab.tabId, to: surfaceId };
     await attachment.handle(JSON.stringify({ type: "navigation.go", url: origin, surfaceId }));
     const page = browser!.context.pages()[0]!;
     const cdp = await page.cdp();
@@ -816,6 +830,7 @@ async function main() {
     await attachment?.close();
     await runtime?.shutdown();
     launcher?.close();
+    personalHost?.dispose();
     mock.dispose();
     await new Promise<void>((resolve) => wss.close(() => resolve()));
     server.closeAllConnections();

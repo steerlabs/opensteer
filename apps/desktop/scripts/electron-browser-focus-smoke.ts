@@ -526,38 +526,28 @@ async function run(): Promise<void> {
     });
     await assertBackground("website focus and dialog handling");
 
-    const snapshot = await browser.exportSnapshot();
-    await assertBackground("profile export");
+    // Portable legacy profile snapshots (`exportSnapshot` / `storage.kind: "legacy"`)
+    // were removed in 2fa8004e2; keep verifying that closing and relaunching stays background.
     await controller.handle({ type: "stream.unsubscribe" });
     await controller.close();
     await router.close();
     await ledger.close();
     await browser.close();
 
-    browser = await launcher.launch({ ...request, storage: { kind: "legacy", snapshot } });
+    browser = await launcher.launch(request);
     cleanup.push(() => browser.close());
-    const restoredLedger = new SurfaceLedger(browser.context, {
+    const relaunchedLedger = new SurfaceLedger(browser.context, {
       initialViewport: request.initialViewport,
     });
-    ledger = restoredLedger;
-    cleanup.push(() => restoredLedger.close());
+    ledger = relaunchedLedger;
+    cleanup.push(() => relaunchedLedger.close());
     await ledger.start();
     page = browser.context.pages()[0];
-    if (!page) throw new Error("Electron restored focus smoke page missing.");
+    if (!page) throw new Error("Electron relaunched focus smoke page missing.");
     pageCdp = await page.cdp();
     await pageCdp.send("Page.navigate", { url: origin });
     await waitFor(() => page.url() === `${origin}/`);
-    const restored = await pageCdp.send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
-      expression: '({ cookie: document.cookie, localStorage: localStorage.getItem("focus") })',
-      returnByValue: true,
-    });
-    if (
-      JSON.stringify(restored.result?.value) !==
-      JSON.stringify({ cookie: "focus=preserved", localStorage: "preserved" })
-    ) {
-      throw new Error(`Electron focus smoke profile restore mismatch: ${JSON.stringify(restored)}`);
-    }
-    await assertBackground("profile restore and relaunch");
+    await assertBackground("relaunch");
     await ledger.close();
     await browser.close();
     if (focusFailures.length > 0) {

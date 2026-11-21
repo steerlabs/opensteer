@@ -276,13 +276,14 @@ export class DesktopMenuBar {
 
   /**
    * Main redraws on change: the status item at once from what main holds, and
-   * the popover, while it shows, with one full status at a time. Changes that
-   * arrive meanwhile fold into one more, and a failure is logged, never thrown.
+   * the popover, once created, with one full status at a time even while hidden
+   * so Stop state advances independently of visibility. Changes that arrive
+   * meanwhile fold into one more, and a failure is logged, never thrown.
    */
   #redraw(): void {
     this.#drawIcon(this.#options.service.icon());
     const popover = this.#popover;
-    if (popover && !popover.isDestroyed() && popover.isVisible()) this.#pushStatus();
+    if (popover && !popover.isDestroyed()) this.#pushStatus();
   }
 
   #pushStatus(): void {

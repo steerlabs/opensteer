@@ -712,6 +712,8 @@ export interface CallerMachine {
   readonly harnessInstanceId: string;
   readonly primary: PrimaryConnection;
   readonly runnerId: RunnerId;
+  /** Reports Agent home as the hosting Runner does once it has created and canonicalized it. */
+  reportAgentHome(): void;
   close(): Promise<void>;
 }
 
@@ -743,6 +745,11 @@ export async function connectCallerMachine(
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
     readonly runFileProof?: boolean;
+    /**
+     * Connects with the Agent home files capability but leaves Agent home unreported, as a
+     * real hosting Runner is while it creates the folder, until `reportAgentHome()`.
+     */
+    readonly holdAgentHomeReport?: boolean;
     readonly runnerKind?: "local" | "main";
     /** Accepts Trigger programs, so the Host's coordinator dispatches them here. */
     readonly triggerPrograms?: boolean;
@@ -772,7 +779,7 @@ export async function connectCallerMachine(
       "run-events-v2",
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
-      ...(input.runFileProof ? [agentHomeFilesCapability] : []),
+      ...(input.runFileProof || input.holdAgentHomeReport ? [agentHomeFilesCapability] : []),
       ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
     ],
     modules: {
@@ -817,7 +824,7 @@ export async function connectCallerMachine(
     ? { privateKey: input.previous.primary.privateKey }
     : { token: input.token };
   const primary = await connectPrimary(host.hostPort, descriptor, credentials, socket);
-  if (input.runFileProof) {
+  const reportAgentHome = () =>
     primary.socket.send(
       JSON.stringify(
         RunnerAgentHomeReportSchema.parse({
@@ -829,7 +836,7 @@ export async function connectCallerMachine(
         }),
       ),
     );
-  }
+  if (input.runFileProof && !input.holdAgentHomeReport) reportAgentHome();
   // Every dispatched command is acknowledged, including the ones this Runner
   // has nothing to do about: a command the Host waits on and never hears back
   // ejects the whole connection fifteen seconds later.
@@ -940,6 +947,7 @@ export async function connectCallerMachine(
     environmentId,
     harnessInstanceId,
     primary,
+    reportAgentHome,
     runnerId,
   };
 }

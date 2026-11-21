@@ -148,7 +148,6 @@ const journeys: Journey[] = [
   ["5", "No field and page-bound admission"],
   ["6", "Lease checks"],
   ["7", "Platform leak scan"],
-  ["8", "Profile reopen"],
   ["9-oopif", "Focus leaves OOPIF"],
   ["9-navigation", "Navigation during release"],
   ["9-cancel", "Cancel during release"],

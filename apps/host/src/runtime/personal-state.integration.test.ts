@@ -12,7 +12,12 @@ import { installPersonalMutationHooks } from "@opensteer/database/personal-mutat
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { AutomationFailureStore, ChannelStore, OpensteerStore } from "@opensteer/database";
+import {
+  AutomationFailureStore,
+  ChannelStore,
+  isEligibleBrowserRunner,
+  OpensteerStore,
+} from "@opensteer/database";
 import {
   ContinuationService,
   type IntegrationInventorySource,
@@ -145,6 +150,55 @@ it("initializes Home from the hosting report and refuses a later path change", a
     expect((await initializePersonalState(database, config))?.options.agentHome).toEqual(
       reportedAgentHome,
     );
+  } finally {
+    await database.destroy();
+    await clone.drop();
+  }
+});
+
+it("tells the owner a Home still waiting for Agent home is not ready, and no one else anything new", async () => {
+  const clone = await cloneTestDatabase("host");
+  const database = createDatabase({ connectionString: clone.url });
+  try {
+    const personal = await seedPersonalFixture(database, "/configured-home");
+    await database.deleteFrom("personalSettings").execute();
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: sql<readonly string[]>`${JSON.stringify([agentHomeFilesCapability])}::jsonb`,
+      })
+      .where("id", "=", personal.runnerId)
+      .execute();
+    const config = { agentHome: "/configured-home", environmentId: personal.environmentId };
+    await expect(initializePersonalState(database, config)).resolves.toBeNull();
+    // An owner-only read in the window: the owner hears "not ready", retryable.
+    await expect(
+      isEligibleBrowserRunner(database, personal.userId, personal.runnerId),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "The hosting computer is not ready.",
+      retryable: true,
+    });
+    // Anyone else is still refused as not the owner.
+    await expect(
+      isEligibleBrowserRunner(database, createId("user"), personal.runnerId),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await initializePersonalState(database, {
+      ...config,
+      reportedAgentHome: { computerId: personal.runnerId, path: "/canonical-home" },
+    });
+    await expect(
+      isEligibleBrowserRunner(database, personal.userId, personal.runnerId),
+    ).resolves.toBeTypeOf("boolean");
+    // A disabled owner of a started Home is refused, not told to wait.
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", personal.userId)
+      .execute();
+    await expect(
+      isEligibleBrowserRunner(database, personal.userId, personal.runnerId),
+    ).rejects.toMatchObject({ code: "forbidden" });
   } finally {
     await database.destroy();
     await clone.drop();

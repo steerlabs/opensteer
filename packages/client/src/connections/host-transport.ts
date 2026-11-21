@@ -369,12 +369,23 @@ export class HostTransport {
           throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (
+          controller.signal.aborted &&
+          controller.signal.reason instanceof HostTransportError &&
+          controller.signal.reason.code === "deployment-changed"
+        )
+          throw controller.signal.reason;
+        if (
           error instanceof HostTransportError &&
           (error.code === "deployment-changed" || error.code === "response-too-large")
         )
           throw error;
+        const timedOut =
+          (controller.signal.aborted &&
+            controller.signal.reason instanceof HostTransportError &&
+            controller.signal.reason.code === "timed-out") ||
+          (error instanceof HostTransportError && error.code === "timed-out");
         if (unauthorizedObserved)
-          throw new HostTransportError("unreachable", {
+          throw new HostTransportError(timedOut ? "timed-out" : "unreachable", {
             code: "unauthorized",
             reason: "sign-in-required",
             retryable: false,

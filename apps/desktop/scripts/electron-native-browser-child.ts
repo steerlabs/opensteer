@@ -1068,7 +1068,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   await until(
     async () =>
       (await evaluateApp(
-        "!!document.querySelector('.side-tab[data-group=web] .side-tab__main')",
+        "!!document.querySelector('.side-tab[data-kind=page] .side-tab__main')",
       )) === true,
     "production browser tab",
     30_000,
@@ -1342,6 +1342,7 @@ function bridgeOptions(
     bridgeToken,
     browserPresentation,
     hostTransport,
+    isWorkspaceContents: (sender) => sender === kit.shell?.webContents,
     ipcMain: {
       removeHandler: (channel) => ipcMain.removeHandler(channel),
       handle: (channel, listener) =>

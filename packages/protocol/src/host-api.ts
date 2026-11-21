@@ -2370,7 +2370,12 @@ const workspaceHostApi = defineRpc({
         runtimeId: z.string().trim().min(1).max(255),
       }),
     ]),
-    z.object({ ready: z.boolean(), pluginAgentWorkStoppedSince: IsoDateTimeSchema.optional() }),
+    z.object({
+      ready: z.boolean(),
+      pluginAgentWorkStoppedSince: IsoDateTimeSchema.optional(),
+      /** Not ready because the connected hosting computer has not reported Agent home yet. */
+      pending: z.literal("agent-home").optional(),
+    }),
   ),
   "thread.snapshot.get": declaration(
     "GET",

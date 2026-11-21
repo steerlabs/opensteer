@@ -256,8 +256,8 @@ import Darwin
     let peerIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(peerRecord.identity))
     let peerBundleId = peerRecord.identity.bundleId
     let session = "cus_33333333-3333-4333-8333-333333333333"
-    let primaryTarget: [String: Any] = ["identity": primaryIdentity, "access": "read-only"]
-    let peerTarget: [String: Any] = ["identity": peerIdentity, "access": "read-only"]
+    let primaryTarget: [String: Any] = ["identity": primaryIdentity, "access": "read"]
+    let peerTarget: [String: Any] = ["identity": peerIdentity, "access": "read"]
     let peerOut = out.appendingPathComponent("peer-app")
     try FileManager.default.createDirectory(at: peerOut, withIntermediateDirectories: true)
 
