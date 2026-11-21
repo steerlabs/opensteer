@@ -18,7 +18,14 @@ export interface BrowserPoolIntent {
   readonly sequence: number;
 }
 
-/** Issued by the physical controller: instance once per start, epoch once per resume. */
+/**
+ * Issued by the physical controller: instance once per start, epoch once per resume. Controls
+ * are ordered by the (term, sequence) high-water this runtime keeps in memory. Known limit of
+ * the loopback stand-in: a freshly restarted, empty runtime has no high-water, so a replayed
+ * old install can land on it; the Home then sees a fence that is not the slot's and starts a
+ * fresh guest, so it ends in a discard. With a real pool agent the high-water lives outside the
+ * guest, and such a replay is refused there.
+ */
 export interface BrowserPoolRuntimeFence {
   readonly slot: string;
   readonly term: number;
