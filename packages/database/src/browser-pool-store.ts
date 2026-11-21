@@ -593,6 +593,30 @@ export async function listBrowserPoolRuntimeSessions(
   return rows.map(({ id }) => id);
 }
 
+/**
+ * A pooled Runner that was revoked (a removal the Home did not finish): the sessions that
+ * revocation ended, which the release still owes a note. Undefined while the Runner stands.
+ */
+export async function readBrowserPoolRevocation(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<readonly BrowserSessionId[] | undefined> {
+  const runner = await database
+    .selectFrom("runners")
+    .select("revokedAt")
+    .where("id", "=", runnerId)
+    .executeTakeFirst();
+  if (!runner?.revokedAt) return undefined;
+  const ended = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", runnerId)
+    .where("closedAt", "=", runner.revokedAt)
+    .orderBy("id")
+    .execute();
+  return ended.map(({ id }) => id);
+}
+
 /** The ready sessions of this runtime: the ones a channel can be missing from. */
 export async function listBrowserPoolReadySessions(
   database: Kysely<DatabaseSchema>,

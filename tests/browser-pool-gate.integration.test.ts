@@ -534,6 +534,56 @@ it("holds a viewer's protection, queued after the park intent, in the adopted ru
   }
 });
 
+it("keeps a running browser's sessions through a Home crash and reattaches them", async () => {
+  const j = await journey("home-crash-running");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("crash"));
+    const page = await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    // The Home dies while the browser runs, and starts again: the start-up sweep keeps the
+    // pooled session, and the loop reattaches it inside its window.
+    const next = await j.crashHome(home);
+    await vi.waitFor(() => expect(next.coordinator.gate.phase).toBe("open"), { timeout: 10_000 });
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    expect(page.page.isClosed()).toBe(false);
+    expect(await page.value()).toBe('["unsent draft",99]');
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("finishes a removal a Home crash interrupted after the revocation, with the notes", async () => {
+  const j = await journey("removal-crash");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("removal"));
+    await j.draft();
+    await j.database
+      .updateTable("runners")
+      .set({ kind: "managed" })
+      .where("id", "=", j.task.runnerId)
+      .execute();
+    // The revocation commits; the Home dies before the browser hears of it.
+    const removed = await j.store.revokeRunner(j.task.runnerId, j.task.userId, {
+      allowDeployment: true,
+    });
+    expect(removed.closedBrowserSessions).toContain(sessionId);
+    const next = await j.crashHome(home);
+    await next.coordinator.released();
+    expect(next.coordinator.gate.phase).toBe("released");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId, reason: "device-removed" },
+    ]);
+    expect(await j.slot()).toBeUndefined();
+    expect(j.controller.effects).toEqual(["start", "stop"]);
+  } finally {
+    await j.close();
+  }
+});
+
 it("stops a parked session while its viewer waits and never reattaches it", async () => {
   const j = await journey("stop-waiting");
   try {

@@ -332,6 +332,13 @@ export async function journey(
     home.coordinator.close();
     return startHome(channel);
   };
+  /** The Home process dies: nothing is closed gracefully, every channel drops, and it starts. */
+  const crashHome = async (home: Home) => {
+    home.coordinator.close();
+    bridge.closeAll(1011, "home gone");
+    for (const connection of connections.splice(0)) connection.lose(1006, "home gone");
+    return startHome();
+  };
   const command = (idempotencyKey: string) => ({
     type: "browser.tab.open" as const,
     identity: { kind: "guest" as const },
@@ -449,6 +456,7 @@ export async function journey(
     signer,
     startHome,
     restartHome,
+    crashHome,
     command,
     draft,
     viewer,

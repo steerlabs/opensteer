@@ -20,6 +20,7 @@ import {
   finishBrowserPoolRelease,
   readAppliedBrowserPoolControllerCall,
   readBrowserPoolSlot,
+  readBrowserPoolRevocation,
   type BrowserPoolSessionLoss,
   type BrowserPoolSlot,
   type BrowserPoolTargetIdentity,
@@ -526,7 +527,18 @@ export class BrowserPoolCoordinator {
   }
 
   async #recoverStep(): Promise<void> {
+    // A removal a Home crash interrupted after the revocation: the slot is released, and the
+    // sessions the revocation ended get their notes.
+    const revoked = await readBrowserPoolRevocation(this.#options.database, this.#options.runnerId);
+    if (revoked) {
+      this.#released ??= { ended: new Set(), noted: Promise.withResolvers() };
+      for (const sessionId of revoked) this.#released.ended.add(sessionId);
+      this.#publish(this.#slot);
+      return;
+    }
     await this.#recover();
+    // Sessions a Home restart left without a channel are counted before admission opens.
+    if (this.#slot?.phase === "running") await this.#withoutChannel();
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
