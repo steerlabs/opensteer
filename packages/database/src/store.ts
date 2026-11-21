@@ -842,6 +842,7 @@ export class OpensteerStore {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: import("./browser-pool-store.js").BrowserPoolTargetIdentity;
   }): Promise<boolean> {
     return browserSessionStore.attachBrowserSession(this.#database, input);
   }

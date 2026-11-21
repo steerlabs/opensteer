@@ -332,6 +332,9 @@ it("wakes only for a visible owner context read and keeps a parked sign-in looku
   ownerTabJourney("context"));
 it("reconciles an interrupted adoption with the original epoch and one physical resume", () =>
   ownerTabJourney("recover-adoption"));
+it("waits for pooled admission before a Run opens its own page", () => ownerTabJourney("run-open"));
+it("waits for pooled admission before a Run binds and joins a retained page", () =>
+  ownerTabJourney("run-bind"));
 
 async function ownerTabJourney(
   mode:
@@ -342,7 +345,9 @@ async function ownerTabJourney(
     | "close-parked"
     | "activate"
     | "context"
-    | "recover-adoption",
+    | "recover-adoption"
+    | "run-open"
+    | "run-bind",
 ) {
   const restart = mode !== "empty";
   const fixture = await createStoreFixture();
@@ -352,7 +357,7 @@ async function ownerTabJourney(
   let browser: BrowserService | undefined;
   const allowResume = Promise.withResolvers<void>();
   try {
-    const task = await fixture.createRunFixture("pool-owner-tab");
+    const task = await fixture.startRunFixture("pool-owner-tab");
     const { database, store } = fixture;
     await database
       .updateTable("runners")
@@ -510,6 +515,7 @@ async function ownerTabJourney(
             surfaceState: 1,
             tabRestoreVersion: true,
             sharedControl: true,
+            cdpBoundary: true,
             loopbackPool: negotiated,
             connect: (ticket) => {
               calls.push("attach");
@@ -665,6 +671,71 @@ async function ownerTabJourney(
         expect(restarted.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
           original?.documentId,
         );
+        return;
+      }
+      if (mode === "run-open" || mode === "run-bind") {
+        const run = {
+          agentBindingId: `run:${task.runId}`,
+          ownerId: task.userId,
+          environmentId: task.environmentId,
+          threadId: task.threadId,
+        };
+        const bind = async () => {
+          const scope = await store.runCapabilityScope(task.runId);
+          if (!scope) throw new Error("The test Run has no browser authority.");
+          return restarted.service.bindPage(
+            {
+              ...scope,
+              aud: "opensteer-run-tools",
+              iss: "opensteer-host",
+              jti: randomUUID(),
+              iat: 1,
+              exp: 2,
+            },
+            tab!,
+          );
+        };
+        const result =
+          mode === "run-open"
+            ? restarted.service.openAgentTab(run, {
+                identity: { kind: "guest", computer: task.runnerId },
+                operationKey: "run-open",
+              })
+            : bind();
+        try {
+          await Promise.race([
+            resumeSeen.promise,
+            result.then(() => {
+              throw new Error("The Run used the browser before physical resume.");
+            }),
+          ]);
+          expect(calls).toEqual(["attach", "pause", "resume"]);
+          expect(await store.listActiveBrowserSessionsForAgentBinding(run.agentBindingId)).toEqual(
+            [],
+          );
+          allowResume.resolve();
+          const bound = await result;
+          expect(bound.backend).toBe("cdp");
+          if (mode === "run-bind") {
+            expect(bound).toMatchObject({ tabId, sessionId, reloaded: false });
+            await expect(
+              restarted.service.openAgentSession({ ...run, sessionId }),
+            ).resolves.toMatchObject({
+              wasExisting: true,
+              session: { id: sessionId, attached: true },
+            });
+            expect(restarted.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
+              original?.documentId,
+            );
+          } else expect(bound.sessionId).not.toBe(sessionId);
+          expect(await store.listBrowserSessionAttachmentBindings(bound.sessionId)).toEqual([
+            run.agentBindingId,
+          ]);
+          expect(await restarted.negotiated.gate.tryPark()).toBe("vetoed");
+        } finally {
+          allowResume.resolve();
+          await result.catch(() => undefined);
+        }
         return;
       }
       let open = true;

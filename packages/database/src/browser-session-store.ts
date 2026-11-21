@@ -1,5 +1,9 @@
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
-import { requireBrowserPoolAdmission } from "./browser-pool-store.js";
+import {
+  BrowserPoolAdmissionClosed,
+  requireBrowserPoolAdmission,
+  type BrowserPoolTargetIdentity,
+} from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
@@ -961,10 +965,19 @@ export async function attachBrowserSession(
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: BrowserPoolTargetIdentity;
   },
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.pool) await requireBrowserPoolAdmission(transaction, input.pool.runnerId, input.pool);
     const session = await getBrowserSessionForOwner(transaction, input.sessionId, input.ownerId);
+    if (
+      input.pool &&
+      (session?.state !== "ready" ||
+        session.runnerId !== input.pool.runnerId ||
+        session.runtimeId !== input.pool.runtimeId)
+    )
+      throw new BrowserPoolAdmissionClosed();
     if (!session) return false;
     if (session?.profileId) {
       await lockBrowserProfile(transaction, session.profileId);

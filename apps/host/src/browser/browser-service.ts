@@ -429,6 +429,7 @@ export interface BrowserSessionRepository {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: BrowserPoolTargetIdentity;
   }): Promise<boolean>;
   detachBrowserSessionAttachments(agentBindingId: string): Promise<readonly BrowserSessionId[]>;
 
@@ -960,6 +961,7 @@ export class BrowserService {
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   readonly #managedPoolTestRunner: RunnerId | undefined;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
+  readonly #poolAgentWaiters = new Map<string, Set<AbortController>>();
   readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -1159,7 +1161,7 @@ export class BrowserService {
         onTabsChanged: () => this.#queueTabDescriptors(sessionId),
         onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
         onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
-        cdpBoundary: false,
+        cdpBoundary: target.cdpBoundary === true,
         basicInput: target.basicInput,
         surfaceState: target.surfaceState,
         sharedControl: target.sharedControl === true,
@@ -1391,10 +1393,24 @@ export class BrowserService {
     input: StartBrowserSessionInput,
     personNavigation?: { readonly typed: boolean },
   ): Promise<StartBrowserSessionResult> {
+    const budget = this.#poolStartBudget(input.operationBudget?.signal);
+    try {
+      return await this.#startSession(input, personNavigation, budget);
+    } finally {
+      budget?.pool?.reservation.release();
+    }
+  }
+
+  async #startSession(
+    input: StartBrowserSessionInput,
+    personNavigation?: { readonly typed: boolean },
+    budget?: BrowserTabOpenBudget,
+  ): Promise<StartBrowserSessionResult> {
     const finish = await this.#prepareStart(
       input,
       undefined,
       personNavigation ? { ownerId: input.ownerId, typed: personNavigation.typed } : undefined,
+      budget,
     );
     const result = await finish();
     const record = await this.#repository.getBrowserSessionForOwner(
@@ -2025,8 +2041,14 @@ export class BrowserService {
           }
           const pooled = this.#poolTabTarget(runnerId);
           if (pooled) {
-            if (agent) throw unavailable("This browser cannot open a tab for an agent yet.");
-            const reservation = await this.#reservePool(pooled.gate, budget.signal, record?.id);
+            const reservation = agent
+              ? await this.#reserveAgentPool(
+                  pooled.gate,
+                  agent.agentBindingId,
+                  record?.id,
+                  budget.signal,
+                )
+              : await this.#reservePool(pooled.gate, budget.signal, record?.id);
             budget.pool = { target: pooled, reservation };
             budget.signal.throwIfAborted();
             if (record) {
@@ -2305,6 +2327,10 @@ export class BrowserService {
                     )
                       throw unavailable("The browser session changed while waiting.");
                     this.#requireOpenableSession(current);
+                    if (agent) {
+                      await this.admitAgentBrowser(agent, "read-write", [current]);
+                      await this.#requireAgentAccess(record.runnerId);
+                    }
                   },
                   submitted: () => {
                     budget.pageRequested = true;
@@ -2346,6 +2372,7 @@ export class BrowserService {
           "browser-tab-open-outcome-unknown",
           "The page outcome is unknown.",
         );
+      if (budget.pool && agent) await this.#holdForAgent(agent, record);
       await this.#flushTabDescriptors(record.id);
       this.#onTabsChanged();
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
@@ -3670,35 +3697,48 @@ export class BrowserService {
           )
           .map((other) => other.id);
         this.#pagesAwaitingNavigation.add(row.id);
-        const finish = await this.#prepareStart({
-          ownerId,
-          sessionId,
-          tabGroupId: binding.lineageId,
-          initialSurfaceId: row.id,
-          tabGeneration: row.generation,
-          previousPageBinding: binding,
-          dormantSurfaceIds: dormant,
-          initialUrl: row.url!,
-          placement: { kind: "runner", runnerId: rowRunnerId },
-          ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
-          origin: agent ? "agent" : "person",
-          ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
-          opener:
-            previous?.opener ??
-            (agent
-              ? await this.#repository.browserSessionOpenerForBinding(agent.agentBindingId, ownerId)
-              : { kind: "person", userId: ownerId }),
-        });
-        await finish();
-        row = await this.#requireWorkspaceGeneration(ownerId, initial);
-        const record = row.pageBinding
-          ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
-          : null;
-        if (!record)
-          throw new OpensteerError({ code: "not_found", message: "The restored browser ended." });
-        if (agent)
-          await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
-        return record;
+        const budget = this.#poolStartBudget(signal);
+        try {
+          const finish = await this.#prepareStart(
+            {
+              ownerId,
+              sessionId,
+              tabGroupId: binding.lineageId,
+              initialSurfaceId: row.id,
+              tabGeneration: row.generation,
+              previousPageBinding: binding,
+              dormantSurfaceIds: dormant,
+              initialUrl: row.url!,
+              placement: { kind: "runner", runnerId: rowRunnerId },
+              ...(row.profileId ? { profileId: row.profileId } : { fresh: true }),
+              origin: agent ? "agent" : "person",
+              ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
+              opener:
+                previous?.opener ??
+                (agent
+                  ? await this.#repository.browserSessionOpenerForBinding(
+                      agent.agentBindingId,
+                      ownerId,
+                    )
+                  : { kind: "person", userId: ownerId }),
+            },
+            undefined,
+            undefined,
+            budget,
+          );
+          await finish();
+          row = await this.#requireWorkspaceGeneration(ownerId, initial);
+          const record = row.pageBinding
+            ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
+            : null;
+          if (!record)
+            throw new OpensteerError({ code: "not_found", message: "The restored browser ended." });
+          if (agent)
+            await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
+          return record;
+        } finally {
+          budget?.pool?.reservation.release();
+        }
       },
     );
   }
@@ -3732,20 +3772,42 @@ export class BrowserService {
       await this.#requireWorkspaceGeneration(agent.ownerId, row);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
-    const live =
+    const existing =
+      this.#managedPoolTestRunner &&
       old &&
-      this.#brokers.get(old.sessionId)?.live &&
-      this.#brokers.get(old.sessionId)?.pageOf(row.id);
-    const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
-    const { backend } = await this.#admitAgentBackend(
-      { ...agent, sessionId: session.id },
-      undefined,
-      true,
-    );
-    await this.#requireWorkspaceGeneration(agent.ownerId, row);
-    await this.pageTabs.admitted!((await this.#workspaceTabs!.get(agent.ownerId, row.id))!);
-    await this.#recordAgentTabPlace(agent, session, row.id);
-    return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
+      (await this.#repository.getBrowserSessionForOwner(old.sessionId, agent.ownerId));
+    const pool = existing ? this.#poolTabTarget(existing.runnerId) : undefined;
+    if (pool && existing) {
+      await this.admitAgentBrowser(agent, "read-write", [existing]);
+      await this.#requireAgentAccess(existing.runnerId);
+    }
+    const reservation =
+      pool && existing
+        ? await this.#reserveAgentPool(pool.gate, agent.agentBindingId, existing.id, signal)
+        : undefined;
+    try {
+      if (reservation) {
+        const fresh = await this.#requireWorkspaceGeneration(agent.ownerId, row);
+        if (fresh.pageBinding?.sessionId !== old?.sessionId)
+          throw new BrowserCdpConnectionEnded("This browser page changed while waiting.");
+      }
+      const live =
+        old &&
+        this.#brokers.get(old.sessionId)?.live &&
+        this.#brokers.get(old.sessionId)?.pageOf(row.id);
+      const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
+      const { backend } = await this.#admitAgentBackend(
+        { ...agent, sessionId: session.id },
+        undefined,
+        true,
+      );
+      await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      await this.pageTabs.admitted!((await this.#workspaceTabs!.get(agent.ownerId, row.id))!);
+      await this.#recordAgentTabPlace(agent, session, row.id);
+      return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
+    } finally {
+      reservation?.release();
+    }
   }
   async #writeWorkspacePages(
     record: BrowserSessionRecord,
@@ -4048,14 +4110,24 @@ export class BrowserService {
           message: "That tab is not available to this task.",
         });
       }
-      await this.withRunnerAdmission(record.runnerId, async () => {
-        await this.#requireAgentAccess(record.runnerId);
-        await this.#holdForAgent(input, record);
-      });
-      return {
-        session: await this.#agentSessionSummary(input, record.id),
-        wasExisting: true,
-      };
+      const pool = this.#poolTabTarget(record.runnerId);
+      if (pool) await this.#requireAgentAccess(record.runnerId);
+      const reservation = pool
+        ? await this.#reserveAgentPool(pool.gate, input.agentBindingId, record.id)
+        : undefined;
+      try {
+        await this.withRunnerAdmission(record.runnerId, async () => {
+          await this.#requireAgentAccess(record.runnerId);
+          if (pool) await this.#usableAgentSession(input, record.id);
+          await this.#holdForAgent(input, record);
+        });
+        return {
+          session: await this.#agentSessionSummary(input, record.id),
+          wasExisting: true,
+        };
+      } finally {
+        reservation?.release();
+      }
     }
 
     if (
@@ -5853,10 +5925,11 @@ export class BrowserService {
     input: StartBrowserSessionInput,
     onInitialPage?: (tabId: BrowserSurfaceId) => void,
     personNavigation?: { ownerId: UserId; typed: boolean },
+    poolStart?: BrowserTabOpenBudget,
   ): Promise<() => Promise<StartBrowserSessionResult>> {
     return this.#serializeKey(
       input.profileId ? `profile-admission:${input.profileId}` : `start:${input.ownerId}`,
-      () => this.#admitStart(input, onInitialPage, personNavigation),
+      () => this.#admitStart(input, onInitialPage, personNavigation, poolStart),
     );
   }
 
@@ -5864,6 +5937,7 @@ export class BrowserService {
     input: StartBrowserSessionInput,
     onInitialPage?: (tabId: BrowserSurfaceId) => void,
     personNavigation?: { ownerId: UserId; typed: boolean },
+    poolStart?: BrowserTabOpenBudget,
   ): Promise<() => Promise<StartBrowserSessionResult>> {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     const initialUrl = input.initialUrl ? safeNavigationUrl(input.initialUrl) : undefined;
@@ -5874,6 +5948,11 @@ export class BrowserService {
         ? null
         : await this.#repository.findActiveBrowserSessionForPerson(input.ownerId);
     if (existing) {
+      const pool = poolStart && this.#poolTabTarget(existing.runnerId);
+      if (pool && poolStart) {
+        const reservation = await this.#reservePool(pool.gate, poolStart.signal, existing.id);
+        poolStart.pool = { target: pool, reservation };
+      }
       const broker = this.#brokers.get(existing.id);
       if (broker) {
         // Identity is immutable, so a personal session that does not already
@@ -5916,6 +5995,10 @@ export class BrowserService {
         sessionId: existing.id,
         state: "failed",
       });
+      if (poolStart?.pool) {
+        poolStart.pool.reservation.release();
+        delete poolStart.pool;
+      }
     }
 
     const profile = input.profileId
@@ -5942,12 +6025,12 @@ export class BrowserService {
         : this.#defaultPlacement(input, placements, homes));
     // Only the computer this open will use is worth waiting for.
     if (await this.#waitForBrowser(homes, placement.runnerId, input.operationBudget?.signal))
-      return this.#admitStart(input, onInitialPage, personNavigation);
+      return this.#admitStart(input, onInitialPage, personNavigation, poolStart);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     if (origin !== "person") await this.#requireAgentAccess(placement.runnerId);
     if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
       throw unavailable("The selected browser computer is unavailable for this open.");
-    const target = this.#resolveTarget(placement);
+    let target = this.#resolveTarget(placement);
     if (!target)
       throw unavailable(
         boundRunnerId
@@ -5955,9 +6038,37 @@ export class BrowserService {
           : "The selected Browser Runtime is not connected.",
       );
     const pooled = this.#poolTabTarget(placement.runnerId);
-    const poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
-    if (pooled && (poolBudget?.pool?.target !== pooled || origin !== "person"))
-      throw unavailable("Open this pooled browser from a person tab.");
+    let poolBudget = input.operationBudget as BrowserTabOpenBudget | undefined;
+    if (pooled && poolStart) {
+      if (input.agentBindingId) {
+        await this.admitAgentBrowser(
+          { ownerId: input.ownerId, agentBindingId: input.agentBindingId },
+          "read-write",
+          [],
+          this.#repository,
+          false,
+          { profileId: profile?.id ?? null },
+        );
+      }
+      const reservation = input.agentBindingId
+        ? await this.#reserveAgentPool(
+            pooled.gate,
+            input.agentBindingId,
+            undefined,
+            poolStart.signal,
+          )
+        : await this.#reservePool(pooled.gate, poolStart.signal);
+      poolStart.pool = { target: pooled, reservation };
+      poolStart.signal.throwIfAborted();
+      const current = this.#resolveTarget(placement);
+      if (current?.loopbackPool !== pooled || current.runtimeId !== target.runtimeId)
+        throw unavailable("The browser runtime changed while waiting.");
+      target = current;
+      poolBudget = poolStart;
+      input = { ...input, operationBudget: poolStart };
+    }
+    if (pooled && poolBudget?.pool?.target !== pooled)
+      throw unavailable("The pooled browser has no start reservation.");
 
     const admit = async () => {
       const sessionId = input.sessionId ?? createBrowserSessionId();
@@ -6313,6 +6424,18 @@ export class BrowserService {
     return target.loopbackPool;
   }
 
+  #poolStartBudget(upstream?: AbortSignal): BrowserTabOpenBudget | undefined {
+    if (!this.#managedPoolTestRunner) return undefined;
+    return {
+      expiresAt: Date.now() + browserOpenWorkMs,
+      signal: AbortSignal.any([
+        this.#closing.signal,
+        AbortSignal.timeout(browserOpenWorkMs),
+        ...(upstream ? [upstream] : []),
+      ]),
+    };
+  }
+
   async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
     if (!sessionId) return gate.reserve(signal);
     const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
@@ -6324,6 +6447,33 @@ export class BrowserService {
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);
+    }
+  }
+
+  async #reserveAgentPool(
+    gate: BrowserPoolGate,
+    binding: string,
+    sessionId?: BrowserSessionId,
+    upstream?: AbortSignal,
+  ) {
+    if (this.browserBindingEnded(binding)) throw new BrowserCdpConnectionEnded();
+    const waiters = this.#poolAgentWaiters.get(binding) ?? new Set<AbortController>();
+    const waiter = new AbortController();
+    waiters.add(waiter);
+    this.#poolAgentWaiters.set(binding, waiters);
+    try {
+      return await this.#reservePool(
+        gate,
+        AbortSignal.any([
+          waiter.signal,
+          this.#closing.signal,
+          upstream ?? AbortSignal.timeout(browserOpenWorkMs),
+        ]),
+        sessionId,
+      );
+    } finally {
+      waiters.delete(waiter);
+      if (!waiters.size) this.#poolAgentWaiters.delete(binding);
     }
   }
 
@@ -6587,22 +6737,29 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded(
           "Another task holds exclusive access to this browser profile.",
         );
-      const [attached, credits] = await Promise.all([
-        this.#repository.attachBrowserSession({
-          agentBindingId: input.agentBindingId,
-          ownerId: input.ownerId,
-          sessionId: record.id,
-        }),
-        this.#repository.recordAgentBrowserUse({
-          agentBindingId: input.agentBindingId,
-          ownerId: input.ownerId,
-          page: null,
-          sessionId: record.id,
-          tabId: null,
-        }),
-      ]);
-      if (attached) this.#onSessionsChanged([record.id]);
-      this.announceUsage(credits);
+      const pool = this.#poolTabTarget(record.runnerId);
+      const reservation = pool?.gate.holdOpen();
+      try {
+        const [attached, credits] = await Promise.all([
+          this.#repository.attachBrowserSession({
+            agentBindingId: input.agentBindingId,
+            ownerId: input.ownerId,
+            sessionId: record.id,
+            ...(pool ? { pool: pool.identity() } : {}),
+          }),
+          this.#repository.recordAgentBrowserUse({
+            agentBindingId: input.agentBindingId,
+            ownerId: input.ownerId,
+            page: null,
+            sessionId: record.id,
+            tabId: null,
+          }),
+        ]);
+        if (attached) this.#onSessionsChanged([record.id]);
+        this.announceUsage(credits);
+      } finally {
+        reservation?.release();
+      }
     });
   }
 
@@ -6661,6 +6818,8 @@ export class BrowserService {
   }
 
   #forgetAgentBinding(agentBindingId: string): void {
+    for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
+      waiter.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
     for (const attachment of this.#deviceAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
