@@ -12,6 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
+import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
 import { createId } from "@opensteer/core";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -114,7 +115,7 @@ const parityFixture = new URL("./personal-hot-paths.parity.json", import.meta.ur
  * The pooled browser must leave an ordinary Home's statements alone. Each path records only the
  * statements its own async work issues (the Runner's and the Run's background work runs in
  * contexts of its own and is never counted), and every path's statement texts, sorted, must
- * equal those recorded with this same test on the overhaul head before the pool (71fde8839):
+ * equal those recorded with this same test on the overhaul head before the pool (4910b97d7):
  * a statement added, removed or changed on any of these paths fails it. To record the fixture
  * again, run with OPENSTEER_POOL_PARITY_REPORT set to a file path on the base.
  */
@@ -139,7 +140,10 @@ it.skipIf(Boolean(reportPath))(
       }
     };
     try {
-      const host = await startPrivateMachineHost(database.url, { logger: false });
+      // The Home's real startup, all of it that runs in its own async work.
+      const host = await record("home startup", () =>
+        startPrivateMachineHost(database.url, { logger: false }),
+      );
       close.unshift(() => host.close());
       const runner = await connectCallerMachine(host, {
         name: "Parity fixture",
@@ -151,6 +155,9 @@ it.skipIf(Boolean(reportPath))(
           sharedControl: 1,
           tabRestoreVersion: 1,
           surfaceState: 1,
+          // A Standard CDP ticket is issued, not refused.
+          standardCdp: 1,
+          standardCdpAttemptRecovery: 1,
         },
       });
       close.unshift(() => runner.close());
@@ -292,6 +299,30 @@ it.skipIf(Boolean(reportPath))(
         handOffAgentOperation(host.store.database, { ...lineage, reviewed }),
       );
       expect(handed?.state).toBe("handed-off");
+      // The hand-off's real caller: a connected agent's direct operation through the one door.
+      const sessions = new AgentSessionService({ store: host.store, holdMs: 0 });
+      const ran = await record("direct operation run", () =>
+        sessions.run({
+          ownerUserId: host.ownerId,
+          agentConnectionId: connection.id,
+          operationKey: "parity-run-operation",
+          tool: "browser_use",
+          input: { code: "parity" },
+          target: {
+            grant: { kind: "browser-profile", profileId: profile.id },
+            name: "Parity profile",
+            device: null,
+          },
+          targetGeneration: null,
+          effect: "write",
+          calls: "parity",
+          execute: async (context) => {
+            await context.recheck();
+            return "done";
+          },
+        }),
+      );
+      expect(ran.status).toBe("completed");
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(
