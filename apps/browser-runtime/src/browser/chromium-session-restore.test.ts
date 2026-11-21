@@ -657,7 +657,14 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
     await live.cdp.send("Page.navigate", { url: urls[i]! });
     await waitLoaded(live.cdp, "/article");
     if (i === 4) {
-      await evalValue(live.cdp, "window.scrollTo(0, 1200); window.scrollY;");
+      await evalValue(
+        live.cdp,
+        `window.scrollTo(0, 1200); sessionStorage.setItem("r1_key", "r1-preserved"); window.scrollY;`,
+      );
+      // Force Blink's throttled UpdateState IPC to flush scrollY=1200 into Chromium's
+      // NavigationEntry before the test closes the browser (while keeping p4 live).
+      await live.cdp.send("Page.setWebLifecycleState", { state: "frozen" });
+      await live.cdp.send("Page.setWebLifecycleState", { state: "active" });
     }
   }
   await browser1.context.sessionRestore!.flush!();
@@ -712,15 +719,19 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
   expect(browser2.context.pages()).toHaveLength(1);
   expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");
 
-  // Claim parked tab 4 later -> wakes with scroll state AND page policy script intact!
+  // Claim parked tab 4 later -> wakes with scroll state, sessionStorage, AND page policy script intact!
   await ledger2.openSurface({ surfaceId: surfaceIds[4]! });
   const live4 = ledger2.binding(surfaceIds[4]!)!;
+  expect(live4.page.restoredFromSession).toBe(true);
   await waitLoaded(live4.cdp, "/article");
   await vi.waitFor(
     async () => {
       expect(await evalValue<number>(live4.cdp, "window.scrollY")).toBe(1200);
     },
     { timeout: 5_000, interval: 100 },
+  );
+  expect(await evalValue<string | null>(live4.cdp, `sessionStorage.getItem("r1_key")`)).toBe(
+    "r1-preserved",
   );
   // Verify page policy script is active on both the initial restored tab and woken parked tab (R9).
   for (const id of [surfaceIds[0]!, surfaceIds[4]!]) {
