@@ -21,6 +21,10 @@ import {
   nativeSmokeWorker,
   runNativeProfileSmokePhase,
 } from "./test-support/native-profile-smoke.js";
+import {
+  requireSmokeProtectedStorage,
+  smokeProtectedStorageUnavailablePrefix,
+} from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 const phase = process.env.PROFILE_VM_PHASE ?? "native-create";
 const state = realpathSync(
@@ -79,6 +83,7 @@ async function main() {
   let failed = false;
   try {
     await app.whenReady();
+    await requireSmokeProtectedStorage();
     await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
     launcher = new ElectronBrowserLauncher({
       downloads: smokeDesktopDownloads(),
@@ -146,14 +151,28 @@ async function driver() {
         });
       });
       failed ||= code !== 0;
+      const evidence = path.join(out, `results-${name}.json`);
+      if (code !== 0 && existsSync(evidence)) {
+        const parsed = JSON.parse(readFileSync(evidence, "utf8")) as {
+          results?: Record<string, Result>;
+        };
+        if (
+          Object.values(parsed.results ?? {}).some((entry) =>
+            entry.error?.includes(smokeProtectedStorageUnavailablePrefix),
+          )
+        )
+          break;
+      }
     }
     const summary = path.join(out, "results.json");
     if (existsSync(summary)) {
       const result = JSON.parse(readFileSync(summary, "utf8")) as { nativePhases?: unknown[] };
-      result.nativePhases = nativeProfileSmokePhases.map(
-        (name) =>
-          JSON.parse(readFileSync(path.join(out, `results-${name}.json`), "utf8")) as unknown,
-      );
+      result.nativePhases = nativeProfileSmokePhases
+        .filter((name) => existsSync(path.join(out, `results-${name}.json`)))
+        .map(
+          (name) =>
+            JSON.parse(readFileSync(path.join(out, `results-${name}.json`), "utf8")) as unknown,
+        );
       writeFileSync(summary, JSON.stringify(result, null, 2));
     }
   } catch (error) {
