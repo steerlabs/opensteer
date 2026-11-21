@@ -93,6 +93,7 @@ export class ComputeFake {
   token = "test-metadata-access-token";
   expiresIn = 100;
   nextInsert: "lost" | "late" | "failure" | "quota" | undefined;
+  nextAddressInsert: "quota" | undefined;
   keepOperationsRunning = false;
   rejectMetadata = false;
   rejectComputeToken = false;
@@ -325,6 +326,13 @@ export class ComputeFake {
     }
     const body = req.body as { name: string; labels: Labels };
     if (this.addresses.has(body.name)) return json({}, 409);
+    if (this.nextAddressInsert === "quota") {
+      this.nextAddressInsert = undefined;
+      return json(
+        { error: { code: 403, errors: [{ domain: "usageLimits", reason: "quotaExceeded" }] } },
+        403,
+      );
+    }
     return json(
       this.#start(req, regionPath, () =>
         this.addresses.set(body.name, { ...body, address: `192.0.2.${this.#nextAddress++}` }),

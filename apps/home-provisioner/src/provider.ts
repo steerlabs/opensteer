@@ -61,6 +61,11 @@ export interface VmProvider {
   ): Promise<readonly VmServer[]>;
   listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; server: VmServer }[]>;
   create(input: CreateVm, signal: AbortSignal, check?: () => Promise<void>): Promise<VmServer>;
+  /**
+   * Acquires what a new machine needs that the provider may refuse (a reserved address), before
+   * the reconciler stops the machine it replaces.
+   */
+  prepareCreate?(input: VmAddress, signal: AbortSignal, check?: () => Promise<void>): Promise<void>;
   describe(
     id: VmServerId,
     signal: AbortSignal,

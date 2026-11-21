@@ -397,6 +397,10 @@ export class Reconciler {
       if (current?.status === "deleting") return unready("provisioning");
       if (!current && !computer.bootstrapToken)
         return report("failed", "A bootstrap token is required to create this Cloud Computer.");
+      if (!current && computer.bootstrapToken && provider.prepareCreate) {
+        // Before anything happens to the machine being replaced.
+        await act((job, check) => provider.prepareCreate!({ id, generation }, job, check), true);
+      }
       if (previous.some((server) => server.status !== "off")) {
         for (const old of previous) {
           if (old.status === "deleting") return unready("provisioning");

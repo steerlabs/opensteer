@@ -16,7 +16,7 @@ import {
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
-import { ComputeFake, computeCreate, regionPath, zonePath } from "./google-compute.test-support.js";
+import { ComputeFake, regionPath, zonePath } from "./google-compute.test-support.js";
 import { fakeHetzner } from "./hetzner.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
@@ -583,6 +583,7 @@ describe("Cloud Computer reconciliation", () => {
     expect(compute.instances.size).toBe(2);
 
     const originalAddress = addresses.find(({ body }) => JSON.stringify(body).includes(home.id))!;
+    const originalInsert = instances.find(({ body }) => JSON.stringify(body).includes(home.id))!;
     const [, journal] = vi
       .mocked(h.account.check)
       .mock.calls.find(
@@ -592,17 +593,12 @@ describe("Cloud Computer reconciliation", () => {
           check.write.kind === "create",
       )!;
     if (journal.operation !== "begin-provider-write") throw new Error("Missing the create journal");
+    expect(originalInsert.query.get("requestId")).toBe(journal.write.token);
+    // A fresh adapter derives the address request id from the same generation's address.
     const replay = new ComputeFake();
-    const replayAdapter = replay.adapter();
-    await replayAdapter.create(
-      {
-        ...computeCreate,
-        id: home.id,
-        generation: home.generation,
-        requestId: journal.write.token,
-      },
-      new AbortController().signal,
-    );
+    await replay
+      .adapter()
+      .prepareCreate({ id: home.id, generation: home.generation }, new AbortController().signal);
     const replayedAddress = replay.requests.find(
       ({ method, path }) => method === "POST" && path === `${regionPath}/addresses`,
     );
@@ -866,6 +862,47 @@ describe("Cloud Computer reconciliation", () => {
       { operation: "orphan" },
       expect.any(AbortSignal),
     );
+  });
+
+  it("reserves a Google replacement's address before stopping the running Home", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    const old = [...compute.instances.values()][0]!;
+    const oldAddress = old.networkInterfaces[0]?.accessConfigs[0]?.natIP;
+    expect(h.records.get(home.hostname)?.ipv4).toBe(oldAddress);
+    const replacement = { ...h.status.desired[0]!, generation: 2, revision: 9 };
+    h.status.desired = [{ ...replacement, bootstrapToken: "boot_token" }];
+    compute.nextAddressInsert = "quota";
+    await h.pass();
+    expect(old.status).toBe("RUNNING");
+    expect(h.records.get(home.hostname)?.ipv4).toBe(oldAddress);
+    expect(
+      compute.requests.filter(({ method, path }) => method === "POST" && path.endsWith("/stop")),
+    ).toEqual([]);
+    expect(h.last()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer provider operation failed.",
+    });
+    expect(h.onError.mock.calls.map(([error]) => provisionerFailure(error))).toContainEqual(
+      expect.objectContaining({
+        service: "Google Compute Engine",
+        status: 403,
+        reasons: ["quotaExceeded"],
+      }),
+    );
+    await h.pass();
+    const writes = compute.requests
+      .filter(({ method }) => method !== "GET")
+      .map(({ method, path }) => `${method} ${path.split("/").slice(-2).join("/")}`);
+    const reserved = writes.lastIndexOf("POST us-central1/addresses");
+    const stopped = writes.findIndex((write) => write.endsWith("/stop"));
+    expect(reserved).toBeGreaterThan(-1);
+    expect(stopped).toBeGreaterThan(reserved);
+    expect(old.status).toBe("TERMINATED");
   });
 
   it("keeps the old Google address during a refused replacement and releases it after verification", async () => {

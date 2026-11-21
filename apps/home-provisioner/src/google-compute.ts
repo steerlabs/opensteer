@@ -581,6 +581,15 @@ export class GoogleCompute implements VmProvider {
     return googleVm(verifyNamedInstance(observed, id, generation), generation);
   }
 
+  /**
+   * Reserves the new generation's address before the old machine is stopped, so a refusal (quota
+   * or anything else) leaves the running Home as it is. The address name belongs to one
+   * generation and is reserved once, so its request id is derived from that name.
+   */
+  async prepareCreate(target: VmAddress, signal: AbortSignal, check?: Check) {
+    await this.#reserveAddress(target, `${target.id}/${target.generation}`, signal, check);
+  }
+
   async #reserveAddress(
     target: VmAddress,
     journalId: string | undefined,

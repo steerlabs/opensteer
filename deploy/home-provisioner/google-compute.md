@@ -77,8 +77,13 @@ cluster.
 3. Check the regional static and in-use external IPv4 quotas. Budget one of
    each per VM and allow for reservations held by suspended VMs and pending
    operations. Budget another reservation during a replacement. The old VM
-   keeps its address until the provisioner deletes it. Enable Cloud Quotas if you need to request an
-   increase. Use the quota ID and dimensions returned for the required metric.
+   keeps its address until the provisioner deletes it. The provisioner
+   reserves the replacement's address before it stops the old VM. If Compute
+   refuses the reservation, the old Home keeps running and stays reachable,
+   the Cloud Computer is reported failed, and the log names the refusal (for
+   example `"reasons":["quotaExceeded"]`). Enable Cloud Quotas if you need to
+   request an increase. Use the quota ID and dimensions returned for the
+   required metric.
 
    ```sh
    gcloud compute regions describe "$REGION" --project="$PROJECT" \
