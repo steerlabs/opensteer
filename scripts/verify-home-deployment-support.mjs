@@ -33,6 +33,8 @@ export function verifierTarget({ env, home, os, arch, builder }) {
       checkoutSpacePath: resolve(home, ".colima"),
       // The VM reaches fixtures served by this process on the Mac under this name.
       fixtureHost: "host.lima.internal",
+      // Traffic to the Account fixture's public-looking address is forwarded to the Mac.
+      fixtureRoute: "forward-to-fixture-host",
       proofPlatform: "linux/arm64",
       requireBuilderPlatform: false,
     };
@@ -53,6 +55,8 @@ export function verifierTarget({ env, home, os, arch, builder }) {
     builderDirectory,
     checkoutSpacePath: builderDirectory,
     fixtureHost: "localhost",
+    // The Account fixture listens here, so its public-looking address is simply local.
+    fixtureRoute: "local-address",
     proofPlatform,
     // A native builder without emulation cannot build the other platform: that check is blocked.
     requireBuilderPlatform: true,
@@ -117,6 +121,27 @@ export function platformSummary({
 export function checkoutTemporaryDirectory(root) {
   mkdirSync(resolve(root, ".opensteer"), { recursive: true });
   return mkdtempSync(resolve(root, ".opensteer/home-proof-"));
+}
+
+/**
+ * Root-shell commands that make `address:port` reach the Account fixture from the machine and
+ * from the pod, whose firewall refuses private addresses, and the commands that undo them.
+ */
+export function accountFixtureRoute(target, address, port) {
+  if (target.fixtureRoute === "local-address") {
+    return {
+      add: `ip address add ${address}/32 dev lo`,
+      remove: `ip address del ${address}/32 dev lo`,
+    };
+  }
+  const rule = (chain) =>
+    `-t nat ${chain} -d ${address}/32 -p tcp --dport ${port} -j DNAT --to-destination "$fixture:${port}"`;
+  const fixture = `fixture=$(getent ahostsv4 ${target.fixtureHost} | awk 'NR == 1 { print $1 }')
+[[ -n $fixture ]]`;
+  return {
+    add: `${fixture}\niptables ${rule("-I OUTPUT")}\niptables ${rule("-I PREROUTING")}`,
+    remove: `${fixture}\niptables ${rule("-D OUTPUT")}\niptables ${rule("-D PREROUTING")}`,
+  };
 }
 
 export function assertBuildSpace(location, dfOutput) {

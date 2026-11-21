@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { parseHostConfig } from "../packages/config/src/config.ts";
 import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs";
 import {
+  accountFixtureRoute,
   assertBuildSpace,
   builderPlatforms,
   checkoutTemporaryDirectory,
@@ -75,6 +76,7 @@ await test("the Colima target is the default and keeps its socket, root shell an
     builderDirectory: "/Users/proof/.colima/test-builder",
     checkoutSpacePath: "/Users/proof/.colima",
     fixtureHost: "host.lima.internal",
+    fixtureRoute: "forward-to-fixture-host",
     proofPlatform: "linux/arm64",
     requireBuilderPlatform: false,
   });
@@ -108,6 +110,7 @@ await test("the local target uses this Linux machine's Docker, sudo and native p
     builderDirectory: "/home/proof/.cache/test-builder",
     checkoutSpacePath: "/home/proof/.cache/test-builder",
     fixtureHost: "localhost",
+    fixtureRoute: "local-address",
     proofPlatform: "linux/amd64",
     requireBuilderPlatform: true,
   });
@@ -202,6 +205,49 @@ await test("the Host CDP fixture finds its anchor after the bundler renames the 
     );
   }
   assert.throws(() => injectCdpFixture("await runtime.start();"), /fixture anchor/u);
+});
+
+await test("the Account fixture's public-looking address is local on Linux and forwarded on Colima", () => {
+  const local = verifierTarget({
+    env: { OPENSTEER_HOME_VERIFIER_TARGET: "local" },
+    home: "/home/proof",
+    os: "linux",
+    arch: "x64",
+    builder: "test-builder",
+  });
+  assert.deepEqual(accountFixtureRoute(local, "11.1.2.3", 4000), {
+    add: "ip address add 11.1.2.3/32 dev lo",
+    remove: "ip address del 11.1.2.3/32 dev lo",
+  });
+  const colima = verifierTarget({
+    env: {},
+    home: "/Users/proof",
+    os: "darwin",
+    arch: "arm64",
+    builder: "test-builder",
+  });
+  const route = accountFixtureRoute(colima, "11.1.2.3", 4000);
+  for (const chain of ["OUTPUT", "PREROUTING"]) {
+    assert.match(
+      route.add,
+      new RegExp(
+        `iptables -t nat -I ${chain} -d 11\\.1\\.2\\.3/32 -p tcp --dport 4000 -j DNAT`,
+        "u",
+      ),
+    );
+    assert.match(route.remove, new RegExp(`iptables -t nat -D ${chain} -d 11\\.1\\.2\\.3/32`, "u"));
+  }
+  assert.match(route.add, /getent ahostsv4 host\.lima\.internal/u);
+});
+
+await test("the managed proof claims through the Account and never signs in with a password", () => {
+  const verifier = readFileSync(resolve(import.meta.dirname, "verify-home-deployment.mjs"), "utf8");
+  const managed = verifier.slice(verifier.indexOf("async function managedProof("));
+  const body = managed.slice(0, managed.indexOf("\nfunction prepareBuilder("));
+  assert.doesNotMatch(body, /auth\.password\.signIn|auth\.setup\.(exchange|claim)/u);
+  assert.match(body, /managedHome: \{ cloudComputerId/u);
+  assert.match(body, /accountClaim\(api, generations\[0\]/u);
+  assert.match(body, /accountClaim\(restoredApi, generations\[1\]/u);
 });
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {

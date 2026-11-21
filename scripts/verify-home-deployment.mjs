@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  verify,
+} from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   apiVersionHeaders,
   hostKeyFingerprint,
@@ -20,11 +28,15 @@ import { ControlPlaneError } from "../apps/control-plane/src/server/errors.ts";
 import {
   CloudComputerBootResponseSchema,
   CloudComputerEgressResponseSchema,
+  managedHomeClaimPath,
+  managedHomeClaimReceiptSigningBytes,
 } from "../packages/control-plane-protocol/src/cloud-computers.ts";
+import { officialOpensteerAccountProviderId } from "../packages/control-plane-protocol/src/index.ts";
 import { decodeBrowserFrameEnvelope } from "../packages/protocol/src/browser.ts";
 import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync.ts";
 
 import {
+  accountFixtureRoute,
   assertBuildSpace,
   builderPlatforms,
   checkoutTemporaryDirectory,
@@ -38,6 +50,7 @@ import {
 const root = resolve(import.meta.dirname, "..");
 const requireHost = createRequire(resolve(root, "apps/host/package.json"));
 const WebSocket = requireHost("ws");
+const { SignJWT, exportJWK } = await import(pathToFileURL(requireHost.resolve("jose")).href);
 const Fastify = createRequire(resolve(root, "apps/control-plane/package.json"))("fastify");
 const suffix = randomBytes(5).toString("hex");
 const project = `opensteer-home-proof-${suffix}`;
@@ -1013,11 +1026,52 @@ async function waitForSystemd(unit, successFile, expectedState, managed = true, 
   );
 }
 
-async function managedProof(directory, bootPackage) {
+/**
+ * The standalone installer, plus one Compose layer that makes the managed Host trust the
+ * Account fixture's certificate. A real Account has a public certificate; nothing else in the
+ * recipe changes, as the BYO proof layers compose.proof.yaml onto its installed recipe.
+ */
+function managedInstaller(directory, certificate) {
+  const source = resolve(directory, "managed-source");
+  const home = resolve(source, "deploy/home");
+  mkdirSync(home, { recursive: true });
+  copyFileSync(resolve(root, "package.json"), resolve(source, "package.json"));
+  cpSync(recipe, home, { recursive: true });
+  const layer = resolve(directory, "account/compose.proof.yaml");
+  writeFileSync(
+    layer,
+    `services:
+  host:
+    environment:
+      NODE_EXTRA_CA_CERTS: /home-proof-account-ca.pem
+    volumes:
+      - ${certificate}:/home-proof-account-ca.pem:ro
+`,
+    { mode: 0o644 },
+  );
+  const common = readFileSync(resolve(home, "common.sh"), "utf8");
+  const anchor = '-f "$home_dir/compose.yaml")';
+  assert.ok(common.includes(anchor), "The Compose recipe anchor moved");
+  writeFileSync(
+    resolve(home, "common.sh"),
+    common.replace(anchor, `${anchor}\n  args+=(-f ${quote(layer)})`),
+  );
+  const installer = resolve(directory, "account/opensteer-home-installer.sh");
+  checked(
+    result("bash", [resolve(home, "package-installer.sh"), installer]),
+    "Managed installer packaging failed",
+  );
+  return installer;
+}
+
+async function managedProof(directory) {
   const accountDirectory = resolve(directory, "account");
   mkdirSync(accountDirectory);
   const key = resolve(accountDirectory, "key.pem");
   const certificate = resolve(accountDirectory, "certificate.pem");
+  // The Account is a public HTTPS origin the Home reaches from inside its pod, whose firewall
+  // refuses private addresses; this public-looking address exists only on this machine.
+  const accountAddress = `11.${Number.parseInt(suffix.slice(0, 2), 16)}.${Number.parseInt(suffix.slice(2, 4), 16)}.${Number.parseInt(suffix.slice(4, 6), 16) ^ 1}`;
   checked(
     result("openssl", [
       "req",
@@ -1032,12 +1086,40 @@ async function managedProof(directory, bootPackage) {
       "-out",
       certificate,
       "-subj",
-      `/CN=${target.fixtureHost}`,
+      `/CN=${accountAddress}`,
       "-addext",
-      `subjectAltName=DNS:${target.fixtureHost}`,
+      `subjectAltName=IP:${accountAddress}`,
     ]),
     "Account fixture TLS generation failed",
   );
+  const bootPackage = managedInstaller(directory, certificate);
+  const accountKeys = generateKeyPairSync("ed25519");
+  const accountKeyId = `home-proof-${suffix}`;
+  const jwks = {
+    keys: [{ ...(await exportJWK(accountKeys.publicKey)), alg: "EdDSA", kid: accountKeyId }],
+  };
+  const accountSubject = `acct_${randomUUID()}`;
+  const owner = { email, displayName: "Home Proof Owner", emailVerified: true };
+  const hostCredential = `osc_${randomBytes(32).toString("base64url")}`;
+  const linkGeneration = randomBytes(32).toString("base64url");
+  // A replacement is a new generation with its own OIDC client, as the Account issues it.
+  const generations = [1, 2].map((generation) => ({
+    generation,
+    oidc: {
+      clientId: `occ_${randomUUID()}`,
+      clientSecret: `ocs_${randomBytes(32).toString("base64url")}`,
+    },
+  }));
+  const homeCredentials = (authorization) =>
+    generations.find(
+      ({ oidc }) =>
+        authorization ===
+        `Basic ${Buffer.from(`${oidc.clientId}:${oidc.clientSecret}`).toString("base64")}`,
+    );
+  const codes = new Map();
+  const accessTokens = new Set();
+  let egressPolls = 0;
+  const backupReports = [];
 
   const release = { version, images: managedImages() };
   const token = randomBytes(32).toString("base64url");
@@ -1087,6 +1169,7 @@ async function managedProof(directory, bootPackage) {
           hostname: managedHostname,
           accountOrigin,
           setupCodeDigest: replacing ? "e".repeat(64) : setupCodeDigest,
+          managedHome: { cloudComputerId, ...generations[replacing ? 1 : 0] },
           ...(replacing ? { restoreSnapshot: snapshotId } : {}),
           ipv6Enabled: false,
           release,
@@ -1126,6 +1209,17 @@ async function managedProof(directory, bootPackage) {
         if (completeRequests === 1)
           throw new ControlPlaneError("unavailable", "Lost completion acknowledgement");
       },
+      async egressForHome(id, authorization) {
+        assert.equal(id, cloudComputerId);
+        assert.ok(homeCredentials(authorization), "Egress poll without the Home's credentials");
+        egressPolls++;
+        return CloudComputerEgressResponseSchema.parse({});
+      },
+      async reportBackupForHome(id, authorization, report) {
+        assert.equal(id, cloudComputerId);
+        assert.ok(homeCredentials(authorization), "Backup report without the Home's credentials");
+        backupReports.push(report.snapshotId);
+      },
     },
     authenticator: {
       authenticate() {
@@ -1137,8 +1231,170 @@ async function managedProof(directory, bootPackage) {
     },
     stripeWebhookSecret: "fixture",
   });
+  // The Account's OIDC provider for this Home's client, as the Host's sign-in reads it.
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_request, body, done) => done(null, Object.fromEntries(new URLSearchParams(body))),
+  );
+  app.get("/api/auth/jwks", async () => jwks);
+  app.get("/.well-known/openid-configuration", async () => ({
+    issuer: accountOrigin,
+    authorization_endpoint: `${accountOrigin}/api/auth/oauth2/authorize`,
+    token_endpoint: `${accountOrigin}/api/auth/oauth2/token`,
+    userinfo_endpoint: `${accountOrigin}/api/auth/oauth2/userinfo`,
+    jwks_uri: `${accountOrigin}/api/auth/jwks`,
+    response_types_supported: ["code"],
+    subject_types_supported: ["public"],
+    id_token_signing_alg_values_supported: ["EdDSA"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic"],
+    scopes_supported: ["openid", "email", "profile"],
+  }));
+  app.get("/api/auth/oauth2/authorize", async (request, reply) => {
+    const query = request.query;
+    const client = generations.find(({ oidc }) => oidc.clientId === query.client_id);
+    assert.ok(client, "Authorization for an unknown OIDC client");
+    assert.equal(query.response_type, "code");
+    assert.equal(query.code_challenge_method, "S256");
+    assert.equal(new URL(query.redirect_uri).origin, `https://${managedHostname}`);
+    const code = randomBytes(24).toString("base64url");
+    codes.set(code, {
+      challenge: query.code_challenge,
+      clientId: query.client_id,
+      redirectUri: query.redirect_uri,
+    });
+    const callback = new URL(query.redirect_uri);
+    callback.searchParams.set("code", code);
+    if (query.state) callback.searchParams.set("state", query.state);
+    return reply.redirect(callback.href, 302);
+  });
+  app.post("/api/auth/oauth2/token", async (request, reply) => {
+    const client = homeCredentials(request.headers.authorization);
+    const body = request.body;
+    const issued = codes.get(body.code);
+    codes.delete(body.code);
+    if (
+      !client ||
+      !issued ||
+      issued.clientId !== client.oidc.clientId ||
+      issued.redirectUri !== body.redirect_uri ||
+      createHash("sha256").update(String(body.code_verifier)).digest("base64url") !==
+        issued.challenge
+    )
+      return reply.code(400).send({ error: "invalid_grant" });
+    const accessToken = randomBytes(32).toString("base64url");
+    accessTokens.add(accessToken);
+    return { access_token: accessToken, token_type: "Bearer", expires_in: 600 };
+  });
+  app.get("/api/auth/oauth2/userinfo", async (request, reply) => {
+    const bearer = request.headers.authorization?.replace(/^Bearer /u, "");
+    if (!bearer || !accessTokens.has(bearer)) return reply.code(401).send({});
+    return {
+      sub: accountSubject,
+      email: owner.email,
+      email_verified: true,
+      name: owner.displayName,
+    };
+  });
   await app.listen({ host: "0.0.0.0", port: 0 });
-  const accountOrigin = `https://${target.fixtureHost}:${app.server.address().port}`;
+  const accountPort = app.server.address().port;
+  const accountOrigin = `https://${accountAddress}:${accountPort}`;
+  const accountRoute = accountFixtureRoute(target, accountAddress, accountPort);
+  let accountRouted = false;
+
+  /** The Account claims a ready Home once per generation with its signed assertion. */
+  async function accountClaim(api, managedHome, setupCode) {
+    const discovered = expectStatus(
+      await api("/.well-known/opensteer", { negotiation: false }),
+      200,
+    ).json.authority;
+    const document = verifyHostDiscoveryEnvelope(discovered);
+    const issuedAt = Math.floor(Date.now() / 1_000);
+    const assertion = await new SignJWT({
+      tokenUse: "opensteer-managed-home-claim",
+      authority: {
+        canonicalOrigin: document.canonicalOrigin,
+        deploymentId: document.deploymentId,
+        hostInstanceId: document.hostInstanceId,
+        hostKeyFingerprint: hostKeyFingerprint(discovered.publicKey.spki),
+      },
+      claim: { cloudComputerId, generation: managedHome.generation },
+      work,
+      owner,
+      link: {
+        generation: linkGeneration,
+        hostCredentialSha256: createHash("sha256").update(hostCredential).digest("base64url"),
+      },
+    })
+      .setProtectedHeader({ alg: "EdDSA", kid: accountKeyId })
+      .setIssuer(accountOrigin)
+      .setAudience(document.canonicalOrigin)
+      .setSubject(accountSubject)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + 120)
+      .setJti(`mhc_${randomUUID()}`)
+      .sign(accountKeys.privateKey);
+    const claimed = expectStatus(
+      await api(managedHomeClaimPath, {
+        body: { schemaVersion: 1, setupCode, assertion, hostCredential },
+        negotiation: false,
+      }),
+      200,
+    ).json;
+    assert.equal(claimed.publicKey.spki, discovered.publicKey.spki);
+    assert.ok(
+      verify(
+        null,
+        managedHomeClaimReceiptSigningBytes(claimed.document),
+        createPublicKey({
+          key: Buffer.from(claimed.publicKey.spki, "base64url"),
+          format: "der",
+          type: "spki",
+        }),
+        Buffer.from(claimed.signature, "base64url"),
+      ),
+      "The Home's claim receipt signature does not verify",
+    );
+    assert.deepEqual(claimed.document.claim, {
+      cloudComputerId,
+      generation: managedHome.generation,
+    });
+    assert.equal(claimed.document.account.subject, accountSubject);
+    return claimed;
+  }
+
+  /** The owner signs in through the Account's OIDC provider, as a browser would. */
+  async function accountSignIn(api) {
+    const begun = expectStatus(
+      await rpc(api, "auth.oidc.begin", {
+        providerId: officialOpensteerAccountProviderId,
+        returnPath: "/",
+      }),
+      200,
+    );
+    const authorize = new URL(begun.data.redirectUrl);
+    assert.equal(authorize.origin, accountOrigin);
+    const authorized = await app.inject({
+      method: "GET",
+      url: `${authorize.pathname}${authorize.search}`,
+    });
+    assert.equal(authorized.statusCode, 302, authorized.body);
+    const callback = new URL(authorized.headers.location);
+    const completed = await api(`${callback.pathname}${callback.search}`, {
+      cookie: begun.cookie,
+      negotiation: false,
+    });
+    assert.ok(
+      completed.status >= 300 && completed.status < 400,
+      `OIDC callback ${completed.status}`,
+    );
+    assert.ok(completed.cookie, "The OIDC callback set no session");
+    const session = expectStatus(await api("/v1/auth/session", { cookie: completed.cookie }), 200)
+      .json.session;
+    return { cookie: completed.cookie, data: { session } };
+  }
+
   const spec = {
     cloudComputerId,
     accountOrigin,
@@ -1149,6 +1405,8 @@ async function managedProof(directory, bootPackage) {
   const specPath = `${vmDirectory}/boot.json`;
   const tokenPath = `${vmDirectory}/bootstrap-token`;
   try {
+    vm(accountRoute.add);
+    accountRouted = true;
     vm(`ip address add ${feedAddress}/32 dev lo`);
     feedAddressAdded = true;
     vm(
@@ -1192,17 +1450,12 @@ async function managedProof(directory, bootPackage) {
     });
     const config = expectStatus(await rpc(api, "auth.config"), 200).data;
     assert.equal(config.setupState, "required");
-    const admission = expectStatus(
-      await rpc(api, "auth.setup.exchange", { token: setupToken }),
-      200,
-    );
-    assert.ok(admission.cookie);
-    const claim = expectStatus(
-      await rpc(api, "auth.setup.claim", { kind: "password", email, password }, admission.cookie),
-      200,
-    );
+    // The Account claims the Home with the setup code it sealed and its signed assertion.
+    const claim = await accountClaim(api, generations[0], setupToken);
     assert.ok(claim);
-    const owner = expectStatus(await rpc(api, "auth.password.signIn", { email, password }), 200);
+    assert.deepEqual(await accountClaim(api, generations[0], setupToken), claim);
+    assert.equal(expectStatus(await rpc(api, "auth.config"), 200).data.setupState, "complete");
+    const owner = await accountSignIn(api);
     await browserJourney(api, owner.cookie, ca, { managed: true, expectedFailure: true });
     const spent = await app.inject({
       method: "POST",
@@ -1286,6 +1539,8 @@ async function managedProof(directory, bootPackage) {
     );
     snapshotId = backedUp.match(/snapshot ([0-9a-f]+) saved/u)?.[1];
     assert.ok(snapshotId);
+    assert.ok(backupReports.includes(snapshotId), "The managed backup was not reported");
+    assert.ok(egressPolls > 0, "Maintenance never asked the Account for browser egress");
     vm(`systemctl stop ${unit}.service`, { managed: true });
     const replacementTokenPath = `${vmDirectory}/replacement-token`;
     vm(
@@ -1329,10 +1584,10 @@ async function managedProof(directory, bootPackage) {
       identity.deploymentId,
     );
     assert.equal(hostKeyFingerprint(restoredAuthority.publicKey.spki), identity.hostKeyFingerprint);
-    const restoredOwner = expectStatus(
-      await rpc(restoredApi, "auth.password.signIn", { email, password }),
-      200,
-    );
+    // The Account claims the new generation for the same linked owner; the setup code it sends
+    // is the replacement's, and the restored Account link is what the Home matches.
+    await accountClaim(restoredApi, generations[1], randomBytes(32).toString("base64url"));
+    const restoredOwner = await accountSignIn(restoredApi);
     assert.equal(restoredOwner.data.session.user.id, owner.data.session.user.id);
     startLoopbackServer("replacement");
     await browserJourney(restoredApi, restoredOwner.cookie, restoredCa, {
@@ -1351,7 +1606,11 @@ async function managedProof(directory, bootPackage) {
           if ${feedAddressAdded}; then ip address del ${feedAddress}/32 dev lo; fi`);
       }
     } finally {
-      await bounded(app.close(), "managed Account shutdown");
+      try {
+        if (accountRouted) vm(accountRoute.remove);
+      } finally {
+        await bounded(app.close(), "managed Account shutdown");
+      }
     }
   }
 }
@@ -2249,7 +2508,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     "managed installer retries completion, restores onto a fresh destination, and refuses mutable images",
     () => {
       managedPrepared = true;
-      return managedProof(checkoutTemp, bootPackage);
+      return managedProof(checkoutTemp);
     },
     Boolean(setupToken && bucketReady),
   );
