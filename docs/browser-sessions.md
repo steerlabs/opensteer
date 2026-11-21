@@ -46,33 +46,46 @@ native Chromium profile is discarded via Chromium's own tab lifecycle (`chrome.t
 after freezing to flush Blink page state and detaching CDP) through a minimal bundled MV3 helper
 extension (`tabs` and `debugger` permissions only, hidden from tab lists, session CDP and connected
 agents); if the helper is unavailable or fails, the tab still sleeps by closing its page and wakes
-by address (unknown-outcome discards stay tracked by tab id only so later wake or release still
-cleans them up).
+by address. A discard whose outcome is unknown stays tracked by the tab's Chromium id, followed
+through every tab Chromium replaced it with; if the helper's worker restarted since, so its record
+of replacements may be gone, the tab is "not known" and stays tracked, never taken as gone.
 Closing a sleeping tab or ending its session removes it from Chromium with confirmation, retrying
-failed releases in the background until confirmed gone. On Linux without an explicit
+an unconfirmed removal in the background a bounded number of times and then reporting it as not
+removed; a page such a tab loads later is still never handed off. On Linux without an explicit
 `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab sleeper reacts to container working set
 (`memory.current - inactive_file` against `memory.max`, or bare-Linux `MemTotal - MemAvailable`
-against `MemTotal`) — sleeping eligible tabs above 70% and stopping below 60% — while keeping
-renderer `Pss` for reporting only and falling back to its page estimate when memory state cannot be
-read.
+against `MemTotal`) — sleeping eligible tabs above 70% and stopping below 60%, evaluated on its
+timer and again before each new page is created, so a burst of opens sheds other tabs first — while
+keeping renderer `Pss` for reporting only and falling back to its page estimate when memory state
+cannot be read.
 Native Chromium profiles keep Chromium's own `Default/Sessions/` files across orderly runtime
 restarts or crashes, plus an atomic full-strip `opensteer-tabs.json` sidecar holding strip indices,
 Home tab ids, and addresses of every open tab (with placeholders for unsaved and agent tabs), never
-typed text or page content; if a map update fails persistently, the stale map is deleted so a later
-cold start opens by address rather than matching a stale strip. As in a desktop browser, typed text
+typed text or page content. A map that fails to be written three times in a row since its last
+successful write is deleted, and both the Home's flush and a browser close bring the map current or
+delete it before Chromium writes its own session, so a later cold start opens by address rather than
+matching a stale strip. Each native launch logs what the map held, what Chromium restored and what
+matched, naming the reason when nothing matched. As in a desktop browser, typed text
 in standard form fields of durable tabs in the person's profile stays on disk in Chromium's
 `Default/Sessions/` files while those tabs exist; passwords typed into a form are not kept there.
-On cold start, the restoring lineage reconciles restored tabs against its own Home saved tab list —
+Every restore session, on a cold or a running browser, reconciles restored tabs against its own Home
+saved tab list —
 matching only exact unshifted full-strip slots or unique addresses by globally unique Home tab id,
 discarding any kept parked saved tab Chromium has loaded off the path to ready (while leaving
 never-loaded `unloaded` tabs untouched so their `sessionStorage` survives, and automatically
 discarding any parked tab Chromium loads later before a session claims it so no unowned background
 page stays running), closing unowned, deleted, agent and other-lineage tabs with evidence (failing
-closed if launch inventory or removal fails and never handing off a surviving restored tab or its
-popups), and opening unmatched Home tabs by address. Any second saved lineage in the same profile
-therefore has its restored tabs closed when the restoring lineage reconciles and opens its own tabs
-by address when activated later. If reconciliation exceeds its runtime deadline, remaining restored
-tabs stay hidden and are removed in the background while the session goes on opening tabs by
+closed if launch inventory or removal fails), and opening unmatched Home tabs by address. A page
+that arrives while restored tabs are tracked is handed off only on positive evidence that it is no
+restored tab and no tab a wake waits for; otherwise it stays hidden, is looked at again for about
+300 ms and is then closed, and a hidden restored page's popups are closed too. A session's first page
+is its own claim or a new page by address, never whichever page the browser listed first. Each
+restore session closes every restored tab outside its own lineage's list that no session has
+claimed, so the latest reconcile decides which kept tabs of another lineage survive; no tab ever
+crosses to another surface, and a tab whose restored page was closed opens by address. If
+reconciliation exceeds its runtime deadline, or a claim waits too long behind a park of the same
+tab, the remaining restored tabs (or that tab) are given up: they stay hidden and are removed in the
+background, one tab at a time with any discard of it, while the session goes on opening tabs by
 address.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
