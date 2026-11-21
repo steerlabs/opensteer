@@ -1,0 +1,76 @@
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  browserReturnNotes,
+  browserSleepFromHome,
+  browserWakeSteps,
+  type BrowserSleep,
+  type BrowserTabNote,
+  type BrowserTabReturn,
+} from "../host/browser-sleep.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
+import { useHostSelector } from "./use-host-snapshot.js";
+import { useTab } from "./use-tabs.js";
+
+export interface BrowserSleepState {
+  readonly browser: BrowserSleep;
+  readonly tab: BrowserTabReturn;
+  /**
+   * How long this device has watched the current wait, in steps of `browserWakeSteps`: the view
+   * renders again only when the line could change, never on a running clock.
+   */
+  readonly elapsedMs: number;
+  /** The note this tab shows now, until the person has seen it. */
+  readonly note: BrowserTabNote | null;
+  /** The person has seen the note: it leaves and does not come back. */
+  readonly seen: () => void;
+}
+
+const selectPools = (snapshot: HostSnapshot) => snapshot.browserPools;
+
+/**
+ * One tab's browser sleep, for a view of that tab. For every Home without a pooled browser this
+ * is `not-pooled` with no note, and nothing in the view changes.
+ */
+export function useBrowserSleep(hostClient: HostClient, tabId: string | null): BrowserSleepState {
+  const listed = useTab(hostClient, tabId);
+  const computerId = listed?.kind === "page" ? listed.computer.computerId : null;
+  const pools = useHostSelector(hostClient, selectPools);
+  const view = useMemo(
+    () => browserSleepFromHome(pools, computerId, tabId),
+    [computerId, pools, tabId],
+  );
+  const elapsedMs = useWaitElapsed(view.browser);
+  const notes = browserReturnNotes(hostClient);
+  useSyncExternalStore(notes.subscribe, notes.version, notes.version);
+  const note = computerId && tabId ? notes.note(computerId, tabId, view.tab) : null;
+  const tab = view.tab;
+  const seen = useCallback(() => {
+    if (computerId && tabId) notes.seen(computerId, tabId, tab);
+  }, [computerId, notes, tab, tabId]);
+  return { browser: view.browser, tab, elapsedMs, note, seen };
+}
+
+/**
+ * Time is this device's own, from when it first saw this wait: the Home's clock may differ from
+ * this one, and what the person waited is what this device saw.
+ */
+function useWaitElapsed(browser: BrowserSleep): number {
+  const wait =
+    browser.kind === "waking" || browser.kind === "starting" || browser.kind === "restarting"
+      ? `${browser.computerId}:${browser.kind}:${browser.since}`
+      : null;
+  const [watched, setWatched] = useState<{ wait: string; from: number } | null>(null);
+  const [, setStep] = useState(0);
+  const from = wait === null ? null : watched?.wait === wait ? watched.from : null;
+  useEffect(() => {
+    if (wait !== null && watched?.wait !== wait) setWatched({ wait, from: Date.now() });
+  }, [wait, watched?.wait]);
+  const elapsedMs = from === null ? 0 : Date.now() - from;
+  const next = browserWakeSteps.find((step) => step > elapsedMs);
+  useEffect(() => {
+    if (from === null || next === undefined) return;
+    const timer = setTimeout(() => setStep(next), next - (Date.now() - from));
+    return () => clearTimeout(timer);
+  }, [from, next]);
+  return elapsedMs;
+}
