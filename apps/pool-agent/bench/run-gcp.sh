@@ -4,6 +4,7 @@
 #   run-gcp.sh images   the browser runtime and egress images, then guest/build-image.sh
 #   run-gcp.sh agent    agent config (bench guests), upstream forwarder, profiles, the service
 #   run-gcp.sh bench    the root helper, then the bench as the relay user
+#   run-gcp.sh runtime  our runtime in the guests: guestMode runtime, the relay started
 # The host has no external address: package downloads use http(s)_proxy (an IAP reverse tunnel
 # to a temporary proxy, as the measurement did), and so does the egress upstream forwarder.
 set -euo pipefail
@@ -56,6 +57,7 @@ agent() {
     # The bench run installs the bench entry (the production daemon plus its crash hook, for the
     # restart-in-a-transition checks); setup-host.sh never installs it.
     install -m 0644 "$agent_dir/dist/bench-agent.mjs" /opt/opensteer-pool/agent/main.js
+    install -m 0644 "$agent_dir/dist/relay.mjs" /opt/opensteer-pool/agent/relay.mjs
     install -d -m 0700 "$creds"
     install -d -m 0711 "$bench"
     local relay_uid; relay_uid=$(id -u opensteer-pool-relay)
@@ -87,7 +89,7 @@ agent() {
     "slotUidBase": 200000,
     "egressUidBase": 300000,
     "egress": { "node": "/opt/opensteer-pool/node/bin/node", "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js" },
-    "network": { "resolvers": [], "hostUpstreams": [{ "address": "192.0.43.10", "port": 8443 }], "relayUid": $relay_uid },
+    "network": { "resolvers": [], "privateResolvers": ["169.254.169.254"], "hostUpstreams": [{ "address": "192.0.43.10", "port": 8443 }], "relayUid": $relay_uid },
     "guestMode": "bench"
   }
 }
@@ -107,10 +109,14 @@ EOF
         openssl rand -hex 16 > "$creds/upstream-password"
         chmod 0600 "$creds"/upstream-*
     fi
-    for index in 0 1 2 3 4; do
-        install -d -m 0755 "/etc/netns/osp$index"
-        printf '%s example.com\n' "${EXAMPLE_COM_ADDRESS:?the address example.com resolves to}" > "/etc/netns/osp$index/hosts"
-    done
+    # Names resolve through the host's private resolver (Google Cloud's, re-check finding 2);
+    # a slot hosts file is written only when one is asked for.
+    if [[ -n ${EXAMPLE_COM_ADDRESS:-} ]]; then
+        for index in 0 1 2 3 4; do
+            install -d -m 0755 "/etc/netns/osp$index"
+            printf '%s example.com\n' "$EXAMPLE_COM_ADDRESS" > "/etc/netns/osp$index/hosts"
+        done
+    fi
     systemctl stop pool-bench-upstream.service 2>/dev/null || true
     systemd-run --unit=pool-bench-upstream.service --collect --property=Restart=always \
         socat "OPENSSL-LISTEN:8443,bind=192.0.43.10,fork,reuseaddr,cert=$creds/upstream-ca.pem,key=$creds/upstream-key.pem,verify=0" \
@@ -141,10 +147,28 @@ run_bench() {
         --credentials "$creds" --out "$bench/out/results.jsonl" "$@"
 }
 
+runtime_mode() {
+    # Our runtime in the guests (pool-runtime-in-guest.md): every slot started from here runs it.
+    python3 - <<'PY'
+import json
+path = "/etc/opensteer-pool/agent.json"
+config = json.load(open(path))
+config["driver"]["guestMode"] = "runtime"
+open(path, "w").write(json.dumps(config, indent=2))
+PY
+    chmod 0600 /etc/opensteer-pool/agent.json
+    local profile=/var/lib/opensteer-pool/profiles/proof-0.ext4
+    if [[ ! -f $profile ]]; then truncate -s 2G "$profile"; mkfs.ext4 -q -F -m 0 "$profile"; fi
+    systemctl restart opensteer-pool-agent.service
+    systemctl enable opensteer-pool-relay.service >/dev/null
+    systemctl restart opensteer-pool-relay.service
+}
+
 case "${1:-}" in
     deps) deps ;;
     images) images ;;
     agent) agent ;;
     bench) shift; run_bench "$@" ;;
-    *) echo "usage: $0 deps|images|agent|bench" >&2; exit 2 ;;
+    runtime) runtime_mode ;;
+    *) echo "usage: $0 deps|images|agent|bench|runtime" >&2; exit 2 ;;
 esac

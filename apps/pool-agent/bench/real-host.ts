@@ -1028,9 +1028,78 @@ async function scale(existing: Slot[]) {
     agent_ready_ms: restarts,
     cold_start_among_400_ms: Math.round(reply.ms),
   });
+  // Kept for a real host reboot (re-check finding 3) when the run asks for it.
+  if (options.phases.includes("keep-400")) return;
   const deleted = now();
   for (const extraSlot of extra) await admin({ op: "delete", slotId: extraSlot.id, term });
   emit({ kind: "scale-cleanup", delete_ms: Math.round(now() - deleted) });
+}
+
+/**
+ * Re-check finding 7 on a host: a journal that keeps failing. Every call in the window ends the
+ * agent (rule S2); systemd keeps starting it, with a growing delay and no start limit, and it is
+ * back by itself once the journal takes writes again. The guest runs throughout.
+ */
+async function journalRepeated(slot: Slot) {
+  await slot.ensureStopped();
+  await slot.call("start");
+  (await firstReply(slot, now())).cdp.close();
+  const before = (await helper({ cmd: "vmm-pids", slotId: slot.id })).pids as string[];
+  const restartsBefore = (await helper({ cmd: "agent-restarts" })) as { restarts: number };
+  await helper({ cmd: "record-immutable", slotId: slot.id, on: true });
+  const outcomes: string[] = [];
+  const until = now() + 45_000;
+  while (now() < until) {
+    outcomes.push(
+      await slot.call("pause").then(
+        () => "applied",
+        (error: unknown) => (error instanceof Error ? error.message.slice(0, 60) : "failed"),
+      ),
+    );
+    await sleep(1_500);
+  }
+  const during = (await helper({ cmd: "agent-restarts" })) as { restarts: number; state: string };
+  await helper({ cmd: "record-immutable", slotId: slot.id, on: false });
+  const backAt = now();
+  await waitForAgent(slot);
+  const backMs = now() - backAt;
+  const after = (await helper({ cmd: "vmm-pids", slotId: slot.id })).pids as string[];
+  const paused = await slot.call("pause");
+  const resumed = await slot.call("resume");
+  emit({
+    kind: "journal-repeated",
+    calls: outcomes.length,
+    applied: outcomes.filter((outcome) => outcome === "applied").length,
+    restarts_in_window: during.restarts - restartsBefore.restarts,
+    unit_state_in_window: during.state,
+    back_after_ms: Math.round(backMs),
+    guest_kept: before.length > 0 && before.join() === after.join(),
+    pause_then_resume: [paused.result.applied, resumed.result.applied],
+    ok:
+      during.state !== "failed" &&
+      before.join() === after.join() &&
+      paused.result.applied &&
+      resumed.result.applied,
+  });
+}
+
+/** Re-check finding 6 on a host: what the kernel answered when kvm-pit was moved. */
+async function kvmPit() {
+  const answer = (await helper({ cmd: "kvm-pit" })) as Record<string, unknown>;
+  emit({ kind: "kvm-pit", ...answer });
+}
+
+/** Re-check finding 3 on a host: after a real reboot, with 400 slots, the agent's start. */
+async function afterReboot(slots: Slot[]) {
+  const boot = (await helper({ cmd: "boot-agent-ready" })) as Record<string, unknown>;
+  const slot = slots[0]!;
+  await slot.ensureStopped();
+  const began = now();
+  await slot.call("start");
+  const reply = await firstReply(slot, began);
+  reply.cdp.close();
+  await slot.call("stop");
+  emit({ kind: "after-reboot", ...boot, first_cold_start_ms: Math.round(reply.ms) });
 }
 
 async function main() {
@@ -1068,6 +1137,9 @@ async function main() {
   if (options.phases.includes("flush")) await flush(slots);
   if (options.phases.includes("array")) await arrayUnmounted(slots);
   if (options.phases.includes("scale")) await scale(slots);
+  if (options.phases.includes("journal-repeat")) await journalRepeated(slots[0]!);
+  if (options.phases.includes("kvm-pit")) await kvmPit();
+  if (options.phases.includes("after-reboot")) await afterReboot(slots);
   emit({ kind: "done" });
 }
 

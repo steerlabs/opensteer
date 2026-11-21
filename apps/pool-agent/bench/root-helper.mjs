@@ -174,6 +174,49 @@ async function run(command) {
       }
       return { ok: true };
     }
+    case "agent-restarts": {
+      const show = (property) =>
+        spawnSync("systemctl", ["show", "-p", property, "--value", "opensteer-pool-agent"], {
+          encoding: "utf8",
+        }).stdout.trim();
+      return { restarts: Number(show("NRestarts")), state: show("ActiveState") };
+    }
+    case "kvm-pit": {
+      const file = "/run/opensteer-pool/kvm-pit.json";
+      const events = spawnSync(
+        "journalctl",
+        ["-u", "opensteer-pool-agent", "-b", "-o", "cat", "--no-pager", "--grep", "kvm-pit"],
+        { encoding: "utf8" },
+      )
+        .stdout.trim()
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .slice(-3);
+      return { state: existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null, events };
+    }
+    case "boot-agent-ready": {
+      // From the agent's first start in this boot to its "agent.ready", in the journal's own times.
+      const lines = spawnSync(
+        "journalctl",
+        ["-u", "opensteer-pool-agent", "-b", "-o", "json", "--no-pager"],
+        { encoding: "utf8" },
+      )
+        .stdout.trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const started = lines.find((line) => /Started/u.test(line.MESSAGE ?? ""));
+      const ready = lines.find((line) => /"agent.ready"/u.test(line.MESSAGE ?? ""));
+      const failed = lines.filter((line) =>
+        /"agent.failed"|"agent.fatal"/u.test(line.MESSAGE ?? ""),
+      );
+      const at = (line) => (line ? Number(line.__REALTIME_TIMESTAMP) / 1000 : null);
+      return {
+        agent_start_to_ready_ms: started && ready ? Math.round(at(ready) - at(started)) : null,
+        ready_line: ready?.MESSAGE ?? null,
+        failures_this_boot: failed.length,
+        uptime_s: Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]),
+      };
+    }
     case "facts": {
       const route = execFileSync("ip", ["-4", "route", "get", "1.1.1.1"], { encoding: "utf8" });
       return { hostAddress: route.match(/ src ([0-9.]+)/u)?.[1] };
