@@ -110,6 +110,7 @@ export const databaseLockOrder = [
   // A session and its operations are admitted under their connection, before any Run.
   "agent_sessions",
   "agent_operations",
+  "browser_pool_agent_operations",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",

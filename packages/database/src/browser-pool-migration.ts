@@ -18,4 +18,16 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       retained jsonb
     )
   `.execute(database);
+  await sql`
+    create table browser_pool_agent_operations (
+      operation_id text primary key references agent_operations(id) on delete cascade,
+      runner_id text not null,
+      runtime_id text not null,
+      slot_id text not null,
+      term integer not null,
+      instance_id uuid not null,
+      epoch integer not null,
+      armed_at timestamptz
+    )
+  `.execute(database);
 }

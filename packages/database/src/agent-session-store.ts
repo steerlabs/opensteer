@@ -28,6 +28,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { RequestStore } from "./request-store.js";
+import {
+  requireBrowserPoolAdmission,
+  type BrowserPoolTargetIdentity,
+} from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -989,9 +993,20 @@ export async function handOffAgentOperation(
     readonly agentConnectionId: string;
     readonly reviewed: ReviewedOperation;
     readonly grantTarget?: AgentGrantTarget | undefined;
+    readonly pool?:
+      | {
+          readonly target: BrowserPoolTargetIdentity;
+          readonly signal: AbortSignal;
+        }
+      | undefined;
   },
 ): Promise<AgentOperationRow | null> {
   return commitPersonalMutation(database, async (tx) => {
+    const pool = input.pool;
+    if (pool) {
+      pool.signal.throwIfAborted();
+      await requireBrowserPoolAdmission(tx, pool.target.runnerId, pool.target);
+    }
     const connection = await lockLiveConnection(
       tx,
       input.userId,
@@ -1017,13 +1032,35 @@ export async function handOffAgentOperation(
       operation.mode !== minThreadAccessMode(operation.accessMode, connection.accessMode)
     )
       return null;
-    return (
-      (await approvedOperationUpdate(tx, input.reviewed)
-        .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
-        .returningAll()
-        .executeTakeFirst()) ?? null
-    );
+    pool?.signal.throwIfAborted();
+    const handed = await approvedOperationUpdate(tx, input.reviewed)
+      .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
+      .returningAll()
+      .executeTakeFirst();
+    if (handed && pool) {
+      pool.signal.throwIfAborted();
+      await tx
+        .insertInto("browserPoolAgentOperations")
+        .values({ operationId: handed.id, ...pool.target, armedAt: null })
+        .execute();
+      pool.signal.throwIfAborted();
+    }
+    return handed ?? null;
   });
+}
+
+/** Record the boundary after which a lost Home may have submitted a command. */
+export async function armPooledAgentOperation(
+  database: Kysely<DatabaseSchema>,
+  id: AgentOperationId,
+): Promise<void> {
+  const armed = await database
+    .updateTable("browserPoolAgentOperations")
+    .set({ armedAt: sql`coalesce(armed_at, now())` })
+    .where("operationId", "=", id)
+    .returning("operationId")
+    .executeTakeFirst();
+  if (!armed) throw new Error("Missing pooled browser hand-off.");
 }
 
 type ReviewedOperation = Pick<
@@ -1120,6 +1157,7 @@ export async function settleAgentOperation(
   id: AgentOperationId,
   outcome: Exclude<AgentOperationOutcome, "refused">,
   summary: Readonly<Record<string, unknown>> | null,
+  terminalEvidence = true,
 ): Promise<AgentOperationRow | null> {
   const state: AgentOperationState = outcome;
   return (
@@ -1130,8 +1168,7 @@ export async function settleAgentOperation(
         outcome,
         completedAt: new Date(),
         updatedAt: new Date(),
-        // The executor ran in this process and has returned: that is the end of the attempt.
-        terminalEvidenceAt: new Date(),
+        ...(terminalEvidence ? { terminalEvidenceAt: new Date() } : {}),
         ...(outcome === "unknown" ? { contactLostAt: new Date() } : {}),
         resultSummary: summary ? jsonValue(summary) : null,
       })
@@ -1161,8 +1198,11 @@ export async function settleOrphanedAgentOperations(
       outcome: "unknown",
       completedAt: new Date(),
       updatedAt: new Date(),
-      // The process that handed it off is gone, so it can do nothing more; its effect is unknown.
-      terminalEvidenceAt: new Date(),
+      // The old executor is gone, but a pooled runtime can still have work in flight.
+      terminalEvidenceAt: sql`case when exists (
+        select 1 from browser_pool_agent_operations
+        where operation_id = agent_operations.id and armed_at is not null
+      ) then null else ${new Date()}::timestamptz end`,
       contactLostAt: new Date(),
     })
     .where("id", "in", orphans)

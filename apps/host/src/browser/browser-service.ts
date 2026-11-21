@@ -173,6 +173,8 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
 import type { BrowserPoolDocument, BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
+import type { BrowserPoolTargetIdentity } from "@opensteer/database";
+import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
@@ -533,6 +535,8 @@ export interface BrowserRuntimeTarget {
   readonly loopbackPool?: {
     readonly gate: BrowserPoolGate;
     readonly fence: () => BrowserPoolRuntimeFence;
+    readonly identity: () => BrowserPoolTargetIdentity;
+    readonly retainedDocument: (sessionId: string, surfaceId: string) => string | undefined;
   };
   readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
@@ -683,6 +687,7 @@ interface ConfirmedCdpDispatch {
   readonly maxEntries: number;
   readonly signal?: AbortSignal;
   readonly eventBudget?: Pick<ConfirmedCdpDispatch, "maxBytes" | "maxDepth" | "maxEntries">;
+  readonly browserSend?: PooledBrowserSend;
 }
 
 type BrowserCdpRequest = Extract<BrowserClientMessage, { readonly type: "cdp.command" }>;
@@ -1045,6 +1050,31 @@ export class BrowserService {
       if (error instanceof OpensteerError && error.code === "runner_offline") return false;
       throw error;
     }
+  }
+
+  pooledDirectBrowser(runnerId: RunnerId) {
+    const pool = this.#poolTabTarget(runnerId);
+    if (!pool) return undefined;
+    return {
+      identity: pool.identity,
+      reserve: (signal: AbortSignal) => pool.gate.reserve(signal),
+      pageDocument: (sessionId: BrowserSessionId, tabId: TabId) =>
+        this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
+        (pool.gate.retiringOrAdopting ? pool.retainedDocument(sessionId, tabId) : undefined),
+    };
+  }
+
+  async pooledScriptPageWitness(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
+    const tab = await this.#workspaceTabs?.get(ownerId, tabId);
+    const documentId = this.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    if (
+      tab?.pageBinding?.sessionId !== sessionId ||
+      tab.pageBinding.surfaceId !== tabId ||
+      !tab.profileId ||
+      !documentId
+    )
+      return undefined;
+    return JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId, documentId]);
   }
 
   async initialize(): Promise<void> {
@@ -3412,7 +3442,7 @@ export class BrowserService {
           code: "conflict",
           message: "This tab is in use by another task.",
         });
-      return this.#bindWorkspacePage(actor.authority, row, actor.signal);
+      return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend);
     },
     closeViewers: async (_ownerId, row, closePage) => {
       const binding = row.pageBinding;
@@ -3678,11 +3708,30 @@ export class BrowserService {
       row,
     );
   }
-  async #bindWorkspacePage(agent: CdpAuthority, row: TabRecord, signal?: AbortSignal) {
+  async #bindWorkspacePage(
+    agent: CdpAuthority,
+    row: TabRecord,
+    signal?: AbortSignal,
+    pooled?: PooledBrowserSend,
+  ) {
     signal?.throwIfAborted();
     await this.admitAgentBrowser(agent);
     const current = await this.#requireWorkspaceGeneration(agent.ownerId, row);
     const old = current.pageBinding;
+    if (pooled) {
+      const session = old && (await this.#usableAgentSession(agent, old.sessionId, false));
+      if (
+        !session ||
+        session.runnerId !== pooled.target.runnerId ||
+        session.runtimeId !== pooled.target.runtimeId ||
+        !this.#brokers.get(session.id)?.live ||
+        !(await this.pooledScriptPageWitness(agent.ownerId, session.id, row.id))
+      )
+        throw new BrowserCdpConnectionEnded("This browser page is stale.");
+      const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
+      await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
+    }
     const live =
       old &&
       this.#brokers.get(old.sessionId)?.live &&
@@ -4819,11 +4868,14 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
+      readonly browserSend?: PooledBrowserSend;
+      readonly expectedPooledWitness?: string;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
   ): Promise<{
     readonly session: HostedBrowserSession;
+    readonly pooledWitness?: string;
     close(): void;
     /**
      * Admits the command and hands it to the browser, resolving once it is on
@@ -4852,11 +4904,14 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
+      readonly browserSend?: PooledBrowserSend;
+      readonly expectedPooledWitness?: string;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
   ): Promise<{
     readonly session: HostedBrowserSession;
+    readonly pooledWitness?: string;
     close(): void;
     /**
      * Admits the command and hands it to the browser, resolving once it is on
@@ -4869,7 +4924,18 @@ export class BrowserService {
     ): Promise<{ readonly result: Promise<unknown> }>;
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
-    const { record, broker } = await this.#admitAgentBackend(input, "cdp", true);
+    const { record, broker } = await this.#admitAgentBackend(input, "cdp", !input.browserSend);
+    const pool = input.browserSend && this.#poolTabTarget(record.runnerId);
+    const pageWitness = (tabId: TabId) =>
+      this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
+    const expectedPage = pool && input.scriptTabId && (await pageWitness(input.scriptTabId));
+    if (
+      input.browserSend &&
+      (!pool ||
+        !expectedPage ||
+        (input.expectedPooledWitness && input.expectedPooledWitness !== expectedPage))
+    )
+      throw new BrowserCdpConnectionEnded("This browser page is stale.");
     if (input.scriptTabId && (this.#endedBindings.has(input.agentBindingId) || this.#closed))
       throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
     if (input.scriptTabId && !broker.supportsBrowserScriptAttachments)
@@ -5090,6 +5156,15 @@ export class BrowserService {
             ? {}
             : { maxImageBytes: confirmed.maxImageBytes }),
         };
+        const browserSend = confirmed?.browserSend;
+        if (pool && !browserSend)
+          throw new BrowserCdpConnectionEnded("This pooled browser command has no admission.");
+        if (
+          browserSend &&
+          (browserSend.target.runnerId !== record.runnerId ||
+            browserSend.target.runtimeId !== record.runtimeId)
+        )
+          throw new BrowserCdpConnectionEnded("This page changed browser.");
         const answered = broker.requestCdp(
           {
             ...(replyBudget ? { replyBudget } : {}),
@@ -5102,6 +5177,18 @@ export class BrowserService {
             type: "cdp.command",
           },
           confirmed?.signal,
+          browserSend && {
+            recheck: async () => {
+              await this.#requireAgentAccess(record.runnerId);
+              if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
+              await browserSend.recheck();
+              if (!input.scriptTabId || (await pageWitness(input.scriptTabId)) !== expectedPage)
+                throw new BrowserCdpConnectionEnded("This browser page is stale.");
+              assertAttached(false);
+            },
+            submitted: browserSend.submitted,
+            acknowledged: browserSend.acknowledged,
+          },
         );
         if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
           scriptOpening = answered;
@@ -5193,6 +5280,7 @@ export class BrowserService {
       dispatch,
       request: async (command) => (await dispatch(command)).result,
       session: publicSession(record),
+      ...(expectedPage ? { pooledWitness: expectedPage } : {}),
     };
   }
 
@@ -7081,6 +7169,7 @@ export class HostedBrowserBroker {
     {
       readonly expectedType: "cdp.result";
       readonly removeAbort: () => void;
+      readonly acknowledge: (() => void) | undefined;
       readonly bounded: boolean;
       submitted: boolean;
       readonly reject: (error: unknown) => void;
@@ -7718,7 +7807,7 @@ export class HostedBrowserBroker {
   requestCdp(
     message: BrowserCdpRequest,
     signal?: AbortSignal,
-    admission?: { recheck(): Promise<void>; submitted(): void },
+    admission?: { recheck(): Promise<void>; submitted(): void; acknowledged?(): void },
   ): Promise<BrowserCdpResponse> {
     signal?.throwIfAborted();
     const parsed = BrowserClientMessageSchema.parse(message) as BrowserCdpRequest;
@@ -7776,6 +7865,7 @@ export class HostedBrowserBroker {
         timeout,
         bounded: parsed.replyBudget !== undefined,
         removeAbort: () => signal?.removeEventListener("abort", cancel),
+        acknowledge: admission?.acknowledged,
       };
       if (this.supportsScriptCancellation && parsed.replyBudget)
         signal?.addEventListener("abort", cancel, { once: true });
@@ -8491,6 +8581,7 @@ export class HostedBrowserBroker {
     pending.removeAbort();
     this.#pendingCdpRequests.delete(message.requestId);
     if (message.type === "cdp.error") {
+      if (pending.submitted) pending.acknowledge?.();
       const cause = agentProtocolError(message.error);
       if (pending.bounded) {
         const words = {
@@ -8527,6 +8618,7 @@ export class HostedBrowserBroker {
       pending.reject(new Error("Browser Runtime returned the wrong correlated CDP response."));
       throw new Error("Browser Runtime returned the wrong correlated CDP response.");
     }
+    if (pending.submitted) pending.acknowledge?.();
     pending.resolve(message);
   }
 

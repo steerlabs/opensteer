@@ -25,6 +25,7 @@ export class BrowserPoolAdmissionClosed extends Error {
 export async function requireBrowserPoolAdmission(
   tx: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
+  target?: BrowserPoolTargetIdentity,
 ): Promise<void> {
   if (
     !tx.isTransaction ||
@@ -32,7 +33,8 @@ export async function requireBrowserPoolAdmission(
   )
     throw new Error("Browser pool admission requires the deployment fence.");
   const row = await readBrowserPoolSlot(tx, runnerId);
-  if (row && row.phase !== "running") throw new BrowserPoolAdmissionClosed();
+  if (row && (row.phase !== "running" || (target && !sameRuntime(row, target))))
+    throw new BrowserPoolAdmissionClosed();
 }
 
 export function readBrowserPoolSlot(database: Kysely<DatabaseSchema>, runnerId: RunnerId) {
@@ -91,13 +93,20 @@ export async function beginBrowserPoolPark(
         select 1 from browser_profile_deletions
         where runner_id = ${runnerId} and state <> 'deleted'
         union all
-        select 1 from agent_operations
-        where handed_off_at is not null and terminal_evidence_at is null
-          and target->'grant'->>'kind' = 'browser-profile'
+        select 1 from agent_operations operation
+        left join browser_pool_agent_operations runtime on runtime.operation_id = operation.id
+        where operation.handed_off_at is not null and operation.terminal_evidence_at is null
+          and operation.target->'grant'->>'kind' = 'browser-profile'
+          and (
+            runtime.operation_id is null or
+            (runtime.runner_id, runtime.runtime_id, runtime.slot_id, runtime.term,
+             runtime.instance_id, runtime.epoch) =
+            (${runnerId}, ${runtimeId}, ${target.slotId}, ${target.term},
+             ${target.instanceId}::uuid, ${target.epoch})
+          )
       ) as blocked
     `.execute(tx);
-      // Existing hand-offs lack an exact runtime witness. Any unresolved browser-profile
-      // hand-off conservatively vetoes parking; Chrome and plugins have independent evidence.
+      // An older browser-profile hand-off without a runtime witness can still belong here.
       if (demanded() || blockers.rows[0]?.blocked !== false) return undefined;
       const next = {
         ...target,

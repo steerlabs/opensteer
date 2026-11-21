@@ -24,6 +24,7 @@ import {
 import {
   admitAgentOperation,
   admitExecution,
+  armPooledAgentOperation,
   askForAgentOperation,
   beginAgentSession,
   decideAgentOperation,
@@ -33,11 +34,13 @@ import {
   handOffAgentOperation,
   idleAgentSessions,
   readAgentOperation,
+  refuseUnsentAgentOperation,
   reopenAgentOperation,
   respondToAgentOperation,
   settleAgentOperation,
   settleOrphanedAgentOperations,
   type AgentOperationRow,
+  type BrowserPoolTargetIdentity,
   type ExecutionAuthority,
   type OpensteerStore,
 } from "@opensteer/database";
@@ -45,6 +48,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { DeadlineDrain } from "../runtime/deadline-drain.js";
 import { ReplFailureSchema, type ReplFailure } from "../computer-use/computer-repl/messages.js";
+import type { BrowserPoolReservation } from "../browser/browser-pool-gate.js";
 
 /**
  * Decides an effect in `auto`: allow it, or ask the person. It sees the grant, the mode, the
@@ -140,6 +144,21 @@ export interface DirectOperationContext {
    * once the session ended, the grant changed or the target is no longer reached.
    */
   recheck(): Promise<void>;
+  /** The pooled command queue calls this at the wire boundary. */
+  readonly browserSend?: PooledBrowserSend;
+}
+
+export interface PooledBrowserSend {
+  readonly target: BrowserPoolTargetIdentity;
+  recheck(): Promise<void>;
+  submitted(): void;
+  acknowledged(): void;
+}
+
+export interface PooledDirectBrowser {
+  reserve(signal: AbortSignal): Promise<BrowserPoolReservation>;
+  identity(): BrowserPoolTargetIdentity;
+  recheckTarget(): Promise<void>;
 }
 
 /** An executor's way to say it cannot tell whether its effect happened. */
@@ -172,6 +191,7 @@ export interface DirectOperation<Result> {
   /** Shown for a null target, such as "Your tabs". */
   readonly targetName?: string;
   readonly targetGeneration?: string | null;
+  readonly pooledBrowser?: PooledDirectBrowser;
   readonly effect: "read" | "write";
   /** The exact script or calls, shown in full to the person who reviews it. */
   readonly calls: string;
@@ -258,7 +278,7 @@ export class AgentSessionService {
     AgentSessionId,
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
-  /** Operations handed off in this process, joined by a concurrent resume of the same call. */
+  /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
   readonly #running = new Map<
     AgentOperationId,
     {
@@ -266,6 +286,7 @@ export class AgentSessionService {
       readonly result: Promise<DirectOperationResult<unknown>>;
       readonly taskId: ThreadId;
       readonly mode: ThreadAccessMode;
+      readonly pooled?: { readonly sessionId: AgentSessionId; readonly connectionId: string };
     }
   >();
   readonly #decisions = new EventEmitter();
@@ -322,6 +343,11 @@ export class AgentSessionService {
   }
   stop(): void {
     void this.#sweeper.close();
+    for (const attempt of this.#running.values())
+      if (attempt.pooled)
+        attempt.controller.abort(
+          new OpensteerError({ code: "conflict", message: "The Home stopped." }),
+        );
     for (const [id, entry] of this.#sessions) {
       entry.controller.abort(
         new OpensteerError({ code: "conflict", message: "The Home stopped." }),
@@ -458,6 +484,8 @@ export class AgentSessionService {
 
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
   async closeConnection(connectionId: string, all: boolean): Promise<void> {
+    for (const [id, attempt] of this.#running)
+      if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id);
     const live = [...this.#sessions].filter(([, entry]) => entry.connectionId === connectionId);
     if (!live.length) return;
     const ended = all
@@ -500,17 +528,18 @@ export class AgentSessionService {
       reason === "stopped"
         ? "The person stopped this work."
         : "The connected agent's access to this work ended.";
+    const error = new OpensteerError({
+      code: "forbidden",
+      reason: reason === "stopped" ? "agent-session-stopped" : "authority-changed",
+      message,
+    });
     this.#closeBinding(`session:${sessionId}`, message);
+    for (const attempt of this.#running.values())
+      if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
     if (!entry) return;
     this.#sessions.delete(sessionId);
-    entry.controller.abort(
-      new OpensteerError({
-        code: "forbidden",
-        reason: reason === "stopped" ? "agent-session-stopped" : "authority-changed",
-        message,
-      }),
-    );
+    entry.controller.abort(error);
   }
 
   async #admit(
@@ -694,6 +723,24 @@ export class AgentSessionService {
         execution,
       );
     }
+    if (operation.pooledBrowser) {
+      const pending = this.#running.get(row.id);
+      if (pending) return pending.result as Promise<DirectOperationResult<Result>>;
+      const controller = new AbortController();
+      const result = withAgentOperationReceipt(this.#store.database, row, taskId, () =>
+        this.#handOffPooled(operation, operation.pooledBrowser!, row, taskId, controller.signal),
+      );
+      this.#running.set(row.id, {
+        controller,
+        result,
+        taskId,
+        mode: row.mode,
+        pooled: { sessionId: row.sessionId, connectionId: row.connectionId },
+      });
+      const forget = () => this.#running.delete(row.id);
+      void result.then(forget, forget);
+      return result;
+    }
     const handed = await handOffAgentOperation(this.#store.database, {
       userId: operation.ownerUserId,
       agentConnectionId: operation.agentConnectionId,
@@ -715,6 +762,45 @@ export class AgentSessionService {
     const forget = () => this.#running.delete(handed.id);
     void running.then(forget, forget);
     return this.#awaitExecution(operation, handed, taskId, running);
+  }
+
+  async #handOffPooled<Result>(
+    operation: DirectOperation<Result>,
+    pool: PooledDirectBrowser,
+    row: AgentOperationRow,
+    taskId: ThreadId,
+    stop: AbortSignal,
+  ): Promise<DirectOperationResult<Result>> {
+    const bindingId = `session:${row.sessionId}` as const;
+    const deadline = Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
+    let reservation: BrowserPoolReservation | undefined;
+    let handed: AgentOperationRow | null = null;
+    try {
+      reservation = await pool.reserve(signal);
+      const identity = pool.identity();
+      await pool.recheckTarget();
+      signal.throwIfAborted();
+      handed = await handOffAgentOperation(this.#store.database, {
+        userId: operation.ownerUserId,
+        agentConnectionId: operation.agentConnectionId,
+        reviewed: row,
+        grantTarget: operation.target?.grant,
+        pool: { target: identity, signal },
+      });
+      if (!handed) throw refused("forbidden", "The connected agent's access changed or ended.");
+      return await this.#execute(operation, handed, taskId, bindingId, signal, {
+        deadline,
+        identity,
+        pool,
+      });
+    } catch (error) {
+      if (!handed && (signal.aborted || error instanceof OpensteerError))
+        await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+      throw error;
+    } finally {
+      reservation?.release();
+    }
   }
 
   async #awaitExecution<Result>(
@@ -756,6 +842,11 @@ export class AgentSessionService {
     taskId: ThreadId,
     bindingId: `session:${string}`,
     stop: AbortSignal,
+    pooled?: {
+      deadline: number;
+      identity: BrowserPoolTargetIdentity;
+      pool: PooledDirectBrowser;
+    },
   ): Promise<DirectOperationResult<Result>> {
     const entry = this.#sessions.get(row.sessionId) ?? {
       controller: new AbortController(),
@@ -764,16 +855,28 @@ export class AgentSessionService {
     };
     this.#sessions.set(row.sessionId, entry);
     entry.work++;
-    const deadline = Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
     const signal = AbortSignal.any([
       entry.controller.signal,
       stop,
-      AbortSignal.timeout(deadline - Date.now()),
+      ...(!pooled ? [AbortSignal.timeout(deadline - Date.now())] : []),
     ]);
     const base = { taskId, operationId: row.id };
+    let outstanding = 0;
+    const recheck = async () => {
+      signal.throwIfAborted();
+      const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
+        if (error instanceof OpensteerError) throw new OperationOutcomeUnknown(error.message);
+        throw error;
+      });
+      if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
+        throw new OperationOutcomeUnknown("The connected agent's access changed during this work.");
+      signal.throwIfAborted();
+    };
     try {
       let result: Result;
       try {
+        if (pooled) signal.throwIfAborted();
         result = await operation.execute({
           sessionId: row.sessionId,
           taskId,
@@ -785,25 +888,45 @@ export class AgentSessionService {
           ownerUserId: operation.ownerUserId,
           signal,
           deadline,
-          recheck: async () => {
-            signal.throwIfAborted();
-            const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
-              if (error instanceof OpensteerError) throw new OperationOutcomeUnknown(error.message);
-              throw error;
-            });
-            if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
-              throw new OperationOutcomeUnknown(
-                "The connected agent's access changed during this work.",
-              );
-            signal.throwIfAborted();
-          },
+          recheck,
+          ...(pooled
+            ? {
+                browserSend: {
+                  target: pooled.identity,
+                  recheck: async () => {
+                    await armPooledAgentOperation(this.#store.database, row.id);
+                    await recheck();
+                    await pooled.pool.recheckTarget();
+                    if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
+                      throw new OperationOutcomeUnknown(
+                        "The browser runtime changed during this work.",
+                      );
+                    signal.throwIfAborted();
+                  },
+                  submitted: () => {
+                    outstanding++;
+                  },
+                  acknowledged: () => {
+                    outstanding--;
+                  },
+                },
+              }
+            : {}),
         });
       } catch (error) {
         const ended =
           signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
         const outcome =
-          error instanceof OperationOutcomeUnknown || signal.aborted ? "unknown" : "failed";
-        const settled = await settleAgentOperation(this.#store.database, row.id, outcome, null);
+          error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
+            ? "unknown"
+            : "failed";
+        const settled = await settleAgentOperation(
+          this.#store.database,
+          row.id,
+          outcome,
+          null,
+          outstanding === 0,
+        );
         // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
         // it had already done is uncertain; the record says so and the next step repeats it.
         if (ended)
@@ -831,6 +954,10 @@ export class AgentSessionService {
         this.#onError(error);
       }
       const scriptError = operation.scriptFailure?.(result);
+      if (outstanding > 0) {
+        await settleAgentOperation(this.#store.database, row.id, "unknown", null, false);
+        return { status: "unknown", ...base, next: unknownNext };
+      }
       const settled = await settleAgentOperation(
         this.#store.database,
         row.id,

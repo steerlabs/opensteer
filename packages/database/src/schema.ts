@@ -2398,6 +2398,16 @@ export interface DatabaseSchema {
     phase: "running" | "preparing" | "parked" | "waking";
     retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
   };
+  browserPoolAgentOperations: {
+    operationId: AgentOperationId;
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    armedAt: Timestamp | null;
+  };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;

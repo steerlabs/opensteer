@@ -236,5 +236,13 @@ export async function createLoopbackBrowserPool(input: {
   )
     throw new BrowserPoolAdmissionClosed();
   gate.recovered(slot);
-  return { gate, fence: () => state().fence };
+  return {
+    gate,
+    fence: () => state().fence,
+    identity: () => ({ ...target, epoch: state().fence.epoch }),
+    retainedDocument: (sessionId: string, surfaceId: string) =>
+      state().result?.retained.find(
+        (document) => document.sessionId === sessionId && document.surfaceId === surfaceId,
+      )?.documentId,
+  };
 }
