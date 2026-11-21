@@ -3912,6 +3912,7 @@ function mockBootstrap(
       profiles: snapshot.browserProfiles,
       profileHomes: snapshot.browserProfileHomes,
       profileDeletions: snapshot.browserProfileDeletions,
+      ...(snapshot.browserPools ? { pools: snapshot.browserPools } : {}),
     },
     environments: snapshot.environments,
     harnesses: snapshot.harnesses.map((harness) => mockHarnessRecord(harness, sourceConfigs)),
@@ -4446,7 +4447,7 @@ export class MockHostClient implements HostClient {
     );
   }
 
-  /** As every Home today: refused, and nothing changes. */
+  /** The preview Home has no pooled browser to restart: refused, and nothing changes. */
   readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
     Promise.reject(new BrowserRestartUnavailable());
 

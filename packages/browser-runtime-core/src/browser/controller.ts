@@ -104,6 +104,7 @@ import type {
 
 export interface BrowserControllerSink extends BrowserFrameSink {
   sendServer(message: BrowserRuntimeServerMessage): Promise<void>;
+  closeForPool?(): void;
 }
 
 interface BrowserControllerOptions {
@@ -797,8 +798,20 @@ export class BrowserController {
     this.releaseDisconnect();
   }
 
-  private closeReason: "retired" | undefined;
-  close(reason?: "retired"): Promise<void> {
+  async drainForPool(): Promise<void> {
+    await Promise.all([this.agentCommands.tail, this.viewerCommands.tail]);
+    await Promise.all([...this.lanes.values()].map((lane) => lane.idle()));
+    await this.messageTail;
+  }
+
+  async detachForPool(): Promise<void> {
+    this.browserDisconnected();
+    await this.close("pooled");
+    this.sink.closeForPool?.();
+  }
+
+  private closeReason: "retired" | "pooled" | undefined;
+  close(reason?: "retired" | "pooled"): Promise<void> {
     if (!this.closePromise) this.closeReason = reason;
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const [surfaceId, offer] of this.saveOffers) this.endPersonSave(surfaceId, offer, "ended");
@@ -852,7 +865,8 @@ export class BrowserController {
       this.disconnectPromise,
       delay(closeGraceMs),
     ]);
-    await this.send({ state: "closing", type: "browser.status" }).catch(() => undefined);
+    if (this.closeReason !== "pooled")
+      await this.send({ state: "closing", type: "browser.status" }).catch(() => undefined);
     if (!this.disconnected) {
       await Promise.race([
         this.screencast.close().catch(() => undefined),
@@ -861,6 +875,7 @@ export class BrowserController {
       ]);
     }
     this.terminated = true;
+    if (this.closeReason === "pooled") return;
     await this.send({
       state: "closed",
       type: "browser.status",

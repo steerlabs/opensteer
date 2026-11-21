@@ -1,4 +1,9 @@
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
+import {
+  BrowserPoolAdmissionClosed,
+  requireBrowserPoolAdmission,
+  type BrowserPoolTargetIdentity,
+} from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { itemView } from "./personal-sync-store.js";
@@ -407,10 +412,12 @@ export async function createBrowserSession(
     readonly origin: "agent" | "trigger" | "person";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
+    readonly pooled?: true;
   },
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.pooled) await requireBrowserPoolAdmission(transaction, input.runnerId);
     await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) {
       await lockBrowserProfile(transaction, profileId);
@@ -958,10 +965,19 @@ export async function attachBrowserSession(
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
+    readonly pool?: BrowserPoolTargetIdentity;
   },
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
+    if (input.pool) await requireBrowserPoolAdmission(transaction, input.pool.runnerId, input.pool);
     const session = await getBrowserSessionForOwner(transaction, input.sessionId, input.ownerId);
+    if (
+      input.pool &&
+      (session?.state !== "ready" ||
+        session.runnerId !== input.pool.runnerId ||
+        session.runtimeId !== input.pool.runtimeId)
+    )
+      throw new BrowserPoolAdmissionClosed();
     if (!session) return false;
     if (session?.profileId) {
       await lockBrowserProfile(transaction, session.profileId);
@@ -1703,6 +1719,7 @@ export async function listActiveBrowserSessionsForAgent(
 export async function failActiveBrowserSessions(
   database: Kysely<DatabaseSchema>,
   placementKey?: string,
+  pooledRunner?: RunnerId,
 ): Promise<{
   readonly failed: number;
 }> {
@@ -1718,6 +1735,26 @@ export async function failActiveBrowserSessions(
         .select("id")
         .where("state", "in", ["starting", "ready", "closing"])
         .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
+        .$if(pooledRunner !== undefined, (query) =>
+          query.where(sql<boolean>`
+          not exists (
+            -- A session a parked or parking browser retained is recovered by the pool.
+            select 1 from browser_pool_slots slot
+            where slot.runner_id = ${pooledRunner!}
+              and slot.runner_id = browser_sessions.runner_id
+              and slot.runtime_id = browser_sessions.runtime_id
+              and slot.phase <> 'running'
+              and browser_sessions.origin in ('person', 'agent')
+              and browser_sessions.state = 'ready'
+              and (
+                slot.retained is null or exists (
+                  select 1 from jsonb_array_elements(slot.retained->'documents') document
+                  where document->>'sessionId' = browser_sessions.id
+                )
+              )
+          )
+        `),
+        )
         .orderBy("id", "asc")
         .forNoKeyUpdate()
         .execute(databaseOperationOptions())
@@ -1873,18 +1910,28 @@ export async function bindBrowserTabOpen(
     readonly binding: BrowserTabOpenBinding;
     readonly identityKey: string | null;
     readonly runnerId: RunnerId;
+    readonly pooled?: true;
   },
 ): Promise<void> {
-  await database
-    .insertInto("browserTabOpens")
-    .values({
-      ownerId: input.binding.callerUserId,
-      idempotencyKey: input.binding.idempotencyKey,
-      binding: input.binding,
-      identityKey: input.identityKey,
-      runnerId: input.runnerId,
-    })
-    .execute(databaseOperationOptions());
+  const insert = (target: Kysely<DatabaseSchema>) =>
+    target
+      .insertInto("browserTabOpens")
+      .values({
+        ownerId: input.binding.callerUserId,
+        idempotencyKey: input.binding.idempotencyKey,
+        binding: input.binding,
+        identityKey: input.identityKey,
+        runnerId: input.runnerId,
+      })
+      .execute(databaseOperationOptions());
+  if (input.pooled)
+    return commitPersonalMutation(database, async (tx) => {
+      await requireBrowserPoolAdmission(tx, input.runnerId);
+      // Pending pooled opens can still have an uncertain outcome. Keep that
+      // evidence for park recovery instead of pruning it in the admission write.
+      await insert(tx);
+    });
+  await insert(database);
   // Keep the guaranteed replay window and one successful placement preference per identity.
   await sql`
     with remembered as (

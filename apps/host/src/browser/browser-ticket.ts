@@ -1,7 +1,8 @@
 import type { PersonFillVersion } from "@opensteer/protocol";
 import {
   BrowserAttachTicketClaimsSchema,
-  type BrowserAttachTicketClaims,
+  PooledBrowserAttachTicketClaimsSchema,
+  type RuntimeBrowserAttachTicketClaims,
   type BrowserAttachTicketIdentity,
   type BrowserSessionId,
 } from "@opensteer/protocol/browser";
@@ -11,10 +12,10 @@ const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
-  readonly standardCdp?: BrowserAttachTicketClaims["standardCdp"];
-  readonly standardCdpAttempt?: BrowserAttachTicketClaims["standardCdpAttempt"];
-  readonly standardCdpLineage?: BrowserAttachTicketClaims["standardCdpLineage"];
-  readonly standardCdpLease?: BrowserAttachTicketClaims["standardCdpLease"];
+  readonly standardCdp?: RuntimeBrowserAttachTicketClaims["standardCdp"];
+  readonly standardCdpAttempt?: RuntimeBrowserAttachTicketClaims["standardCdpAttempt"];
+  readonly standardCdpLineage?: RuntimeBrowserAttachTicketClaims["standardCdpLineage"];
+  readonly standardCdpLease?: RuntimeBrowserAttachTicketClaims["standardCdpLease"];
   readonly creationOrigin: "agent" | "person";
   /** Whom the attachment acts for; only for a runtime that reads it. */
   readonly actor?: "agent" | "person" | undefined;
@@ -23,8 +24,9 @@ interface IssueBrowserAttachTicketInput {
   readonly passkeys?: 1;
   readonly personFillVersion?: PersonFillVersion | undefined;
   readonly navigationVersion?: 1;
-  readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
+  readonly initialNavigation?: RuntimeBrowserAttachTicketClaims["initialNavigation"];
   readonly reattach?: true;
+  readonly pool?: RuntimeBrowserAttachTicketClaims["pool"];
   readonly navigationAttributionVersion?: 1;
   readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
@@ -32,7 +34,7 @@ interface IssueBrowserAttachTicketInput {
   readonly surfaceState?: 1;
   readonly clipboard?: boolean;
   readonly tabRestoreVersion?: 1;
-  readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
+  readonly initialSurfaceId?: RuntimeBrowserAttachTicketClaims["initialSurfaceId"];
   /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
   readonly runtimeId: string;
@@ -81,7 +83,10 @@ export class BrowserAttachTicketSigner {
 
   issue(input: IssueBrowserAttachTicketInput): string {
     const issuedAt = this.#clock();
-    const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
+    const schema = input.pool
+      ? PooledBrowserAttachTicketClaimsSchema
+      : BrowserAttachTicketClaimsSchema;
+    const claims: RuntimeBrowserAttachTicketClaims = schema.parse({
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
       ...(input.standardCdpAttempt ? { standardCdpAttempt: input.standardCdpAttempt } : {}),
@@ -106,6 +111,7 @@ export class BrowserAttachTicketSigner {
           }
         : {}),
       ...(input.reattach ? { reattach: true } : {}),
+      ...(input.pool ? { pool: input.pool } : {}),
       ...(input.navigationAttributionVersion === 1 ? { navigationAttributionVersion: 1 } : {}),
       ...(input.popupFollowVersion === 1 ? { popupFollowVersion: 1 } : {}),
       ...(input.tabRestoreVersion
@@ -131,7 +137,7 @@ export class BrowserAttachTicketSigner {
     return this.#sign(claims, ticketType);
   }
 
-  #sign(claims: BrowserAttachTicketClaims, typ: string): string {
+  #sign(claims: RuntimeBrowserAttachTicketClaims, typ: string): string {
     const protectedHeader = Buffer.from(
       JSON.stringify({ alg: "EdDSA", kid: this.#keyId, typ }),
       "utf8",

@@ -1137,6 +1137,7 @@ export const DesktopHostTransportErrorCodeSchema = z.enum([
   "cancelled",
   "unreachable",
 ]);
+export type DesktopHostTransportErrorCode = z.infer<typeof DesktopHostTransportErrorCodeSchema>;
 /**
  * Electron hands main a fresh Request without the renderer's abort signal, so
  * each request carries an unguessable id the renderer cancels it by.
@@ -1154,6 +1155,33 @@ export function isDesktopHostUploadPath(pathname: string): boolean {
 
 export function desktopHostRouteUrl(deploymentId: DeploymentId, hostUrl: URL): string {
   return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}${deploymentId}${hostUrl.pathname}${hostUrl.search}`;
+}
+
+/** Main records a post-headers stream failure under the request's id for the renderer to recover. */
+export function desktopHostStreamErrorRouteUrl(requestId: string): string {
+  return `${desktopHostRouteOrigin}${desktopHostRoutePrefix}error/${requestId}`;
+}
+
+export function parseDesktopHostStreamErrorRoute(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "app:" ||
+    url.host !== "opensteer" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    return null;
+  const match = /^\/host\/error\/([^/]+)$/u.exec(url.pathname);
+  if (!match) return null;
+  const requestId = DesktopHostRequestIdSchema.safeParse(match[1]);
+  return requestId.success ? requestId.data : null;
 }
 
 export function parseDesktopHostRoute(

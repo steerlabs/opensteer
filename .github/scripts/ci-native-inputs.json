@@ -284,6 +284,7 @@
     "apps/host/src/browser/agent-request-results.ts",
     "apps/host/src/browser/browser-legacy-clipboard.ts",
     "apps/host/src/browser/browser-local-profiles.ts",
+    "apps/host/src/browser/browser-pool-relay.ts",
     "apps/host/src/browser/browser-presence.ts",
     "apps/host/src/browser/browser-runtime-compatibility.ts",
     "apps/host/src/browser/browser-service.ts",

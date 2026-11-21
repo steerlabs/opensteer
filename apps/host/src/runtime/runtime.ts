@@ -3443,6 +3443,8 @@ export async function createHostRuntime(
             return deviceId;
           },
           issueTicket: (input) => browser.issueStandardCdpTicket(input),
+          pooledBrowser: (runnerId) => browser.pooledDirectBrowser(runnerId),
+          pooledTab: (actor, tabId) => tabs.connectionTab(actor, tabId),
           origin: config.canonicalOrigin,
         }),
         sessionPerson: new SessionPersonTools({

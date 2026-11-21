@@ -260,6 +260,19 @@ export const BrowserAttachTicketClaimsSchema = z
   );
 export type BrowserAttachTicketClaims = z.infer<typeof BrowserAttachTicketClaimsSchema>;
 
+export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSchema.safeExtend({
+  pool: z.strictObject({
+    slot: z.string().min(1).max(200),
+    term: z.number().int().positive(),
+    instance: z.uuid(),
+    epoch: z.number().int().positive(),
+    attachment: z.number().int().positive().optional(),
+  }),
+});
+type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;
+export type RuntimeBrowserAttachTicketClaims = BrowserAttachTicketClaims &
+  Partial<Pick<PooledBrowserAttachTicketClaims, "pool">>;
+
 export const BrowserSurfaceSchema = z.strictObject({
   state: z.enum(["live", "suspended"]).optional(),
   canGoBack: z.boolean().optional(),
@@ -1489,6 +1502,40 @@ export const BrowserProfileDeletionsViewSchema = z
   )
   .optional();
 export const BrowserPlacementsViewSchema = z.array(BrowserPlacementSchema).max(129);
+
+/**
+ * A Cloud Computer's pooled browser, as its Home reports it with the placements. Only a Home
+ * with a pooled browser sends it; every field is additive and optional on the wire.
+ */
+export const BrowserPoolReportSchema = z.object({
+  runnerId: z.string().min(1).max(200),
+  phase: z.enum(["running", "preparing", "parked", "waking", "starting", "restarting", "failed"]),
+  /** When the phase began, by the Home's clock. */
+  since: z.string().max(64),
+  start: z
+    .object({
+      reason: z.enum(["expired", "host", "update", "security-update", "person"]),
+      /** Identifies that start, so each note about it is said once. */
+      at: z.string().max(200),
+    })
+    .optional(),
+  failures: z.number().int().nonnegative().optional(),
+  /** Pages that did not come back as they were, until the person has seen them. */
+  pages: z
+    .array(
+      z.object({
+        surfaceId: z.string().min(1).max(200),
+        /** The notice's id: a client sends it back once the person has seen the note. */
+        noticeId: z.string().min(1).max(200).optional(),
+        outcome: z.enum(["reloaded", "lost"]),
+        typed: z.boolean(),
+      }),
+    )
+    .max(500)
+    .optional(),
+});
+export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;
+export const BrowserPoolReportsViewSchema = z.array(BrowserPoolReportSchema).max(129);
 export const BrowserProfileHomesViewSchema = z.array(RunnerIdSchema).max(129).optional();
 export const BrowserProfilesViewSchema = z.array(BrowserProfileSchema).max(128);
 

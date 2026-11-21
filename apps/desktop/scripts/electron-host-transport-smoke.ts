@@ -79,7 +79,8 @@ async function run(): Promise<void> {
   );
   const pending = new Set<string>();
   const counts = new Map<string, number>();
-  let rpcMode: "large" | "stall" | "unreachable" | "normal" = "large";
+  let rpcMode: "large" | "stall" | "hold-normal" | "unreachable" | "normal" = "large";
+  let heldTeamResponse: import("node:http").ServerResponse | null = null;
   let sessionStatus = 200;
   const handleRequest: RequestListener = (request, response) => {
     const target = request.url ?? "/";
@@ -104,6 +105,13 @@ async function run(): Promise<void> {
     const session = url.pathname === "/v1/auth/session-exchange";
     // No headers at all, so only the renderer's cancel can end it.
     if (url.pathname === "/v1/withheld") return;
+    if (rpc && rpcMode === "hold-normal") {
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.write('{"ok":false,"error":{"code":"forbidden","message":');
+      heldTeamResponse = response;
+      return;
+    }
     const stall =
       url.pathname === "/v1/stall" ||
       url.pathname === "/v1/stalled-unauthorized" ||
@@ -188,8 +196,26 @@ async function run(): Promise<void> {
     source: { kind: "manual" },
     updatedAt: now,
   });
+  const personalConnection = DeploymentConnectionSchema.parse({
+    authority: testDiscoveryEnvelope({
+      canonicalOrigin: origin,
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      hostKey: { algorithm: "Ed25519" },
+      deploymentShape: { kind: "personal" },
+    }),
+    bootstrapMethods: ["password"],
+    createdAt: now,
+    endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
+    kind: "personal",
+    lastUsedAt: null,
+    name: "Transport smoke personal",
+    reachability: "canonical",
+    source: { kind: "manual" },
+    updatedAt: now,
+  });
   let catalog: DeploymentCatalog = DeploymentCatalogSchema.parse({
-    deployments: [connection],
+    deployments: [connection, personalConnection],
     revision: 1,
     schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
@@ -542,6 +568,7 @@ async function run(): Promise<void> {
       revision: 3,
       selectedDeploymentId: connection.authority.document.deploymentId,
     };
+    await transport.selection();
     cases.push({ case: "attachment-fence", code: "deployment-changed" });
 
     const bridgeToken = randomBytes(32).toString("base64url");
@@ -577,9 +604,10 @@ async function run(): Promise<void> {
       );
       const execute = (
         action: "rpc" | "abort-start" | "abort-finish" | "binary",
+        deploymentId = connection.authority.document.deploymentId,
       ): Promise<unknown> =>
         window.webContents.executeJavaScript(
-          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(connection.authority.document.deploymentId)}, ${JSON.stringify(action)})`,
+          `window.hostTransportSmoke(${JSON.stringify(origin)}, ${JSON.stringify(deploymentId)}, ${JSON.stringify(action)})`,
         );
       for (const [mode, code, reason, retryable] of [
         ["large", "response-too-large", "response-too-large", false],
@@ -594,12 +622,39 @@ async function run(): Promise<void> {
         assert.equal(result.error.message, new HostTransportError(code).message);
         cases.push({ case: `renderer-rpc-${mode}`, ...result });
       }
+      // Team requests are pinned to their own transport, so moving the Personal selection mid-body does not cut them.
+      rpcMode = "hold-normal";
+      heldTeamResponse = null;
+      const teamMidBody = execute("rpc", connection.authority.document.deploymentId);
+      await waitUntil(() => heldTeamResponse !== null);
+      catalog = {
+        ...catalog,
+        revision: 4,
+        selectedDeploymentId: personalConnection.authority.document.deploymentId,
+      };
+      await transport.selection();
+      assert(
+        !heldTeamResponse!.destroyed,
+        "Personal selection move cut an in-flight team request.",
+      );
+      heldTeamResponse!.end('"Normal response arrived.","retryable":false}}');
+      heldTeamResponse = null;
+      const teamUnaffected = z
+        .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
+        .parse(await teamMidBody);
+      assert.equal(teamUnaffected.error.message, "Normal response arrived.");
+      await waitUntil(
+        () => ![...pending].some((target) => target.startsWith("/v1/rpc/auth.config")),
+      );
+      cases.push({ case: "renderer-team-unaffected-by-selection-move", ...teamUnaffected });
+
+      // Personal selection moves cut in-flight requests to that personal connection with deployment-changed.
       rpcMode = "stall";
-      const moved = execute("rpc");
+      const moved = execute("rpc", personalConnection.authority.document.deploymentId);
       await waitUntil(() =>
         [...pending].some((target) => target.startsWith("/v1/rpc/auth.config")),
       );
-      catalog = { ...catalog, revision: 4, selectedDeploymentId: null };
+      catalog = { ...catalog, revision: 5, selectedDeploymentId: null };
       await transport.selection();
       const movedResult = z
         .object({
@@ -612,9 +667,10 @@ async function run(): Promise<void> {
       cases.push({ case: "renderer-deployment-changed", ...movedResult.rejected });
       catalog = {
         ...catalog,
-        revision: 5,
+        revision: 6,
         selectedDeploymentId: connection.authority.document.deploymentId,
       };
+      await transport.selection();
       const binary = z
         .strictObject({
           code: z.literal("response-too-large"),

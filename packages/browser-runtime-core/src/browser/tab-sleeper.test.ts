@@ -27,6 +27,23 @@ describe("TabSleeper", () => {
       },
     };
   }
+  it("reports the released ordinary idle sleep byte for byte", async () => {
+    const reports: string[] = [];
+    const f = await fixture({
+      memoryBudgetBytes: 2 * 1024 ** 3,
+      onPass: (pass) => reports.push(JSON.stringify(pass)),
+    });
+    try {
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      expect(reports.at(-1)).toBe(
+        '{"livePages":1,"rendererProcesses":0,"rendererResidentBytes":null,"unassignedRendererProcesses":0,"underPressure":0,"attempted":1,"slept":1}',
+      );
+    } finally {
+      await f.close();
+    }
+  });
   it("waits for Host state and release, and a Watch pin never makes a tab a person's", async () => {
     const f = await fixture();
     try {

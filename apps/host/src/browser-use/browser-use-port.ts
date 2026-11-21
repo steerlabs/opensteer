@@ -8,6 +8,7 @@ import {
   type PageAgentBinding,
 } from "@opensteer/protocol";
 import { z } from "zod";
+import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import { browserReplLimits, browserTargetSchema } from "./browser-repl-messages.js";
@@ -26,11 +27,12 @@ interface AdmittedPage {
 
 export interface BrowserUseTabAccess {
   pages(call: BrowserUseCall): AsyncIterable<BrowserUsePage>;
-  bind(tabId: string, signal: AbortSignal): Promise<AdmittedPage>;
+  bind(tabId: string, signal: AbortSignal, browserSend?: PooledBrowserSend): Promise<AdmittedPage>;
   open(
     input: { url: string; profileId?: string },
     key: string,
     signal: AbortSignal,
+    browserSend?: PooledBrowserSend,
   ): Promise<AdmittedPage>;
 }
 
@@ -80,9 +82,14 @@ export function createBrowserUsePort({
 }: {
   authority: CdpAuthority;
   tabs: BrowserUseTabAccess;
-  browser: Pick<BrowserService, "attachCdpForAgent">;
+  browser: Pick<BrowserService, "attachCdpForAgent"> &
+    Partial<Pick<BrowserService, "pooledScriptPageWitness">>;
 }): BrowserUsePort<Target> {
-  async function bind({ binding, threadId }: AdmittedPage, call: BrowserUseCall): Promise<Target> {
+  async function bind(
+    { binding, threadId }: AdmittedPage,
+    call: BrowserUseCall,
+    expectedPooledWitness?: string,
+  ): Promise<Target> {
     call.signal.throwIfAborted();
     if (binding.backend !== "cdp")
       throw refused("conflict", "This tab cannot run browser scripts.");
@@ -113,6 +120,8 @@ export function createBrowserUsePort({
           sessionId: binding.sessionId,
           scriptTabId: binding.tabId,
           scriptThreadId: threadId,
+          ...(call.browserSend ? { browserSend: call.browserSend } : {}),
+          ...(expectedPooledWitness ? { expectedPooledWitness } : {}),
         },
         (event) => {
           if (closed) return;
@@ -160,7 +169,13 @@ export function createBrowserUsePort({
       if (closed || detached.has(channel.sessionId)) throw ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
-      target = { ...fields, relay, port, closed };
+      target = {
+        ...fields,
+        relay,
+        port,
+        closed,
+        ...(relay.pooledWitness ? { pooledWitness: relay.pooledWitness } : {}),
+      };
       call.signal.throwIfAborted();
       return target;
     } catch (error) {
@@ -193,7 +208,8 @@ export function createBrowserUsePort({
       if (!TabIdSchema.safeParse(tabId).success) throw refused("not_found", "Tab not found.");
       call.signal.throwIfAborted();
       try {
-        return await bind(await tabs.bind(tabId, call.signal), call);
+        const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
+        return await bind(await tabs.bind(tabId, call.signal, ...args), call);
       } catch (error) {
         translate(error);
       }
@@ -201,10 +217,26 @@ export function createBrowserUsePort({
     async newPage(input, call) {
       call.signal.throwIfAborted();
       try {
-        return await bind(await tabs.open(input, randomUUID(), call.signal), call);
+        const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
+        return await bind(await tabs.open(input, randomUUID(), call.signal, ...args), call);
       } catch (error) {
         translate(error);
       }
+    },
+    async rebind(previous, call) {
+      const { pooledWitness, relay } = previous;
+      const tabId = TabIdSchema.parse(previous.tabId);
+      if (
+        !call.browserSend ||
+        !pooledWitness ||
+        (await browser.pooledScriptPageWitness?.(authority.ownerId, relay.session.id, tabId)) !==
+          pooledWitness
+      )
+        throw ended();
+      const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
+      if (admitted.binding.sessionId !== relay.session.id || admitted.binding.reloaded)
+        throw ended();
+      return bind(admitted, call, pooledWitness);
     },
     async command(target, method, params, sessionId, call) {
       call.signal.throwIfAborted();

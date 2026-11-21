@@ -23,11 +23,17 @@ export interface TabsClient {
   /**
    * Opens or wakes this device's viewer. `wake` is the person's explicit Open:
    * only it arms a phone's one-shot screen wake; selection restore, renewal
-   * and reconnect never do.
+   * and reconnect never do. `recoveryNoticeSeen` names a recovery notice the person was
+   * shown; it is sent only when this Home gave that id for this tab, since a Home that never
+   * gives one refuses the field.
    */
   activateTab(
     tabId: TabId,
-    options?: { readonly wake?: boolean; readonly signal?: AbortSignal },
+    options?: {
+      readonly wake?: boolean;
+      readonly signal?: AbortSignal;
+      readonly recoveryNoticeSeen?: string;
+    },
   ): Promise<TabViewer>;
   organizeTabs(input: TabOrganizeInput): Promise<TabOrganizeResult>;
   updateTabGroup(input: TabGroupUpdateInput): Promise<TabGroup>;

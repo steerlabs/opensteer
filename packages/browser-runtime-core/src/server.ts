@@ -183,7 +183,7 @@ export class BrowserRuntimeServer {
     if (new Set(keys.map((key) => key.keyId)).size !== keys.length) {
       throw new Error("The browser attach key IDs are not unique.");
     }
-    bridge.updateAttachKeys(keys);
+    if (!this.runtime.pooled) bridge.updateAttachKeys(keys);
   }
 
   private async profileMaintenance(
@@ -318,6 +318,7 @@ export class BrowserRuntimeServer {
     let attachment: BrowserAttachment | null = null;
     let disconnected = false;
     let restarting = false;
+    let channelLost = false;
     const cancellation = new AbortController();
     let queuedBytes = 0;
     const queued: Buffer[] = [];
@@ -355,9 +356,11 @@ export class BrowserRuntimeServer {
     });
 
     const closed = Promise.withResolvers<void>();
-    websocket.once("close", () => {
+    websocket.once("close", (code: number) => {
       disconnected = true;
       restarting = bridge && this.relayRestartPlanned;
+      // A pooled guest outlives its Runner: a channel the Home did not close keeps its pages.
+      channelLost = this.runtime.pooled && code !== 1000;
       cancellation.abort();
       closed.resolve();
     });
@@ -393,7 +396,7 @@ export class BrowserRuntimeServer {
       try {
         await ready;
       } finally {
-        await attachment?.close(bridge, restarting);
+        await attachment?.close(bridge, restarting, channelLost);
       }
     });
     if (bridge) this.trackRelayAttachment(websocket, ended);
@@ -597,6 +600,10 @@ class WebSocketBrowserSink implements BrowserControllerSink {
 
   sendFrame(frame: BrowserFrame): Promise<void> {
     return this.send(encodeBrowserFrame(frame), true);
+  }
+
+  closeForPool(): void {
+    this.websocket.close(1012, "browser-pool-retire");
   }
 
   private send(data: Buffer | string, binary: boolean): Promise<void> {

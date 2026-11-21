@@ -11,6 +11,11 @@
  */
 export const databaseLockOrder = [
   "client_sync_state",
+  "browser_pool_slots",
+  "browser_pool_controller_calls",
+  "browser_pool_document_losses",
+  "browser_pool_relays",
+  "browser_tab_opens",
   // The 0029 fence occupies the same rank before the offline rename.
   "deployment_event_state",
   // BEGIN team authority and content lock order.
