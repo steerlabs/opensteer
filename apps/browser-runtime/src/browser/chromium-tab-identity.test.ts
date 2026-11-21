@@ -327,7 +327,7 @@ it("keeps a tab's group out of its page, its picture and its popups (R2 e)", asy
   );
 }, 60_000);
 
-it("probe: a grouped tab keeps the same history and form state through discard and clean restart as an ungrouped one", async () => {
+it("keeps a named tab's history, history state and form field through discard and clean restart exactly as an unnamed tab's (R2 c)", async () => {
   const url = await fixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-state-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
