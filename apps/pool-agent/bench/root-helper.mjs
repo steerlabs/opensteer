@@ -10,6 +10,21 @@ const [socketPath, relayUser] = process.argv.slice(2);
 const agentCgroup = "/sys/fs/cgroup/system.slice/opensteer-pool-agent.service/guests";
 const config = "/etc/opensteer-pool/agent.json";
 
+/** The proxies' slice's cgroup: systemd nests a slice by the dashes in its name. */
+function egressSliceCgroup() {
+  const group = spawnSync(
+    "systemctl",
+    ["show", "-p", "ControlGroup", "--value", "opensteer-pool-egress.slice"],
+    {
+      encoding: "utf8",
+    },
+  ).stdout.trim();
+  return join(
+    "/sys/fs/cgroup",
+    group || "opensteer.slice/opensteer-pool.slice/opensteer-pool-egress.slice",
+  );
+}
+
 function processes(directory) {
   if (!existsSync(directory)) return 0;
   let count = readFileSync(join(directory, "cgroup.procs"), "utf8")
@@ -374,7 +389,7 @@ exec /usr/bin/systemctl "$@"
       ).stdout.trim();
       return {
         guests: events(join(agentCgroup, "memory.events")),
-        slice: events("/sys/fs/cgroup/opensteer-pool-egress.slice/memory.events"),
+        slice: events(join(egressSliceCgroup(), "memory.events")),
         failedProxies: failed ? failed.split("\n").length : 0,
         vmms: processes(agentCgroup),
       };
@@ -403,10 +418,7 @@ exec /usr/bin/systemctl "$@"
         ]),
         slice: read("opensteer-pool-egress.slice", ["MemoryMax", "CPUQuotaPerSecUSec"]),
         // The ceiling in force, as the kernel has it: quota and period in microseconds.
-        sliceCpuMax: readFileSync(
-          "/sys/fs/cgroup/opensteer-pool-egress.slice/cpu.max",
-          "utf8",
-        ).trim(),
+        sliceCpuMax: readFileSync(join(egressSliceCgroup(), "cpu.max"), "utf8").trim(),
         cores: Number(spawnSync("nproc", [], { encoding: "utf8" }).stdout.trim()),
       };
     }
