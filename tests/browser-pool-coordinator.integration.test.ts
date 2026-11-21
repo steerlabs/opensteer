@@ -668,6 +668,71 @@ it("notes a page a vetoed retire could not thaw as its own loss, and keeps its s
   }
 });
 
+/** The fake, except that the first call of `kind` is refused after its work was undone. */
+function refusing(
+  f: Awaited<ReturnType<typeof poolFixture>>,
+  kind: "resume" | "start",
+): BrowserPoolPhysicalController & { refused: number } {
+  const port = {
+    refused: 0,
+    status: (slot: string, term: number) => f.controller.status(slot, term),
+    result: (slot: string, term: number, id: string) => f.controller.result(slot, term, id),
+    apply: async (call: BrowserPoolControllerCall) => {
+      if (call.kind === kind && port.refused === 0) {
+        port.refused++;
+        // The guest is stopped now, whatever the call asked for.
+        f.controller.observe({ phase: "stopped", savedState: null });
+        return {
+          id: call.id,
+          applied: false,
+          reason: "undone",
+          status: await f.controller.status(call.slotId, call.term),
+        };
+      }
+      return f.controller.apply(call);
+    },
+  };
+  return port;
+}
+
+it("reads the state a refused resume returns: the stopped guest is replaced, the session ended", async () => {
+  const f = await poolFixture("refused-resume");
+  try {
+    const port = refusing(f, "resume");
+    const home = f.home(undefined, port);
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
+    woken.release();
+    expect(port.refused).toBe(1);
+    // Nothing assumed the guest was still paused: no stop of a stopped guest, a fresh start.
+    expect(f.controller.effects).toEqual(["start", "pause", "start"]);
+    expect(home.gate.phase).toBe("open");
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+  } finally {
+    await f.close();
+  }
+});
+
+it("reads the state a refused start returns, and starts again from the stopped guest", async () => {
+  const f = await poolFixture("refused-start");
+  try {
+    const port = refusing(f, "start");
+    const home = f.home(undefined, port);
+    await home.recover();
+    expect(port.refused).toBe(1);
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(home.gate.phase).toBe("open");
+    const status = await f.controller.status("slot-refused-start", 1);
+    expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
 it("recovers a runtime found retiring at a Home restart as not parked", async () => {
   // The retire's page probe waits here, so the runtime is still retiring when the Home restarts.
   let probing = Promise.withResolvers<void>();

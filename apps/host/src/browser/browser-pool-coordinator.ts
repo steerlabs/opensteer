@@ -843,7 +843,9 @@ export class BrowserPoolCoordinator {
     if (status.phase !== "stopped") {
       const stopped = await this.#call(slot, "stop", status, replacing);
       replacing = false;
-      if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
+      // A refusal returns the state now: a guest that is stopped anyway is stopped.
+      if (!stopped.applied && stopped.status.phase !== "stopped")
+        throw new Error(`The guest did not stop: ${stopped.reason}.`);
       status = stopped.status;
     }
     const started = await this.#call(slot, "start", status, replacing);
@@ -1002,7 +1004,9 @@ export class BrowserPoolCoordinator {
     if (status.phase !== "stopped") {
       const stopped = await this.#call(undefined, "stop", status, replacing);
       replacing = false;
-      if (!stopped.applied) throw new Error(`The guest did not stop: ${stopped.reason}.`);
+      // A refusal returns the state now: a guest that is stopped anyway is stopped.
+      if (!stopped.applied && stopped.status.phase !== "stopped")
+        throw new Error(`The guest did not stop: ${stopped.reason}.`);
       status = stopped.status;
     }
     const started = await this.#call(undefined, "start", status, replacing);
