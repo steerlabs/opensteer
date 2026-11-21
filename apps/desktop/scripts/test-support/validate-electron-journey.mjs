@@ -91,8 +91,10 @@ try {
       break;
     }
     case "cookies":
-    case "passkeys":
       assert.equal(local("electron.json").engine, "electron");
+      break;
+    case "passkeys":
+      assert.equal(local("electron.json").policy?.engine, "electron");
       break;
     case "usb":
       assert(!local("usb.json").error);
