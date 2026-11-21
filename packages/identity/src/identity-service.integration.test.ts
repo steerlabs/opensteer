@@ -15,10 +15,6 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
-import { TeamIdentityAdmission } from "./team-admission.js";
-import { TeamAccessStore } from "@opensteer/database/team-access";
-import { TeamInvitesStore } from "@opensteer/database/team-invites";
-import { HostKeyFingerprintSchema } from "@opensteer/core";
 import { issueLocalAdministratorPasswordRecovery } from "./operator-password-reset.js";
 import type { VerifiedAccountAdoptionGrant } from "./types.js";
 
@@ -293,7 +289,7 @@ integration("IdentityService", () => {
 
   it("requires a browser-bound admission when signup is invite-only", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "team", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -314,7 +310,7 @@ integration("IdentityService", () => {
     expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
   });
 
-  it.each(["personal", "team"] as const)(
+  it.each(["personal"] as const)(
     "completes %s OIDC discovery, PKCE and sign-in with the appropriate provider-token custody",
     async (kind) => {
       const accessToken = "fixture-access-token-that-must-not-be-stored-in-plaintext";
@@ -423,72 +419,12 @@ integration("IdentityService", () => {
         expect(configuredIssuer.status).toBe(200);
         expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
 
-        const logicalProviderId = kind === "team" ? "opensteer-account" : "enterprise";
+        const logicalProviderId = "enterprise";
         const configuredProviderId = `oidc.${logicalProviderId}.${createHash("sha256")
           .update(issuerOrigin)
           .digest("base64url")
           .slice(0, 22)}`;
-        let team: TeamIdentityAdmission | undefined;
-        let ownerId: ReturnType<typeof createId<"user">> | undefined;
-        let invite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
-        let laterInvite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
-        if (kind === "team") {
-          const deployment = await ensureDeployment({
-            canonicalOrigin: publicOrigin,
-            deploymentId: createId("deployment"),
-            hostInstanceId: createId("hostInstance"),
-            deploymentShape: { kind: "team" },
-          });
-          const access = new TeamAccessStore(database);
-          await access.initialize();
-          const invites = new TeamInvitesStore(access, publicOrigin);
-          team = new TeamIdentityAdmission({
-            access,
-            invites,
-            authority: {
-              canonicalOrigin: publicOrigin,
-              deploymentId: deployment.id,
-              hostInstanceId: deployment.hostInstanceId,
-              hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
-            },
-            grantVerifier: {
-              async verify() {
-                throw new Error("No adoption grant in OIDC fixture");
-              },
-            },
-            async installAccountBundle() {
-              throw new Error("No bundle in OIDC fixture");
-            },
-          });
-          ownerId = await createUser("Team Owner");
-          await database
-            .insertInto("teamMembers")
-            .values({
-              userId: ownerId,
-              handle: "owner",
-              role: "owner",
-              state: "active",
-              joinedAt: new Date(),
-              changedAt: new Date(),
-              changedBy: null,
-            })
-            .execute();
-          await database
-            .insertInto("accountDirectoryProvider")
-            .values({
-              singletonKey: "opensteer-account",
-              providerId: configuredProviderId,
-              issuer: issuerOrigin,
-            })
-            .execute();
-          invite = await invites.create({ kind: "human", userId: ownerId }, createId("teamInvite"));
-          laterInvite = await invites.create(
-            { kind: "human", userId: ownerId },
-            createId("teamInvite"),
-          );
-        }
         const identity = identityService({
-          ...(team ? { team } : {}),
           localPasswordEnabled: false,
           oidcProviders: [
             {
@@ -560,51 +496,7 @@ integration("IdentityService", () => {
         expect(nativeLoginUrl.pathname).toBe("/");
         const nativeOAuthQuery = nativeLoginUrl.search.slice(1);
         expect(nativeOAuthQuery).toContain("sig=");
-        const proveInvite = async (url: URL) =>
-          cookieHeader(
-            (
-              await identity.exchangeTeamInvitation(
-                url.pathname.split("/").pop()!,
-                url.hash.slice(1),
-                new Headers({ origin: publicOrigin }),
-              )
-            ).headers,
-          );
-        /** The native sign-in's trip through Account, with the cookies this browser holds. */
-        const signInThroughAccount = async (admission: string) => {
-          const begun = await identity.beginOidcSignIn({
-            headers: new Headers({ origin: publicOrigin }),
-            oauthQuery: nativeOAuthQuery,
-            providerId: logicalProviderId,
-            returnPath: "/",
-          });
-          const authorization = new URL(begun.data.redirectUrl);
-          expectedCodeChallenge = authorization.searchParams.get("code_challenge");
-          return identity.handleOidcCallback(
-            new Request(
-              `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorization.searchParams.get("state") ?? "")}`,
-              {
-                headers: {
-                  accept: "text/html",
-                  cookie: [admission, cookieHeader(begun.headers)].filter(Boolean).join("; "),
-                  "sec-fetch-mode": "navigate",
-                },
-              },
-            ),
-          );
-        };
-        const sessionCount = async () =>
-          (await database.selectFrom("authSessions").select("id").execute()).length;
-        if (team) {
-          // Account knows the person, the team doesn't: no invite proven here, no way in.
-          const sessions = await sessionCount();
-          expect((await signInThroughAccount("")).status).toBe(403);
-          expect(await database.selectFrom("teamMembers").select("userId").execute()).toEqual([
-            { userId: ownerId },
-          ]);
-          expect(await sessionCount()).toBe(sessions);
-        }
-        const admissionCookie = invite ? await proveInvite(new URL(invite.url)) : "";
+        const admissionCookie = "";
         const started = await identity.beginOidcSignIn({
           headers: new Headers({ origin: publicOrigin, "user-agent": "OIDC integration test" }),
           oauthQuery: nativeOAuthQuery,
@@ -670,51 +562,8 @@ integration("IdentityService", () => {
           providerId: configuredProviderId,
           refreshToken: null,
         });
-        if (kind === "personal") {
-          expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
-          expect(account.accessToken).not.toContain(accessToken);
-        } else {
-          expect(account.accessToken).toBeNull();
-          const stored = await database
-            .selectFrom("authAccounts")
-            .select(["idToken", "password", "refreshToken"])
-            .where("providerId", "=", configuredProviderId)
-            .executeTakeFirstOrThrow();
-          expect(stored).toEqual({ idToken: null, password: null, refreshToken: null });
-          expect(
-            await database
-              .selectFrom("teamMembers")
-              .select(["role", "state"])
-              .where("userId", "=", authenticated!.user.id)
-              .executeTakeFirst(),
-          ).toEqual({ role: "member", state: "active" });
-          expect(
-            await database
-              .selectFrom("authSessions")
-              .select("memberGeneration")
-              .where("id", "=", authenticated!.id)
-              .executeTakeFirst(),
-          ).toEqual({ memberGeneration: "1" });
-
-          // Removed, they can't come back with an invite made before the removal.
-          await database
-            .updateTable("teamMembers")
-            .set({ state: "removed", changedAt: new Date(), changedBy: ownerId })
-            .where("userId", "=", authenticated!.user.id)
-            .execute();
-          const sessions = await sessionCount();
-          await expect(
-            signInThroughAccount(await proveInvite(new URL(laterInvite!.url))),
-          ).rejects.toMatchObject({ reason: "invite-invalid" });
-          expect(
-            await database
-              .selectFrom("teamMembers")
-              .select("state")
-              .where("userId", "=", authenticated!.user.id)
-              .executeTakeFirst(),
-          ).toEqual({ state: "removed" });
-          expect(await sessionCount()).toBe(sessions);
-        }
+        expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
+        expect(account.accessToken).not.toContain(accessToken);
       } finally {
         await new Promise<void>((resolve, reject) => {
           issuer.close((error) => (error ? reject(error) : resolve()));
@@ -2381,119 +2230,6 @@ integration("IdentityService", () => {
     await expect(identity.exchangeInitialOwnerEnrollment(token)).resolves.toMatchObject({
       data: { admitted: true },
     });
-  });
-
-  it("lets several browsers start on a shared invite with one use left, but admits only one", async () => {
-    const deployment = await ensureDeployment({
-      canonicalOrigin: "http://127.0.0.1:4310",
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "team" },
-    });
-    const access = new TeamAccessStore(database);
-    await access.initialize();
-    const invites = new TeamInvitesStore(access, "http://127.0.0.1:4310");
-    const ownerId = await createUser("Team Owner");
-    await database
-      .insertInto("teamMembers")
-      .values({
-        userId: ownerId,
-        handle: "owner",
-        role: "owner",
-        state: "active",
-        joinedAt: new Date(),
-        changedAt: new Date(),
-        changedBy: null,
-      })
-      .execute();
-    const owner = { kind: "human", userId: ownerId } as const;
-    const team = new TeamIdentityAdmission({
-      access,
-      invites,
-      authority: {
-        canonicalOrigin: "http://127.0.0.1:4310",
-        deploymentId: deployment.id,
-        hostInstanceId: deployment.hostInstanceId,
-        hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
-      },
-      grantVerifier: {
-        async verify() {
-          throw new Error("No adoption grant in this fixture");
-        },
-      },
-      async installAccountBundle() {
-        throw new Error("No bundle in this fixture");
-      },
-    });
-    const identity = identityService({ team, localPasswordEnabled: false });
-    await identity.initialize();
-    const exchange = (url: string) => {
-      const parsed = new URL(url);
-      return identity.exchangeTeamInvitation(
-        parsed.pathname.split("/").pop()!,
-        parsed.hash.slice(1),
-        new Headers({ origin: "http://127.0.0.1:4310" }),
-      );
-    };
-    const shared = await invites.create(owner, createId("teamInvite"));
-    await database
-      .updateTable("teamInvites")
-      .set({ maxUses: null })
-      .where("id", "=", shared.invite.id)
-      .execute();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-    await expect(exchange(shared.url)).resolves.toBeDefined();
-
-    // Capped at five with four spent: several people may open it, the use cap decides who gets in.
-    const capped = await invites.create(owner, createId("teamInvite"));
-    await database
-      .updateTable("teamInvites")
-      .set({ maxUses: 5, usedCount: 4 })
-      .where("id", "=", capped.invite.id)
-      .execute();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    await expect(exchange(capped.url)).resolves.toBeDefined();
-    const providerId = "opensteer-account-fixture";
-    await database
-      .insertInto("accountDirectoryProvider")
-      .values({ singletonKey: "opensteer-account", providerId, issuer: "https://accounts.example" })
-      .execute();
-    const admissions = await database
-      .selectFrom("authAdmissions")
-      .select(["id", "purpose", "subjectSelector", "consumedBy"])
-      .where("subjectSelector", "=", capped.invite.selector)
-      .execute();
-    expect(admissions).toHaveLength(3);
-    const outcomes = await Promise.allSettled(
-      admissions.map(async (admission, index) => {
-        const userId = await createUser(`Invitee ${index}`);
-        await database
-          .insertInto("authAccounts")
-          .values({
-            id: createId("authAccount"),
-            userId,
-            accountId: `invitee-${index}`,
-            providerId,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .execute();
-        return team.admit(userId, { ...admission, purpose: "invitation" });
-      }),
-    );
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-    expect(
-      outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : [])),
-    ).toEqual([
-      expect.objectContaining({ reason: "invite-used-up" }),
-      expect.objectContaining({ reason: "invite-used-up" }),
-    ]);
-
-    const single = await invites.create(owner, createId("teamInvite"));
-    await expect(exchange(single.url)).resolves.toBeDefined();
-    await expect(exchange(single.url)).rejects.toMatchObject({ code: "timeout" });
   });
 
   it("rotates an unfinished setup admission instead of locking out a valid setup retry", async () => {

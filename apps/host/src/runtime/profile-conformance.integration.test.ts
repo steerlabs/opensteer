@@ -1,23 +1,15 @@
 import { testResourceData } from "../server/test-host-api-request.js";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
-import { createId, opensteerDesktopOAuthClientId } from "@opensteer/core";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createId } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { parseHostConfig } from "@opensteer/config";
-import { createTeamFixture } from "@opensteer/database/test-support/team";
 import {
   HostDescriptorSchema,
   hostApiVersion,
   hostApiVersionHeader,
   minimumHostApiVersion,
-  minimumTeamApiVersion,
-  teamApiVersion,
-  teamApiVersionHeader,
   verifyHostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import { sessionExchangePath } from "@opensteer/protocol";
@@ -34,7 +26,6 @@ import {
   type CallerMachine,
 } from "./machine-access-protocol.test-support.js";
 import { RunnerDescriptorSchema, RunnerBootIdSchema } from "@opensteer/protocol";
-import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 
@@ -220,130 +211,6 @@ integration("Personal configuration conformance", () => {
     expect(paired.statusCode, paired.body).toBe(200);
     expect(paired.cookies.length).toBeGreaterThan(0);
     expect((await host.runtime.app.inject(request)).statusCode).toBe(403);
-  });
-});
-
-integration("team configuration conformance", () => {
-  let team: Awaited<ReturnType<typeof createTeamFixture>>;
-  let runtime: HostRuntime;
-  let directory: string;
-  beforeAll(async () => {
-    team = await createTeamFixture();
-    directory = await realpath(await mkdtemp(join(tmpdir(), "team-conformance-")));
-    const identity = await (
-      await import("../identity/host-instance.js")
-    ).loadOrCreateHostInstance(directory);
-    await team.database
-      .updateTable("deployments")
-      .set({ activeHostInstanceId: identity.hostInstanceId })
-      .where("id", "=", team.deploymentId)
-      .execute();
-    runtime = await createHostRuntime(
-      parseHostConfig({
-        OPENSTEER_MODE: "development",
-        OPENSTEER_DEPLOYMENT_KIND: "team",
-        OPENSTEER_DATABASE_URL: team.databaseUrl,
-        OPENSTEER_AUTH_SECRET: randomUUID().repeat(2),
-        OPENSTEER_HOST_DATA_DIR: directory,
-        OPENSTEER_CANONICAL_ORIGIN: "https://team.example.invalid",
-        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
-        OPENSTEER_PORT: "4310",
-      }),
-    );
-  }, 60_000);
-  afterAll(async () => {
-    await runtime?.close();
-    await team?.close();
-    if (directory) await rm(directory, { recursive: true, force: true });
-  });
-
-  it("advertises only the team version and never constructs a computer or agent", async () => {
-    const descriptor = HostDescriptorSchema.parse(
-      (await runtime.app.inject({ url: "/.well-known/opensteer" })).json(),
-    );
-    expect(descriptor).toMatchObject({
-      apiVersion: teamApiVersion,
-      minimumApiVersion: minimumTeamApiVersion,
-    });
-    expect(descriptor.authority.document.deploymentShape).toEqual({ kind: "team" });
-    expect(runtime.kind).toBe("team");
-    expect(await team.database.selectFrom("runners").select("id").execute()).toEqual([]);
-    expect(await team.database.selectFrom("personalSettings").select("ownerId").execute()).toEqual(
-      [],
-    );
-    for (const url of [
-      "/v1/local-bootstrap",
-      "/v1/personal-remote-access",
-      "/internal/v1/runners",
-      "/internal/v1/mcp",
-    ])
-      expect(runtime.app.hasRoute({ method: "GET", url })).toBe(false);
-  });
-
-  it("answers native OAuth forms and refuses malformed requests at the shared boundary", async () => {
-    const version = { [teamApiVersionHeader]: String(teamApiVersion) };
-    for (const { path, form, error } of [
-      {
-        path: "token",
-        form: { grant_type: "refresh_token", refresh_token: "unknown-refresh-token" },
-        error: "invalid_grant",
-      },
-      { path: "revoke", form: { token: "unknown-refresh-token" }, error: "invalid_request" },
-      { path: "end-session", form: {}, error: "invalid_request" },
-    ]) {
-      const response = await runtime.app.inject({
-        method: "POST",
-        url: `/v1/auth/native/oauth2/${path}`,
-        headers: { ...version, "content-type": "application/x-www-form-urlencoded" },
-        payload: new URLSearchParams({
-          client_id: opensteerDesktopOAuthClientId,
-          ...form,
-        }).toString(),
-      });
-      expect(response.statusCode, `${path}: ${response.body}`).toBe(400);
-      expect(response.json()).toMatchObject({ error });
-    }
-    // The OAuth routes live in their own plugin scope; a refusal there must
-    // still reach the Host's handler rather than Fastify's default one.
-    const oversized = await runtime.app.inject({
-      method: "POST",
-      url: "/v1/auth/native/oauth2/token",
-      headers: { ...version, "content-type": "application/x-www-form-urlencoded" },
-      payload: `refresh_token=${"r".repeat(32 * 1_024)}`,
-    });
-    expect(oversized.statusCode, oversized.body).toBe(413);
-    expect(oversized.json()).toEqual({
-      error: { code: "bad_request", message: "Request body is too large", retryable: false },
-    });
-    await expectSharedHttpBoundary(runtime.app, version);
-  });
-
-  it("gates team bootstrap before authentication and ignores the personal epoch", async () => {
-    const url = "/v1/rpc/team.bootstrap.get?input=%7B%7D";
-    expect(
-      (
-        await runtime.app.inject({
-          url,
-          method: "POST",
-          payload: {},
-          headers: {
-            [teamApiVersionHeader]: String(teamApiVersion),
-            [hostApiVersionHeader]: String(hostApiVersion - 1),
-          },
-        })
-      ).statusCode,
-    ).toBe(401);
-    const refused = await runtime.app.inject({
-      url,
-      method: "POST",
-      payload: {},
-      headers: { [teamApiVersionHeader]: String(minimumTeamApiVersion - 1) },
-    });
-    expect(refused.statusCode).toBe(409);
-    expect(refused.json()).toMatchObject({
-      ok: false,
-      error: { code: "conflict", reason: "api-version-mismatch", retryable: false },
-    });
   });
 });
 

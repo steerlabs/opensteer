@@ -159,14 +159,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
 
-  "apps/host/src/server/host-api-registration.ts": {
-    counts: {
-      "options.kind": 2,
-      kind: 3,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
-  },
   "apps/host/src/team-links/discovery.ts": {
     counts: {
       behind: 1,
@@ -424,12 +416,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "packages/harness/src/types.ts": {
     counts: {
       "runner.deploymentKind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/identity/src/identity-service.ts": {
-    counts: {
-      "deployment.deploymentShape.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },

@@ -50,7 +50,6 @@ import {
 import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
 import { requirePersonalOwner, needsYouPage } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
-import type { PersonalTeamLinks } from "./team-links/service.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -385,7 +384,6 @@ export interface HostServerDependencies {
      */
     readonly initialized: () => boolean;
   };
-  readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly connectionEffects?: ConnectionCommandEffects;
   /** Settles a person's answer to a Request about an external agent's direct operation. */
@@ -1677,18 +1675,10 @@ export async function createHostServer(
           userId: requireRpcSession(context).user.id,
         }),
       ),
-    "teams.links.list": async (_input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ links: await (await dependencies.teamLinks()).list() });
-    },
-    "teams.threadTask.get": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
-    },
-    "teams.replyTask.get": async (input, context) => {
-      const ownerId = requireRpcSession(context).user.id;
-      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
-    },
+    // Removed with the team server; the wire drops these in the next commit.
+    "teams.links.list": async () => teamLinksRemoved(),
+    "teams.threadTask.get": async () => teamLinksRemoved(),
+    "teams.replyTask.get": async () => teamLinksRemoved(),
     "tasks.list": async ({ active: _active, deviceAccessRequests: _requests, ...input }, context) =>
       personalReads.handlers["tasks.page"](input, context),
     ...personalReads.handlers,
@@ -1774,26 +1764,9 @@ export async function createHostServer(
         return result;
       }
       case "teams.link.join":
-        return {
-          type: command.type,
-          link: await (await dependencies.teamLinks()).join(command.link),
-        };
       case "teams.ask.decide":
-        await requirePersonalOwner(dependencies.store.database, userId);
-        await (
-          await dependencies.teamLinks()
-        ).options.requests.decide(
-          userId,
-          command.teamId,
-          command.requestId,
-          command.decision,
-          command.expectedRevision,
-          session.id,
-        );
-        return { type: command.type };
       case "teams.link.leave":
-        await (await dependencies.teamLinks()).leave(command.teamId);
-        return { type: command.type };
+        return teamLinksRemoved();
       case "thread.visit": {
         const visit = await dependencies.store.notificationState.visit({
           threadId: command.threadId,
@@ -2760,7 +2733,6 @@ export async function createHostServer(
       },
     },
     {
-      kind: "personal",
       guardResponse: (input, context) => {
         return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
       },
@@ -4318,4 +4290,8 @@ function personalResponseScopes(input: unknown, sessionId: string | undefined): 
     scopes.push(`thread:${input.selectedThreadId}`);
   if ("nodeId" in input && typeof input.nodeId === "string") scopes.push(`node:${input.nodeId}`);
   return scopes;
+}
+
+function teamLinksRemoved(): never {
+  throw new OpensteerError({ code: "not_found", message: "Team links are not available." });
 }

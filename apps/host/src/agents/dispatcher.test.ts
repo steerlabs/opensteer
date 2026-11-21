@@ -53,9 +53,6 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -113,9 +110,6 @@ describe("HostCommandDispatcher Request responses", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -774,9 +768,6 @@ describe("HostCommandDispatcher model selection", () => {
       },
     );
     const dispatcher = new HostCommandDispatcher({
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -952,9 +943,6 @@ describe("HostCommandDispatcher run planning", () => {
         type: "run.execute" as const,
       };
       const dispatcher = new HostCommandDispatcher({
-        teamRequestContext: async () => {
-          throw new Error("Unexpected team request");
-        },
         executionLeaseMs: 90_000,
         attachmentRunTokens: {
           issue: () => "attachment-token",
@@ -1142,9 +1130,6 @@ function steerDispatcher(input: {
   readonly succeedCommand: OpensteerStore["succeedCommand"];
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
-    teamRequestContext: async () => {
-      throw new Error("Unexpected team request");
-    },
     executionLeaseMs: 90_000,
     attachmentRunTokens: {
       issue: () => "attachment-token",

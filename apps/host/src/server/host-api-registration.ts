@@ -1,6 +1,4 @@
 import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
-import { assertTeamApiVersion } from "../team/services.js";
-import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
@@ -13,17 +11,16 @@ import {
   type RpcResult,
 } from "@opensteer/protocol";
 import { OpensteerError, unsupportedVersionReason } from "@opensteer/core";
-import { attachmentMaxBytes, deploymentPolicy } from "@opensteer/core";
+import { attachmentMaxBytes } from "@opensteer/core";
 import {
   apiCurrentQueryParameter,
-  apiNegotiation,
-  apiVersionHeader,
   apiVersionQueryParameter,
   hostApiCurrentHeader,
+  hostApiVersion,
+  hostApiVersionHeader,
   minimumHostApiVersion,
-  statesApiVersion,
+  negotiatedHostApiVersion,
 } from "@opensteer/deployment-authority";
-import type { DeploymentKind } from "@opensteer/core";
 import { unversionedRoute } from "./unversioned-route.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -184,16 +181,10 @@ export function registerHostApi(
   app: FastifyInstance,
   authenticator: HostAuthenticator,
   handlers: Partial<HostApiHandlers>,
-  options: HostApiRegistrationOptions = { kind: "personal" },
+  options: HostApiRegistrationOptions = {},
 ): void {
   for (const name of Object.keys(hostApi) as (keyof typeof hostApi)[]) {
-    const team = name.startsWith("team.");
-    if (
-      options.kind === "personal"
-        ? team
-        : !team && name !== "commands.dispatch" && !Object.hasOwn(handlers, name)
-    )
-      continue;
+    if (name.startsWith("team.")) continue;
     registerHostApiMember(app, authenticator, handlers, name, options);
   }
 }
@@ -247,23 +238,10 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
         });
     },
     onRequest: async (request) => {
-      if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
-      else requireNegotiatedVersion(request);
+      requireNegotiatedVersion(request);
       await rejectDuplicateCredentialHeaders(request);
     },
     handler: async (request, reply) => {
-      if (options.dispatch && (name.startsWith("team.") || name === "commands.dispatch")) {
-        const raw =
-          declaration.method === "POST"
-            ? request.body
-            : JSON.parse(
-                z.strictObject({ input: z.string().max(262144) }).parse(request.query).input,
-              );
-        const data = declaration.success.parse(
-          await options.dispatch(name, raw, request),
-        ) as z.output<(typeof declaration)["success"]>;
-        return sendResult(declaration, { ok: true, data }, request, reply);
-      }
       const scope =
         name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
       const authenticated = await authenticateScope(authenticator, scope, request);
@@ -405,24 +383,18 @@ function isUnchanged(request: FastifyRequest, reply: FastifyReply): boolean {
  * fields no longer mean what this tree thinks they mean, so no part of it is
  * dispatched. A missing version is refused like one outside the window.
  */
-export function requireNegotiatedVersion(
-  request: FastifyRequest,
-  kind: DeploymentKind = "personal",
-): void {
-  if (statesApiVersion(request.headers, kind)) return;
-  const stated = request.headers[apiVersionHeader(kind)];
-  const current = kind === "personal" ? request.headers[hostApiCurrentHeader] : undefined;
-  const serves =
-    kind === "personal"
-      ? `Opensteer protocol ${minimumHostApiVersion} through ${apiNegotiation(kind).apiVersion}`
-      : `Opensteer protocol ${apiNegotiation(kind).apiVersion}`;
+export function requireNegotiatedVersion(request: FastifyRequest): void {
+  if (negotiatedHostApiVersion(request.headers) !== null) return;
+  const stated = request.headers[hostApiVersionHeader];
+  const current = request.headers[hostApiCurrentHeader];
+  const serves = `Opensteer protocol ${minimumHostApiVersion} through ${hostApiVersion}`;
   const detail =
     typeof stated === "string"
       ? `This deployment serves ${serves}; the caller stated ${stated}${typeof current === "string" ? ` through ${current}` : ""}.`
       : `This deployment serves ${serves} and the caller stated none.`;
   throw new OpensteerError({
     code: "bad_request",
-    message: kind === "personal" ? `Update Opensteer to connect to this Host. ${detail}` : detail,
+    message: `Update Opensteer to connect to this Host. ${detail}`,
     reason: unsupportedVersionReason,
   });
 }
@@ -471,7 +443,6 @@ function createContext(
 }
 
 export interface HostApiRegistrationOptions {
-  readonly kind: DeploymentKind;
   readonly guardResponse?: (
     input: unknown,
     context: HostApiServerContext,
@@ -487,14 +458,9 @@ export interface HostApiRegistrationOptions {
     data: unknown,
     context: HostApiServerContext,
   ) => Promise<unknown>;
-  readonly dispatch?: (
-    name: keyof typeof hostApi,
-    raw: unknown,
-    request: FastifyRequest,
-  ) => Promise<unknown>;
 }
 
-export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentKind): void {
+export function carryWebSocketVersion(request: FastifyRequest): void {
   if (request.headers.upgrade?.toLowerCase() !== "websocket") return;
   const query = new URL(request.url, "http://localhost").searchParams;
   const carry = (parameter: string, header: string) => {
@@ -506,9 +472,8 @@ export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentK
         ? versions[0]
         : "invalid";
   };
-  carry(apiVersionQueryParameter, apiVersionHeader(kind));
-  if (deploymentPolicy({ kind }).services.personal)
-    carry(apiCurrentQueryParameter, hostApiCurrentHeader);
+  carry(apiVersionQueryParameter, hostApiVersionHeader);
+  carry(apiCurrentQueryParameter, hostApiCurrentHeader);
 }
 
 /**
@@ -518,7 +483,7 @@ export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentK
  */
 export function installPersonalVersionGate(app: FastifyInstance): void {
   app.addHook("onRequest", async (request) => {
-    carryWebSocketVersion(request, "personal");
+    carryWebSocketVersion(request);
     if (!request.url.startsWith("/v1/") || request.url.startsWith("/v1/rpc/")) return;
     const exemption = request.routeOptions.config.apiVersion;
     if (

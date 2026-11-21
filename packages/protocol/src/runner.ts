@@ -6,7 +6,6 @@ import {
   RunnerAppsSyncResultSchema,
 } from "./apps.js";
 import { RunMaintenanceSchema, isLoopbackHostname } from "@opensteer/core";
-export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
@@ -23,7 +22,6 @@ import {
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
-  TeamTurnContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
@@ -158,7 +156,8 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   maintenance: RunMaintenanceSchema.optional(),
   maintenanceExpiresAt: z.number().int().nonnegative().optional(),
-  teamTurnContext: TeamTurnContextSchema.nullable().default(null),
+  /** A Home before team removal still sends null here; nothing reads it. */
+  teamTurnContext: z.null().optional(),
   personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),

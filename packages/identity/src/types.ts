@@ -70,15 +70,7 @@ export interface AccountAdoptionGrantVerifier {
   verify(grant: unknown): Promise<VerifiedAccountAdoptionGrant>;
 }
 
-/** Checks an Account team identity assertion's signature, issuer, audience and lifetime. */
-export interface TeamIdentityAssertionVerifier {
-  verify(
-    assertion: unknown,
-  ): Promise<import("@opensteer/control-plane-protocol").TeamIdentityAssertionClaims>;
-}
-
 export interface IdentityServiceOptions {
-  readonly team?: import("./team-admission.js").TeamIdentityAdmission;
   readonly deployment: DeploymentPresentation;
   /** Actual fingerprint of the Host key loaded by the composition root. */
   readonly hostKeyFingerprint?: HostKeyFingerprint;

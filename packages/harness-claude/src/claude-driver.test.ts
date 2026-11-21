@@ -64,7 +64,6 @@ import {
 // carry exactly that context and the inputs and reports each test names.
 const noThreadContext = {
   assignment: null,
-  teamTurnContext: null,
   threadState: { previousAssignment: null, previousRun: null },
   startedAt: "2026-08-22T00:00:00.000Z",
 };

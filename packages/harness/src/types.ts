@@ -3,7 +3,6 @@ import type {
   ExecutionNodeId,
   AgentEventType,
   AssignmentRunContext,
-  TeamTurnContext,
   DelegationModelChoice,
   DeploymentKind,
   EnvironmentId,
@@ -405,7 +404,6 @@ export function durableHistoryWindowNotice(context: HarnessSessionContext): stri
  * task the Run belongs to and what the engine's own history cannot show.
  */
 export interface HarnessRunContext {
-  readonly teamTurnContext: TeamTurnContext | null;
   readonly assignment: AssignmentRunContext | null;
   readonly threadState: RunThreadState;
   /** When this computer started the Run; every rendering of its context reads this, never the clock. */

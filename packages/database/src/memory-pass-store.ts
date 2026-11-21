@@ -256,11 +256,6 @@ export async function memoryPassWakeContext(
     .select(({ fn }) => [
       "threads.id",
       "threads.title",
-      sql<
-        import("@opensteer/core").TeamSource[]
-      >`coalesce(jsonb_agg(distinct thread_inputs.team_source) filter (where thread_inputs.team_source is not null), '[]'::jsonb)`.as(
-        "sources",
-      ),
       fn.countAll<string>().as("count"),
       sql<Date>`min(messages.created_at)`.as("first"),
       sql<Date>`max(coalesce(thread_inputs.updated_at, messages.created_at))`.as("newest"),

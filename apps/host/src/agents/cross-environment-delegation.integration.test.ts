@@ -3004,9 +3004,6 @@ integration("personal task delegation lifecycle", () => {
         issue,
       } as never,
       triggers: {} as never,
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
     });
   }
 });

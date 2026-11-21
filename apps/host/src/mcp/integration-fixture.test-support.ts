@@ -45,8 +45,6 @@ export function createIntegrationMcpFixture(options: {
     product: unavailable as never,
     triggers: unavailable as never,
     apps: unavailable as never,
-    teamRequestForRun: async () => null,
-    personalContextForRun: async () => true,
   });
   return new OpensteerMcpService({
     handlers,

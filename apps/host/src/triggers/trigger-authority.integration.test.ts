@@ -1773,9 +1773,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         triggerControlTokens: {
           issue: () => "control",
         } as never,
-        teamRequestContext: async () => {
-          throw new Error("Unexpected team request");
-        },
       });
       for (const ingress of ["manual", "schedule", "webhook"] as const) {
         await database
@@ -1953,9 +1950,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
       triggerControlTokens: {} as never,
-      teamRequestContext: async () => {
-        throw new Error("Unexpected team request");
-      },
     });
     const command = (await store.listPendingCommands()).find(
       ({ id }) => id === occurrence.commandId,

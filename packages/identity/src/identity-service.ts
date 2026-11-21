@@ -1,10 +1,3 @@
-import {
-  acceptsTeamApiVersion,
-  teamApiVersion,
-  teamApiVersionRefusal,
-  teamOidcStatePrefix,
-  teamOAuthVersionParameter,
-} from "@opensteer/deployment-authority";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -34,9 +27,7 @@ import {
   type AuthenticatedSession,
   type IdentityConfig,
   type NativeOAuthApplication,
-  type NativeOAuthClient,
   type NativeOAuthRegistrationMetadata,
-  type TeamInviteSecret,
   type PersonalRemoteSessionCredential,
   type PersonalRemoteSessionDelivery,
   type UserId,
@@ -44,10 +35,8 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
-import { personProfileReceiptClaim } from "@opensteer/control-plane-protocol";
 import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
-import { refuseEntry } from "./team-admission.js";
 import { sso } from "@better-auth/sso";
 import {
   oauthProvider,
@@ -92,11 +81,6 @@ const nativeOAuthReference = (clientId: string) => `${legacyNativeOAuthReference
 const nativeOAuthScopes = ["openid", "profile", "email", "offline_access", "host:access"] as const;
 const maxPendingAdmissions = 1_024;
 const maxPendingAdmissionsPerSubject = 1;
-/**
- * Browsers that may hold an admission for one shared invite at once. Its use cap is enforced when
- * someone accepts, so a capped invite with one use left still lets several people start.
- */
-const maxPendingAdmissionsPerInvite = 64;
 const accountAdoptionProofLifetimeMilliseconds = 5 * 60 * 1_000;
 const maxPendingAccountAdoptionProofs = 64;
 const accountAdoptionProofIdPattern =
@@ -174,11 +158,6 @@ export class IdentityService {
   #options: IdentityServiceOptions;
 
   constructor(database: Kysely<DatabaseSchema>, options: IdentityServiceOptions) {
-    if (
-      options.team &&
-      (options.localMachineOwner || options.localPasswordEnabled || options.signupPolicy === "open")
-    )
-      throw new Error("A team uses Account sign-in and explicit admission only");
     if (options.secret.length < 32) {
       throw new Error("Opensteer identity secret must contain at least 32 characters");
     }
@@ -187,8 +166,7 @@ export class IdentityService {
     }
     if (
       options.managedOwner &&
-      (options.team ||
-        options.localMachineOwner ||
+      (options.localMachineOwner ||
         options.localPasswordEnabled ||
         !options.oidcProviders.some(
           (provider) => provider.providerId === options.managedOwner?.providerId,
@@ -208,29 +186,6 @@ export class IdentityService {
     return createOpensteerAuth(this.#database, this.#options, (request) =>
       this.#requireSignupAdmission(request),
     );
-  }
-
-  async issueSetupAccountAdoptionProof(headers: Headers, account: AccountAdoptionAccount) {
-    const proof = await this.#admissionFromHeaders(headers);
-    if (!this.#options.team || !proof)
-      throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
-    return this.#options.team.issueAdoption(proof, parseAccountAdoptionAccount(account));
-  }
-  async completeTeamAccountAdoption(grant: unknown, bundle: unknown, hostedBootstrap?: unknown) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
-    const { provider, receipt } = await team.completeAdoption(null, grant, bundle, hostedBootstrap);
-    await this.reloadAccountProvider(provider);
-    return { completed: true as const, ...(receipt ? { receipt } : {}) };
-  }
-
-  async reloadAccountProvider(
-    provider: NonNullable<IdentityServiceOptions["oidcProviders"]>[number],
-  ) {
-    this.#options = { ...this.#options, oidcProviders: [provider] };
-    this.#auth = this.#createAuth();
-    await this.#ensureNativeOAuthClients();
   }
 
   async initialize(): Promise<void> {
@@ -486,14 +441,6 @@ export class IdentityService {
     ) {
       throw new OpensteerError({ code: "unauthorized", message: "Native access token is invalid" });
     }
-    if (
-      this.#options.team &&
-      !(await this.#options.team.sessionActive(subject.data, session.memberGeneration))
-    )
-      throw new OpensteerError({
-        code: "unauthorized",
-        message: "Team session is no longer active",
-      });
     // The registration row, not the configuration, is the trusted statement of
     // which application holds this credential and of when the credentials it
     // issued stopped counting. A JWT access token has no row to delete, so
@@ -552,7 +499,6 @@ export class IdentityService {
     }
     const url = new URL(request.url);
     const publicPath = url.pathname.slice(publicNativeAuthPath.length);
-    if (this.#options.team) url.searchParams.delete(teamOAuthVersionParameter);
     if (request.method === "GET" && publicPath === "/oauth2/authorize") {
       forceInteractiveConsent(url);
     }
@@ -701,24 +647,17 @@ export class IdentityService {
     const enrollment = this.#options.initialOwnerEnrollment;
     if (!enrollment) return;
     const tokenHash = enrollment.tokenDigest;
-    // An operator holds a team's or a networked Home's code and re-issues it by
-    // starting the Host with a new one. A loopback Host's code is derived from
-    // the desktop's claim, so a different live one is stale configuration.
-    const operatorHeld = this.#options.team !== undefined || enrollment.renewable !== true;
+    // An operator holds a networked Home's code and re-issues it by starting
+    // the Host with a new one. A loopback Host's code is derived from the
+    // desktop's claim, so a different live one is stale configuration.
+    const operatorHeld = enrollment.renewable !== true;
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-enrollment");
-      const existingAdministrator = this.#options.team
-        ? await transaction
-            .selectFrom("teamMembers")
-            .select("userId as id")
-            .where("role", "=", "owner")
-            .where("state", "=", "active")
-            .executeTakeFirst()
-        : await transaction
-            .selectFrom("users")
-            .select("id")
-            .where("disabledAt", "is", null)
-            .executeTakeFirst();
+      const existingAdministrator = await transaction
+        .selectFrom("users")
+        .select("id")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst();
       if (existingAdministrator) {
         // The durable administrator and consumed enrollment are authoritative. A stale deployment
         // secret must be removed by the operator, but it must never make an otherwise healthy Host
@@ -765,11 +704,7 @@ export class IdentityService {
         // code moves its deadline forward, because a local Host that sat idle
         // past the original window must not become permanently unclaimable. An
         // operator-configured code keeps its fixed deadline.
-        if (
-          !this.#options.team &&
-          enrollment.renewable &&
-          existingEnrollment.expiresAt < enrollment.expiresAt
-        ) {
+        if (enrollment.renewable && existingEnrollment.expiresAt < enrollment.expiresAt) {
           await transaction
             .updateTable("ownerEnrollments")
             .set({ expiresAt: enrollment.expiresAt })
@@ -821,13 +756,11 @@ export class IdentityService {
   }
 
   async configuration(): Promise<IdentityConfig> {
-    const administrator = this.#options.team
-      ? await this.#options.team.hasOwner()
-      : await this.#database
-          .selectFrom("users")
-          .select("id")
-          .where("disabledAt", "is", null)
-          .executeTakeFirst();
+    const administrator = await this.#database
+      .selectFrom("users")
+      .select("id")
+      .where("disabledAt", "is", null)
+      .executeTakeFirst();
     return IdentityConfigSchema.parse({
       deployment: this.#options.deployment,
       emailDeliveryAvailable: this.#options.emailDeliveryAvailable ?? false,
@@ -916,10 +849,7 @@ export class IdentityService {
     );
   }
 
-  async #authenticateSessionCookie(
-    headers: Headers,
-    pendingTeamAdmission = false,
-  ): Promise<AuthenticatedSession | null> {
+  async #authenticateSessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
     const raw = await this.#auth.api.getSession({ headers });
     if (!raw) return null;
     const sessionId = AuthSessionIdSchema.safeParse(raw.session.id);
@@ -952,12 +882,6 @@ export class IdentityService {
       }
       return null;
     }
-    if (
-      this.#options.team &&
-      !pendingTeamAdmission &&
-      !(await this.#options.team.sessionActive(row.userId, row.memberGeneration))
-    )
-      return null;
     if (now.getTime() - row.lastSeenAt.getTime() >= 5 * 60 * 1_000) {
       await this.#database
         .updateTable("authSessions")
@@ -1308,11 +1232,6 @@ export class IdentityService {
     readonly proofCredential: string;
     readonly proofId: string;
   }): Promise<ConsumedAccountAdoptionProof> {
-    if (this.#options.team) {
-      const receipt = await this.#options.team.consumeAdoption(input);
-      if (receipt) return receipt;
-      throw invalidAccountAdoptionProof();
-    }
     const proofId = parseAccountAdoptionProofId(input.proofId);
     const proofCredential = parseAccountAdoptionCredential(input.proofCredential);
     const expectedAccount = parseAccountAdoptionAccount(input.expectedAccount);
@@ -1784,7 +1703,6 @@ export class IdentityService {
   }
 
   #serializeOwnerSetup<Value>(step: () => Promise<Value>): Promise<Value> {
-    if (this.#options.team) return step();
     const result = this.#ownerSetup.then(step, step);
     this.#ownerSetup = result.catch(() => undefined);
     return result;
@@ -2221,36 +2139,15 @@ export class IdentityService {
     }
     return {
       data: {
-        redirectUrl: this.#options.team ? this.#versionedTeamOidcRedirect(body.url) : body.url,
+        redirectUrl: body.url,
       },
       headers: response.headers,
       status: response.status,
     };
   }
 
-  #versionedTeamOidcRedirect(value: string): string {
-    const url = new URL(value),
-      state = url.searchParams.get("state");
-    if (!state)
-      throw new OpensteerError({ code: "internal", message: "OIDC sign-in returned no state" });
-    url.searchParams.set("state", `${teamOidcStatePrefix}${teamApiVersion}.${state}`);
-    return url.toString();
-  }
   async handleOidcCallback(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (this.#options.team) {
-      const state = url.searchParams.get("state"),
-        version = state?.startsWith(teamOidcStatePrefix)
-          ? /^([0-9]+)\./u.exec(state.slice(teamOidcStatePrefix.length))?.[1]
-          : undefined;
-      if (!state || !version || !acceptsTeamApiVersion(version))
-        throw new OpensteerError({
-          code: "conflict",
-          reason: "api-version-mismatch",
-          message: teamApiVersionRefusal,
-        });
-      url.searchParams.set("state", state.slice(teamOidcStatePrefix.length + version.length + 1));
-    }
     url.pathname = `${internalAuthPath}/sso/callback`;
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
@@ -2258,28 +2155,11 @@ export class IdentityService {
     if (response.status < 300 || response.status >= 400) return response;
     const admission = await this.#admissionFromHeaders(request.headers);
     const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
-    if (this.#options.team) {
-      // The SSO plugin commits its user/account/session transaction before returning this response.
-      const session = await this.#authenticateSessionCookie(authenticatedHeaders, true);
-      if (!session) return response;
-      try {
-        await this.#options.team.admit(session.user.id, admission, session.id);
-      } catch (error) {
-        await this.#database.deleteFrom("authSessions").where("id", "=", session.id).execute();
-        throw error;
-      }
-      const headers = new Headers(response.headers);
-      for (const cookie of clearAdmissionCookie(this.#options.publicOrigin).getSetCookie())
-        headers.append("set-cookie", cookie);
-      return new Response(response.body, { headers, status: response.status });
-    }
     if (!admission) return response;
     const completionHeaders =
       admission.purpose === "setup"
         ? (await this.completeInitialOwnerSetup(authenticatedHeaders)).headers
-        : admission.purpose === "invitation"
-          ? (await this.acceptInvitation(authenticatedHeaders)).headers
-          : undefined;
+        : undefined;
     if (!completionHeaders) return response;
     const headers = new Headers(response.headers);
     for (const cookie of completionHeaders.getSetCookie()) headers.append("set-cookie", cookie);
@@ -2363,155 +2243,6 @@ export class IdentityService {
     this.announceSessionsEnded([parsedId], afterResponse);
   }
 
-  /**
-   * A team's native sign-in without a browser: an Account identity assertion, plus an invite for
-   * anyone not yet a member, becomes the token set the browser flow would have issued to the
-   * application the assertion names.
-   */
-  async exchangeTeamSession(input: {
-    readonly assertion: unknown;
-    readonly invite?: TeamInviteSecret;
-    readonly userAgent: string | null;
-  }): Promise<{
-    readonly admitted: boolean;
-    readonly userId: UserId;
-    readonly tokens: NativeTokenResponse;
-  }> {
-    const team = this.#options.team;
-    if (!team || !this.#options.nativeOAuth)
-      throw new OpensteerError({ code: "not_found", message: "Team sign-in is unavailable" });
-    const claims = await team.verifyIdentity(input.assertion);
-    const client = this.#options.nativeOAuth.clients.find(
-      (candidate) => candidate.application === claims.surface,
-    );
-    if (!client) refuseEntry("assertion-invalid");
-    const entry = await team.admitAccountIdentity(claims, input.invite);
-    return {
-      admitted: entry.admitted,
-      userId: entry.userId,
-      tokens: await this.#issueNativeTokens(entry, client, input.userAgent),
-    };
-  }
-
-  /**
-   * Runs the authorization server's own code flow for a fresh generation-fenced session, so the
-   * tokens are indistinguishable from a browser sign-in's: same consent, hashing and refresh.
-   */
-  async #issueNativeTokens(
-    entry: { readonly userId: UserId; readonly generation: string },
-    client: NativeOAuthClient,
-    userAgent: string | null,
-  ): Promise<NativeTokenResponse> {
-    const origin = this.#options.publicOrigin;
-    const now = new Date();
-    const sessionId = createId("authSession");
-    const token = randomBytes(32).toString("base64url");
-    await this.#database
-      .insertInto("authSessions")
-      .values({
-        absoluteExpiresAt: new Date(now.getTime() + absoluteSessionMilliseconds),
-        createdAt: now,
-        deviceLabel: describeSessionDevice(userAgent).label,
-        expiresAt: new Date(now.getTime() + idleSessionSeconds * 1_000),
-        id: sessionId,
-        ipAddress: null,
-        lastSeenAt: now,
-        memberGeneration: entry.generation,
-        token,
-        updatedAt: now,
-        userAgent,
-        userId: entry.userId,
-      })
-      .executeTakeFirstOrThrow();
-    try {
-      const signed = `${token}.${createHmac("sha256", this.#options.secret).update(token).digest("base64")}`;
-      const cookie = `${origin.protocol === "https:" ? "__Host-opensteer.session" : localSessionCookieName}=${encodeURIComponent(signed)}`;
-      const verifier = randomBytes(48).toString("base64url");
-      const state = randomBytes(24).toString("base64url");
-      const [redirectUri] = client.redirectUris as readonly [string, ...string[]];
-      const authorize = new URL(`${internalAuthPath}/oauth2/authorize`, origin);
-      for (const [name, value] of Object.entries({
-        client_id: client.clientId,
-        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-        code_challenge_method: "S256",
-        prompt: "consent",
-        redirect_uri: redirectUri,
-        response_type: "code",
-        scope: nativeOAuthScopes.join(" "),
-        state,
-      }))
-        authorize.searchParams.set(name, value);
-      const consentPage = await nativeFlowUrl(
-        await this.#auth.handler(
-          new Request(authorize, { headers: { accept: "application/json", cookie } }),
-        ),
-      );
-      const callback = await nativeFlowUrl(
-        await this.#auth.handler(
-          new Request(new URL(`${internalAuthPath}/oauth2/consent`, origin), {
-            body: JSON.stringify({ accept: true, oauth_query: consentPage.search.slice(1) }),
-            headers: { "content-type": "application/json", cookie, origin: origin.origin },
-            method: "POST",
-          }),
-        ),
-      );
-      const code = callback.searchParams.get("code");
-      if (callback.searchParams.get("state") !== state || !code)
-        throw new Error("Native authorization returned no code");
-      const response = await this.#auth.handler(
-        new Request(new URL(`${internalAuthPath}/oauth2/token`, origin), {
-          body: new URLSearchParams({
-            client_id: client.clientId,
-            code,
-            code_verifier: verifier,
-            grant_type: "authorization_code",
-            redirect_uri: redirectUri,
-            resource: origin.origin,
-          }),
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          method: "POST",
-        }),
-      );
-      if (!response.ok) throw new Error(`Native token request returned HTTP ${response.status}`);
-      return NativeTokenResponseSchema.parse(await response.json());
-    } catch (error) {
-      await this.#database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
-      throw new OpensteerError({
-        cause: error,
-        code: "internal",
-        message: "Team sign-in could not be completed",
-      });
-    }
-  }
-
-  async exchangeTeamInvitation(selector: string, verifier: string, headers: Headers) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
-    const invite = await team.invites.verify(selector, verifier);
-    return this.#createOrReuseAdmission(
-      {
-        purpose: "invitation",
-        reservedEmail: null,
-        subjectSelector: invite.selector,
-        maxPending: invite.maxUses === 1 ? 1 : maxPendingAdmissionsPerInvite,
-      },
-      headers,
-    );
-  }
-  async acceptInvitation(headers: Headers, authenticated?: AuthenticatedSession) {
-    const team = this.#options.team;
-    if (!team)
-      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
-    const session = authenticated ?? (await this.requireSession(headers));
-    const proof = await this.#admissionFromHeaders(headers);
-    const generation = await team.admit(session.user.id, proof);
-    return {
-      headers: clearAdmissionCookie(this.#options.publicOrigin),
-      membership: { userId: session.user.id, generation },
-    };
-  }
-
   exchangeInitialOwnerEnrollment(
     token: string,
     headers: Headers = new Headers(),
@@ -2526,7 +2257,7 @@ export class IdentityService {
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
     if (this.#options.managedOwner) throw managedOwnerSetupRefused();
-    if (!this.#options.team) await this.#ensureInitialOwnerEnrollment();
+    await this.#ensureInitialOwnerEnrollment();
     const tokenHash = digestSecret(token.trim());
     const [enrollment, administrator] = await Promise.all([
       this.#database
@@ -2535,13 +2266,11 @@ export class IdentityService {
         .where("tokenHash", "=", tokenHash)
         .where("kind", "=", "initial")
         .executeTakeFirst(),
-      this.#options.team
-        ? this.#options.team.hasOwner()
-        : this.#database
-            .selectFrom("users")
-            .select("id")
-            .where("disabledAt", "is", null)
-            .executeTakeFirst(),
+      this.#database
+        .selectFrom("users")
+        .select("id")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst(),
     ]);
     if (
       administrator ||
@@ -2571,11 +2300,6 @@ export class IdentityService {
     readonly userId: UserId;
   }> {
     const session = await this.requireSession(headers);
-    if (this.#options.team) {
-      if (!(await this.#options.team.hasOwner()))
-        throw new OpensteerError({ code: "forbidden", message: "Owner admission required" });
-      return { headers: clearAdmissionCookie(this.#options.publicOrigin), userId: session.user.id };
-    }
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
@@ -2775,13 +2499,7 @@ export class IdentityService {
     return row;
   }
 
-  async #requireSignupAdmission(request: Request | undefined): Promise<void> {
-    if (this.#options.team) {
-      const proof = request ? await this.#admissionFromHeaders(request.headers) : null;
-      if (!proof) throw new APIError("FORBIDDEN", { message: "Team admission required" });
-      await this.#options.team.validateAdmission(proof);
-      return;
-    }
+  async #requireSignupAdmission(_request: Request | undefined): Promise<void> {
     if (this.#options.signupPolicy === "open") return;
     // A Home's one owner is created by its setup claim, never by a sign-up.
     throw new APIError("FORBIDDEN", { message: "Signup admission required" });
@@ -2863,40 +2581,6 @@ function createOpensteerAuth(
     baseURL: options.publicOrigin.origin,
     database: databaseOption,
     databaseHooks: {
-      ...(options.team
-        ? {
-            account: {
-              create: {
-                before: async (account) => ({
-                  data: {
-                    ...account,
-                    accessToken: null,
-                    refreshToken: null,
-                    idToken: null,
-                    accessTokenExpiresAt: null,
-                    refreshTokenExpiresAt: null,
-                    scope: null,
-                    password: null,
-                  },
-                }),
-              },
-              update: {
-                before: async (account) => ({
-                  data: {
-                    ...account,
-                    accessToken: null,
-                    refreshToken: null,
-                    idToken: null,
-                    accessTokenExpiresAt: null,
-                    refreshTokenExpiresAt: null,
-                    scope: null,
-                    password: null,
-                  },
-                }),
-              },
-            },
-          }
-        : {}),
       session: {
         create: {
           before: async (session, context) => {
@@ -2971,27 +2655,10 @@ function createOpensteerAuth(
                   issuer: provider.issuer,
                   pkce: true,
                   scopes: ["openid", "email", "profile"],
-                  ...(options.team
-                    ? { mapping: { extraFields: { profileReceipt: personProfileReceiptClaim } } }
-                    : {}),
                 },
                 providerId: oidcIdentityProviderId(provider),
               })),
               disableImplicitSignUp: options.signupPolicy !== "open",
-              ...(options.team
-                ? {
-                    // A team takes each member's Account name at every browser sign-in. Best
-                    // effort: a failure keeps the old name and never blocks signing in.
-                    provisionUserOnEveryLogin: true,
-                    provisionUser: async ({ user, userInfo }) => {
-                      const receipt = userInfo.profileReceipt;
-                      if (typeof receipt !== "string" || !options.team) return;
-                      await options.team
-                        .applyProfile(UserIdSchema.parse(user.id), receipt)
-                        .catch(() => false);
-                    },
-                  }
-                : {}),
               domainVerification: { enabled: false },
               modelName: "authSsoProviders",
               organizationProvisioning: { disabled: true },
@@ -3251,25 +2918,12 @@ async function requireLiveAdministratorSession(
     .where("s.userId", "=", session.user.id)
     .forShare("s")
     .executeTakeFirst();
-  const deployment = await transaction
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .executeTakeFirstOrThrow();
-  const owner =
-    deployment.deploymentShape.kind === "team"
-      ? await transaction
-          .selectFrom("teamMembers")
-          .select("userId as id")
-          .where("userId", "=", session.user.id)
-          .where("role", "in", ["owner", "admin"])
-          .where("state", "=", "active")
-          .executeTakeFirst()
-      : await transaction
-          .selectFrom("users")
-          .select("id")
-          .orderBy("createdAt")
-          .orderBy("id")
-          .executeTakeFirst();
+  const owner = await transaction
+    .selectFrom("users")
+    .select("id")
+    .orderBy("createdAt")
+    .orderBy("id")
+    .executeTakeFirst();
   if (
     !row ||
     !owner ||
@@ -3451,12 +3105,6 @@ const NativeTokenResponseSchema = z.object({
 export type NativeTokenResponse = z.infer<typeof NativeTokenResponseSchema>;
 
 /** The next step of an in-process native authorization, from its JSON redirect answer. */
-async function nativeFlowUrl(response: Response): Promise<URL> {
-  if (!response.ok) throw new Error(`Native authorization returned HTTP ${response.status}`);
-  const body = z.object({ url: z.string().min(1) }).parse(await response.json());
-  return new URL(body.url, "http://native-flow.invalid");
-}
-
 function nativeOAuthError(status: number, error: string, description: string): Response {
   return new Response(JSON.stringify({ error, error_description: description }), {
     headers: { "content-type": "application/json" },
