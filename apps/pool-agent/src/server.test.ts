@@ -10,7 +10,7 @@ import {
   type BrowserPoolAgentAdminEnvelope,
   type BrowserPoolAgentEnvelope,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import { createAdminServer, listen } from "./server.js";
+import { createAdminServer, createHomeServer, listen, maximumConnections } from "./server.js";
 import { homeKeyPair, startTestPoolAgent, testGuest, type TestPoolAgent } from "./test-support.js";
 
 const open: (() => Promise<void>)[] = [];
@@ -226,4 +226,17 @@ it("signs every administration reply with the host key the provisioner pinned", 
   };
   await expect(callBrowserPoolAgentAdmin(forged, { op: "list" })).rejects.toThrow("host key");
   void host;
+});
+
+it("bounds both listeners' connections (review G10)", async () => {
+  const { f } = await adminFixture();
+  const home = createHomeServer({ agent: f.agent.agent });
+  const adminServer = createAdminServer({
+    agent: f.agent.agent,
+    provisionerKey: generateKeyPairSync("ed25519").publicKey,
+    hostId: "h",
+    hostKey: generateKeyPairSync("ed25519").privateKey,
+  });
+  expect(home.maxConnections).toBe(maximumConnections);
+  expect(adminServer.maxConnections).toBe(maximumConnections);
 });

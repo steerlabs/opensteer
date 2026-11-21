@@ -33,6 +33,7 @@ import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
 import { requireEncryptedArray } from "./array.js";
 import { confine } from "./paths.js";
+import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
@@ -100,6 +101,7 @@ export class FirecrackerDriver implements HypervisorDriver {
   #fingerprint = "";
   #arrayId: string | undefined;
   #hostAddresses: readonly string[] = [];
+  readonly #space = new SpaceLedger();
   readonly #egress = new Map<string, SlotEgress | undefined>();
   readonly #pendingEgress = new Map<string, Promise<void>>();
 
@@ -263,8 +265,26 @@ export class FirecrackerDriver implements HypervisorDriver {
     const began = performance.now();
     const memoryBytes = await this.#memoryBytes(jailId);
     const space = await statfs(this.#config.savedRoot);
-    if (space.bavail * space.bsize < memoryBytes + minimumFreeMarginBytes)
-      throw new Error("The saved-state array has no room for this guest.");
+    // Review G10: concurrent saves reserve their space before they write.
+    const release = this.#space.reserve(
+      space.bavail * space.bsize,
+      memoryBytes + minimumFreeMarginBytes,
+    );
+    try {
+      return await this.#writeSnapshot(slotId, jailId, savedStateId, signal, root, began);
+    } finally {
+      release();
+    }
+  }
+
+  async #writeSnapshot(
+    slotId: string,
+    jailId: string,
+    savedStateId: string,
+    signal: AbortSignal,
+    root: string,
+    began: number,
+  ): Promise<SavedImage> {
     await firecrackerApi(
       join(root, "api.sock"),
       "PUT",

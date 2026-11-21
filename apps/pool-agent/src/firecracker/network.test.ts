@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { agentConfigSchema, refuseUnsupportedMode } from "../config.js";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { agentConfigSchema, readAgentConfig, refuseUnsupportedMode } from "../config.js";
 import { egressRuleset, hostRuleset, type NetworkConfig } from "./network.js";
 
 const config: NetworkConfig = {
@@ -117,5 +120,31 @@ describe("review G5: the guest mode", () => {
     expect(() =>
       refuseUnsupportedMode({ ...config, driver: { ...config.driver, guestMode: "runtime" } }),
     ).toThrow('guestMode "runtime" is not supported yet');
+  });
+});
+
+describe("review G10: the configuration's own checks", () => {
+  it("refuses overlapping uid ranges", () => {
+    const config = base();
+    const overlapping = {
+      ...config,
+      driver: { ...config.driver, egressUidBase: 205_000, network: { resolvers: [] } },
+    };
+    expect(agentConfigSchema.safeParse(overlapping).success).toBe(false);
+    const apart = { ...config, driver: { ...config.driver, network: { resolvers: [] } } };
+    expect(agentConfigSchema.safeParse(apart).success).toBe(true);
+  });
+
+  it("refuses a configuration file other users can read", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "osp-config-"));
+    const file = join(directory, "agent.json");
+    const text = JSON.stringify({
+      ...base(),
+      driver: { ...base().driver, network: { resolvers: [] } },
+    });
+    await writeFile(file, text, { mode: 0o644 });
+    await expect(readAgentConfig(file)).rejects.toThrow("readable by other users");
+    await chmod(file, 0o600);
+    expect((await readAgentConfig(file)).driver.guestMode).toBe("bench");
   });
 });

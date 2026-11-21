@@ -31,6 +31,7 @@ import {
 } from "./agent.js";
 
 const maximumBodyBytes = 64 * 1024;
+export const maximumConnections = 256;
 
 const phase = z.enum(["running", "paused", "stopped"]);
 const fence = z.strictObject({
@@ -313,6 +314,8 @@ function harden(server: Server): Server {
   server.timeout = 0;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 32;
+  // Review G10: a bounded number of connections, whoever opens them.
+  server.maxConnections = maximumConnections;
   return server;
 }
 

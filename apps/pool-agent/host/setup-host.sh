@@ -39,10 +39,27 @@ require_host() {
     [[ $(uname -m) == x86_64 ]] || die "x86_64 only"
     [[ -c /dev/kvm ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
     [[ -f /sys/fs/cgroup/cgroup.controllers ]] || die "the unified cgroup v2 hierarchy is required"
-    # One thread per core: no SMT sibling is shared between two people's guests.
-    if [[ -r /sys/devices/system/cpu/smt/active && $(cat /sys/devices/system/cpu/smt/active) != 0 ]]; then
-        die "SMT is active: create the host with one thread per core"
+    # One thread per core: no SMT sibling is shared between two people's guests. A host whose
+    # thread status cannot be read fails unless it is declared one-thread-per-core.
+    if [[ -r /sys/devices/system/cpu/smt/active ]]; then
+        [[ $(cat /sys/devices/system/cpu/smt/active) == 0 ]] || die "SMT is active: create the host with one thread per core"
+    elif [[ ${OSP_ONE_THREAD_PER_CORE:-} != declared ]]; then
+        die "SMT status is unreadable: set OSP_ONE_THREAD_PER_CORE=declared on a one-thread-per-core host"
     fi
+    vulnerable_cpu && die "a CPU vulnerability Firecracker's production guide names is not mitigated (see check)"
+    return 0
+}
+
+# The side channels Firecracker's production host guide names (Spectre, Meltdown, MDS and
+# iTLB multihit): any one reported "Vulnerable" by the kernel fails the host.
+readonly NAMED_VULNERABILITIES="spectre_v1 spectre_v2 meltdown mds itlb_multihit"
+vulnerable_cpu() {
+    local name state
+    for name in $NAMED_VULNERABILITIES; do
+        state=$(cat "/sys/devices/system/cpu/vulnerabilities/$name" 2>/dev/null || echo "Unknown")
+        [[ $state == Vulnerable* ]] && return 0
+    done
+    return 1
 }
 
 fetch() { # url output sha256
@@ -169,6 +186,8 @@ kernel_settings() {
     if [[ -w /sys/kernel/mm/ksm/run ]]; then echo 2 > /sys/kernel/mm/ksm/run; echo 0 > /sys/kernel/mm/ksm/run; fi
     # Guest memory is never written anywhere but the encrypted array: no swap, no core dumps.
     swapoff -a
+    # And no swap after a reboot either.
+    sed -i -E 's/^([^#].*[[:space:]]swap[[:space:]].*)$/# disabled by opensteer-pool: \1/' /etc/fstab
     cat > /etc/sysctl.d/90-opensteer-pool.conf <<'EOF'
 kernel.core_pattern=|/bin/false
 fs.suid_dumpable=0
@@ -182,8 +201,9 @@ EOF
     install -d -m 0755 /etc/systemd/coredump.conf.d /etc/systemd/system.conf.d
     printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/opensteer-pool.conf
     printf '[Manager]\nDefaultLimitCORE=0\n' > /etc/systemd/system.conf.d/opensteer-pool.conf
+    systemctl daemon-reexec
     # Linux 6.1+ cgroup v2 attach latency (Firecracker production host setup).
-    mount -o remount,favordynmods /sys/fs/cgroup 2>/dev/null || true
+    mount -o remount,favordynmods /sys/fs/cgroup || die "could not remount cgroup2 with favordynmods"
 }
 
 host_firewall() {
@@ -273,8 +293,18 @@ check() {
         else printf '  FAIL %-28s %s (want %s)\n' "$1" "$2" "$3"; failed=1; fi
     }
     expect "thp" "$(grep -o '\[[a-z]*\]' /sys/kernel/mm/transparent_hugepage/enabled)" "[madvise]"
+    expect "thp defrag" "$(grep -o '\[[a-z+]*\]' /sys/kernel/mm/transparent_hugepage/defrag)" "[madvise]"
+    expect "favordynmods" "$(grep -c ' /sys/fs/cgroup cgroup2 .*favordynmods' /proc/mounts)" "1"
+    expect "swap in fstab" "$(grep -cE '^[^#].*[[:space:]]swap[[:space:]]' /etc/fstab)" "0"
+    local name
+    for name in $NAMED_VULNERABILITIES; do
+        expect "cpu $name" "$(cut -c1-10 "/sys/devices/system/cpu/vulnerabilities/$name" 2>/dev/null | grep -c '^Vulnerable')" "0"
+    done
     expect "ksm" "$(cat /sys/kernel/mm/ksm/run 2>/dev/null || echo 0)" "0"
-    expect "smt active" "$(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo 0)" "0"
+    local smt
+    smt=$(cat /sys/devices/system/cpu/smt/active 2>/dev/null ||
+        { [[ ${OSP_ONE_THREAD_PER_CORE:-} == declared ]] && echo 0 || echo unreadable; })
+    expect "smt active" "$smt" "0"
     expect "threads per core" "$(lscpu | awk -F: '/Thread\(s\) per core/ {gsub(/ /,"",$2); print $2}')" "1"
     expect "swap" "$(awk 'NR>1' /proc/swaps | wc -l)" "0"
     expect "core_pattern" "$(cat /proc/sys/kernel/core_pattern)" "|/bin/false"
