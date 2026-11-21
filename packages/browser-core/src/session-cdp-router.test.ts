@@ -925,6 +925,18 @@ describe("SessionCdpRouter", () => {
         parameters: { behavior: "allowAndName", eventsEnabled: true, downloadPath: "/client/path" },
       }),
     ).resolves.toEqual({});
+    await expect(
+      granted.send({
+        method: "Browser.setDownloadBehavior",
+        parameters: { behavior: "allow", downloadPath: "/client/path" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      granted.send({
+        method: "Browser.cancelDownload",
+        parameters: { guid: "download-1" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
     expect(backend.commands.map(({ method }) => method)).toEqual(["Target.getTargetInfo"]);
     const flushed = Promise.withResolvers<unknown>();
     vi.spyOn(backend, "send").mockReturnValueOnce(flushed.promise);
@@ -937,6 +949,54 @@ describe("SessionCdpRouter", () => {
     flushed.resolve({});
     await granted.settled;
     expect(router.hasExclusiveContextClient).toBe(false);
+    await router.close();
+  });
+
+  it("refuses Browser.setDownloadBehavior and Browser.cancelDownload with forbidden on non-standard agent sessions", async () => {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "root-a", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "root-a", async () => true, "/files/a");
+    const attached = (await router.send("a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("root-a")!;
+
+    await expect(
+      router.send("a", {
+        method: "Browser.setDownloadBehavior",
+        parameters: { behavior: "allow", downloadPath: "/tmp/agent" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      router.send("a", {
+        method: "Browser.setDownloadBehavior",
+        parameters: { behavior: "allowAndName", eventsEnabled: true, downloadPath: "/tmp/agent" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      router.send("a", {
+        method: "Browser.setDownloadBehavior",
+        sessionId: attached.sessionId,
+        parameters: { behavior: "allow", downloadPath: "/tmp/agent" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      router.send("a", {
+        method: "Browser.cancelDownload",
+        parameters: { guid: "download-1" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      router.send("a", {
+        method: "Browser.cancelDownload",
+        sessionId: attached.sessionId,
+        parameters: { guid: "download-1" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(backend.commands).toEqual([]);
+    expect(channel.commands).toEqual([]);
     await router.close();
   });
 
@@ -1814,6 +1874,23 @@ describe("full page CDP with routing isolation", () => {
       code: "forbidden",
     });
     expect(f.channel.commands).toEqual([]);
+    await f.router.close();
+  });
+
+  it("allows Page.screencastFrameAck with a numeric screencast sessionId while still rejecting foreign target sessionIds", async () => {
+    const f = await fixture();
+    await expect(f.send("Page.screencastFrameAck", { sessionId: 49 })).resolves.toEqual({
+      method: "Page.screencastFrameAck",
+    });
+    expect(f.channel.commands).toEqual([
+      { method: "Page.screencastFrameAck", parameters: { sessionId: 49 } },
+    ]);
+    await expect(
+      f.send("Page.screencastFrameAck", { sessionId: "foreign-session" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(f.send("Target.sendMessageToTarget", { sessionId: 49 })).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await f.router.close();
   });
 });

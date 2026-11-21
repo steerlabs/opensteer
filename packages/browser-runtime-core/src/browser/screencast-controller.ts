@@ -272,6 +272,7 @@ export class ScreencastController {
         active !== queued ||
         active.surfaceId !== surfaceId ||
         !this.streaming ||
+        !this.ledger.binding(surfaceId) ||
         (active.casting &&
           active.geometryRevision === this.ledger.binding(surfaceId)?.surface.geometryRevision &&
           active.capture?.revision ===
@@ -446,7 +447,14 @@ export class ScreencastController {
         if (this.active !== active) return;
         this.cancelPendingCast(active);
         void this.viewportChanged(active.surfaceId).catch((error: unknown) => {
-          if (this.closed || !this.streaming || this.active !== active) return;
+          if (
+            this.closed ||
+            !this.streaming ||
+            this.active !== active ||
+            !this.ledger.binding(active.surfaceId) ||
+            (error instanceof BrowserRuntimeError && error.code === "not_found")
+          )
+            return;
           const failure =
             error instanceof BrowserRuntimeError
               ? error
@@ -671,7 +679,14 @@ export class ScreencastController {
           await this.castActive(active, "paint-retry");
         })
         .catch((cause: unknown) => {
-          if (this.closed || !this.streaming || this.active !== active) return;
+          if (
+            this.closed ||
+            !this.streaming ||
+            this.active !== active ||
+            !this.ledger.binding(active.surfaceId) ||
+            (cause instanceof BrowserRuntimeError && cause.code === "not_found")
+          )
+            return;
           this.onError?.(
             cause instanceof BrowserRuntimeError
               ? cause

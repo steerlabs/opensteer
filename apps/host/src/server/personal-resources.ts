@@ -290,14 +290,18 @@ export class PersonalResources {
         // Only a Home with a pooled browser reports one; every other Home sends nothing new.
         const pools = await this.#dependencies.browser.resourcePools(ids);
         const byId = new Map(placements.map((placement) => [placement.runnerId, placement]));
-        return page(rows, (selected) => ({
-          kind,
-          placements: selected.flatMap(({ id }) => {
-            const placement = byId.get(id);
-            return placement ? [placement] : [];
-          }),
-          ...(pools.length ? { pools: [...pools] } : {}),
-        }));
+        return page(rows, (selected) => {
+          // A pooled browser's report rides only the page that carries its Runner.
+          const shown = pools.filter((pool) => selected.some(({ id }) => id === pool.runnerId));
+          return {
+            kind,
+            placements: selected.flatMap(({ id }) => {
+              const placement = byId.get(id);
+              return placement ? [placement] : [];
+            }),
+            ...(shown.length ? { pools: shown } : {}),
+          };
+        });
       }
       if (kind === "harness-catalog") {
         const models = await readHarnessCatalogModelPage(tx, ownerId, {

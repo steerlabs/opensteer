@@ -371,13 +371,22 @@ export class SessionCdpRouter {
     this.#unclaimedPages.delete(rootTargetId);
   }
 
-  async unregisterSession(sessionId: string, confirm = false): Promise<void> {
+  /**
+   * Ends a session's routing. `abandon` gives up the targets' claim of work still in flight, for
+   * a session whose channel was lost while its pages are kept: that work's outcome is already
+   * unknown to its sender, its replies reach no connection, and the same session may register
+   * the targets again at once.
+   */
+  async unregisterSession(sessionId: string, confirm = false, abandon = false): Promise<void> {
     const state = this.#sessions.get(sessionId);
     if (!state) return;
     this.#sessions.delete(sessionId);
     const connections = [...state.session.connections];
     for (const connection of connections) this.#closeConnection(connection);
-    for (const targetId of state.session.ownedTargetIds) this.#ownerByTargetId.delete(targetId);
+    for (const targetId of state.session.ownedTargetIds) {
+      this.#ownerByTargetId.delete(targetId);
+      if (abandon) this.#workByTarget.delete(targetId);
+    }
     if (confirm) await Promise.all(connections.map((connection) => connection.settlement.promise));
   }
 
@@ -740,6 +749,7 @@ export class SessionCdpRouter {
       state,
       command.parameters ?? {},
       command.method === "Target.detachFromTarget",
+      command.method,
     );
     if (state.standard && command.parameters?.browserContextId !== undefined) {
       const { browserContextId, ...parameters } = command.parameters;
@@ -841,6 +851,17 @@ export class SessionCdpRouter {
         throw new SessionCdpRouterError(
           "forbidden",
           `${command.method} cannot be scoped to this CDP attachment.`,
+        );
+    } else {
+      if (command.method === "Browser.setDownloadBehavior")
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Remote CDP cannot configure browser download destinations.",
+        );
+      if (command.method === "Browser.cancelDownload")
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Remote CDP does not manage browser downloads.",
         );
     }
     if (this.#backend.scopeParameters && command.sessionId) {
@@ -1451,7 +1472,7 @@ export class SessionCdpRouter {
     }
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
-    this.#assertScope(state, parameters);
+    this.#assertScope(state, parameters, false, command.method);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
     }
@@ -1783,7 +1804,9 @@ export class SessionCdpRouter {
     }
     const tracked = work;
     return trackPromise(tracked, start).finally(() => {
-      if (!tracked.size) this.#workByTarget.delete(targetId);
+      // Abandoned work settling late leaves the target's newer work alone.
+      if (!tracked.size && this.#workByTarget.get(targetId) === tracked)
+        this.#workByTarget.delete(targetId);
     });
   }
 
@@ -2016,14 +2039,24 @@ export class SessionCdpRouter {
     );
   }
 
-  #assertScope(state: ConnectionState, parameters: CdpParameters, allowAlias = false): void {
+  #assertScope(
+    state: ConnectionState,
+    parameters: CdpParameters,
+    allowAlias = false,
+    method?: string,
+  ): void {
     for (const key of ["targetId", "openerId"]) {
       const target = parameters[key];
       if (typeof target === "string") this.#assertOwnedTarget(state, target);
     }
+    // Page.screencastFrameAck names a numeric screencast frame sessionId, not a
+    // CDP target attachment session.
+    const isScreencastAck =
+      method === "Page.screencastFrameAck" && typeof parameters.sessionId === "number";
     // Browser contexts are checked and supplied by the profile-owned backend.
     if (
       parameters.sessionId !== undefined &&
+      !isScreencastAck &&
       !state.channels.has(String(parameters.sessionId)) &&
       !state.retiredTargets.has(String(parameters.sessionId)) &&
       !(allowAlias && state.aliases.has(String(parameters.sessionId)))

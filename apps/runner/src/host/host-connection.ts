@@ -1319,6 +1319,7 @@ export class ReconnectingHostConnection {
           fail: (reason) => socket.close(1011, reason),
           fence: this.#fence,
           heartbeatNow: () => sendHeartbeat(),
+          logger: this.#logger,
           signal,
           sink,
         })
@@ -1521,6 +1522,8 @@ interface AgentsWorkSessionOptions {
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
+  /** Where a failure the Host cannot see is told: the Host only ever hears its report. */
+  readonly logger?: RunnerLogger;
   /** Sends a heartbeat now rather than at the next interval. */
   readonly heartbeatNow: () => void;
   readonly signal: AbortSignal;
@@ -2047,7 +2050,17 @@ export class AgentsWorkSession implements RunnerWorkSession {
             type: "runner.agent-home.report",
           });
         }
-      } catch {
+      } catch (error) {
+        // Without this report a fresh Home stays not ready; say why where the desktop reads it.
+        if (!this.#signal.aborted)
+          this.#options.logger?.error("Agent home could not be prepared on this computer", {
+            code:
+              error instanceof Error && "code" in error && typeof error.code === "string"
+                ? error.code
+                : error instanceof Error
+                  ? error.name
+                  : "unknown",
+          });
         return;
       }
     }

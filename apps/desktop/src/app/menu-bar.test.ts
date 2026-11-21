@@ -164,12 +164,65 @@ it("pushes the Stop result on reopen even if the popover immediately blurs", asy
     await menuBar.toggle();
     expect(popover.isVisible()).toBe(false);
     set(unconfirmed);
-    expect(service.status).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
+    expect(service.refresh).toHaveBeenCalledTimes(1);
 
     popover.focus.mockImplementationOnce(() => popover.emit("blur"));
     await menuBar.open();
     expect(popover.isVisible()).toBe(false);
     expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed);
+  } finally {
+    menuBar.dispose();
+  }
+});
+
+it("advances the popover Stop state when a Stop fails after blur hides the popover", async () => {
+  const { contents, menuBar, popover, service, set } = fixture();
+  const stopping = status({
+    stop: { phase: "stopping", stoppedAt: null, offline: null, problem: null, confirmed: null },
+  });
+  const unconfirmed = status({
+    stop: {
+      phase: "stopped",
+      stoppedAt: null,
+      offline: null,
+      problem: "Couldn’t confirm everything stopped",
+      confirmed: null,
+    },
+    icon: { attention: false, unreachable: false, stopped: true },
+  });
+  try {
+    menuBar.start();
+    set(stopping);
+    await menuBar.open();
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, stopping),
+    );
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+
+    // Reopen while Stop is still in flight; the window immediately loses focus and hides.
+    popover.focus.mockImplementationOnce(() => popover.emit("blur"));
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(false);
+
+    // Proof fails to arrive after blur already hid the popover.
+    set(unconfirmed);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
+    expect(popover.isVisible()).toBe(false);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    // Opening the popover later shows the failed Stop state immediately.
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(true);
+    await vi.waitFor(() =>
+      expect(contents.send).toHaveBeenLastCalledWith(menuBarChannels.statusChanged, unconfirmed),
+    );
   } finally {
     menuBar.dispose();
   }
@@ -253,5 +306,117 @@ it("refreshes attention while the popover is open and stops when the popover hid
   } finally {
     menuBar.dispose();
     vi.useRealTimers();
+  }
+});
+
+it("refreshes the Home on reopen even when panel show reports hidden or does not emit", async () => {
+  vi.useFakeTimers();
+  const { menuBar, popover, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+
+    // macOS NSPanel can emit "show" before becoming visible (or while deactivated).
+    const originalShow = popover.show;
+    popover.show = () => {
+      popover.emit("show");
+    };
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+    // Must not leak the 15s open-popover refresh timer when the window stayed hidden.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    // Or omit "show" entirely on reopen.
+    popover.show = () => {};
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+    popover.show = originalShow;
+  } finally {
+    menuBar.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("starts the 15s refresh timer from open() when the panel becomes visible without a visible show event, and stops on hide", async () => {
+  vi.useFakeTimers();
+  const { menuBar, popover, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+
+    await menuBar.toggle();
+    expect(popover.isVisible()).toBe(false);
+
+    // Case 1: "show" fires while isVisible() is still false, then focus() activates the panel.
+    let visible = false;
+    const originalShow = popover.show;
+    const originalHide = popover.hide;
+    const originalIsVisible = popover.isVisible;
+    popover.isVisible = () => visible;
+    popover.hide = () => {
+      visible = false;
+      popover.emit("hide");
+    };
+    popover.show = () => {
+      popover.emit("show");
+    };
+    popover.focus.mockImplementationOnce(() => {
+      visible = true;
+    });
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(true);
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+
+    popover.hide();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+
+    // Case 2: "show" does not fire at all on reopen, while the panel becomes visible.
+    popover.show = () => {
+      visible = true;
+    };
+    await menuBar.open();
+    expect(popover.isVisible()).toBe(true);
+    expect(service.refresh).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(5);
+
+    popover.hide();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(service.refresh).toHaveBeenCalledTimes(5);
+
+    popover.show = originalShow;
+    popover.hide = originalHide;
+    popover.isVisible = originalIsVisible;
+  } finally {
+    menuBar.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("refreshes the Home after Stop and Resume finish from the popover", async () => {
+  const { actions, call, menuBar, service } = fixture();
+  try {
+    menuBar.start();
+    await menuBar.open();
+    expect(service.refresh).toHaveBeenCalledTimes(1);
+
+    await call(menuBarChannels.stop);
+    expect(actions.stop).toHaveBeenCalledOnce();
+    expect(service.refresh).toHaveBeenCalledTimes(2);
+
+    await call(menuBarChannels.resume);
+    expect(actions.resume).toHaveBeenCalledOnce();
+    expect(service.refresh).toHaveBeenCalledTimes(3);
+  } finally {
+    menuBar.dispose();
   }
 });

@@ -74,6 +74,12 @@ describe("composer editor", () => {
     expect(field.isContentEditable || field.getAttribute("contenteditable")).toBeTruthy();
   });
 
+  it("injects no inline style element so strict style-src CSP allows mounting it", () => {
+    const before = document.querySelectorAll("style").length;
+    mount("hello");
+    expect(document.querySelectorAll("style").length).toBe(before);
+  });
+
   it("rebuilds references from Markdown and gives the source back byte for byte", () => {
     const source = `Before ${task}\nthen ${channel} and \\[not a link\\](x) \`${task}\``;
     const { editor, field } = mount(source);

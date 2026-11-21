@@ -37,6 +37,9 @@ export interface TabsClientPort {
 export function createTabsClient(port: TabsClientPort): TabsClient {
   // Each tab's newest activation: an older answer arriving after it binds nothing.
   const activations = new Map<TabId, number>();
+  // The recovery notice id each tab's Home gave. Only such an id goes back as seen: an older
+  // Home parses `tab.activate` strictly and would refuse the field.
+  const notices = new Map<TabId, string>();
   let activation = 0;
   async function send<Command extends TabsCommand>(
     command: Command,
@@ -76,7 +79,18 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       const request = ++activation;
       activations.set(tabId, request);
       try {
-        const result = await send({ type: "tab.activate", tabId }, options?.signal);
+        const seen =
+          options?.recoveryNoticeSeen !== undefined &&
+          notices.get(tabId) === options.recoveryNoticeSeen
+            ? options.recoveryNoticeSeen
+            : undefined;
+        const result = await send(
+          { type: "tab.activate", tabId, ...(seen ? { recoveryNoticeSeen: seen } : {}) },
+          options?.signal,
+        );
+        const given = result.viewer.kind === "page" ? result.viewer.recoveryNoticeId : undefined;
+        if (given) notices.set(tabId, given);
+        else notices.delete(tabId);
         if (activations.get(tabId) === request)
           port.activated?.(result.tab as Tab, result.viewer, options?.wake === true);
         return result.viewer;

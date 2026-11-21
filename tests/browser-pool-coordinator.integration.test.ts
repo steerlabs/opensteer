@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
 import {
   BrowserPoolCoordinator,
@@ -66,7 +67,14 @@ class Crash {
 
 async function poolFixture(
   key: string,
-  options: { adoptionWindowMs?: number; now?: () => number } = {},
+  options: {
+    adoptionWindowMs?: number;
+    now?: () => number;
+    /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
+    freshGuests?: boolean;
+    /** The runtime's page probe during a retire; a retire waits for it. */
+    probePage?: () => Promise<readonly string[]>;
+  } = {},
 ) {
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
@@ -75,20 +83,35 @@ async function poolFixture(
     slotId: `slot-${key}`,
     term: 1,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.freshGuests ? { freshGuests: true } : {}),
   });
   const page = new FakePage();
   const verifier = new FakeTicketVerifier();
-  const runtime = new BrowserRuntime({
-    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
-    runtimeId: "pool-runtime",
-    sessionFilesRoot: testSessionFilesRoot(),
-    ticketVerifier: verifier,
-    pool: {
-      controllerKey: controller.publicKey,
-      probePage: async () => [],
-      ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
-    },
-  });
+  const newRuntime = () =>
+    new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+      runtimeId: "pool-runtime",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: verifier,
+      pool: {
+        controllerKey: controller.publicKey,
+        probePage: options.probePage ?? (async () => []),
+        ...(options.adoptionWindowMs ? { adoptionWindowMs: options.adoptionWindowMs } : {}),
+      },
+    });
+  let runtime = newRuntime();
+  if (options.freshGuests) {
+    const apply = controller.apply.bind(controller);
+    controller.apply = async (call) => {
+      const result = await apply(call);
+      if (call.kind === "start" && result.applied) {
+        const old = runtime;
+        runtime = newRuntime();
+        await old.shutdown().catch(() => undefined);
+      }
+      return result;
+    };
+  }
   const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
   const claims = freshClaims({
     sessionId,
@@ -101,14 +124,15 @@ async function poolFixture(
   const skip = new Set<BrowserSessionId>();
   const surfaces = new Set<string>();
   let tabLoss: BrowserSessionId | undefined;
+  let stalled: Promise<void> | undefined;
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
+    // As the Home's: a ready session with no live channel here.
     orphans: async (_runtimeId) => {
-      const live = (runtime as unknown as { sessions: Map<string, unknown> }).sessions;
       const current = await getBrowserSessionForOwner(database, sessionId, task.userId);
-      return current && current.state === "ready" && !live.has(sessionId)
+      return current && current.state === "ready" && !sinks.has(sessionId)
         ? [
             {
               sessionId,
@@ -118,6 +142,7 @@ async function poolFixture(
         : [];
     },
     reattach: async ({ sessions, fence, attempt, documents }) => {
+      if (stalled) await stalled;
       for (const id of sessions) {
         if (skip.has(id)) continue;
         const name = `reattach-${id}-${attempt}`;
@@ -184,9 +209,9 @@ async function poolFixture(
     homes.push(coordinator);
     return coordinator;
   };
-  const openSession = async (coordinator: BrowserPoolCoordinator) => {
+  const openSession = async (coordinator: BrowserPoolCoordinator, id = sessionId) => {
     await createBrowserSession(database, {
-      id: sessionId,
+      id,
       ownerId: task.userId,
       opener: { kind: "person", userId: task.userId },
       placementKey: "pool-test",
@@ -196,17 +221,17 @@ async function poolFixture(
       runtimeId: "pool-runtime",
       pooled: true,
     });
-    await transitionBrowserSession(database, { sessionId, state: "ready" });
-    verifier.setClaims("open", { ...claims, pool: coordinator.fence() });
+    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
+    verifier.setClaims(`open-${id}`, { ...claims, sessionId: id, pool: coordinator.fence() });
     const sink = new FakeSink();
-    const attachment = await runtime.attach("open", sink);
-    for (const id of sink.tabs.rows.keys()) surfaces.add(id);
+    const attachment = await runtime.attach(`open-${id}`, sink);
+    if (id === sessionId) for (const surface of sink.tabs.rows.keys()) surfaces.add(surface);
     await attachment.handle(
       JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
     );
-    sinks.set(sessionId, attachment);
+    sinks.set(id, attachment);
   };
-  const row = () => getBrowserSessionForOwner(database, sessionId, task.userId);
+  const row = (id = sessionId) => getBrowserSessionForOwner(database, id, task.userId);
   const slot = () => readBrowserPoolSlot(database, task.runnerId);
   const admitted = () =>
     commitPersonalMutation(database, async (tx) => {
@@ -250,11 +275,14 @@ async function poolFixture(
     task,
     database,
     controller,
-    runtime,
+    get runtime() {
+      return runtime;
+    },
     page,
     sessionId,
     home,
     openSession,
+    sinks,
     row,
     slot,
     admitted,
@@ -267,6 +295,15 @@ async function poolFixture(
     },
     reportTabLoss: (value: BrowserSessionId | undefined) => {
       tabLoss = value;
+    },
+    /** Every reattach waits for this, as one that stalls on the way to the runtime. */
+    stallReattach: (until: Promise<void> | undefined) => {
+      stalled = until;
+    },
+    /** The Runner's channel drops: the guest keeps the session detached. */
+    loseChannel: async (id: BrowserSessionId = sessionId) => {
+      await sinks.get(id)?.close(false, false, true);
+      sinks.delete(id);
     },
     close,
   };
@@ -297,6 +334,90 @@ it("installs the controller's fence before any traffic and never reads it from t
     expect(status.instance).not.toBe(f.runtime.standardCdpBootId);
     expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
     expect(f.controller.effects).toEqual(["start"]);
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
+for (const field of ["slotId", "term"] as const)
+  it(`replaces a guest whose ${field} differs from the slot's, with the same instance and epoch`, async () => {
+    const f = await poolFixture(`fence-${field}`);
+    try {
+      const before = f.home();
+      await before.recover();
+      await f.openSession(before);
+      before.close();
+      const first = await f.controller.status(`slot-fence-${field}`, 1);
+      // The durable row names another slot or term; the instance and epoch still match.
+      await f.database
+        .updateTable("browserPoolSlots")
+        .set(field === "slotId" ? { slotId: "slot-elsewhere" } : { term: 2 })
+        .where("runnerId", "=", f.task.runnerId)
+        .execute();
+      const home = f.home();
+      await home.recover();
+      // Not the controller's whole fence: never kept, the guest is replaced and named again.
+      const now = await f.controller.status(`slot-fence-${field}`, 1);
+      expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+      expect(now.instance).not.toBe(first.instance);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        slotId: `slot-fence-${field}`,
+        term: 1,
+        instanceId: now.instance,
+        epoch: now.epoch,
+      });
+      expect(f.runtime.poolState()?.fence).toEqual({
+        slot: `slot-fence-${field}`,
+        term: 1,
+        instance: now.instance,
+        epoch: now.epoch,
+      });
+      expect((await f.row())?.state).toBe("failed");
+      expect(home.gate.phase).toBe("open");
+    } finally {
+      await f.close();
+    }
+  });
+
+it("bootstraps a Home without its slot row by replacing whatever guest runs, with the controller's fence", async () => {
+  const f = await poolFixture("bootstrap");
+  try {
+    const first = f.home();
+    await first.recover();
+    await f.openSession(first);
+    first.close();
+    const dropRow = () =>
+      f.database.deleteFrom("browserPoolSlots").where("runnerId", "=", f.task.runnerId).execute();
+    const installed = async () => {
+      const now = await f.controller.status("slot-bootstrap", 1);
+      const fence = { slot: "slot-bootstrap", term: 1, instance: now.instance, epoch: now.epoch };
+      expect(f.runtime.poolState()?.fence).toEqual(fence);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        slotId: "slot-bootstrap",
+        term: 1,
+        instanceId: now.instance,
+        epoch: now.epoch,
+      });
+      return now.instance;
+    };
+    const before = (await f.controller.status("slot-bootstrap", 1)).instance;
+    // Without a row nothing could own a page in the running guest, even one whose whole fence is
+    // the controller's: it is stopped and a fresh one started.
+    await dropRow();
+    await f.home().recover();
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    const second = await installed();
+    expect(second).not.toBe(before);
+    expect(f.page.isClosed()).toBe(true);
+    // The same with a controller on an epoch the guest does not carry.
+    await dropRow();
+    f.controller.observe({ epoch: 5 });
+    await f.home().recover();
+    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    expect(await installed()).not.toBe(second);
     await f.admitted();
   } finally {
     await f.close();
@@ -515,7 +636,15 @@ it("recovers a retire that threw by release and adoption, then parks again", asy
 });
 
 it("recovers a runtime found retiring at a Home restart as not parked", async () => {
-  const f = await poolFixture("found-retiring");
+  // The retire's page probe waits here, so the runtime is still retiring when the Home restarts.
+  let probing = Promise.withResolvers<void>();
+  let blocked = false;
+  const f = await poolFixture("found-retiring", {
+    probePage: async () => {
+      if (blocked) await probing.promise;
+      return [];
+    },
+  });
   try {
     const home = f.home();
     await home.recover();
@@ -527,15 +656,35 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
       randomUUID(),
       () => false,
     );
-    const retired = await f.signed({
-      kind: "retire",
-      fence: f.runtime.poolState()!.fence!,
-      intent: { id: intent!.intentId!, sequence: intent!.intentSequence },
-    });
-    expect(retired.phase).toBe("retired");
+    blocked = true;
+    const retiring = f
+      .signed({
+        kind: "retire",
+        fence: f.runtime.poolState()!.fence!,
+        intent: { id: intent!.intentId!, sequence: intent!.intentSequence },
+      })
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("retiring"));
     home.close();
-    const next = f.home();
-    await next.recover();
+    const seen: string[] = [];
+    const next = f.home(undefined, f.controller, {
+      runtime: {
+        poolState: () => {
+          const state = f.runtime.poolState();
+          if (state) seen.push(state.phase);
+          return state;
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+      },
+    });
+    const recovering = next.recover();
+    // The new Home found it retiring; only then may the probe finish.
+    await vi.waitFor(() => expect(seen).toContain("retiring"));
+    blocked = false;
+    probing.resolve();
+    probing = Promise.withResolvers<void>();
+    await recovering;
+    await retiring;
     expect(next.gate.phase).toBe("open");
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 1 });
     expect(f.runtime.poolState()).toMatchObject({ phase: "running", cancelled: true });
@@ -543,6 +692,7 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
     expect((await f.row())?.state).toBe("ready");
     expect(f.page.isClosed()).toBe(false);
   } finally {
+    probing.resolve();
     await f.close();
   }
 });
@@ -657,15 +807,20 @@ it("keeps admission closed when the park intent's commit and its read-back fail,
   const f = await poolFixture("commit-unknown");
   try {
     let reads = 0;
+    let readingBack = false;
     const home = f.home(undefined, f.controller, {
       testHooks: {
         beginPark: async (...args) => {
           await beginBrowserPoolPark(...args);
+          readingBack = true;
           throw new Error("The COMMIT reply was lost.");
         },
         readSlot: async (...args) => {
           // The first two read-backs fail too; admission stays closed meanwhile.
-          if (++reads <= 2) throw new Error("The read-back failed.");
+          if (readingBack) {
+            if (++reads <= 2) throw new Error("The read-back failed.");
+            readingBack = false;
+          }
           return readBrowserPoolSlot(...args);
         },
       },
@@ -893,6 +1048,271 @@ it("aborts a park when a page was ended while its session was suspended", async 
   }
 });
 
+it("keeps installing a cold start past the attempts until the controller answers", async () => {
+  const f = await poolFixture("cold-start");
+  try {
+    // The controller cannot be reached for more attempts than the ladder has before its last rung.
+    let unreachable = 9;
+    const flaky: BrowserPoolPhysicalController = {
+      status: async (slot, term) => {
+        if (unreachable > 0) {
+          unreachable--;
+          throw new Error("The pool controller is unreachable.");
+        }
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: (call) => f.controller.apply(call),
+    };
+    const home = f.home(undefined, flaky);
+    await withTimeout(home.recover(), 10_000, {
+      timeoutError: () => new Error("The cold start never installed."),
+    });
+    expect(unreachable).toBe(0);
+    expect(home.gate.phase).toBe("open");
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
+it("discards a running slot whose recovery keeps failing, and never opens it unchecked", async () => {
+  const f = await poolFixture("running-fallback");
+  try {
+    const first = f.home();
+    await first.recover();
+    await f.openSession(first);
+    first.close();
+    // After the restart the runtime's state cannot be read for many attempts.
+    let unreadable = 9;
+    const next = f.home(undefined, f.controller, {
+      runtime: {
+        poolState: () => {
+          if (unreadable > 0) {
+            unreadable--;
+            return undefined;
+          }
+          return f.runtime.poolState();
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+      },
+    });
+    await withTimeout(next.recover(), 10_000, {
+      timeoutError: () => new Error("The recovery never ended."),
+    });
+    // Recovery is tried every round; once the attempts are used and it fails again, the live
+    // state is discarded with its note. Admission opens only behind the fresh guest.
+    expect(next.gate.phase).toBe("open");
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({
+      outcome: { adopted: [], lost: [{ sessionId: f.sessionId, reason: "unrecoverable" }] },
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+it("drives a reconnect whose slot read fails to the session reattached and an open gate", async () => {
+  const f = await poolFixture("reconnect-read");
+  try {
+    let failing = 0;
+    const home = f.home(undefined, f.controller, {
+      channelDeadlineMs: 5_000,
+      testHooks: {
+        readSlot: async (database, runnerId) => {
+          if (failing > 0) {
+            failing--;
+            throw new Error("The slot read failed.");
+          }
+          return readBrowserPoolSlot(database, runnerId);
+        },
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    await f.loseChannel();
+    failing = 2;
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"), { timeout: 4_000 });
+    expect(failing).toBe(0);
+    expect((await f.row())?.state).toBe("ready");
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+it("ends a reconnect whose reattach stalls by its deadline, with the session's end recorded", async () => {
+  const f = await poolFixture("reconnect-stall");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 300 });
+    await home.recover();
+    await f.openSession(home);
+    await f.loseChannel();
+    const never = Promise.withResolvers<void>();
+    f.stallReattach(never.promise);
+    const lost = Date.now();
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"), { timeout: 3_000 });
+    expect(Date.now() - lost).toBeLessThan(3_000);
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+    never.resolve();
+  } finally {
+    await f.close();
+  }
+});
+
+for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const)
+  it(`keeps a removed device's slot until its guest is known stopped when the ${fault}`, async () => {
+    const f = await poolFixture(`release-${fault}`);
+    try {
+      let failing = 3;
+      let refused = 0;
+      const physical: BrowserPoolPhysicalController = {
+        status: async (slot, term) => {
+          if (fault === "status-fails" && failing > 0) {
+            failing--;
+            refused++;
+            throw new Error("The pool controller is unreachable.");
+          }
+          return f.controller.status(slot, term);
+        },
+        result: (slot, term, id) => f.controller.result(slot, term, id),
+        apply: async (call) => {
+          if (call.kind === "stop" && fault !== "status-fails" && failing > 0) {
+            failing--;
+            refused++;
+            if (fault === "stop-throws") throw new Error("The stop request was lost.");
+            return {
+              id: call.id,
+              applied: false,
+              reason: "busy",
+              status: await f.controller.status(call.slotId, call.term),
+            };
+          }
+          return f.controller.apply(call);
+        },
+      };
+      const first = f.home();
+      await first.recover();
+      await f.openSession(first);
+      first.close();
+      let removing = f.home(undefined, physical);
+      await removing.recover();
+      const blocked = Promise.withResolvers<void>();
+      f.controller.hold("stop", () => blocked.promise);
+      failing = 1_000;
+      await removing.releaseDevice();
+      // The sessions ended with their note at once, admission is closed for good, and the row
+      // waits: none of the failures is evidence that the guest stopped.
+      expect((await f.row())?.state).toBe("failed");
+      expect(await f.slot()).toMatchObject({ phase: "releasing" });
+      expect(removing.gate.phase).toBe("released");
+      // The driver keeps asking; however often it is refused, the row stays.
+      const before = refused;
+      await vi.waitFor(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
+      expect(await f.slot()).toMatchObject({ phase: "releasing" });
+      expect(f.controller.effects).toEqual(["start"]);
+      // A Home restart resumes the stop; once it is known, the slot goes with its journal.
+      removing.close();
+      blocked.resolve();
+      failing = 2;
+      removing = f.home(undefined, physical);
+      await removing.recover();
+      expect(removing.gate.phase).toBe("released");
+      await vi.waitFor(async () => expect(await f.slot()).toBeUndefined(), { timeout: 5_000 });
+      expect(f.controller.effects).toEqual(["start", "stop"]);
+      expect(
+        await f.database
+          .selectFrom("browserPoolControllerCalls")
+          .select("id")
+          .where("runnerId", "=", f.task.runnerId)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+it("ages out finished calls, the last intent's included once the slot runs again, without being asked", async () => {
+  const f = await poolFixture("prune-idle");
+  try {
+    const home = f.home(undefined, f.controller, { pruneEveryMs: 50 });
+    await home.recover();
+    await f.openSession(home);
+    await parkAndWake(f, home);
+    const slot = await f.slot();
+    expect(slot).toMatchObject({ phase: "running", intentId: expect.any(String) });
+    const calls = () =>
+      f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select(["id", "intentId"])
+        .where("runnerId", "=", f.task.runnerId)
+        .execute();
+    expect((await calls()).some(({ intentId }) => intentId === slot!.intentId)).toBe(true);
+    // Everything finished long ago; nothing calls the cleanup here, the Home's own timer does.
+    await f.database
+      .updateTable("browserPoolControllerCalls")
+      .set({ settledAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) })
+      .where("runnerId", "=", f.task.runnerId)
+      .where("settledAt", "is not", null)
+      .execute();
+    await vi.waitFor(async () => expect(await calls()).toEqual([]), { timeout: 3_000 });
+  } finally {
+    await f.close();
+  }
+});
+
+it("closes an open resume when a discard replaces the guest, so no later recovery replays it", async () => {
+  const f = await poolFixture("resume-ack-lost", { freshGuests: true });
+  try {
+    // Every acknowledgement of the resume is lost: its row stays open while the guest resumed.
+    const settle = async (id: string, result: Readonly<Record<string, unknown>>) => {
+      const row = await f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select("kind")
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+      if (row.kind === "resume") throw new Error("The journal acknowledgement was lost.");
+      await f.database
+        .updateTable("browserPoolControllerCalls")
+        .set({ result, settledAt: new Date() })
+        .where("id", "=", id)
+        .where("settledAt", "is", null)
+        .execute();
+    };
+    const home = f.home(undefined, f.controller, { testHooks: { settleCall: settle } });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const woken = await home.gate.reserve(AbortSignal.timeout(15_000));
+    woken.release();
+    // The ladder reached its last rung: a fresh guest replaced the resumed one.
+    expect(f.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+    const open = () =>
+      f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select(["kind", "result"])
+        .where("runnerId", "=", f.task.runnerId)
+        .where("settledAt", "is", null)
+        .execute();
+    expect(await open()).toEqual([]);
+    // A later Home's recovery has nothing to replay against the new guest: still one guest.
+    home.close();
+    const next = f.home();
+    await next.recover();
+    expect(f.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+    expect(next.gate.phase).toBe("open");
+    expect(await open()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
 it("ends a recovery that keeps failing at start in a discard and an open gate", async () => {
   const f = await poolFixture("startup-discard");
   try {
@@ -933,14 +1353,16 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
   }
 });
 
-it("reports a lost session whose end could not be confirmed without discarding the adoption", async () => {
+it("reports a lost session whose end could not be confirmed, and keeps the other session usable", async () => {
   const f = await poolFixture("end-unconfirmed");
   try {
     const home = f.home();
     await home.recover();
     await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
     expect(await home.tryPark()).toBe("parked");
-    // The session is not reattached, and ending it fails.
+    // The first session is not reattached, and ending it fails; the second is reattached.
     f.skip.add(f.sessionId);
     (f.runtime as unknown as { endPooledSession: () => Promise<void> }).endPooledSession =
       async () => {
@@ -952,14 +1374,26 @@ it("reports a lost session whose end could not be confirmed without discarding t
       phase: "running",
       adoption: {
         outcome: {
-          adopted: [],
+          adopted: [other],
           lost: [{ sessionId: f.sessionId, reason: "not-reattached; end-unconfirmed" }],
         },
       },
     });
-    // No blanket discard: the controller saw no fresh start.
+    // No blanket discard: the controller saw no fresh start, and the other session works.
     expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
+    expect((await f.row(other))?.state).toBe("ready");
+    await expect(
+      f.sinks.get(other)!.handle(
+        JSON.stringify({
+          type: "session.state",
+          runs: 0,
+          personUsed: [],
+          viewed: [],
+          pinned: [],
+        }),
+      ),
+    ).resolves.toBeUndefined();
   } finally {
     await f.close();
   }

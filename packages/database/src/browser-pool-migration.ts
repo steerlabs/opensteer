@@ -18,7 +18,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       intent_sequence integer not null check (intent_sequence >= 0),
       intent_id uuid,
       attachment_generation integer not null check (attachment_generation > 0),
-      phase text not null check (phase in ('running', 'preparing', 'parked', 'waking')),
+      phase text not null check (phase in ('running', 'preparing', 'parked', 'waking', 'releasing')),
       retained jsonb,
       saved_state jsonb,
       outcome jsonb,

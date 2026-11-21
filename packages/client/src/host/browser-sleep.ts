@@ -34,8 +34,8 @@ export type BrowserStartReason =
 /**
  * One Cloud Computer's pooled browser, as its Home would report it. Names follow
  * `browser-pool-core` where it has the fact (`browserPoolSlots.runnerId`, `.phase`;
- * `BrowserPoolDocument.surfaceId`, `.typed`; `BrowserPoolAdoptionOutcome.adopted`, `.lost`).
- * The rest is what the clients need and the Home does not report yet; see
+ * `BrowserPoolDocument.surfaceId`, `.typed`; `BrowserPoolAdoptionOutcome.adopted`, `.lost`),
+ * plus each note's id, which the client sends back once the note was seen; see
  * `browserSleepFromHome`.
  */
 export interface BrowserPoolReport {
@@ -62,27 +62,18 @@ export interface BrowserPoolReport {
   readonly failures?: number | undefined;
   /**
    * The pages that did not come back as they were after the last start or wake, until the
-   * person has seen them. Every other page was `adopted`: exactly as it was.
+   * person has seen them. Every other page came back exactly as it was.
    */
   readonly pages?:
     | readonly {
         /** `BrowserPoolDocument.surfaceId`: the tab. */
         readonly surfaceId: string;
+        /** The Home's id for this note, sent back once the person has seen it. */
+        readonly noticeId?: string | undefined;
         /** "reloaded": opened again from its address. "lost": could not be brought back. */
         readonly outcome: "reloaded" | "lost";
         /** `BrowserPoolDocument.typed`: the page held typed text that was not sent. */
         readonly typed: boolean;
-      }[]
-    | undefined;
-  /**
-   * Each adopted tab's document and its revision when the browser froze. A picture taken of
-   * that same document and revision is still current after the wake.
-   */
-  readonly adopted?:
-    | readonly {
-        readonly surfaceId: string;
-        readonly documentId: string;
-        readonly revision: number;
       }[]
     | undefined;
 }
@@ -127,11 +118,14 @@ export type BrowserTabReturn =
       readonly reason: BrowserStartReason | null;
       /** The start this note is about; null when the Home did not say. */
       readonly startAt: string | null;
+      /** The Home's id for this note, sent back once the person has seen it. */
+      readonly noticeId?: string;
     }
   | {
       readonly kind: "lost";
       readonly typed: boolean;
       readonly startAt: string | null;
+      readonly noticeId?: string;
     };
 
 export interface BrowserSleepView {
@@ -151,8 +145,7 @@ export const browserNotPooled: BrowserSleepView = Object.freeze({
  * A Home with a pooled browser reports it with its browser placements (`pools`), and the
  * client copies that into `browserPools` unchanged; every other Home sends nothing, so this
  * returns `browserNotPooled` for it. The report carries every phase, when it began, the last
- * fresh start's reason and id, the count of failed starts, the pages not kept until seen, and
- * each adopted tab's document at the freeze.
+ * fresh start's reason and id, the count of failed starts, and the pages not kept until seen.
  */
 export function browserSleepFromHome(
   reports: HostSnapshot["browserPools"],
@@ -189,33 +182,16 @@ function tabOf(report: BrowserPoolReport, tabId: string): BrowserTabReturn {
   const page = report.pages?.find((candidate) => candidate.surfaceId === tabId);
   if (!page) return kept;
   const startAt = report.start?.at ?? null;
+  const notice = page.noticeId ? { noticeId: page.noticeId } : {};
   return page.outcome === "reloaded"
-    ? { kind: "reloaded", typed: page.typed, reason: report.start?.reason ?? null, startAt }
-    : { kind: "lost", typed: page.typed, startAt };
-}
-
-/**
- * Whether a picture the client holds of this tab from before a sleep is still current: the
- * Home adopted the same document at the same revision. A viewport change is not covered: the
- * Home does not yet report the viewport at the freeze and at adoption, so a picture is current
- * only for its own size.
- */
-export function browserPictureIsCurrent(
-  reports: HostSnapshot["browserPools"],
-  computerId: string | null | undefined,
-  picture: { readonly tabId: string; readonly documentId: string; readonly revision: number },
-): boolean {
-  const report = computerId
-    ? reports?.find((candidate) => candidate.runnerId === computerId)
-    : undefined;
-  return (
-    report?.adopted?.some(
-      ({ surfaceId, documentId, revision }) =>
-        surfaceId === picture.tabId &&
-        documentId === picture.documentId &&
-        revision === picture.revision,
-    ) ?? false
-  );
+    ? {
+        kind: "reloaded",
+        typed: page.typed,
+        reason: report.start?.reason ?? null,
+        startAt,
+        ...notice,
+      }
+    : { kind: "lost", typed: page.typed, startAt, ...notice };
 }
 
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */
@@ -405,14 +381,20 @@ export function browserStartFailure(browser: BrowserSleep): {
 
 /**
  * The tab notes this device has shown and the person has seen (dismissed, touched the page, or
- * left the tab), and the starts whose reason has been given. Held for the life of the client:
- * the Home clears its own record once it is told, which it cannot be yet.
+ * left the tab), and the starts whose reason has been given. Each seen note the Home gave an id
+ * is sent back to it, so it leaves the report and every other client of the person drops it.
  */
 export class BrowserReturnNotes {
   readonly #seen = new Set<string>();
   readonly #reasons = new Set<string>();
   readonly #listeners = new Set<() => void>();
   #version = 0;
+  readonly #tell: BrowserNoticeClient["browserNoticeSeen"] | undefined;
+
+  /** `tell` lets the Home know a note was seen, so every client of the person drops it. */
+  constructor(tell?: BrowserNoticeClient["browserNoticeSeen"]) {
+    this.#tell = tell;
+  }
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -434,6 +416,8 @@ export class BrowserReturnNotes {
     const key = noteKey(computerId, tabId, tab);
     if (this.#seen.has(key)) return;
     this.#seen.add(key);
+    // The Home is told only of a note it gave an id; a failure leaves the note to the Home.
+    if (tab.noticeId) void this.#tell?.(computerId, tabId, tab.noticeId).catch(() => undefined);
     if (tab.kind === "reloaded") this.#reasons.add(JSON.stringify([computerId, tab.startAt]));
     this.#version += 1;
     for (const listener of this.#listeners) listener();
@@ -450,10 +434,16 @@ const notesByClient = new WeakMap<object, BrowserReturnNotes>();
 export function browserReturnNotes(hostClient: object): BrowserReturnNotes {
   let notes = notesByClient.get(hostClient);
   if (!notes) {
-    notes = new BrowserReturnNotes();
+    const tell = (hostClient as Partial<BrowserNoticeClient>).browserNoticeSeen;
+    notes = new BrowserReturnNotes(tell?.bind(hostClient));
     notesByClient.set(hostClient, notes);
   }
   return notes;
+}
+
+/** What a Host client offers so the Home learns a note was seen. */
+export interface BrowserNoticeClient {
+  browserNoticeSeen(computerId: string, tabId: string, noticeId: string): Promise<void>;
 }
 
 /* ------------------------------------------------------------------------- *

@@ -256,8 +256,8 @@ import Darwin
     let peerIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(peerRecord.identity))
     let peerBundleId = peerRecord.identity.bundleId
     let session = "cus_33333333-3333-4333-8333-333333333333"
-    let primaryTarget: [String: Any] = ["identity": primaryIdentity, "access": "read-only"]
-    let peerTarget: [String: Any] = ["identity": peerIdentity, "access": "read-only"]
+    let primaryTarget: [String: Any] = ["identity": primaryIdentity, "access": "read"]
+    let peerTarget: [String: Any] = ["identity": peerIdentity, "access": "read"]
     let peerOut = out.appendingPathComponent("peer-app")
     try FileManager.default.createDirectory(at: peerOut, withIntermediateDirectories: true)
 
@@ -277,7 +277,7 @@ import Darwin
       try require(error.code == .appNotRunning, "Wrong closed-app windowsExisting error: \(error.code)")
     }
     do {
-      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget, "windowId": NSNull()])
       throw JourneyFailure.failed("session.bindExisting succeeded on a closed app")
     } catch let error as HelperError {
       try require(error.code == .appNotRunning, "Wrong closed-app bindExisting error: \(error.code)")
@@ -337,7 +337,7 @@ import Darwin
     let emptyWindows = (emptyListed["windows"] as? [[String: Any]]) ?? []
     try require(emptyWindows.isEmpty, "Running app with no windows reported \(emptyWindows.count) windows")
     do {
-      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget])
+      _ = try await request("session.bindExisting", ["sessionId": session, "app": peerTarget, "windowId": NSNull()])
       throw JourneyFailure.failed("session.bindExisting succeeded on a running app with no windows")
     } catch let error as HelperError {
       try require(

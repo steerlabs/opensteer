@@ -69,10 +69,22 @@ export async function findPersonalSettings(database: Kysely<DatabaseSchema>) {
     : null;
 }
 
+/**
+ * The Home knows its owner but has not created its Personal settings yet: it is
+ * waiting for its hosting computer to report Agent home. That passes, so it is
+ * retryable, and it is never `forbidden`, which says the caller is not the owner.
+ */
+export function hostingComputerNotReady() {
+  return new OpensteerError({
+    code: "conflict",
+    message: "The hosting computer is not ready.",
+    retryable: true,
+  });
+}
+
 export async function personalSettings(database: Kysely<DatabaseSchema>) {
   const settings = await findPersonalSettings(database);
-  if (!settings)
-    throw new OpensteerError({ code: "conflict", message: "The hosting computer is not ready." });
+  if (!settings) throw hostingComputerNotReady();
   return settings;
 }
 

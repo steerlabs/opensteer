@@ -6,6 +6,7 @@ import {
   type BrowserPoolRuntimeFence,
 } from "./browser-pool.js";
 import { BrowserRuntime } from "./runtime.js";
+import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -28,9 +29,10 @@ async function fixture(
 ) {
   const keys = generateKeyPairSync("ed25519");
   const page = new FakePage();
+  const context = new FakeContext([page]);
   const verifier = new FakeTicketVerifier();
   const runtime = new BrowserRuntime({
-    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
     runtimeId: "runtime_test",
     sessionFilesRoot: testSessionFilesRoot(),
     ticketVerifier: verifier,
@@ -101,6 +103,7 @@ async function fixture(
   };
   return {
     runtime,
+    context,
     controls,
     install,
     resume,
@@ -219,6 +222,28 @@ it("keeps an agent's page through retire and release, and adopts it under a newe
   }
 });
 
+it("ends a page its session opens during the park, outside the retained pages, and reports it", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sink = new FakeSink();
+    await f.open(sink);
+    const tab = [...sink.tabs.rows.values()][0]!;
+    const retired = await f.controls("retire");
+    expect(retired).toMatchObject({ phase: "retired", dropped: 0 });
+    // A popup the retired page opens after the final probe: it is not kept and is said.
+    const popup = new FakePage({ opener: f.page });
+    f.context.addPage(popup);
+    await vi.waitFor(() => expect(popup.isClosed()).toBe(true));
+    const state = f.runtime.poolState();
+    expect(state).toMatchObject({ phase: "retired", dropped: 1 });
+    expect(state?.retired?.documents.map((document) => document.surfaceId)).toEqual([tab.id]);
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
 it("recovers a retire that threw after detaching by release and adoption", async () => {
   const f = await fixture();
   try {
@@ -242,6 +267,61 @@ it("recovers a retire that threw after detaching by release and adoption", async
       phase: "running",
       adoption: { outcome: { adopted: [f.claims.sessionId], lost: [] } },
     });
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("loses only the page that did not thaw, closed with its note, and keeps both sessions", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    const sinkA = new FakeSink();
+    await f.open(sinkA);
+    // A second session of the same runtime, with a page of its own.
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    f.verifier.setClaims("open-b", {
+      ...f.claims,
+      sessionId: other,
+      pool: { ...f.fence(), attachment: 1 },
+    });
+    const sinkB = new FakeSink();
+    const b = await f.runtime.attach("open-b", sinkB);
+    await b.handle(
+      JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+    );
+    const pageB = f.context.pages().find((page) => page !== f.page) as FakePage;
+    expect(pageB).toBeDefined();
+    const tabB = [...sinkB.tabs.rows.values()][0]!;
+    await f.controls("retire");
+    await f.controls("seal");
+    // Chromium refuses to thaw session B's page.
+    pageB.cdpSession.responses.set(
+      "Page.setWebLifecycleState",
+      (parameters: Record<string, unknown> | undefined) => {
+        if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
+        return {};
+      },
+    );
+    await f.resume();
+    await f.reattach(2);
+    f.verifier.setClaims("reattach-b", {
+      ...f.claims,
+      sessionId: other,
+      reattach: true,
+      initialNavigation: undefined,
+      pool: { ...f.fence(), attachment: 2 },
+    });
+    await f.runtime.attach("reattach-b", new FakeSink());
+    const completed = await f.controls("complete", 1, 2);
+    expect(completed.adoption?.outcome).toEqual({
+      adopted: [f.claims.sessionId, other].sort(),
+      lost: [],
+      pagesLost: [{ sessionId: other, surfaceId: tabB.id, reason: "thaw-failed" }],
+    });
+    // The page that did not thaw is closed, never shown frozen as usable; the other is kept.
+    expect(pageB.isClosed()).toBe(true);
     expect(f.page.isClosed()).toBe(false);
   } finally {
     await f.runtime.shutdown();

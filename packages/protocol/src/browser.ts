@@ -1525,19 +1525,10 @@ export const BrowserPoolReportSchema = z.object({
     .array(
       z.object({
         surfaceId: z.string().min(1).max(200),
+        /** The notice's id: a client sends it back once the person has seen the note. */
+        noticeId: z.string().min(1).max(200).optional(),
         outcome: z.enum(["reloaded", "lost"]),
         typed: z.boolean(),
-      }),
-    )
-    .max(500)
-    .optional(),
-  /** Each adopted tab's document and revision at the freeze: a picture of them is current. */
-  adopted: z
-    .array(
-      z.object({
-        surfaceId: z.string().min(1).max(200),
-        documentId: z.string().min(1).max(200),
-        revision: z.number().int().nonnegative(),
       }),
     )
     .max(500)

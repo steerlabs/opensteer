@@ -163,6 +163,7 @@ import {
   AgentPhoneHostTargetSchema,
   ApprovePersonalHostAccountLinkRequestSchema,
   BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
@@ -377,7 +378,13 @@ export interface HostServerDependencies {
   readonly deviceDrivers?: DeviceDriverManagementPort;
   readonly assets?: AssetService;
   readonly transcriptFiles?: TranscriptFiles;
-  readonly execution: Pick<PersonalExecution, "canExecute">;
+  readonly execution: Pick<PersonalExecution, "canExecute"> & {
+    /**
+     * The Home has its owner, hosting computer and Personal settings in place, so it can
+     * answer the owner's reads. False while it waits for the hosting Runner's agent home.
+     */
+    readonly initialized: () => boolean;
+  };
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly connectionEffects?: ConnectionCommandEffects;
@@ -2657,6 +2664,20 @@ export async function createHostServer(
         return handleAppCommand(dependencies.apps, command, userId);
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
+        return { type: command.type };
+      case "browser.pool.notice.seen":
+        await dependencies.browser.poolNoticeSeen(
+          userId,
+          BrowserSurfaceIdSchema.parse(command.surfaceId),
+          command.noticeId,
+        );
+        return { type: command.type };
+      case "browser.pool.restart":
+        await dependencies.browser.restartPooledBrowser(
+          userId,
+          command.runnerId as RunnerId,
+          command.idempotencyKey,
+        );
         return { type: command.type };
     }
     throw new OpensteerError({

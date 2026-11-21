@@ -70,6 +70,12 @@ export interface BrowserPoolSessionOutcome {
 export interface BrowserPoolAdoptionOutcome {
   readonly adopted: readonly BrowserSessionId[];
   readonly lost: readonly BrowserPoolSessionOutcome[];
+  /** Pages of adopted sessions that did not thaw: each closed, and each its own loss. */
+  readonly pagesLost?: readonly {
+    readonly sessionId: BrowserSessionId;
+    readonly surfaceId: BrowserSurfaceId;
+    readonly reason: string;
+  }[];
 }
 
 export type BrowserPoolRuntimePhase =

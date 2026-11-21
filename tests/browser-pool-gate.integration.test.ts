@@ -27,6 +27,27 @@ import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { removeDevice } from "../apps/host/src/administration/device-removal.js";
+import {
+  registerTriggerCdpBridge,
+  registerWatchCdpBridge,
+} from "../apps/host/src/browser/trigger-cdp-bridge.js";
+import { hostInternalRoutePaths } from "../apps/host/src/server/internal-routes.js";
+import { createRequire } from "node:module";
+
+/** Packages the Host depends on, resolved as the Host resolves them. */
+const requireFromHost = createRequire(new URL("../apps/host/package.json", import.meta.url));
+const { WebSocket } = requireFromHost("ws") as typeof import("ws");
+/** The database driver's client, as the Host loads it; only its query method is used here. */
+const pg = requireFromHost("pg") as {
+  readonly Client: { readonly prototype: { query(...args: unknown[]): unknown } };
+};
+type FastifyLike = {
+  register(plugin: unknown): Promise<unknown>;
+  listen(options: { host: string; port: number }): Promise<string>;
+  close(): Promise<unknown>;
+  readonly server: { address(): unknown };
+};
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
 import {
   before,
@@ -34,6 +55,7 @@ import {
   editVisibly,
   holdResume,
   journey,
+  TestRuntimeConnection,
 } from "./browser-pool-journey.test-support.js";
 
 it("vetoes D on an ended session with confined CDP contact loss", async () => {
@@ -315,6 +337,99 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     } finally {
       attached.close();
     }
+  } finally {
+    await j.close();
+  }
+});
+
+it("carries the tabs the person used to the adopted broker of a restored session, by its lineage", async () => {
+  const j = await journey("person-use");
+  try {
+    const home = await j.startHome();
+    const { sessionId: first, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("person-use"),
+    );
+    // The session ends and the tab is restored: a new session under the first one's lineage.
+    await home.service.stop(j.task.userId, first);
+    const restoredRow = await j.tabs.get(j.task.userId, tabId);
+    const restored = await home.service.pageTabs.activate(
+      j.task.userId,
+      restoredRow!,
+      "person-use-restore",
+    );
+    const sessionId = restored.kind === "page" ? restored.sessionId : undefined;
+    expect(sessionId).toBeDefined();
+    expect(sessionId).not.toBe(first);
+    const lineage = await j.database
+      .selectFrom("browserSessions")
+      .select("tabGroupId")
+      .where("id", "=", sessionId!)
+      .executeTakeFirstOrThrow();
+    expect(lineage.tabGroupId).toBe(first);
+    // What the Home tells the runtime about the person's use.
+    const send = vi.spyOn(TestRuntimeConnection.prototype, "send");
+    const marked = (from: number) =>
+      send.mock.calls.slice(from).flatMap(([data]) => {
+        const message = JSON.parse(data) as { type: string; personUsed?: string[] };
+        return message.type === "session.state" ? (message.personUsed ?? []) : [];
+      });
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    const parked = send.mock.calls.length;
+    // A watch viewer wakes it: watching is not use, so only the carried use can name the tab.
+    const watching = j.viewer(home, sessionId!, "watch");
+    const attached = await watching.attaching;
+    attached.close();
+    expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    await vi.waitFor(() => expect(marked(parked)).toContain(tabId));
+  } finally {
+    vi.restoreAllMocks();
+    await j.close();
+  }
+});
+
+it("lets a Stop asked as the reattach ticket leaves wait for the broker, and close it the way Stop does", async () => {
+  const j = await journey("stop-at-ticket");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("stop-at"));
+    const page = await j.draft();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    let stopping: Promise<void> | undefined;
+    // Any read of the session's lineage made after the ticket left waits until Stop committed:
+    // the widest a Stop between the ticket and the broker's registration can be.
+    const prototype = pg.Client.prototype;
+    const query = prototype.query;
+    let afterTicket = false;
+    const held = vi.spyOn(prototype, "query").mockImplementation(function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string })?.text;
+      if (afterTicket && stopping && text?.includes('select "tab_group_id"')) {
+        afterTicket = false;
+        const waiting = stopping;
+        return waiting.then(() => Reflect.apply(query, this, args));
+      }
+      return Reflect.apply(query, this, args);
+    });
+    j.onNextTicket(() => {
+      afterTicket = true;
+      stopping = home.service.stop(j.task.userId, sessionId);
+    });
+    try {
+      const woken = await home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+      woken.release();
+    } finally {
+      held.mockRestore();
+    }
+    expect(stopping).toBeDefined();
+    await stopping;
+    expect((await j.row(sessionId))?.state).toBe("closed");
+    // Stop found the registered broker and closed it: the page ends now, not at a deadline.
+    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 5_000 });
+    expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
   } finally {
     await j.close();
   }
@@ -825,7 +940,140 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
   }
 });
 
-it("vetoes a park for a Trigger or Watch program with browser demand, and not for one without", async () => {
+it("parks under a running Trigger and a live Watch with no browser, and is vetoed while each holds one", async () => {
+  const j = await journey("program-journey");
+  let closeApp: (() => Promise<unknown>) | undefined;
+  try {
+    const home = await j.startHome();
+    const owner = { ownerId: j.task.userId, environmentId: j.task.environmentId };
+    // A running Trigger occurrence and a live Watch activation, neither with a browser yet.
+    const occurrence = await j.fixture.startTriggerOccurrence(j.task, "pool-program");
+    const watch = await j.fixture.triggers.create({
+      actorThreadId: null,
+      anchorThreadId: j.task.threadId,
+      createdBy: j.task.userId,
+      idempotencyKey: "pool-watch",
+      name: "Pool Watch",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+      },
+      source: { kind: "watch" },
+    });
+    const { activations } = await j.fixture.triggers.reconcileWatchesForRunner({
+      environmentId: j.task.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 3_600_000),
+      runnerBootId: j.task.runnerBootId,
+      runnerConnectionGeneration: 1,
+      runnerId: j.task.runnerId,
+    });
+    const activation = activations.find(
+      (entry) => entry.activation.triggerId === watch.trigger.id,
+    )?.activation;
+    expect(activation).toBeDefined();
+    const trigger = { ...owner, agentBindingId: `trigger:${occurrence.id}` };
+    const watcher = { ...owner, agentBindingId: `watch:${activation!.id}` };
+    // Programs that have not asked for a browser leave the park alone.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+
+    // Each program connects through its real CDP route, over a WebSocket: the demand wakes the
+    // browser, the open connection vetoes the park, and once the program closes its socket the
+    // route lets go of the attachment and the session it owns, and the browser parks.
+    const fastify = requireFromHost("fastify") as (options: object) => FastifyLike;
+    const websocket = requireFromHost("@fastify/websocket") as unknown;
+    const app = fastify({ logger: false });
+    await app.register(websocket);
+    const scopes = new Map<string, unknown>([
+      [
+        "trigger-token-0123456789abcdef",
+        {
+          occurrenceId: occurrence.id,
+          environmentId: j.task.environmentId,
+          requestedBy: j.task.userId,
+        },
+      ],
+      [
+        "watch-token-0123456789abcdef",
+        {
+          activationId: activation!.id,
+          environmentId: j.task.environmentId,
+          createdBy: j.task.userId,
+          exp: Math.floor(Date.now() / 1000) + 3_600,
+        },
+      ],
+    ]);
+    const tokens = {
+      authenticate: async (token: string) => {
+        const scope = scopes.get(token);
+        if (!scope) throw new Error("Unknown token.");
+        return scope;
+      },
+    };
+    registerTriggerCdpBridge(app as never, home.service, tokens as never);
+    registerWatchCdpBridge(app as never, home.service, tokens as never);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const origin = `ws://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+    const connect = async (token: string, path: string, bindingId: string) => {
+      const socket = new WebSocket(`${origin}${path}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", () => resolve());
+        socket.once("error", reject);
+      });
+      // A command answered means the route has attached its owned session.
+      socket.send(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+      await new Promise<void>((resolve) => socket.once("message", () => resolve()));
+      const [session] = await j.database
+        .selectFrom("browserSessionAttachments")
+        .select("sessionId")
+        .where("agentBindingId", "=", bindingId)
+        .execute();
+      return {
+        session: session!.sessionId,
+        close: async () => {
+          socket.close();
+          await vi.waitFor(async () => {
+            expect(
+              await j.database
+                .selectFrom("browserSessionAttachments")
+                .select("sessionId")
+                .where("agentBindingId", "=", bindingId)
+                .execute(),
+            ).toEqual([]);
+            expect((await j.row(session!.sessionId))?.state).toBe("closed");
+            expect(home.coordinator.gate.held).toBe(0);
+          });
+        },
+      };
+    };
+    closeApp = () => app.close();
+    const triggerBrowser = await connect(
+      "trigger-token-0123456789abcdef",
+      hostInternalRoutePaths.triggerCdp,
+      trigger.agentBindingId,
+    );
+    expect((await j.row(triggerBrowser.session))?.origin).toBe("trigger");
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    await triggerBrowser.close();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    const watchBrowser = await connect(
+      "watch-token-0123456789abcdef",
+      hostInternalRoutePaths.watchCdp,
+      watcher.agentBindingId,
+    );
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    await watchBrowser.close();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume", "pause"]);
+  } finally {
+    await closeApp?.();
+    await j.close();
+  }
+});
+
+it("D counts a program's open browser session and nothing else of the program", async () => {
   const fixture = await createStoreFixture();
   try {
     const task = await fixture.createRunFixture("program-demand");
@@ -902,6 +1150,41 @@ it("keeps the person's pages through a Runner restart and reattaches them under 
   }
 });
 
+it("keeps the person's pages when the Runner's channel closes cleanly, code 1000 included", async () => {
+  const j = await journey("runner-clean-close");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("restart"));
+    const page = await j.draft();
+    const original = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    const before = (await j.slot())!.attachmentGeneration;
+    j.runnerDown(1000);
+    // Nothing ends: the row stays ready, the page keeps running, sends wait.
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(page.page.isClosed()).toBe(false);
+    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+    j.runnerUp();
+    const held = await waiting;
+    held.release();
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect((await j.slot())!.attachmentGeneration).toBeGreaterThan(before);
+    expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    expect(await page.value()).toBe('["unsent draft",99]');
+    // No pause happened: the controller saw only the start.
+    expect(j.controller.effects).toEqual(["start"]);
+    const watching = j.viewer(home, sessionId);
+    const attached = await watching.attaching;
+    try {
+      await editVisibly(attached, watching.frames, tabId, page.value, page.rendered);
+    } finally {
+      attached.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
 it("ends the sessions with their note when the Runner does not come back before the deadline", async () => {
   const j = await journey("runner-gone", { channelDeadlineMs: 1_500 });
   try {
@@ -922,18 +1205,51 @@ it("ends the sessions with their note when the Runner does not come back before 
   }
 });
 
-it("ends a removed device's pooled sessions with evidence, releases its slot and never wakes it", async () => {
+/** Every removal dependency but the store and the browser does nothing, as nothing else runs. */
+function removalDependencies(store: unknown, browser: unknown) {
+  const passive: unknown = new Proxy(function () {}, {
+    get: (_target, property) => (property === "then" ? undefined : passive),
+    apply: (_target, _this, args: unknown[]) => {
+      const last = args.at(-1);
+      return typeof last === "function" ? (last as () => unknown)() : Promise.resolve(undefined);
+    },
+  });
+  const real: Record<string, unknown> = { store, browser };
+  return new Proxy(real, {
+    get: (target, property: string) => (property in target ? target[property] : passive),
+  }) as never;
+}
+
+it("ends a removed device's pooled sessions with their notes through the real removal, and never wakes it", async () => {
   const j = await journey("device-removed");
   try {
     const home = await j.startHome();
     const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("removed"));
     await j.draft();
-    await home.service.poolDeviceRemoved(j.task.runnerId);
-    expect(await j.slot()).toBeUndefined();
-    expect((await j.row(sessionId))?.state).toBe("failed");
+    // A Cloud Computer is a managed Runner, never the Home's own: it can be removed.
+    await j.database
+      .updateTable("runners")
+      .set({ kind: "managed" })
+      .where("id", "=", j.task.runnerId)
+      .execute();
+    // The real route: the store's revocation ends the sessions in its own transaction, then the
+    // removal's own steps.
+    await removeDevice(
+      removalDependencies(j.store, home.service),
+      await j.store.requireSelfDeviceId(j.task.runnerId),
+      j.task.userId,
+    );
+    const state = await j.database
+      .selectFrom("browserSessions")
+      .select("state")
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    expect(state.state).toBe("failed");
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, reason: "device-removed" },
     ]);
+    await home.coordinator.released();
+    expect(await j.slot()).toBeUndefined();
     expect(j.controller.effects).toEqual(["start", "stop"]);
     await expect(home.coordinator.gate.reserve(AbortSignal.timeout(1_000))).rejects.toThrow(
       "device was removed",
@@ -945,7 +1261,117 @@ it("ends a removed device's pooled sessions with evidence, releases its slot and
   }
 });
 
-it("reports the pooled browser's phase, its adopted documents, a fresh start's reason and the pages not kept, and restarts for the owner only", async () => {
+it("gives each loss of a tab its own notice, reports only the newest, and clears it once seen", async () => {
+  const j = await journey("notices");
+  try {
+    const home = await j.startHome();
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    const { tabId } = await home.service.openTab(j.task.userId, j.command("notices"));
+    // The tab is lost twice: a restart, a reopen, and another restart.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "restart-1");
+    await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "reopen",
+    );
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "restart-2");
+    const notes = await j.database
+      .selectFrom("browserPoolDocumentLosses")
+      .select(["intentId", "lostAt"])
+      .where("surfaceId", "=", tabId)
+      .orderBy("lostAt", "desc")
+      .execute();
+    expect(notes).toHaveLength(2);
+    expect(new Set(notes.map(({ intentId }) => intentId)).size).toBe(2);
+    // Only the newest unseen notice of the tab is reported, with its id.
+    const shown = (await report())?.pages?.filter(({ surfaceId }) => surfaceId === tabId);
+    expect(shown).toEqual([
+      expect.objectContaining({ surfaceId: tabId, noticeId: notes[0]!.intentId }),
+    ]);
+    const revision = async () =>
+      (
+        (
+          await j.database
+            .selectFrom("clientSyncState")
+            .select("resourceRevisions")
+            .executeTakeFirstOrThrow()
+        ).resourceRevisions as Record<string, string>
+      )["browser-placement"];
+    const before = await revision();
+    // Seen: it and the older one leave the report, and subscribed readers are told.
+    await home.service.poolNoticeSeen(j.task.userId, tabId, notes[0]!.intentId);
+    expect(((await report())?.pages ?? []).map(({ surfaceId }) => surfaceId)).not.toContain(tabId);
+    expect(await revision()).not.toBe(before);
+    expect(
+      await j.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select("noticedAt")
+        .where("surfaceId", "=", tabId)
+        .where("noticedAt", "is", null)
+        .execute(),
+    ).toEqual([]);
+    // However many tabs wait, the report stays bounded well under the protocol's limit.
+    const owner = j.task.userId;
+    await j.database
+      .insertInto("browserPoolDocumentLosses")
+      .values(
+        Array.from({ length: 150 }, (_, index) => ({
+          intentId: randomUUID(),
+          runnerId: j.task.runnerId,
+          ownerId: owner,
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          surfaceId: BrowserSurfaceIdSchema.parse(`srf_backlog_${index}`),
+          documentId: null,
+          reason: "person",
+        })),
+      )
+      .execute();
+    expect((await report())?.pages).toHaveLength(100);
+  } finally {
+    await j.close();
+  }
+});
+
+it("counts the failed starts of a restart in the report, and clears the count once one starts", async () => {
+  const j = await journey("failed-starts");
+  try {
+    const home = await j.startHome();
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    await home.service.openTab(j.task.userId, j.command("failed-starts"));
+    // The first two fresh starts cannot reach the controller; the third is held there.
+    const status = j.controller.status.bind(j.controller);
+    let unreachable = 2;
+    vi.spyOn(j.controller, "status").mockImplementation(async (slotId, term) => {
+      if (unreachable > 0) {
+        unreachable--;
+        throw new Error("The pool controller is unreachable.");
+      }
+      return status(slotId, term);
+    });
+    const third = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    j.controller.hold("start", async () => {
+      reached.resolve();
+      await third.promise;
+    });
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId);
+    await reached.promise;
+    // A third attempt is under way: the person sees the restart, and the two that failed.
+    expect(await report()).toMatchObject({ phase: "restarting", failures: 2 });
+    expect(await j.slot()).toMatchObject({ failedStarts: 2 });
+    third.resolve();
+    await restarting;
+    const started = await report();
+    expect(started).toMatchObject({ phase: "running", start: { reason: "person" } });
+    expect(started).not.toHaveProperty("failures");
+    expect(await j.slot()).toMatchObject({ failedStarts: 0 });
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("reports the pooled browser's phase, a fresh start's reason and the pages not kept, and restarts for the owner only", async () => {
   const j = await journey("pool-report");
   try {
     let home = await j.startHome();
@@ -959,11 +1385,8 @@ it("reports the pooled browser's phase, its adopted documents, a fresh start's r
     home = await j.restartHome(home);
     const row = await j.tabs.get(j.task.userId, tabId);
     await home.service.pageTabs.activate(j.task.userId, row!, "report-wake");
-    // The adopted tab's document at the freeze: a picture of it is current.
-    expect(await report()).toMatchObject({
-      phase: "running",
-      adopted: [{ surfaceId: tabId, documentId: original, revision: expect.any(Number) }],
-    });
+    expect(await report()).toMatchObject({ phase: "running" });
+    expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
     // Only the owner restarts it; an ordinary computer has no such browser.
     await expect(
       home.service.restartPooledBrowser("usr_someone-else" as never, j.task.runnerId),
@@ -985,7 +1408,12 @@ it("reports the pooled browser's phase, its adopted documents, a fresh start's r
       "report-reopen",
     );
     expect((await report())?.pages).toEqual([
-      { surfaceId: tabId, outcome: "reloaded", typed: false },
+      {
+        surfaceId: tabId,
+        noticeId: reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
+        outcome: "reloaded",
+        typed: false,
+      },
     ]);
     await home.service.pageTabs.activate(
       j.task.userId,

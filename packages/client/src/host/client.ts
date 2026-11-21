@@ -1162,7 +1162,8 @@ export interface HostClient extends TabsClient {
   readonly browserPasskeys?: BrowserPasskeys;
   /**
    * Closes every page of this Cloud Computer's browser and starts it fresh. Refused with
-   * `BrowserRestartUnavailable` until a Home supports it; call through `restartPooledBrowser`.
+   * `BrowserRestartUnavailable` for a browser the Home does not report as pooled; call
+   * through `restartPooledBrowser`.
    */
   readonly restartPooledBrowser?: (computerId: string) => Promise<void>;
   /** Popups this client's own input opens from one tab, as each one opens. */
@@ -1591,6 +1592,8 @@ export const resourceBackedFields = {
   browserProfiles: ["browser-profile"],
   browserProfileDeletions: ["browser-profile"],
   browserPlacements: ["browser-placement"],
+  // A pooled browser's report rides the placement resource: reading it watches that kind.
+  browserPools: ["browser-placement"],
   browserProfileHomes: ["browser-home"],
   browserAvailable: ["browser-availability"],
 } as const satisfies Partial<

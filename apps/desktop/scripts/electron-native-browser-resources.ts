@@ -8,7 +8,12 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { personalWebBuildId } from "@opensteer/protocol";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import { stageDataTree, stageNodeService, stagePluginRuntime } from "./build-personal-runtime.js";
+import {
+  stageDataTree,
+  stageNativeFsHelper,
+  stageNodeService,
+  stagePluginRuntime,
+} from "./build-personal-runtime.js";
 import { personalRuntimeLayout } from "./personal-runtime-layout.js";
 import { hostProcessEntries } from "../../host/src/process-entries.js";
 import {
@@ -113,6 +118,19 @@ for (const service of ["host", "runner", "channel-runtime", "browser-harness"] a
   );
   for (const artifact of artifacts) await upsertArtifact(artifact);
 }
+
+// Rebuild the native filesystem helper so an older native seed matches the
+// Host/Runner protocol version (1.7.0 after d29ab2922).
+const nativeFsHelperPath = path.join(
+  release,
+  ...`${personalRuntimeLayout.nativeFsHelper}${manifest.operatingSystem === "win32" ? ".exe" : ""}`.split(
+    "/",
+  ),
+);
+await rm(nativeFsHelperPath, { force: true });
+await upsertArtifact(
+  await stageNativeFsHelper(release, manifest.operatingSystem, manifest.architecture),
+);
 
 // Stage the plugin runtime externals (`ws`, `workerd`, `typescript-5`, `@alchemy.run/cloudflare-runtime`)
 // and the Host's plugin framework bridge so an older native seed can boot the current Host.

@@ -1141,6 +1141,26 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.stop();
   });
 
+  it("ends the wait for a Runner that never reports Agent home, and names what is missing", async () => {
+    const fixture = supervisorFixture(null);
+    fixture.host.waitForRunner.mockImplementationOnce(
+      (_origin, _deploymentId, _environmentId, _runnerId, _signal, onPending) => {
+        onPending?.("agent-home");
+        return new Promise(() => undefined);
+      },
+    );
+
+    await expect(fixture.supervisor.start()).rejects.toThrow(
+      "Runner did not become ready. This computer did not finish preparing its Agent home folder.",
+    );
+    expect(fixture.supervisor.status).toMatchObject({
+      issue: { code: "runner-unavailable", component: "runner" },
+      state: "repair-required",
+    });
+    expect(fixture.host.ensureAgentHome).not.toHaveBeenCalled();
+    await fixture.supervisor.stop();
+  });
+
   it("names the service that failed, not the release, when its output mentions release words", async () => {
     const fixture = supervisorFixture(null);
     fixture.host.waitForRunner.mockImplementationOnce(() => new Promise(() => undefined));

@@ -8,11 +8,9 @@
  */
 import { DeploymentCatalogSchema, DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { menuBarWords } from "@opensteer/client/computers";
-import { HttpHostClient, placeList, type WebSocketClient } from "@opensteer/client/host";
+import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { DesktopAccessOriginSchema } from "@opensteer/protocol/desktop";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   app,
   BrowserWindow,
@@ -24,7 +22,6 @@ import {
   protocol,
   screen,
   Tray,
-  utilityProcess,
   webContents,
 } from "electron";
 import assert from "node:assert/strict";
@@ -47,15 +44,10 @@ import { DesktopMenuBarService } from "../src/app/menu-bar-service.js";
 import { DesktopQuitRouting, type QuitActions } from "../src/app/quit-routing.js";
 import { parentedQuitQuestion, quitQuestionParentOptions } from "../src/app/quit-question.js";
 import { AgentBrowserGate } from "../src/browser/agent-browser-gate.js";
-import { readDesktopConfiguration } from "../src/config.js";
 import { createDesktopHostApi } from "../src/connections/desktop-host-api.js";
 import { NativePersonalDeploymentCredentials } from "../src/secrets/personal-deployment-credentials.js";
 import { NativePersonalDeploymentFilesystem } from "../src/secrets/personal-deployment-store.js";
 import { startLocalBrowserRuntime } from "../src/supervisor/local-browser-runtime.js";
-import {
-  electronUtilityProcessFork,
-  LocalRunnerService,
-} from "../src/supervisor/local-runner-service.js";
 import { PersonalDeploymentSupervisor } from "../src/supervisor/personal-deployment-supervisor.js";
 import { NativePersonalHostControl } from "../src/supervisor/personal-host-control.js";
 import {
@@ -352,7 +344,7 @@ async function popoverPhases(): Promise<void> {
   passed();
 }
 
-/** This Mac's own Home and the Device Runner it lends to it, as the quit smoke starts them. */
+/** This Mac's own Home and its hosted Runner, as `PersonalDeploymentSupervisor` runs them. */
 async function startHome(input: {
   readonly agentsStoppedSince: () => string | null;
   readonly gate: AgentBrowserGate;
@@ -373,6 +365,7 @@ async function startHome(input: {
   const engineFixture = path.join(resources, "codex-fixture", "fake-codex-app-server.mjs");
   const engineWrapper = path.join(root, "codex-fixture");
   const engineRelease = path.join(root, "release-fixture-turn");
+  const engineHarnessLog = path.join(root, "logs", "codex-browser-harness.jsonl");
   const shellArgument = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const supervisor = new PersonalDeploymentSupervisor({
     agentsStoppedSince: input.agentsStoppedSince,
@@ -438,7 +431,8 @@ async function startHome(input: {
         writeFileSync(
           engineWrapper,
           `#!/bin/sh
-exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held ${shellArgument(`--release-file=${engineRelease}`)} "$@"
+export FAKE_CODEX_HARNESS_LOG=${shellArgument(engineHarnessLog)}
+exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stream-held --unique-threads ${shellArgument(`--release-file=${engineRelease}`)} "$@"
 `,
           { mode: 0o700 },
         );
@@ -489,77 +483,16 @@ exec ${shellArgument(node)} ${shellArgument(engineFixture)} --scenario=long-stre
   };
   const runtime = await supervisor.current();
   assert(runtime);
-  const config = readDesktopConfiguration({
-    appDataDirectory: root,
-    defaultMode: "development",
-    packaged: false,
-    resourcesDirectory: resources,
-    environment: {
-      OPENSTEER_DESKTOP_DATA_DIR: root,
-      OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: path.join(resources, "personal-runtime"),
-      OPENSTEER_DESKTOP_RUNNER_WORKER: path.join(import.meta.dirname, "quit-runner-worker.js"),
-      OPENSTEER_DESKTOP_NATIVE_FS_HELPER: path.join(
-        resources,
-        "personal-runtime/bin/opensteer-native-fs",
-      ),
-    },
-  }).config;
-  const target = {
-    authority: runtime.discoveryEnvelope,
-    source: { kind: "manual" as const },
-    accessRoute: null,
-    deploymentId: manifest.deploymentId,
-    deploymentShape: { kind: "personal" as const },
-    hostUrl: DesktopAccessOriginSchema.parse(origin),
-    key: "menu-bar-smoke",
-    mayRunAgents: false,
-  };
-  const localRunners = new LocalRunnerService(config, {
-    agentsStoppedSince: input.agentsStoppedSince,
-    log,
-    browser: (browserInput) =>
-      startLocalBrowserRuntime({
-        agentGate: input.gate,
-        downloads: smokeDesktopDownloads(),
-        logPath: browserInput.logPath,
-        pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
-        profileRoot: browserInput.profileRoot,
-        runtimeId: browserInput.runtimeId,
-      }),
-    fork: (modulePath, args, options) =>
-      electronUtilityProcessFork(utilityProcess.fork)(modulePath, args, {
-        ...options,
-        env: {
-          ...options.env,
-          [processSupervisorExecutableVariable]: readPersonalProcessSupervisorRelease(resources),
-        },
-      }),
-    homeDirectory: root,
-    computerName: async () => "Menu bar smoke Mac",
-    targets: {
-      resolve: async () => target,
-      isCurrent: async () => true,
-      subscribe: () => () => undefined,
-    },
-    userEnvironment: { resolve: async () => environment },
-  });
-  shutdown.add({
-    component: "local-runners",
-    step: "stop",
-    order: 30,
-    timeoutMs: 8_000,
-    stop: async (signal) => {
-      await localRunners.shutdown(signal);
-      localRunners.dispose();
-    },
-  });
-  return { fetch, host, localRunners, manifest, network, origin, rpc, supervisor };
+  return { fetch, host, manifest, network, origin, rpc, supervisor };
 }
 
 /**
- * Stop everything with this Mac's own Home and a Device Runner here:
+ * Stop everything on the Mac hosting its own Personal Home (the shipped path,
+ * where `LocalRunnerAuthority` never attaches a separate Device Runner to this
+ * Mac's own Home and Stop acts on the Home's own Runner via
+ * `PersonalDeploymentSupervisor.restartForAgentMode()`):
  * - an active Run and agent browser tab both stop;
- * - the confirmed Stop time appears only after the Runners finish restarting;
+ * - the confirmed Stop time appears only after the Runner finishes restarting;
  * - the person's own tab keeps its exact page instance and form text across Stop and Resume;
  * - an open live Watch view reconnects by itself across Stop;
  * - Resume continues held work while a manually paused queue stays paused;
@@ -575,10 +508,7 @@ async function homeStop(): Promise<void> {
     restart: async () => {
       restartInFlight = true;
       try {
-        await Promise.all([
-          home.supervisor.restartForAgentMode(),
-          home.localRunners.restartForAgentMode(),
-        ]);
+        await home.supervisor.restartForAgentMode();
         restartCompleted += 1;
       } finally {
         restartInFlight = false;
@@ -595,24 +525,7 @@ async function homeStop(): Promise<void> {
   await localStop.restore();
   const home = await startHome({ agentsStoppedSince: () => localStop.agentsStoppedSince, gate });
   assert.equal(localStop.phase, "running");
-  const enrollment = z.object({ token: z.string() }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "runner.enrollment.createLocal",
-      idempotencyKey: randomUUID(),
-      name: "Menu bar smoke Device",
-      allowedModules: ["browser", "integrations", "shell"],
-      access: { apps: false, browser: true, files: false },
-    }),
-  );
-  await home.localRunners.start({
-    deploymentId: home.manifest.deploymentId,
-    enrollmentToken: enrollment.token,
-    runAgents: false,
-    runnerName: "Menu bar smoke Device",
-  });
-  const deviceRunnerId = z
-    .string()
-    .parse((await home.localRunners.status(home.manifest.deploymentId)).runner.runnerId);
+  const homeRunnerId = home.manifest.runnerId;
 
   // The person's own tab (with a form input and page-instance nonce), and an agent page URL.
   const pages = createServer((request, response) => {
@@ -643,59 +556,23 @@ async function homeStop(): Promise<void> {
   assert(address && typeof address !== "string");
   const pageUrl = `http://127.0.0.1:${address.port}/person`;
   const agentPageUrl = `http://127.0.0.1:${address.port}/agent`;
-  const session = z.object({ session: z.object({ id: z.string() }) }).parse(
-    await home.rpc("commands.dispatch", {
-      type: "browser.session.start",
-      idempotencyKey: randomUUID(),
-      input: {
-        fresh: true,
-        initialUrl: pageUrl,
-        reuseExisting: false,
-        placement: { kind: "runner", runnerId: deviceRunnerId },
-      },
-    }),
-  ).session;
-  await waitFor("the person's tab", () =>
-    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
-  );
-  const personTab = webContents
-    .getAllWebContents()
-    .find((contents) => contents.getURL() === pageUrl)!;
-  const typedNote = "kept-across-stop";
-  const initialPageId = z
-    .string()
-    .min(1)
-    .parse(
-      await personTab.executeJavaScript(
-        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
-      ),
-    );
-  const assertPersonTabIntact = async (stage: string) => {
-    assert(
-      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
-      `The person's tab closed (${stage})`,
-    );
-    const state = z
-      .object({ pageId: z.string(), value: z.string() })
-      .parse(
-        await personTab.executeJavaScript(
-          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
-        ),
-      );
-    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
-    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
-  };
 
-  // Real HttpHostClient live view kept open across Stop to verify self-reconnection.
+  // Real HttpHostClient opens, activates and watches the person's tab the way the product does.
+  let personSessionId: string | null = null;
   let liveViewSocketsOpened = 0;
   let liveViewSnapshots = 0;
   const liveClient = new HttpHostClient({
     baseUrl: home.origin,
-    fetch: (input, init) => home.fetch(input, init ?? {}),
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", home.origin);
+      return home.fetch(input, { ...init, headers });
+    },
     reconnectBaseDelayMs: 100,
     reconnectMaxDelayMs: 500,
     webSocketFactory: (url): WebSocketClient => {
-      const isBrowserWatch = url.includes(`/v1/browser-sessions/${session.id}/connect`);
+      const isBrowserWatch =
+        personSessionId !== null && url.includes(`/v1/browser-sessions/${personSessionId}/connect`);
       if (isBrowserWatch) liveViewSocketsOpened += 1;
       let readyState = 0;
       const listeners = new Map<string, Set<(event: unknown) => void>>();
@@ -772,24 +649,59 @@ async function homeStop(): Promise<void> {
       };
     },
   });
-  await liveClient.load();
-  const findPersonTab = () =>
-    placeList(liveClient.getSnapshot()).find(
-      (place) => place.tab.kind === "page" && place.tab.url === pageUrl,
-    );
-  await waitFor("person tab in live client snapshot", () => Boolean(findPersonTab()));
-  const personSurfaceId = findPersonTab()!.tab.tabId;
-  const releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
+  let releaseLiveView: (() => void) | null = null;
   shutdown.add({
     component: "live-watch",
     step: "close",
     order: 20,
     timeoutMs: 2_000,
     stop: () => {
-      releaseLiveView();
+      releaseLiveView?.();
       liveClient.dispose();
     },
   });
+  await liveClient.load();
+  const openedTab = await liveClient.openTab({
+    kind: "page",
+    url: pageUrl,
+    guest: true,
+  });
+  const viewer = await liveClient.activateTab(openedTab.tabId);
+  assert.equal(viewer.kind, "page", "Person tab did not activate as a page viewer");
+  const session = { id: viewer.sessionId };
+  personSessionId = session.id;
+  const personSurfaceId = openedTab.tabId;
+  await waitFor("the person's tab", () =>
+    webContents.getAllWebContents().some((contents) => contents.getURL() === pageUrl),
+  );
+  const personTab = webContents
+    .getAllWebContents()
+    .find((contents) => contents.getURL() === pageUrl)!;
+  const typedNote = "kept-across-stop";
+  const initialPageId = z
+    .string()
+    .min(1)
+    .parse(
+      await personTab.executeJavaScript(
+        `(() => { const el = document.getElementById("person-note"); el.focus(); el.value = ${JSON.stringify(typedNote)}; el.dispatchEvent(new Event("input", { bubbles: true })); return window.__personPageId; })()`,
+      ),
+    );
+  const assertPersonTabIntact = async (stage: string) => {
+    assert(
+      !personTab.isDestroyed() && personTab.getURL() === pageUrl,
+      `The person's tab closed (${stage})`,
+    );
+    const state = z
+      .object({ pageId: z.string(), value: z.string() })
+      .parse(
+        await personTab.executeJavaScript(
+          `({ pageId: String(window.__personPageId ?? ""), value: String(document.getElementById("person-note")?.value ?? "") })`,
+        ),
+      );
+    assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
+    assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
+  };
+  releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
   await waitFor(
     "live view admitted before Stop",
     () =>
@@ -802,25 +714,62 @@ async function homeStop(): Promise<void> {
     snapshots: liveViewSnapshots,
   });
 
-  const harnesses = z
-    .object({
+  const harnessDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness"),
       harnesses: z.array(
         z.object({ id: z.string(), driverKind: z.string(), environmentId: z.string() }),
       ),
-    })
-    .parse(await home.rpc("resources.detail.get", { kind: "harness" }));
-  const codex = harnesses.harnesses.find(
-    (harness) =>
-      harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+    }),
+  });
+  const harnessCatalogDetailSchema = z.object({
+    data: z.object({
+      kind: z.literal("harness-catalog"),
+      environments: z.array(
+        z.object({
+          id: z.string(),
+          harnessCatalogs: z.array(z.object({ harnessInstanceId: z.string(), status: z.string() })),
+        }),
+      ),
+    }),
+  });
+  let codex:
+    | { readonly id: string; readonly driverKind: string; readonly environmentId: string }
+    | undefined;
+  await waitFor(
+    "the fixture engine and its model catalog",
+    async () => {
+      const harnesses = harnessDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness" }),
+      );
+      codex = harnesses.data.harnesses.find(
+        (harness) =>
+          harness.driverKind === "codex" && harness.environmentId === home.manifest.environmentId,
+      );
+      if (!codex) return false;
+      const catalogs = harnessCatalogDetailSchema.parse(
+        await home.rpc("resources.detail.get", { kind: "harness-catalog" }),
+      );
+      const environment = catalogs.data.environments.find(
+        (entry) => entry.id === home.manifest.environmentId,
+      );
+      return (
+        environment?.harnessCatalogs.some(
+          (entry) => entry.harnessInstanceId === codex!.id && entry.status === "ready",
+        ) === true
+      );
+    },
+    30_000,
   );
   assert(codex, "The Home did not expose the fixture engine");
+  const fixtureHarness = codex;
   const createTask = async (title: string) =>
     z.object({ thread: z.object({ id: z.string() }) }).parse(
       await home.rpc("commands.dispatch", {
         type: "thread.create",
         idempotencyKey: randomUUID(),
         environmentId: home.manifest.environmentId,
-        harnessInstanceId: codex.id,
+        harnessInstanceId: fixtureHarness.id,
         modelSelection: {
           modelId: "gpt-5.6-sol",
           providerId: "openai",
@@ -848,16 +797,44 @@ async function homeStop(): Promise<void> {
       })
       .parse(await home.rpc("personal.shell.get"))
       .tasks.find((entry) => entry.id === threadId);
+  const runItemFor = async (threadId: string, runId: string) =>
+    z
+      .object({
+        items: z.array(
+          z
+            .object({
+              kind: z.string(),
+              runId: z.string().nullable().optional(),
+              view: z.object({ status: z.string().optional() }).passthrough().optional(),
+              failure: z.object({ code: z.string(), message: z.string() }).passthrough().optional(),
+            })
+            .passthrough(),
+        ),
+      })
+      .parse(await home.rpc("thread.snapshot.get", { threadId }))
+      .items.find((entry) => entry.kind === "run" && entry.runId === runId);
 
   // Task 1: active Run + agent browser tab in use + follow-up queued to resume after Stop.
   const task = await createTask("Stop journey task");
   const taskState = () => taskStateFor(task.id);
-  await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  const firstRun = await sendTo(task.id, `Keep working until Stop\nAGENT_TAB_URL=${agentPageUrl}`);
+  assert(firstRun.run, "Stop journey task did not start an initial run");
+  const stoppedRunId = firstRun.run.id;
   await waitFor(
     "the task running before Stop",
     async () => (await taskState())?.status === "running",
   );
-  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000);
+  await waitFor("the agent browser tab in use before Stop", () => gate.agentTabs > 0, 30_000).catch(
+    (error: unknown) => {
+      const harnessLogPath = path.join(root, "logs", "codex-browser-harness.jsonl");
+      if (existsSync(harnessLogPath)) {
+        log("test.agent-tab-diagnostic", {
+          harnessLog: readFileSync(harnessLogPath, "utf8").trim(),
+        });
+      }
+      throw error;
+    },
+  );
   await sendTo(task.id, "Continue once this Mac resumes");
   held("task-and-agent-browser-tab-in-use-before-stop", { agentTabs: gate.agentTabs });
 
@@ -895,9 +872,7 @@ async function homeStop(): Promise<void> {
     local: () => ({
       apps: [],
       tabs: gate.agentTabDetails(),
-      runs: home.localRunners
-        .localActivity()
-        .map((run) => ({ ...run, threadId: run.threadId ?? null })),
+      runs: [],
     }),
     stop: () => ({
       phase: localStop.phase,
@@ -908,7 +883,6 @@ async function homeStop(): Promise<void> {
     log,
   });
   localStop.subscribe(() => service.changed());
-  home.localRunners.subscribe(() => service.changed());
   const item = statusItem({
     service,
     stop: () => localStop.stop(),
@@ -964,19 +938,24 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("home-shows-its-own-mac-stopped");
+  await waitFor("the Home identifying the old Run as stopped", async () => {
+    const run = await runItemFor(task.id, stoppedRunId);
+    return (
+      run?.view?.status === "failed" &&
+      run.failure?.code === "computer_stopped" &&
+      run.failure.message.includes("Stopped on")
+    );
+  });
   await waitFor(
-    "the Home identifying the old Run as stopped",
-    async () => (await taskState())?.failurePreview?.includes("Stopped on") === true,
-  );
-  await waitFor(
-    "the Home showing the Device stopped while its Runner is online",
+    "the Home showing this Mac stopped while its Runner stays online",
     async () => {
-      const device = await row(deviceRunnerId);
-      return Boolean(device?.agentsStoppedSince) && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return Boolean(self?.agentsStoppedSince) && self?.status === "online";
     },
     30_000,
   );
   held("home-shows-the-device-stopped-not-offline");
+  if (item.window().isVisible()) item.window().hide();
   await item.menuBar.open();
   await waitFor(
     "the Home's confirmation",
@@ -1011,10 +990,10 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   await waitFor(
-    "the Device back online",
+    "this Mac's Runner back online",
     async () => {
-      const device = await row(deviceRunnerId);
-      return !device?.agentsStoppedSince && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return !self?.agentsStoppedSince && self?.status === "online";
     },
     60_000,
   );
@@ -1079,10 +1058,10 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   await waitFor(
-    "Device online after rapid Stop+Resume",
+    "this Mac's Runner online after rapid Stop+Resume",
     async () => {
-      const device = await row(deviceRunnerId);
-      return !device?.agentsStoppedSince && device?.status === "online";
+      const self = await row(homeRunnerId);
+      return !self?.agentsStoppedSince && self?.status === "online";
     },
     60_000,
   );
@@ -1096,7 +1075,7 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   held("stop-then-resume-quickly");
-  passed({ deviceRunnerId });
+  passed({ runnerId: homeRunnerId });
 }
 
 /**

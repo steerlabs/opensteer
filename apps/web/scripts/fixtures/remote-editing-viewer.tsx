@@ -113,6 +113,35 @@ if (mode === "host") {
     },
   });
   await host.load();
+  if (host.getSnapshot().browserSessions.length === 0) {
+    // Scoped sync (8e42296b6) populates browserSessions when a page tab is activated.
+    const requestedSurface = query.get("surface");
+    const findPageTab = () => {
+      const rows = [...host.getSnapshot().tabs.rows.values()];
+      return (
+        (requestedSurface
+          ? rows.find((tab) => tab.kind === "page" && tab.tabId === requestedSurface)
+          : undefined) ?? rows.find((tab) => tab.kind === "page")
+      );
+    };
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Timed out waiting for a page tab in the viewer journey.")),
+        5000,
+      );
+      const check = () => {
+        if (findPageTab()) {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve();
+        }
+      };
+      const unsubscribe = host.subscribe(check);
+      check();
+    });
+    const pageTab = findPageTab();
+    if (pageTab) await host.activateTab(pageTab.tabId);
+  }
   client = host;
 } else client = new MockHostClient({ latencyMs: 0 });
 const session = client

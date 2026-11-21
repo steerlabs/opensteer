@@ -143,7 +143,11 @@ describe("Desktop Host renderer adapter", () => {
       signal: caller.signal,
     });
 
-    expect(response).toBe(answer);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBe('"v1"');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      new Uint8Array([0xff, 0xfe, 0x00]),
+    );
     const [url, init] = route.mock.calls[0]!;
     expect(url).toBe(`app://opensteer/host/${deploymentId}/v1/workspaces?limit=10`);
     expect(init?.method).toBe("POST");
@@ -241,6 +245,137 @@ describe("Desktop Host renderer adapter", () => {
     await expect(
       fetch("https://home.test/v1/rpc/file.content?input=%7B%7D", { signal: leaving.signal }),
     ).rejects.toThrow("Viewer closed");
+  });
+
+  it("recovers a typed transport error when a streamed response body aborts across the protocol boundary", async () => {
+    let seenRequestId: string | null = null;
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      "https://home.test",
+      deploymentId,
+      async (input, init) => {
+        const url = String(input);
+        if (url.startsWith("app://opensteer/host/error/")) {
+          expect(url).toBe(`app://opensteer/host/error/${seenRequestId}`);
+          return new Response(null, {
+            status: 204,
+            headers: { "x-opensteer-desktop-transport-error": "deployment-changed" },
+          });
+        }
+        seenRequestId = new Headers(init?.headers).get("x-opensteer-desktop-request");
+        let sentFirst = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sentFirst) {
+                sentFirst = true;
+                controller.enqueue(new TextEncoder().encode("{"));
+                return;
+              }
+              controller.error(new TypeError("network error"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    );
+    const response = await fetch("https://home.test/v1/rpc/auth.config?input=%7B%7D");
+    await expect(response.text()).rejects.toMatchObject({
+      name: "HostTransportError",
+      code: "deployment-changed",
+    });
+  });
+
+  it("keeps the caller's abort reason mid-body without making an error lookup", async () => {
+    const caller = new AbortController();
+    const callerReason = new Error("Caller cancelled mid-body");
+    let errorLookups = 0;
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      "https://home.test",
+      deploymentId,
+      async (input) => {
+        if (String(input).startsWith("app://opensteer/host/error/")) {
+          errorLookups += 1;
+          return new Response(null, {
+            status: 204,
+            headers: { "x-opensteer-desktop-transport-error": "deployment-changed" },
+          });
+        }
+        let sentFirst = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sentFirst) {
+                sentFirst = true;
+                controller.enqueue(new TextEncoder().encode("{"));
+                return;
+              }
+              caller.abort(callerReason);
+              controller.error(new TypeError("network error"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    );
+    const response = await fetch("https://home.test/v1/rpc/auth.config?input=%7B%7D", {
+      signal: caller.signal,
+    });
+    const caught = await response.text().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(caught).toBe(callerReason);
+    expect(errorLookups).toBe(0);
+  });
+
+  it("keeps the caller's abort reason when the caller aborts while the stream error lookup is in flight", async () => {
+    const caller = new AbortController();
+    const callerReason = new Error("Caller aborted during error lookup");
+    const lookupStarted = Promise.withResolvers<void>();
+    const finishLookup = Promise.withResolvers<Response>();
+    const fetch = createDesktopHostFetch(
+      { cancelHostRequest: async () => undefined },
+      "https://home.test",
+      deploymentId,
+      async (input) => {
+        if (String(input).startsWith("app://opensteer/host/error/")) {
+          lookupStarted.resolve();
+          return finishLookup.promise;
+        }
+        let sentFirst = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!sentFirst) {
+                sentFirst = true;
+                controller.enqueue(new TextEncoder().encode("{"));
+                return;
+              }
+              controller.error(new TypeError("network error"));
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    );
+    const response = await fetch("https://home.test/v1/rpc/auth.config?input=%7B%7D", {
+      signal: caller.signal,
+    });
+    const pending = response.text().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await lookupStarted.promise;
+    caller.abort(callerReason);
+    finishLookup.resolve(
+      new Response(null, {
+        status: 204,
+        headers: { "x-opensteer-desktop-transport-error": "deployment-changed" },
+      }),
+    );
+    expect(await pending).toBe(callerReason);
   });
 
   it("adapts sockets through one bridge listener and rejects cross-Deployment targets", async () => {

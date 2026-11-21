@@ -45,7 +45,8 @@ export async function finishDeviceRemoval(
   await dependencies.computerApps.refreshDeviceDrivers();
   for (const sessionId of removed.closedBrowserSessions)
     dependencies.browser.abandonSession(sessionId);
-  if (runnerId) await dependencies.browser.poolDeviceRemoved?.(runnerId);
+  if (runnerId)
+    await dependencies.browser.poolDeviceRemoved?.(runnerId, removed.closedBrowserSessions);
   await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
   dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
   await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {

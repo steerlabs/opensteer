@@ -204,7 +204,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
       : testAuthenticatedSession(await partialAuthenticator.authenticateUser(headers, options));
   return createProductionHostServer({
     ...complete,
-    execution: { canExecute: () => true },
+    execution: { canExecute: () => true, initialized: () => true },
     authenticator:
       authenticator instanceof HostAuthenticator
         ? authenticator

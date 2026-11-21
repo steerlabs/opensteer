@@ -140,6 +140,8 @@ interface ActiveSession {
   poolAttachment?: number;
   /** A pooled session whose channel was lost: kept until its Home reattaches or the deadline. */
   channelLostUntil?: ReturnType<typeof setTimeout>;
+  /** When the lost channel's reconnect window ends; a failed reattach keeps this deadline. */
+  channelLostDeadline?: number;
 }
 
 interface FreshHostIdentity {
@@ -294,6 +296,8 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly pool: BrowserPoolRuntimeControl | undefined;
   private readonly poolChannelDeadlineMs: number;
   private readonly frozenPages = new Map<BrowserSurfaceId, NonNullable<TabRecord["live"]>>();
+  /** The session of each frozen page, so a page that does not thaw is that session's loss. */
+  private readonly frozenSessions = new Map<BrowserSurfaceId, BrowserSessionId>();
   private readonly pooledCdp = new Set<StandardCdpAttachment>();
   /** Pages a session opened while it was suspended for the pool, and that were ended. */
   private poolDrops = 0;
@@ -552,9 +556,10 @@ export class BrowserRuntime implements NativePresentationSource {
     const before = await boundedProbe("active");
     if (before.length) return before;
     try {
-      for (const { record, live } of pages) {
+      for (const { session, record, live } of pages) {
         if (!live) continue;
         this.frozenPages.set(record.id, live);
+        this.frozenSessions.set(record.id, session.claims.sessionId);
         await this.setPoolLifecycle(live, "frozen");
       }
     } catch {
@@ -596,12 +601,27 @@ export class BrowserRuntime implements NativePresentationSource {
     });
   }
 
-  private async thawPoolPages(): Promise<void> {
+  /**
+   * Thaws every frozen page. A page that cannot be thawed is closed, so it is never shown as
+   * usable while frozen, and is returned as its own loss; the others still thaw.
+   */
+  private async thawPoolPages(): Promise<
+    { readonly surfaceId: BrowserSurfaceId; readonly sessionId: BrowserSessionId | undefined }[]
+  > {
+    const failed: { surfaceId: BrowserSurfaceId; sessionId: BrowserSessionId | undefined }[] = [];
     for (const [id, live] of this.frozenPages) {
-      // A page that cannot be thawed stays a page of its session; the others still thaw.
-      if (!live.page.isClosed()) await this.setPoolLifecycle(live, "active").catch(() => undefined);
+      const sessionId = this.frozenSessions.get(id);
       this.frozenPages.delete(id);
+      this.frozenSessions.delete(id);
+      if (live.page.isClosed()) continue;
+      try {
+        await this.setPoolLifecycle(live, "active");
+      } catch {
+        failed.push({ surfaceId: id, sessionId });
+        await live.page.close().catch(() => undefined);
+      }
     }
+    return failed;
   }
 
   /** A retained session is adopted only if its current channel is the given attempt's. */
@@ -632,19 +652,28 @@ export class BrowserRuntime implements NativePresentationSource {
         : true;
       lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
     }
-    await this.thawPoolPages();
-    return { adopted, lost };
+    // A page that did not thaw is that page's loss; its session and the others are kept.
+    const pagesLost = (await this.thawPoolPages()).flatMap(({ surfaceId, sessionId }) =>
+      sessionId && adopted.includes(sessionId)
+        ? [{ sessionId, surfaceId, reason: "thaw-failed" }]
+        : [],
+    );
+    return { adopted, lost, ...(pagesLost.length ? { pagesLost } : {}) };
   }
 
   private async endPooledSession(session: ActiveSession): Promise<void> {
     session.poolDetached = true;
-    for (const record of session.ledger.policyRecords()) this.frozenPages.delete(record.id);
+    for (const record of session.ledger.policyRecords()) {
+      this.frozenPages.delete(record.id);
+      this.frozenSessions.delete(record.id);
+    }
     await this.detach(session.sessionId, session.generation, true, false, true);
   }
 
   /** The loopback stand-in for a newly started guest: no page of the previous one survives. */
   private async discardForPool(): Promise<void> {
     this.frozenPages.clear();
+    this.frozenSessions.clear();
     // A copy: ending a session removes it from the map.
     for (const session of Array.from(this.sessions.values())) {
       session.poolDetached = true;
@@ -1393,6 +1422,8 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new BrowserRuntimeError("forbidden", "This ticket cannot adopt the retained session.");
 
     session.poolAttachment = attachment;
+    const channelLostDeadline =
+      session.channelLostUntil !== undefined ? session.channelLostDeadline : undefined;
     clearTimeout(session.channelLostUntil);
     delete session.channelLostUntil;
     if (!session.poolDetached) {
@@ -1400,30 +1431,33 @@ export class BrowserRuntime implements NativePresentationSource {
       await session.host.router.unregisterSession(session.sessionId, true);
       await session.controller.detachForPool().catch(() => undefined);
     }
-    const [root, ...others] = session.ledger.resumeAfterRelayRestart();
-    if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const router = session.host.router;
-    router.registerSession(
-      session.sessionId,
-      root,
-      session.ledger.resolveTarget.bind(session.ledger),
-      session.files.root,
-    );
-    for (const target of others) router.claimTarget(session.sessionId, target);
-    const controller = this.createController(
-      session.host,
-      claims,
-      session.files,
-      session.ledger,
-      sink,
-    );
+    let registered = false;
+    let controller: BrowserController | undefined;
     try {
+      const [root, ...others] = session.ledger.resumeAfterRelayRestart();
+      if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      router.registerSession(
+        session.sessionId,
+        root,
+        session.ledger.resolveTarget.bind(session.ledger),
+        session.files.root,
+      );
+      registered = true;
+      for (const target of others) router.claimTarget(session.sessionId, target);
+      controller = this.createController(session.host, claims, session.files, session.ledger, sink);
       await controller.start();
     } catch (error) {
+      const started = controller;
       await settleCleanup([
-        () => controller.detachForPool(),
-        () => router.unregisterSession(session.sessionId, true),
+        ...(started ? [() => started.detachForPool()] : []),
+        ...(registered ? [() => router.unregisterSession(session.sessionId)] : []),
       ]);
+      session.ledger.suspendForPool(() => this.poolDrops++);
+      // A reattach after a lost channel that did not take leaves the session detached until the
+      // same deadline, for the Home's next attempt; an adoption keeps it for its window.
+      if (channelLostDeadline !== undefined)
+        this.armChannelDeadline(session, session.generation, channelLostDeadline);
       throw error;
     }
     session.controller = controller;
@@ -1439,6 +1473,19 @@ export class BrowserRuntime implements NativePresentationSource {
       undefined,
       this.poolTrafficFor(session, generation),
     );
+  }
+
+  /** Ends a detached session whose lost channel did not come back by `at`. */
+  private armChannelDeadline(session: ActiveSession, generation: number, at: number): void {
+    clearTimeout(session.channelLostUntil);
+    session.channelLostDeadline = at;
+    session.channelLostUntil = setTimeout(
+      () => {
+        void this.detach(session.sessionId, generation, false, false, true).catch(() => undefined);
+      },
+      Math.max(0, at - Date.now()),
+    );
+    session.channelLostUntil.unref();
   }
 
   private createController(
@@ -1797,27 +1844,28 @@ export class BrowserRuntime implements NativePresentationSource {
       if (active.poolDetached && !forcePoolDetach) return;
       if (!forcePoolDetach && channelLost && this.pool?.acceptsTraffic) {
         // The Runner's channel went away, the guest did not: the pages keep running, detached,
-        // until the Home reattaches the session or the reconnect deadline ends it.
+        // until the Home reattaches the session or the reconnect deadline ends it. A command
+        // already sent may never answer in a kept page, so its routing ends without waiting
+        // for it: its outcome is unknown, and a late answer reaches no one.
+        // The same command gives up its claim on the kept pages, so the Home's reattach can take
+        // them at once; it is never sent again.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId, true),
+          () => active.host.router.unregisterSession(sessionId, false, true),
         ]);
-        clearTimeout(active.channelLostUntil);
-        active.channelLostUntil = setTimeout(() => {
-          void this.detach(sessionId, generation, false, false, true).catch(() => undefined);
-        }, this.poolChannelDeadlineMs);
-        active.channelLostUntil.unref();
+        this.armChannelDeadline(active, generation, Date.now() + this.poolChannelDeadlineMs);
         return;
       }
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
-        // A channel lost during adoption keeps the session for the next attempt or the window.
+        // A channel lost during adoption keeps the session for the next attempt or the window;
+        // as above, its routing ends without waiting for a command a kept page may never answer.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
         await settleCleanup([
           () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId, true),
+          () => active.host.router.unregisterSession(sessionId, false, true),
         ]);
         return;
       }

@@ -11,8 +11,8 @@ import {
   connection,
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
-import type { ThreadId } from "../packages/core/src/index.js";
-import type { TabRecord } from "../packages/database/src/index.js";
+import type { RequestId, ThreadId } from "../packages/core/src/index.js";
+import { listBrowserPoolDocumentLosses, type TabRecord } from "../packages/database/src/index.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
@@ -92,12 +92,17 @@ async function directWork(j: Journey, home: () => Home) {
       name: "browser_use",
       arguments: { profileId: j.profile!.id, code, reason: "Read the draft" },
     });
+  const resume = (code: string, operationId: string) =>
+    agent.client.callTool({
+      name: "browser_use",
+      arguments: { profileId: j.profile!.id, code, reason: "Read the draft", operationId },
+    });
   const connect = () =>
     agent.client.callTool({
       name: "browser_connect",
       arguments: { profileId: j.profile!.id, reason: "Drive the page" },
     });
-  return { sessions, scripts, agent, use, connect };
+  return { sessions, scripts, agent, use, resume, connect };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -166,7 +171,165 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     expect(third.structuredContent).toMatchObject({
       error: { message: "The browser page attachment has ended.", performed: [] },
     });
+    // Handed off, then the Home's own witness refused the script's page before any command left:
+    // the script's failure, with nothing performed, and never unknown, since nothing left.
+    expect(
+      await j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "handedOffAt"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "failed", outcome: "failed", handedOffAt: expect.any(Date) });
     expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume"]);
+  } finally {
+    await j.close();
+  }
+});
+
+/** A connected agent's unanswered command on a saved profile's page, then the Runner's channel drops. */
+async function unansweredAtChannelLoss(key: string, channelDeadlineMs: number) {
+  const j = await journey(key, { profile: true, channelDeadlineMs });
+  const home = await j.startHome();
+  const { session } = await home.service.start({
+    ownerId: j.task.userId,
+    profileId: j.profile!.id,
+  });
+  const [tab] = await home.service.savedPages(j.task.userId, session.id);
+  if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+  const page = await j.draft();
+  const work = await directWork(j, () => home);
+  const read = `return await page.js("document.querySelector('input').value")`;
+  const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+  expect(bound.isError, text(bound)).not.toBe(true);
+  const sent = async () =>
+    (
+      await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+        expression: "window.__sent ?? 0",
+        returnByValue: true,
+      })
+    ).result.value;
+  const document = home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId;
+  // The page receives the command and never answers it.
+  const hanging = work.use(
+    `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
+  );
+  await vi.waitFor(async () => expect(await sent()).toBe(1));
+  j.runnerDown();
+  // The agent hears that the Home lost track of it, never that it failed.
+  const result = await hanging;
+  expect(result.structuredContent, text(result)).toMatchObject({ status: "unknown" });
+  const operations = () =>
+    j.database
+      .selectFrom("agentOperations")
+      .select(["state", "outcome"])
+      .orderBy("createdAt", "asc")
+      .execute();
+  const settled = [
+    { state: "completed", outcome: "completed" },
+    { state: "unknown", outcome: "unknown" },
+  ];
+  expect(await operations()).toEqual(settled);
+  return { j, home, session, tab, page, work, read, sent, document, operations, settled };
+}
+
+it("keeps a session whose unanswered command was settled unknown when the Runner's channel dropped, and the Runner came back in time", async () => {
+  const w = await unansweredAtChannelLoss("direct-unknown", 20_000);
+  try {
+    // The Runner comes back inside the window: the same page is reattached and usable, and the
+    // command is never sent again.
+    w.j.runnerUp();
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
+      timeout: 10_000,
+    });
+    expect((await w.j.row(w.session.id))?.state).toBe("ready");
+    expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
+      w.document,
+    );
+    const again = await w.work.use(w.read);
+    expect(again.isError, text(again)).not.toBe(true);
+    expect(text(again)).toContain("unsent draft");
+    expect(await w.sent()).toBe(1);
+    expect((await w.operations()).slice(0, 2)).toEqual(w.settled);
+  } finally {
+    await w.j.close();
+  }
+});
+
+it("ends a session whose unanswered command was settled unknown with its note when the Runner does not come back", async () => {
+  const w = await unansweredAtChannelLoss("direct-unknown-gone", 1_500);
+  try {
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
+      timeout: 10_000,
+    });
+    expect((await w.j.row(w.session.id))?.state).toBe("failed");
+    expect(
+      await listBrowserPoolDocumentLosses(w.j.database, w.j.task.userId, w.tab.id),
+    ).toMatchObject([{ sessionId: w.session.id, surfaceId: w.tab.id, reason: "not-adopted" }]);
+    await vi.waitFor(() => expect(w.page.page.isClosed()).toBe(true), { timeout: 10_000 });
+    expect(await w.operations()).toEqual(w.settled);
+  } finally {
+    w.j.runnerUp();
+    await w.j.close();
+  }
+});
+
+it("restarts only once a command in flight has its recorded outcome, and once per idempotency key", async () => {
+  const j = await journey("direct-restart", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const page = await j.draft();
+    const work = await directWork(j, () => home);
+    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+    expect(bound.isError, text(bound)).not.toBe(true);
+    const hanging = work.use(`return await page.js("(window.__sent = 1, new Promise(() => {}))")`);
+    await vi.waitFor(async () => {
+      const sent = await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+        expression: "window.__sent ?? 0",
+        returnByValue: true,
+      });
+      expect(sent.result.value).toBe(1);
+    });
+    const latest = () =>
+      j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow();
+    expect(await latest()).toMatchObject({ state: "handed-off" });
+    // When the controller is asked to stop the guest, the command already has its outcome.
+    let atStop: unknown;
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    j.controller.hold("stop", async () => {
+      atStop = await latest();
+      reached.resolve();
+      await release.promise;
+    });
+    const asked = vi.spyOn(home.coordinator, "restart");
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
+    await reached.promise;
+    // A second restart asked while one runs joins it.
+    const joined = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-2");
+    await vi.waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
+    release.resolve();
+    await Promise.all([restarting, joined]);
+    expect(atStop).toEqual({ state: "unknown", outcome: "unknown" });
+    expect((await hanging).structuredContent).toMatchObject({ status: "unknown" });
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    expect((await j.row(session.id))?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tab.id)).toMatchObject([
+      { sessionId: session.id, reason: "person" },
+    ]);
+    // A retry after a lost response, with the same key: the first outcome, nothing discarded.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(home.coordinator.gate.phase).toBe("open");
   } finally {
     await j.close();
   }
@@ -247,6 +410,61 @@ it("honours a mode cut that arrives while the browser is parked: the call waits 
     expect(after.structuredContent).toMatchObject({ status: "pending" });
     expect(p.j.controller.effects).toEqual(parkedEffects);
     expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("never wakes a parked browser for an approved call whose grant was cut before its hand-off", async () => {
+  const p = await parkedAfterWork("parked-grant-after-approval");
+  try {
+    const ownerId = p.j.task.userId;
+    await p.j.store.updateThreadAccessMode({
+      threadId: p.taskId,
+      requestedBy: ownerId,
+      accessMode: "approval-required",
+    });
+    await p.work.sessions.lowerTaskMode(p.taskId, "approval-required");
+    const pending = (await p.work.use(p.read)).structuredContent as {
+      status: string;
+      requestId: RequestId;
+      operationId: string;
+    };
+    expect(pending.status).toBe("pending");
+    await p.work.sessions.respond({
+      requestId: pending.requestId,
+      expectedRevision: (await p.j.store.requests.revision(pending.requestId))!,
+      resolvedBy: ownerId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    // Between the person's approval and the hand-off, the grant is cut: the profile goes, a
+    // second one keeps the tool listed.
+    {
+      const other = await p.j.store.createBrowserProfile({
+        name: "Other",
+        ownerId,
+        homeRunnerId: p.j.task.runnerId,
+        idempotencyKey: "other-profile",
+      });
+      await p.connection.update(p.work.agent.id, {
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: other.id }],
+        },
+      });
+    }
+    const resumed = await p.work.resume(p.read, pending.operationId);
+    expect(text(resumed)).not.toContain("unsent draft");
+    // Refused before anything could wake the browser.
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+    const operation = await p.j.database
+      .selectFrom("agentOperations")
+      .select(["state", "handedOffAt"])
+      .where("id", "=", pending.operationId as never)
+      .executeTakeFirstOrThrow();
+    expect(operation).toMatchObject({ state: "refused", handedOffAt: null });
   } finally {
     await p.j.close();
   }

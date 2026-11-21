@@ -2396,7 +2396,8 @@ export interface DatabaseSchema {
     intentSequence: number;
     intentId: string | null;
     attachmentGeneration: number;
-    phase: "running" | "preparing" | "parked" | "waking";
+    /** `releasing`: the device was removed; the row goes once the guest is known stopped. */
+    phase: "running" | "preparing" | "parked" | "waking" | "releasing";
     retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
     savedState: JsonColumn<Readonly<Record<string, unknown>> | null>;
     outcome: JsonColumn<Readonly<Record<string, unknown>> | null>;

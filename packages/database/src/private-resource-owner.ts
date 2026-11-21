@@ -1,4 +1,4 @@
-import { requirePersonalOwner } from "./personal-settings-store.js";
+import { hostingComputerNotReady, requirePersonalOwner } from "./personal-settings-store.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -27,7 +27,18 @@ export async function assertPersonalOwner(database: Kysely<DatabaseSchema>, owne
     .where("personalSettings.ownerId", "=", ownerId)
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
-  if (!owner || owner.deploymentShape.kind !== "personal" || owner.lifecycle !== "active")
+  if (!owner || owner.deploymentShape.kind !== "personal" || owner.lifecycle !== "active") {
+    // The caller is the owner (checked above); a Home without Personal settings is still starting.
+    if (
+      !owner &&
+      !(await database
+        .selectFrom("personalSettings")
+        .select("singletonKey")
+        .where("singletonKey", "=", "personal")
+        .executeTakeFirst())
+    )
+      throw hostingComputerNotReady();
     throw new OpensteerError({ code: "forbidden", message: "Personal owner access is required" });
+  }
   return owner;
 }

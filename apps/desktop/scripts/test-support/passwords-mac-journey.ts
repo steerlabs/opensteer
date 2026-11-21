@@ -288,7 +288,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
     // again, and an ended session's ref answers "That window is closed."
     const bind = async () =>
       ComputerUseBindResultSchema.parse(
-        await request("session.bind", { sessionId, app, window: null }),
+        await request("session.bind", { sessionId, app, windowId: null }),
       ).window;
     let window = await bind();
     const observe = async () =>

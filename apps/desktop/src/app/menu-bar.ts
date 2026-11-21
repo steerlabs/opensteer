@@ -146,6 +146,7 @@ export class DesktopMenuBar {
   #tray: Tray | null = null;
   #popover: BrowserWindow | null = null;
   #refreshTimer: ReturnType<typeof setInterval> | undefined;
+  #refreshGeneration = 0;
   #loaded: Promise<void> | null = null;
   #glyph = "";
   #detach: (() => void) | null = null;
@@ -192,8 +193,22 @@ export class DesktopMenuBar {
       return;
     }
     if (popover.isDestroyed()) return;
+    const before = this.#refreshGeneration;
     popover.show();
     popover.focus();
+    if (popover.isDestroyed()) return;
+    if (this.#refreshGeneration === before) {
+      this.#pushStatus();
+      void this.#options.service.refresh().catch(() => undefined);
+    }
+    if (popover.isVisible()) this.#startRefreshing();
+  }
+
+  #startRefreshing(): void {
+    this.#refreshTimer ??= setInterval(() => {
+      void this.#options.service.refresh().catch(() => undefined);
+    }, 15_000);
+    this.#refreshTimer.unref();
   }
 
   #stopRefreshing(): void {
@@ -246,11 +261,9 @@ export class DesktopMenuBar {
       if (this.#popover !== popover || popover.isDestroyed()) return;
       this.#pushStatus();
       if (!popover.isVisible()) return;
+      this.#refreshGeneration += 1;
       void this.#options.service.refresh().catch(() => undefined);
-      this.#refreshTimer ??= setInterval(() => {
-        void this.#options.service.refresh().catch(() => undefined);
-      }, 15_000);
-      this.#refreshTimer.unref();
+      this.#startRefreshing();
     });
     popover.on("blur", () => {
       if (!popover.isDestroyed() && !popover.webContents.isDevToolsOpened()) popover.hide();
@@ -276,13 +289,14 @@ export class DesktopMenuBar {
 
   /**
    * Main redraws on change: the status item at once from what main holds, and
-   * the popover, while it shows, with one full status at a time. Changes that
-   * arrive meanwhile fold into one more, and a failure is logged, never thrown.
+   * the popover, once created, with one full status at a time even while hidden
+   * so Stop state advances independently of visibility. Changes that arrive
+   * meanwhile fold into one more, and a failure is logged, never thrown.
    */
   #redraw(): void {
     this.#drawIcon(this.#options.service.icon());
     const popover = this.#popover;
-    if (popover && !popover.isDestroyed() && popover.isVisible()) this.#pushStatus();
+    if (popover && !popover.isDestroyed()) this.#pushStatus();
   }
 
   #pushStatus(): void {
@@ -345,8 +359,20 @@ export class DesktopMenuBar {
       this.#popover?.hide();
       await actions.openRow(target);
     });
-    handle(menuBarChannels.stop, () => actions.stop());
-    handle(menuBarChannels.resume, () => actions.resume());
+    handle(menuBarChannels.stop, async () => {
+      try {
+        await actions.stop();
+      } finally {
+        void service.refresh().catch(() => undefined);
+      }
+    });
+    handle(menuBarChannels.resume, async () => {
+      try {
+        await actions.resume();
+      } finally {
+        void service.refresh().catch(() => undefined);
+      }
+    });
     handle(menuBarChannels.setOpenAtLogin, async (input) => {
       await actions.setOpenAtLogin(z.boolean().parse(input));
       service.changed();

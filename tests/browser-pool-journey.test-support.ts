@@ -219,8 +219,12 @@ export async function journey(
   let withholdNext = false;
   let runnerDown = false;
   const connections: TestRuntimeConnection[] = [];
+  let onTicket: ((ticket: string) => void) | undefined;
   const connect = (ticket: string) => {
     issued.push(ticket);
+    const hook = onTicket;
+    onTicket = undefined;
+    hook?.(ticket);
     if (withholdNext) {
       withholdNext = false;
       withheld.push(ticket);
@@ -415,11 +419,20 @@ export async function journey(
     withholdNextTicket: () => {
       withholdNext = true;
     },
-    /** The Runner restarts: every channel drops, the guest keeps running. */
-    runnerDown: () => {
+    /** Runs once, as the next ticket leaves the Home for the runtime. */
+    onNextTicket: (hook: (ticket: string) => void) => {
+      onTicket = hook;
+    },
+    /**
+     * The Runner restarts: every channel drops, the guest keeps running. `homeCode` is the close
+     * code the Home sees; the runtime always sees the Runner's own 1011 (a 1000 reaches it only
+     * as the relay of the Home's own close).
+     */
+    runnerDown: (homeCode = 1011) => {
       runnerDown = true;
       bridge.closeAll(1011, "runner restarting");
-      for (const connection of connections.splice(0)) connection.lose(1011, "runner restarting");
+      for (const connection of connections.splice(0))
+        connection.lose(homeCode, "runner restarting");
     },
     runnerUp: () => {
       runnerDown = false;
