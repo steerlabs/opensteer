@@ -11,7 +11,7 @@ import {
   connection,
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
-import type { ThreadId } from "../packages/core/src/index.js";
+import type { RequestId, ThreadId } from "../packages/core/src/index.js";
 import { listBrowserPoolDocumentLosses, type TabRecord } from "../packages/database/src/index.js";
 import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
 
@@ -92,12 +92,17 @@ async function directWork(j: Journey, home: () => Home) {
       name: "browser_use",
       arguments: { profileId: j.profile!.id, code, reason: "Read the draft" },
     });
+  const resume = (code: string, operationId: string) =>
+    agent.client.callTool({
+      name: "browser_use",
+      arguments: { profileId: j.profile!.id, code, reason: "Read the draft", operationId },
+    });
   const connect = () =>
     agent.client.callTool({
       name: "browser_connect",
       arguments: { profileId: j.profile!.id, reason: "Drive the page" },
     });
-  return { sessions, scripts, agent, use, connect };
+  return { sessions, scripts, agent, use, resume, connect };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -396,6 +401,61 @@ it("honours a mode cut that arrives while the browser is parked: the call waits 
     expect(after.structuredContent).toMatchObject({ status: "pending" });
     expect(p.j.controller.effects).toEqual(parkedEffects);
     expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("never wakes a parked browser for an approved call whose grant was cut before its hand-off", async () => {
+  const p = await parkedAfterWork("parked-grant-after-approval");
+  try {
+    const ownerId = p.j.task.userId;
+    await p.j.store.updateThreadAccessMode({
+      threadId: p.taskId,
+      requestedBy: ownerId,
+      accessMode: "approval-required",
+    });
+    await p.work.sessions.lowerTaskMode(p.taskId, "approval-required");
+    const pending = (await p.work.use(p.read)).structuredContent as {
+      status: string;
+      requestId: RequestId;
+      operationId: string;
+    };
+    expect(pending.status).toBe("pending");
+    await p.work.sessions.respond({
+      requestId: pending.requestId,
+      expectedRevision: (await p.j.store.requests.revision(pending.requestId))!,
+      resolvedBy: ownerId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    // Between the person's approval and the hand-off, the grant is cut: the profile goes, a
+    // second one keeps the tool listed.
+    {
+      const other = await p.j.store.createBrowserProfile({
+        name: "Other",
+        ownerId,
+        homeRunnerId: p.j.task.runnerId,
+        idempotencyKey: "other-profile",
+      });
+      await p.connection.update(p.work.agent.id, {
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: other.id }],
+        },
+      });
+    }
+    const resumed = await p.work.resume(p.read, pending.operationId);
+    expect(text(resumed)).not.toContain("unsent draft");
+    // Refused before anything could wake the browser.
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+    const operation = await p.j.database
+      .selectFrom("agentOperations")
+      .select(["state", "handedOffAt"])
+      .where("id", "=", pending.operationId as never)
+      .executeTakeFirstOrThrow();
+    expect(operation).toMatchObject({ state: "refused", handedOffAt: null });
   } finally {
     await p.j.close();
   }

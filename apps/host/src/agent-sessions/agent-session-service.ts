@@ -784,6 +784,10 @@ export class AgentSessionService {
     let reservation: BrowserPoolReservation | undefined;
     let handed: AgentOperationRow | null = null;
     try {
+      // A caller the target check would refuse never wakes a parked browser: the same check runs
+      // first, before the reserve, and again after it, where it stays the authority.
+      await pool.recheckTarget();
+      signal.throwIfAborted();
       reservation = await pool.reserve(signal);
       const identity = pool.identity();
       await pool.recheckTarget();
