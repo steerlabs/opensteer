@@ -172,7 +172,7 @@ import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
-import type { BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
+import type { BrowserPoolDocument, BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
 import { browserViewerEditingVersion, browserViewerMessage } from "./browser-viewer-protocol.js";
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
@@ -430,7 +430,10 @@ export interface BrowserSessionRepository {
   }): Promise<boolean>;
   detachBrowserSessionAttachments(agentBindingId: string): Promise<readonly BrowserSessionId[]>;
 
-  failActiveBrowserSessions(placementKey?: string): Promise<{
+  failActiveBrowserSessions(
+    placementKey?: string,
+    pooledRunner?: RunnerId,
+  ): Promise<{
     readonly failed: number;
   }>;
   findActiveBrowserSessionForPerson(ownerId: UserId): Promise<BrowserSessionRecord | null>;
@@ -951,6 +954,7 @@ export class BrowserService {
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   readonly #managedPoolTestRunner: RunnerId | undefined;
+  readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -1044,8 +1048,127 @@ export class BrowserService {
   }
 
   async initialize(): Promise<void> {
-    if (this.#personal) await this.#repository.failActiveBrowserSessions();
+    if (this.#personal) {
+      if (this.#managedPoolTestRunner)
+        await this.#repository.failActiveBrowserSessions(undefined, this.#managedPoolTestRunner);
+      else await this.#repository.failActiveBrowserSessions();
+    }
     await this.pruneHistory();
+  }
+
+  /** Rebuilds the opted-in Guest broker from durable Home ownership and tab bindings. */
+  async adoptPooledOwnerDocuments(
+    ownerId: UserId,
+    runnerId: RunnerId,
+    documents: readonly BrowserPoolDocument[],
+    fence: BrowserPoolRuntimeFence,
+    attachment: number,
+  ): Promise<readonly BrowserPoolDocument[]> {
+    const pool = this.#poolTabTarget(runnerId);
+    const target = this.#resolveTarget({ kind: "runner", runnerId });
+    if (!pool?.gate.retiringOrAdopting || !target || !this.#workspaceTabs || this.#closed)
+      return [];
+    const adopted: BrowserPoolDocument[] = [];
+    for (const sessionId of new Set(documents.map((document) => document.sessionId))) {
+      const expected = documents.filter((document) => document.sessionId === sessionId);
+      const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
+      if (
+        record?.state !== "ready" ||
+        record.origin !== "person" ||
+        record.profileId !== null ||
+        record.runnerId !== runnerId ||
+        record.runtimeId !== target.runtimeId ||
+        record.opener?.kind !== "person" ||
+        record.opener.userId !== ownerId
+      )
+        continue;
+      const tabWitness = async () =>
+        Promise.all(
+          expected.map(async (document) => {
+            const tab = await this.#workspaceTabs!.get(ownerId, document.surfaceId);
+            return tab?.pageBinding?.sessionId === sessionId &&
+              tab.pageBinding.surfaceId === document.surfaceId
+              ? { generation: tab.generation, lineageId: tab.pageBinding.lineageId }
+              : null;
+          }),
+        );
+      const before = await tabWitness();
+      if (before.includes(null) || this.#closed) continue;
+      const socket = target.connect(
+        this.#signer.issue({
+          creationOrigin: "person",
+          actor: "person",
+          access: "read-write",
+          reattach: true,
+          pool: { ...fence, attachment },
+          identity: { kind: "fresh" },
+          runtimeId: target.runtimeId,
+          sessionId,
+          subject: ownerId,
+          tabRestoreVersion: 1,
+          ...(target.surfaceState ? { surfaceState: target.surfaceState } : {}),
+          ...(target.basicInput ? { basicInput: target.basicInput } : {}),
+        }),
+      );
+      const broker = new HostedBrowserBroker({
+        poolGate: pool.gate,
+        sessionId,
+        socket,
+        groupId: before[0]!.lineageId,
+        profileId: null,
+        tabRestoreVersion: true,
+        historyWrite: () => {},
+        readSessionState: () => this.#sessionState(sessionId),
+        onPageChanged: () => this.#announcePresence(sessionId),
+        onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+        onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
+        onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
+        cdpBoundary: false,
+        basicInput: target.basicInput,
+        surfaceState: target.surfaceState,
+        sharedControl: target.sharedControl === true,
+        navigation: false,
+        targetControl: target.targetControl === true,
+        captureRegion: target.captureRegion === true,
+        rasterDemand: target.rasterDemand === true,
+        passkeys: false,
+        passkeyOwnOrigins: this.#passkeyOwnOrigins,
+        editing: undefined,
+        clipboard: false,
+        computer: target.computer ?? null,
+        connectTimeoutMs: this.#connectTimeoutMs,
+        fileStaging: false,
+        signIn: false,
+        stateImport: false,
+        onState: (state) => this.#transitionBrowserSession({ sessionId, state }),
+        onTerminal: () => {
+          if (this.#brokers.get(sessionId) === broker) this.#brokers.delete(sessionId);
+          this.#onTabsChanged();
+        },
+      });
+      this.#brokers.set(sessionId, broker);
+      await broker.ready();
+      const live = this.pageInventory(sessionId)?.records;
+      const current = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
+      const after = await tabWitness();
+      if (
+        current?.state !== "ready" ||
+        this.#closed ||
+        before.some(
+          (witness, i) =>
+            witness?.generation !== after[i]?.generation ||
+            witness?.lineageId !== after[i]?.lineageId,
+        )
+      )
+        continue;
+      if (
+        expected.every(
+          ({ surfaceId, documentId }) => live?.get(surfaceId)?.documentId === documentId,
+        )
+      )
+        adopted.push(...expected);
+    }
+    return adopted;
   }
 
   async workspaceBootstrap(
@@ -1828,7 +1951,7 @@ export class BrowserService {
           const pooled = this.#poolTabTarget(runnerId);
           if (pooled) {
             if (agent) throw unavailable("This browser cannot open a tab for an agent yet.");
-            const reservation = await pooled.gate.reserve(budget.signal);
+            const reservation = await this.#reservePool(pooled.gate, budget.signal, record?.id);
             budget.pool = { target: pooled, reservation };
             budget.signal.throwIfAborted();
             if (record) {
@@ -5416,14 +5539,29 @@ export class BrowserService {
     const peers = this.#authConsumers.get(options.authSessionId) ?? new Set<BrowserConsumerPeer>();
     peers.add(peer);
     this.#authConsumers.set(options.authSessionId, peers);
+    let pooledViewer: BrowserPoolReservation | undefined;
     const detachAuth = () => {
+      pooledViewer?.release();
       peers.delete(peer);
       if (peers.size === 0) this.#authConsumers.delete(options.authSessionId);
     };
     try {
-      const persisted = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
+      let persisted = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
       if (!persisted) {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
+      }
+      const pool = this.#poolTabTarget(persisted.runnerId);
+      if (pool && !isTerminal(persisted.state)) {
+        if (!peer.isOpen() || !(await options.signedIn()))
+          throw new OpensteerError({ code: "forbidden", message: "Browser access ended." });
+        pooledViewer = await this.#reservePool(
+          pool.gate,
+          AbortSignal.any([this.#closing.signal, AbortSignal.timeout(this.#connectTimeoutMs)]),
+          sessionId,
+        );
+        persisted = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
+        if (!persisted || !peer.isOpen())
+          throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       const broker = this.#brokers.get(sessionId);
       if (!broker || isTerminal(persisted.state)) {
@@ -5489,6 +5627,10 @@ export class BrowserService {
       if (!persisted) {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
+      for (const waiter of this.#poolWaiters.get(sessionId) ?? [])
+        waiter.abort(
+          new OpensteerError({ code: "conflict", message: "The person stopped this browser." }),
+        );
       this.#endPersonUse(this.#brokers.get(sessionId)?.groupId ?? sessionId);
       await this.#stopRecord(persisted);
     });
@@ -5819,6 +5961,7 @@ export class BrowserService {
       const broker = withoutDatabaseOperationSignal(
         () =>
           new HostedBrowserBroker({
+            ...(pooled ? { poolGate: pooled.gate } : {}),
             personUse,
             onPersonUseChanged: () => {
               if (personUse.ended) return;
@@ -6007,6 +6150,20 @@ export class BrowserService {
     if (!target?.main || !target.loopbackPool)
       throw unavailable("The pooled browser target is unavailable.");
     return target.loopbackPool;
+  }
+
+  async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
+    if (!sessionId) return gate.reserve(signal);
+    const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
+    const waiter = new AbortController();
+    waiters.add(waiter);
+    this.#poolWaiters.set(sessionId, waiters);
+    try {
+      return await gate.reserve(AbortSignal.any([signal, waiter.signal]));
+    } finally {
+      waiters.delete(waiter);
+      if (!waiters.size) this.#poolWaiters.delete(sessionId);
+    }
   }
 
   /**
@@ -6604,6 +6761,7 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly poolGate?: BrowserPoolGate;
   readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
   readonly onPersonUseChanged?: () => void;
   readonly readSessionState: () => Promise<
@@ -6652,6 +6810,7 @@ interface HostedBrowserBrokerOptions {
 }
 
 export class HostedBrowserBroker {
+  readonly #poolGate: BrowserPoolGate | undefined;
   readonly profileId: BrowserProfileId | null;
   readonly #historyWrite: HostedBrowserBrokerOptions["historyWrite"];
   readonly #historyNavigations = new Map<
@@ -6905,6 +7064,7 @@ export class HostedBrowserBroker {
   #sessionStateSending: Promise<void> | undefined;
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.#poolGate = options.poolGate;
     this.#personUse = options.personUse ?? { tabs: new Set(), ended: false };
     this.#pendingPersonUse = new Set(this.#personUse.tabs);
     this.#onPersonUseChanged = options.onPersonUseChanged ?? (() => undefined);
@@ -7728,7 +7888,14 @@ export class HostedBrowserBroker {
         void this.#runtimeFrameTail
           .then(() =>
             this.#finish(
-              this.#stopping || code === 1000 ? "closed" : "failed",
+              !this.#stopping &&
+                this.#poolGate?.retiringOrAdopting &&
+                code === 1012 &&
+                reason.toString() === "browser-pool-retire"
+                ? "pooled"
+                : this.#stopping || code === 1000
+                  ? "closed"
+                  : "failed",
               this.#stopping ? 1000 : 1011,
               this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
             ),
@@ -8031,12 +8198,12 @@ export class HostedBrowserBroker {
       this.#reconcileHistory(this.#surfaces);
       if (!this.#runtimeReady) {
         if (!this.#reconnecting) {
-          await this.#sendSavedTabs();
+          if (!this.#poolGate?.retiringOrAdopting) await this.#sendSavedTabs();
           await this.#onState("ready");
         }
         this.#reconnecting = false;
         this.#runtimeReady = true;
-        await this.#sendSessionState();
+        if (!this.#poolGate?.retiringOrAdopting) await this.#sendSessionState();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.#onTabsChanged();
@@ -8911,6 +9078,12 @@ export class HostedBrowserBroker {
           message: "Update the browser computer to reload without cache.",
         }),
       );
+    let poolHold: BrowserPoolReservation | undefined;
+    try {
+      poolHold = this.#poolGate?.holdOpen();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const generation = this.#runtimeConnectionGeneration;
     const tail = recheck ? this.#commandTail.then(recheck) : this.#commandTail;
     const operation = tail.then(
@@ -9014,12 +9187,13 @@ export class HostedBrowserBroker {
           );
         }),
     );
-    this.#commandTail = operation.catch(() => undefined);
-    return operation;
+    const settled = poolHold ? operation.finally(() => poolHold.release()) : operation;
+    this.#commandTail = settled.catch(() => undefined);
+    return settled;
   }
 
   #finish(
-    state: "closed" | "failed",
+    state: "closed" | "failed" | "pooled",
     consumerCloseCode: number,
     consumerCloseReason: string,
   ): Promise<void> {
@@ -9072,7 +9246,7 @@ export class HostedBrowserBroker {
       }
       this.#consumers.clear();
       try {
-        await this.#onState(state);
+        if (state !== "pooled") await this.#onState(state);
       } catch (cause) {
         throw new OpensteerError({
           cause,

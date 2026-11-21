@@ -876,8 +876,12 @@ export class OpensteerStore {
   }): Promise<readonly BrowserSessionWithAttachmentCountRecord[]> {
     return browserSessionStore.listActiveBrowserSessionsForAgent(this.#database, input);
   }
-  async failActiveBrowserSessions(placementKey?: string) {
-    return browserSessionStore.failActiveBrowserSessions(this.#database, placementKey);
+  async failActiveBrowserSessions(placementKey?: string, pooledRunner?: RunnerId) {
+    return browserSessionStore.failActiveBrowserSessions(
+      this.#database,
+      placementKey,
+      pooledRunner,
+    );
   }
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];

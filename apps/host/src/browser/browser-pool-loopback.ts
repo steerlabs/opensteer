@@ -1,6 +1,8 @@
 import {
   browserPoolControlBytes,
   type BrowserPoolControl,
+  type BrowserPoolDocument,
+  type BrowserPoolRuntimeFence,
   type BrowserRuntime,
 } from "@opensteer/browser-runtime-core";
 import {
@@ -14,6 +16,7 @@ import {
 } from "@opensteer/database";
 import type { Kysely } from "kysely";
 import { sign, type KeyObject } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { BrowserPoolGate } from "./browser-pool-gate.js";
 
 export interface LoopbackPoolPhysicalState {
@@ -42,6 +45,11 @@ export async function createLoopbackBrowserPool(input: {
   runtime: BrowserRuntime;
   physical: LoopbackPoolPhysicalController;
   controllerKey: KeyObject;
+  adopt?: (
+    documents: readonly BrowserPoolDocument[],
+    fence: BrowserPoolRuntimeFence,
+    attachment: number,
+  ) => Promise<readonly BrowserPoolDocument[]>;
 }) {
   const { database, target, runtime, physical, controllerKey } = input;
   const state = () => {
@@ -51,11 +59,17 @@ export async function createLoopbackBrowserPool(input: {
     return state;
   };
   const read = () => readBrowserPoolSlot(database, target.runnerId);
-  const driveRuntime = (slot: BrowserPoolSlot, kind: BrowserPoolControl["kind"]) => {
+  const driveRuntime = (
+    slot: BrowserPoolSlot,
+    kind: BrowserPoolControl["kind"],
+    documents?: readonly BrowserPoolDocument[],
+    epoch = slot.epoch,
+  ) => {
     const control = {
       kind,
-      fence: { term: slot.term, instance: slot.instanceId, epoch: slot.epoch },
+      fence: { term: slot.term, instance: slot.instanceId, epoch },
       intent: { id: slot.intentId, sequence: slot.intentSequence },
+      ...(documents ? { documents } : {}),
     };
     return runtime.controlPool(
       control,
@@ -104,6 +118,25 @@ export async function createLoopbackBrowserPool(input: {
     if (!released.cancelled || released.phase !== "running") throw new BrowserPoolAdmissionClosed();
     return advance(slot, "running", released.fence.epoch);
   };
+  const park = async (slot: BrowserPoolSlot) => {
+    if (!input.adopt && runtime.health().sessionCount !== 0) return abortPark(slot);
+    const retired = await driveRuntime(slot, "retire");
+    if (retired.phase === "running") return abortPark(slot);
+    if (
+      (retired.phase !== "retired" && retired.phase !== "sealed") ||
+      !retired.result ||
+      retired.result.dropped.length
+    )
+      throw new BrowserPoolAdmissionClosed();
+    const recorded = await advanceBrowserPoolSlot(database, slot, {
+      phase: "preparing",
+      epoch: slot.epoch,
+      retained: { ...retired.result },
+    });
+    await driveRuntime(recorded, "seal");
+    await drivePhysical(recorded, "pause");
+    return advance(recorded, "parked");
+  };
   const gate = new BrowserPoolGate({
     read,
     begin: (id, demanded) =>
@@ -116,35 +149,28 @@ export async function createLoopbackBrowserPool(input: {
         id,
         demanded,
       ),
-    park: async (slot) => {
-      // Retaining a Home session requires rebuilding its broker. Keep this
-      // first entry point to an empty runtime until that restore path exists.
-      if (runtime.health().sessionCount !== 0) return abortPark(slot);
-      const retired = await driveRuntime(slot, "retire");
-      if (retired.phase === "running") return abortPark(slot);
-      if (
-        retired.phase !== "retired" ||
-        !retired.result ||
-        retired.result.retained.length ||
-        retired.result.dropped.length
-      )
-        throw new BrowserPoolAdmissionClosed();
-      const recorded = await advanceBrowserPoolSlot(database, slot, {
-        phase: "preparing",
-        epoch: slot.epoch,
-        retained: { ...retired.result },
-      });
-      await drivePhysical(recorded, "pause");
-      return advance(recorded, "parked");
-    },
+    park,
     abortPark,
     wake: async (slot) => {
       const waking = await advance(slot, "waking");
       await drivePhysical(waking, "resume");
-      return abortPark(waking);
+      const documents = state().result?.retained;
+      if (!documents || !isDeepStrictEqual(waking.retained?.retained, documents))
+        throw new BrowserPoolAdmissionClosed();
+      const adoption = await driveRuntime(waking, "adopt", documents);
+      const admitted =
+        (await input.adopt?.(documents, adoption.fence, waking.intentSequence + 1)) ?? [];
+      const completed = await driveRuntime(waking, "complete", admitted, adoption.fence.epoch);
+      if (completed.phase !== "running" || !completed.adoption?.outcome)
+        throw new BrowserPoolAdmissionClosed();
+      return advanceBrowserPoolSlot(database, waking, {
+        phase: "running",
+        epoch: completed.fence.epoch,
+        retained: { ...waking.retained, ...completed.adoption.outcome },
+      });
     },
   });
-  const slot = await read();
+  let slot = await read();
   const observed = await status();
   const runtimeState = state();
   if (slot) {
@@ -153,18 +179,33 @@ export async function createLoopbackBrowserPool(input: {
       slot.slotId !== target.slotId ||
       slot.term !== target.term ||
       slot.instanceId !== target.instanceId ||
-      slot.epoch !== runtimeState.fence.epoch ||
-      (slot.phase === "parked"
-        ? observed.phase !== "paused" ||
-          observed.lastOperation !== `${slot.intentId}:pause` ||
-          runtimeState.phase !== "retired" ||
-          runtimeState.intent?.id !== slot.intentId
-        : slot.phase !== "running" ||
-          observed.phase !== "running" ||
-          runtimeState.phase !== "running" ||
-          runtimeState.intent?.id !== slot.intentId)
+      slot.epoch !== runtimeState.fence.epoch
     )
       throw new BrowserPoolAdmissionClosed();
+    if (slot.phase === "preparing") {
+      if (runtimeState.phase === "running" || runtimeState.phase === "releasing") {
+        // Even a not-yet-delivered retire needs a signed tombstone before opening.
+        slot = await abortPark(slot);
+      } else {
+        if (runtimeState.intent?.id !== slot.intentId) throw new BrowserPoolAdmissionClosed();
+        slot = await park(slot);
+      }
+    } else if (slot.phase === "parked") {
+      if (
+        observed.phase !== "paused" ||
+        observed.lastOperation !== `${slot.intentId}:pause` ||
+        runtimeState.phase !== "sealed" ||
+        runtimeState.intent?.id !== slot.intentId
+      )
+        throw new BrowserPoolAdmissionClosed();
+    } else if (
+      slot.phase !== "running" ||
+      observed.phase !== "running" ||
+      runtimeState.phase !== "running" ||
+      runtimeState.intent?.id !== slot.intentId
+    ) {
+      throw new BrowserPoolAdmissionClosed();
+    }
   } else if (
     observed.phase !== "running" ||
     observed.lastOperation ||

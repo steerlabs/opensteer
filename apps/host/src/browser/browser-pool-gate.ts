@@ -38,22 +38,30 @@ export class BrowserPoolGate {
     this.install(slot);
   }
 
+  get retiringOrAdopting(): boolean {
+    return this.phase === "parking" || this.phase === "parked" || this.phase === "waking";
+  }
+
+  /** Maintenance can use the running browser, without creating wake demand. */
+  holdOpen(): BrowserPoolReservation {
+    if (this.phase !== "open") throw new BrowserPoolAdmissionClosed();
+    this.active++;
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        this.active--;
+      },
+    };
+  }
+
   async reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
     for (;;) {
       signal.throwIfAborted();
       const phase = this.phase;
       if (phase === "closed") throw new BrowserPoolAdmissionClosed();
-      if (phase === "open") {
-        this.active++;
-        let released = false;
-        return {
-          release: () => {
-            if (released) return;
-            released = true;
-            this.active--;
-          },
-        };
-      }
+      if (phase === "open") return this.holdOpen();
       if (phase === "preparing") this.demanded = true;
       if (phase === "parked") this.wake();
       await waitForChange(this.changed.signal, signal);

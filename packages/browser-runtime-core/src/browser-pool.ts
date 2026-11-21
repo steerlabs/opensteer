@@ -243,7 +243,7 @@ export class BrowserPoolRetirement {
           phase: "running",
           cancelled: true,
           result: same ? current.result : null,
-          blockers: [],
+          blockers: same ? current.blockers : [],
           adoption: null,
         });
       } else {

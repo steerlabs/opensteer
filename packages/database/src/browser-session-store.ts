@@ -1706,12 +1706,13 @@ export async function listActiveBrowserSessionsForAgent(
 export async function failActiveBrowserSessions(
   database: Kysely<DatabaseSchema>,
   placementKey?: string,
+  pooledRunner?: RunnerId,
 ): Promise<{
   readonly failed: number;
 }> {
   const now = new Date();
   if (placementKey === undefined) {
-    await interruptPendingBrowserTabOpens(database);
+    await interruptPendingBrowserTabOpens(database, pooledRunner);
   }
   let sessionIds: BrowserSessionId[] = [];
   return commitPersonalMutation(database, async (transaction, mutation) => {
@@ -1721,6 +1722,24 @@ export async function failActiveBrowserSessions(
         .select("id")
         .where("state", "in", ["starting", "ready", "closing"])
         .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
+        .$if(pooledRunner !== undefined, (query) =>
+          query.where(sql<boolean>`
+          not exists (
+            select 1 from browser_pool_slots slot
+            where slot.runner_id = ${pooledRunner!}
+              and slot.runner_id = browser_sessions.runner_id
+              and slot.runtime_id = browser_sessions.runtime_id
+              and slot.phase <> 'running'
+              and browser_sessions.origin = 'person' and browser_sessions.state = 'ready'
+              and (
+                slot.retained is null or exists (
+                  select 1 from jsonb_array_elements(slot.retained->'retained') document
+                  where document->>'sessionId' = browser_sessions.id
+                )
+              )
+          )
+        `),
+        )
         .orderBy("id", "asc")
         .forNoKeyUpdate()
         .execute(databaseOperationOptions())
@@ -1981,10 +2000,12 @@ export async function browserSessionOpenerForBinding(
 /** Fence pending attempts before accepting Runtime streams after Host restart. */
 export async function interruptPendingBrowserTabOpens(
   database: Kysely<DatabaseSchema>,
+  pooledRunner?: RunnerId,
 ): Promise<void> {
-  await sql`update browser_tab_opens
+  const interrupt = sql`update browser_tab_opens
     set binding = jsonb_set(binding, '{outcome}', '{"kind":"failed","reason":"interrupted"}'::jsonb)
-    where binding -> 'outcome' ->> 'kind' = 'pending'`.execute(
+    where binding -> 'outcome' ->> 'kind' = 'pending'`;
+  await (pooledRunner ? sql`${interrupt} and runner_id <> ${pooledRunner}` : interrupt).execute(
     database,
     databaseOperationOptions(),
   );
