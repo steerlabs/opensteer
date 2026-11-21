@@ -10,7 +10,6 @@ import { createReadStream } from "node:fs";
 import {
   chown,
   mkdir,
-  open,
   readdir,
   readFile,
   rename,
@@ -20,7 +19,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { setFileMode } from "@opensteer/shared/privateFiles";
+import { setFileMode, syncDirectory } from "@opensteer/shared/privateFiles";
 import {
   readPrivateFileText,
   replacePrivateFileAtomically,
@@ -603,15 +602,6 @@ function sha256(path: string): Promise<string> {
       .on("end", () => resolve(hash.digest("hex")))
       .on("error", reject);
   });
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 async function mounted(path: string): Promise<boolean> {
