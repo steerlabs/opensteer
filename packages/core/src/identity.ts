@@ -90,7 +90,7 @@ export const IdentityConfigSchema = z.strictObject({
   oidcProviders: z.array(IdentityProviderSummarySchema).max(16),
   passkeysEnabled: z.boolean(),
   exposure: HostExposureSchema,
-  /** Absent from Homes before it, and from a team or a Home that is none of these. */
+  /** Absent from Homes before it, and from a Home that is none of these. */
   homeKind: HostHomeKindSchema.optional(),
   /** Apex portal this Deployment belongs to, or null when it is self-hosted. */
   portalOrigin: z.url().nullable(),

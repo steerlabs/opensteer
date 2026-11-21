@@ -30,8 +30,8 @@ import type {
 } from "./client.js";
 
 /**
- * A message still waiting for a Run: in line, or a teammate's ask awaiting
- * its owner's approval. Either may be edited, and neither has reached the agent.
+ * A message still waiting for a Run, in line. It may be edited, and has not
+ * reached the agent.
  */
 export function isWaitingInputState(
   state: ThreadInputState,

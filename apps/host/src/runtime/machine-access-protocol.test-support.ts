@@ -154,7 +154,7 @@ export async function startMachineAccessWireHost(
         pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")
-        throw new Error("Personal wire fixture constructed a team Host");
+        throw new Error("Personal wire fixture constructed another kind of Host");
       runtime = created;
       await runtime.listen();
       const claimed = await runtime.app.inject({

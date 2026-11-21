@@ -80,12 +80,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
-  "apps/desktop/src/connections/deployment-access-service.ts": {
-    counts: {
-      "deployment.kind": 2,
-    },
-    reason: "The comparison reads a resource's own kind, not Deployment policy.",
-  },
   "apps/host/src/browser/saved-logins.ts": {
     counts: {
       "prior.payload.scope": 1,

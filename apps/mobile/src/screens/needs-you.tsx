@@ -26,10 +26,7 @@ export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId:
 const earlierFailed = presentClientIssue({ code: "read-failed", resource: "earlier requests" });
 
 /**
- * Everything waiting on the person. A teammate's ask is answered in the task
- * it waits in, where its words can be read and edited first. A failed ask
- * says why and can be dismissed, which declines it, and still opens any task
- * it left behind; one that never became a task can only be dismissed.
+ * Everything waiting on the person, each opened in the task it waits in.
  */
 function NeedsYouList({ client, deploymentId }: { client: HostClient; deploymentId: string }) {
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);

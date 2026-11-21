@@ -18,7 +18,7 @@ export interface DeploymentCredentials {
 }
 
 /**
- * The real answer: a team Host, or a Home at its own address, issues its own
+ * The real answer: a Home at its own address issues its own
  * OAuth bearer, and a Mac reached remotely presents the session its pairing
  * code established. A Deployment never carries both — the two credential families
  * are read by different parsers on the Host, and mixing them would let one

@@ -215,7 +215,8 @@ export async function startPersonalRuntime(input: {
         },
       },
     );
-    if (runtime.kind !== "personal") throw new Error("Personal fixture constructed a team Host");
+    if (runtime.kind !== "personal")
+      throw new Error("Personal fixture constructed another kind of Host");
     host = runtime;
     await host.listen();
     const signedIn = await host.app.inject({

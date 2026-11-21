@@ -180,10 +180,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     removeAllAccountIdentities(): Promise<void>;
     removeOtherAccountIdentities(source: AccountDeploymentConnectionSource): Promise<void>;
   };
-  readonly #catalog: Pick<
-    DeploymentCatalogStore,
-    "load" | "upsert" | "addPendingAccountDeployment" | "remove"
-  >;
+  readonly #catalog: Pick<DeploymentCatalogStore, "load" | "upsert" | "remove">;
   readonly #fetch: OAuthFetch;
   readonly #accountListeners = new Set<AccountAuthStateListener>();
   readonly #flowExpiries = new Map<string, () => void>();
@@ -228,10 +225,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       removeAllAccountIdentities(): Promise<void>;
       removeOtherAccountIdentities(source: AccountDeploymentConnectionSource): Promise<void>;
     };
-    readonly catalog: Pick<
-      DeploymentCatalogStore,
-      "load" | "upsert" | "addPendingAccountDeployment" | "remove"
-    >;
+    readonly catalog: Pick<DeploymentCatalogStore, "load" | "upsert" | "remove">;
     readonly fetch?: OAuthFetch;
     readonly now?: () => Date;
     readonly networkTimeoutMs?: number;
@@ -760,7 +754,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#assertStorageReady();
     // Personal connections ride the partition session cookie, so they must
     // never also carry a self-hosted bearer token; only a Home at its own
-    // address signs in here as a team server does.
+    // address signs in here.
     if (!usesHostNativeOAuth(connection)) return null;
     const owner = this.#accountRuntime;
     await owner.run(() => this.#retryCredentialWrite(connection.authority.document.deploymentId));
@@ -1601,7 +1595,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   #advanceHostEntry(deploymentId: DeploymentId): void {
     this.#hostControllers
       .get(deploymentId)
-      ?.abort(new ClientOperationError("Team authorization changed. Try again.", "transient"));
+      ?.abort(new ClientOperationError("The sign-in changed. Try again.", "transient"));
     this.#hostControllers.delete(deploymentId);
   }
 

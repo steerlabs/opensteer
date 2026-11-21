@@ -17,8 +17,8 @@ export class HostSignInOutcomeError extends Error {
       outcome.error instanceof Error
         ? outcome.error.message
         : outcome.status === "sign-in-required"
-          ? "Sign in to this team."
-          : "Team authorization changed. Try again.",
+          ? "Sign in to this Home."
+          : "The sign-in changed. Try again.",
     );
     this.outcome = outcome;
   }

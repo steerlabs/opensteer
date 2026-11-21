@@ -211,8 +211,7 @@ export function registerIdentityRoutes(
       );
     });
   }
-  // The identity provider sends the browser here; a navigation states no API
-  // version (a team's travels in the OIDC state and is checked there).
+  // The identity provider sends the browser here; a navigation states no API version.
   app.get("/v1/auth/oidc/callback", { config: unversionedRoute }, async (request, reply) => {
     const incoming = new Request(
       new URL(request.raw.url ?? request.url, authenticator.publicOrigin),
@@ -273,7 +272,6 @@ export function registerIdentityRoutes(
         oauth.route({
           ...(route.method === "POST" ? { bodyLimit: maximumNativeOAuthBodyBytes } : {}),
           // Standard OAuth: a system browser and a token client state no Opensteer version.
-          // A team negotiates its own version in the OAuth round trip, in its own gate.
           config: unversionedRoute,
           handler: (request, reply) => handleNativeOAuth(identity, authenticator, request, reply),
           method: route.method,

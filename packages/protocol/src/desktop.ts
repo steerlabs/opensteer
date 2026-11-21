@@ -897,8 +897,8 @@ export type DesktopAddDirectRouteInput = z.infer<typeof DesktopAddDirectRouteInp
 /**
  * Connects a fresh Desktop client through one explicitly selected trust path.
  * Personal pairing verifies the Host-signed remote route before spending its
- * one-use code. Adding by address (a team server, or a Home at its own
- * address) verifies ordinary signed discovery and then delegates
+ * one-use code. Adding by address (a Home at its own address) verifies
+ * ordinary signed discovery and then delegates
  * authentication to that Host's native OAuth surface. The renderer, the bridge
  * and the service share this one discriminator. Electron
  * main derives every Deployment identity and catalog field from those signed

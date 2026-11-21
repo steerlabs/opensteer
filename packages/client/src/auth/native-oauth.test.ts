@@ -1438,7 +1438,6 @@ async function managerFixture(
       };
       return catalog.current;
     },
-    addPendingAccountDeployment: async () => catalog.current,
     remove: async () => catalog.current,
     current: catalogFor(connection),
     load: async () => catalog.current,

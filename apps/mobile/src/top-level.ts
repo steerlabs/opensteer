@@ -18,11 +18,6 @@ const topLevelRoutes: ReadonlySet<string> = new Set([
   "Schedules",
   "Tabs",
   "TaskSearch",
-  "TeamChannel",
-  "TeamChannels",
-  "TeamKnowledge",
-  "TeamSearch",
-  "Teams",
   "Thread",
   "WorkspaceBrowser",
 ]);

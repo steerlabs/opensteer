@@ -1503,7 +1503,6 @@ export function Message(props: {
       ) : null}
       {mine ? null : (
         <Attribution
-          // A teammate's ask in the person's own words, which history spells out.
           action={incomingMessageAction(message)}
           mark={
             author.kind === "agent" ? (

@@ -3,7 +3,7 @@
  * against the mock Host: the production web build; real pointer, keyboard and
  * window input; every frame of a drag checked for rows shown in part and for
  * React renders; Tabs' height kept across a reload and across whatever the
- * pane above shows (Tasks, Done, a team); screenshots and a video.
+ * pane above shows (Tasks, Done); screenshots and a video.
  */
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -662,7 +662,7 @@ try {
     },
   );
 
-  await check("Done and a team take the pane above Tabs, and Tabs never moves", async () => {
+  await check("Done takes the pane above Tabs, and Tabs never moves", async () => {
     // Done shows once a task is in it.
     const threadId = await page
       .locator(".side-section--tasks .side-list > li[data-thread-id]")
@@ -685,22 +685,13 @@ try {
     const done = await layout(page);
     await page.getByRole("button", { name: "Back to Tasks" }).click();
     await page.locator("#sidebar-tasks", { hasText: "Tasks" }).waitFor();
-    await page.locator(`.side-switch [role="radio"]:not([data-value="tasks"])`).click();
-    await page.locator(".side-section--tasks[aria-label='Team']").waitFor();
-    await settle(page);
-    const team = await layout(page);
-    await shot(page, "02-team.png");
-    await page.locator(`.side-switch [role="radio"][data-value="tasks"]`).click();
-    await page.locator("#sidebar-tasks").waitFor();
     await settle(page);
     const back = await layout(page);
     tabsStill(before, done, "Done");
-    tabsStill(before, team, "a team");
     tabsStill(before, back, "back to Tasks");
     noParts(done, "Done");
-    noParts(team, "a team");
     noParts(back, "back to Tasks");
-    return { top: [before.tabsTop, done.tabsTop, team.tabsTop, back.tabsTop] };
+    return { top: [before.tabsTop, done.tabsTop, back.tabsTop] };
   });
 
   const dy = 80;

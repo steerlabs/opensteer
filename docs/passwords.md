@@ -46,7 +46,7 @@ browser, phone or Mac app: each use still needs the Run's current authority over
 `saved_login_request` and `card_request` report what Passwords still needs instead of a separate tool suggesting it, so the
 suggestion can't depend on a model remembering to call anything. Clients show it from that result
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
-(a team server or an unsupported Mac) and nothing offers it.
+(an unsupported Mac) and nothing offers it.
 
 Setup happens in a window agents cannot observe. The Host tracks an outstanding offer and wakes
 its Thread when a login becomes available; the person must not have to report completion. A

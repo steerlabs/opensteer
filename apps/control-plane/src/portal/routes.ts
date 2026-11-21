@@ -80,8 +80,8 @@ export function registerControlPlaneRoutes(
       throw new ControlPlaneError("unavailable", "Account profiles are not configured");
     return dependencies.accountProfiles;
   };
-  // The person's own apps only: a team's sign-in token also carries `openid`, and a team may
-  // read a name through its sign-in but never change it.
+  // The person's own apps only: another client's sign-in token may also carry `openid`, and
+  // may read a name through its sign-in but never change it.
   const profilePrincipal = async (headers: Headers, mutation: boolean) => {
     const principal = await dependencies.authenticator.authenticate(headers, {
       mutation,

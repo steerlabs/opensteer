@@ -18,7 +18,7 @@ import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 
 /**
- * The address door, for a Home on someone's own server or a team, in two
+ * The address door, for a Home on someone's own server, in two
  * steps on one screen.
  *
  * Step one asks the address and nothing else; step two shows what answered —

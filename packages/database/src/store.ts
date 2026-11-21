@@ -1317,7 +1317,7 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
-  /** The name of the computer a personal Deployment runs on; null on a team server. */
+  /** The name of the computer a personal Deployment runs on; null before it has one. */
   async homeComputerName(): Promise<string | null> {
     const row = await this.#database
       .selectFrom("runners")

@@ -482,7 +482,7 @@ export interface HostServerDependencies {
   };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
-  /** The personal owner's name; absent on a team Host. */
+  /** The personal owner's name; absent before the Home has an owner. */
   readonly ownerProfile?: OwnerProfileService;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly onPersonalScopeCut?: (

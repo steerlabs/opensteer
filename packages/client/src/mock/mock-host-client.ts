@@ -7952,11 +7952,6 @@ class MockHostState {
     this.update(this.withInputQueue(this.snapshot, threadId));
   }
 
-  /**
-   * A teammate's ask arriving as the Host admits it: a waiting message in the
-   * task for that team thread, or in a new task named for the asker, gated
-   * until the person answers. An ask the Host could not admit keeps no task.
-   */
   queueBehindPreparingAccount(threadId: string): void {
     const snapshot = this.snapshot;
     const thread = snapshot.threads.find(({ id }) => id === threadId);
@@ -8257,9 +8252,7 @@ class MockHostState {
   /**
    * The queue as the Host would answer it from this snapshot: only the running
    * Run of an unpaused Thread accepts promotions, and every queued message is
-   * the viewer's own, so all of them can be withdrawn, except a teammate's ask,
-   * which only an answer ends. Asks awaiting that answer follow the line.
-   * Null for an unknown Thread.
+   * the viewer's own, so all of them can be withdrawn. Null for an unknown Thread.
    */
   private inputQueueView(snapshot: HostSnapshot, threadId: string): ThreadInputQueue | null {
     const thread = snapshot.threads.find((candidate) => candidate.id === threadId);

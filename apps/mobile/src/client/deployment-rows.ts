@@ -47,8 +47,8 @@ export type DeploymentStatus =
 /**
  * The door a Deployment that needs a credential opens.
  *
- * A team Host runs its own authorization server, so the person signs in
- * through the system browser. A Personal computer reached over Opensteer
+ * A Home at its own address runs its own authorization server, so the person
+ * signs in through the system browser. A Personal computer reached over Opensteer
  * Connect needs nobody: the Account signs a grant for the route and the Host
  * exchanges it. A Personal computer on its own private route needs the one-use
  * pairing code the operator carries off it, which only the Add door can take.
