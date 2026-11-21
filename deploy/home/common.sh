@@ -237,9 +237,16 @@ prepare_runner_apparmor() {
   fi
 }
 
+# Unloads the Runner profile this Home loaded; one that is no longer loaded (after a reboot,
+# say) is already gone.
 remove_runner_apparmor() {
+  local profile
   if [[ -s "$home_dir/runner-apparmor.name" ]]; then
-    runner_apparmor_rules "$(cat "$home_dir/runner-apparmor.name")" | apparmor_parser -R
+    profile=$(cat "$home_dir/runner-apparmor.name")
+    if [[ -r /sys/kernel/security/apparmor/profiles ]] &&
+      grep -q "^$profile (" /sys/kernel/security/apparmor/profiles; then
+      runner_apparmor_rules "$profile" | apparmor_parser -R
+    fi
     rm -f -- "$home_dir/runner-apparmor.name"
   fi
 }
@@ -349,6 +356,31 @@ installed_claim_state() {
   volume=$(compose config --format json | jq -er '.volumes["postgres-data"].name') || return
   if docker volume inspect "$volume" >/dev/null 2>&1; then return 1; fi
   echo required
+}
+
+# Stops the Home's containers even when its release selector is gone.
+compose_down_home() {
+  local selector="$home_dir/images.env" placeholder='' service status=0
+  if [[ ! -f $selector ]]; then
+    placeholder=$(mktemp "$home_dir/images.placeholder.XXXXXX")
+    {
+      echo 'OPENSTEER_HOME_VERSION=0.0.1'
+      for service in "${services[@]}"; do
+        printf 'OPENSTEER_HOME_%s_IMAGE=placeholder\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')"
+      done
+    } > "$placeholder"
+    selector=$placeholder
+  fi
+  release_env="$selector" compose down "$@" || status=$?
+  if [[ -n $placeholder ]]; then rm -f -- "$placeholder"; fi
+  return "$status"
+}
+
+# Everything an install, its operations and its interrupted ones leave in the Home directory.
+remove_home_files() {
+  rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
+  rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem,local-images,backup.resume,runner-apparmor.name}
 }
 
 # Whether this Home was installed with --local-images.

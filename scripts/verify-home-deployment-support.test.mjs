@@ -528,6 +528,49 @@ await test("the installer decides about an installed Home before it writes anyth
   );
 });
 
+await test("only the default Home owns the command on the path, and purge removes only its own files", () => {
+  const owner = runHome(`
+    owns_operator_command && echo temp-owns || echo temp-does-not-own
+    home_dir=/etc/opensteer-home; owns_operator_command && echo default-owns
+    OPENSTEER_HOME_UNIT_PREFIX=opensteer-home-proof owns_operator_command || echo prefixed-does-not-own`);
+  assert.equal(
+    owner.stdout,
+    "temp-does-not-own\ndefault-owns\nprefixed-does-not-own\n",
+    owner.stderr,
+  );
+  const purged = runHome(`
+    mkdir -p "$home_dir/"{secrets,boot,backup.abc123,install.def456,update.ghi789,restore.pending.retired}
+    touch "$home_dir/"{config.env,backup.resume,local-images,runner-apparmor.name,images.env.Xy12Ab} "$home_dir/someone-else.txt"
+    remove_home_files
+    remove_home_files
+    (cd "$home_dir" && find . -mindepth 1 | LC_ALL=C sort)`);
+  assert.equal(purged.status, 0, purged.stderr);
+  assert.equal(purged.stdout, "./images.env.Xy12Ab\n./someone-else.txt\n");
+  const stopped = runHome(`
+    compose() { echo "compose $* with $(sed -n 's/^OPENSTEER_HOME_HOST_IMAGE=//p' "$release_env")"; }
+    compose_down_home --volumes
+    ls "$home_dir" | grep -c placeholder || true`);
+  assert.equal(stopped.stdout, "compose down --volumes with placeholder\n0\n", stopped.stderr);
+  const apparmor = runHome(`
+    printf 'proof-runner-userns\\n' > "$home_dir/runner-apparmor.name"
+    apparmor_parser() { echo "unload $*"; return 1; }
+    remove_runner_apparmor
+    test ! -e "$home_dir/runner-apparmor.name" && echo name-removed`);
+  assert.equal(apparmor.status, 0, apparmor.stderr);
+  assert.equal(apparmor.stdout, "name-removed\n");
+  const home = readFileSync("deploy/home/opensteer-home", "utf8");
+  assert.ok(home.indexOf("[[ $EUID == 0 ]]") < home.indexOf('source "$home_dir/common.sh"'));
+  assert.ok(
+    home.indexOf("$(stat -c '%u:%a' \"$home_dir\") != 0:700") <
+      home.indexOf('source "$home_dir/common.sh"'),
+  );
+  assert.match(home, /if owns_operator_command; then rm -f \/usr\/local\/bin\/opensteer-home; fi/u);
+  assert.match(
+    home,
+    /if \[\[ -f "\$own_dir\/common\.sh" && -f "\$own_dir\/install-scheduler\.sh" \]\]; then default_dir=\$own_dir; fi/u,
+  );
+});
+
 await test("a Home installed with local images checks the machine's images instead of pulling them", () => {
   const composeConfig = JSON.stringify({
     services: Object.fromEntries(
