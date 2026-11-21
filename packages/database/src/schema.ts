@@ -2385,6 +2385,18 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  browserPoolSlots: {
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    intentSequence: number;
+    intentId: string;
+    phase: "running" | "preparing" | "parked" | "waking";
+    retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
+  };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
