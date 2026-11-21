@@ -825,7 +825,75 @@ it("lets a Stop that commits while a saved-profile session reattaches win, and d
   }
 });
 
-it("vetoes a park for a Trigger or Watch program with browser demand, and not for one without", async () => {
+it("parks under a running Trigger and a live Watch with no browser, and is vetoed while each holds one", async () => {
+  const j = await journey("program-journey");
+  try {
+    const home = await j.startHome();
+    const owner = { ownerId: j.task.userId, environmentId: j.task.environmentId };
+    // A running Trigger occurrence and a live Watch activation, neither with a browser yet.
+    const occurrence = await j.fixture.startTriggerOccurrence(j.task, "pool-program");
+    const watch = await j.fixture.triggers.create({
+      actorThreadId: null,
+      anchorThreadId: j.task.threadId,
+      createdBy: j.task.userId,
+      idempotencyKey: "pool-watch",
+      name: "Pool Watch",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+      },
+      source: { kind: "watch" },
+    });
+    const { activations } = await j.fixture.triggers.reconcileWatchesForRunner({
+      environmentId: j.task.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 3_600_000),
+      runnerBootId: j.task.runnerBootId,
+      runnerConnectionGeneration: 1,
+      runnerId: j.task.runnerId,
+    });
+    const activation = activations.find(
+      (entry) => entry.activation.triggerId === watch.trigger.id,
+    )?.activation;
+    expect(activation).toBeDefined();
+    const trigger = { ...owner, agentBindingId: `trigger:${occurrence.id}` };
+    const watcher = { ...owner, agentBindingId: `watch:${activation!.id}` };
+    // Programs that have not asked for a browser leave the park alone.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+
+    // Each program connects to its browser the way its CDP route does: the demand wakes it,
+    // the open connection vetoes the park, and once the route closed it the browser parks.
+    const connect = async (authority: typeof trigger) => {
+      const opened = await home.service.openAgentSession({ ...authority, fresh: true });
+      const cdp = await home.service.attachCdpForAgent(
+        { ...authority, sessionId: opened.session.id },
+        () => {},
+      );
+      return {
+        session: opened.session.id,
+        close: async () => {
+          cdp.close();
+          await home.service.closeTriggerSessionsForBinding(authority.agentBindingId);
+          await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+        },
+      };
+    };
+    const triggerBrowser = await connect(trigger);
+    expect((await j.row(triggerBrowser.session))?.origin).toBe("trigger");
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    await triggerBrowser.close();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    const watchBrowser = await connect(watcher);
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    await watchBrowser.close();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume", "pause"]);
+  } finally {
+    await j.close();
+  }
+});
+
+it("D counts a program's open browser session and nothing else of the program", async () => {
   const fixture = await createStoreFixture();
   try {
     const task = await fixture.createRunFixture("program-demand");
