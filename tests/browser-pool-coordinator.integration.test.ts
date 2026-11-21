@@ -1320,11 +1320,83 @@ it("ends a reconnect whose reattach stalls by its deadline, with the session's e
     expect(Date.now() - lost).toBeLessThan(3_000);
     expect((await f.row())?.state).toBe("failed");
     expect(await f.slot()).toMatchObject({ phase: "running" });
+    // The stalled attempt was ended by its own signal: nothing attaches late.
     never.resolve();
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    expect(f.sinks.has(f.sessionId)).toBe(false);
   } finally {
     await f.close();
   }
 });
+
+it("gives a second session that loses its channel while the first one ends its own window", async () => {
+  const f = await poolFixture("second-loss");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 400 });
+    await home.recover();
+    await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
+    // The first never comes back; the second drops while the first's window runs out.
+    f.skip.add(f.sessionId);
+    await f.loseChannel(f.sessionId);
+    home.channelLost(f.sessionId);
+    await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"), {
+      timeout: 5_000,
+    });
+    await f.loseChannel(other);
+    home.channelLost(other);
+    await vi.waitFor(() => expect(f.sinks.has(other)).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    expect((await f.row(other))?.state).toBe("ready");
+  } finally {
+    await f.close();
+  }
+});
+
+for (const asked of ["restart", "removal"] as const)
+  it(`settles a ${asked} asked while a park is retiring, with no reconnect after it`, async () => {
+    const inProbe = Promise.withResolvers<void>();
+    const probe = Promise.withResolvers<void>();
+    let holding = false;
+    const f = await poolFixture(`retiring-${asked}`, {
+      probePage: async (_page, phase) => {
+        if (holding && phase === "frozen") {
+          inProbe.resolve();
+          await probe.promise;
+        }
+        return [];
+      },
+    });
+    try {
+      const home = f.home();
+      await home.recover();
+      await f.openSession(home);
+      holding = true;
+      const parking = home.tryPark();
+      await inProbe.promise;
+      const done = asked === "restart" ? home.restart() : home.releaseDevice();
+      holding = false;
+      probe.resolve();
+      await parking;
+      await done;
+      if (asked === "removal") {
+        await home.released();
+        expect(home.gate.phase).toBe("released");
+        expect(await f.slot()).toBeUndefined();
+      } else {
+        // The park had committed its intent, so it ends parked; then the restart replaces it.
+        expect(home.gate.phase).toBe("open");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop", "start"]);
+        expect(await f.slot()).toMatchObject({ phase: "running" });
+        // No session is left waiting for a channel: nothing reconnects afterwards.
+        expect(home.gate.away).toBeNull();
+      }
+    } finally {
+      probe.resolve();
+      await f.close();
+    }
+  });
 
 for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const)
   it(`keeps a removed device's slot until its guest is known stopped when the ${fault}`, async () => {

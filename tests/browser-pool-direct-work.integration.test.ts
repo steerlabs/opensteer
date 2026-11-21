@@ -574,6 +574,31 @@ it("honours a Stop of the agent's task that arrives while the browser is parked,
   }
 });
 
+it("restarts at once with an unredeemed connection ticket, which no longer attaches", async () => {
+  const j = await journey("restart-ticket", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    await j.draft();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service);
+    const issued = await work.connect();
+    expect(issued.isError, text(issued)).not.toBe(true);
+    const { endpoint: url } = issued.structuredContent as { endpoint: string };
+    // The ticket holds the gate until it is redeemed or ends: the restart revokes it first.
+    expect(home.coordinator.gate.held).toBeGreaterThan(0);
+    const asked = Date.now();
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "with-ticket");
+    expect(Date.now() - asked).toBeLessThan(15_000);
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    await expect(endpoint.open(url)).rejects.toThrow();
+  } finally {
+    await endpoint?.close();
+    await j.close();
+  }
+});
+
 it("issues browser_connect for a parked browser after access checks and one wake, attaches for real, and refuses a frame for another document", async () => {
   const j = await journey("direct-connect", { profile: true });
   let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;

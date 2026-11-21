@@ -584,6 +584,62 @@ it("finishes a removal a Home crash interrupted after the revocation, with the n
   }
 });
 
+it("restarts through the service while a park is retiring, with no reconnect after it", async () => {
+  const inProbe = Promise.withResolvers<void>();
+  const probe = Promise.withResolvers<void>();
+  let holding = false;
+  const j = await journey("restart-retiring", {
+    probePage: async (_page, phase) => {
+      if (holding && phase === "frozen") {
+        inProbe.resolve();
+        await probe.promise;
+      }
+      return [];
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("retiring"));
+    await j.draft();
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    holding = true;
+    const parking = home.coordinator.tryPark();
+    await inProbe.promise;
+    const asked = Date.now();
+    const restarting = home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "r-1");
+    holding = false;
+    probe.resolve();
+    await parking;
+    await restarting;
+    // The retiring broker's close was the park's own, never a lost channel: nothing waits for it.
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect(Date.now() - asked).toBeLessThan(10_000);
+    expect((await j.row(sessionId))?.state).toBe("failed");
+  } finally {
+    probe.resolve();
+    await j.close();
+  }
+});
+
+it("lets a Stop during a reconnect end that session's wait at once", async () => {
+  const j = await journey("stop-reconnect");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-reconnect"));
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    const stopped = Date.now();
+    await home.service.stop(j.task.userId, sessionId);
+    // The stopped session no longer needs a channel: the gate does not hold for its window.
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("open"), { timeout: 5_000 });
+    expect(Date.now() - stopped).toBeLessThan(5_000);
+    expect((await j.row(sessionId))?.state).toBe("closed");
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("stops a parked session while its viewer waits and never reattaches it", async () => {
   const j = await journey("stop-waiting");
   try {
