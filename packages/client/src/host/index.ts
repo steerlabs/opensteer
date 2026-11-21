@@ -98,6 +98,7 @@ export * from "./connected-agent-options.js";
 export * from "./automatic-models.js";
 
 export * from "./browser-last-picture.js";
+export * from "./browser-sleep.js";
 export * from "./browser-agent-follow.js";
 export * from "./harness-authentication.js";
 export * from "./account-name.js";

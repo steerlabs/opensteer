@@ -3,14 +3,18 @@ import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import {
+  useBrowserSleep,
   useBrowserViewerSurface,
   usePlaceActivity,
   useTab,
   useTabStrip,
 } from "@opensteer/client/react";
 import {
+  browserRestartFailure,
+  browserSleepWords,
   passkeyNotice,
   passwordSaveResultMessage,
+  restartPooledBrowser,
   browserSiteForTab,
   browserTabTitle,
   parseNavigationInput,
@@ -35,6 +39,7 @@ import {
   type Ref,
 } from "react";
 import {
+  AccessibilityInfo,
   Alert,
   I18nManager,
   Linking,
@@ -178,6 +183,38 @@ export function BrowserPage(props: {
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
   // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
   const listed = useTab(hostClient, tabId);
+  // A Cloud Computer's browser sleeps and wakes; every other browser is `not-pooled` and shows
+  // nothing of it.
+  const sleep = useBrowserSleep(hostClient, tabId);
+  const pooledComputer = sleep.browser.kind === "not-pooled" ? null : sleep.browser.computerId;
+  const [restarting, setRestarting] = useState(false);
+  const restartBrowser = () => {
+    if (pooledComputer === null) return;
+    setRestarting(true);
+    void restartPooledBrowser(hostClient, pooledComputer)
+      .catch((error: unknown) =>
+        Alert.alert(browserSleepWords.restartRefusedTitle, browserRestartFailure(error)),
+      )
+      .finally(() => setRestarting(false));
+  };
+  const askRestart = () =>
+    Alert.alert(browserSleepWords.restartTitle, browserSleepWords.restartBody, [
+      { style: "cancel", text: browserSleepWords.restartCancel },
+      { onPress: restartBrowser, style: "destructive", text: browserSleepWords.restartConfirm },
+    ]);
+  // The note a page that came back by reloading says once: until it is dismissed, the page is
+  // touched, or the person leaves it.
+  const noteShown = props.presence.shown && sleep.note !== null;
+  const shownNote = useRef<{ readonly key: string; readonly seen: () => void } | null>(null);
+  useEffect(() => {
+    const key = noteShown ? sleep.noteKey : null;
+    if (shownNote.current && shownNote.current.key !== key) shownNote.current.seen();
+    shownNote.current = key ? { key, seen: sleep.seen } : null;
+  }, [noteShown, sleep.noteKey, sleep.seen]);
+  const noteWords = noteShown && sleep.note ? `${sleep.note.title}. ${sleep.note.detail}` : null;
+  useEffect(() => {
+    if (noteWords !== null) AccessibilityInfo.announceForAccessibility(noteWords);
+  }, [noteWords]);
   const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
   // The row as the page chrome reads it: the viewer's page adds what the page shows now.
   const row = useMemo(
@@ -765,6 +802,19 @@ export function BrowserPage(props: {
           },
         ],
     ...(pair?.menu ?? []),
+    ...(pooledComputer === null
+      ? []
+      : [
+          [
+            {
+              // No mark: Reload's arrow would say it does the same thing.
+              disabled: restarting || sleep.browser.kind === "restarting",
+              id: "restart-browser",
+              label: browserSleepWords.restart,
+              onPress: askRestart,
+            } satisfies NativeMenuOption,
+          ],
+        ]),
     [
       {
         destructive: true,
@@ -993,6 +1043,7 @@ export function BrowserPage(props: {
                   onPageSize={onPageSize}
                   onPresentedGeometry={setDrawnGeometry}
                   onPointerDown={() => {
+                    if (sleep.note) sleep.seen();
                     setPageFocused(true);
                     menuInteraction.current++;
                     editing.dismissMenu();
@@ -1069,7 +1120,8 @@ export function BrowserPage(props: {
             !feed.inputError &&
             !passkey &&
             !fillNotice &&
-            !saveNotice ? null : (
+            !saveNotice &&
+            !sleep.note ? null : (
               <View pointerEvents="box-none" style={styles.top}>
                 {passkey ? (
                   <View style={styles.card}>
@@ -1092,6 +1144,15 @@ export function BrowserPage(props: {
                 ) : saveNotice !== null ? (
                   <Animated.View entering={appear} exiting={exit}>
                     <Notice detail={saveNotice.detail} title={saveNotice.title} tone="neutral" />
+                  </Animated.View>
+                ) : sleep.note !== null ? (
+                  <Animated.View entering={appear} exiting={exit}>
+                    <Notice
+                      action={{ label: browserSleepWords.dismiss, onPress: sleep.seen }}
+                      detail={sleep.note.detail}
+                      title={sleep.note.title}
+                      tone="neutral"
+                    />
                   </Animated.View>
                 ) : null}
               </View>

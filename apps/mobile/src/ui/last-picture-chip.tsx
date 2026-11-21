@@ -13,7 +13,11 @@ import { AppText } from "./primitives.js";
  * The picture's own fact while it shows the place as it last was. Input is
  * off then, so a tap on the picture pulses this instead of doing nothing.
  */
-export function LastPictureChip(props: { readonly pulse: number }): ReactNode {
+export function LastPictureChip(props: {
+  readonly pulse: number;
+  /** A Cloud Computer's browser waking says how its wait is going here. */
+  readonly label?: string;
+}): ReactNode {
   const scale = useSharedValue(1);
   useEffect(() => {
     if (props.pulse === 0) return;
@@ -27,7 +31,7 @@ export function LastPictureChip(props: { readonly pulse: number }): ReactNode {
       style={[styles.chip, pulsed]}
     >
       <AppText numberOfLines={1} role="caption" tone="soft">
-        Last picture
+        {props.label ?? "Last picture"}
       </AppText>
     </Animated.View>
   );

@@ -1673,7 +1673,17 @@ export class MockPlaceWorld {
         session?.state === "ready" && session.catalog?.tabs.some((tab) => tab.id === surfaceId)
           ? session.surfaces.find((tab) => tab.id === surfaceId)
           : undefined;
-      if (!tab || snapshot.connection !== "connected" || snapshot.session !== "authenticated") {
+      // A Cloud Computer's pooled browser sends no picture while it wakes, starts or fails.
+      const pool = snapshot.browserPools?.find(
+        (report) => report.runnerId === session?.placement.runnerId,
+      );
+      const waking = pool !== undefined && !["running", "preparing", "parked"].includes(pool.phase);
+      if (
+        !tab ||
+        waking ||
+        snapshot.connection !== "connected" ||
+        snapshot.session !== "authenticated"
+      ) {
         const recoverable =
           snapshot.session === "authenticated" &&
           (tab !== undefined || snapshot.connection !== "connected");

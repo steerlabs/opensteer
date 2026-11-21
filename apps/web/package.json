@@ -31,7 +31,8 @@
     "test:tab-activation": "tsx scripts/tab-activation-journey.ts",
     "test:tab-reopen": "tsx scripts/tab-reopen-journey.ts",
     "test:browser-downloads": "tsx scripts/browser-downloads-journey.ts",
-    "test:computer-windows": "tsx scripts/computer-windows-journey.ts"
+    "test:computer-windows": "tsx scripts/computer-windows-journey.ts",
+    "test:browser-sleep": "tsx scripts/browser-sleep-journey.ts"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",

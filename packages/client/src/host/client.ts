@@ -886,6 +886,12 @@ export interface HostSnapshot {
   browserProfileHomes?: readonly string[] | undefined;
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
+  /**
+   * What each Cloud Computer's pooled browser reports about its sleep. Absent for every other
+   * Home, and for every Home today: no Home reports it yet. Read only through
+   * `browserSleepFromHome`.
+   */
+  browserPools?: readonly import("./browser-sleep.js").BrowserPoolReport[] | undefined;
   /** Recorded browser uses of the conversations this client shows, including ended sessions. */
   readonly browserUses: readonly BrowserSessionUseSummary[];
   connection: HostConnectionState;
@@ -1155,6 +1161,11 @@ export interface HostClient extends TabsClient {
   readonly desktopUpdates?: DesktopUpdates;
   readonly iphoneSetup?: import("./iphone-setup.js").IphoneSetupPort | undefined;
   readonly browserPasskeys?: BrowserPasskeys;
+  /**
+   * Closes every page of this Cloud Computer's browser and starts it fresh. Refused with
+   * `BrowserRestartUnavailable` until a Home supports it; call through `restartPooledBrowser`.
+   */
+  readonly restartPooledBrowser?: (computerId: string) => Promise<void>;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
     sessionId: string,
