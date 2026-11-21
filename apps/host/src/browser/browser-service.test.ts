@@ -119,6 +119,7 @@ function runnerTarget(options: {
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly tabRestoreVersion?: boolean;
+  readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
   readonly runnerId?: RunnerId;
@@ -167,7 +168,7 @@ function runnerTarget(options: {
               installWebSocketLiveness(socket);
               return socket;
             },
-            localProfileStorage: fixtureStorage,
+            localProfileStorage: options.localProfileStorage ?? fixtureStorage,
             main: true,
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
@@ -7850,6 +7851,129 @@ it("batches additive person-use marks once per runtime connection and replays on
       .flatMap((message) => message.personUsed),
   ).toEqual([]);
 });
+
+it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs reconcile barrier", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const ownerId = createId("user");
+  const startAndInspect = async (engine: "electron" | "chromium", answerListTabs: boolean) => {
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const runnerId = createId("runner");
+    const storage = { storageInstanceId: randomUUID(), engine };
+    const profile = await repository.createBrowserProfile({
+      ownerId,
+      name: `Profile-${engine}`,
+      homeRunnerId: runnerId,
+      storageInstanceId: storage.storageInstanceId,
+      engine,
+    });
+    const memory = memoryTabs();
+    Object.assign(memory.store, {
+      bindPage: async (
+        _ownerId: unknown,
+        id: string,
+        _expectedGeneration: unknown,
+        _previousBinding: unknown,
+        next: { lineageId: BrowserSessionId; sessionId: BrowserSessionId; surfaceId: BrowserSurfaceId },
+      ) => {
+        const current = memory.rows.get(id);
+        if (!current) return false;
+        current.pageBinding = next;
+        return true;
+      },
+    });
+    const sentCommands: Record<string, unknown>[] = [];
+    const targetResolver = runnerTarget({
+      runnerId,
+      url: runtime.url,
+      tabRestoreVersion: true,
+      localProfileStorage: storage,
+    });
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      connectTimeoutMs: 1_500,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+    });
+    cleanups.push(() => service.close());
+
+    // Seed a dormant saved tab on this profile so pageTabs.activate cold-starts with savedTabIds.
+    const oldSessionId = createBrowserSessionId();
+    const row = await memory.add({
+      id: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
+      kind: "page",
+      title: "Saved",
+      url: "https://example.com",
+      profileId: profile.id,
+      computerId: runnerId,
+      generation: 1,
+      closedAt: null,
+      pageBinding: {
+        lineageId: oldSessionId,
+        sessionId: oldSessionId,
+        surfaceId: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
+      },
+    } as never);
+
+    const activating = service.pageTabs.activate(ownerId, row, `activate-${engine}`);
+
+    let done = false;
+    void activating.finally(() => {
+      done = true;
+    });
+    const drain = (async () => {
+      while (!done) {
+        const command = await Promise.race([
+          runtime.nextCommand(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 150)),
+        ]);
+        if (!command) continue;
+        sentCommands.push(command);
+        if (
+          answerListTabs &&
+          command.type === "cdp.command" &&
+          (command.command as { method?: string } | undefined)?.method === "Opensteer.listTabs"
+        ) {
+          runtime.sendServer({
+            type: "cdp.result",
+            requestId: String(command.requestId),
+            result: { tabs: [], nextCursor: null },
+          });
+        }
+      }
+    })();
+
+    const activated = await activating;
+    await drain;
+    return { activated, sentCommands };
+  };
+
+  // Electron (Mac app) must never receive Opensteer.listTabs before ready and must succeed without answering it.
+  const electron = await startAndInspect("electron", false);
+  expect(electron.activated.sessionId).toBeDefined();
+  expect(
+    electron.sentCommands.some(
+      (cmd) =>
+        cmd.type === "cdp.command" &&
+        (cmd.command as { method?: string } | undefined)?.method === "Opensteer.listTabs",
+    ),
+  ).toBe(false);
+
+  // Chromium local profile restore waits for the Opensteer.listTabs reconcile barrier before ready.
+  const chromiumRun = await startAndInspect("chromium", true);
+  expect(chromiumRun.activated.sessionId).toBeDefined();
+  expect(
+    chromiumRun.sentCommands.some(
+      (cmd) =>
+        cmd.type === "cdp.command" &&
+        (cmd.command as { method?: string } | undefined)?.method === "Opensteer.listTabs",
+    ),
+  ).toBe(true);
+}, 20_000);
 
 it("sends authoritative sleep state after commit and keeps two viewers and Watch independent of Run holds", async () => {
   const keys = generateKeyPairSync("ed25519");

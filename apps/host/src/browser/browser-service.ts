@@ -6891,7 +6891,10 @@ export class BrowserService {
             },
             tabRestoreVersion: tabRestore,
             ...(tabRestore && input.initialSurfaceId
-              ? { savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])] }
+              ? {
+                  savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])],
+                  reconcileSavedTabs: localIdentity?.binding.engine === "chromium",
+                }
               : {}),
             profileId: record.profileId,
             ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
@@ -7756,6 +7759,7 @@ interface HostedBrowserBrokerOptions {
     Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
   >;
   readonly savedTabIds?: readonly BrowserSurfaceId[];
+  readonly reconcileSavedTabs?: boolean | undefined;
   readonly tabRestoreVersion?: boolean | undefined;
   readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
   readonly profileId: BrowserProfileId | null;
@@ -7915,6 +7919,7 @@ export class HostedBrowserBroker {
     return this.#navigation && this.live ? 1 : undefined;
   }
   readonly #restoreTabs: boolean;
+  readonly #reconcileSavedTabs: boolean;
   #reconcilingSavedTabs = false;
   readonly #savedTabIds: readonly BrowserSurfaceId[] | undefined;
   readonly #tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
@@ -8068,6 +8073,7 @@ export class HostedBrowserBroker {
     this.#onPersonUseChanged = options.onPersonUseChanged ?? (() => undefined);
     this.#readSessionState = options.readSessionState;
     this.#restoreTabs = options.tabRestoreVersion === true;
+    this.#reconcileSavedTabs = options.reconcileSavedTabs === true;
     this.#savedTabIds = options.savedTabIds;
     this.profileId = options.profileId;
     this.#historyWrite = options.historyWrite;
@@ -8314,7 +8320,14 @@ export class HostedBrowserBroker {
    * so no new wire message or capability name is needed.
    */
   async #awaitSavedTabsReconciled(): Promise<void> {
-    if (!this.#restoreTabs || !this.#savedTabIds || !this.cdpBoundary || this.#settled) return;
+    if (
+      !this.#restoreTabs ||
+      !this.#reconcileSavedTabs ||
+      !this.#savedTabIds ||
+      !this.cdpBoundary ||
+      this.#settled
+    )
+      return;
     const requestId = randomUUID();
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -9304,7 +9317,12 @@ export class HostedBrowserBroker {
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) {
             await this.#sendSavedTabs();
-            if (this.#restoreTabs && this.#savedTabIds && this.cdpBoundary) {
+            if (
+              this.#restoreTabs &&
+              this.#reconcileSavedTabs &&
+              this.#savedTabIds &&
+              this.cdpBoundary
+            ) {
               needsReconcileBarrier = true;
             } else {
               await this.#onState("ready");
