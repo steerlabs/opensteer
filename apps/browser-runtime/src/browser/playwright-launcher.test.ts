@@ -1659,13 +1659,13 @@ describe("native Chromium profiles", () => {
         return [...tabs];
       });
       discSpy.mockImplementationOnce(async () => {
-        // Chromium committed the discard (closing the page and creating discarded tab 404) before helper threw!
+        // Chromium committed the discard of tab 303 (closing the page) before helper threw!
         raw2.markClosed();
-        tabs = [{ ...tabs[0]!, tabId: 404, discarded: true, status: "unloaded", targetId: null }];
+        tabs = [{ ...tabs[0]!, tabId: 303, discarded: true, status: "unloaded", targetId: null }];
         throw new Error("Helper call timed out");
       });
       remSpy.mockImplementation(async (tabId) => {
-        if (tabId === 404) {
+        if (tabId === 303) {
           tabs = [];
           return true;
         }
@@ -1675,9 +1675,9 @@ describe("native Chromium profiles", () => {
       const page2 = await launched.context.createPage();
       const token2 = await page2.captureRestore!();
       await page2.close({ reason: "slept" });
-      expect(tabs.map((t) => t.tabId)).toEqual([404]);
+      expect(tabs.map((t) => t.tabId)).toEqual([303]);
 
-      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, finds 404, and removes it!
+      // releaseRestore MUST NOT have dropped token2: it re-queries inventory, finds 303 by tabId, and removes it!
       expect(await launched.context.releaseRestore!(token2)).toBe(true);
       expect(tabs).toHaveLength(0);
     } finally {
@@ -2551,6 +2551,133 @@ describe("native Chromium profiles", () => {
     } finally {
       failInventoryAlways = false;
       invSpy.mockRestore();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("matches unknown-outcome sleeping probes by tabId only and never binds or removes another owner's same-address discarded tab (F2)", async () => {
+    const f = await nativeCloseFixture();
+    const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+    const sharedUrl = "https://shared-f2.test/page";
+    let closed1 = false;
+    const helperPage = {
+      url: () => "about:blank",
+      isClosed: () => false,
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f2-helper" } }) },
+    } as unknown as Page;
+    const rawPage1 = {
+      url: () => sharedUrl,
+      isClosed: () => closed1,
+      close: vi.fn(async () => {
+        closed1 = true;
+      }),
+      on: vi.fn(),
+      once: vi.fn(),
+      off: vi.fn(),
+      frames: () => [],
+      mainFrame: () => ({}),
+      _connection: { toImpl: () => ({ delegate: { _targetId: "target-f2-s1" } }) },
+    } as unknown as Page;
+    let newPageCalls = 0;
+    Object.assign(f.context, {
+      serviceWorkers: () => [],
+      pages: () => [],
+      newPage: vi.fn(async () => (++newPageCalls === 1 ? helperPage : rawPage1)),
+      newCDPSession: vi.fn(async () => ({
+        send: vi.fn(async (method: string) =>
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-f2-s1" } } : {},
+        ),
+        on: vi.fn(),
+        off: vi.fn(),
+        detach: vi.fn(async () => undefined),
+      })),
+    });
+
+    // Tab 501 belongs to session S1; tab 999 belongs to another owner (e.g. a parked tab or S2)
+    // that gets discarded at the same URL while S1's discard throws and S1's tab 501 vanishes.
+    let tabs: Array<{
+      tabId: number;
+      windowId: number;
+      index: number;
+      url: string;
+      title: string;
+      active: boolean;
+      discarded: boolean;
+      status: string;
+      targetId: string | null;
+    }> = [];
+    let invCalls = 0;
+    const invSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+      .mockImplementation(async () => {
+        invCalls++;
+        // Call 1: launch inventory (empty); Call 2: pre-discard inventory (tab 501 live);
+        // Call 3: post-throw inventory fails so token enters "unknown" state;
+        // Call 4+: inventory shows ONLY other owner's newly discarded tab 999 at sharedUrl!
+        if (invCalls === 3) throw new Error("transient helper outage");
+        return [...tabs];
+      });
+    const discSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "discardByTabId")
+      .mockImplementationOnce(async () => {
+        closed1 = true;
+        tabs = [
+          {
+            tabId: 999,
+            windowId: 1,
+            index: 0,
+            url: sharedUrl,
+            title: "Other Owner",
+            active: false,
+            discarded: true,
+            status: "unloaded",
+            targetId: "target-f2-other",
+          },
+        ];
+        throw new Error("discard failed");
+      });
+    const removedIds: number[] = [];
+    const remSpy = vi
+      .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+      .mockImplementation(async (tabId) => {
+        removedIds.push(tabId);
+        tabs = tabs.filter((t) => t.tabId !== tabId);
+        return true;
+      });
+
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      tabs = [
+        {
+          tabId: 501,
+          windowId: 1,
+          index: 0,
+          url: sharedUrl,
+          title: "S1",
+          active: false,
+          discarded: false,
+          status: "complete",
+          targetId: "target-f2-s1",
+        },
+      ];
+      const page1 = await launched.context.createPage();
+      const token1 = await page1.captureRestore!();
+      await page1.close({ reason: "slept" });
+
+      // Release token1 -> MUST NOT match or remove tab 999 (other owner's tab at same URL)!
+      await launched.context.releaseRestore!(token1);
+      expect(removedIds).not.toContain(999);
+      expect(tabs.some((t) => t.tabId === 999)).toBe(true);
+    } finally {
+      invSpy.mockRestore();
+      discSpy.mockRestore();
+      remSpy.mockRestore();
       f.exit();
       await launched?.close();
       await rm(f.directory, { recursive: true, force: true });

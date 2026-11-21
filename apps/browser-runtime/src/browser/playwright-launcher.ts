@@ -1236,9 +1236,6 @@ class PlaywrightContextHandle implements BrowserContext {
         readonly state: "unknown";
         readonly originalTabId: number;
         readonly url: string;
-        readonly windowId: number;
-        readonly index: number;
-        readonly priorDiscardedIds: ReadonlySet<number>;
         readonly surfaceId?: BrowserSurfaceId;
       }
   >();
@@ -2512,23 +2509,18 @@ class PlaywrightContextHandle implements BrowserContext {
     newTabId: number | null,
     unknownOutcome?: {
       readonly originalTabId: number;
-      readonly windowId: number;
-      readonly index: number;
-      readonly priorDiscardedIds: ReadonlySet<number>;
     },
   ): void {
     const current = this.sleepingTabs.get(tokenId);
     if (!current) return;
     if (newTabId === null) {
       if (unknownOutcome) {
-        // Unknown discard outcome: keep tracking the token so release/wake reconciles and removes any leftover tab.
+        // Unknown discard outcome: keep tracking the token by tabId only so release/wake
+        // reconciles and removes any surviving tab without ever matching another owner's tab.
         this.sleepingTabs.set(tokenId, {
           state: "unknown",
           originalTabId: unknownOutcome.originalTabId,
           url: current.url,
-          windowId: unknownOutcome.windowId,
-          index: unknownOutcome.index,
-          priorDiscardedIds: unknownOutcome.priorDiscardedIds,
           ...(current.surfaceId ? { surfaceId: current.surfaceId } : {}),
         });
         return;
@@ -2547,10 +2539,6 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private async resolveUnknownSleepingTabId(probe: {
     readonly originalTabId: number;
-    readonly url: string;
-    readonly windowId: number;
-    readonly index: number;
-    readonly priorDiscardedIds: ReadonlySet<number>;
   }): Promise<
     | { readonly status: "found"; readonly tabId: number }
     | { readonly status: "absent" }
@@ -2560,17 +2548,7 @@ class PlaywrightContextHandle implements BrowserContext {
     const after = await this.lifecycle.inventory().catch(() => null);
     if (!after) return { status: "unknown" };
     const sameId = after.find((entry) => entry.tabId === probe.originalTabId);
-    if (sameId) return { status: "found", tabId: sameId.tabId };
-    const newlyDiscarded = after.filter(
-      (entry) =>
-        entry.discarded && !probe.priorDiscardedIds.has(entry.tabId) && entry.url === probe.url,
-    );
-    const exactSlot = newlyDiscarded.find(
-      (entry) => entry.windowId === probe.windowId && entry.index === probe.index,
-    );
-    if (exactSlot) return { status: "found", tabId: exactSlot.tabId };
-    if (newlyDiscarded.length === 1) return { status: "found", tabId: newlyDiscarded[0]!.tabId };
-    return newlyDiscarded.length === 0 ? { status: "absent" } : { status: "unknown" };
+    return sameId ? { status: "found", tabId: sameId.tabId } : { status: "absent" };
   }
 
   private enqueuePendingSleepingRemoval(tokenId: string): void {
@@ -2623,10 +2601,6 @@ class PlaywrightContextHandle implements BrowserContext {
       | {
           readonly state: "unknown";
           readonly originalTabId: number;
-          readonly url: string;
-          readonly windowId: number;
-          readonly index: number;
-          readonly priorDiscardedIds: ReadonlySet<number>;
         }
       | { readonly state: "discarding"; readonly settled: Promise<number | null> },
   ): Promise<boolean> {
@@ -3236,18 +3210,12 @@ class PlaywrightPageHandle implements BrowserPage {
         let unknownOutcome:
           | {
               readonly originalTabId: number;
-              readonly windowId: number;
-              readonly index: number;
-              readonly priorDiscardedIds: ReadonlySet<number>;
             }
           | undefined;
         try {
           const inventory = await this.contextHandle.lifecycle.inventory().catch(() => null);
           const tab = inventory?.find((entry) => entry.targetId === sleepDiscard.targetId);
           if (tab && inventory) {
-            const priorDiscardedIds = new Set(
-              inventory.filter((entry) => entry.discarded).map((entry) => entry.tabId),
-            );
             // Only activate the private anchor when Chromium considers this exact tab active,
             // so sleeping a background tab never steals focus or visibility from the foreground tab.
             if (tab.active) await this.contextHandle.activatePrivateAnchor();
@@ -3259,38 +3227,20 @@ class PlaywrightPageHandle implements BrowserPage {
                 newTabId = await this.contextHandle.lifecycle.discardByTabId(tab.tabId);
               } catch {
                 discardThrew = true;
-                // Unknown outcome: discard may have committed in Chromium before the helper
-                // timed out or errored. Reconcile via inventory before assuming failure.
+                // Unknown outcome: match by exact tabId only, never by another tab's URL.
                 const after = await this.contextHandle.lifecycle.inventory().catch(() => null);
-                if (after) {
-                  const sameId = after.find((entry) => entry.tabId === tab.tabId);
-                  if (sameId?.discarded) {
-                    newTabId = sameId.tabId;
-                  } else if (!sameId) {
-                    const newlyDiscarded = after.filter(
-                      (entry) =>
-                        entry.discarded &&
-                        !priorDiscardedIds.has(entry.tabId) &&
-                        entry.url === tab.url,
-                    );
-                    const exactSlot = newlyDiscarded.find(
-                      (entry) => entry.windowId === tab.windowId && entry.index === tab.index,
-                    );
-                    if (exactSlot) newTabId = exactSlot.tabId;
-                    else if (newlyDiscarded.length === 1) newTabId = newlyDiscarded[0]!.tabId;
-                  }
+                const sameId = after?.find((entry) => entry.tabId === tab.tabId);
+                if (sameId?.discarded) {
+                  newTabId = sameId.tabId;
                 }
               }
               if (newTabId === null && !this.page.isClosed()) {
                 await this.page.close({ runBeforeUnload: false });
               } else if (newTabId === null && discardThrew && this.page.isClosed()) {
-                // Page vanished during an errored discard and follow-up inventory was unavailable
-                // or ambiguous: retain unknown-outcome metadata so release/wake can clean it up.
+                // Page vanished during an errored discard without a confirmed tabId outcome:
+                // retain unknown-outcome tabId so release/wake can clean it up if it survives.
                 unknownOutcome = {
                   originalTabId: tab.tabId,
-                  windowId: tab.windowId,
-                  index: tab.index,
-                  priorDiscardedIds,
                 };
               }
             }
