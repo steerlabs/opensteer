@@ -6,6 +6,7 @@ import type {
   BrowserSessionId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
+import type { PageEndReason } from "./page-ownership.js";
 import type { PageSize } from "./surface-ledger.js";
 import type { ViewportCapture, ViewportCaptureRequest } from "./viewport-capture.js";
 
@@ -115,7 +116,7 @@ export interface BrowserPage {
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */
-  close(): Promise<void>;
+  close(options?: { readonly reason?: PageEndReason }): Promise<void>;
   /** True only once the engine confirms the native page gone, never while a close is under way. */
   isClosed(): boolean;
   offClose(listener: (cause?: PageGoneCause) => void): void;
@@ -145,6 +146,8 @@ export interface BrowserContext {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
   }): Promise<BrowserPage>;
+  /** Releases engine-held resources for a sleeping tab that will not be woken (e.g. closed while asleep). */
+  releaseRestore?(restore: unknown): Promise<void> | void;
   /**
    * The one handoff of native pages to the runtime: called synchronously as
    * each page handle comes to exist, before any asynchronous work, with the

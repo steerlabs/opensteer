@@ -484,6 +484,13 @@ export class SurfaceLedger {
   untabbedPages(): number {
     return this.pages.untabbed(this.session);
   }
+  releaseRestore(record: TabRecord): void {
+    if (!record.restore || record.restore.engine == null) return;
+    const engine = record.restore.engine;
+    record.restore.engine = null;
+    record.restore.bytes = 0;
+    void Promise.resolve(this.context.releaseRestore?.(engine)).catch(() => undefined);
+  }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
   noteSleepBlocker(id: BrowserSurfaceId, reason: SleepBlocker | null): void {
     const page = this.records.get(id)?.live?.page;
@@ -646,8 +653,12 @@ export class SurfaceLedger {
           else this.releaseTarget?.(record.lastTargetId);
           creation.abandon();
           if (record.restore) {
+            const stale = record.restore.engine;
             record.restore.engine = null;
             record.restore.bytes = 0;
+            if (stale != null) {
+              void Promise.resolve(this.context.releaseRestore?.(stale)).catch(() => undefined);
+            }
           }
           if (error instanceof BrowserRuntimeError) throw error;
           throw new BrowserRuntimeError(
@@ -2125,6 +2136,7 @@ export class SurfaceLedger {
 
   private async removeOnce(record: TabRecord): Promise<void> {
     let disposing: LivePage | null = null;
+    let releasedRestore: unknown = null;
     await this.viewportMutex.run(async () => {
       if (!this.records.delete(record.id)) return;
       this.surfaceIdsByTarget.delete(record.lastTargetId);
@@ -2132,6 +2144,11 @@ export class SurfaceLedger {
       this.adoptedTargetIds.delete(record.lastTargetId);
       this.releaseTarget?.(record.lastTargetId);
       if (record.live) this.pageIds.delete(record.live.page);
+      if (!this.tearingDown && record.restore?.engine != null) {
+        releasedRestore = record.restore.engine;
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
       const wasActive = this.activeId === record.id;
       if (wasActive) this.activeId = null;
       disposing = record.live;
@@ -2155,6 +2172,15 @@ export class SurfaceLedger {
       await withTimeout(this.disposeLive(disposing), pageCloseWaitMs, {
         timeoutError: () => new Error("Page cleanup is still running."),
       }).catch(() => undefined);
+    if (releasedRestore != null) {
+      await withTimeout(
+        Promise.resolve(this.context.releaseRestore?.(releasedRestore)),
+        pageCloseWaitMs,
+        {
+          timeoutError: () => new Error("Restore cleanup is still running."),
+        },
+      ).catch(() => undefined);
+    }
   }
 
   /** The engine confirmed an incarnation gone; only the tab's current one ends the tab. */

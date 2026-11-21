@@ -21,6 +21,7 @@ import {
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
+  type PageEndReason,
   type PageGoneCause,
   type RendererGoneCause,
   readImageDimensions,
@@ -55,6 +56,11 @@ import {
 import { z } from "zod";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 import { collectLinuxRendererUsage, type LinuxProcFs } from "./linux-renderer-usage.js";
+import {
+  ChromiumTabLifecycleBridge,
+  ensureTabLifecycleExtension,
+  isInternalExtensionUrl,
+} from "./tab-lifecycle-extension.js";
 
 import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
 
@@ -627,6 +633,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     await this.prepare();
     timing("prepare");
     await initializeNativePreferences(directory);
+    const lifecycleExtensionDir = await ensureTabLifecycleExtension(directory);
     timing("preferences");
     signal?.throwIfAborted();
     const context = await chromium.launchPersistentContext(directory, {
@@ -644,9 +651,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         // Chrome for Testing enables TrackEmptyRendererProcessesForReuse and holds closed
         // tab renderers alive past TabSleeper's settle window.
         "--disable-field-trial-config",
-        // Guest already receives these from Playwright's defaults. Native launches
-        // must not start Chromium's bundled extension workers on every cold open.
-        "--disable-extensions",
+        // Load only Opensteer's minimal internal tab-lifecycle helper (tabs + debugger,
+        // zero host permissions) for native profiles; every other extension stays disabled.
+        `--disable-extensions-except=${lifecycleExtensionDir}`,
+        `--load-extension=${lifecycleExtensionDir}`,
         "--disable-component-extensions-with-background-pages",
         "--disable-component-update",
         "--disable-background-networking",
@@ -808,6 +816,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       timing("cookie-target");
       const browserCdp = await browser.newBrowserCDPSession();
       timing("cdp");
+      const lifecycle =
+        typeof context.serviceWorkers === "function"
+          ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
+          : undefined;
       const launched = new PlaywrightLaunchedBrowser(
         owner,
         context,
@@ -818,6 +830,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         providerConfig,
         helper,
         true,
+        lifecycle,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
@@ -857,6 +870,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
     dedicatedContext = false,
+    lifecycle?: ChromiumTabLifecycleBridge,
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -869,6 +883,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       authenticator,
       providerConfig,
       privatePage,
+      lifecycle,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -969,6 +984,22 @@ const targetLookupMs = 5_000;
 /** One debugger round trip to a page or browser that may be dying. */
 const nameTargetMs = 2_000;
 
+/** Opaque restore token for a Chromium tab discarded in place by `chrome.tabs.discard`. */
+const chromiumDiscardRestoreSchema = z.object({
+  kind: z.literal("chromium-discard"),
+  tokenId: z.string().min(1),
+  url: z.string(),
+});
+
+type ChromiumDiscardRestore = z.infer<typeof chromiumDiscardRestoreSchema>;
+
+function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | null {
+  const parsed = chromiumDiscardRestoreSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+const wakeDiscardedTabMs = 10_000;
+
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
   isConnected(): boolean {
@@ -986,7 +1017,15 @@ class PlaywrightContextHandle implements BrowserContext {
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
+  readonly lifecycle: ChromiumTabLifecycleBridge | undefined;
   private readonly privatePage: Page | undefined;
+  private readonly sleepingTabs = new Map<string, { tabId: number; url: string }>();
+  private readonly claimedWakePages = new WeakSet<Page>();
+  private readonly wakeWaiters = new Set<{
+    readonly tabId: number;
+    readonly expectedTargetId: string | null;
+    readonly resolve: (page: Page) => void;
+  }>();
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -994,32 +1033,144 @@ class PlaywrightContextHandle implements BrowserContext {
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
+    lifecycle?: ChromiumTabLifecycleBridge,
   ) {
     this.privatePage = privatePage;
+    this.lifecycle = lifecycle;
     this.authenticator = authenticator;
     this.providerConfig = providerConfig;
     this.context = context;
     context.on("close", () => {
       this.closed = true;
+      this.sleepingTabs.clear();
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
     // Playwright reports a popup to its opener right after the context's page
     // event, in the same turn; one microtask later both are known.
     context.on("page", (page) => {
-      if (page === this.privatePage) return;
+      if (this.isHiddenPage(page)) return;
+      if (this.wakeWaiters.size > 0) {
+        void this.routeOrHandOffPage(page);
+        return;
+      }
       const handle = this.wrap(page);
       queueMicrotask(() => {
+        if (this.claimedWakePages.has(page)) return;
         for (const listener of this.handOffs) listener(handle, handle.openerHandle);
       });
     });
     this.openDialogs = openDialogs;
   }
 
+  private isHiddenPage(page: Page): boolean {
+    if (page === this.privatePage) return true;
+    const url = typeof page.url === "function" ? page.url() : "";
+    return isInternalExtensionUrl(url);
+  }
+
+  private async targetIdOfPage(page: Page): Promise<string | null> {
+    if (page.isClosed()) return null;
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      session = await withTimeout(this.context.newCDPSession(page), nameTargetMs, {
+        timeoutError: () => new Error("Target lookup CDP attach timed out."),
+      });
+      const response = (await withTimeout(session.send("Target.getTargetInfo"), nameTargetMs, {
+        timeoutError: () => new Error("Target lookup getTargetInfo timed out."),
+      })) as { targetInfo?: { targetId?: unknown } };
+      return typeof response.targetInfo?.targetId === "string"
+        ? response.targetInfo.targetId
+        : null;
+    } catch {
+      return null;
+    } finally {
+      await session?.detach().catch(() => undefined);
+    }
+  }
+
+  private async routeOrHandOffPage(page: Page): Promise<void> {
+    const targetId = await this.targetIdOfPage(page);
+    if (targetId && this.wakeWaiters.size > 0) {
+      let matched = [...this.wakeWaiters].find((waiter) => waiter.expectedTargetId === targetId);
+      if (!matched && this.lifecycle) {
+        const inventory = await this.lifecycle.inventory().catch(() => []);
+        const tab = inventory.find((entry) => entry.targetId === targetId);
+        if (tab) {
+          matched = [...this.wakeWaiters].find((waiter) => waiter.tabId === tab.tabId);
+        }
+      }
+      if (matched) {
+        this.wakeWaiters.delete(matched);
+        this.claimedWakePages.add(page);
+        matched.resolve(page);
+        return;
+      }
+    }
+    if (page.isClosed() || this.isHiddenPage(page) || this.claimedWakePages.has(page)) return;
+    const handle = this.wrap(page);
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+  }
+
+  async activatePrivateAnchor(): Promise<void> {
+    if (!this.privatePage || this.privatePage.isClosed()) return;
+    await this.privatePage.bringToFront().catch(() => undefined);
+  }
+
+  registerSleepingTab(tokenId: string, tabId: number, url: string): void {
+    this.sleepingTabs.set(tokenId, { tabId, url });
+  }
+
+  async releaseRestore(restore: unknown): Promise<void> {
+    const discardRestore = parseChromiumDiscardRestore(restore);
+    if (!discardRestore || !this.lifecycle) return;
+    const sleeping = this.sleepingTabs.get(discardRestore.tokenId);
+    if (!sleeping) return;
+    this.sleepingTabs.delete(discardRestore.tokenId);
+    await this.lifecycle.removeByTabId(sleeping.tabId).catch(() => undefined);
+  }
+
+  private async wakeDiscardedTab(tabId: number): Promise<Page> {
+    const lifecycle = this.lifecycle;
+    if (!lifecycle) throw new Error("Tab lifecycle helper is unavailable.");
+    const inventory = await lifecycle.inventory();
+    const entry = inventory.find((tab) => tab.tabId === tabId);
+    if (!entry) throw new Error("Sleeping Chromium tab no longer exists.");
+
+    const waiterPromise = Promise.withResolvers<Page>();
+    const waiter = {
+      tabId,
+      expectedTargetId: entry.targetId,
+      resolve: (page: Page) => waiterPromise.resolve(page),
+    };
+    this.wakeWaiters.add(waiter);
+    try {
+      const activated = await lifecycle.activateByTabId(tabId);
+      if (!activated) throw new Error("Chromium could not activate sleeping tab.");
+
+      // Check existing Playwright pages in case the page already materialized.
+      for (const candidate of this.context.pages()) {
+        if (this.isHiddenPage(candidate) || candidate.isClosed()) continue;
+        const candidateTargetId = await this.targetIdOfPage(candidate);
+        if (candidateTargetId && candidateTargetId === entry.targetId) {
+          this.wakeWaiters.delete(waiter);
+          this.claimedWakePages.add(candidate);
+          return candidate;
+        }
+      }
+
+      return await withTimeout(waiterPromise.promise, wakeDiscardedTabMs, {
+        timeoutError: () => new Error("Waking sleeping Chromium tab timed out."),
+      });
+    } finally {
+      this.wakeWaiters.delete(waiter);
+    }
+  }
+
   handOff(listener: (page: BrowserPage, opener: BrowserPage | null) => void): () => void {
     this.handOffs.add(listener);
     for (const page of this.context.pages()) {
-      if (page === this.privatePage || page.isClosed()) continue;
+      if (this.isHiddenPage(page) || page.isClosed()) continue;
       const handle = this.wrap(page);
       listener(handle, handle.openerHandle);
     }
@@ -1029,11 +1180,38 @@ class PlaywrightContextHandle implements BrowserContext {
   pages(): BrowserPage[] {
     return this.context
       .pages()
-      .filter((page) => page !== this.privatePage)
+      .filter((page) => !this.isHiddenPage(page))
       .map((page) => this.wrap(page));
   }
 
-  async createPage(options?: { readonly own?: (page: BrowserPage) => void }): Promise<BrowserPage> {
+  async createPage(options?: {
+    readonly restore?: unknown;
+    readonly own?: (page: BrowserPage) => void;
+  }): Promise<BrowserPage> {
+    const discardRestore = parseChromiumDiscardRestore(options?.restore);
+    if (discardRestore && this.lifecycle) {
+      const sleeping = this.sleepingTabs.get(discardRestore.tokenId);
+      this.sleepingTabs.delete(discardRestore.tokenId);
+      if (sleeping) {
+        try {
+          const wokenPage = await this.wakeDiscardedTab(sleeping.tabId);
+          const handle = this.wrap(wokenPage);
+          options?.own?.(handle);
+          return handle;
+        } catch {
+          await this.lifecycle.removeByTabId(sleeping.tabId).catch(() => undefined);
+        }
+      }
+      const fallback = this.wrap(await this.context.newPage());
+      options?.own?.(fallback);
+      if (discardRestore.url && discardRestore.url !== "about:blank") {
+        void fallback
+          .cdp()
+          .then((cdp) => cdp.send("Page.navigate", { url: discardRestore.url }))
+          .catch(() => undefined);
+      }
+      return fallback;
+    }
     const handle = this.wrap(await this.context.newPage());
     options?.own?.(handle);
     return handle;
@@ -1043,7 +1221,7 @@ class PlaywrightContextHandle implements BrowserContext {
     const existing = this.pageListeners.get(listener);
     if (existing) return;
     const wrappedListener = (page: Page) => {
-      if (page !== this.privatePage) listener(this.wrap(page));
+      if (!this.isHiddenPage(page) && !this.claimedWakePages.has(page)) listener(this.wrap(page));
     };
     this.pageListeners.set(listener, wrappedListener);
     this.context.on("page", wrappedListener);
@@ -1075,7 +1253,7 @@ class PlaywrightContextHandle implements BrowserContext {
     return pageWithTarget(
       this.context
         .pages()
-        .filter((page) => page !== this.privatePage)
+        .filter((page) => !this.isHiddenPage(page))
         .map((page) => this.wrap(page)),
       targetId,
       targetLookupMs,
@@ -1110,6 +1288,12 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  readonly captureRestore?: () => Promise<unknown | null>;
+  private pendingDiscard: {
+    readonly tokenId: string;
+    readonly tabId: number;
+    readonly url: string;
+  } | null = null;
   private requestMethod = "GET";
   private documentMethod = "GET";
   private readonly uploads = new Set<Request>();
@@ -1150,6 +1334,9 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+    if (contextHandle.lifecycle) {
+      this.captureRestore = () => this.captureDiscardRestore();
+    }
     page.on("request", (request) => {
       if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
@@ -1375,6 +1562,37 @@ class PlaywrightPageHandle implements BrowserPage {
     return this.cdpPromise;
   }
 
+  private async captureDiscardRestore(): Promise<ChromiumDiscardRestore | null> {
+    const lifecycle = this.contextHandle.lifecycle;
+    if (!lifecycle || this.closing || this.gone || this.page.isClosed()) return null;
+    const targetId = await this.targetId();
+    const tabId = await lifecycle.tabIdForTargetId(targetId);
+    if (tabId === null) return null;
+    const tokenId = randomUUID();
+    const url = this.url();
+    this.pendingDiscard = { tokenId, tabId, url };
+    return { kind: "chromium-discard", tokenId, url };
+  }
+
+  private async freezeBeforeDiscard(): Promise<void> {
+    if (this.page.isClosed()) return;
+    let session: PlaywrightCdpSession | undefined;
+    try {
+      session = await withTimeout(this.context.newCDPSession(this.page), 1_500, {
+        timeoutError: () => new Error("Freeze CDP attach timed out."),
+      });
+      // Freezing synchronously triggers RenderFrameImpl::SendUpdateState so Blink
+      // flushes recent scroll/form PageState before AttemptFastKillForDiscard.
+      await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_500, {
+        timeoutError: () => new Error("Freeze before discard timed out."),
+      });
+    } catch {
+      // Best-effort flush; discard still proceeds if the renderer already exited.
+    } finally {
+      await session?.detach().catch(() => undefined);
+    }
+  }
+
   /**
    * Each call is a new attempt; a page asked to close never returns to service.
    * The first closes through Playwright, which waits on its own first request
@@ -1382,11 +1600,28 @@ class PlaywrightPageHandle implements BrowserPage {
    * page's debugger again and close the one target from the browser itself.
    * Nothing wider than this page is ever closed.
    */
-  close(): Promise<void> {
+  close(options?: { readonly reason?: PageEndReason }): Promise<void> {
     if (this.isClosed()) return Promise.resolve();
     this.closing = true;
     const first = this.closeAttempts++ === 0;
+    const sleepDiscard = first && options?.reason === "slept" ? this.pendingDiscard : null;
+    this.pendingDiscard = null;
     return (async () => {
+      if (sleepDiscard && this.contextHandle.lifecycle) {
+        await this.contextHandle.activatePrivateAnchor();
+        await this.freezeBeforeDiscard();
+        await this.cdpChannel?.detach();
+        if (this.page.isClosed()) return;
+        const newTabId = await this.contextHandle.lifecycle
+          .discardByTabId(sleepDiscard.tabId)
+          .catch(() => null);
+        if (newTabId !== null) {
+          this.contextHandle.registerSleepingTab(sleepDiscard.tokenId, newTabId, sleepDiscard.url);
+          return;
+        }
+        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+        return;
+      }
       if (first) {
         // Native close can wait on a navigation still held by this private debugger.
         await this.cdpChannel?.detach();
@@ -1699,6 +1934,7 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
   private closed = false;
   private readonly context: PlaywrightContextHandle;
   private readonly handle: PlaywrightCdpHandle;
+  private readonly hiddenTargetIds = new Set<string>();
 
   constructor(
     session: PlaywrightCdpSession,
@@ -1711,6 +1947,27 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
     this.context = context;
     this.handle = new PlaywrightCdpHandle(session);
     this.handle.eventRelay.observeDomain("Target.getTargets");
+  }
+
+  private isHiddenTargetEvent(method: string, parameters: CdpParameters): boolean {
+    if (!method.startsWith("Target.")) return false;
+    const info = isRecord(parameters.targetInfo) ? parameters.targetInfo : null;
+    const targetId =
+      typeof parameters.targetId === "string"
+        ? parameters.targetId
+        : typeof info?.targetId === "string"
+          ? info.targetId
+          : null;
+    const url = typeof info?.url === "string" ? info.url : undefined;
+    if (isInternalExtensionUrl(url)) {
+      if (targetId) this.hiddenTargetIds.add(targetId);
+      return true;
+    }
+    if (targetId && this.hiddenTargetIds.has(targetId)) {
+      if (method === "Target.targetDestroyed") this.hiddenTargetIds.delete(targetId);
+      return true;
+    }
+    return false;
   }
 
   async attach(targetId: string, waitForPage = false, signal?: AbortSignal): Promise<CdpChannel> {
@@ -1769,7 +2026,10 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
   }
 
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void {
-    return this.handle.onEvent(listener);
+    return this.handle.onEvent((method, parameters) => {
+      if (this.isHiddenTargetEvent(method, parameters)) return;
+      listener(method, parameters);
+    });
   }
 
   send(method: string, parameters?: CdpParameters): Promise<unknown> {
@@ -1778,6 +2038,32 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
       this.assertScope(method, parameters ?? {});
     } catch (error) {
       return Promise.reject(error);
+    }
+    if (
+      method.startsWith("Target.") &&
+      typeof parameters?.targetId === "string" &&
+      this.hiddenTargetIds.has(parameters.targetId)
+    ) {
+      return Promise.reject(
+        new Error("CDP target is not an attachable page in this Profile Host."),
+      );
+    }
+    if (method === "Target.getTargets") {
+      return this.handle
+        .send<{ targetInfos?: readonly Record<string, unknown>[] }>(method, parameters)
+        .then((result) => {
+          if (!Array.isArray(result?.targetInfos)) return result;
+          const visible = result.targetInfos.filter((target) => {
+            const url = typeof target.url === "string" ? target.url : undefined;
+            const targetId = typeof target.targetId === "string" ? target.targetId : null;
+            if (isInternalExtensionUrl(url)) {
+              if (targetId) this.hiddenTargetIds.add(targetId);
+              return false;
+            }
+            return true;
+          });
+          return { ...result, targetInfos: visible };
+        });
     }
     if (method === "Target.createTarget") {
       const requestedContext = parameters?.browserContextId;

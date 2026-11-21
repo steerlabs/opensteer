@@ -138,14 +138,15 @@ export class TabSleeper {
   }
   private trimRestore(): void {
     const records = [...this.sessions.values()]
-      .flatMap((session) => [...session.ledger.policyRecords()])
-      .filter((record) => record.lease.state === "suspended" && record.restore?.engine != null);
-    let bytes = records.reduce((sum, record) => sum + (record.restore?.bytes ?? 0), 0);
-    for (const record of records.sort((a, b) => a.usedAt - b.usedAt)) {
+      .flatMap((session) =>
+        [...session.ledger.policyRecords()].map((record) => ({ session, record })),
+      )
+      .filter(({ record }) => record.lease.state === "suspended" && record.restore?.engine != null);
+    let bytes = records.reduce((sum, { record }) => sum + (record.restore?.bytes ?? 0), 0);
+    for (const { session, record } of records.sort((a, b) => a.record.usedAt - b.record.usedAt)) {
       if (bytes <= restoreBudgetBytes) break;
       bytes -= record.restore!.bytes;
-      record.restore!.engine = null;
-      record.restore!.bytes = 0;
+      session.ledger.releaseRestore(record);
     }
   }
   private canRetire(host: SleepHost): boolean {

@@ -699,7 +699,9 @@ export class PageOwnership {
     };
     let closing: Promise<void>;
     try {
-      closing = Promise.resolve(entry.page.close());
+      closing = Promise.resolve(
+        entry.reason ? entry.page.close({ reason: entry.reason }) : entry.page.close(),
+      );
     } catch (error) {
       closing = Promise.reject(error);
     }
