@@ -24,7 +24,10 @@ import {
   createStoreFixture,
   personalBrowserRepository,
 } from "../packages/database/src/store.integration.test-support.js";
-import { BrowserSessionIdSchema } from "../packages/protocol/src/browser.js";
+import {
+  BrowserSessionIdSchema,
+  decodeBrowserFrameEnvelope,
+} from "../packages/protocol/src/browser.js";
 import { RunnerAuxiliaryFrameFenceSchema } from "../packages/protocol/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import { callBrowserPoolAgentAdmin } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
@@ -43,7 +46,7 @@ import {
   BrowserRuntimeRelayToHostMessageSchema,
   RunnerBrowserRuntimeRouter,
 } from "../apps/host/src/browser/runner-browser-runtime.js";
-import { greenAt } from "./browser-pool-journey.test-support.js";
+import { createRequire } from "node:module";
 
 interface RealHost {
   readonly agentUrl: string;
@@ -59,6 +62,33 @@ interface RealHost {
   readonly formUrl: string;
   readonly saveAfterSeconds: number;
   readonly results: string;
+}
+
+/** Decodes a frame with the Host's own image library. */
+const sharp = createRequire(new URL("../apps/host/package.json", import.meta.url))("sharp") as (
+  input: Buffer,
+) => {
+  raw(): {
+    toBuffer(options: { resolveWithObject: true }): Promise<{
+      data: Buffer;
+      info: { width: number; height: number; channels: number };
+    }>;
+  };
+};
+
+/** The page's colour at three quarters of its height, for this tab's frames only. */
+async function colourAt(frame: Buffer, tabId: string): Promise<string | undefined> {
+  const decoded = decodeBrowserFrameEnvelope(frame);
+  if (decoded.header.surfaceId !== tabId) return undefined;
+  const { data, info } = await sharp(Buffer.from(decoded.data))
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const offset = (Math.floor(info.height * 0.75) * info.width + (info.width >> 1)) * info.channels;
+  const [red, green, blue] = [data[offset]!, data[offset + 1]!, data[offset + 2]!];
+  if (green > 90 && red < 70 && blue < 110) return "green";
+  if (blue > 150 && red < 80 && green < 120) return "blue";
+  if (red > 230 && green > 230 && blue > 230) return "white";
+  return "other";
 }
 
 const configFile = process.env.OPENSTEER_POOL_REAL_HOST;
@@ -359,9 +389,12 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         person: documentOf(person.sessionId, person.tabId),
         agent: documentOf(agent.sessionId, agent.tabId),
       };
+      // A viewer that gives each frame's credit back, so frames follow the page's changes, and
+      // that never leaves a stream with keys in flight (leaving cancels unapplied input).
       const watch = () => {
         let open = true;
         const frames: Buffer[] = [];
+        let handle: ((message: Record<string, unknown>) => Promise<void>) | undefined;
         const attaching = service.attach(
           task.userId,
           BrowserSessionIdSchema.parse(person.sessionId),
@@ -372,36 +405,24 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
               open = false;
             },
             send: async (data, binary) => {
-              if (binary && Buffer.isBuffer(data)) frames.push(data);
+              if (!binary || !Buffer.isBuffer(data)) return;
+              frames.push(data);
+              const token = decodeBrowserFrameEnvelope(data).header.watchToken;
+              if (token)
+                queueMicrotask(() => void handle?.({ type: "stream.ack", token }).catch(() => {}));
             },
           },
           { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
         );
+        void attaching.then(
+          (attached) => {
+            handle = (message) => attached.handle(Buffer.from(JSON.stringify(message)), false);
+          },
+          () => {},
+        );
         return { attaching, frames, close: () => (open = false) };
       };
-      // The person clicks into the field first, as a person would.
-      const click = async (attached: Awaited<ReturnType<typeof service.attach>>) => {
-        for (const action of ["down", "up"] as const)
-          await attached.handle(
-            Buffer.from(
-              JSON.stringify({
-                type: "input.pointer",
-                surfaceId: person.tabId,
-                action,
-                button: "left",
-                buttons: action === "down" ? 1 : 0,
-                clickCount: 1,
-                x: 0.2,
-                y: 0.03,
-                viewportWidth: 1280,
-                viewportHeight: 720,
-              }),
-            ),
-            false,
-          );
-      };
       const type = async (attached: Awaited<ReturnType<typeof service.attach>>, text: string) => {
-        await click(attached);
         for (const character of text) {
           const key = {
             type: "input.key",
@@ -415,9 +436,13 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
           await attached.handle(Buffer.from(JSON.stringify({ ...key, action: "up" })), false);
         }
       };
-      const greenFrame = async (frames: Buffer[]) => {
-        for (const frame of frames.slice(-3)) if (await greenAt(frame, person.tabId)) return true;
-        return false;
+      // The page is blue for exactly "unsent draft" and green for exactly "unsent draftx".
+      const latestColour = async (frames: Buffer[]) => {
+        for (const frame of frames.toReversed()) {
+          const colour = await colourAt(frame, person.tabId);
+          if (colour) return colour;
+        }
+        return undefined;
       };
       const first = watch();
       const viewing = await first.attaching;
@@ -427,8 +452,11 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       );
       await vi.waitFor(() => expect(first.frames.length).toBeGreaterThan(0), { timeout: 30_000 });
       await type(viewing, "unsent draft");
-      // The page turns green only for exactly "unsent draftx": not yet.
-      expect(await greenFrame(first.frames)).toBe(false);
+      // The draft is on the page before anything is parked.
+      await vi.waitFor(async () => expect(await latestColour(first.frames)).toBe("blue"), {
+        timeout: 30_000,
+        interval: 250,
+      });
       viewing.close();
       first.close();
       // The agent's Run lets go of its page (the ordinary way), then the browser idles, parks,
@@ -470,27 +498,17 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       // The same documents were adopted.
       expect(documentOf(person.sessionId, person.tabId)).toBe(before.person);
       expect(documentOf(agent.sessionId, agent.tabId)).toBe(before.agent);
-      // A new command reaches the page it was meant for, and the draft was there.
+      // The draft came back as it was: the woken page is blue.
+      await vi.waitFor(async () => expect(await latestColour(second.frames)).toBe("blue"), {
+        timeout: 30_000,
+        interval: 250,
+      });
+      // A new key reaches the page it was meant for: with the draft it makes "unsent draftx".
       await type(woken, "x");
-      // Recorded, not assumed: on this run the viewer's keys did not change the page in the
-      // guest (see RESULTS-3.md), so the draft's survival is read from the frames and reported.
-      const draftVisible = await vi
-        .waitFor(
-          async () => {
-            await woken.handle(
-              Buffer.from(JSON.stringify({ type: "stream.unsubscribe", surfaceId: person.tabId })),
-              false,
-            );
-            await woken.handle(
-              Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: person.tabId })),
-              false,
-            );
-            if (!(await greenFrame(second.frames))) throw new Error("Not visible yet.");
-            return true;
-          },
-          { timeout: 15_000, interval: 1_000 },
-        )
-        .catch(() => false);
+      await vi.waitFor(async () => expect(await latestColour(second.frames)).toBe("green"), {
+        timeout: 30_000,
+        interval: 250,
+      });
       const edited = performance.now() - mark;
       const slot = await readBrowserPoolSlot(database, task.runnerId);
       emit({
@@ -500,7 +518,9 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
         first_frame_ms: Math.round(firstFrameMs),
         edited_frame_ms: Math.round(edited),
         same_documents: true,
-        draft_and_new_key_visible: draftVisible,
+        draft_before_park: true,
+        draft_after_wake: true,
+        new_key_after_wake: true,
         outcome: slot?.outcome ?? null,
       });
       expect(slot).toMatchObject({ phase: "running", epoch: 2 });
