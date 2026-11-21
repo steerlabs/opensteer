@@ -11,10 +11,12 @@ import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { createId } from "@opensteer/core";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { writeFile } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readFile, writeFile } from "node:fs/promises";
 import pg from "pg";
 import { expect, it, vi } from "vitest";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
@@ -106,28 +108,34 @@ it.skipIf(Boolean(reportPath))(
 );
 
 const parityReport = process.env.OPENSTEER_POOL_PARITY_REPORT;
+const parityFixture = new URL("./personal-hot-paths.parity.json", import.meta.url);
 
 /**
- * The pooled browser must leave an ordinary Home's statements alone. These numbers were
- * recorded with this same test on the base before the pool (54e33c8fc), three runs each side,
- * and the distinct statement texts of every path were equal there and here.
+ * The pooled browser must leave an ordinary Home's statements alone. Each path records only the
+ * statements its own async work issues (the Runner's and the Run's background work runs in
+ * contexts of its own and is never counted), and every path's statement texts, sorted, must
+ * equal those recorded with this same test on the overhaul head before the pool (71fde8839):
+ * a statement added, removed or changed on any of these paths fails it. To record the fixture
+ * again, run with OPENSTEER_POOL_PARITY_REPORT set to a file path on the base.
  */
 it.skipIf(Boolean(reportPath))(
   "keeps an ordinary Home's browser and direct-work statements as they were before the pool",
   async () => {
     const database = await cloneTestDatabase("host");
     const close: (() => unknown | Promise<unknown>)[] = [() => database.drop()];
-    let tracing: string[] | undefined;
-    const trace = traceQueries((statement) => tracing?.push(statement));
+    const own = new AsyncLocalStorage<string[]>();
+    const trace = traceQueries((statement) => own.getStore()?.push(statement));
     const recorded: Record<string, string[]> = {};
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
-      tracing = sql;
       try {
-        return await action();
+        return await own.run(sql, action);
       } finally {
-        tracing = undefined;
-        recorded[path] = sql;
+        // Work the path left running is not its statement; only what it awaited counts. A
+        // statement timeout is the time left to a deadline, so only its presence is compared.
+        recorded[path] = sql
+          .map((statement) => statement.replace(/\b(\w*timeout) = \d+/gu, "$1 = <ms>"))
+          .sort();
       }
     };
     try {
@@ -165,9 +173,30 @@ it.skipIf(Boolean(reportPath))(
         if (!reply.ok) throw new Error(reply.error.message);
         return reply.data;
       };
+      // The person's commands go in process, so the Host's handling of each stays in the
+      // path's own async context and is counted as the path's.
+      const api = createHttpHostApiClient({
+        baseUrl: host.origin,
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          const reply = await host.runtime.app.inject({
+            method: (init?.method ?? "GET") as "GET" | "POST",
+            url: `${url.pathname}${url.search}`,
+            headers: { ...Object.fromEntries(new Headers(init?.headers)), ...host.ownerHeaders },
+            ...(typeof init?.body === "string" ? { payload: init.body } : {}),
+          });
+          return new Response(reply.body, {
+            status: reply.statusCode,
+            headers: { "content-type": String(reply.headers["content-type"] ?? "") },
+          });
+        },
+        onAuthenticationRequired: () => {
+          throw new Error("Personal owner session expired");
+        },
+      });
       const target = { kind: "page", guest: true, url: "about:blank" } as const;
       const opened = (await record("person tab open", () =>
-        rpc(host.api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+        rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
       )) as { tab: { tabId: Parameters<TabStore["get"]>[1] } };
       const tabId = opened.tab.tabId;
       const row = await new TabStore(host.store.database).get(host.ownerId, tabId);
@@ -184,7 +213,7 @@ it.skipIf(Boolean(reportPath))(
       close.unshift(() => viewer.close());
       await record("workspace activation", () =>
         rpc(
-          host.api["commands.dispatch"]({
+          api["commands.dispatch"]({
             type: "tab.activate",
             idempotencyKey: "parity-activate",
             tabId,
@@ -270,25 +299,12 @@ it.skipIf(Boolean(reportPath))(
           .flat()
           .filter((sql) => /browser_pool/u.test(sql)),
       ).toEqual([]);
-      // Background work of the Runner and the Run interleaves with the busier paths, so those
-      // pin the statements on browser tables and agent operations; the quiet ones pin all.
-      const browserStatements = (sql: readonly string[]) =>
-        sql.filter((statement) => /browser_|agent_operations/u.test(statement)).length;
-      expect(
-        Object.fromEntries(
-          Object.entries(recorded).map(([path, sql]) => [path, browserStatements(sql)]),
-        ),
-      ).toEqual({
-        "startup sweep": 6,
-        "person tab open": 24,
-        "viewer attach": 1,
-        "workspace activation": 4,
-        "standard CDP issue": 3,
-        "direct hand-off": 2,
-      });
-      expect(recorded["viewer attach"]).toHaveLength(1);
-      expect(recorded["workspace activation"]).toHaveLength(27);
-      expect(recorded["direct hand-off"]).toHaveLength(6);
+      const base = JSON.parse(await readFile(parityFixture, "utf8")) as {
+        issued: string;
+        recorded: Record<string, string[]>;
+      };
+      expect(issued).toBe(base.issued);
+      expect(recorded).toEqual(base.recorded);
     } finally {
       trace.mockRestore();
       for (const step of close) await step();
