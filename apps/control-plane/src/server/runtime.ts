@@ -188,6 +188,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
                 store: cloudComputers,
                 kickBootstrap: () => cloudComputerClaimer?.kick(),
                 stripeWebhookSecret: cloud.stripeWebhookSecret,
+                ...(config.websiteOrigin ? { websiteOrigin: config.websiteOrigin } : {}),
                 verifyProvisioner: googleServiceAccountVerifier({
                   audience: config.publicOrigin.origin,
                   email: cloud.provisionerEmail,

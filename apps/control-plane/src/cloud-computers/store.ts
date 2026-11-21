@@ -138,6 +138,11 @@ export class CloudComputerStore {
     return { ...this.#options.config.plan, interval: this.#options.config.interval };
   }
 
+  /** The plan a checkout would sell now, or null while Stripe hasn't confirmed the offer. */
+  get offer() {
+    return this.#offerValid ? this.plan : null;
+  }
+
   pendingReplacementOwnerAccess(clientId: string) {
     return this.#db
       .selectFrom("cloudComputers")
