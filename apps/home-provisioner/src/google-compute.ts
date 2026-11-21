@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   CloudComputerGenerationSchema,
@@ -127,6 +127,7 @@ type Check = () => Promise<void>;
 type Scope = "zone" | "region" | "global";
 type Write = {
   method: "POST" | "DELETE";
+  resourceName?: string;
   body?: unknown;
   requestId?: string | undefined;
   query?: Record<string, string>;
@@ -185,7 +186,12 @@ export class GoogleCompute implements VmProvider {
     let current = await this.#get(`${path}/${name}`, firewall, signal);
     if (!current) {
       try {
-        await this.#write(path, "global", signal, { method: "POST", body: expected, check });
+        await this.#write(path, "global", signal, {
+          method: "POST",
+          resourceName: name,
+          body: expected,
+          check,
+        });
         return;
       } catch (error) {
         if (!hasStatus(error, 409)) throw error;
@@ -371,12 +377,13 @@ export class GoogleCompute implements VmProvider {
     if (found) return googleVm(verifyNamedInstance(found, id, generation), generation);
 
     const dualStack = await this.#dualStack(signal);
-    const reservation = await this.#reserveAddress(id, signal, check);
+    const reservation = await this.#reserveAddress(id, input.requestId, signal, check);
     await this.#detachPreviousAddress(input, reservation, signal, check);
     let inserted: Operation;
     try {
       inserted = await this.#write(`${this.#zone}/instances`, "zone", signal, {
         method: "POST",
+        resourceName: name,
         requestId: input.requestId,
         check,
         body: {
@@ -452,7 +459,12 @@ export class GoogleCompute implements VmProvider {
     return googleVm(verifyNamedInstance(observed, id, generation), generation);
   }
 
-  async #reserveAddress(id: CloudComputerId, signal: AbortSignal, check?: Check) {
+  async #reserveAddress(
+    id: CloudComputerId,
+    journalId: string | undefined,
+    signal: AbortSignal,
+    check?: Check,
+  ) {
     const path = this.#addressesPath();
     const name = addressName(id);
     let current = await this.#get(`${path}/${name}`, address, signal);
@@ -460,6 +472,8 @@ export class GoogleCompute implements VmProvider {
       try {
         await this.#write(path, "region", signal, {
           method: "POST",
+          resourceName: name,
+          requestId: childRequestId(journalId, "address-insert", name),
           check,
           body: {
             name,
@@ -507,6 +521,11 @@ export class GoogleCompute implements VmProvider {
         if (access) {
           await this.#write(`${this.#zone}/instances/${name}/deleteAccessConfig`, "zone", signal, {
             method: "POST",
+            requestId: childRequestId(
+              input.requestId,
+              "delete-access-config",
+              `${name}/${nic.name}/${access.name}`,
+            ),
             query: { accessConfig: access.name, networkInterface: nic.name },
             check,
           });
@@ -668,6 +687,7 @@ export class GoogleCompute implements VmProvider {
     const key = JSON.stringify([
       path,
       write.method,
+      write.resourceName,
       query.toString(),
       write.requestId ?? write.observedVersion,
     ]);
@@ -816,6 +836,14 @@ function instanceName(id: CloudComputerId, generation: number) {
 
 function addressName(id: CloudComputerId) {
   return `os-${id.replace("_", "-")}-ip`;
+}
+
+function childRequestId(journalId: string | undefined, kind: string, name: string) {
+  if (!journalId) return undefined;
+  const hex = createHash("sha256")
+    .update(JSON.stringify([journalId, kind, name]))
+    .digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 function namedIdentity(name: string) {

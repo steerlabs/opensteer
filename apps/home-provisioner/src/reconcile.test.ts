@@ -11,7 +11,7 @@ import { RemoteRequestError } from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
-import { ComputeFake, zonePath } from "./google-compute.test-support.js";
+import { ComputeFake, computeCreate, regionPath, zonePath } from "./google-compute.test-support.js";
 import { fakeHetzner } from "./hetzner.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
@@ -552,6 +552,52 @@ describe("Cloud Computer reconciliation", () => {
       "block-project-ssh-keys",
       "disable-legacy-endpoints",
     ]);
+  });
+
+  it("gives two Google purchases in one pass distinct address and instance request IDs", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }, { ...second }];
+    await h.pass();
+    const addresses = compute.requests.filter(
+      ({ method, path }) => method === "POST" && path === `${regionPath}/addresses`,
+    );
+    const instances = compute.requests.filter(
+      ({ method, path }) => method === "POST" && path === `${zonePath}/instances`,
+    );
+    expect(addresses).toHaveLength(2);
+    expect(instances).toHaveLength(2);
+    expect(
+      new Set([...addresses, ...instances].map(({ query }) => query.get("requestId"))).size,
+    ).toBe(4);
+    expect(compute.addresses.size).toBe(2);
+    expect(compute.instances.size).toBe(2);
+
+    const originalAddress = addresses.find(({ body }) => JSON.stringify(body).includes(home.id))!;
+    const [, journal] = vi
+      .mocked(h.account.check)
+      .mock.calls.find(
+        ([id, check]) =>
+          id === home.id &&
+          check.operation === "begin-provider-write" &&
+          check.write.kind === "create",
+      )!;
+    if (journal.operation !== "begin-provider-write") throw new Error("Missing the create journal");
+    const replay = new ComputeFake();
+    const replayAdapter = replay.adapter();
+    await replayAdapter.create(
+      {
+        ...computeCreate,
+        id: home.id,
+        generation: home.generation,
+        requestId: journal.write.token,
+      },
+      new AbortController().signal,
+    );
+    const replayedAddress = replay.requests.find(
+      ({ method, path }) => method === "POST" && path === `${regionPath}/addresses`,
+    );
+    expect(replayedAddress?.query.get("requestId")).toBe(originalAddress.query.get("requestId"));
   });
 
   it("keeps a lost Google insert unknown and deletes its late VM and reservation", async () => {
