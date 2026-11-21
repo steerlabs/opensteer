@@ -81,6 +81,7 @@ export type BrowserPageIcon =
   | "check"
   | "chevron"
   | "clock"
+  | "cloud"
   | "download"
   | "key"
   | "laptop"
@@ -100,6 +101,7 @@ const iconPaths: Readonly<Record<BrowserPageIcon, string>> = {
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   chevron: '<path d="M9.5 6l6 6-6 6"/>',
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  cloud: '<path d="M17.5 18.5a4.5 4.5 0 0 0 .4-9A6 6 0 0 0 6.2 8.3 4.8 4.8 0 0 0 7 18.5h10.5Z"/>',
   download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
   key: '<circle cx="8" cy="14" r="3.5"/><path d="M10.5 11.5 18 4M15 7l2.5 2.5M17.5 4.5 20 7"/>',
   laptop: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>',

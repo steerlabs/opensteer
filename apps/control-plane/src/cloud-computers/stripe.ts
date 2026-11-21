@@ -162,6 +162,11 @@ const refundRecord = z.object({
   metadata: z.record(z.string(), z.string()),
 });
 const refundList = z.object({ has_more: z.boolean(), data: z.array(refundRecord) });
+const customerRecord = z.object({ id: z.string(), deleted: z.boolean().optional() });
+const customerSubscriptions = z.object({
+  has_more: z.boolean(),
+  data: z.array(z.object({ id: subscriptionId, status: z.string() })),
+});
 const hostedSession = z.object({ url: z.url({ protocol: /^https$/u }) });
 const createdSession = hostedSession.extend({ id: sessionId });
 const checkoutRecord = z
@@ -531,6 +536,32 @@ export class CloudComputerStripe {
     return settled;
   }
 
+  /**
+   * Deletes a customer, with the payment details saved on it, unless Stripe shows a
+   * subscription on it that is not cancelled. Stripe keeps its own records of past payments.
+   * One already deleted is done. At most three requests.
+   */
+  async deleteIdleCustomer(id: string): Promise<void> {
+    const customer = customerId.parse(id);
+    const current = await this.#request(`customers/${customer}`, customerRecord);
+    if (current.deleted === true) return;
+    // Without a status, Stripe lists the subscriptions that are not cancelled.
+    const live = await this.#request(
+      `subscriptions?${new URLSearchParams({ customer, limit: "100" })}`,
+      customerSubscriptions,
+    );
+    if (live.has_more || live.data.some(({ status }) => status !== "incomplete_expired")) return;
+    const deleted = await this.#request(
+      `customers/${customer}`,
+      customerRecord,
+      undefined,
+      undefined,
+      "DELETE",
+    );
+    if (deleted.id !== customer || deleted.deleted !== true)
+      throw new ControlPlaneError("unavailable", "Stripe did not delete the customer");
+  }
+
   async updateSeatQuantity(input: {
     item: string;
     subscription: string;
@@ -637,6 +668,7 @@ export type StripeBilling = Pick<
   | "validateOffer"
   | "expireCheckout"
   | "refundCheckout"
+  | "deleteIdleCustomer"
   | "validatePortal"
 >;
 

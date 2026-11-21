@@ -49,7 +49,7 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
             ok: false,
             error: {
               code: "forbidden",
-              message: "Turn on Use from anywhere to add a computer.",
+              message: "Turn on Remote access to add a computer.",
               reason: "personal-remote-access-off",
             },
           },
@@ -85,8 +85,39 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
       expect(target.mock.invocationCallOrder[0]).toBeLessThan(mint.mock.invocationCallOrder[0]!);
     } else {
       expect(mint).not.toHaveBeenCalled();
-      expect(document.body.textContent).toContain("Turn on Use from anywhere");
+      expect(document.body.textContent).toContain("Turn on Remote access");
       expect(document.querySelector("pre")).toBeNull();
     }
   },
 );
+
+it.each([
+  ["cloud-computer", "sign in with your Opensteer account", "password"],
+  ["server", "sign in with your password", "Opensteer account"],
+] as const)("tells a %s Home how to sign in on another device", async (homeKind, says, never) => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  const snapshot = client.getSnapshot();
+  shell = {
+    hostClient: client,
+    snapshot: {
+      ...snapshot,
+      identityConfig: {
+        ...snapshot.identityConfig,
+        exposure: "networked",
+        homeKind,
+        publicOrigin: "https://home.example",
+      },
+    },
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(<AddDeviceDialog homeName="Home" onClose={() => undefined} />);
+  });
+  await click("Sign in on it");
+  const text = (container.textContent ?? "").replace(/\s+/gu, " ");
+  expect(text).toContain(says);
+  expect(text).not.toContain(never);
+});

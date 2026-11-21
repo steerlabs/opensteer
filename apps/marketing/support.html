@@ -6,7 +6,7 @@
     <title>Support · Opensteer</title>
     <meta
       name="description"
-      content="Get help with Opensteer on your Mac, your phone and an Opensteer Cloud Computer: connect an agent, delete your account, or report a bug."
+      content="Get help with Opensteer on your Mac, your phone and an Opensteer Cloud Computer: connect an agent, delete your Opensteer account, or report a bug."
     />
   </head>
   <body>
@@ -62,10 +62,17 @@
 
           <h2 id="cloud-computer">Opensteer Cloud Computer</h2>
           <p>
-            Set up, suspend or delete your Cloud Computer in Opensteer under Settings, then Account.
-            It starts as a new Home, so connected agents connect again to its new address. Opensteer
-            bills you through Stripe each month, and you can cancel any time. For billing questions,
-            email <a href="mailto:tim@opensteer.com">tim@opensteer.com</a>.
+            Set up, suspend or delete your Cloud Computer in Opensteer under Settings, then Account,
+            or on your <a href="{{cloudComputer}}">Opensteer account's Cloud Computer page</a>. It
+            starts as a new Home, so connected agents connect again to its new address. Opensteer
+            bills you through Stripe for each billing period, and you can cancel any time. When a
+            subscription ends, the Cloud Computer is turned off and keeps its data until you delete
+            it. Deleting it cancels the subscription, normally within a minute, so it won't renew;
+            the rest of the period already paid isn't refunded. If Stripe can't be reached, we keep
+            cancelling until Stripe confirms, and if a renewal is charged in that time, we refund
+            it. The computer, its disk, its backups and the payment details kept with Stripe for its
+            subscription are deleted; Stripe keeps its own records of past payments. For billing
+            questions, email <a href="mailto:tim@opensteer.com">tim@opensteer.com</a>.
           </p>
 
           <h2 id="account">Privacy and account deletion</h2>
@@ -78,11 +85,13 @@
             To delete your Opensteer account, open Settings, then Account, then Delete Account. Sign
             in again if asked and confirm deletion on the Account page. This turns off Remote access
             for the computers you own and deletes central account records; it does not erase work
-            stored on your computer or by AI providers. Signing out alone does not delete your
-            account.
-            <!-- TODO(owner): say what deleting an account does to a paid Opensteer Cloud Computer. -->
-            Email <a href="mailto:tim@opensteer.com">tim@opensteer.com</a> for privacy requests or
-            if you cannot access the deletion flow.
+            stored on your own Mac or server, or by AI providers. Signing out alone does not delete
+            your Opensteer account. If you have an Opensteer Cloud Computer, it is deleted with your
+            Opensteer account, the same way, and your Opensteer account itself is deleted at once. A
+            work Home belongs to its organization: ask your organization admin to offboard it before
+            you delete your Opensteer account. Email
+            <a href="mailto:tim@opensteer.com">tim@opensteer.com</a> for privacy requests or if you
+            cannot access the deletion flow.
           </p>
 
           <h2 id="bugs">Report a bug</h2>

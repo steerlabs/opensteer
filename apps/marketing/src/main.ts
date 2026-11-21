@@ -7,6 +7,7 @@ import "./styles/site.css";
 import { mountConsent } from "./demo/consent.js";
 import { mountWatch } from "./demo/phone.js";
 import { byId } from "./dom.js";
+import { mountOffer } from "./offer.js";
 import { startSections } from "./sections.js";
 
 startSections();
@@ -16,3 +17,4 @@ mountWatch(
   byId("showHint"),
 );
 mountConsent(byId("consent"));
+void mountOffer(document.querySelector<HTMLElement>("[data-offer]"));

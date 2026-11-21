@@ -30,8 +30,20 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail }: { detail: string }) => <span>{detail}</span>,
-  PrimaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
-    <button onClick={onPress}>{label}</button>
+  PrimaryButton: ({
+    busy,
+    disabled,
+    label,
+    onPress,
+  }: {
+    busy?: boolean;
+    disabled?: boolean;
+    label: string;
+    onPress: () => void;
+  }) => (
+    <button disabled={disabled === true || busy === true} onClick={onPress}>
+      {label}
+    </button>
   ),
   RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,
   SecondaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
@@ -54,7 +66,7 @@ const signedOut = {
 };
 
 describe("first-run welcome", () => {
-  it("leads with the Mac link and the scan, then the Account and an address", async () => {
+  it("leads with the Opensteer account, which finds a Mac or a Cloud Computer, then the Mac link, the scan and an address", async () => {
     const container = document.createElement("div");
     const root = createRoot(container);
     const signIn = vi.fn();
@@ -89,7 +101,14 @@ describe("first-run welcome", () => {
     };
     try {
       await act(async () => root.render(render({ portalOrigin: null })));
-      expect(container.textContent).toContain("Opensteer runs on your Mac");
+      // Someone whose Home is a Cloud Computer is never told they need a Mac.
+      expect(container.textContent).not.toContain("Opensteer runs on your Mac");
+      expect(container.textContent).toContain(
+        "It runs on your Mac or on a Cloud Computer. Sign in with your Opensteer account",
+      );
+      expect(container.querySelector("button")?.textContent).toBe("Sign in");
+      // Nothing here buys anything.
+      expect(container.textContent).not.toMatch(/buy|checkout|price|subscribe/iu);
       expect(container.textContent).toContain("Enter address");
       expect(container.textContent).not.toContain("Send me the Mac link");
       await click("Scan QR Code");
@@ -99,7 +118,7 @@ describe("first-run welcome", () => {
 
       // While the browser is open, the Account row says so and cannot start a second sign-in.
       await act(async () => root.render(render({ portalOrigin: null, signingIn: true })));
-      expect(button("Finish signing in in your browserLoading")?.disabled).toBe(true);
+      expect(button("Finish signing in in your browser")?.disabled).toBe(true);
 
       // A build with no Account offers only the address.
       await act(async () =>
@@ -111,6 +130,7 @@ describe("first-run welcome", () => {
         ),
       );
       expect(button("Sign in")).toBeUndefined();
+      expect(container.textContent).toContain("Install it on your Mac");
       expect(container.textContent).toContain("Enter address");
 
       await act(async () => root.render(render({ portalOrigin: "https://portal.example.com" })));
@@ -126,9 +146,7 @@ describe("first-run welcome", () => {
       );
       expect(container.textContent).toContain("alex@example.com");
       expect(button("Sign in")).toBeUndefined();
-      expect(container.textContent).toContain(
-        "Your Opensteer appears here as soon as your Mac has it.",
-      );
+      expect(container.textContent).toContain("Your Opensteer appears here as soon as it’s ready.");
     } finally {
       await act(async () => root.unmount());
     }

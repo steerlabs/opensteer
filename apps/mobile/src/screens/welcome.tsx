@@ -16,7 +16,6 @@ import {
   shareMacLink,
   welcomeCopy,
   welcomePresentation,
-  welcomeSentence,
   type WelcomeProps,
 } from "./welcome-model.js";
 
@@ -40,7 +39,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
             {welcomeCopy.title}
           </AppText>
           <AppText role="body" style={styles.centred} tone="soft">
-            {welcomeSentence(thisPhoneNoun)}
+            {view.sentence(thisPhoneNoun)}
           </AppText>
         </View>
         {view.failure === null ? null : (
@@ -48,14 +47,26 @@ export function Welcome(props: WelcomeProps): ReactNode {
             {view.failure}
           </AppText>
         )}
-        {view.macLink === null ? null : (
+        {/* The Opensteer account finds a Home on a Mac or a Cloud Computer, so it leads. */}
+        {view.account === null ? null : (
+          <PrimaryButton
+            busy={props.signingIn}
+            disabled={view.account.disabled}
+            label={view.account.label}
+            onPress={props.onAccount}
+            prominent
+          />
+        )}
+        {view.macLink === null ? null : view.account === null ? (
           <PrimaryButton
             label={welcomeCopy.mac}
             onPress={() => shareMacLink(view.macLink!)}
             prominent
           />
+        ) : (
+          <SecondaryButton label={welcomeCopy.mac} onPress={() => shareMacLink(view.macLink!)} />
         )}
-        {view.macLink === null ? (
+        {view.macLink === null && view.account === null ? (
           <PrimaryButton label={welcomeCopy.scan} onPress={props.onScan} prominent />
         ) : (
           <SecondaryButton label={welcomeCopy.scan} onPress={props.onScan} />
@@ -70,15 +81,6 @@ export function Welcome(props: WelcomeProps): ReactNode {
                     {view.signedInAs}
                   </AppText>
                 </View>
-              ),
-              view.account === null ? null : (
-                <WelcomeRow
-                  busy={props.signingIn}
-                  disabled={view.account.disabled}
-                  key="account"
-                  label={view.account.label}
-                  onPress={props.onAccount}
-                />
               ),
               <WelcomeRow key="address" label={welcomeCopy.address} onPress={props.onAddress} />,
             ]}

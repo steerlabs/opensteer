@@ -7,6 +7,7 @@ import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
 import {
   cloudComputerBackupReportMigration,
+  cloudComputerBillingSettledMigration,
   cloudComputerClaimMigration,
   cloudComputerGoogleServerRefMigration,
   cloudComputersMigration,
@@ -527,6 +528,7 @@ const migrationProvider = {
       "0032_agent_directory": agentDirectoryMigration,
       "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
       "0034_cloud_computer_google_server_ref": cloudComputerGoogleServerRefMigration,
+      "0035_cloud_computer_billing_settled": cloudComputerBillingSettledMigration,
     };
   },
 };

@@ -193,7 +193,7 @@ it("sets up a new Mac with its switches, binds this session, then walks macOS an
   expect(container().textContent).toContain("On · needs macOS permission");
 });
 
-it("opens the workspace with the fix when Home's Use from anywhere is off, minting nothing", async () => {
+it("opens the workspace with the fix when Home's Remote access is off, minting nothing", async () => {
   const setup = await attach({ remote: "off", runnerId: null });
   const before = setup.host.getSnapshot().machines.length;
   await render(setup);
