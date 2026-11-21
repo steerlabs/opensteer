@@ -39,6 +39,9 @@ export const devicesCopy = {
   "devices.switch.filesDetail": "Read files and run commands",
   "home.remoteAccess": "Remote access",
   "home.thisMac": "Running on this Mac",
+  "home.kept.mac": "Your Opensteer lives on this Mac, so it can’t be removed.",
+  "home.kept.server": "Your Opensteer lives on this server, so it can’t be removed.",
+  "home.kept.cloud": "Your Opensteer lives on this Cloud Computer, so it can’t be removed.",
   "home.address": "Address",
   "home.version": "Version",
   "home.owner": "Signed in as owner",
@@ -56,5 +59,19 @@ export function deviceWords(
 ): string {
   return devicesCopy[id].replace(/\{(\w+)\}/gu, (whole, key: string) =>
     Object.hasOwn(values, key) ? String(values[key]) : whole,
+  );
+}
+
+/**
+ * Why the Home's own device can't be removed, said of what it is: a Mac, a server, or a
+ * Cloud Computer (a work Home is one too). Never "this Mac" for a Home that isn't one.
+ */
+export function homeKeptWords(kind: "this-mac" | "mac" | "server" | "cloud" | "work"): string {
+  return deviceWords(
+    kind === "cloud" || kind === "work"
+      ? "home.kept.cloud"
+      : kind === "server"
+        ? "home.kept.server"
+        : "home.kept.mac",
   );
 }

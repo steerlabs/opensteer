@@ -60,7 +60,24 @@ describe("a device page's switches", () => {
       ["files", true, true],
     ]);
     expect(home.rows[0]?.detail).toBe(homeFixed);
-    expect(home.footer).toBe("Your Opensteer lives on this Mac, so it can't be removed.");
+    expect(home.footer).toBe("Your Opensteer lives on this Mac, so it can’t be removed.");
+  });
+
+  it("never tells a Cloud Computer, a work Home or a server that it is a Mac", () => {
+    const home = machine({
+      kind: "home",
+      ownership: "deployment",
+      allowedModules: ["agents", "browser", "shell"],
+    });
+    for (const [homeKind, footer] of [
+      ["cloud", "Your Opensteer lives on this Cloud Computer, so it can’t be removed."],
+      ["work", "Your Opensteer lives on this Cloud Computer, so it can’t be removed."],
+      ["server", "Your Opensteer lives on this server, so it can’t be removed."],
+    ] as const) {
+      const view = deviceSwitches(home, { devicesAvailable: true, homeKind });
+      expect(view.footer).toBe(footer);
+      expect(view.footer).not.toContain("Mac");
+    }
   });
 
   it("lets an older Host change only files", () => {
@@ -112,7 +129,7 @@ describe("under a device's switches", () => {
     // A Home Mac's Apps switch is real, so the footer belongs under it too.
     expect(home.rows.some(({ fixed }) => !fixed)).toBe(true);
     expect(deviceSwitchesFooter(home)).toBe(
-      "Your Opensteer lives on this Mac, so it can't be removed. Connected agents also need you to choose this device’s profile or app for them.",
+      "Your Opensteer lives on this Mac, so it can’t be removed. Connected agents also need you to choose this device’s profile or app for them.",
     );
   });
 

@@ -16,7 +16,7 @@ import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
 import { cloudSuggestionQuietMs } from "./cloud-computer.js";
 import { computerStatus } from "./computers.js";
-import { deviceWords } from "./devices-copy.js";
+import { deviceWords, homeKeptWords } from "./devices-copy.js";
 import {
   asleepGateLine,
   asleepToolFailure,
@@ -476,5 +476,21 @@ describe("a server Home's page", () => {
     expect(facts("member", true)).toBeNull();
     // An older Home says nothing: a personal Home has only an owner.
     expect(facts(undefined, true)).toBe("Signed in as owner");
+  });
+});
+
+describe("why the Home's own device can't be removed", () => {
+  it("names what the Home is, and calls only a Mac a Mac", () => {
+    expect(homeKeptWords("this-mac")).toBe(
+      "Your Opensteer lives on this Mac, so it can’t be removed.",
+    );
+    expect(homeKeptWords("mac")).toBe(homeKeptWords("this-mac"));
+    expect(homeKeptWords("cloud")).toBe(
+      "Your Opensteer lives on this Cloud Computer, so it can’t be removed.",
+    );
+    expect(homeKeptWords("work")).toBe(homeKeptWords("cloud"));
+    expect(homeKeptWords("server")).toBe(
+      "Your Opensteer lives on this server, so it can’t be removed.",
+    );
   });
 });

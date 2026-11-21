@@ -237,7 +237,11 @@ function DevicePage(props: {
       />
     );
   }
-  const switchContext = { devicesAvailable, ...(thisDevice ? { noun: thisPhoneNoun } : {}) };
+  const switchContext = {
+    devicesAvailable,
+    homeKind,
+    ...(thisDevice ? { noun: thisPhoneNoun } : {}),
+  };
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
     if (access === null) return;

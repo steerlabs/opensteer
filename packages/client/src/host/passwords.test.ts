@@ -277,6 +277,21 @@ describe("Passwords from anywhere but its Mac", () => {
       "Not available on this Opensteer",
     );
   });
+
+  it("never sends a Home that isn't on the person's Mac to a Passwords it doesn't have", () => {
+    const words = passwordsElsewhere({
+      homeName: "My Cloud Computer",
+      personal: true,
+      onMac: false,
+    });
+    expect(words).toBe(
+      "Saved logins and cards work only when your Home is on your Mac. On this Home, sign in to a site in its own browser.",
+    );
+    expect(words).not.toContain("My Cloud Computer");
+    expect(
+      passwordsSettingsSubtitle({ homeName: "My Cloud Computer", personal: true, onMac: false }),
+    ).toBe("Only on a Home on your Mac");
+  });
 });
 
 function passwordRequest(
