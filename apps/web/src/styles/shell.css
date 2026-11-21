@@ -191,47 +191,6 @@ html.sidebar-drawer-open body {
 
 /* The shortcut is for people already looking for it: it shows on hover. */
 
-.task-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-
-/* Working, Finished: a small label over its rows, with a count. */
-.task-group {
-  display: flex;
-  flex-direction: column;
-}
-
-.task-group__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 40px;
-  padding: var(--space-10) var(--space-4) var(--space-4) var(--space-10);
-}
-
-.task-group__title {
-  display: flex;
-  flex: 1;
-  align-items: baseline;
-  gap: var(--space-6);
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-strong);
-}
-
-.task-group__count {
-  color: var(--muted-dim);
-  font-weight: var(--weight-medium);
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-}
-
 /* Done: finished tasks the reader has seen, shut until they open it. */
 
 /* Lined up with the titles of the rows above it. */
@@ -367,118 +326,13 @@ html.sidebar-drawer-open body {
   color: var(--text);
 }
 
-/* ---- Task rows ----
-   One line each, in the sidebar and in search: a mark
-   for what the task is doing, its title, and only what the reader needs
-   beside it. A task waiting on its reader is the one loud row — tinted, with
-   an amber "Needs you". A working task names where it works; an unread one
-   carries an ember dot; stopped work says when it stopped; finished work the
-   reader has seen steps back. */
-
-.task-row {
-  position: relative;
-}
-
-.task-row__link {
-  display: flex;
-  align-items: center;
-  gap: var(--space-10);
-  padding: calc(var(--space-6) - 1px) calc(var(--space-10) - 1px);
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  font-size: var(--text-xl);
-  /* One-off: a 32px row around one line, from padding alone (see the nav). */
-  line-height: 20px;
-  transition: background-color var(--duration-fast) var(--ease-out);
-  border: 1px solid transparent;
-}
-
-.task-row__link:hover,
-.task-row:hover .task-row__link {
-  text-decoration: none;
-  background-color: var(--fill-quiet);
-}
-
-.task-row__link[aria-current="page"] {
-  background: var(--sheen) var(--fill-plate-hover);
-  color: var(--text);
-  border-color: var(--rim-selected);
-  box-shadow: var(--edge-plate);
-}
-
-.task-row__title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Dragged narrow, the title keeps the room the place would take. */
-
-.task-row__time {
-  flex: none;
-  min-width: 22px;
-  color: var(--muted-dim);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
+/* The ember dot for news the reader has not opened. */
 .task-row__unread {
   width: 7px;
   height: 7px;
   flex: none;
   border-radius: var(--radius-full);
   background: var(--ember);
-}
-
-.task-row--unread .task-row__title {
-  color: var(--text);
-}
-
-.task-row--finished:not(.task-row--unread) .task-row__title,
-.task-row--done:not(.task-row--needs-you):not(.task-row--failed) .task-row__title {
-  color: var(--muted);
-}
-
-/* The state slot carries attention; the row itself stays quiet. */
-.task-row--needs-you .task-row__title {
-  color: var(--text);
-}
-
-/* Move to Done, or Back to Tasks: it takes the time's place while the row is
-   hovered or focused, so the list never carries a column of buttons. */
-.row-action {
-  position: absolute;
-  top: 50%;
-  right: var(--space-6);
-  display: none;
-  place-items: center;
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  min-height: 0;
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  transform: translateY(-50%);
-}
-
-.row-action:hover {
-  color: var(--text);
-  background-color: var(--fill-quiet);
-}
-
-.row-action svg {
-  width: 14px;
-  height: 14px;
-}
-
-.task-row:is(:hover, :focus-within) .row-action {
-  display: grid;
-}
-
-.task-row--has-action:is(:hover, :focus-within) .task-row__time {
-  visibility: hidden;
 }
 
 /* The Account stays below the deployments rather than among them. */
@@ -1010,16 +864,4 @@ html.sidebar-drawer-open body {
   padding: 0 6px;
   color: var(--red-text);
   font-size: var(--text-sm);
-}
-
-.task-row__text {
-  display: grid;
-  flex: 1;
-  gap: 2px;
-  min-width: 0;
-}
-.task-row__ask {
-  color: var(--amber-text);
-  font-size: var(--text-sm);
-  line-height: 1.36;
 }

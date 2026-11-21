@@ -9,7 +9,6 @@ import {
   taskList,
   taskUnderWay,
   taskMark,
-  taskMarkQuiet,
   taskRowLabel,
   type HostClient,
   type TaskRow,
@@ -125,13 +124,13 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
               : styles.pressed),
       ]}
     >
-      <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
+      <TaskMark mark={taskMark(row)} quiet={row.quiet && !props.selected} />
       {subtitle === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
           role="secondary"
-          style={[styles.grow, titleStyle(row, props.shelf)]}
+          style={[styles.grow, titleStyle(row, props.selected)]}
         >
           {row.title}
         </AppText>
@@ -141,7 +140,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
             maxFontSizeMultiplier={controlFontScaleLimit}
             numberOfLines={1}
             role="secondary"
-            style={titleStyle(row, props.shelf)}
+            style={titleStyle(row, props.selected)}
           >
             {row.title}
           </AppText>
@@ -258,12 +257,11 @@ export function DraftPen(): ReactNode {
   return <Symbol name="pencil" size={13} tint={color.muted} />;
 }
 
-/** Unread work and questions read bright; finished work the reader has seen steps back. */
-function titleStyle(row: TaskRow, shelf: TaskShelf): { readonly color: string } {
+/** Unread work and questions read bright; settled work the reader has seen steps back. */
+function titleStyle(row: TaskRow, selected: boolean): { readonly color: string } {
   if (row.tone === "needs-you") return styles.strong;
-  if (shelf === "done") return styles.quiet;
   if (row.unread) return styles.bright;
-  return row.tone === "finished" ? styles.quiet : styles.title;
+  return row.quiet && !selected ? styles.quiet : styles.title;
 }
 
 /**

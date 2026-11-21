@@ -23,18 +23,6 @@ import { isThreadUnread } from "./thread-unread.js";
 /** What a task is doing, in the order a reader has to care. */
 export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finished";
 
-/**
- * A task's mark reads quietly once it is settled and seen, or put in Done;
- * needing someone or having failed stays loud wherever it sits.
- */
-export function taskMarkQuiet(row: Pick<TaskRow, "tone" | "unread">, done: boolean): boolean {
-  return (
-    (done || (row.tone === "finished" && !row.unread)) &&
-    row.tone !== "needs-you" &&
-    row.tone !== "failed"
-  );
-}
-
 export interface TaskRow {
   readonly threadId: string;
   readonly teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
@@ -49,10 +37,15 @@ export interface TaskRow {
   /** Something arrived this reader has not opened. */
   readonly unread: boolean;
   /**
-   * Nothing more happens until someone writes to it or resumes it: finished,
-   * failed, or stopped by a person and left paused.
+   * Nothing more happens until someone writes to it: it finished, failed, or
+   * a person stopped it.
    */
   readonly stopped: boolean;
+  /**
+   * Stopped and seen: nothing is happening, asked or new. A row steps back
+   * while it is not open; live work, asks and news stay bright, in Done too.
+   */
+  readonly quiet: boolean;
   readonly done: boolean;
   /** When it was put in Done, while it is there. */
   readonly doneAt: string | null;
@@ -326,6 +319,12 @@ function rowOf(
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
   const tone = thread.pendingRequests > 0 || asks.length > 0 ? "needs-you" : taskTone(thread);
+  const done = thread.doneAt !== null;
+  const stopped = tone === "finished" || tone === "failed";
+  const unread = isThreadUnread({
+    ...thread,
+    lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
+  });
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
@@ -341,20 +340,14 @@ function rowOf(
           ? teamAskLine(teamAsks) || "Needs you"
           : taskLine(entry, tone, asks, surface),
     place: surface === null ? null : placeName(surface),
-    done: thread.doneAt !== null,
+    done,
     doneAt: thread.doneAt,
     quietlyDone: thread.doneAt !== null && thread.doneReason === "quiet",
     // The Host also refuses an active channel conversation, which a client cannot tell apart.
     canBeDone: thread.purpose === "task",
-    unread: isThreadUnread({
-      ...thread,
-      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
-    }),
-    // A Stop pauses the queue: the task waits for the person alone, as a finished one does.
-    stopped:
-      tone === "finished" ||
-      tone === "failed" ||
-      (tone === "waiting" && thread.inputQueuePaused && thread.status !== "waiting"),
+    unread,
+    stopped,
+    quiet: stopped && !unread,
     askedAt: thread.askedAt,
   };
 }
@@ -381,9 +374,14 @@ function placeName(surface: SurfaceItem): string | null {
   }
 }
 
+/**
+ * From the Host's status alone. A person's Stop pauses the queue, but the task
+ * it stopped is settled like a finished one: what the queue still holds waits
+ * in the conversation, behind its Resume.
+ */
 function taskTone(thread: ThreadSummary): Exclude<TaskTone, "needs-you"> {
   if (thread.status === "running") return "working";
-  if (thread.status === "waiting" || thread.inputQueuePaused) return "waiting";
+  if (thread.status === "waiting") return "waiting";
   if (thread.status === "failed") return "failed";
   return "finished";
 }
@@ -483,6 +481,7 @@ export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
     left.place === right.place &&
     left.unread === right.unread &&
     left.stopped === right.stopped &&
+    left.quiet === right.quiet &&
     left.done === right.done &&
     left.doneAt === right.doneAt &&
     left.quietlyDone === right.quietlyDone &&

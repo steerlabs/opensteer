@@ -469,6 +469,15 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(stopped.structuredContent).toMatchObject({
       interruptedRunId: (result.structuredContent as { runId: string }).runId,
     });
+    // The connection stopped it, not the person, so its end is still news to them.
+    expect(
+      await storeFixture.database
+        .selectFrom("commands")
+        .select("authoritySource")
+        .where("threadId", "=", threadId)
+        .where("type", "=", "run.interrupt")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ authoritySource: { kind: "connection" } });
     const stopReplay = await agent.client.callTool({
       name: "opensteer_task_interrupt",
       arguments: { taskId: threadId },
@@ -997,6 +1006,15 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           timeoutError: () => new Error("Self interrupt never revoked its grant"),
         }),
       ).toMatchObject({ runId: f.run.id, threadId: f.thread.id });
+      // An agent's Stop is recorded as the agent's, never as its person's.
+      expect(
+        await storeFixture.database
+          .selectFrom("commands")
+          .select("authoritySource")
+          .where("runId", "=", f.run.id)
+          .where("type", "=", "run.interrupt")
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ authoritySource: { kind: "thread-agent", runId: f.run.id } });
     } finally {
       detach();
     }
