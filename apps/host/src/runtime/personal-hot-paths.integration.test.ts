@@ -13,6 +13,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { OwnerProfileService } from "../administration/owner-profile.js";
+import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { createId } from "@opensteer/core";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -127,14 +129,47 @@ it.skipIf(Boolean(reportPath))(
     const own = new AsyncLocalStorage<string[]>();
     const trace = traceQueries((statement) => own.getStore()?.push(statement));
     const recorded: Record<string, string[]> = {};
+    // A path's first shell read refreshes the owner's name in the background, and that
+    // transaction's last statement raced the end of the path. Each refresh runs in a trace of its
+    // own; the path waits for it after its own statements are taken, and counts it whole.
+    const refreshes = new Map<string[], { sql: string[]; done: Promise<unknown> }[]>();
+    const refresh = OwnerProfileService.prototype.refresh;
+    const refreshing = vi
+      .spyOn(OwnerProfileService.prototype, "refresh")
+      .mockImplementation(function (this: OwnerProfileService) {
+        const path = own.getStore();
+        if (!path) return Reflect.apply(refresh, this, []) as Promise<void>;
+        const sql: string[] = [];
+        const done = own.run(sql, () => Reflect.apply(refresh, this, []) as Promise<void>);
+        refreshes.set(path, [...(refreshes.get(path) ?? []), { sql, done }]);
+        return done;
+      });
+    close.unshift(() => refreshing.mockRestore());
+    // The memory pass's provisioning drain is work the start leaves running: it is counted on no
+    // path. The fixture once held the first statement of its two passes at the start, which
+    // always ran inside the start while the rest of each pass raced its end; they are no longer
+    // listed.
+    const reconcile = MemoryPassService.prototype.reconcileMissing;
+    const reconciling = vi
+      .spyOn(MemoryPassService.prototype, "reconcileMissing")
+      .mockImplementation(function (this: MemoryPassService) {
+        return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
+      });
+    close.unshift(() => reconciling.mockRestore());
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
       try {
         return await own.run(sql, action);
       } finally {
-        // Work the path left running is not its statement; only what it awaited counts. A
-        // statement timeout is the time left to a deadline, so only its presence is compared.
-        recorded[path] = sql
+        // Work the path left running is not its statement; only what it awaited counts, taken
+        // here and now. A statement timeout is the time left to a deadline, so only its
+        // presence is compared.
+        const counted = [...sql];
+        for (const started of refreshes.get(sql) ?? []) {
+          await started.done.catch(() => undefined);
+          counted.push(...started.sql);
+        }
+        recorded[path] = counted
           .map((statement) => statement.replace(/\b(\w*timeout) = \d+/gu, "$1 = <ms>"))
           .sort();
       }
@@ -143,6 +178,12 @@ it.skipIf(Boolean(reportPath))(
       // The Home's real startup, all of it that runs in its own async work.
       const host = await record("home startup", () =>
         startPrivateMachineHost(database.url, { logger: false }),
+      );
+      // Its first shell read refreshed the owner's name: counted whole, never only in part.
+      expect(recorded["home startup"]).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('update "personal_settings" set "owner_name_account"'),
+        ]),
       );
       close.unshift(() => host.close());
       const runner = await connectCallerMachine(host, {
@@ -200,6 +241,20 @@ it.skipIf(Boolean(reportPath))(
         onAuthenticationRequired: () => {
           throw new Error("Personal owner session expired");
         },
+      });
+      // An ordinary Home's broker allocates nothing for the pool: no controller for a pooled
+      // end, so none of its closes constructs that end's error either.
+      const brokerControllers: string[] = [];
+      const Original = globalThis.AbortController;
+      globalThis.AbortController = class extends Original {
+        constructor() {
+          super();
+          const stack = new Error().stack ?? "";
+          if (/new HostedBrowserBroker/u.test(stack)) brokerControllers.push(stack);
+        }
+      };
+      close.unshift(() => {
+        globalThis.AbortController = Original;
       });
       const target = { kind: "page", guest: true, url: "about:blank" } as const;
       const opened = (await record("person tab open", () =>
@@ -323,6 +378,7 @@ it.skipIf(Boolean(reportPath))(
         }),
       );
       expect(ran.status).toBe("completed");
+      expect(brokerControllers).toEqual([]);
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(

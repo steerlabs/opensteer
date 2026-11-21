@@ -295,16 +295,14 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       placements: (ids?: never) => router.placements(ids),
       resolve: (placement: never) => {
         const target = router.resolve(placement);
-        return target
-          ? Object.assign(Object.create(target), { loopbackPool: coordinator, main: true })
-          : target;
+        return target ? Object.assign(Object.create(target), { main: true }) : target;
       },
     };
     const service = new BrowserService({
       deploymentId: task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
-      managedPoolTestRunner: task.runnerId,
+      pools: new Map([[task.runnerId, coordinator]]),
       tabs: new TabStore(database),
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),

@@ -3,7 +3,8 @@
  * pool agent on a fake hypervisor behind its signed HTTP interface and the Home's real client.
  * The agent file sets `globalThis.opensteerPoolController = "agent"` before importing the suite.
  */
-import { createPublicKey, type KeyObject } from "node:crypto";
+import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
+import type { BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
 import type {
   BrowserPoolControllerCall,
   BrowserPoolControllerResult,
@@ -11,6 +12,7 @@ import type {
   BrowserPoolPhysicalKind,
   BrowserPoolPhysicalStatus,
 } from "../apps/host/src/browser/browser-pool-controller.js";
+import { expectationOf } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
   FakeBrowserPoolController,
   type BrowserPoolFault,
@@ -45,6 +47,8 @@ export async function createPoolController(options: {
   now?: () => number;
   /** Each start is a new guest with an empty runtime, as on a real host. */
   freshGuests?: boolean;
+  /** The fence the loopback guest's runtime holds now: the fake sees its guest. */
+  guest?: () => BrowserPoolControl["fence"] | null;
 }): Promise<PoolControllerUnderTest> {
   if (poolControllerKind() === "fake") return new FakeBrowserPoolController(options);
   return AgentPoolController.create(options);
@@ -63,6 +67,9 @@ export class AgentPoolController implements PoolControllerUnderTest {
   readonly #slotId: string;
   readonly #faults: { kind: string; fault: BrowserPoolFault }[] = [];
   readonly #holds = new Map<BrowserPoolPhysicalKind, () => Promise<void>>();
+  /** Effects of calls the harness made itself, as an earlier Home would have. */
+  readonly #hidden = new Set<number>();
+  #pending: Promise<void> = Promise.resolve();
 
   private constructor(
     agent: TestPoolAgent,
@@ -108,7 +115,9 @@ export class AgentPoolController implements PoolControllerUnderTest {
   }
 
   get effects(): string[] {
-    return this.#agent.agent.effects(this.#slotId).filter((effect) => homeVisible.has(effect));
+    return this.#agent.agent
+      .effects(this.#slotId)
+      .filter((effect, index) => homeVisible.has(effect) && !this.#hidden.has(index));
   }
 
   inject(kind: BrowserPoolPhysicalKind | `sign:${string}` | "any", fault: BrowserPoolFault): void {
@@ -120,29 +129,65 @@ export class AgentPoolController implements PoolControllerUnderTest {
   }
 
   /**
-   * Only physical facts the agent can find on its own: a guest and its saved state gone. A
-   * controller on an epoch the guest does not carry is not one: the agent's epoch moves only by
-   * a resume, and the adoption it signs is then the fence it expects the next start's install
-   * to replace. The in-process runtime this suite keeps across starts never received it, so it
-   * refuses that install for good; a real guest starts empty (`expect: null`) and has no such case.
+   * Only physical facts the agent can reach on its own: a guest and its saved state gone, or a
+   * guest on a later epoch than this Home knows (an earlier Home paused and resumed it and its
+   * adoption never arrived). The agent's epoch moves only by a resume, so the harness pauses and
+   * resumes until it is there; those calls are the earlier Home's, not this one's effects. With
+   * fresh guests the next start installs into an empty runtime, so the undelivered adoption
+   * leaves nothing behind.
    */
   observe(change: Partial<BrowserPoolPhysicalStatus>): void {
-    if (change.phase === "stopped" && change.savedState === null) {
+    const { phase, savedState, epoch, ...rest } = change;
+    if (phase === "stopped" && savedState === null) {
       this.#agent.driver.loseGuest(this.#slotId);
       return;
     }
-    throw new Error("The agent harness models only a lost guest.");
+    if (
+      typeof epoch === "number" &&
+      phase === undefined &&
+      savedState === undefined &&
+      !Object.keys(rest).length
+    ) {
+      this.#pending = this.#pending.then(() => this.#advanceEpoch(epoch));
+      return;
+    }
+    throw new Error("The agent harness models only a lost guest or a later epoch.");
   }
 
-  status(slotId: string, term: number): Promise<BrowserPoolPhysicalStatus> {
-    return this.#client.status(slotId, term);
+  async #advanceEpoch(epoch: number): Promise<void> {
+    const term = this.#agent.agent.authority(this.#slotId)?.term ?? 1;
+    for (;;) {
+      if ((await this.#client.status(this.#slotId, term)).epoch! >= epoch) return;
+      for (const kind of ["pause", "resume"] as const) {
+        const before = this.#agent.agent.effects(this.#slotId).length;
+        const current = await this.#client.status(this.#slotId, term);
+        const result = await this.#client.apply({
+          id: randomUUID(),
+          slotId: this.#slotId,
+          term,
+          kind,
+          expect: expectationOf(current),
+          ...(kind === "resume" ? { intent: { id: randomUUID(), sequence: 1 } } : {}),
+        });
+        if (!result.applied) throw new Error(`The harness ${kind} was refused: ${result.reason}.`);
+        const after = this.#agent.agent.effects(this.#slotId).length;
+        for (let index = before; index < after; index += 1) this.#hidden.add(index);
+      }
+    }
   }
 
-  result(slotId: string, term: number, id: string): Promise<BrowserPoolControllerResult | null> {
+  async result(slotId: string, term: number, id: string) {
+    await this.#pending;
     return this.#client.result(slotId, term, id);
   }
 
+  async status(slotId: string, term: number): Promise<BrowserPoolPhysicalStatus> {
+    await this.#pending;
+    return this.#client.status(slotId, term);
+  }
+
   async apply(call: BrowserPoolControllerCall): Promise<BrowserPoolControllerResult> {
+    await this.#pending;
     const fault = this.#take(call);
     if (fault === "request") throw new Error(`The ${call.kind} request was lost.`);
     const hold = this.#holds.get(call.kind);

@@ -23,6 +23,7 @@ type Home = Awaited<ReturnType<Journey["startHome"]>>;
  * real script service. The tab list is the Home's own rows; authority stays in the database.
  */
 async function directWork(j: Journey, home: () => Home) {
+  let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
   const refuse = async (): Promise<never> => {
     throw new Error("Unexpected tab operation in this fixture.");
   };
@@ -60,12 +61,22 @@ async function directWork(j: Journey, home: () => Home) {
     await home().service.pageTabs.admitted?.(write);
     return { tab: { tabId: write.id } };
   };
+  /** The tab row a connection reads; a test can make the next reads see a changed tab. */
+  const tabRow = async (tabId: string) => {
+    const tab = await row(tabId);
+    return tabChange ? await tabChange(tab) : tab;
+  };
   const handlers = new BrowserToolHandlers({
     sessions,
     tabs: {
-      list: refuse,
+      // The owner's own page tabs, as a connection with this grant lists them.
+      list: async () => ({
+        tabs: (await j.tabs.snapshot(ownerId)).rows
+          .filter((tab) => tab.kind === "page")
+          .map((tab) => ({ tabId: tab.id })),
+      }),
       open,
-      connectionTab: async (_actor: never, tabId: string) => row(tabId),
+      connectionTab: async (_actor: never, tabId: string) => tabRow(tabId),
       bindBrowserScript: async (actor: never, tabId: string) =>
         home().service.pageTabs.bindBrowserScript!(actor, await row(tabId)),
     } as never,
@@ -75,6 +86,8 @@ async function directWork(j: Journey, home: () => Home) {
     requireDevice: (runnerId) => j.store.requireSelfDeviceId(runnerId),
     issueTicket: (input) => home().service.issueStandardCdpTicket(input),
     pooledBrowser: (runnerId) => home().service.pooledDirectBrowser(runnerId),
+    // As the Home wires it: the connection's own read of the tab row.
+    pooledTab: async (_actor: never, tabId: string) => tabRow(tabId),
     origin: new URL("https://home.example.test"),
   });
   const url = await serveMcp(j.fixture, { browser: handlers });
@@ -102,7 +115,21 @@ async function directWork(j: Journey, home: () => Home) {
       name: "browser_connect",
       arguments: { profileId: j.profile!.id, reason: "Drive the page" },
     });
-  return { sessions, scripts, agent, use, resume, connect };
+  const useTab = (code: string, tabId: string, operationId?: string) =>
+    agent.client.callTool({
+      name: "browser_use",
+      arguments: { tabId, code, reason: "Read the draft", ...(operationId ? { operationId } : {}) },
+    });
+  const connectTab = (tabId: string) =>
+    agent.client.callTool({
+      name: "browser_connect",
+      arguments: { tabId, reason: "Drive the page" },
+    });
+  /** From now on, reads of a tab see it changed by `change`; undefined restores them. */
+  const changeTabs = (change: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined) => {
+    tabChange = change;
+  };
+  return { sessions, scripts, agent, use, resume, connect, useTab, connectTab, changeTabs };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -255,6 +282,81 @@ it("keeps a session whose unanswered command was settled unknown when the Runner
   }
 });
 
+it("lets a tab-targeted call made while the Runner's channel reconnects wait for it, never refuse it as not found", async () => {
+  const w = await unansweredAtChannelLoss("direct-tab-reconnecting", 20_000);
+  try {
+    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("reconnecting"));
+    // The broker is gone with its channel: the page's document stands from when it was lost.
+    expect(w.home.service.pageInventory(w.session.id)).toBeUndefined();
+    let settled = false;
+    const call = w.work.useTab(w.read, w.tab.id).finally(() => {
+      settled = true;
+    });
+    // The call passed its witness and waits on admission for the browser to come back.
+    await vi.waitFor(() => expect(w.home.coordinator.gate.demand).toBe(true));
+    expect(settled).toBe(false);
+    expect(w.home.coordinator.gate.phase).toBe("reconnecting");
+    w.j.runnerUp();
+    const result = await call;
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).toContain("unsent draft");
+    expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
+      w.document,
+    );
+    // The unanswered command is never sent again.
+    expect(await w.sent()).toBe(1);
+  } finally {
+    w.j.runnerUp();
+    await w.j.close();
+  }
+});
+
+it("lets a tab-targeted call made while a crashed Home reattaches its sessions wait for them, never refuse it as not found", async () => {
+  const j = await journey("direct-tab-crash", { profile: true, channelDeadlineMs: 20_000 });
+  try {
+    let home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const document = home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId;
+    // The Home dies while its Runner is away: the new Home has its tab rows, a session with no
+    // channel, and no document it knows for the page.
+    j.runnerDown();
+    home = await j.crashHome(home);
+    await vi.waitFor(() => expect(home.coordinator.gate.phase).toBe("reconnecting"), {
+      timeout: 10_000,
+    });
+    expect(home.service.pageInventory(session.id)).toBeUndefined();
+    const work = await directWork(j, () => home);
+    let settled = false;
+    const call = work
+      .useTab(
+        `const page = await openPage(${JSON.stringify(tab.id)});
+         return await page.js("document.querySelector('input').value")`,
+        tab.id,
+      )
+      .finally(() => {
+        settled = true;
+      });
+    // The call passed the checks it can make now and waits on admission for the reattach.
+    await vi.waitFor(() => expect(home.coordinator.gate.demand).toBe(true));
+    expect(settled).toBe(false);
+    j.runnerUp();
+    const result = await call;
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).toContain("unsent draft");
+    expect(home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId).toBe(document);
+    expect((await j.row(session.id))?.state).toBe("ready");
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("ends a session whose unanswered command was settled unknown with its note when the Runner does not come back", async () => {
   const w = await unansweredAtChannelLoss("direct-unknown-gone", 1_500);
   try {
@@ -329,6 +431,22 @@ it("restarts only once a command in flight has its recorded outcome, and once pe
     // A retry after a lost response, with the same key: the first outcome, nothing discarded.
     await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-1");
     expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(home.coordinator.gate.phase).toBe("open");
+    // The joined restart's own retry: its key was recorded with the same start.
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "key-2");
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    // A later cold start that was not a restart (the saved state expired while parked) keeps
+    // both keys handled.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    j.controller.observe({ phase: "stopped", savedState: null, epoch: null });
+    (await home.coordinator.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect(j.controller.effects).toEqual(["start", "stop", "start", "pause", "start"]);
+    expect(await j.slot()).toMatchObject({
+      lastStart: { reason: expect.not.stringMatching(/^person$/) },
+    });
+    for (const key of ["key-1", "key-2"])
+      await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, key);
+    expect(j.controller.effects).toEqual(["start", "stop", "start", "pause", "start"]);
     expect(home.coordinator.gate.phase).toBe("open");
   } finally {
     await j.close();
@@ -470,6 +588,60 @@ it("never wakes a parked browser for an approved call whose grant was cut before
   }
 });
 
+it("never wakes a parked browser for a tab-targeted call whose tab changed before its hand-off", async () => {
+  const p = await parkedAfterWork("parked-tab-changed");
+  try {
+    // The call's own target and witness read the tab as it was; from the next read on, the tab
+    // has changed (another generation), as if the person rebound it in that interval.
+    let reads = 0;
+    p.work.changeTabs((tab) => (++reads > 2 ? { ...tab, generation: tab.generation + 1 } : tab));
+    const result = await p.work.useTab(p.read, p.tab.id);
+    expect(reads).toBe(3);
+    expect(text(result)).not.toContain("unsent draft");
+    // Refused before anything could wake the browser, and recorded so.
+    expect(p.j.controller.effects).toEqual(parkedEffects);
+    expect(await p.j.slot()).toMatchObject({ phase: "parked" });
+    expect(
+      await p.j.database
+        .selectFrom("agentOperations")
+        .select(["state", "handedOffAt"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", handedOffAt: null });
+  } finally {
+    p.work.changeTabs(undefined);
+    await p.j.close();
+  }
+});
+
+it("records refused a tab-targeted call the Home refused after its hand-off, before any command", async () => {
+  const p = await parkedAfterWork("handed-off-refused");
+  try {
+    // Every check up to the hand-off reads the tab as it was; the execute's own check after it
+    // sees the tab changed, so nothing is sent.
+    p.work.changeTabs(async (tab) => {
+      const latest = await p.j.database
+        .selectFrom("agentOperations")
+        .select("handedOffAt")
+        .where("tool", "=", "browser_connect")
+        .executeTakeFirst();
+      return latest?.handedOffAt ? { ...tab, generation: tab.generation + 1 } : tab;
+    });
+    const result = await p.work.connectTab(p.tab.id);
+    expect(text(result)).toContain("not_found");
+    expect(
+      await p.j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "handedOffAt"])
+        .where("tool", "=", "browser_connect")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused", handedOffAt: expect.any(Date) });
+  } finally {
+    p.work.changeTabs(undefined);
+    await p.j.close();
+  }
+});
+
 it("honours a Stop of the agent's task that arrives while the browser is parked, without a wake", async () => {
   const p = await parkedAfterWork("parked-stop");
   try {
@@ -490,6 +662,31 @@ it("honours a Stop of the agent's task that arrives while the browser is parked,
     expect(await p.j.slot()).toMatchObject({ phase: "parked" });
   } finally {
     await p.j.close();
+  }
+});
+
+it("restarts at once with an unredeemed connection ticket, which no longer attaches", async () => {
+  const j = await journey("restart-ticket", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    await j.draft();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service);
+    const issued = await work.connect();
+    expect(issued.isError, text(issued)).not.toBe(true);
+    const { endpoint: url } = issued.structuredContent as { endpoint: string };
+    // The ticket holds the gate until it is redeemed or ends: the restart revokes it first.
+    expect(home.coordinator.gate.held).toBeGreaterThan(0);
+    const asked = Date.now();
+    await home.service.restartPooledBrowser(j.task.userId, j.task.runnerId, "with-ticket");
+    expect(Date.now() - asked).toBeLessThan(15_000);
+    expect(j.controller.effects).toEqual(["start", "stop", "start"]);
+    await expect(endpoint.open(url)).rejects.toThrow();
+  } finally {
+    await endpoint?.close();
+    await j.close();
   }
 });
 

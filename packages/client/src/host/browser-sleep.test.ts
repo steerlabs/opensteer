@@ -288,3 +288,21 @@ describe("a restart that did not happen", () => {
     );
   });
 });
+
+describe("a second loss of the same tab", () => {
+  it("is a new note, shown and told to the Home, even with no new start", async () => {
+    const told: string[] = [];
+    const notes = new BrowserReturnNotes(async (_computer, _tab, noticeId) => {
+      told.push(noticeId);
+    });
+    const lost = (noticeId: string) =>
+      ({ kind: "lost", typed: false, startAt: null, noticeId }) as const;
+    expect(notes.note(computer, tab, lost("id-1"))).not.toBeNull();
+    notes.seen(computer, tab, lost("id-1"));
+    expect(notes.note(computer, tab, lost("id-1"))).toBeNull();
+    // A later loss of the same tab has its own notice: it is shown, and its seen is sent.
+    expect(notes.note(computer, tab, lost("id-2"))).not.toBeNull();
+    notes.seen(computer, tab, lost("id-2"));
+    expect(told).toEqual(["id-1", "id-2"]);
+  });
+});

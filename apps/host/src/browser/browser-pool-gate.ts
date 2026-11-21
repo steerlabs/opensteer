@@ -1,51 +1,73 @@
 import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
-export interface BrowserPoolGateDriver {
-  /** Writes D and parks, or vetoes. `demanded` is read inside D and again after it. */
-  park(demanded: () => boolean): Promise<"parked" | "vetoed">;
-  /** Brings a parked browser back. It ends in an open gate: adopted, or discarded and fresh. */
-  wake(): Promise<void>;
-}
+/** Where the browser is when it is not simply running: senders wait, and nothing wakes it twice. */
+export type BrowserPoolAway = "parking" | "parked" | "waking" | "reconnecting";
 
-type GatePhase =
-  | "recovering"
-  | "open"
-  | "preparing"
-  | "parking"
-  | "parked"
-  | "waking"
-  | "reconnecting"
-  | "restarting"
-  | "released";
+/** What holds admission closed whatever the browser is doing. */
+export type BrowserPoolHold = "restart" | "released";
 
 export interface BrowserPoolReservation {
   release(): void;
+  /** Aborted when a restart or a removal needs every holder gone: the holder stops and settles. */
+  readonly ended?: AbortSignal;
 }
 
 /**
- * One instance per pooled runtime, shared by every send on it. A send before the park intent
- * vetoes the park; a send after it waits. Two holds nothing else undoes: `released` is for good,
- * and a restart holds admission until it lets go; meanwhile a park or reconnect that finishes
- * only records where the browser is.
+ * Admission for one pooled runtime, as a function of facts the coordinator's loop sets. It is
+ * open exactly when the browser is recovered, no hold is set, it is not away and no park is
+ * preparing; it starts closed. A send before the park intent vetoes the park; a send after it
+ * waits. It never drives anything: a waiter with demand only asks the loop to act.
  */
 export class BrowserPoolGate {
-  #driver: BrowserPoolGateDriver | undefined;
-  #phase: GatePhase = "recovering";
-  #changed = new AbortController();
-  #active = 0;
+  #recovered = false;
+  #away: BrowserPoolAway | null = null;
+  #hold: BrowserPoolHold | null = null;
+  #preparing = false;
   #demanded = false;
-  #waking: Promise<void> | undefined;
-  /** Where the browser is, as the driver last said, whatever a hold shows. */
-  #where: "open" | "parked" = "open";
-  #restarts = 0;
+  #waiting = 0;
+  #active = 0;
+  #changed = new AbortController();
+  #ended = new AbortController();
+  readonly #idle: (() => void)[] = [];
+  /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
+  onChange: () => void = () => {};
 
-  attach(driver: BrowserPoolGateDriver): void {
-    this.#driver = driver;
+  /** The loop's facts. `released` is for good: nothing moves it again. */
+  set(facts: {
+    readonly recovered?: boolean;
+    readonly away?: BrowserPoolAway | null;
+    readonly hold?: BrowserPoolHold | null;
+  }): void {
+    if (this.#hold === "released") return;
+    if (facts.recovered !== undefined) this.#recovered = facts.recovered;
+    if (facts.away !== undefined) this.#away = facts.away;
+    if (facts.hold !== undefined) {
+      // Every holder is asked to stop when a hold begins.
+      if (facts.hold && !this.#hold) {
+        this.#ended.abort();
+        this.#ended = new AbortController();
+      }
+      this.#hold = facts.hold;
+    }
+    this.#notify();
   }
 
-  get phase(): GatePhase {
-    return this.#phase;
+  get admits(): boolean {
+    return this.#recovered && !this.#hold && !this.#away && !this.#preparing;
+  }
+
+  /** One word for clients and logs; the facts themselves decide admission. */
+  get phase(): "recovering" | "open" | "preparing" | BrowserPoolAway | "restarting" | "released" {
+    if (this.#hold === "released") return "released";
+    if (this.#hold === "restart") return "restarting";
+    if (!this.#recovered) return "recovering";
+    if (this.#preparing) return "preparing";
+    return this.#away ?? "open";
+  }
+
+  get away(): BrowserPoolAway | null {
+    return this.#away;
   }
 
   /** Reservations held now, including queued sends with no consumer. */
@@ -53,66 +75,63 @@ export class BrowserPoolGate {
     return this.#active;
   }
 
-  /** Every send that arrives after D waits; the retained documents stand for live ones. */
-  get retiringOrAdopting(): boolean {
-    return this.#phase === "parking" || this.#phase === "parked" || this.#phase === "waking";
+  /** Someone waits for the browser with demand: a parked browser should wake. */
+  get demand(): boolean {
+    return this.#waiting > 0;
   }
 
-  /**
-   * The driver calls this once the park intent has committed. False: a send arrived first and
-   * vetoes the park. True: from here on a send waits for the wake.
-   */
-  committed(): boolean {
-    if (this.#demanded || this.#phase !== "preparing") return false;
-    this.#setPhase("parking");
+  /** The browser is away (retiring, parked, waking, reconnecting): retained documents stand. */
+  get retiringOrAdopting(): boolean {
+    return this.#away !== null;
+  }
+
+  /** The park step's window before D: a send now vetoes it. False: it cannot begin. */
+  beginPark(): boolean {
+    if (!this.admits || this.#active) return false;
+    this.#demanded = false;
+    this.#preparing = true;
+    this.#notify();
     return true;
   }
 
-  /** The Runner's channel was lost: sends wait while the Home reattaches its sessions. */
-  reconnecting(): void {
-    if (this.#phase === "open") this.#setPhase("reconnecting");
+  /** Read inside D, and again after it: whether a send arrived first. */
+  demandedSince(): boolean {
+    return this.#demanded || this.#waiting > 0;
   }
 
   /**
-   * The owner's restart was accepted: admission is held until the returned release, which the
-   * restart calls once its fresh guest is installed. Nothing in between admits, wakes or parks.
+   * The park intent committed. False: a send arrived first and vetoes it. True: the browser is
+   * now away (parking) and every send waits.
    */
-  restarting(): () => void {
-    if (this.#phase === "released") return () => {};
-    this.#restarts++;
-    this.#setPhase("restarting");
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      if (--this.#restarts === 0 && this.#phase === "restarting") this.#setPhase(this.#where);
-    };
+  committed(): boolean {
+    if (!this.#preparing) return false;
+    this.#preparing = false;
+    // A send, a restart or a removal that came first vetoes it.
+    if (this.demandedSince() || this.#hold) {
+      this.#notify();
+      return false;
+    }
+    this.#away = "parking";
+    this.#notify();
+    return true;
   }
 
-  /** The device was removed: nothing is admitted or woken again, whatever finishes later. */
-  released(): void {
-    this.#setPhase("released");
+  /** The park step ended before D: the window closes. */
+  endPark(): void {
+    if (!this.#preparing) return;
+    this.#preparing = false;
+    this.#notify();
   }
 
-  /** The driver reports where the browser is now; under a hold that is only recorded. */
-  settle(phase: "open" | "parked"): void {
-    this.#where = phase;
-    if (this.#phase === "released" || this.#phase === "restarting") return;
-    this.#setPhase(phase);
-  }
-
-  /** Demand: wakes a parked browser and waits for it. */
+  /** Demand: asks the loop to wake a parked browser and waits for it. */
   reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
     return this.#wait(signal, true);
   }
 
-  /**
-   * Taken when a send without a consumer is queued, so a park cannot start under it. Before D it
-   * vetoes the park; undefined means the caller waits with `background`.
-   */
+  /** Taken when a send without a consumer is queued. Before D it vetoes the park. */
   backgroundNow(): BrowserPoolReservation | undefined {
-    if (this.#phase === "open") return this.#hold();
-    if (this.#phase === "preparing") this.#demanded = true;
+    if (this.admits) return this.#take();
+    if (this.#preparing) this.#demanded = true;
     return undefined;
   }
 
@@ -121,30 +140,41 @@ export class BrowserPoolGate {
     return this.#wait(signal, false);
   }
 
+  /** Resolves once no reservation is held: every admitted send has finished. */
+  idle(): Promise<void> {
+    if (this.#active === 0) return Promise.resolve();
+    return new Promise((resolve) => this.#idle.push(resolve));
+  }
+
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
-    for (;;) {
-      if (signal.aborted)
-        // A Stop or a cut keeps its own refusal; a deadline is a refusal before any effect.
-        throw signal.reason instanceof OpensteerError
-          ? signal.reason
-          : new BrowserPoolAdmissionClosed(
-              "The pooled browser did not wake in time. Nothing was sent.",
-              signal.reason,
-            );
-      const phase = this.#phase;
-      if (phase === "open") return this.#hold();
-      if (phase === "released")
-        throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
-      if (phase === "preparing") this.#demanded = true;
-      if (phase === "parked" && demand) this.#wake();
-      await waitForChange(this.#changed.signal, signal);
+    if (demand) this.#waiting++;
+    try {
+      for (;;) {
+        if (signal.aborted)
+          // A Stop or a cut keeps its own refusal; a deadline is a refusal before any effect.
+          throw signal.reason instanceof OpensteerError
+            ? signal.reason
+            : new BrowserPoolAdmissionClosed(
+                "The pooled browser did not wake in time. Nothing was sent.",
+                signal.reason,
+              );
+        if (this.#hold === "released")
+          throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
+        if (this.admits) return this.#take();
+        if (this.#preparing) this.#demanded = true;
+        if (demand) this.onChange();
+        await waitForChange(this.#changed.signal, signal);
+      }
+    } finally {
+      if (demand) this.#waiting--;
     }
   }
 
-  #hold(): BrowserPoolReservation {
+  #take(): BrowserPoolReservation {
     this.#active++;
     let released = false;
     return {
+      ended: this.#ended.signal,
       release: () => {
         if (released) return;
         released = true;
@@ -153,41 +183,7 @@ export class BrowserPoolGate {
     };
   }
 
-  readonly #idle: (() => void)[] = [];
-
-  /** Resolves once no reservation is held: every admitted send has finished. */
-  idle(): Promise<void> {
-    if (this.#active === 0) return Promise.resolve();
-    return new Promise((resolve) => this.#idle.push(resolve));
-  }
-
-  async tryPark(): Promise<"parked" | "vetoed"> {
-    if (this.#phase !== "open" || this.#active || !this.#driver) return "vetoed";
-    this.#demanded = false;
-    this.#setPhase("preparing");
-    let outcome: "parked" | "vetoed" = "vetoed";
-    try {
-      // Until the intent has committed, a send vetoes; the driver asks after the commit.
-      outcome = await this.#driver.park(() => this.#demanded);
-    } finally {
-      this.settle(outcome === "parked" ? "parked" : "open");
-    }
-    return outcome;
-  }
-
-  #wake(): void {
-    if (this.#waking || !this.#driver || this.#phase !== "parked") return;
-    this.#setPhase("waking");
-    this.#waking = this.#driver.wake().finally(() => {
-      this.#waking = undefined;
-    });
-    void this.#waking.catch(() => undefined);
-  }
-
-  #setPhase(phase: GatePhase): void {
-    // Released is for good: nothing moves it again.
-    if (this.#phase === "released") return;
-    this.#phase = phase;
+  #notify(): void {
     const previous = this.#changed;
     this.#changed = new AbortController();
     previous.abort();

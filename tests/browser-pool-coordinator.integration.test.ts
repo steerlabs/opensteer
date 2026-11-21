@@ -10,7 +10,10 @@ import type {
   BrowserPoolControllerCall,
   BrowserPoolPhysicalController,
 } from "../apps/host/src/browser/browser-pool-controller.js";
-import { createPoolController } from "./browser-pool-controller-under-test.test-support.js";
+import {
+  createPoolController,
+  poolControllerKind,
+} from "./browser-pool-controller-under-test.test-support.js";
 import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import {
@@ -30,6 +33,7 @@ import {
   browserPoolSlotIdentity,
   listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
+  listBrowserPoolReadySessions,
   requireBrowserPoolAdmission,
 } from "../packages/database/src/browser-pool-store.js";
 import {
@@ -73,17 +77,22 @@ async function poolFixture(
     /** Each start the controller applies brings a new, uninstalled runtime, as a new guest. */
     freshGuests?: boolean;
     /** The runtime's page probe during a retire; a retire waits for it. */
-    probePage?: () => Promise<readonly string[]>;
+    probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
   } = {},
 ) {
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
   const { database } = fixture;
+  // The agent cannot see a loopback runtime that outlives a start: against it every start is a
+  // new guest with an empty runtime, as on a real host.
+  if (poolControllerKind() === "agent") options = { ...options, freshGuests: true };
   const controller = await createPoolController({
     slotId: `slot-${key}`,
     term: 1,
     ...(options.now ? { now: options.now } : {}),
     ...(options.freshGuests ? { freshGuests: true } : {}),
+    // The loopback runtime outlives a start: the controller sees what it holds.
+    guest: () => runtime.poolState()?.fence ?? null,
   });
   const page = new FakePage();
   const verifier = new FakeTicketVerifier();
@@ -129,20 +138,25 @@ async function poolFixture(
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
-    // As the Home's: a ready session with no live channel here.
-    orphans: async (_runtimeId) => {
-      const current = await getBrowserSessionForOwner(database, sessionId, task.userId);
-      return current && current.state === "ready" && !sinks.has(sessionId)
-        ? [
-            {
-              sessionId,
-              surfaces: [...surfaces].map((surfaceId) => ({ surfaceId, documentId: null })),
-            },
-          ]
-        : [];
+    // As the Home's: the ready sessions of the runtime with no channel here.
+    pagesOf: async (id) => (id === sessionId ? [...surfaces] : []),
+    withoutChannel: async (runtimeId) =>
+      (await listBrowserPoolReadySessions(database, task.runnerId, runtimeId)).filter(
+        (id) => !sinks.has(id),
+      ),
+    // As the Home's before a restart: every channel of the runtime is closed, its row kept.
+    quiesce: async () => {
+      for (const attachment of sinks.values()) await attachment.close().catch(() => undefined);
+      sinks.clear();
     },
-    reattach: async ({ sessions, fence, attempt, documents }) => {
-      if (stalled) await stalled;
+    reattach: async ({ sessions, fence, attempt, documents, signal }) => {
+      // A stall ends when the attempt's own signal does: nothing is left running after it.
+      if (stalled)
+        await Promise.race([
+          stalled,
+          new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve())),
+        ]);
+      if (signal?.aborted) return [];
       for (const id of sessions) {
         if (skip.has(id)) continue;
         const name = `reattach-${id}-${attempt}`;
@@ -316,6 +330,30 @@ async function parkAndWake(f: Awaited<ReturnType<typeof poolFixture>>, home = f.
   woken.release();
   return home;
 }
+
+it("starts again after an install that never reached the runtime, and installs the next one", async () => {
+  const f = await poolFixture("install-lost");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    // The restart's install is lost on its way: the runtime still holds the first fence.
+    f.runtimeFaults.push({ kind: "install", fault: "request" });
+    await withTimeout(home.restart(), 10_000, {
+      timeoutError: () => new Error("The restart is wedged on the lost install."),
+    });
+    const status = await f.controller.status("slot-install-lost", 1);
+    expect(f.runtime.poolState()).toMatchObject({
+      phase: "running",
+      fence: { slot: "slot-install-lost", term: 1, instance: status.instance, epoch: 1 },
+    });
+    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
 
 it("installs the controller's fence before any traffic and never reads it from the guest", async () => {
   const f = await poolFixture("install");
@@ -536,8 +574,18 @@ for (const [point, when, ends] of crashes)
       dying.close();
       // The old process's sockets close with it.
       await f.crashSockets();
-      const next = f.home();
+      // A session the crash left without a channel gets the reconnect window, then ends with its
+      // note: a short window here.
+      const next = f.home(undefined, f.controller, { channelDeadlineMs: 300 });
       await next.recover();
+      if (ends === "failed")
+        await vi.waitFor(
+          async () => {
+            expect((await f.row())?.state).toBe("failed");
+            expect(next.gate.phase).not.toBe("reconnecting");
+          },
+          { timeout: 5_000 },
+        );
       expect(["open", "parked"]).toContain(next.gate.phase);
       if (next.gate.phase === "parked") {
         const woken = await next.gate.reserve(AbortSignal.timeout(10_000));
@@ -634,6 +682,152 @@ it("recovers a retire that threw by release and adoption, then parks again", asy
     await f.close();
   }
 });
+
+it("notes a page a vetoed retire could not thaw as its own loss, and keeps its session", async () => {
+  // The frozen probe finds a blocker, so the retire thaws its pages and is vetoed.
+  const f = await poolFixture("veto-thaw", {
+    probePage: async (_page, phase) => (phase === "frozen" ? ["busy"] : []),
+  });
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    // Chromium refuses to thaw the page.
+    f.page.cdpSession.responses.set(
+      "Page.setWebLifecycleState",
+      (parameters: Record<string, unknown> | undefined) => {
+        if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
+        return {};
+      },
+    );
+    expect(await home.tryPark()).toBe("vetoed");
+    // Never left frozen as usable: the page is closed, and it is a loss with its note.
+    expect(f.page.isClosed()).toBe(true);
+    expect(
+      await f.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select(["sessionId", "reason"])
+        .where("sessionId", "=", f.sessionId)
+        .execute(),
+    ).toEqual([{ sessionId: f.sessionId, reason: "thaw-failed" }]);
+    expect((await f.row())?.state).toBe("ready");
+    expect(home.gate.phase).toBe("open");
+  } finally {
+    await f.close();
+  }
+});
+
+/** The fake, except that the first call of `kind` is refused after its work was undone. */
+function refusing(
+  f: Awaited<ReturnType<typeof poolFixture>>,
+  kind: "resume" | "start",
+): BrowserPoolPhysicalController & { refused: number } {
+  const port = {
+    refused: 0,
+    status: (slot: string, term: number) => f.controller.status(slot, term),
+    result: (slot: string, term: number, id: string) => f.controller.result(slot, term, id),
+    apply: async (call: BrowserPoolControllerCall) => {
+      if (call.kind === kind && port.refused === 0) {
+        port.refused++;
+        // The guest is stopped now, whatever the call asked for.
+        f.controller.observe({ phase: "stopped", savedState: null });
+        return {
+          id: call.id,
+          applied: false,
+          reason: "undone",
+          status: await f.controller.status(call.slotId, call.term),
+        };
+      }
+      return f.controller.apply(call);
+    },
+  };
+  return port;
+}
+
+it("reads the state a refused resume returns: the stopped guest is replaced, the session ended", async () => {
+  const f = await poolFixture("refused-resume");
+  try {
+    const port = refusing(f, "resume");
+    const home = f.home(undefined, port);
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
+    woken.release();
+    expect(port.refused).toBe(1);
+    // Nothing assumed the guest was still paused: no stop of a stopped guest, a fresh start.
+    expect(f.controller.effects).toEqual(["start", "pause", "start"]);
+    expect(home.gate.phase).toBe("open");
+    expect((await f.row())?.state).toBe("failed");
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+  } finally {
+    await f.close();
+  }
+});
+
+it("reads the state a refused start returns, and starts again from the stopped guest", async () => {
+  const f = await poolFixture("refused-start");
+  try {
+    const port = refusing(f, "start");
+    const home = f.home(undefined, port);
+    await home.recover();
+    expect(port.refused).toBe(1);
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(home.gate.phase).toBe("open");
+    const status = await f.controller.status("slot-refused-start", 1);
+    expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
+    await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
+for (const asked of ["removal", "restart"] as const)
+  it(`holds admission when a ${asked} is asked while a park is in flight`, async () => {
+    const f = await poolFixture(`park-then-${asked}`);
+    try {
+      const home = f.home();
+      await home.recover();
+      await f.openSession(home);
+      const pausing = Promise.withResolvers<void>();
+      const pause = Promise.withResolvers<void>();
+      f.controller.hold("pause", async () => {
+        pausing.resolve();
+        await pause.promise;
+      });
+      const parking = home.tryPark();
+      await pausing.promise;
+      const done = asked === "removal" ? home.releaseDevice() : home.restart();
+      // A waiter with demand arrives meanwhile.
+      const waiting = home.gate.reserve(AbortSignal.timeout(10_000)).then(
+        (held) => {
+          held.release();
+          return "admitted" as const;
+        },
+        (error: unknown) => (error instanceof Error ? error.message : "refused"),
+      );
+      pause.resolve();
+      // The park finishes and reports where the browser is; it admits nothing.
+      expect(await parking).toBe("parked");
+      expect(home.gate.phase).toBe(asked === "removal" ? "released" : "restarting");
+      expect(home.gate.held).toBe(0);
+      await done;
+      if (asked === "removal") {
+        await home.released();
+        expect(await waiting).toContain("removed");
+        expect(home.gate.phase).toBe("released");
+        expect(await home.tryPark()).toBe("vetoed");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop"]);
+      } else {
+        // Only the restart's fresh guest admits the waiter; the parked guest was never woken.
+        expect(await waiting).toBe("admitted");
+        expect(home.gate.phase).toBe("open");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop", "start"]);
+      }
+    } finally {
+      await f.close();
+    }
+  });
 
 it("recovers a runtime found retiring at a Home restart as not parked", async () => {
   // The retire's page probe waits here, so the runtime is still retiring when the Home restarts.
@@ -768,6 +962,64 @@ it("discards live state and opens when the saved state expired, and says what wa
     );
     expect(losses).toMatchObject([{ sessionId: f.sessionId, reason: "live-state-unavailable" }]);
     await f.admitted();
+  } finally {
+    await f.close();
+  }
+});
+
+/** The park's manifest says each page held typed text that was not sent. */
+async function parkedTyped(f: Awaited<ReturnType<typeof poolFixture>>) {
+  const parked = (await f.slot())!;
+  const documents = (parked.retained as { documents: { surfaceId: string }[] }).documents;
+  await f.database
+    .updateTable("browserPoolSlots")
+    .set({
+      retained: {
+        ...(parked.retained as object),
+        documents: documents.map((document) => ({ ...document, typed: true })),
+      },
+    })
+    .where("runnerId", "=", parked.runnerId)
+    .execute();
+  return documents[0]!.surfaceId as never;
+}
+
+it("records with each loss whether its page held unsent typed text, as known when the loss is written", async () => {
+  const f = await poolFixture("typed-loss");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const surfaceId = await parkedTyped(f);
+    // The saved state expired: the page is lost, and its note says typed text went with it.
+    f.controller.observe({ phase: "stopped", savedState: null, epoch: null });
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect(f.controller.effects).toEqual(["start", "pause", "start"]);
+    expect(await listBrowserPoolDocumentLosses(f.database, f.task.userId, surfaceId)).toEqual([
+      expect.objectContaining({ reason: "live-state-unavailable", typed: true }),
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
+it("claims nothing typed for a page a restart of the running browser loses after an earlier park", async () => {
+  const f = await poolFixture("typed-stale");
+  try {
+    const home = f.home();
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+    const surfaceId = await parkedTyped(f);
+    // Woken and adopted: that park's manifest is no longer what is so.
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect((await f.row())?.state).toBe("ready");
+    await home.restart();
+    expect((await f.row())?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(f.database, f.task.userId, surfaceId)).toEqual([
+      expect.objectContaining({ reason: "person", typed: false }),
+    ]);
   } finally {
     await f.close();
   }
@@ -1160,11 +1412,83 @@ it("ends a reconnect whose reattach stalls by its deadline, with the session's e
     expect(Date.now() - lost).toBeLessThan(3_000);
     expect((await f.row())?.state).toBe("failed");
     expect(await f.slot()).toMatchObject({ phase: "running" });
+    // The stalled attempt was ended by its own signal: nothing attaches late.
     never.resolve();
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    expect(f.sinks.has(f.sessionId)).toBe(false);
   } finally {
     await f.close();
   }
 });
+
+it("gives a second session that loses its channel while the first one ends its own window", async () => {
+  const f = await poolFixture("second-loss");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 400 });
+    await home.recover();
+    await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
+    // The first never comes back; the second drops while the first's window runs out.
+    f.skip.add(f.sessionId);
+    await f.loseChannel(f.sessionId);
+    home.channelLost(f.sessionId);
+    await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"), {
+      timeout: 5_000,
+    });
+    await f.loseChannel(other);
+    home.channelLost(other);
+    await vi.waitFor(() => expect(f.sinks.has(other)).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(home.gate.phase).toBe("open"));
+    expect((await f.row(other))?.state).toBe("ready");
+  } finally {
+    await f.close();
+  }
+});
+
+for (const asked of ["restart", "removal"] as const)
+  it(`settles a ${asked} asked while a park is retiring, with no reconnect after it`, async () => {
+    const inProbe = Promise.withResolvers<void>();
+    const probe = Promise.withResolvers<void>();
+    let holding = false;
+    const f = await poolFixture(`retiring-${asked}`, {
+      probePage: async (_page, phase) => {
+        if (holding && phase === "frozen") {
+          inProbe.resolve();
+          await probe.promise;
+        }
+        return [];
+      },
+    });
+    try {
+      const home = f.home();
+      await home.recover();
+      await f.openSession(home);
+      holding = true;
+      const parking = home.tryPark();
+      await inProbe.promise;
+      const done = asked === "restart" ? home.restart() : home.releaseDevice();
+      holding = false;
+      probe.resolve();
+      await parking;
+      await done;
+      if (asked === "removal") {
+        await home.released();
+        expect(home.gate.phase).toBe("released");
+        expect(await f.slot()).toBeUndefined();
+      } else {
+        // The park had committed its intent, so it ends parked; then the restart replaces it.
+        expect(home.gate.phase).toBe("open");
+        expect(f.controller.effects).toEqual(["start", "pause", "stop", "start"]);
+        expect(await f.slot()).toMatchObject({ phase: "running" });
+        // No session is left waiting for a channel: nothing reconnects afterwards.
+        expect(home.gate.away).toBeNull();
+      }
+    } finally {
+      probe.resolve();
+      await f.close();
+    }
+  });
 
 for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const)
   it(`keeps a removed device's slot until its guest is known stopped when the ${fault}`, async () => {
@@ -1301,6 +1625,25 @@ it("closes an open resume when a discard replaces the guest, so no later recover
         .where("settledAt", "is", null)
         .execute();
     expect(await open()).toEqual([]);
+    // The resume did apply, so its row never says it did not: it was superseded, its outcome
+    // not known to the journal.
+    expect(
+      await f.database
+        .selectFrom("browserPoolControllerCalls")
+        .select("result")
+        .where("runnerId", "=", f.task.runnerId)
+        .where("kind", "=", "resume")
+        .execute(),
+    ).toEqual([
+      {
+        result: {
+          id: expect.any(String),
+          outcome: "unknown",
+          reason: "superseded",
+          status: expect.any(Object),
+        },
+      },
+    ]);
     // A later Home's recovery has nothing to replay against the new guest: still one guest.
     home.close();
     const next = f.home();

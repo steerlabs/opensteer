@@ -1738,20 +1738,14 @@ export async function failActiveBrowserSessions(
         .$if(pooledRunner !== undefined, (query) =>
           query.where(sql<boolean>`
           not exists (
-            -- A session a parked or parking browser retained is recovered by the pool.
+            -- A pooled guest outlives the Home: its ready sessions are the pool's to reattach
+            -- or end with their note, whatever the slot's phase.
             select 1 from browser_pool_slots slot
             where slot.runner_id = ${pooledRunner!}
               and slot.runner_id = browser_sessions.runner_id
               and slot.runtime_id = browser_sessions.runtime_id
-              and slot.phase <> 'running'
               and browser_sessions.origin in ('person', 'agent')
               and browser_sessions.state = 'ready'
-              and (
-                slot.retained is null or exists (
-                  select 1 from jsonb_array_elements(slot.retained->'documents') document
-                  where document->>'sessionId' = browser_sessions.id
-                )
-              )
           )
         `),
         )

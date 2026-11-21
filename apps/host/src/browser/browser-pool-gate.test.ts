@@ -11,31 +11,37 @@ function gate() {
   let wakes = 0;
   const wake = Promise.withResolvers<void>();
   const subject = new BrowserPoolGate();
-  subject.attach({
-    // Stands in for D: the intent check runs inside its transaction, then it commits.
-    park: async (demanded) => {
-      inD.resolve();
-      await beforeCheck.promise;
-      const vetoed = demanded();
-      checked.resolve(vetoed);
-      if (vetoed) return "vetoed";
-      await commit.promise;
-      // After the commit the driver asks again: a send during the commit still vetoes.
-      return subject.committed() ? "parked" : "vetoed";
-    },
-    wake: async () => {
-      wakes++;
-      await wake.promise;
-      subject.settle("open");
-    },
-  });
-  subject.settle("open");
-  return { subject, inD, beforeCheck, checked, commit, wake, wakes: () => wakes };
+  subject.set({ recovered: true, away: null, hold: null });
+  // Stands in for the coordinator's loop: demand on a parked browser wakes it, once.
+  subject.onChange = () => {
+    if (subject.away !== "parked" || !subject.demand) return;
+    wakes++;
+    subject.set({ away: "waking" });
+    void wake.promise.then(() => subject.set({ away: null }));
+  };
+  // Stands in for its park step: D's intent check runs inside its transaction, then it commits.
+  const tryPark = async (): Promise<"parked" | "vetoed"> => {
+    if (!subject.beginPark()) return "vetoed";
+    inD.resolve();
+    await beforeCheck.promise;
+    const vetoed = subject.demandedSince();
+    checked.resolve(vetoed);
+    if (vetoed) {
+      subject.endPark();
+      return "vetoed";
+    }
+    await commit.promise;
+    // After the commit the step asks again: a send during the commit still vetoes.
+    if (!subject.committed()) return "vetoed";
+    subject.set({ away: "parked" });
+    return "parked";
+  };
+  return { subject, tryPark, inD, beforeCheck, checked, commit, wake, wakes: () => wakes };
 }
 
 it("vetoes a park for demand that arrives before the intent check", async () => {
   const g = gate();
-  const parking = g.subject.tryPark();
+  const parking = g.tryPark();
   await g.inD.promise;
   const demand = g.subject.reserve(new AbortController().signal);
   g.beforeCheck.resolve();
@@ -47,17 +53,17 @@ it("vetoes a park for demand that arrives before the intent check", async () => 
 
 it("vetoes a park for a background send queued before the intent check, and never wakes for one", async () => {
   const g = gate();
-  const parking = g.subject.tryPark();
+  const parking = g.tryPark();
   await g.inD.promise;
   expect(g.subject.backgroundNow()).toBeUndefined();
   g.beforeCheck.resolve();
   expect(await parking).toBe("vetoed");
   const held = g.subject.backgroundNow();
   expect(held).toBeDefined();
-  expect(await g.subject.tryPark()).toBe("vetoed");
+  expect(await g.tryPark()).toBe("vetoed");
   held!.release();
   // Parked: background traffic waits and wakes nothing.
-  const second = g.subject.tryPark();
+  const second = g.tryPark();
   g.commit.resolve();
   expect(await second).toBe("parked");
   const waiting = new AbortController();
@@ -72,7 +78,7 @@ it("vetoes a park for a background send queued before the intent check, and neve
 
 it("vetoes a park for a send that arrives while the intent is being committed", async () => {
   const g = gate();
-  const parking = g.subject.tryPark();
+  const parking = g.tryPark();
   await g.inD.promise;
   g.beforeCheck.resolve();
   expect(await g.checked.promise).toBe(false);
@@ -88,7 +94,7 @@ it("vetoes a park for a send that arrives while the intent is being committed", 
 it("makes a send after the commit wait for one wake, and Stop while waiting dispatches nothing", async () => {
   const g = gate();
   g.beforeCheck.resolve();
-  const parking = g.subject.tryPark();
+  const parking = g.tryPark();
   await g.inD.promise;
   expect(await g.checked.promise).toBe(false);
   g.commit.resolve();
@@ -111,7 +117,7 @@ it("answers a wake that runs out of time with a refusal before any effect", asyn
   const g = gate();
   g.beforeCheck.resolve();
   g.commit.resolve();
-  expect(await g.subject.tryPark()).toBe("parked");
+  expect(await g.tryPark()).toBe("parked");
   const refused = await g.subject.reserve(AbortSignal.timeout(10)).then(
     () => undefined,
     (error: unknown) => error,
@@ -128,19 +134,19 @@ async function settled(): Promise<void> {
 
 it("stays released for good when a park in flight finishes after the removal, and never wakes", async () => {
   const g = gate();
-  const parking = g.subject.tryPark();
+  const parking = g.tryPark();
   await g.inD.promise;
-  g.subject.released();
+  g.subject.set({ hold: "released" });
   g.beforeCheck.resolve();
   g.commit.resolve();
   expect(await parking).toBe("vetoed");
   expect(g.subject.phase).toBe("released");
   // Nothing that finishes later moves it, and a waiter with demand is refused without a wake.
-  g.subject.settle("parked");
-  g.subject.reconnecting();
+  g.subject.set({ away: "parked" });
+  g.subject.set({ away: "reconnecting", hold: null });
   expect(g.subject.phase).toBe("released");
   await expect(g.subject.reserve(new AbortController().signal)).rejects.toThrow("removed");
-  expect(await g.subject.tryPark()).toBe("vetoed");
+  expect(await g.tryPark()).toBe("vetoed");
   expect(g.wakes()).toBe(0);
 });
 
@@ -149,25 +155,24 @@ for (const during of ["park", "reconnect"] as const)
     const g = gate();
     let parking: Promise<"parked" | "vetoed"> | undefined;
     if (during === "park") {
-      parking = g.subject.tryPark();
+      parking = g.tryPark();
       await g.inD.promise;
-    } else g.subject.reconnecting();
-    const done = g.subject.restarting();
+    } else g.subject.set({ away: "reconnecting" });
+    g.subject.set({ hold: "restart" });
     // A waiter with demand arrives while the restart holds admission.
     const waiting = g.subject.reserve(AbortSignal.timeout(5_000));
     if (parking) {
       g.beforeCheck.resolve();
       g.commit.resolve();
       expect(await parking).toBe("vetoed");
-    } else g.subject.settle("open");
+    } else g.subject.set({ away: null });
     // Where the browser is was reported, but nothing is admitted, woken or parked.
     await settled();
     expect(g.subject.held).toBe(0);
-    expect(await g.subject.tryPark()).toBe("vetoed");
+    expect(await g.tryPark()).toBe("vetoed");
     expect(g.wakes()).toBe(0);
     // The restart installs its fresh guest and lets go: only now is the waiter admitted.
-    g.subject.settle("open");
-    done();
+    g.subject.set({ away: null, hold: null });
     (await waiting).release();
     expect(g.subject.phase).toBe("open");
     expect(g.wakes()).toBe(0);
