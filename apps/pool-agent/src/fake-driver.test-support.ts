@@ -17,7 +17,10 @@ type Operation =
   | "stepClock"
   | "kill"
   | "openNetwork"
-  | "closeNetwork";
+  | "closeNetwork"
+  | "discard"
+  | "verify"
+  | "inspect";
 
 interface Process {
   readonly slotId: string;
@@ -43,10 +46,13 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   /** Images whose source process ran again after they were taken: never to be loaded. */
   readonly tainted = new Set<string>();
   readonly loaded = new Map<string, number>();
+  /** Snapshots that published their image (late ones included). */
+  snapshotsFinished = 0;
   #incarnation = randomUUID();
   #fingerprint = "fake-host-1";
   readonly #faults = new Map<Operation, { error?: Error; hang?: boolean; count: number }>();
   readonly #gates = new Map<Operation, Promise<void>>();
+  readonly #unknown = new Map<string, number>();
 
   constructor(options: { startsEmpty?: boolean } = {}) {
     this.startsEmpty = options.startsEmpty ?? false;
@@ -61,6 +67,11 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   gate(operation: Operation, until: Promise<void> | undefined): void {
     if (until) this.#gates.set(operation, until);
     else this.#gates.delete(operation);
+  }
+
+  /** The VMM's API does not answer the next `times` inspections (the process still exists). */
+  answerUnknown(jailId: string, times = Number.POSITIVE_INFINITY): void {
+    this.#unknown.set(jailId, times);
   }
 
   /** The host restarted: every process and every image is gone; the incarnation changes. */
@@ -154,10 +165,14 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     process.state = "running";
   }
 
+  /**
+   * The memory is captured when the call arrives; the image is published once the gate opens,
+   * whatever the caller's signal says, as a Firecracker API call that was already sent would.
+   */
   async snapshot(slotId: string, jailId: string, savedStateId: string): Promise<SavedImage> {
-    await this.#enter("snapshot", slotId);
     const process = this.#process(jailId, "paused");
     process.snapshotted = savedStateId;
+    await this.#enter("snapshot", slotId);
     const image: SavedImage = {
       savedStateId,
       sourceJailId: jailId,
@@ -176,6 +191,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
       writtenAt: new Date().toISOString(),
     };
     this.images.set(savedStateId, { slotId, image, intact: true });
+    this.snapshotsFinished += 1;
     return image;
   }
 
@@ -204,16 +220,24 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.#process(jailId, "running");
   }
 
-  async verify(_slotId: string, image: SavedImage): Promise<boolean> {
+  async verify(slotId: string, image: SavedImage): Promise<boolean> {
+    await this.#enter("verify", slotId);
     const stored = this.images.get(image.savedStateId);
     return !!stored && stored.intact && image.fingerprint === this.#fingerprint;
   }
 
-  async discard(_slotId: string, savedStateId: string): Promise<void> {
+  async discard(slotId: string, savedStateId: string): Promise<void> {
+    await this.#enter("discard", slotId);
     this.images.delete(savedStateId);
   }
 
-  async inspect(_slotId: string, jailId: string): Promise<GuestProcessState> {
+  async inspect(slotId: string, jailId: string): Promise<GuestProcessState> {
+    await this.#enter("inspect", slotId);
+    const unknown = this.#unknown.get(jailId) ?? 0;
+    if (unknown > 0 && this.processes.has(jailId)) {
+      this.#unknown.set(jailId, unknown - 1);
+      return "unknown";
+    }
     return this.processes.get(jailId)?.state ?? "absent";
   }
 
