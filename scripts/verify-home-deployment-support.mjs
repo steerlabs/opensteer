@@ -10,10 +10,16 @@ export function redact(value) {
 
 export const requiredFreeKiB = 50 * 1024 * 1024;
 
+// The Colima deployment proof runs on loaded ARM64 images. AMD64 is only built, into the
+// BuildKit cache, after that proof, so a builder without AMD64 support cannot block it.
 export function homeImageBuilds(builder) {
   const bake = ["buildx", "bake", "--builder", builder, "-f", "deploy/container/docker-bake.hcl"];
-  return [
-    {
+  return {
+    proof: {
+      platform: "linux/arm64",
+      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+    },
+    buildOnly: {
       platform: "linux/amd64",
       args: [
         ...bake,
@@ -24,11 +30,21 @@ export function homeImageBuilds(builder) {
         "home",
       ],
     },
-    {
-      platform: "linux/arm64",
-      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
-    },
-  ];
+  };
+}
+
+/** One line that separates the ARM64 deployment proof from the AMD64 build-only check. */
+export function platformSummary({ proofPassed, buildOnly }) {
+  const proof = proofPassed
+    ? "The linux/arm64 deployment proof passed"
+    : "The linux/arm64 deployment proof did not pass";
+  const build =
+    buildOnly === true
+      ? "the linux/amd64 Home image build passed."
+      : buildOnly === false
+        ? "the linux/amd64 Home image build failed."
+        : "the linux/amd64 Home image build did not run.";
+  return `${proof}; ${build}`;
 }
 
 export function assertBuildSpace(location, dfOutput) {

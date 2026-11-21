@@ -27,6 +27,7 @@ import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync
 import {
   assertBuildSpace,
   homeImageBuilds,
+  platformSummary,
   quote,
   redact,
 } from "./verify-home-deployment-support.mjs";
@@ -63,6 +64,8 @@ const builder = "opensteer-home-verifier";
 const builderDirectory = resolve(homedir(), ".colima", builder);
 const builderEnv = { ...env, BUILDX_CONFIG: resolve(builderDirectory, "buildx") };
 let builderUsed = false;
+let proofPassed = false;
+let amd64Built;
 const images = Object.fromEntries(
   components.map((name) => [name, `local/opensteer-home-${name}:${tag}`]),
 );
@@ -1452,8 +1455,9 @@ try {
   if (!contract) throw new Error("Home Account contract failed");
   resourcesAllowed = true;
   const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
-  for (const { platform, args } of homeImageBuilds(builder)) {
-    const built = await check(`build all six Home images for ${platform}`, () => {
+  const builds = homeImageBuilds(builder);
+  const buildHome = ({ platform, args }) =>
+    check(`build all six Home images for ${platform}`, () => {
       builderUsed = true;
       const build = result("docker", args, {
         env: {
@@ -1469,8 +1473,8 @@ try {
       });
       checked(build, "Home build failed");
     });
-    if (!built) throw new Error(`The deployment proof needs the source-built ${platform} images.`);
-  }
+  if (!(await buildHome(builds.proof)))
+    throw new Error(`The deployment proof needs the source-built ${builds.proof.platform} images.`);
   const prepared = await check("prepare the local Home and stage the standalone installer", () => {
     checked(
       result("bash", [resolve(recipe, "package-installer.sh"), bootPackage]),
@@ -2230,6 +2234,9 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     },
     Boolean(setupToken && bucketReady),
   );
+  // The ARM64 proof above is complete; AMD64 is built afterwards so it cannot block it.
+  proofPassed = steps.fail === 0 && steps.blocked === 0;
+  amd64Built = Boolean(await buildHome(builds.buildOnly));
 } finally {
   cleaningUp = true;
   try {
@@ -2329,5 +2336,6 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     rmSync(lock, { recursive: true, force: true });
   }
   console.log(JSON.stringify(steps));
+  console.log(platformSummary({ proofPassed, buildOnly: amd64Built }));
   if (interrupted || steps.fail || steps.blocked) process.exitCode = 1;
 }

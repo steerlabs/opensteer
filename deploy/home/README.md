@@ -165,8 +165,10 @@ The installer bundles shell scripts and Compose files for both AMD64 and ARM64.
 The `home` Bake group in `deploy/container/docker-bake.hcl` defines six images
 for `linux/amd64` and `linux/arm64`. Inspect the resolved targets locally with
 `docker buildx bake -f deploy/container/docker-bake.hcl home --print`. The local
-verifier builds AMD64 into the BuildKit cache and loads ARM64 for the Colima
-deployment test. Building AMD64 locally requires a builder that can execute
+verifier loads ARM64 and runs the Colima deployment test on it first. After that
+test it builds AMD64 into the BuildKit cache only; nothing runs the AMD64 images.
+Its last line says separately whether the ARM64 proof passed and whether the
+AMD64 build passed. Building AMD64 locally requires a builder that can execute
 AMD64 instructions, either natively or through emulation.
 
 The release owner must complete these steps.

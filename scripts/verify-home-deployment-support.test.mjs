@@ -9,12 +9,13 @@ import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs"
 import {
   assertBuildSpace,
   homeImageBuilds,
+  platformSummary,
   quote,
   redact,
   requiredFreeKiB,
 } from "./verify-home-deployment-support.mjs";
 
-await test("builds AMD64 locally and loads only ARM64 for the Colima deployment proof", () => {
+await test("loads ARM64 for the deployment proof first and builds AMD64 only afterwards", () => {
   const bake = [
     "buildx",
     "bake",
@@ -23,8 +24,12 @@ await test("builds AMD64 locally and loads only ARM64 for the Colima deployment 
     "-f",
     "deploy/container/docker-bake.hcl",
   ];
-  assert.deepEqual(homeImageBuilds("test-builder"), [
-    {
+  assert.deepEqual(homeImageBuilds("test-builder"), {
+    proof: {
+      platform: "linux/arm64",
+      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+    },
+    buildOnly: {
       platform: "linux/amd64",
       args: [
         ...bake,
@@ -35,11 +40,19 @@ await test("builds AMD64 locally and loads only ARM64 for the Colima deployment 
         "home",
       ],
     },
-    {
-      platform: "linux/arm64",
-      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
-    },
-  ]);
+  });
+  assert.equal(
+    platformSummary({ proofPassed: true, buildOnly: false }),
+    "The linux/arm64 deployment proof passed; the linux/amd64 Home image build failed.",
+  );
+  assert.equal(
+    platformSummary({ proofPassed: false, buildOnly: undefined }),
+    "The linux/arm64 deployment proof did not pass; the linux/amd64 Home image build did not run.",
+  );
+  assert.equal(
+    platformSummary({ proofPassed: true, buildOnly: true }),
+    "The linux/arm64 deployment proof passed; the linux/amd64 Home image build passed.",
+  );
 });
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
