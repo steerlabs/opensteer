@@ -886,11 +886,7 @@ it("says once that a page could not be kept when the saved state expired, and re
     j.controller.observe({ phase: "stopped", savedState: null, epoch: null });
     const row = await j.tabs.get(j.task.userId, tabId);
     const restored = await home.service.pageTabs.activate(j.task.userId, row!, "activate-lost");
-    expect(restored).toMatchObject({
-      kind: "page",
-      surfaceId: tabId,
-      recoveryNotice: "This page was reloaded because its live state could not be kept.",
-    });
+    expect(restored).toMatchObject({ kind: "page", surfaceId: tabId });
     expect(restored.kind === "page" && restored.sessionId).not.toBe(sessionId);
     expect(page.page.isClosed()).toBe(true);
     expect((await j.row(sessionId))?.state).toBe("failed");
@@ -898,20 +894,24 @@ it("says once that a page could not be kept when the saved state expired, and re
       restored.kind === "page" &&
         home.service.pageInventory(restored.sessionId)?.records.get(tabId)?.documentId,
     ).not.toBe(original);
-    // The reply that carried the notice may not have reached the person: until the client
-    // says it showed it, every activation carries it again.
-    const activate = (key: string, seen?: string) =>
+    // The report that carried the note may not have reached the person: until the client says
+    // it showed it, every report, after every activation, carries it again.
+    const activate = (key: string) =>
       j.tabs
         .get(j.task.userId, tabId)
-        .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key, seen));
-    const retried = await activate("activate-retry");
-    expect(retried).toMatchObject({ recoveryNotice: expect.any(String) });
-    const noticeId = restored.kind === "page" ? restored.recoveryNoticeId : undefined;
-    expect(noticeId).toEqual(expect.any(String));
-    expect(retried.kind === "page" && retried.recoveryNoticeId).toBe(noticeId);
-    const again = await activate("activate-again", noticeId);
-    expect(again).not.toHaveProperty("recoveryNotice");
-    expect(await activate("activate-later")).not.toHaveProperty("recoveryNotice");
+        .then((row) => home.service.pageTabs.activate(j.task.userId, row!, key));
+    const report = async () => (await home.service.resourcePools([j.task.runnerId]))[0];
+    const reloaded = (noticeId: unknown) => [
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
+    ];
+    expect((await report())?.pages).toEqual(reloaded(expect.any(String)));
+    const noticeId = (await report())?.pages?.[0]?.noticeId;
+    await activate("activate-retry");
+    expect((await report())?.pages).toEqual(reloaded(noticeId));
+    await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
+    expect(await report()).not.toHaveProperty("pages");
+    await activate("activate-later");
+    expect(await report()).not.toHaveProperty("pages");
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
       { sessionId, surfaceId: tabId, documentId: original, noticedAt: expect.any(Date) },
     ]);
@@ -1658,26 +1658,19 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
     });
     expect(restarted).not.toHaveProperty("failures");
     expect((await j.row(sessionId))?.state).toBe("failed");
-    // Reopened, the page came back by reloading; once seen, it is no longer reported.
-    const reopened = await home.service.pageTabs.activate(
+    // Reopened, the page came back by reloading, under the same note; once seen, it is no
+    // longer reported.
+    const noticeId = (await report())?.pages?.[0]?.noticeId;
+    expect(noticeId).toEqual(expect.any(String));
+    await home.service.pageTabs.activate(
       j.task.userId,
       (await j.tabs.get(j.task.userId, tabId))!,
       "report-reopen",
     );
     expect((await report())?.pages).toEqual([
-      {
-        surfaceId: tabId,
-        noticeId: reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
-        outcome: "reloaded",
-        typed: false,
-      },
+      { surfaceId: tabId, noticeId, outcome: "reloaded", typed: false },
     ]);
-    await home.service.pageTabs.activate(
-      j.task.userId,
-      (await j.tabs.get(j.task.userId, tabId))!,
-      "report-seen",
-      reopened.kind === "page" ? reopened.recoveryNoticeId : undefined,
-    );
+    await home.service.poolNoticeSeen(j.task.userId, tabId, noticeId!);
     expect(await report()).not.toHaveProperty("pages");
   } finally {
     await j.close();

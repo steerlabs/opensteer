@@ -696,25 +696,6 @@ export async function seeBrowserPoolDocumentLoss(
   });
 }
 
-/** The newest notice of this tab the person has not seen, after marking `seen` seen. */
-export async function nextBrowserPoolDocumentLoss(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-  surfaceId: BrowserSurfaceId,
-  seen?: string,
-): Promise<{ readonly id: string; readonly reason: string } | undefined> {
-  if (seen) await seeBrowserPoolDocumentLoss(database, ownerId, surfaceId, seen);
-  const row = await database
-    .selectFrom("browserPoolDocumentLosses")
-    .select(["intentId", "reason"])
-    .where("ownerId", "=", ownerId)
-    .where("surfaceId", "=", surfaceId)
-    .where("noticedAt", "is", null)
-    .orderBy("lostAt", "desc")
-    .executeTakeFirst();
-  return row ? { id: row.intentId, reason: row.reason } : undefined;
-}
-
 /** At most this many notices reach a pool report: the newest unseen one of each tab. */
 export const browserPoolReportedNotices = 100;
 

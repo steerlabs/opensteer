@@ -185,7 +185,6 @@ import type { BrowserPoolAdopter, BrowserPoolCoordinator } from "./browser-pool-
 import { PooledBrowserRelay } from "./browser-pool-relay.js";
 import type { BrowserPoolDocument, BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
 import {
-  nextBrowserPoolDocumentLoss,
   listBrowserPoolRuntimeSessions,
   readBrowserPoolOwner,
   readBrowserPoolSlot,
@@ -3708,7 +3707,7 @@ export class BrowserService {
     },
     states: (ownerId, rows) => this.#workspacePageStates(ownerId, rows),
     state: async (ownerId, row) => (await this.#workspacePageStates(ownerId, [row])).get(row.id)!,
-    activate: async (ownerId, row, _key, recoveryNoticeSeen) => {
+    activate: async (ownerId, row) => {
       const pooledSession =
         this.#pools.size && row.pageBinding
           ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
@@ -3756,26 +3755,7 @@ export class BrowserService {
         const current = await recheck();
         await this.pageTabs.admitted!(pool ? current : row);
         await broker?.markPersonUsed(row.id);
-        const lost =
-          this.#pools.has(session.runnerId) && this.#repository instanceof OpensteerStore
-            ? await nextBrowserPoolDocumentLoss(
-                this.#repository.database,
-                ownerId,
-                row.id,
-                recoveryNoticeSeen,
-              )
-            : undefined;
-        return {
-          kind: "page",
-          sessionId: session.id,
-          surfaceId: row.id,
-          ...(lost
-            ? {
-                recoveryNotice: "This page was reloaded because its live state could not be kept.",
-                recoveryNoticeId: lost.id,
-              }
-            : {}),
-        };
+        return { kind: "page", sessionId: session.id, surfaceId: row.id };
       } finally {
         reservation?.release();
       }
@@ -6505,7 +6485,6 @@ export class BrowserService {
     await this.#pool(runnerId)!.restart(idempotencyKey ? { key: idempotencyKey } : {});
   }
 
-  /** A removed device's pooled browser: its sessions end with evidence and its slot is released. */
   /** The person was shown a pooled browser's note: it leaves the report. Nothing elsewhere. */
   async poolNoticeSeen(ownerId: UserId, surfaceId: BrowserSurfaceId, noticeId: string) {
     if (!this.#pools.size || !(this.#repository instanceof OpensteerStore))
