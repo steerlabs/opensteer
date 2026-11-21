@@ -12,7 +12,7 @@ usage() {
 }
 
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail "Run the Home installer as root on a Linux Docker host."
-local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false reinstalled=false
+local_tls=false local_images=false prepare=false managed='' token_path='' manifest='' hostname='' resume_managed=false
 while (($#)); do
   case "$1" in
     --resume-managed) resume_managed=true; shift ;;
@@ -129,19 +129,23 @@ if ! $prepare; then
   command -v systemctl >/dev/null || fail "systemd is required for scheduled Home operation."
 fi
 
+if [[ -z $managed && -f "$home_dir/config.env" ]]; then
+  # An installed Home run again by hand: decided and checked in full before anything changes.
+  lock_home
+  staging=$(mktemp -d "$home_dir/install.XXXXXX")
+  trap 'rm -rf -- "$staging"' EXIT
+  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir" "$staging"
+  exit 0
+fi
+
 install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-# The operator command is in place before anything can fail, so a failed attempt is undone
-# with `opensteer-home uninstall --purge`.
-for name in compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh; do
-  if [[ "$source_dir/$name" != "$home_dir/$name" ]]; then
-    install -m 0600 "$source_dir/$name" "$home_dir/$name"
-  fi
-done
-chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh}
-if ! $prepare && [[ $unit_prefix == opensteer-home ]]; then
+# The recipe and its command are in place before the configuration is written, so an install
+# that fails from here on is removed with `opensteer-home uninstall --purge`.
+install_recipe "$source_dir" "$home_dir"
+if ! $prepare && owns_operator_command; then
   install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi
 setup_code=''
@@ -187,11 +191,6 @@ if [[ -f "$home_dir/config.env" ]]; then
   configured_host=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME)
   if [[ -n $managed ]]; then hostname=$(jq -er .hostname "$managed"); fi
   [[ $hostname == "$configured_host" ]] || fail "This installation already uses $configured_host."
-  if [[ -z $managed && -n $manifest ]]; then
-    reinstall_release "$manifest"
-    reinstalled=true
-    compose down
-  fi
 else
   if [[ -n $managed ]]; then
     hostname=$(jq -er .hostname "$managed")
@@ -297,15 +296,11 @@ if [[ -f "$staging/config.env" ]]; then
   sync -f "$home_dir"
   publish_file "$staging/config.env" "$home_dir/config.env"
 fi
-if $local_images; then
-  touch "$home_dir/local-images"
-elif [[ -z $managed && -n $manifest ]]; then
-  rm -f -- "$home_dir/local-images"
-fi
 if $prepare; then
   install_sandbox_policies
 else
-  fetch_release_images
+  fetch_release_images "$home_dir/images.env" "$local_images"
+  if $local_images; then touch "$home_dir/local-images"; fi
   if $resume_managed; then check_release_stamps "$home_dir/images.env"; fi
   install_sandbox_policies
   if $resume_managed; then
@@ -334,11 +329,9 @@ else
   fi
   "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9
-  if $reinstalled; then systemctl restart "$unit_prefix.service"; else systemctl start "$unit_prefix.service"; fi
+  systemctl start "$unit_prefix.service"
 fi
 if [[ -z $managed && -f "$home_dir/setup-link.pending" ]]; then
   print_setup_link "$(cat "$home_dir/setup-link.pending")"
   rm -f -- "$home_dir/setup-link.pending"
-elif $reinstalled; then
-  echo 'The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.'
 fi

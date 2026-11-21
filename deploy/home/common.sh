@@ -4,6 +4,9 @@ umask 077
 home_dir=${OPENSTEER_HOME_DIR:-/etc/opensteer-home}
 unset release_env volume_env stage_project
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
+default_home_dir=/etc/opensteer-home
+# The recipe a Home keeps in its directory and runs from.
+recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 lock_home() {
@@ -200,16 +203,16 @@ check_release_stamps() {
 }
 
 install_sandbox_policies() {
-  local service policy image tmp
+  local destination=${1:-$home_dir} service policy image tmp
   for service in browser-runtime runner; do
     case "$service" in
       browser-runtime) policy=chromium-oci.json ;;
       runner) policy=runner-oci.json ;;
     esac
     image=$(compose config --format json | jq -er --arg service "$service" '.services[$service].image') || return
-    tmp=$(mktemp "$home_dir/$policy.XXXXXX") || return
+    tmp=$(mktemp "$destination/$policy.XXXXXX") || return
     if docker run --rm --network none --entrypoint cat "$image" "/usr/local/share/opensteer/$policy" > "$tmp"; then
-      mv -f -- "$tmp" "$home_dir/$policy"
+      mv -f -- "$tmp" "$destination/$policy"
     else
       rm -f -- "$tmp"
       return 1
@@ -315,12 +318,12 @@ claimed_state() {
   jq -er '.data.setupState | select(. == "complete" or . == "required")' <<< "$config"
 }
 
-# Fetches a release's images. A Home installed with --local-images uses the six Home images
-# already on this machine (deploy/home/build-images.sh builds them) and checks their release
-# stamps instead of pulling them; PostgreSQL is still pulled.
+# Fetches a release's images: pulled, or with LOCAL true the six Home images already on this
+# machine (deploy/home/build-images.sh builds them), their release stamps checked; PostgreSQL
+# is still pulled.
 fetch_release_images() {
-  local selector=${1:-$home_dir/images.env} config service image missing=()
-  if [[ ! -f "$home_dir/local-images" ]]; then
+  local selector=$1 local=$2 config service image missing=()
+  if [[ $local != true ]]; then
     release_env="$selector" compose pull --quiet
     return
   fi
@@ -348,16 +351,97 @@ installed_claim_state() {
   echo required
 }
 
-# The installer run again with a manifest installs it on a Home that was never claimed and
-# refuses a claimed Home, naming the commands that change or remove it.
-reinstall_release() {
-  local manifest=$1 state
+# Whether this Home was installed with --local-images.
+uses_local_images() {
+  if [[ -f "$home_dir/local-images" ]]; then echo true; else echo false; fi
+}
+
+# Only the Home in the default directory, with the default units, owns the command on the path.
+owns_operator_command() {
+  [[ $home_dir == "$default_home_dir" && ${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home} == opensteer-home ]]
+}
+
+install_recipe() {
+  local source=$1 destination=$2 name
+  for name in "${recipe_files[@]}"; do
+    if [[ "$source/$name" != "$destination/$name" ]]; then
+      install -m 0600 "$source/$name" "$destination/$name"
+    fi
+  done
+  chmod 0700 "$destination/"{firewall.sh,opensteer-home,install-scheduler.sh}
+}
+
+# The installer run again by hand on an installed Home. It first reads what is on the machine
+# and obtains the whole release, and changes nothing unless all of it is in hand: a managed
+# Home, a claimed Home, another name, a different TLS choice, or --local-images without a
+# manifest is refused. Only then does it stop the Home, replace its release and recipe and start
+# it; if that release does not start, the previous one is put back and started again.
+rerun_installed_home() {
+  local hostname=$1 manifest=$2 local_images=$3 local_tls=$4 source=$5 staging=$6
+  local configured state selector local_mode tls installed_tls name running=false
+  local unchanged='Nothing was changed.'
+  configured=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME) ||
+    fail "The installed Home's configuration could not be read. $unchanged"
+  [[ $hostname == "$configured" ]] || fail "This installation already uses $configured. $unchanged"
+  [[ ! -e "$home_dir/managed" ]] ||
+    fail "This Home is managed by its Opensteer account; the installer run by hand does not change it. $unchanged"
+  if [[ -z $manifest ]] && $local_images; then
+    fail "--local-images applies to the release given with --manifest. $unchanged"
+  fi
+  if $local_tls; then tls=internal; else tls=public; fi
+  installed_tls=public
+  if grep -qx 'tls internal' "$home_dir/tls.caddy"; then installed_tls=internal; fi
+  [[ $tls == "$installed_tls" ]] ||
+    fail "This Home was installed $([[ $installed_tls == internal ]] && echo with || echo without) --local, and the installer does not change that. $unchanged"
   state=$(installed_claim_state) ||
-    fail "Could not tell whether this Home was claimed. Start it with: sudo opensteer-home start. Or remove it with: sudo opensteer-home uninstall --purge"
+    fail "Could not tell whether this Home was claimed. Start it with: sudo opensteer-home start. Or remove it with: sudo opensteer-home uninstall --purge. $unchanged"
   [[ $state == required ]] ||
-    fail "This Home is already claimed, so the installer will not replace its release. Change its release with: sudo opensteer-home update $manifest. Or remove it with: sudo opensteer-home uninstall --purge"
-  release_to_env "$manifest" "$home_dir/images.env" false
-  echo "This Home was never claimed. Installing the release in $manifest."
+    fail "This Home is already claimed, so the installer will not change it. Change its release with: sudo opensteer-home update ${manifest:-MANIFEST.json}. Or remove it with: sudo opensteer-home uninstall --purge. $unchanged"
+
+  selector="$staging/images.env"
+  if [[ -n $manifest ]]; then
+    release_to_env "$manifest" "$selector" false
+    local_mode=$local_images
+  else
+    cp -- "$home_dir/images.env" "$selector"
+    local_mode=$(uses_local_images)
+  fi
+  fetch_release_images "$selector" "$local_mode" ||
+    fail "The release's images could not be obtained. $unchanged"
+  mkdir -- "$staging/recipe" "$staging/previous"
+  install_recipe "$source" "$staging/recipe"
+  release_env="$selector" install_sandbox_policies "$staging/recipe" ||
+    fail "The release's sandbox policies could not be read. $unchanged"
+
+  for name in "${recipe_files[@]}" images.env local-images chromium-oci.json runner-oci.json; do
+    if [[ -e "$home_dir/$name" ]]; then cp -p -- "$home_dir/$name" "$staging/previous/$name"; fi
+  done
+  if [[ -n $(compose ps -q host 2>/dev/null) ]]; then running=true; fi
+  compose down
+  for name in "${recipe_files[@]}" chromium-oci.json runner-oci.json; do
+    cp -p -- "$staging/recipe/$name" "$home_dir/$name"
+  done
+  cp -- "$selector" "$home_dir/images.env"
+  if [[ $local_mode == true ]]; then touch "$home_dir/local-images"; else rm -f -- "$home_dir/local-images"; fi
+  sync "$home_dir"
+  if ! start_pod; then
+    echo 'The new release did not start. Putting the previous one back.' >&2
+    rm -f -- "$home_dir/local-images"
+    for name in "$staging/previous/"*; do cp -p -- "$name" "$home_dir/${name##*/}"; done
+    sync "$home_dir"
+    if $running && ! start_pod; then
+      fail 'The previous release did not start again either. See: sudo opensteer-home logs host'
+    fi
+    fail 'The Home is back on its previous release.'
+  fi
+  if owns_operator_command; then install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home; fi
+  echo "This Home was never claimed. It now runs release $(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env")."
+  if [[ -f "$home_dir/setup-link.pending" ]]; then
+    print_setup_link "$(cat "$home_dir/setup-link.pending")"
+    rm -f -- "$home_dir/setup-link.pending"
+  else
+    echo 'The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.'
+  fi
 }
 
 print_setup_link() {
