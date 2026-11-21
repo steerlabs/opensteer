@@ -74,9 +74,11 @@ export class GuestCgroups {
   }
 
   /** Ends every process of the slot (or of one jail) and waits until none is left. */
-  async kill(slotKey: string, signal: AbortSignal, jailId?: string): Promise<void> {
+  /** Ends every process of the slot (or of one jail); true if there was one to end. */
+  async kill(slotKey: string, signal: AbortSignal, jailId?: string): Promise<boolean> {
     const directory = join(mountPoint, this.#base, "guests", slotKey, ...(jailId ? [jailId] : []));
-    if (!(await exists(directory))) return;
+    if (!(await exists(directory))) return false;
+    const ended = await this.populated(slotKey, jailId);
     await appendFile(join(directory, "cgroup.kill"), "1");
     while (await this.populated(slotKey, jailId)) {
       if (signal.aborted) throw new Error(`The processes of ${slotKey} did not end.`);
@@ -85,6 +87,7 @@ export class GuestCgroups {
     for (const child of await readdir(directory, { withFileTypes: true }))
       if (child.isDirectory()) await rmdir(join(directory, child.name)).catch(() => undefined);
     if (jailId) await rmdir(directory).catch(() => undefined);
+    return ended;
   }
 
   async slotKeys(): Promise<readonly string[]> {

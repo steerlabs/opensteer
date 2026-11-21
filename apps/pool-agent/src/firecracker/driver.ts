@@ -42,7 +42,6 @@ import {
   ensureEgressUser,
   removeEgress,
   sleepEgress,
-  wakeEgress,
   type EgressProgram,
 } from "./egress.js";
 import { run, runUntil } from "./exec.js";
@@ -225,8 +224,8 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async openNetwork(slotId: string): Promise<void> {
     const index = this.#require(slotId);
-    // The proxy's socket accepts already; its process was started at boot or restore (and a
-    // paused guest's never stopped), so nothing here waits for it.
+    // The proxy's socket accepts already; systemd starts its process at the guest's first
+    // connection (a paused guest's never stopped), so nothing here waits for it.
     await setGate(index, true);
   }
 
@@ -234,17 +233,12 @@ export class FirecrackerDriver implements HypervisorDriver {
     await setGate(this.#require(slotId), false);
   }
 
-  /** Starts the slot's proxy process without waiting (review G6a). */
-  #wakeEgress(slotId: string): void {
-    const index = this.#require(slotId);
-    void wakeEgress(index).catch(() => undefined);
-  }
-
   // ---- VMM lifecycle ------------------------------------------------------------------------
 
   async boot(boot: GuestBoot, signal: AbortSignal): Promise<void> {
+    // Re-check finding 8: the proxy is started by its socket at the guest's first connection,
+    // never here, so nothing on the way to the first reply competes with a Node start.
     const index = this.#require(boot.slotId);
-    this.#wakeEgress(boot.slotId);
     const root = await this.#prepareJail(boot, index);
     await this.#jail(boot, index, signal);
     const socket = join(root, "api.sock");
@@ -378,7 +372,6 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async restore(boot: GuestBoot, image: SavedImage, signal: AbortSignal): Promise<void> {
     const index = this.#require(boot.slotId);
-    this.#wakeEgress(boot.slotId);
     if (!(await this.verify(boot.slotId, image)))
       throw new Error("The saved image changed or is not loadable here.");
     const root = await this.#prepareJail(boot, index);
@@ -466,10 +459,12 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async kill(slotId: string, signal: AbortSignal): Promise<void> {
     const key = slotKey(slotId);
-    await this.#cgroups.kill(key, signal);
-    // No VMM, no proxy process: a slot parked on disk or stopped keeps only its socket.
+    const ended = await this.#cgroups.kill(key, signal);
+    // No VMM, no proxy process: a slot parked on disk or stopped keeps only its socket. Only an
+    // ended VMM can have had its proxy started (re-check finding 8): a resume from disk, whose
+    // VMM ended when it was saved, does not stop it again.
     const index = this.#numbers.get(slotId);
-    if (index !== undefined) await sleepEgress(index);
+    if (ended && index !== undefined) await sleepEgress(index);
     for (const jail of await this.#jails(key)) await this.#removeJail(jail);
   }
 

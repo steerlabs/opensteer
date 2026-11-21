@@ -123,11 +123,6 @@ export async function defineEgress(
   ]);
 }
 
-/** Starts the proxy process without waiting for it: its socket already accepts. */
-export async function wakeEgress(index: number): Promise<void> {
-  await run("systemctl", ["start", "--no-block", egressUnit(index)]);
-}
-
 /** Ends the proxy process; the socket stays, so the slot keeps its address. */
 export async function sleepEgress(index: number): Promise<void> {
   await run("systemctl", ["stop", egressUnit(index)], { allow: [5] });
