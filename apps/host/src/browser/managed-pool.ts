@@ -142,6 +142,8 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
 export interface ManagedBrowserPoolRelay {
   readonly host: string;
   readonly port: number;
+  /** SPKI DER, base64, of the relay's own TLS key, pinned at enrolment (not the host key). */
+  readonly relayHostKey: string;
   /** PKCS#8 PEM of this Home's relay key for the slot, and a certificate for it. */
   readonly relayKey: string;
   readonly relayCertificate: string;
@@ -158,7 +160,7 @@ export function managedBrowserPool(
   const endpoint: PoolRelayEndpoint = {
     host: target.relay.host,
     port: target.relay.port,
-    hostKey: spki(target.hostKey),
+    relayHostKey: spki(target.relay.relayHostKey),
     controlKey: spki(target.agentKey),
     relayKey: target.relay.relayKey,
     relayCertificate: target.relay.relayCertificate,

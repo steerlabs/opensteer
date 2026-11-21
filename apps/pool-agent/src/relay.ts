@@ -1,7 +1,7 @@
 /**
  * The pool relay (pool-runtime-in-guest.md, decisions 4 to 6). Its own process and user; one
  * TLS 1.3 listener. A Home presents a certificate for its relay key; the relay presents one for
- * the host key. After the handshake the client names its slot and term, the agent decides
+ * the relay's own key, which is not the host's signing key. After the handshake the client names its slot and term, the agent decides
  * (live slot, same term, that key, guest running), and only then does the relay connect to the
  * slot's bridge port, answer with the agent's signed grant, and copy bytes. TLS ends here: from
  * here to the guest is the host's own veth, which only this user may use. The relay never wakes
@@ -31,7 +31,7 @@ export type RelayDecision =
   | { readonly ok: false; readonly code: "refused" | "parked" | "unavailable" };
 
 export interface RelayServerOptions {
-  /** The host key and a self-signed certificate for it (PEM). */
+  /** The relay's own key (not the host's signing key) and a self-signed certificate for it. */
   readonly key: string;
   readonly certificate: string;
   /** The agent's decision for one hello and the client's key (SPKI DER, base64). */

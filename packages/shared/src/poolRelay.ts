@@ -56,7 +56,7 @@ export function poolRelayGrantBytes(nonce: string, grant: PoolRelayGrant): Buffe
 
 export class PoolRelayRefused extends Error {
   override readonly name = "PoolRelayRefused";
-  readonly code: "refused" | "parked" | "unavailable" | "host-key" | "grant";
+  readonly code: "refused" | "parked" | "unavailable" | "relay-key" | "grant";
 
   constructor(code: PoolRelayRefused["code"], message: string) {
     super(message);
@@ -67,8 +67,11 @@ export class PoolRelayRefused extends Error {
 export interface PoolRelayEndpoint {
   readonly host: string;
   readonly port: number;
-  /** The pool host's public key, pinned: the relay's certificate must be for it. */
-  readonly hostKey: KeyObject;
+  /**
+   * The relay's own public key, pinned: its certificate must be for it. It is not the host's
+   * signing key, which only the agent holds (a compromised relay cannot forge an answer).
+   */
+  readonly relayHostKey: KeyObject;
   /** The slot's control key (public): it signs the grant. */
   readonly controlKey: KeyObject;
   /** This Home's relay key for the slot, and a certificate for it (PEM). */
@@ -117,8 +120,8 @@ export function openPoolRelay(endpoint: PoolRelayEndpoint): Promise<PoolRelayTun
     socket.once("close", closed);
     socket.once("secureConnect", () => {
       const peer = socket.getPeerX509Certificate();
-      if (!peer || !peer.publicKey.equals(endpoint.hostKey))
-        return fail(new PoolRelayRefused("host-key", "The relay is not the pinned pool host."));
+      if (!peer || !peer.publicKey.equals(endpoint.relayHostKey))
+        return fail(new PoolRelayRefused("relay-key", "The relay is not the pinned pool relay."));
       const hello: PoolRelayHello = { v: 1, slot: endpoint.slot, term: endpoint.term, nonce };
       socket.write(`${JSON.stringify(hello)}\n`);
       readLine(socket).then((line) => {

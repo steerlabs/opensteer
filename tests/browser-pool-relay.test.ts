@@ -132,7 +132,7 @@ async function relayFixture() {
   const endpoint = (overrides: Partial<PoolRelayEndpoint> = {}): PoolRelayEndpoint => ({
     host: "127.0.0.1",
     port: (relay.address() as AddressInfo).port,
-    hostKey: host.publicKey,
+    relayHostKey: host.publicKey,
     controlKey,
     relayKey: home.key,
     relayCertificate: home.certificate,
@@ -214,11 +214,11 @@ describe("the relay", () => {
     expect(await refusal(openPoolRelay(f.endpoint({ slot: "slot-none" })))).toBe("refused");
   });
 
-  it("sends nothing to a relay that is not the pinned pool host", async () => {
+  it("sends nothing to a relay that does not hold the pinned relay key", async () => {
     const f = await relayFixture();
     await f.call("start");
     const impostor: KeyObject = f.other.publicKey;
-    expect(await refusal(openPoolRelay(f.endpoint({ hostKey: impostor })))).toBe("host-key");
+    expect(await refusal(openPoolRelay(f.endpoint({ relayHostKey: impostor })))).toBe("relay-key");
     expect(f.asked()).toBe(0);
   });
 

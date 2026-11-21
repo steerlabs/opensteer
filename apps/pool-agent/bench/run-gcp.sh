@@ -141,6 +141,7 @@ run_bench() {
     install -d -o opensteer-pool-relay -m 0755 "$bench/out"
     # The host key's public half is what the provisioner pins; the bench reads a copy.
     install -m 0644 /etc/opensteer-pool/host-key.pub "$creds/host-key.pub"
+    install -m 0644 /etc/opensteer-pool-relay/relay-key.pub "$creds/relay-key.pub"
     setpriv --reuid=opensteer-pool-relay --regid=opensteer-pool-relay --clear-groups --no-new-privs \
         /opt/opensteer-pool/node/bin/node "$agent_dir/dist/real-host.mjs" \
         --provisioner-key "$creds/provisioner.pem" --host-key "$creds/host-key.pub" --host-id pool-bench-host --helper /run/opensteer-pool-bench-helper.sock \

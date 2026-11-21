@@ -113,16 +113,20 @@ host_key() {
     fi
     openssl pkey -in /etc/opensteer-pool/host-key.pem -pubout -out /etc/opensteer-pool/host-key.pub
     chmod 0644 /etc/opensteer-pool/host-key.pub
-    # The relay presents a certificate for the same key; a Home checks the key, not the
-    # certificate's issuer (there is none): pool-runtime-in-guest.md, decision 4.
-    if [[ ! -f /etc/opensteer-pool/host-cert.pem ]]; then
-        openssl req -x509 -new -key /etc/opensteer-pool/host-key.pem -subj /CN=opensteer-pool-host \
-            -days 3650 -out /etc/opensteer-pool/host-cert.pem
+    # The relay's own TLS key (round 4, item 5): not the host key, so a compromised relay cannot
+    # sign an answer. A Home pins both. The relay's user gets it only as a systemd credential and
+    # presents a certificate for it; a Home checks the key, not an issuer (there is none).
+    if [[ ! -f /etc/opensteer-pool/relay-key.pem ]]; then
+        (umask 077 && openssl genpkey -algorithm ed25519 -out /etc/opensteer-pool/relay-key.pem)
     fi
-    chmod 0644 /etc/opensteer-pool/host-cert.pem
     # The relay's user cannot enter /etc/opensteer-pool: its public files live beside it.
     install -d -m 0755 /etc/opensteer-pool-relay
-    install -m 0644 /etc/opensteer-pool/host-cert.pem /etc/opensteer-pool-relay/host-cert.pem
+    if [[ ! -f /etc/opensteer-pool-relay/relay-cert.pem ]]; then
+        openssl req -x509 -new -key /etc/opensteer-pool/relay-key.pem -subj /CN=opensteer-pool-relay \
+            -days 3650 -out /etc/opensteer-pool-relay/relay-cert.pem
+    fi
+    openssl pkey -in /etc/opensteer-pool/relay-key.pem -pubout -out /etc/opensteer-pool-relay/relay-key.pub
+    chmod 0644 /etc/opensteer-pool-relay/relay-cert.pem /etc/opensteer-pool-relay/relay-key.pub
 }
 
 install_users() {
@@ -192,11 +196,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     # The relay (pool-runtime-in-guest.md, decisions 4 and 5): its own user, the only one the
-    # host's rules let reach a guest's bridge port. The host key reaches it as a credential.
+    # host's rules let reach a guest's bridge port. Its own key reaches it as a credential.
     install -d -m 0755 /etc/opensteer-pool-relay
     cat > /etc/opensteer-pool-relay/relay.json <<EOF
 { "listen": { "host": "0.0.0.0", "port": $OSP_RELAY_PORT },
-  "certificate": "/etc/opensteer-pool-relay/host-cert.pem",
+  "certificate": "/etc/opensteer-pool-relay/relay-cert.pem",
   "authSocket": "/run/opensteer-pool-relay/relay.sock" }
 EOF
     chmod 0644 /etc/opensteer-pool-relay/relay.json
@@ -210,7 +214,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=opensteer-pool-relay
 Group=opensteer-pool-relay
-LoadCredential=host-key:/etc/opensteer-pool/host-key.pem
+LoadCredential=relay-key:/etc/opensteer-pool/relay-key.pem
 ExecStart=$OPT/node/bin/node $OPT/agent/relay.mjs /etc/opensteer-pool-relay/relay.json
 Restart=always
 RestartSec=1

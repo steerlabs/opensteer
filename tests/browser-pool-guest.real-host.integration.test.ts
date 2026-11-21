@@ -59,6 +59,8 @@ interface RealHost {
   readonly hostId: string;
   /** PEM paths copied from the run host. */
   readonly hostKeyFile: string;
+  /** The relay's own key's public half (PEM), pinned beside the host key. */
+  readonly relayKeyFile: string;
   readonly provisionerKeyFile: string;
   readonly profilePath: string;
   readonly egress: Record<string, string>;
@@ -141,6 +143,7 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
     const directory = mkdtempSync(join(tmpdir(), "opensteer-pool-proof-"));
     const provisionerKey = createPrivateKey(readFileSync(r.provisionerKeyFile, "utf8"));
     const hostKey = createPublicKey(readFileSync(r.hostKeyFile, "utf8"));
+    const relayHostKey = createPublicKey(readFileSync(r.relayKeyFile, "utf8"));
     const admin = (request: Parameters<typeof callBrowserPoolAgentAdmin>[1]) =>
       callBrowserPoolAgentAdmin(
         { url: r.adminUrl, provisionerKey, host: r.hostId, hostKey, timeoutMs: 120_000 },
@@ -172,12 +175,17 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       homeKey: home.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
       agentKey: created.slot.controlKey,
       hostKey: spkiOf(hostKey),
-      relay: { ...r.relay, relayKey: relayKey.key, relayCertificate: relayKey.certificate },
+      relay: {
+        ...r.relay,
+        relayHostKey: spkiOf(relayHostKey),
+        relayKey: relayKey.key,
+        relayCertificate: relayKey.certificate,
+      },
     });
     const endpoint = (overrides: Partial<Parameters<typeof openPoolRelay>[0]> = {}) => ({
       host: r.relay.host,
       port: r.relay.port,
-      hostKey,
+      relayHostKey,
       controlKey: createPublicKey({
         key: Buffer.from(created.slot.controlKey, "base64"),
         format: "der",

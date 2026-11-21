@@ -1,7 +1,7 @@
 /**
  * The pool relay's process: its own unprivileged user, the one the host's rules let reach a
  * guest's bridge port. `relay.json`: `{ "listen": { "host", "port" }, "certificate": <path>,
- * "authSocket": <path> }`; the host key comes from systemd's credential directory (`host-key`),
+ * "authSocket": <path> }`; its own key comes from systemd's credential directory (`relay-key`),
  * never from a file this user could read otherwise.
  */
 import { readFile } from "node:fs/promises";
@@ -24,9 +24,9 @@ async function main(): Promise<void> {
     JSON.parse(await readFile(process.argv[2] ?? "/etc/opensteer-pool-relay/relay.json", "utf8")),
   );
   const credentials = process.env.CREDENTIALS_DIRECTORY;
-  if (!credentials) throw new Error("The relay's host key is given as a systemd credential.");
+  if (!credentials) throw new Error("The relay's key is given as a systemd credential.");
   const server = createRelayServer({
-    key: await readFile(join(credentials, "host-key"), "utf8"),
+    key: await readFile(join(credentials, "relay-key"), "utf8"),
     certificate: await readFile(config.certificate, "utf8"),
     authorize: relayAuthClient(config.authSocket),
     log,
