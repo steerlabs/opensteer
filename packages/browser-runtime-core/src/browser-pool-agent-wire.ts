@@ -27,6 +27,11 @@ export interface BrowserPoolAgentStatus {
   readonly epoch: number | null;
   readonly phase: BrowserPoolAgentPhase;
   readonly savedState: BrowserPoolAgentSavedState | null;
+  /**
+   * Round D, D1: the guest's egress proxy tripped its start limit. The guest has no network
+   * until its next start or wake, which brings the proxy back. Absent otherwise.
+   */
+  readonly proxy?: "down";
 }
 
 export type BrowserPoolAgentKind = "start" | "pause" | "resume" | "stop" | "sign";

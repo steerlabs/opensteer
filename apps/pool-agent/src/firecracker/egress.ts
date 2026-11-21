@@ -19,9 +19,16 @@ export interface EgressProgram {
   readonly node: string;
   /** browser-egress's entry, `dist/egress-main.js` in the egress image's `/app`. */
   readonly main: string;
-  /** A debug host: the proxy's refusals go to the journal. */
+  /** A diagnostics host: the proxy's refusal counts go to the journal. */
   readonly debug?: boolean;
+  /** One proxy's memory ceiling, in MiB (round D, D1: sized inside the host's guest budget). */
+  readonly memoryMib?: number;
+  /** One proxy's connection ceiling: sized from what one Chromium opens (round D, D1). */
+  readonly maxConnections?: number;
 }
+
+/** Every slot proxy runs in this slice: one aggregate memory ceiling, made by setup-host.sh. */
+export const egressSlice = "opensteer-pool-egress.slice";
 
 export function egressUnit(index: number): string {
   return `opensteer-pool-egress-${index}.service`;
@@ -91,11 +98,19 @@ export async function defineEgress(
     `--socket-property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
     "--socket-property=FreeBind=yes",
     "--socket-property=Backlog=256",
-    // Round 4, item 2: the socket holds every connection until the proxy is up, however often
-    // the proxy is started and stopped (every wake and kill): neither the service's start limit
-    // nor the socket's trigger limit may ever take the socket down.
-    "--socket-property=TriggerLimitIntervalSec=0",
-    "--property=StartLimitIntervalSec=0",
+    // Round D, D1: systemd's crash protection stays on. The agent's own stops reset the start
+    // counter (sleepEgress), so only the proxy's own failures count: five starts in 30 s, with
+    // a restart delay that backs off to 30 s, and then the proxy stays down until the slot's
+    // next start or wake (reviveEgress), and the slot's status says so.
+    `--slice=${egressSlice}`,
+    "--property=StartLimitIntervalSec=30",
+    "--property=StartLimitBurst=5",
+    "--property=RestartSteps=5",
+    "--property=RestartMaxDelaySec=30",
+    // Equal weight between the slots' proxies, and a ceiling of one core each.
+    "--property=CPUWeight=100",
+    "--property=CPUQuota=100%",
+    "--property=IOWeight=100",
     `--uid=${uid}`,
     `--gid=${uid}`,
     `--property=NetworkNamespacePath=/run/netns/${namespaceName(index)}`,
@@ -117,8 +132,9 @@ export async function defineEgress(
     "--property=ProtectKernelModules=yes",
     "--property=ProtectControlGroups=yes",
     "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
-    "--property=MemoryMax=256M",
-    "--property=TasksMax=64",
+    `--property=MemoryMax=${program.memoryMib ?? 80}M`,
+    "--property=TasksMax=32",
+    `--setenv=OPENSTEER_BROWSER_EGRESS_MAX_CONNECTIONS=${program.maxConnections ?? 128}`,
     "--property=LimitCORE=0",
     "--property=StandardOutput=null",
     // A diagnostics host (driver.egressLog) keeps the proxy's refusals in the journal.
@@ -133,9 +149,44 @@ export async function defineEgress(
   ]);
 }
 
-/** Ends the proxy process; the socket stays, so the slot keeps its address. */
+/**
+ * Ends the proxy process; the socket stays, so the slot keeps its address. An agent's own stop
+ * never counts against the proxy's start limit (round D, D1): the counter is reset with it.
+ */
 export async function sleepEgress(index: number): Promise<void> {
   await run("systemctl", ["stop", egressUnit(index)], { allow: [5] });
+  await run("systemctl", ["reset-failed", egressUnit(index), egressSocket(index)], {
+    allow: [1, 5],
+  });
+}
+
+/**
+ * At a slot's start or wake: a proxy that tripped its start limit (and took its socket down)
+ * gets its socket back. True if it was down.
+ */
+export async function reviveEgress(index: number): Promise<boolean> {
+  const failed = await run("systemctl", ["is-failed", egressSocket(index), egressUnit(index)], {
+    allow: [1, 3, 4],
+  });
+  if (!failed.split("\n").some((line) => line.trim() === "failed")) return false;
+  await run("systemctl", ["reset-failed", egressUnit(index), egressSocket(index)], {
+    allow: [1, 5],
+  });
+  await run("systemctl", ["start", egressSocket(index)]);
+  return true;
+}
+
+/** The slot numbers whose proxy (or its socket) failed: down until their next start or wake. */
+export async function failedEgress(): Promise<readonly number[]> {
+  const text = await run(
+    "systemctl",
+    ["list-units", "opensteer-pool-egress-*", "--state=failed", "--plain", "--no-legend"],
+    { allow: [1] },
+  );
+  const indices = new Set<number>();
+  for (const match of text.matchAll(/opensteer-pool-egress-(\d+)\.(?:service|socket)/gu))
+    indices.add(Number(match[1]));
+  return [...indices];
 }
 
 /** Ends the socket and the process: the slot is going away. */

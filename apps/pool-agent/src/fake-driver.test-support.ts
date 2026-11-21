@@ -174,6 +174,20 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.networks.clear();
   }
 
+  /** Slots whose proxy a test made trip its start limit. */
+  readonly proxyDown = new Set<string>();
+  readonly revived: string[] = [];
+
+  async proxiesDown(): Promise<readonly string[]> {
+    return [...this.proxyDown];
+  }
+
+  async reviveProxy(slotId: string): Promise<boolean> {
+    if (!this.proxyDown.delete(slotId)) return false;
+    this.revived.push(slotId);
+    return true;
+  }
+
   async slotsKnown(): Promise<readonly string[]> {
     return [...this.prepared];
   }

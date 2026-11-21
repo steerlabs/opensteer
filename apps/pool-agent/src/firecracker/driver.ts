@@ -42,6 +42,8 @@ import {
   ensureEgressUser,
   removeEgress,
   sleepEgress,
+  failedEgress,
+  reviveEgress,
   type EgressProgram,
 } from "./egress.js";
 import { run, runUntil } from "./exec.js";
@@ -91,6 +93,8 @@ export interface FirecrackerDriverConfig {
   readonly slotUidBase: number;
   readonly egressUidBase: number;
   readonly egress: EgressProgram;
+  /** The slot proxies' slice ceiling, counted inside the host's memory budget (round D, D1). */
+  readonly egressSliceMib?: number;
   readonly network: NetworkConfig;
   /** `runtime` boots our browser runtime; `bench` boots the measurement's Chromium workload. */
   readonly guestMode: "runtime" | "bench";
@@ -127,7 +131,10 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   /** Delegates the cgroup subtree, applies the host filter, and fingerprints this host. */
   async open(): Promise<void> {
-    this.#cgroups = await GuestCgroups.delegate(this.#config.cgroupBase);
+    this.#cgroups = await GuestCgroups.delegate(
+      this.#config.cgroupBase,
+      (this.#config.egressSliceMib ?? 1024) * 1024 * 1024,
+    );
     this.#numbers = new SlotNumbers(this.#config.stateDirectory);
     await this.#numbers.load();
     // Review G3: never write guest memory anywhere but the encrypted array.
@@ -221,6 +228,18 @@ export class FirecrackerDriver implements HypervisorDriver {
       this.#present.add(index);
     }
     this.#verified.add(index);
+  }
+
+  async proxiesDown(): Promise<readonly string[]> {
+    const down = new Set(await failedEgress());
+    return this.#numbers
+      .entries()
+      .filter(([, index]) => down.has(index))
+      .map(([slotId]) => slotId);
+  }
+
+  async reviveProxy(slotId: string): Promise<boolean> {
+    return reviveEgress(this.#require(slotId));
   }
 
   async slotsKnown(): Promise<readonly string[]> {

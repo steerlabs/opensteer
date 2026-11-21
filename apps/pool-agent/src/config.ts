@@ -42,7 +42,19 @@ export const agentConfigSchema = z
       credentialsRoot: path,
       slotUidBase: z.number().int().min(10_000),
       egressUidBase: z.number().int().min(10_000),
-      egress: z.strictObject({ node: path, main: path }),
+      egress: z.strictObject({
+        node: path,
+        main: path,
+        /** One proxy's memory ceiling, MiB (round D, D1). */
+        memoryMib: z.number().int().min(32).max(1024).default(80),
+        /** One proxy's connections: sized from what one Chromium opens (round D, D1). */
+        maxConnections: z.number().int().min(16).max(1024).default(128),
+      }),
+      /**
+       * The slot proxies' slice (setup-host.sh makes it with this MemoryMax): counted inside the
+       * host's budget, so the guests' ceiling leaves it room (round D, D1).
+       */
+      egressSliceMib: z.number().int().min(64).default(1024),
       network: z.strictObject({
         /** Public resolvers only; a resolver in a blocked range must be named below. */
         resolvers: z

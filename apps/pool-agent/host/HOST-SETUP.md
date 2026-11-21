@@ -90,11 +90,30 @@ Each slot's egress proxy: a transient socket unit `opensteer-pool-egress-<index>
 listening on `172.16.0.1:3128` in the slot's namespace for the slot's whole life, and its
 service `opensteer-pool-egress-<index>.service` (socket-activated) as the slot's proxy uid
 (`egressUidBase + index`), with no capabilities, `NoNewPrivileges`, `ProtectSystem=strict`,
-`PrivateTmp`, `PrivateDevices`, `MemoryMax=256M`, `TasksMax=64`, credentials through
-`LoadCredential`, output discarded (it would be the person's browsing). The process runs while
-the guest runs or is paused in memory; it is stopped when the guest is saved to disk or stopped,
-so a slot parked on disk costs a socket, not a process. At a wake the process is started in
-parallel with the restore, and a connection that arrives first waits in the socket's backlog.
+`PrivateTmp`, `PrivateDevices`, credentials through `LoadCredential`, and output discarded. A
+diagnostics host (`driver.egressLog`) gets refusal counts by reason only: never a host name,
+address or path. The process runs while the guest runs or is paused in memory; it is stopped
+when the guest is saved to disk or stopped, so a slot parked on disk costs a socket, not a
+process; the next connection starts it, and a connection that arrives first waits in the
+socket's backlog.
+
+Bounds (round D, D1):
+
+- Every proxy runs in `opensteer-pool-egress.slice` (made by `setup-host.sh`, `MemoryMax` =
+  `driver.egressSliceMib`, 1024 MiB by default). Each has `CPUQuota=100%` (one core),
+  `CPUWeight=100` and `IOWeight=100` (equal between proxies), `MemoryMax` =
+  `driver.egress.memoryMib` (80 MiB), `TasksMax=32`, and `driver.egress.maxConnections`
+  (128) connections.
+- The slice is counted inside the host's budget for guests: `guests/memory.max` is the host's
+  memory less max(2 GiB, 10 %) less the slice. On an n2-standard-8 (32 GiB): 32 - 3.2 - 1 =
+  27.8 GiB for guests, which holds 11 guests in memory at their `memory.high` of 2.5 GiB (27.5
+  GiB); their 11 proxies take at most 880 MiB of the slice's 1024 MiB. A host is sized for 11
+  guests running or paused in memory; any number may be parked on disk.
+- systemd's crash protection stays on: five starts in 30 s, with a restart delay that backs off
+  from 1 s to 30 s. The agent's own stops reset the counter, so only the proxy's own failures
+  count. A proxy that trips the limit stays down, with its socket, until the slot's next start
+  or wake brings it back; meanwhile that guest has no network, nothing else is affected, and the
+  slot's status says `proxy: "down"`.
 
 ## Agent configuration
 

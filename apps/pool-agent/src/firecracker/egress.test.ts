@@ -14,17 +14,34 @@ vi.mock("./exec.js", () => ({
   },
 }));
 
-const { defineEgress } = await import("./egress.js");
+const { defineEgress, sleepEgress } = await import("./egress.js");
 
 beforeEach(() => {
   calls.length = 0;
 });
 
-describe("a slot's proxy unit", () => {
-  it("has no start limit, and its socket no trigger limit", async () => {
+describe("a slot's proxy unit (round D, D1)", () => {
+  it("keeps systemd's crash protection, backs off, and runs in its own bounded slice", async () => {
     await defineEgress({ node: "/node", main: "/main.js" }, 3, 300_003, undefined);
     const unit = calls.find((call) => call.command === "systemd-run")!.args;
-    expect(unit).toContain("--property=StartLimitIntervalSec=0");
-    expect(unit).toContain("--socket-property=TriggerLimitIntervalSec=0");
+    expect(unit).not.toContain("--property=StartLimitIntervalSec=0");
+    expect(unit).not.toContain("--socket-property=TriggerLimitIntervalSec=0");
+    expect(unit).toEqual(
+      expect.arrayContaining([
+        "--slice=opensteer-pool-egress.slice",
+        "--property=StartLimitBurst=5",
+        "--property=RestartSteps=5",
+        "--property=CPUQuota=100%",
+        "--property=CPUWeight=100",
+      ]),
+    );
+  });
+
+  it("does not count the agent's own stops against the start limit", async () => {
+    await sleepEgress(3);
+    const commands = calls.map((call) => [call.command, ...call.args].join(" "));
+    expect(commands).toContain(
+      "systemctl reset-failed opensteer-pool-egress-3.service opensteer-pool-egress-3.socket",
+    );
   });
 });

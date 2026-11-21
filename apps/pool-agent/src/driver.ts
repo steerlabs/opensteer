@@ -85,6 +85,10 @@ export interface HypervisorDriver {
    * host-wide lock.
    */
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
+  /** The slots whose egress proxy tripped its start limit and is down (round D, D1). */
+  proxiesDown(): Promise<readonly string[]>;
+  /** At a start or wake: brings a slot's proxy back if it was down. True if it was. */
+  reviveProxy(slotId: string): Promise<boolean>;
   /** Every slot that holds a number (and so a namespace and proxy) on this host. */
   slotsKnown(): Promise<readonly string[]>;
   /** Removes everything prepareSlot made. Idempotent. */

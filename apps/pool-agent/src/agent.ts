@@ -192,6 +192,8 @@ export class PoolAgent {
   readonly #now: () => number;
   readonly #deadlines: PoolAgentDeadlines;
   readonly #saves: Semaphore;
+  /** Round D, D1: slots whose proxy is down, from the last host check. */
+  #proxiesDown = new Set<string>();
   /** Deleted slots (re-check finding 4): no key of their own, and gone from #slots. */
   readonly #tombstones = new Map<
     string,
@@ -298,6 +300,16 @@ export class PoolAgent {
       void this.#ensureHost().catch((error: unknown) =>
         this.#log({ event: "host-table.failed", message: messageOf(error) }),
       );
+      // Round D, D1: which slots' proxies tripped their start limit.
+      void this.#driver.proxiesDown().then(
+        (down) => {
+          const next = new Set(down);
+          for (const slotId of next)
+            if (!this.#proxiesDown.has(slotId)) this.#log({ event: "proxy.down", slotId });
+          this.#proxiesDown = next;
+        },
+        (error: unknown) => this.#log({ event: "proxy.check-failed", message: messageOf(error) }),
+      );
       // Re-check finding 4: tombstones are pruned while the agent runs.
       void this.#admin
         .run(() => this.#pruneTombstones())
@@ -319,6 +331,14 @@ export class PoolAgent {
 
   #keepTombstone(record: TombstoneRecord): void {
     this.#tombstones.set(record.slotId, { record, homeKey: parsePublicKey(record.homeKey) });
+  }
+
+  /** Round D, D1: a proxy that tripped its limit comes back at the slot's start or wake. */
+  async #reviveProxy(slotId: string): Promise<void> {
+    if (await this.#step("network", () => this.#driver.reviveProxy(slotId))) {
+      this.#proxiesDown.delete(slotId);
+      this.#log({ event: "proxy.revived", slotId });
+    }
   }
 
   async #ensureHost(): Promise<void> {
@@ -424,12 +444,16 @@ export class PoolAgent {
     if (term !== slot.record.term)
       throw new SlotNotFound("The pool agent does not know this slot and term.");
     this.#admit(slot, generation);
+    const withProxy = (status: BrowserPoolAgentStatus): BrowserPoolAgentStatus =>
+      this.#proxiesDown.has(slotId) && status.phase !== "stopped"
+        ? { ...status, proxy: "down" }
+        : status;
     // A read never waits behind a long step: it reports what the journal holds now.
-    if (slot.lane.busy) return statusOf(slot.record);
+    if (slot.lane.busy) return withProxy(statusOf(slot.record));
     return this.#run(slot, async () => {
       this.#admit(slot, generation);
       await this.#settle(slot);
-      return statusOf(slot.record);
+      return withProxy(statusOf(slot.record));
     });
   }
 
@@ -747,6 +771,7 @@ export class PoolAgent {
       await this.#step("network", () =>
         this.#driver.prepareSlot(before.slotId, before.guest.egress),
       );
+      await this.#reviveProxy(before.slotId);
       // Nobody else may write the profile: every earlier process of the slot is gone first.
       await this.#kill(slot);
       await within(this.#deadlines.network, "Closing the guest network", () =>
@@ -876,6 +901,7 @@ export class PoolAgent {
       await this.#step("network", () =>
         this.#driver.prepareSlot(before.slotId, before.guest.egress),
       );
+      await this.#reviveProxy(before.slotId);
       step("prepare");
       await within(this.#deadlines.network, "Closing the guest network", () =>
         this.#driver.closeNetwork(before.slotId),

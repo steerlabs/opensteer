@@ -13,6 +13,10 @@ async function main(): Promise<void> {
     port: port(process.env.OPENSTEER_BROWSER_EGRESS_PORT),
     ...activatedSocket(process.env),
     upstreamRequired: process.env.OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED === "true",
+    // A pool host sizes this for one browser (round D, D1).
+    ...(process.env.OPENSTEER_BROWSER_EGRESS_MAX_CONNECTIONS
+      ? { maxConnections: Number(process.env.OPENSTEER_BROWSER_EGRESS_MAX_CONNECTIONS) }
+      : {}),
     ...(upstream ? { upstream } : {}),
     // A diagnostics pool host asks for refusal counts on stderr (round D, D5): a reason and a
     // count, every ten seconds; never where a person browsed.

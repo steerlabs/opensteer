@@ -19,7 +19,7 @@ export class GuestCgroups {
   }
 
   /** Moves the agent into its own leaf and enables the controllers guests are limited by. */
-  static async delegate(configured?: string): Promise<GuestCgroups> {
+  static async delegate(configured?: string, egressSliceBytes = 0): Promise<GuestCgroups> {
     const base = configured ?? (await ownCgroup());
     const absolute = join(mountPoint, base);
     const leaf = join(absolute, "agent");
@@ -33,12 +33,13 @@ export class GuestCgroups {
     await mkdir(join(absolute, "guests"), { recursive: true });
     await writeFile(join(absolute, "guests", "cgroup.subtree_control"), controllers);
     // Review G6(b): one limit over all guests leaves the host and the agent their room:
-    // everything but max(2 GiB, 10 %) of the host's memory.
+    // everything but max(2 GiB, 10 %) of the host's memory. Round D, D1: and the slot proxies'
+    // slice, which is counted inside the same budget.
     const total = await memoryTotal();
     if (total)
       await writeFile(
         join(absolute, "guests", "memory.max"),
-        String(total - Math.max(2 * 1024 ** 3, Math.floor(total / 10))),
+        String(guestBudget(total, egressSliceBytes)),
       );
     return new GuestCgroups(base);
   }
@@ -135,4 +136,9 @@ async function memoryTotal(): Promise<number | undefined> {
   const text = await readFile("/proc/meminfo", "utf8").catch(() => "");
   const kib = text.match(/^MemTotal:\s+([0-9]+) kB$/mu)?.[1];
   return kib ? Number(kib) * 1024 : undefined;
+}
+
+/** What all guests together may hold: the host less its own room and the proxies' slice. */
+export function guestBudget(totalBytes: number, egressSliceBytes: number): number {
+  return totalBytes - Math.max(2 * 1024 ** 3, Math.floor(totalBytes / 10)) - egressSliceBytes;
 }

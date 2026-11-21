@@ -108,3 +108,25 @@ describe("orphan slot numbers", () => {
     expect(restarted.agent.slotIds()).not.toContain("orphan");
   });
 });
+
+describe("D1: a slot whose proxy tripped its start limit", () => {
+  it("says so in its status, and gets its proxy back at its next start", async () => {
+    const agent = await startTestPoolAgent({ saveAfterMs: null, hostCheckMs: 20 });
+    open.push(agent);
+    await agent.agent.createSlot({
+      slotId,
+      term: 1,
+      homeKey: homeKeyPair().spki,
+      guest: testGuest,
+    });
+    const call = async (kind: Parameters<typeof callFor>[1]) =>
+      agent.agent.apply(callFor(await agent.agent.status(slotId, 1), kind));
+    await call("start");
+    agent.driver.proxyDown.add(slotId);
+    await expect.poll(async () => (await agent.agent.status(slotId, 1)).proxy).toBe("down");
+    await call("stop");
+    await call("start");
+    expect(agent.driver.revived).toEqual([slotId]);
+    expect((await agent.agent.status(slotId, 1)).proxy).toBeUndefined();
+  });
+});
