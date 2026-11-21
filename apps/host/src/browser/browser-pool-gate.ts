@@ -100,20 +100,18 @@ export class BrowserPoolGate {
   }
 
   /**
-   * The park intent committed. False: a send arrived first and vetoes it. True: the browser is
-   * now away (parking) and every send waits.
+   * The park intent committed. False: a send arrived first and vetoes it. Either way the browser
+   * is now away (parking) and every send waits: a vetoed park is undone first, and only the row
+   * reading running again, published by the loop, opens admission.
    */
   committed(): boolean {
     if (!this.#preparing) return false;
     this.#preparing = false;
-    // A send, a restart or a removal that came first vetoes it.
-    if (this.demandedSince() || this.#hold) {
-      this.#notify();
-      return false;
-    }
     this.#away = "parking";
+    // A send, a restart or a removal that came first vetoes it.
+    const vetoed = this.demandedSince() || this.#hold !== null;
     this.#notify();
-    return true;
+    return !vetoed;
   }
 
   /** The park step ended before D: the window closes. */

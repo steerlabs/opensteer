@@ -438,6 +438,46 @@ it("finishes a restart a Home crash interrupted after its stop, once, and a retr
   }
 });
 
+it("keeps admission closed from a park's commit until its abort is confirmed, for demand that came after the last veto check", async () => {
+  const f = await poolFixture("commit-then-demand");
+  try {
+    let waiter: Promise<string> | undefined;
+    const signing = Promise.withResolvers<void>();
+    const sign = Promise.withResolvers<void>();
+    const home = f.home(undefined, f.controller, {
+      testHooks: {
+        beginPark: async (...args) => {
+          const committed = await beginBrowserPoolPark(...args);
+          // Demand arrives after the database's last veto check, before the commit's reply.
+          waiter = home.gate.reserve(AbortSignal.timeout(10_000)).then(async (held) => {
+            const phase = (await f.slot())?.phase ?? "none";
+            held.release();
+            return phase;
+          });
+          // The abort's first signature waits, so the interval stays open to look at.
+          f.controller.hold("sign", async () => {
+            signing.resolve();
+            await sign.promise;
+          });
+          return committed;
+        },
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    const parking = home.tryPark();
+    await signing.promise;
+    expect((await f.slot())?.phase).toBe("preparing");
+    expect(home.gate.admits).toBe(false);
+    sign.resolve();
+    expect(await parking).toBe("vetoed");
+    // Admitted only once the row read running again.
+    expect(await waiter).toBe("running");
+  } finally {
+    await f.close();
+  }
+});
+
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
   try {
