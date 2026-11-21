@@ -803,6 +803,11 @@ async function concurrent(slots: Slot[], rounds: number) {
       live[3 + offset]!.cdp.close();
       await slot.call("pause");
     }
+    // Re-check finding 9: the savers' memory events are counted from here, not since their
+    // cgroups were made.
+    const memoryBefore = await Promise.all(
+      savers.map((slot) => helper({ cmd: "memory-events", slotId: slot.id })),
+    );
     // The two saves begin at the idle threshold; the three wakes start while they write.
     await sleep(options.saveAfterMs + 300);
     const start = now();
@@ -824,12 +829,18 @@ async function concurrent(slots: Slot[], rounds: number) {
     for (const [offset, slot] of savers.entries()) {
       const writeMs = await slot.waitForDisk();
       const memory = await helper({ cmd: "memory-events", slotId: slot.id });
+      const before = memoryBefore[offset] as Record<string, number>;
       emit({
         kind: "concurrent-save",
         round,
         slot: slot.id,
         save_ms: writeMs,
-        memory_events: memory,
+        memory_events_during_save: Object.fromEntries(
+          Object.entries(memory as Record<string, number>).map(([key, value]) => [
+            key,
+            value - (before[key] ?? 0),
+          ]),
+        ),
       });
       const start2 = now();
       await slot.call("resume");
@@ -901,8 +912,11 @@ async function flush(slots: Slot[]) {
     ["agent Home port on host address", String(facts.hostAddress), 7310],
     ["another guest's bridge", vethInside(other!.index), 4312],
     ["internet direct", "1.1.1.1", 443],
+    // Re-check finding 9: positive controls; each probe method must be able to connect.
+    ["control: the slot's proxy", "172.16.0.1", 3128],
   ];
   const proxyProbes: [string, string, number][] = [
+    ["control: the egress upstream", "192.0.43.10", 8443],
     ["GCE metadata IPv4", "169.254.169.254", 80],
     ["agent Home port via veth", vethHost(own!.index), 7310],
     ["agent Home port on host address", String(facts.hostAddress), 7310],
@@ -928,13 +942,16 @@ async function flush(slots: Slot[]) {
     }),
   ]);
   const probeMs = now() - flushedAt;
-  for (const row of results)
+  for (const row of results) {
+    const expected = row.what.startsWith("control:") ? "connected" : "blocked";
     emit({
       kind: "flush-isolation",
       ...row,
+      expected,
       within_ms: Math.round(probeMs),
-      ok: row.result !== "connected",
+      ok: expected === "connected" ? row.result === "connected" : row.result !== "connected",
     });
+  }
   let repairedMs: number | null = null;
   for (let waited = 0; waited < 20_000; waited += 250) {
     const tables = (await helper({ cmd: "nft-tables" })).tables as string[];
@@ -998,8 +1015,10 @@ async function scale(existing: Slot[]) {
   // One guest still wakes normally among 400 slots.
   const slot = existing[0]!;
   await slot.ensureStopped();
+  // Re-check finding 9: timed from before the start call, as the cold series is.
+  const began = now();
   await slot.call("start");
-  const reply = await firstReply(slot, now());
+  const reply = await firstReply(slot, began);
   reply.cdp.close();
   await slot.call("stop");
   emit({

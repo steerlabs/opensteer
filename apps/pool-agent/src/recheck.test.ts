@@ -236,3 +236,38 @@ describe("findings 6 and 7: the host check and the agent's unit", () => {
     expect(unit).toMatch(/RestartMaxDelaySec=\d+/u);
   });
 });
+
+describe("finding 9: the small ones", () => {
+  it("holds the slot until a snapshot writer that outlived its VMM has ended", async () => {
+    const f = await fixture({ deadlines: { snapshot: 30, snapshotDrain: 30, kill: 30 } });
+    await f.call("start");
+    await f.call("pause");
+    const paused = await f.status();
+    let release!: () => void;
+    f.driver.gate("snapshot", new Promise<void>((resolve) => (release = resolve)));
+    const saving = f.agent.agent.saveToDisk(slotId, paused.savedState!.id);
+    await vi.waitFor(() =>
+      expect(f.events.some((event) => event.event === "save.writer-late")).toBe(true),
+    );
+    const starting = f.call("start");
+    // Nothing runs beside the late writer: the queued start has not booted.
+    expect(f.driver.operations.filter((entry) => entry.startsWith("boot:"))).toHaveLength(1);
+    release();
+    await saving;
+    await starting;
+    expect(f.driver.images.size).toBe(0);
+    expect(f.driver.violations).toEqual([]);
+  });
+
+  it("bounds the whole wait for a process state once, however many reads it takes", async () => {
+    const f = await fixture({ deadlines: { inspect: 300 } });
+    await f.call("start");
+    const jail = [...f.driver.processes.keys()][0]!;
+    f.driver.answerUnknown(jail);
+    // Two quick "unknown" answers, then a read that never answers.
+    f.driver.hangInspectAfter = f.driver.inspections + 2;
+    const began = performance.now();
+    expect(await f.status()).toMatchObject({ phase: "stopped" });
+    expect(performance.now() - began).toBeLessThan(420);
+  });
+});

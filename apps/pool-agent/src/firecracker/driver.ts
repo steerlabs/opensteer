@@ -336,17 +336,26 @@ export class FirecrackerDriver implements HypervisorDriver {
     root: string,
     began: number,
   ): Promise<SavedImage> {
-    await firecrackerApi(
-      join(root, "api.sock"),
-      "PUT",
-      "/snapshot/create",
-      { snapshot_type: "Full", snapshot_path: "/snap/vmstate", mem_file_path: "/snap/memory" },
-      600_000,
-    );
+    const partial = async () => {
+      for (const name of ["vmstate", "memory"]) await rm(join(root, "snap", name), { force: true });
+    };
+    try {
+      await firecrackerApi(
+        join(root, "api.sock"),
+        "PUT",
+        "/snapshot/create",
+        { snapshot_type: "Full", snapshot_path: "/snap/vmstate", mem_file_path: "/snap/memory" },
+        600_000,
+      );
+    } catch (error) {
+      // Re-check finding 9: a snapshot that failed part way (a full array) leaves no files.
+      await partial();
+      throw error;
+    }
     // The caller gave up on this snapshot: its files are deleted unpublished, never moved to
     // where an image is looked for (the agent also waits for this call before releasing).
     if (signal.aborted) {
-      for (const name of ["vmstate", "memory"]) await rm(join(root, "snap", name), { force: true });
+      await partial();
       throw new Error("The snapshot finished after its deadline and was not kept.");
     }
     const target = this.#savedDirectory(slotId, savedStateId);

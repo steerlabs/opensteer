@@ -288,8 +288,19 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     this.images.delete(savedStateId);
   }
 
+  /** From this many reads on, inspect never answers. */
+  hangInspectAfter: number | undefined;
+  #inspections = 0;
+
+  get inspections(): number {
+    return this.#inspections;
+  }
+
   async inspect(slotId: string, jailId: string): Promise<GuestProcessState> {
     await this.#enter("inspect", slotId);
+    this.#inspections += 1;
+    if (this.hangInspectAfter !== undefined && this.#inspections > this.hangInspectAfter)
+      await new Promise<never>(() => {});
     const unknown = this.#unknown.get(jailId) ?? 0;
     if (unknown > 0 && this.processes.has(jailId)) {
       this.#unknown.set(jailId, unknown - 1);

@@ -1037,10 +1037,12 @@ export class PoolAgent {
           if (error instanceof DeadlineExceeded) {
             if (!(await finishedWithin(error.settled, this.#deadlines.snapshotDrain))) {
               await this.#lose(slot);
-              if (!(await finishedWithin(error.settled, this.#deadlines.kill)))
-                throw new Error("The timed-out snapshot did not end with its VMM.", {
-                  cause: error,
-                });
+              // Re-check finding 9: the lane stays held until the writer has ended, however
+              // long that takes (its own API call has a bound), so nothing runs beside it.
+              if (!(await finishedWithin(error.settled, this.#deadlines.kill))) {
+                this.#log({ event: "save.writer-late", slotId });
+                await error.settled.catch(() => undefined);
+              }
               await this.#step("discard", () => this.#driver.discard(slotId, savedStateId));
               return "skipped";
             }
@@ -1256,17 +1258,20 @@ export class PoolAgent {
    * unknown means it cannot be confirmed: the caller treats the guest as lost.
    */
   async #confirm(slotId: string, jailId: string): Promise<GuestProcessState> {
+    // Re-check finding 9: one bound for the whole wait, however many reads it takes.
     const until = performance.now() + this.#deadlines.inspect;
     for (;;) {
-      const state = await this.#step("inspect", () => this.#driver.inspect(slotId, jailId)).catch(
-        (error: unknown): GuestProcessState => {
-          if (error instanceof AgentCrashed) throw error;
-          if (error instanceof DriverStateUncertain) this.#die(error);
-          return "unknown";
-        },
-      );
-      if (state !== "unknown" || performance.now() >= until) return state;
-      await sleep(Math.min(100, Math.max(1, until - performance.now())));
+      const left = Math.max(1, until - performance.now());
+      const state = await within(left, "The inspect step", () =>
+        this.#driver.inspect(slotId, jailId),
+      ).catch((error: unknown): GuestProcessState => {
+        if (error instanceof AgentCrashed) throw error;
+        if (error instanceof DriverStateUncertain) this.#die(error);
+        return "unknown";
+      });
+      const remaining = until - performance.now();
+      if (state !== "unknown" || remaining <= 0) return state;
+      await sleep(Math.min(100, remaining));
     }
   }
 

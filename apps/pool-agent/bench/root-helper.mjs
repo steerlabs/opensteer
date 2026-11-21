@@ -1,6 +1,6 @@
 // The bench's root half, on a root-only Unix socket: what the relay user may not do itself.
 // One JSON command per connection. Test infrastructure only; never installed on a real host.
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
@@ -104,10 +104,11 @@ async function run(command) {
       };
     }
     case "agent-state":
+      // `is-active` exits non-zero for every state but active; its answer is still the state.
       return {
-        state: execFileSync("systemctl", ["is-active", "opensteer-pool-agent"], {
+        state: spawnSync("systemctl", ["is-active", "opensteer-pool-agent"], {
           encoding: "utf8",
-        }).trim(),
+        }).stdout.trim(),
       };
     case "agent": {
       for (const action of command.actions)
@@ -147,24 +148,25 @@ async function run(command) {
       return {
         tables: execFileSync("nft", ["list", "tables"], { encoding: "utf8" }).trim().split("\n"),
       };
-    case "proxy-probe": {
-      try {
-        execFileSync("ip", [
-          "netns",
-          "exec",
-          `osp${command.index}`,
-          "nc",
-          "-z",
-          "-w",
-          "1",
-          command.host,
-          String(command.port),
-        ]);
-        return { result: "connected" };
-      } catch {
-        return { result: "blocked" };
-      }
-    }
+    case "proxy-probe":
+      // Asynchronous, so probes sent together run together (re-check finding 9).
+      return new Promise((resolve) =>
+        execFile(
+          "ip",
+          [
+            "netns",
+            "exec",
+            `osp${command.index}`,
+            "nc",
+            "-z",
+            "-w",
+            "1",
+            command.host,
+            String(command.port),
+          ],
+          (error) => resolve({ result: error ? "blocked" : "connected" }),
+        ),
+      );
     case "make-profiles": {
       for (let index = command.from; index < command.to; index += 1) {
         const file = `/var/lib/opensteer-pool/profiles/bench-${index}.ext4`;
