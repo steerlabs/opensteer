@@ -1155,6 +1155,22 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     sessionId: z.string().min(1),
     type: z.literal("browser.session.close"),
   }),
+  /**
+   * The owner's Restart browser on a Cloud Computer's pooled browser: its pages and saved state
+   * are discarded and it starts fresh. Sent only to a Home that reports that pooled browser;
+   * every other Home refuses it.
+   */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    runnerId: z.string().min(1).max(200),
+    type: z.literal("browser.pool.restart"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    surfaceId: z.string().min(1).max(200),
+    noticeId: z.string().min(1).max(200),
+    type: z.literal("browser.pool.notice.seen"),
+  }),
   /** Forgets one address from the person's own profile's history, and its site's icon when unused. */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1476,6 +1492,8 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.pool.restart") }),
+  z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
   z.object({

@@ -31,6 +31,7 @@ import type {
 import type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
 import type { Transaction } from "kysely";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
+import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 export type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
@@ -39,6 +40,7 @@ export type BrowserBindingTabActor = {
   authority: CdpAuthority;
   threadId: ThreadId;
   signal?: AbortSignal;
+  browserSend?: PooledBrowserSend;
 };
 export type TabActor =
   | BrowserBindingTabActor

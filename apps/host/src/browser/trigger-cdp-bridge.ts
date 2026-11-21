@@ -66,7 +66,8 @@ interface CdpRouteOptions<Scope> {
     | "agentBackend"
     | "closeTriggerSessionsForBinding"
     | "openAgentSession"
-  >;
+  > &
+    Partial<Pick<BrowserService, "usesPoolAdmission">>;
   readonly expiresAt?: (scope: Scope) => number;
   /**
    * Rechecks an open connection by what it authenticated as. Without one, each
@@ -405,6 +406,7 @@ function attachCdpSocket<Scope>(
     : undefined;
   expirationTimer?.unref();
   let ownedSessionOpened = false;
+  const poolWaiting = options.browser.usesPoolAdmission ? new AbortController() : undefined;
   const attachmentPromise = (async () => {
     if (authority.bindingGeneration !== undefined) {
       await options.reauthorize?.(connection.scope);
@@ -422,7 +424,11 @@ function attachCdpSocket<Scope>(
       sessionId = parsed.data;
     }
     if (options.ownsSession) {
-      const opened = await options.browser.openAgentSession({ ...authority, fresh: true });
+      const opened = await options.browser.openAgentSession({
+        ...authority,
+        fresh: true,
+        ...(poolWaiting ? { signal: poolWaiting.signal } : {}),
+      });
       ownedSessionOpened = true;
       sessionId = opened.session.id;
     }
@@ -442,7 +448,11 @@ function attachCdpSocket<Scope>(
       };
     }
     const attached = await options.browser.attachCdpForAgent(
-      { ...authority, ...(sessionId ? { sessionId } : {}) },
+      {
+        ...authority,
+        ...(sessionId ? { sessionId } : {}),
+        ...(poolWaiting ? { signal: poolWaiting.signal } : {}),
+      },
       (event) => {
         sendJson(socket, {
           method: event.method,
@@ -464,10 +474,12 @@ function attachCdpSocket<Scope>(
                 method: "Target.detachFromTarget",
                 parameters: { sessionId },
               });
-              void pending.result.catch(() => undefined);
+              if (attached.pooledClose) await pending.result;
+              else void pending.result.catch(() => undefined);
             }),
           );
-          attached.close();
+          if (attached.pooledClose) await attached.pooledClose();
+          else attached.close();
         });
       },
       dispatch: async (value: unknown) => {
@@ -515,17 +527,21 @@ function attachCdpSocket<Scope>(
   const close = (): Promise<void> => {
     if (closing) return closing;
     disconnected = true;
+    poolWaiting?.abort(new BrowserCdpConnectionEnded("The browser connection ended."));
     if (expirationTimer) clearTimeout(expirationTimer);
     if (refusalTimer) clearTimeout(refusalTimer);
-    closing = attachmentPromise
-      .then(
-        (attachment) => attachment.close(),
-        () => undefined,
-      )
-      .then(async () => {
+    closing = (async () => {
+      try {
+        await attachmentPromise.then(
+          (attachment) => attachment.close(),
+          () => undefined,
+        );
+      } finally {
+        // The owned session ends even when the attachment's own cleanup failed.
         if (options.ownsSession && ownedSessionOpened)
           await options.browser.closeTriggerSessionsForBinding(authority.agentBindingId);
-      });
+      }
+    })();
     return closing;
   };
   socket.once("error", () => {

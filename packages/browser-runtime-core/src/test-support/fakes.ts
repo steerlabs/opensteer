@@ -4,7 +4,7 @@ import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/br
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserAttachTicketClaimsSchema,
-  type BrowserAttachTicketClaims,
+  type RuntimeBrowserAttachTicketClaims as BrowserAttachTicketClaims,
   type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";

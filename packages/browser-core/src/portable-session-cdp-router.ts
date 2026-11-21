@@ -371,13 +371,22 @@ export class SessionCdpRouter {
     this.#unclaimedPages.delete(rootTargetId);
   }
 
-  async unregisterSession(sessionId: string, confirm = false): Promise<void> {
+  /**
+   * Ends a session's routing. `abandon` gives up the targets' claim of work still in flight, for
+   * a session whose channel was lost while its pages are kept: that work's outcome is already
+   * unknown to its sender, its replies reach no connection, and the same session may register
+   * the targets again at once.
+   */
+  async unregisterSession(sessionId: string, confirm = false, abandon = false): Promise<void> {
     const state = this.#sessions.get(sessionId);
     if (!state) return;
     this.#sessions.delete(sessionId);
     const connections = [...state.session.connections];
     for (const connection of connections) this.#closeConnection(connection);
-    for (const targetId of state.session.ownedTargetIds) this.#ownerByTargetId.delete(targetId);
+    for (const targetId of state.session.ownedTargetIds) {
+      this.#ownerByTargetId.delete(targetId);
+      if (abandon) this.#workByTarget.delete(targetId);
+    }
     if (confirm) await Promise.all(connections.map((connection) => connection.settlement.promise));
   }
 
@@ -1795,7 +1804,9 @@ export class SessionCdpRouter {
     }
     const tracked = work;
     return trackPromise(tracked, start).finally(() => {
-      if (!tracked.size) this.#workByTarget.delete(targetId);
+      // Abandoned work settling late leaves the target's newer work alone.
+      if (!tracked.size && this.#workByTarget.get(targetId) === tracked)
+        this.#workByTarget.delete(targetId);
     });
   }
 

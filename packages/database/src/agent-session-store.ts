@@ -28,6 +28,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { RequestStore } from "./request-store.js";
+import {
+  requireBrowserPoolAdmission,
+  type BrowserPoolTargetIdentity,
+} from "./browser-pool-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -989,9 +993,20 @@ export async function handOffAgentOperation(
     readonly agentConnectionId: string;
     readonly reviewed: ReviewedOperation;
     readonly grantTarget?: AgentGrantTarget | undefined;
+    readonly pool?:
+      | {
+          readonly target: BrowserPoolTargetIdentity;
+          readonly signal: AbortSignal;
+        }
+      | undefined;
   },
 ): Promise<AgentOperationRow | null> {
   return commitPersonalMutation(database, async (tx) => {
+    const pool = input.pool;
+    if (pool) {
+      pool.signal.throwIfAborted();
+      await requireBrowserPoolAdmission(tx, pool.target.runnerId, pool.target);
+    }
     const connection = await lockLiveConnection(
       tx,
       input.userId,
@@ -1017,6 +1032,7 @@ export async function handOffAgentOperation(
       operation.mode !== minThreadAccessMode(operation.accessMode, connection.accessMode)
     )
       return null;
+    pool?.signal.throwIfAborted();
     return (
       (await approvedOperationUpdate(tx, input.reviewed)
         .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
@@ -1112,6 +1128,37 @@ export async function refuseUnsentAgentOperation(
     .where("state", "in", ["admitted", "pending", "approved"])
     .where("handedOffAt", "is", null)
     .execute();
+}
+
+/**
+ * A pooled browser operation that was handed off but whose every command was refused before it
+ * reached the wire: nothing happened, so it is refused, not failed or unknown.
+ */
+export async function refuseUnsentHandedOffAgentOperation(
+  database: Kysely<DatabaseSchema>,
+  id: AgentOperationId,
+  message: string,
+): Promise<boolean> {
+  const now = new Date();
+  const row = await database
+    .updateTable("agentOperations")
+    .set({
+      state: "refused",
+      outcome: "refused",
+      terminalEvidenceAt: now,
+      completedAt: now,
+      updatedAt: now,
+      decision: jsonValue({
+        by: "refused",
+        reason: "authority",
+        message,
+      } satisfies AgentOperationDecision),
+    })
+    .where("id", "=", id)
+    .where("state", "=", "handed-off")
+    .returning("id")
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 /** The terminal outcome of a handed-off operation; `unknown` is never retried. */

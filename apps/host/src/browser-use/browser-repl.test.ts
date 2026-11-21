@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { Worker } from "node:worker_threads";
-import { OpensteerError, refused } from "@opensteer/core";
+import { OpensteerError, createId, refused } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import {
@@ -99,6 +99,50 @@ describe("browser REPL", () => {
     ).toMatchObject({ isError: true, structuredContent: { error: { code: "outcome-unknown" } } });
     expect(recheck).toHaveBeenCalledOnce();
     expect(port.command).not.toHaveBeenCalled();
+  });
+
+  it("rebinds only a witnessed cached page handle and uses the replacement channel", async () => {
+    const witnessed = { ...root, pooledWitness: "same-profile-tab-generation-and-document" };
+    const replacement = { ...witnessed, targetId: "new-target", sessionId: "new-channel" };
+    const rebind = vi.fn<NonNullable<BrowserUsePort["rebind"]>>(async () => replacement);
+    const { service, port, end } = setup({ openPage: async () => witnessed, rebind });
+    const browserSend = {
+      target: {
+        runnerId: createId("runner"),
+        runtimeId: "pool-runtime",
+        instanceId: "pool-instance",
+        slotId: "slot",
+        term: 1,
+        epoch: 2,
+      },
+      recheck: async () => {},
+      submitted: () => {},
+      acknowledged: () => {},
+    };
+    const run = (code: string) =>
+      service.execute("context", code, undefined, undefined, undefined, browserSend);
+    expect((await run(bind)).isError).not.toBe(true);
+    end();
+    expect((await run('await page.js("document.title")')).isError).not.toBe(true);
+    expect(rebind).toHaveBeenCalledExactlyOnceWith(
+      witnessed,
+      expect.objectContaining({ browserSend }),
+    );
+    expect(port.command).toHaveBeenCalledWith(
+      replacement,
+      "Runtime.evaluate",
+      expect.anything(),
+      replacement.sessionId,
+      expect.anything(),
+    );
+
+    end();
+    rebind.mockResolvedValue({ ...replacement, pooledWitness: "different-document" });
+    expect(await run('await page.js("document.title")')).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "page-ended" } },
+    });
+    expect(port.command).toHaveBeenCalledOnce();
   });
 
   it("prints the browser API without touching a page, and closes a bound page", async () => {

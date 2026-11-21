@@ -68,6 +68,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     agentDirectoryMigrationName,
     "0048_shared_chrome_grants",
     "0049_work_home",
+    "0050_browser_pool",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

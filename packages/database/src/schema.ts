@@ -63,6 +63,7 @@ import type {
   AuthSessionId,
   AuthVerificationId,
   BrowserProfileId,
+  BrowserSurfaceId,
   BrowserSourceId,
   CausalChainId,
   CommandId,
@@ -2385,6 +2386,59 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  browserPoolSlots: {
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    intentSequence: number;
+    intentId: string | null;
+    attachmentGeneration: number;
+    /** `releasing`: the device was removed; the row goes once the guest is known stopped. */
+    phase: "running" | "preparing" | "parked" | "waking" | "releasing";
+    retained: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    savedState: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    outcome: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    phaseSince: ColumnType<Date, Date | undefined, Date>;
+    /** The last fresh start: why, when, and its id. */
+    lastStart: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    failedStarts: ColumnType<number, number | undefined, number>;
+  };
+  browserPoolControllerCalls: {
+    id: string;
+    runnerId: RunnerId;
+    slotId: string;
+    term: number;
+    intentId: string | null;
+    kind: string;
+    request: JsonColumn<Readonly<Record<string, unknown>>>;
+    result: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    createdAt: Generated<Timestamp>;
+    settledAt: Timestamp | null;
+  };
+  browserPoolDocumentLosses: {
+    intentId: string;
+    runnerId: RunnerId;
+    ownerId: UserId;
+    sessionId: BrowserSessionId;
+    surfaceId: BrowserSurfaceId;
+    documentId: string | null;
+    reason: string;
+    lostAt: Generated<Timestamp>;
+    noticedAt: Timestamp | null;
+  };
+  browserPoolRelays: {
+    id: string;
+    runnerId: RunnerId;
+    runtimeId: string;
+    slotId: string;
+    term: number;
+    instanceId: string;
+    epoch: number;
+    createdAt: Generated<Timestamp>;
+  };
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
