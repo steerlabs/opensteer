@@ -13,6 +13,7 @@ import {
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
+import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
 import type { ConsentGrant } from "../account/account-oauth.js";
 
 /**
@@ -279,6 +280,10 @@ export function portalHomeBody(input: {
   readonly hostedTeams: { readonly createHref: string; readonly rows: readonly string[] } | null;
   readonly rows: readonly string[];
   readonly signOutAction: string;
+  /** The Cloud Computer page, when this Account service offers one. */
+  readonly cloudComputerHref?: string | null;
+  /** The organizations page, when this Account service has organizations. */
+  readonly organizationsHref?: string | null;
 }): string {
   const { account } = input;
   const label = account.displayName ?? account.email;
@@ -296,20 +301,29 @@ export function portalHomeBody(input: {
   const hosted = input.hostedTeams
     ? `<h2 class="section-title">Hosted teams</h2><ul class="places">${input.hostedTeams.rows.join("")}<li class="place place--add"><span class="device">${icon("plus")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.hostedTeams.createHref)}">Create a team</a></span></li></ul>`
     : "";
+  // A person who has no Mac, or works for an organization, starts from here too.
+  const more = [
+    input.cloudComputerHref
+      ? `<li class="place place--add"><span class="device">${icon("cloud")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.cloudComputerHref)}">${escapeHtml(cloudWords("cloud.title"))}</a></span></li>`
+      : "",
+    input.organizationsHref
+      ? `<li class="place place--add"><span class="device">${icon("person")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.organizationsHref)}">${escapeHtml(orgWords("org.title"))}</a></span></li>`
+      : "",
+  ].join("");
   if (input.rows.length === 0) {
     return `${masthead}<main class="column"><div class="empty">
       <span class="device">${icon("laptop")}</span>
       <h1 class="title title--page">Set up Opensteer</h1>
       <p class="lead">Opensteers you set up or join show up here.</p>
       ${input.desktopDownloadUrl ? `<a class="btn btn--primary" href="${escapeHtml(input.desktopDownloadUrl)}">${icon("download")}Get the desktop app</a>` : ""}
-    </div>${hosted}${fallbackSignOut}</main>`;
+    </div>${more ? `<ul class="places">${more}</ul>` : ""}${hosted}${fallbackSignOut}</main>`;
   }
   const download = input.desktopDownloadUrl
     ? `<li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li>`
     : "";
   return `${masthead}<main class="column">
     <h1 class="title title--page">Your Opensteers</h1>
-    <ul class="places">${input.rows.join("")}${download}</ul>
+    <ul class="places">${input.rows.join("")}${download}${more}</ul>
     ${hosted}${fallbackSignOut}
   </main>`;
 }

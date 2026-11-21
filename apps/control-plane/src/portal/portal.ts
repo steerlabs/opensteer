@@ -1,5 +1,7 @@
 import { registerTeamSetupPortal } from "../adoption/team-setup.js";
 import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
+import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
+import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { registerOrganizationPortal } from "../organizations/portal-routes.js";
 import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
@@ -232,6 +234,8 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           deploymentCard(deployment, presence[index] === true, cloud.get(deployment.id) ?? null),
         ),
         signOutAction: portalSignOutPath,
+        cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
+        organizationsHref: dependencies.organizations ? organizationsPortalPath : null,
       }),
       fonts,
       layout: "app",

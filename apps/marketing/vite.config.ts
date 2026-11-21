@@ -7,7 +7,10 @@ const origin = "https://opensteer.com";
 const pages = ["index", "download", "support", "privacy", "terms", "404"];
 // GitHub Latest is the newest Stable desktop release; Beta builds are prereleases and never take it.
 const latest = "https://github.com/steerlabs/opensteer/releases/latest/download";
+// The Opensteer account's own Cloud Computer page: sign in, see the offer, then check out.
+const portal = "https://app.opensteer.com";
 const tokens: Record<string, string> = {
+  "{{cloudComputer}}": `${portal}/cloud-computer`,
   "{{macDownload}}": `${latest}/Opensteer-mac-arm64.zip`,
   "{{macInstall}}": `curl -fsSL ${latest}/install.sh | sh`,
 };
