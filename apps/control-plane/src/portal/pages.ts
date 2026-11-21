@@ -336,8 +336,10 @@ export function placeRow(input: {
   readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "team";
+  readonly kind: "personal" | "team" | "cloud";
   readonly kindLabel: string;
+  /** "Work · {organization}" on a Home an organization assigned. */
+  readonly badge?: string | null;
   readonly name: string;
   readonly remove: {
     readonly action: string;
@@ -361,6 +363,11 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
+  // A Cloud Computer says so in words, with its badge when an organization assigned it.
+  const kindLine =
+    input.kind === "cloud"
+      ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
+      : "";
   const spoken = `<span class="visually-hidden">${escapeHtml(input.kindLabel)}${status ? `, ${escapeHtml(status.label)}` : ""}</span>`;
   const sheetId = `remove-${input.id.replace(/[^\w-]/gu, "")}`;
   const confirm = input.remove?.confirm ?? {
@@ -377,8 +384,8 @@ export function placeRow(input: {
       </div>`
     : "";
   return `<li class="place ${open ? "place--open" : "place--still"}"${input.anchor ? ` id="${escapeHtml(input.anchor)}"` : ""}>
-    <span class="device">${icon(input.kind === "personal" ? "laptop" : "server")}${dot}</span>
-    <span class="place__body">${control}${note}${spoken}</span>
+    <span class="device">${icon(input.kind === "personal" ? "laptop" : input.kind === "cloud" ? "cloud" : "server")}${dot}</span>
+    <span class="place__body">${control}${kindLine}${note}${spoken}</span>
     ${remove}${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
   </li>`;
 }

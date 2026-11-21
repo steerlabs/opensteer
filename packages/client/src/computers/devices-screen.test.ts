@@ -25,6 +25,7 @@ import {
   cloudSuggestionVisible,
   deviceScreenRow,
   devicesScreen,
+  cloudComputerDeployments,
   homeKind,
   parseCloudSuggestionMemory,
   serverHomeFacts,
@@ -492,5 +493,17 @@ describe("why the Home's own device can't be removed", () => {
     expect(homeKeptWords("server")).toBe(
       "Your Opensteer lives on this server, so it can’t be removed.",
     );
+  });
+});
+
+describe("which listed Homes are Cloud Computers", () => {
+  it("takes the Account's own Cloud Computers and work Homes, and nothing before it answers", () => {
+    expect([...cloudComputerDeployments(null)]).toEqual([]);
+    expect([
+      ...cloudComputerDeployments({
+        computers: [{ deploymentId: "dep_mine" }, { deploymentId: undefined }] as never,
+        work: [{ computer: { deploymentId: "dep_work" } }, { computer: null }] as never,
+      }),
+    ]).toEqual(["dep_mine", "dep_work"]);
   });
 });

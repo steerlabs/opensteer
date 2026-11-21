@@ -1,4 +1,5 @@
 import {
+  cloudComputerDeployments,
   cloudWords,
   orgWords,
   workAuditExcluded,
@@ -16,6 +17,12 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 /** The person's work Homes, from the one Cloud Computer read the app already makes. */
 export function useWorkHomes(): readonly WorkHomeCard[] {
   return useCloudComputer(useMobileClient().cloudComputers ?? null).work;
+}
+
+/** The listed Homes the Account says are Opensteer Cloud Computers, work Homes among them. */
+export function useCloudComputerIds(): ReadonlySet<string> {
+  const views = useCloudComputer(useMobileClient().cloudComputers ?? null).views;
+  return useMemo(() => cloudComputerDeployments(views), [views]);
 }
 
 /** Each listed work Home's "Work · {organization}" badge, by Home. */

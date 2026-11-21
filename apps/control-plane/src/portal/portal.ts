@@ -16,6 +16,8 @@ import {
   AccountDeploymentSchema,
   ControlPlaneAccountIdSchema,
   IssueAccountHostSessionGrantResponseSchema,
+  cloudWords,
+  orgWords,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -200,10 +202,19 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
   ): Promise<string | FastifyReply> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [deployments, hostedTeams] = await Promise.all([
+    const [deployments, hostedTeams, computers] = await Promise.all([
       store.listDeployments(accountId),
       dependencies.hostedTeams?.listCreatedBy(accountId),
+      // Only to name each Home's kind: the list still draws when this read fails.
+      dependencies.cloudComputers?.listForAccount(accountId).catch(() => []) ?? [],
     ]);
+    const cloud = new Map(
+      computers.flatMap((computer) =>
+        computer.deploymentId
+          ? [[computer.deploymentId, { organization: computer.work?.organizationName ?? null }]]
+          : [],
+      ),
+    );
     const presence = await Promise.all(
       deployments.map((deployment) =>
         store.isDeploymentPresentForAccount(accountId, deployment.id),
@@ -218,7 +229,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           ? { createHref: portalCreateHostedTeamPath, rows: hostedTeamRows(hostedTeams) }
           : null,
         rows: deployments.map((deployment, index) =>
-          deploymentCard(deployment, presence[index] === true),
+          deploymentCard(deployment, presence[index] === true, cloud.get(deployment.id) ?? null),
         ),
         signOutAction: portalSignOutPath,
       }),
@@ -748,6 +759,11 @@ function normalizedApexDomain(value: string): string {
 export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
   present: boolean,
+  /**
+   * The Account's own Cloud Computer for this Home, when it is one: how it is reached never
+   * says what it is, so a Cloud Computer or a work Home is never called "Team".
+   */
+  cloud: { readonly organization: string | null } | null = null,
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
@@ -765,8 +781,13 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "team",
-    kindLabel: deploymentKindLabel(personal ? "personal" : "team"),
+    kind: cloud ? "cloud" : personal ? "personal" : "team",
+    kindLabel: cloud
+      ? cloudWords("cloud.shortTitle")
+      : deploymentKindLabel(personal ? "personal" : "team"),
+    badge: cloud?.organization
+      ? orgWords("org.work.badge", { organization: cloud.organization })
+      : null,
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,

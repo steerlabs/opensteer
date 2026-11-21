@@ -154,6 +154,19 @@ describe("portal Deployment cards", () => {
     );
   });
 
+  it("calls a Cloud Computer a Cloud Computer, and a work Home's organization by name, never Team", () => {
+    // A Cloud Computer is reached at its own address, as a team server is.
+    const deployment = directoryDeployment(selfHostedDeployment());
+    const mine = deploymentCard(deployment, true, { organization: null });
+    expect(mine).toContain("Cloud Computer");
+    expect(mine).not.toContain(">Team<");
+    expect(mine).toContain("M17.5 18.5"); // the cloud, not a server
+    const work = deploymentCard(deployment, true, { organization: "Acme" });
+    expect(work).toContain("Work · Acme · Cloud Computer");
+    // Without the Account's word for it, a canonical Home keeps the word it had.
+    expect(deploymentCard(deployment, true)).toContain(">Team<");
+  });
+
   it("keeps removed member access unavailable even without a Host health observation", () => {
     const deployment = directoryDeployment({ ...selfHostedDeployment(), access: "member" });
     const card = deploymentCard(deployment, false);

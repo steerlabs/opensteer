@@ -38,6 +38,7 @@ export const devicesCopy = {
   "devices.switch.appsDetail": "See and control apps",
   "devices.switch.filesDetail": "Read files and run commands",
   "home.remoteAccess": "Remote access",
+  "place.kind.cloud": "Cloud Computer",
   "home.thisMac": "Running on this Mac",
   "home.kept.mac": "Your Opensteer lives on this Mac, so it can’t be removed.",
   "home.kept.server": "Your Opensteer lives on this server, so it can’t be removed.",

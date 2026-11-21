@@ -42,6 +42,21 @@ export interface HomeAccountFacts {
   readonly work: readonly DesktopWorkHome[];
 }
 
+/**
+ * The Homes the Account itself says are Opensteer Cloud Computers, a person's own or a work
+ * Home an organization assigned: what a list of Homes marks "Cloud Computer". Empty until the
+ * Account was read.
+ */
+export function cloudComputerDeployments(
+  account: HomeAccountFacts | null | undefined,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const view of account?.computers ?? []) if (view.deploymentId) ids.add(view.deploymentId);
+  for (const { computer } of account?.work ?? [])
+    if (computer?.deploymentId) ids.add(computer.deploymentId);
+  return ids;
+}
+
 export function homeKind(input: {
   readonly exposure: "loopback" | "networked" | undefined;
   /** What the Home's own configuration says it is; absent from older Homes. */

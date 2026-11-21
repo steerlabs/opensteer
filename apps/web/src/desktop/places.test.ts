@@ -109,3 +109,39 @@ it("badges the Home an organization pays for, by the Home the Account pinned", (
     Mine: undefined,
   });
 });
+
+it("calls a Cloud Computer a Cloud Computer, with the cloud, never a laptop", () => {
+  const cloud = createId("deployment");
+  const mac = createId("deployment");
+  const here = createId("deployment");
+  const deployment = (id: string, name: string, onThisComputer = false) => ({
+    id,
+    name,
+    kind: "personal",
+    availableActions: ["select"],
+    canonicalOrigin: "https://w3r8.cloud.opensteer.example",
+    onThisComputer,
+    accountAccess: "owner",
+    source: "account",
+    status: "idle",
+    statusInfo: placeStatus.unavailable("host-too-old", name),
+  });
+  const rows = placeRows(
+    {
+      account: { available: true, status: "signed-in" },
+      deployments: [
+        deployment(cloud, "Mine in the cloud"),
+        deployment(mac, "Studio"),
+        deployment(here, "Here", true),
+      ],
+      selectedDeploymentId: null,
+      unavailable: [],
+    } as unknown as DeploymentAccessSnapshot,
+    { thisComputer: "This Mac", cloud: new Set([cloud]) },
+  );
+  expect(Object.fromEntries(rows.map((row) => [row.name, [row.detail, row.icon]]))).toEqual({
+    "Mine in the cloud": ["Cloud Computer", "cloud"],
+    Studio: ["Your computer", "laptop"],
+    Here: ["This Mac", "laptop"],
+  });
+});

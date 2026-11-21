@@ -1,3 +1,4 @@
+import { deviceWords } from "@opensteer/client/computers";
 import { hostNeedsUpdateLabel, placeStatus } from "@opensteer/protocol/deployment-status";
 import type {
   DeploymentAccessDeployment,
@@ -41,6 +42,8 @@ export interface PlaceRowContext {
   readonly facts?: ReadonlyMap<string, ComputerFacts>;
   /** Each work Home's badge, by Home. */
   readonly work?: ReadonlyMap<string, string>;
+  /** The Homes the Account says are Opensteer Cloud Computers, work Homes among them. */
+  readonly cloud?: ReadonlySet<string>;
 }
 
 /**
@@ -86,11 +89,13 @@ function placeRow(
     deployment.source === "account" && !signedIn
       ? deployment.statusInfo
       : deploymentConnectionStatusInfo(deployment);
+  // A Cloud Computer is never "Your computer" with a laptop: the Account says what it is.
+  const cloud = context.cloud?.has(deployment.id) === true && !deployment.onThisComputer;
   return {
     current,
     facts: context.facts?.get(deployment.id),
-    detail: placeDetail(deployment, context),
-    icon: deployment.kind === "personal" ? "laptop" : "server",
+    detail: cloud ? deviceWords("place.kind.cloud") : placeDetail(deployment, context),
+    icon: cloud ? "cloud" : deployment.kind === "personal" ? "laptop" : "server",
     id: deployment.id,
     name: deployment.name,
     opens: current || deployment.availableActions.includes("select"),

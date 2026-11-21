@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import {
+  cloudComputerDeployments,
   cloudWords,
   orgWords,
   workAuditExcluded,
@@ -35,6 +36,15 @@ export function usePlaceWorkBadges(
     () => new Map([...workHomeBadges(work)].map(([id, card]) => [id, card.badge])),
     [work],
   );
+}
+
+/** The listed Homes the Account says are Opensteer Cloud Computers, for a list of places. */
+export function usePlaceCloudComputers(
+  bridge: OpensteerDesktopBridge | null | undefined,
+): ReadonlySet<string> {
+  const account = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
+  const views = useCloudComputer(account).views;
+  return useMemo(() => cloudComputerDeployments(views), [views]);
 }
 
 /** "Work · {organization}" for the listed Home that is a work Home, if any. */
