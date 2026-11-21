@@ -23,7 +23,7 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   const file = process.argv[2] ?? "/etc/opensteer-pool/agent.json";
   const config = await readAgentConfig(file);
   refuseUnsupportedMode(config);
-  const driver = new FirecrackerDriver(config.driver);
+  const driver = new FirecrackerDriver(config.driver, log);
   await driver.open();
   const agent = new PoolAgent({
     journal: new SlotJournal(config.journal),

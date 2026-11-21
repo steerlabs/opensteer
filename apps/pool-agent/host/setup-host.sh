@@ -52,7 +52,7 @@ require_host() {
 
 # The side channels Firecracker's production host guide names (Spectre, Meltdown, MDS and
 # iTLB multihit): any one reported "Vulnerable" by the kernel fails the host.
-readonly NAMED_VULNERABILITIES="spectre_v1 spectre_v2 meltdown mds itlb_multihit"
+readonly NAMED_VULNERABILITIES="spectre_v1 spectre_v2 spec_store_bypass meltdown l1tf mds itlb_multihit"
 vulnerable_cpu() {
     local name state
     for name in $NAMED_VULNERABILITIES; do
@@ -148,12 +148,16 @@ Description=Opensteer pool agent
 Requires=opensteer-pool-host.service
 After=opensteer-pool-host.service network-online.target nftables.service
 Wants=network-online.target
+# The agent never stays down for good (re-check finding 7): no start limit; the delay grows.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=$OPT/node/bin/node $OPT/agent/main.js /etc/opensteer-pool/agent.json
 Restart=always
 RestartSec=1
+RestartSteps=6
+RestartMaxDelaySec=60
 # Guests are in the agent's delegated subtree and outlive an agent restart: the next agent
 # reconciles with them. Only the agent's own process is ended on stop.
 Delegate=yes
@@ -303,6 +307,13 @@ check() {
         expect "cpu $name" "$(cut -c1-10 "/sys/devices/system/cpu/vulnerabilities/$name" 2>/dev/null | grep -c '^Vulnerable')" "0"
     done
     expect "ksm" "$(cat /sys/kernel/mm/ksm/run 2>/dev/null || echo 0)" "0"
+    # Re-check finding 6: what the kernel answered when the agent moved each VMM's kvm-pit
+    # thread into the VMM's cgroup (written by the agent once a guest has started).
+    if [[ -f /run/opensteer-pool/kvm-pit.json ]]; then
+        expect "kvm-pit refused" "$(sed -E 's/.*"refused":([0-9]+).*/\1/' /run/opensteer-pool/kvm-pit.json)" "0"
+    else
+        printf '  ---- %-28s %s\n' "kvm-pit" "no guest started since boot"
+    fi
     local smt
     smt=$(cat /sys/devices/system/cpu/smt/active 2>/dev/null ||
         { [[ ${OSP_ONE_THREAD_PER_CORE:-} == declared ]] && echo 0 || echo unreadable; })

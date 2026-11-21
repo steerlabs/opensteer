@@ -57,10 +57,15 @@ CAP_DAC_READ_SEARCH CAP_MKNOD CAP_SYS_CHROOT CAP_KILL CAP_SYS_RESOURCE`), `NoNew
   `SystemCallArchitectures=native`.
 - `Delegate=yes`, `KillMode=process`: guests live in the agent's delegated cgroup subtree and
   outlive an agent restart; the next agent reconciles with them.
-- `Restart=always`, `RestartSec=1`: a journal write that fails (a full or failing disk, a
-  failed directory sync) ends the agent with status 70, and the restarted agent's recovery
-  reads the disk. If writes keep failing, systemd's default start limit (5 starts in 10 s)
-  stops restarting it: the guests keep running with no agent until an operator fixes the disk.
+- `Restart=always`, `RestartSec=1` growing to 60 s over six steps (`RestartSteps`,
+  `RestartMaxDelaySec`), and no start limit (`StartLimitIntervalSec=0`): a journal write that
+  fails (a full or failing disk, a failed directory sync) ends the agent with status 70, and the
+  restarted agent's recovery reads the disk. If writes keep failing, the agent keeps being
+  started, at most once a minute, and comes back by itself once the disk takes writes again; it
+  never stays down for good. Meanwhile guests keep running (the agent's exit does not end
+  them), no Home call is answered, nothing is saved to disk, and no parked state is discarded:
+  an expiry that passed while the agent was down is enforced at its next start, before any call
+  is served. Watch for `agent.fatal` in the agent's log.
 - No mount-namespace options (`ProtectSystem`, `PrivateTmp`): the agent creates network
   namespaces and bind mounts the host must see. This is the one place the unit is wider than a
   typical service; the jailer confines each VMM instead.
@@ -74,7 +79,10 @@ cache of the memory file is charged to the VMM: a save writes it, a restore maps
   `pids.max=256`, `no-file=1024`, `fsize` = the larger of its memory and its profile disk + 64
   MiB, Firecracker's default seccomp filter, no serial console (`8250.nr_uarts=0`), output to
   `/dev/null`. Its `kvm-pit/<pid>` kernel thread is moved into its cgroup after boot and restore
-  (Firecracker's production guide), best effort. One limit over all guests
+  (Firecracker's production guide), best effort. Each answer is logged (`kvm-pit`, with the
+  kernel's error code) and kept in `/run/opensteer-pool/kvm-pit.json`, which `setup-host.sh
+check` reads. A kernel that refuses the move leaves the thread in the root cgroup: the time a
+  guest makes its timer thread spend is then not charged to that guest's CPU limit. One limit over all guests
   (`guests/memory.max`) leaves the host and the agent max(2 GiB, 10 %) of memory; the agent has
   `OOMScoreAdjust=-900`.
 

@@ -193,3 +193,23 @@ describe("finding 5: delete goes through the same lanes as everything else", () 
     expect(fatal).toHaveLength(1);
   });
 });
+
+describe("findings 6 and 7: the host check and the agent's unit", () => {
+  const script = () => readFile(new URL("../host/setup-host.sh", import.meta.url), "utf8");
+
+  it("names l1tf among the CPU vulnerabilities and reads what the kernel said about kvm-pit", async () => {
+    const text = await script();
+    const named = /NAMED_VULNERABILITIES="([^"]+)"/u.exec(text)![1]!.split(" ");
+    expect(named).toEqual(expect.arrayContaining(["l1tf", "spec_store_bypass"]));
+    expect(text).toContain("/run/opensteer-pool/kvm-pit.json");
+  });
+
+  it("restarts the agent with a growing delay and no start limit", async () => {
+    const unit = (await script())
+      .split("opensteer-pool-agent.service <<EOF")[1]!
+      .split("\nEOF")[0]!;
+    expect(unit).toContain("StartLimitIntervalSec=0");
+    expect(unit).toContain("Restart=always");
+    expect(unit).toMatch(/RestartMaxDelaySec=\d+/u);
+  });
+});

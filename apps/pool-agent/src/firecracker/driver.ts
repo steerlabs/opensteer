@@ -96,6 +96,8 @@ export interface FirecrackerDriverConfig {
 }
 
 const execName = "firecracker";
+/** The host check reads what became of the `kvm-pit` threads here. */
+const pitStateFile = "/run/opensteer-pool/kvm-pit.json";
 const minimumFreeMarginBytes = 512 * 1024 * 1024;
 
 export class FirecrackerDriver implements HypervisorDriver {
@@ -108,7 +110,13 @@ export class FirecrackerDriver implements HypervisorDriver {
   #hostAddresses: readonly string[] = [];
   readonly #space = new SpaceLedger();
 
-  constructor(config: FirecrackerDriverConfig) {
+  readonly #log: (event: Readonly<Record<string, unknown>>) => void;
+
+  constructor(
+    config: FirecrackerDriverConfig,
+    log: (event: Readonly<Record<string, unknown>>) => void = () => {},
+  ) {
+    this.#log = log;
     this.#config = config;
   }
 
@@ -544,16 +552,34 @@ export class FirecrackerDriver implements HypervisorDriver {
       .map((line) => line.trim().split(/\s+/u))
       .filter(([, comm]) => comm === `kvm-pit/${pid}`)
       .map(([thread]) => thread!);
+    // Re-check finding 6: what the kernel answered is logged and kept where the host check
+    // reads it. A thread that was not found is reported too.
+    if (!pit.length) this.#pit("absent", undefined);
     for (const thread of pit)
-      await this.#cgroups
-        .adopt(slotKey(boot.slotId), boot.jailId, thread)
-        .then(() => (this.pitAdopted += 1))
-        .catch(() => (this.pitRefused += 1));
+      await this.#cgroups.adopt(slotKey(boot.slotId), boot.jailId, thread).then(
+        () => this.#pit("adopted", undefined),
+        (error: unknown) => this.#pit("refused", error),
+      );
   }
 
-  /** How many `kvm-pit` threads were moved into, or refused by, a VMM cgroup (diagnostics). */
-  pitAdopted = 0;
-  pitRefused = 0;
+  /** What became of each VMM's `kvm-pit` thread since the agent started. */
+  readonly pit = { adopted: 0, refused: 0, absent: 0, last: null as string | null };
+
+  #pit(outcome: "adopted" | "refused" | "absent", error: unknown): void {
+    this.pit[outcome] += 1;
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    const message = error instanceof Error ? error.message : undefined;
+    if (outcome === "refused") this.pit.last = code ?? message ?? "unknown";
+    this.#log({
+      event: "kvm-pit",
+      outcome,
+      ...(code ? { code } : {}),
+      ...(message ? { message } : {}),
+    });
+    void writeFile(pitStateFile, `${JSON.stringify(this.pit)}\n`, { mode: 0o644 }).catch(
+      () => undefined,
+    );
+  }
 
   async #removeJail(jailId: string): Promise<void> {
     const directory = join(this.#config.jailRoot, execName, jailId);
