@@ -79,7 +79,10 @@ describe("matchRestoredTabs", () => {
     // savedTabIds, so lineage-person claims only surf-person and closes surf-other as an orphan.
     const crossLineage = matchRestoredTabs(
       [restored(40, 0, "https://same.test/"), restored(41, 1, "https://same.test/")],
-      [sidecar(0, "surf-person", "https://same.test/"), sidecar(1, "surf-other", "https://same.test/")],
+      [
+        sidecar(0, "surf-person", "https://same.test/"),
+        sidecar(1, "surf-other", "https://same.test/"),
+      ],
       { savedTabIds: new Set(["surf-person"]) },
     );
 
@@ -112,7 +115,10 @@ describe("matchRestoredTabs", () => {
     for (const opts of [{}, { savedTabIds: new Set(["surf-person"]) }]) {
       const crashNavDrift = matchRestoredTabs(
         [restored(60, 0, "https://shared.test/x"), restored(61, 1, "https://old.test/w")],
-        [placeholder(0, "https://shared.test/x"), sidecar(1, "surf-person", "https://shared.test/x")],
+        [
+          placeholder(0, "https://shared.test/x"),
+          sidecar(1, "surf-person", "https://shared.test/x"),
+        ],
         opts,
       );
       expect(crashNavDrift.matched.size).toBe(0);

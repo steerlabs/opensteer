@@ -42,30 +42,38 @@ tab or explicitly resuming it as an agent wakes the existing record within its a
 Restore state stays in runtime memory or inside the browser profile itself, never a database, stream
 or log. On macOS, Electron captures navigation history with Blink page state and `sessionStorage` in
 runtime memory across a tab sleep. On Linux (and Opensteer Cloud Computers), a sleeping tab in a
-native Chromium profile is discarded in place via Chromium's own tab lifecycle (`chrome.tabs.discard`,
+native Chromium profile is discarded via Chromium's own tab lifecycle (`chrome.tabs.discard`,
 after freezing to flush Blink page state and detaching CDP) through a minimal bundled MV3 helper
 extension (`tabs` and `debugger` permissions only, hidden from tab lists, session CDP and connected
 agents); if the helper is unavailable or fails, the tab still sleeps by closing its page and wakes
-by address (unknown-outcome discards stay tracked so later wake or release still cleans them up).
+by address (unknown-outcome discards stay tracked by tab id only so later wake or release still
+cleans them up).
 Closing a sleeping tab or ending its session removes it from Chromium with confirmation, retrying
 failed releases in the background until confirmed gone. On Linux without an explicit
 `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab sleeper reacts to container working set
 (`memory.current - inactive_file` against `memory.max`, or bare-Linux `MemTotal - MemAvailable`
 against `MemTotal`) — sleeping eligible tabs above 70% and stopping below 60% — while keeping
-renderer `Pss` for reporting and falling back to its page estimate when memory state cannot be read.
+renderer `Pss` for reporting only and falling back to its page estimate when memory state cannot be
+read.
 Native Chromium profiles keep Chromium's own `Default/Sessions/` files across orderly runtime
-restarts or crashes (plus an atomic full-strip `opensteer-tabs.json` sidecar holding strip indices,
-Home tab ids, addresses, real Home lineage ids, and explicit placeholders for unsaved/agent tabs,
-never typed text or page content). As in a desktop browser, typed text in standard form
-fields of durable tabs in the person's profile stays on disk in Chromium's `Default/Sessions/` files
-while those tabs exist; passwords typed into a form are not kept there. On cold start, the first restoring lineage reconciles restored tabs against the Home's saved tab
-list — matching only exact unshifted full-strip slots or unique addresses within the same Home
-lineage, discarding any kept parked saved tab Chromium has loaded (while leaving never-loaded
-`unloaded` tabs untouched so their `sessionStorage` survives, and automatically discarding any
-parked tab Chromium loads later before a session claims it so no unowned background page stays
-running), closing unowned, deleted, agent and non-restoring tabs with evidence (failing closed if
-launch inventory or removal fails and never handing off a surviving restored tab), and opening
-unmatched Home tabs by address.
+restarts or crashes, plus an atomic full-strip `opensteer-tabs.json` sidecar holding strip indices,
+Home tab ids, and addresses of every open tab (with placeholders for unsaved and agent tabs), never
+typed text or page content; if a map update fails persistently, the stale map is deleted so a later
+cold start opens by address rather than matching a stale strip. As in a desktop browser, typed text
+in standard form fields of durable tabs in the person's profile stays on disk in Chromium's
+`Default/Sessions/` files while those tabs exist; passwords typed into a form are not kept there.
+On cold start, the restoring lineage reconciles restored tabs against its own Home saved tab list —
+matching only exact unshifted full-strip slots or unique addresses by globally unique Home tab id,
+discarding any kept parked saved tab Chromium has loaded off the path to ready (while leaving
+never-loaded `unloaded` tabs untouched so their `sessionStorage` survives, and automatically
+discarding any parked tab Chromium loads later before a session claims it so no unowned background
+page stays running), closing unowned, deleted, agent and other-lineage tabs with evidence (failing
+closed if launch inventory or removal fails and never handing off a surviving restored tab or its
+popups), and opening unmatched Home tabs by address. Any second saved lineage in the same profile
+therefore has its restored tabs closed when the restoring lineage reconciles and opens its own tabs
+by address when activated later. If reconciliation exceeds its runtime deadline, remaining restored
+tabs stay hidden and are removed in the background while the session goes on opening tabs by
+address.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
 Guest sessions promise only a descriptor and URL reload.

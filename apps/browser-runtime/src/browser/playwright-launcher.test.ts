@@ -1,10 +1,10 @@
-import {
-  BrowserController,
-  SessionFiles,
-  SurfaceLedger,
-} from "@opensteer/browser-runtime-core";
+import { BrowserController, SessionFiles, SurfaceLedger } from "@opensteer/browser-runtime-core";
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
-import { FakeSink, testSessionFilesRoot, validClaims } from "@opensteer/browser-runtime-core/test-support";
+import {
+  FakeSink,
+  testSessionFilesRoot,
+  validClaims,
+} from "@opensteer/browser-runtime-core/test-support";
 import { SessionCdpRouter } from "@opensteer/browser-core";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
@@ -2692,18 +2692,19 @@ describe("native Chromium profiles", () => {
       { index: 0, surfaceId: surfS, url: "https://race-f3.test/" },
     ]);
     const pageHandlers: Array<(page: Page) => void> = [];
-    const makePage = (id: string, url: string) => ({
-      url: () => url,
-      isClosed: () => false,
-      close: vi.fn(async () => undefined),
-      waitForLoadState: vi.fn(async () => undefined),
-      on: vi.fn(),
-      once: vi.fn(),
-      off: vi.fn(),
-      frames: () => [],
-      mainFrame: () => ({}),
-      _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
-    } as unknown as Page);
+    const makePage = (id: string, url: string) =>
+      ({
+        url: () => url,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+        waitForLoadState: vi.fn(async () => undefined),
+        on: vi.fn(),
+        once: vi.fn(),
+        off: vi.fn(),
+        frames: () => [],
+        mainFrame: () => ({}),
+        _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+      }) as unknown as Page;
     const helper = makePage("target-f3-helper", "about:blank");
     const arrivedPage = makePage("target-f3-601", "https://race-f3.test/");
 
@@ -2981,10 +2982,10 @@ describe("native Chromium profiles", () => {
         t.tabId === 802 ? { ...t, status: "complete", targetId: "target-f4-late-null" } : t,
       );
       for (const handler of pageHandlers) handler(nullTargetPage.page);
-      await vi.waitFor(
-        () => expect(tabs.some((t) => t.tabId === 902 && t.discarded)).toBe(true),
-        { timeout: 3_000, interval: 20 },
-      );
+      await vi.waitFor(() => expect(tabs.some((t) => t.tabId === 902 && t.discarded)).toBe(true), {
+        timeout: 3_000,
+        interval: 20,
+      });
       expect(handedOff).not.toContain("https://null-target-f4.test/");
 
       // (c) Claim meeting a frozen page whose unfreeze fails MUST close it and return null (open by address)!

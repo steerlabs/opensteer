@@ -1154,7 +1154,7 @@ const targetLookupMs = 5_000;
 /** One debugger round trip to a page or browser that may be dying. */
 const nameTargetMs = 2_000;
 
-/** Opaque restore token for a Chromium tab discarded in place by `chrome.tabs.discard`. */
+/** Opaque restore token for a Chromium tab discarded by `chrome.tabs.discard`. */
 const chromiumDiscardRestoreSchema = z.object({
   kind: z.literal("chromium-discard"),
   tokenId: z.string().min(1),
@@ -1442,8 +1442,7 @@ class PlaywrightContextHandle implements BrowserContext {
           if (this.claimedWakePages.has(page) || this.closed) return;
           this.hiddenRestoredPages.delete(page);
           const delayedHandle = this.wrap(page);
-          for (const listener of this.handOffs)
-            listener(delayedHandle, delayedHandle.openerHandle);
+          for (const listener of this.handOffs) listener(delayedHandle, delayedHandle.openerHandle);
           for (const listener of this.pageListeners) listener(delayedHandle);
         })();
         return;
