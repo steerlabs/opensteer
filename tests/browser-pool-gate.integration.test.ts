@@ -435,6 +435,46 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
   }
 });
 
+it("keeps the person's tab the person's through a Home restart while parked, then a wake", async () => {
+  const j = await journey("person-use-restart");
+  try {
+    let home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("used"));
+    await home.service.pageTabs.activate(
+      j.task.userId,
+      (await j.tabs.get(j.task.userId, tabId))!,
+      "person-uses",
+    );
+    const personUsed = () =>
+      [
+        ...(
+          j.guest as unknown as {
+            sessions: Map<
+              string,
+              { ledger: { policyRecords(): Iterable<{ id: string; personUsed: boolean }> } }
+            >;
+          }
+        ).sessions
+          .get(sessionId)!
+          .ledger.policyRecords(),
+      ].find((record) => record.id === tabId)?.personUsed;
+    await vi.waitFor(() => expect(personUsed()).toBe(true));
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    // The Home restarts while parked; its own record of who used which tab starts empty.
+    home = await j.restartHome(home);
+    // A watch viewer wakes it: watching is not use, so nothing new marks the tab.
+    const watching = j.viewer(home, sessionId, "watch");
+    const attached = await watching.attaching;
+    attached.close();
+    expect(await j.slot()).toMatchObject({ outcome: { adopted: [sessionId], lost: [] } });
+    // The guest kept it: the tab is still the person's.
+    expect(personUsed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
 it("stops a parked session while its viewer waits and never reattaches it", async () => {
   const j = await journey("stop-waiting");
   try {
