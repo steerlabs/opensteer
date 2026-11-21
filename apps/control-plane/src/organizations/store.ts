@@ -1,3 +1,4 @@
+import { accountClosing } from "../account/account-closing.js";
 import type { z } from "zod";
 import { cancelAndRefundCheckout } from "../cloud-computers/checkout-compensation.js";
 import {
@@ -185,13 +186,12 @@ export class OrganizationStore {
     const attempt = await this.#db.transaction().execute(async (tx) => {
       const founder = await tx
         .selectFrom("users")
-        .select(["id", "deletionFencedUntil"])
+        .select(["id", "deletionFencedUntil", "deletionRequestedAt"])
         .where("id", "=", account)
         .forNoKeyUpdate()
         .executeTakeFirst();
       const now = this.#now();
-      if (!founder || (founder.deletionFencedUntil && founder.deletionFencedUntil > now))
-        throw deny();
+      if (!founder || accountClosing(founder, now)) throw deny();
       const existing = await tx
         .selectFrom("organizationCheckouts")
         .selectAll()
@@ -317,7 +317,7 @@ export class OrganizationStore {
     if (!id) return false;
     const admin = await tx
       .selectFrom("users")
-      .select(["id", "deletionFencedUntil"])
+      .select(["id", "deletionFencedUntil", "deletionRequestedAt"])
       .where("id", "=", checkout.metadata.account_id)
       .forNoKeyUpdate()
       .executeTakeFirst();
@@ -363,7 +363,7 @@ export class OrganizationStore {
     if (
       !admin ||
       !attempt.founderAccountId ||
-      (admin.deletionFencedUntil && admin.deletionFencedUntil > this.#now()) ||
+      accountClosing(admin, this.#now()) ||
       attempt.status === "expired" ||
       attempt.closeRequestedAt ||
       (attempt.previousSubscriptionId !== null &&
@@ -528,7 +528,7 @@ export class OrganizationStore {
       const owner = attempt.founderAccountId
         ? await tx
             .selectFrom("users")
-            .select("deletionFencedUntil")
+            .select(["deletionFencedUntil", "deletionRequestedAt"])
             .where("id", "=", attempt.founderAccountId)
             .forNoKeyUpdate()
             .executeTakeFirst()
@@ -549,10 +549,7 @@ export class OrganizationStore {
         .executeTakeFirst();
       if (!row) return;
       const closing =
-        close ||
-        Boolean(row.closeRequestedAt) ||
-        !owner ||
-        Boolean(owner.deletionFencedUntil && owner.deletionFencedUntil > this.#now());
+        close || Boolean(row.closeRequestedAt) || !owner || accountClosing(owner, this.#now());
       let session = await this.#stripe.findCheckout({
         accountId: row.founderAccountId,
         requestId: row.requestId,
@@ -1001,7 +998,7 @@ export class OrganizationStore {
     await this.#db.transaction().execute(async (tx) => {
       const user = await tx
         .selectFrom("users")
-        .select(["email", "emailVerified", "deletionFencedUntil"])
+        .select(["email", "emailVerified", "deletionFencedUntil", "deletionRequestedAt"])
         .where("id", "=", account)
         .forNoKeyUpdate()
         .executeTakeFirst();
@@ -1012,7 +1009,7 @@ export class OrganizationStore {
         .executeTakeFirst();
       if (
         !user?.emailVerified ||
-        (user.deletionFencedUntil && user.deletionFencedUntil > this.#now()) ||
+        accountClosing(user, this.#now()) ||
         !invite ||
         normalizeIdentityEmail(user.email) !== invite.email
       )
@@ -1128,6 +1125,8 @@ export class OrganizationStore {
         .select("organizationMembers.accountId")
         .where("organizationId", "=", id)
         .where("accountId", "=", input.accountId)
+        // A member whose Account is closing is assigned nothing.
+        .where("users.deletionRequestedAt", "is", null)
         .where((eb) =>
           eb.or([
             eb("users.deletionFencedUntil", "is", null),
