@@ -136,6 +136,7 @@ it("ends USB input on a Wi-Fi transport event and never accepts or replays its l
     { ...session, includeScreenshot: true },
     f.options(),
   );
+  if ("reason" in observation) throw new Error("Expected a captured observation.");
   const held = Promise.withResolvers<void>();
   f.native.held.set("phone.perform", held.promise);
   const input = connection.request(

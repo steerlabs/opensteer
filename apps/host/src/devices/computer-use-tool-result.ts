@@ -1,9 +1,28 @@
 import {
   formatComputerUseResultHead,
   type PhoneDisplayObservation,
+  type IphoneScreenStatus,
   type ComputerUseObservation,
 } from "@opensteer/protocol";
 import type { ReplContent } from "../computer-use/computer-repl/messages.js";
+
+const iphoneStatusMessages = {
+  locked: "The iPhone is locked. Only the person can unlock it.",
+  "lock-state-unknown": "The iPhone's lock state could not be confirmed.",
+  "screen-off": "The iPhone display is off.",
+  "screen-state-unknown": "The iPhone display state could not be confirmed.",
+} satisfies Record<IphoneScreenStatus["reason"], string>;
+
+export function iphoneScreenStatusContent(status: IphoneScreenStatus, name: string): ReplContent {
+  const locked = status.locked === null ? "unknown" : status.locked ? "yes" : "no";
+  return {
+    type: "text",
+    text: `${name}
+Screen: ${status.screen}
+Locked: ${locked}
+${iphoneStatusMessages[status.reason]}`,
+  };
+}
 
 /** The REPL owns emission order; observations have one text header, then a picture. */
 export function computerObservationContent(

@@ -299,6 +299,8 @@
     "apps/host/src/browser/runner-browser-runtime.ts",
     "apps/host/src/browser/saved-logins.ts",
     "apps/host/src/browser/search-suggestions.ts",
+    "apps/host/src/browser/shadow-comparison.ts",
+    "apps/host/src/browser/shadow-host.ts",
     "apps/host/src/browser/sign-in-admission.ts",
     "apps/host/src/browser/standard-cdp-profile-leases.ts",
     "apps/host/src/browser/standard-cdp-route.ts",

@@ -1,6 +1,7 @@
 import type { ContentPart, MessageEdit } from "@opensteer/core";
-import type { HostApiCommandInput, HostApiCommandOutput } from "@opensteer/protocol";
+import type { HostApiCommandOutput } from "@opensteer/protocol";
 import { HostClientRequestError, type WaitingMessageEditor } from "./client.js";
+import type { ClientCommandInput } from "./device-commands.js";
 
 /**
  * A lease lapses two minutes after its last renewal. Typing renews it at most
@@ -29,7 +30,7 @@ export function isSettledInputMutationError(error: unknown): boolean {
 }
 
 export interface WaitingMessageEditorPort {
-  dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
+  dispatch(command: ClientCommandInput): Promise<HostApiCommandOutput>;
   /**
    * The leases this device holds. An editor adds its own before the take is
    * sent, so the Host's report of that take never reads as another device's.

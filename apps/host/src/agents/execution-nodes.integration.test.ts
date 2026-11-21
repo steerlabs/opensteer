@@ -1,7 +1,7 @@
 import {
   conversationSubagents,
   HttpHostClient,
-  requestDecisionRevision,
+  requestDecision,
   type NodeEntry,
   type WebSocketClient,
 } from "@opensteer/client/host";
@@ -248,8 +248,7 @@ integration("Execution nodes", () => {
       await client.dispatch({
         type: "request.respond",
         idempotencyKey: `respond-${randomUUID()}`,
-        requestId: asked.id,
-        ...requestDecisionRevision(asked),
+        ...requestDecision(asked),
         response: { kind: "choice", optionId: allow.id },
       });
       await settled(active, runId);

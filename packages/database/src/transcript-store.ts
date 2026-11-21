@@ -17,6 +17,7 @@ import {
 import type { Insertable } from "kysely";
 import {
   TranscriptMessageRefsSchema,
+  fitsInlineTranscriptText,
   transcriptMessageRefLimits,
   transcriptMessageRefsMaxBytes,
   type TranscriptMessageRefs,
@@ -59,6 +60,12 @@ export function transcriptPreview(input: TranscriptPreview): TranscriptPreview {
     ...(input.preview !== undefined ? { preview } : {}),
     ...(preview !== text || title !== input.title ? { truncated: true } : {}),
   };
+}
+
+export interface MessageTextFacts {
+  /** Full unstripped message text when within `transcriptInlineTextMaxBytes`; null when oversized. */
+  readonly text: string | null;
+  readonly richPartCount: number;
 }
 
 export const transcriptMessageTextBytes = 1024;
@@ -151,14 +158,19 @@ export function describeTranscriptMessage(input: {
   const refs = transcriptMessageRefs(content.richParts);
   const carried =
     (refs?.attachments?.length ?? 0) + (refs?.pages?.length ?? 0) + (refs?.places?.length ?? 0);
-  // Truncated means the body holds more than the card draws: cut words or references past the bounds.
+  // Truncated means the card preview holds less than the full message body.
   const truncated =
     carried < content.richParts.length || text !== content.text || preview !== text.trim();
+  const messageText: MessageTextFacts = {
+    text: fitsInlineTranscriptText(content.text) ? content.text : null,
+    richPartCount: content.richParts.length,
+  };
   return {
     published,
     visible,
     isTurnStart,
     refs,
+    messageText,
     view: transcriptPreview({
       author: input.author.kind,
       ...(messageKind ? { messageKind, messageAuthor: input.author } : {}),

@@ -1,4 +1,5 @@
 import type { IntegrationDefinitionSummary } from "@opensteer/integration-core/adapter";
+import { createId, PendingRequestSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import {
   accessPlan,
@@ -6,9 +7,58 @@ import {
   computerAccessUpgrade,
   catalogInstallDefinition,
   integrationRequestStillPending,
+  loadAccessRequest,
   matchingInstallationForManifest,
   type LoadedAccessRequest,
 } from "./access-request.js";
+
+it("keeps the request body paired with its revision through the install step", () => {
+  const data = loaded();
+  const payload = {
+    ...data.request,
+    manifest: null,
+    reason: "Read Messages",
+    requestedConnectionId: null,
+  };
+  const installed = PendingRequestSchema.parse({
+    callId: "connect",
+    cancellationReason: null,
+    createdAt: "2026-09-18T00:00:00Z",
+    id: createId("request"),
+    kind: "integration.access",
+    mode: "durable",
+    originatingOccurrenceId: null,
+    originatingRunId: createId("run"),
+    originatingThreadId: createId("thread"),
+    payload,
+    presentation: {
+      kind: "external",
+      title: "Connect Messages",
+      subject: { id: "messages", kind: "integration.access" },
+    },
+    requestedBy: createId("user"),
+    requiredActor: "requester",
+    resolvedAt: null,
+    resolvedBy: null,
+    response: null,
+    status: "pending",
+  });
+  const prior = {
+    ...installed,
+    reviewedRevision: "20",
+    payload: { ...payload, installationId: null, manifest: {}, requestedServerId: null },
+  };
+  const latest = loadAccessRequest(data, { ...installed, reviewedRevision: "21" });
+  expect(loadAccessRequest(data, prior, latest)).toMatchObject({
+    id: installed.id,
+    request: installed.payload,
+    reviewedRevision: "21",
+  });
+  expect(loadAccessRequest(data, { ...prior, id: createId("request") }, latest)).toMatchObject({
+    request: prior.payload,
+    reviewedRevision: "20",
+  });
+});
 
 describe("integrationRequestStillPending", () => {
   it("finds a pending Request across durable pages", async () => {

@@ -34,9 +34,12 @@ import {
   PhoneDisplayDispatchActParamsSchema,
   PhoneDisplayObservationResultSchema,
   PhoneDisplayActResultSchema,
+  IphoneScreenObservationResultSchema,
+  IphoneScreenActResultSchema,
+  IphoneScreenStatusSchema,
+  type IphoneScreenStatus,
   PhoneDisplayInstalledAppsParamsSchema,
   PhoneDisplayInstalledAppsResultSchema,
-  validatePhoneDisplayActions,
   type PhoneDisplayObservation,
   type PhoneDisplayInstalledAppsResult,
   ComputerUseDispatchActParamsSchema,
@@ -318,6 +321,7 @@ export type ComputerUseDispatchResult =
   | (DispatchOutcome & {
       readonly kind: "display";
       readonly observation: PhoneDisplayObservation | null;
+      readonly status?: IphoneScreenStatus;
     });
 
 export interface ComputerUseMachineOption {
@@ -1015,35 +1019,8 @@ export class ComputerUseService {
         checkSession();
         session.route ??= route;
         if (target.kind === "display") {
-          const status = this.#hub.deviceStatus?.(session.deviceId);
-          const refreshReadiness =
-            operation === "observe" &&
-            (status?.operations.some(
-              ({ operation, state }) => operation === "observe" && state === "ready",
-            ) ||
-              status?.availability.reason?.kind === "locked" ||
-              status?.availability.reason?.kind === "protected");
-          if (
-            route?.role === "screen" &&
-            status?.availability.state !== "ready" &&
-            !refreshReadiness
-          )
-            throw new ComputerUseError("unsupported", "This phone is not ready for control.");
-          if (operation === "act") {
-            if (route?.role === "screen") {
-              if (!status || status.availability.state !== "ready")
-                throw new ComputerUseError("unsupported", "This phone is not ready for input.");
-              validatePhoneDisplayActions(params.actions, {
-                actions: status.actions,
-                navigationButtons: status.navigationButtons,
-                wake: status.wake,
-                input: status.operations.some(
-                  ({ operation, state }) => operation === "act" && state === "ready",
-                ),
-                loginText: false,
-              });
-            }
-          }
+          // The assigned driver validates its own live observation and input
+          // capabilities. Cached status is for display, not admission.
           params = ComputerUseFrameParamsSchema.parse(
             getPhoneDisplayCodec(target.definitionId).encodeParams(
               operation as "observe" | "act",
@@ -2385,27 +2362,37 @@ function parseComputerUseResult(
 ): ComputerUseDispatchResult {
   if (scope.kind === "display") {
     if (operation === "observe") {
-      const parsed = PhoneDisplayObservationResultSchema.safeParse(
-        decodePhoneResult(scope.definitionId, "observe", value),
-      );
+      const schema =
+        scope.definitionId === iphoneScreenDefinitionId
+          ? IphoneScreenObservationResultSchema
+          : PhoneDisplayObservationResultSchema;
+      const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "observe", value));
       if (!parsed.success) throw unreadableObservation("observe", scope);
       return {
         error: null,
         kind: "display",
         observation: parsed.data.observation,
+        ...("status" in parsed.data ? { status: parsed.data.status } : {}),
         performed: null,
       };
     }
-    const parsed = PhoneDisplayActResultSchema.safeParse(
-      decodePhoneResult(scope.definitionId, "act", value),
-    );
+    const schema =
+      scope.definitionId === iphoneScreenDefinitionId
+        ? IphoneScreenActResultSchema
+        : PhoneDisplayActResultSchema;
+    const parsed = schema.safeParse(decodePhoneResult(scope.definitionId, "act", value));
     if (!parsed.success) throw unreadableObservation("act", scope);
+    const status =
+      "status" in parsed.data
+        ? IphoneScreenStatusSchema.optional().parse(parsed.data.status)
+        : undefined;
     return {
       error: parsed.data.error
         ? new ComputerUseError(parsed.data.error.code, parsed.data.error.message)
         : null,
       kind: "display",
       observation: parsed.data.observation,
+      ...(status ? { status } : {}),
       performed: parsed.data.performed,
     };
   }

@@ -1,4 +1,4 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import type { CardChoice } from "@opensteer/protocol";
 import {
   browserSiteLabel,
@@ -75,7 +75,8 @@ export function useRequestResponse(input: {
   // `canRespond` never locks answers: a tap while unreachable is answered "Not sent".
   const { canStartResponse, gate, hostClient, onAdmitted, surface } = input;
   const { request } = surface;
-  const session = useRequestSession(request, hostClient.getSnapshot().user?.id ?? null);
+  const { deploymentId, user } = hostClient.getSnapshot();
+  const session = useRequestSession(request, deploymentId, user?.id ?? null);
   const aiSharing = useAiSharing();
   const mounted = useRef(true);
   useEffect(() => {
@@ -84,9 +85,9 @@ export function useRequestResponse(input: {
       mounted.current = false;
     };
   }, []);
-  const reviewed = requestDecisionRevision(request);
-  const currentRevision = useRef(reviewed.expectedRevision);
-  currentRevision.current = reviewed.expectedRevision;
+  const revision = request.reviewedRevision;
+  const currentRevision = useRef(revision);
+  currentRevision.current = revision;
   const answerable = surface.denied === null && request.status === "pending";
   const stillAnswerable = useRef(answerable);
   stillAnswerable.current = answerable;
@@ -136,7 +137,7 @@ export function useRequestResponse(input: {
       !mounted.current ||
       session.responding ||
       !stillAnswerable.current ||
-      currentRevision.current !== reviewed.expectedRevision ||
+      currentRevision.current !== revision ||
       !canStartResponse()
     )
       return;
@@ -182,8 +183,7 @@ export function useRequestResponse(input: {
       session.held = submission;
       await hostClient.dispatch({
         idempotencyKey: submission.idempotencyKey,
-        ...reviewed,
-        requestId: request.id,
+        ...requestDecision(request),
         response: submission.response,
         type: "request.respond",
       });
@@ -210,8 +210,7 @@ export function useRequestResponse(input: {
       const result = await hostClient.dispatch({
         decision,
         idempotencyKey: held.key,
-        ...reviewed,
-        requestId: request.id,
+        ...requestDecision(request),
         type: "browser.sign-in.respond",
       });
       if (session.heldSignIn === held) session.heldSignIn = null;
@@ -275,16 +274,11 @@ export function useRequestResponse(input: {
         )
           return;
         authenticated = true;
-        if (
-          !mounted.current ||
-          !stillAnswerable.current ||
-          currentRevision.current !== reviewed.expectedRevision
-        )
+        if (!mounted.current || !stillAnswerable.current || currentRevision.current !== revision)
           return;
         const result = await hostClient.dispatch({
           idempotencyKey: session.heldPasswordKey,
-          ...reviewed,
-          requestId: request.id,
+          ...requestDecision(request),
           type: "browser.password-sign-in.respond",
           decision: approval
             ? "brand" in approval.account

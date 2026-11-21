@@ -1,12 +1,13 @@
-import { requestDecisionRevision } from "@opensteer/client/host";
+import { requestDecision } from "@opensteer/client/host";
 import { outcomeWords, requestAnswer, runAction } from "./use-action.js";
 import {
   mutationIdempotencyKey,
   questionStep,
   type HostClient,
   type QuestionDrafts,
+  type RequestView,
 } from "@opensteer/client/host";
-import type { Request, RequestFormAnswers, RequestResponse } from "@opensteer/core";
+import type { RequestResponse } from "@opensteer/core";
 import { useSyncExternalStore } from "react";
 import { composerDraftKeyFor, composerDrafts, holdsContent } from "./composer-drafts.js";
 import { useShell } from "./app-shell.js";
@@ -39,12 +40,21 @@ const fresh: QuestionSession = Object.freeze({
 const sessions = new Map<string, QuestionSession>();
 const listeners = new Set<() => void>();
 
-function read(requestId: string): QuestionSession {
-  return sessions.get(requestId) ?? fresh;
+export function useQuestionSessionKey(request: RequestView | null): string | null {
+  const { snapshot } = useShell();
+  return (
+    request &&
+    JSON.stringify([snapshot.deploymentId, snapshot.user?.id, request.id, request.reviewedRevision])
+  );
 }
 
-export function updateQuestionSession(requestId: string, change: Partial<QuestionSession>): void {
-  sessions.set(requestId, { ...read(requestId), ...change });
+function read(key: string | null): QuestionSession {
+  return (key === null ? undefined : sessions.get(key)) ?? fresh;
+}
+
+export function updateQuestionSession(key: string | null, change: Partial<QuestionSession>): void {
+  if (key === null) return;
+  sessions.set(key, { ...read(key), ...change });
   for (const listener of listeners) listener();
 }
 
@@ -53,11 +63,11 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export function useQuestionSession(requestId: string): QuestionSession {
+export function useQuestionSession(key: string | null): QuestionSession {
   return useSyncExternalStore(
     subscribe,
-    () => read(requestId),
-    () => read(requestId),
+    () => read(key),
+    () => read(key),
   );
 }
 
@@ -68,18 +78,19 @@ export function resetQuestionSessionsForTests(): void {
 
 async function respond(
   hostClient: Pick<HostClient, "connection" | "dispatch">,
-  request: Pick<Request, "id">,
+  request: RequestView,
+  sessionKey: string | null,
   response: RequestResponse,
 ): Promise<void> {
-  const session = read(request.id);
+  if (sessionKey === null) return;
+  const session = read(sessionKey);
   if (session.sending) return;
-  const reviewed = requestDecisionRevision(request);
-  const signature = JSON.stringify([reviewed.expectedRevision, response]);
+  const signature = JSON.stringify(response);
   const key =
     session.held?.response === signature
       ? session.held.key
       : mutationIdempotencyKey(`request:${request.id}`);
-  updateQuestionSession(request.id, {
+  updateQuestionSession(sessionKey, {
     failure: null,
     held: { key, response: signature },
     sending: true,
@@ -89,34 +100,29 @@ async function respond(
     execute: () =>
       hostClient.dispatch({
         idempotencyKey: key,
-        requestId: request.id,
+        ...requestDecision(request),
         response,
         type: "request.respond",
       }),
   });
   if (outcome.kind === "confirmed") {
-    sessions.delete(request.id);
+    sessions.delete(sessionKey);
     for (const listener of listeners) listener();
     return;
   }
-  updateQuestionSession(request.id, { failure: outcomeWords(outcome), sending: false });
-}
-
-/** Sends every question's answer, the one form the Host takes. */
-export function sendQuestionAnswers(
-  hostClient: Pick<HostClient, "connection" | "dispatch">,
-  request: Pick<Request, "id">,
-  answers: RequestFormAnswers,
-): Promise<void> {
-  return respond(hostClient, request, { answers, kind: "form" });
+  updateQuestionSession(sessionKey, { failure: outcomeWords(outcome), sending: false });
 }
 
 /** Dismissing an agent's question tells it no. Only `ask_person` questions can be dismissed. */
 export function dismissQuestion(
   hostClient: Pick<HostClient, "connection" | "dispatch">,
-  request: Pick<Request, "id">,
+  request: RequestView,
+  sessionKey: string | null,
 ): Promise<void> {
-  return respond(hostClient, request, { kind: "external", value: { decision: "declined" } });
+  return respond(hostClient, request, sessionKey, {
+    kind: "external",
+    value: { decision: "declined" },
+  });
 }
 
 /**
@@ -125,17 +131,18 @@ export function dismissQuestion(
  */
 export function advanceQuestion(
   hostClient: Pick<HostClient, "connection" | "dispatch">,
-  request: Request,
+  request: RequestView,
+  sessionKey: string | null,
   drafts: QuestionDrafts,
   index: number,
 ): void {
   if (request.presentation.kind !== "form") return;
   const step = questionStep(request.presentation.fields, drafts, index);
-  if (step.kind === "next") updateQuestionSession(request.id, { drafts, index: step.index });
+  if (step.kind === "next") updateQuestionSession(sessionKey, { drafts, index: step.index });
   else if (step.kind === "send") {
-    updateQuestionSession(request.id, { drafts });
-    void sendQuestionAnswers(hostClient, request, step.answers);
-  } else updateQuestionSession(request.id, { drafts });
+    updateQuestionSession(sessionKey, { drafts });
+    void respond(hostClient, request, sessionKey, { answers: step.answers, kind: "form" });
+  } else updateQuestionSession(sessionKey, { drafts });
 }
 
 /** Whether the person has anything waiting in this task's message box. */
@@ -160,8 +167,8 @@ export function useMessageDraftWaiting(threadId: string): boolean {
  * arrives while words wait in the message box leaves them there: the card
  * offers to switch, and the box turns into the answer once it's empty.
  */
-export function useAnswersInComposer(threadId: string, requestId: string | null): boolean {
+export function useAnswersInComposer(threadId: string, questionKey: string | null): boolean {
   const waiting = useMessageDraftWaiting(threadId);
-  const session = useQuestionSession(requestId ?? "");
-  return requestId !== null && (!waiting || session.typing);
+  const session = useQuestionSession(questionKey);
+  return questionKey !== null && (!waiting || session.typing);
 }

@@ -39,10 +39,11 @@ import { writeThreadQueues } from "./personal-queue-view.js";
 import { refreshAssignmentWorkerSummaries } from "./assignment-store.js";
 
 const retainedRows = 4_096;
+const retainedBytes = 32 * 1024 * 1024;
 // Pruning frees this many rows at once, so most commits that fill the feed delete nothing.
 const pruneChunkRows = 512;
 const maxCommitRows = 128;
-const maxChangeBytes = 8 * 1024;
+const maxChangeBytes = 500 * 1024;
 const maxCommitBytes = personalChangesFrameMaxBytes;
 const scopeEnvelopeReserve = 1024;
 
@@ -96,6 +97,8 @@ interface CommitNotice {
   readonly floor: string;
   readonly changedScopes: ReadonlySet<string>;
   readonly resourceKinds: ReadonlySet<DurablePersonalResourceKind>;
+  /** The catalog tabs this commit changed, so a listener can tell whose they are. */
+  readonly changedTabs: ReadonlySet<string>;
 }
 
 export type PersonalCommitReaction =
@@ -382,6 +385,12 @@ class Mutation {
     this.resourceKinds.add(kind);
   }
 
+  readonly changedTabs = new Set<string>();
+  /** These catalog tabs changed in this commit. */
+  changeTabs(tabIds: Iterable<string>) {
+    for (const id of tabIds) this.changedTabs.add(id);
+  }
+
   count(counter: Counter, delta: number) {
     if (!Number.isInteger(delta)) throw new Error("Invalid personal counter delta");
     this.#counters[counter] += delta;
@@ -531,7 +540,34 @@ class Mutation {
           })),
         )
         .execute();
+      const previousCount = count;
       count += changes.length;
+      // Bound retained feed bytes alongside row count (rounding cuts to whole commits) so large
+      // inline message commits cannot grow `client_changes` unboundedly. Trigger on any commit
+      // over 16 KiB or whenever the retained row count crosses a 64-row boundary regardless of
+      // commit batch size parity.
+      if (this.#scopeBytes > 16 * 1024 || Math.floor(count / 64) > Math.floor(previousCount / 64)) {
+        const cutoff = await sql<{ cutSequence: string | null }>`
+          select max(sequence)::text as "cutSequence"
+          from (
+            select sequence,
+              sum(byte_count) over (order by sequence desc, ordinal desc) as retained_bytes
+            from client_changes
+            where deployment_id = ${deploymentId}
+          ) ranked
+          where retained_bytes > ${retainedBytes}
+        `.execute(tx);
+        const cutSequence = cutoff.rows[0]?.cutSequence ?? null;
+        if (cutSequence !== null) {
+          const bytePruned = await feed()
+            .where("sequence", "<=", cutSequence)
+            .returning("sequence")
+            .execute();
+          count -= bytePruned.length;
+          for (const { sequence } of bytePruned)
+            if (BigInt(sequence) > BigInt(floor)) floor = sequence;
+        }
+      }
     }
     if (
       this.hasVisibleChange ||
@@ -566,6 +602,7 @@ class Mutation {
       head,
       floor,
       resourceKinds: this.resourceKinds,
+      changedTabs: this.changedTabs,
       changedScopes: new Set([
         ...this.#scopes.keys(),
         ...(Object.values(this.#counters).some(Boolean) || this.#pendingRequestsChanged
@@ -604,6 +641,7 @@ export type PersonalMutation = Pick<
   | "count"
   | "pendingRequestsChanged"
   | "bumpResource"
+  | "changeTabs"
   | "purge"
   | "fence"
   | "receipt"

@@ -25,6 +25,7 @@ import {
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
 import {
   TranscriptItemSchema,
+  fitsInlineTranscriptText,
   transcriptMessageRefLimits,
   type TranscriptItem,
 } from "@opensteer/protocol/transcript";
@@ -227,6 +228,12 @@ function mockScopedItem(
         pages: entry.pages?.slice(0, transcriptMessageRefLimits.pages) ?? [],
         places: entry.places?.slice(0, transcriptMessageRefLimits.places) ?? [],
       };
+      const fitsInline = fitsInlineTranscriptText(entry.body);
+      const truncated =
+        !fitsInline ||
+        refs.attachments.length < (entry.attachments?.length ?? 0) ||
+        refs.pages.length < (entry.pages?.length ?? 0) ||
+        refs.places.length < (entry.places?.length ?? 0);
       return TranscriptItemSchema.parse({
         ...value,
         kind: entry.kind,
@@ -234,13 +241,10 @@ function mockScopedItem(
         messageKind: entry.messageKind,
         author: entry.author,
         ...Object.fromEntries(Object.entries(refs).filter(([, list]) => list.length)),
+        ...(fitsInline ? { text: entry.body } : {}),
         view: {
           preview: entry.body.slice(0, 400),
-          truncated:
-            entry.body.length > 400 ||
-            refs.attachments.length < (entry.attachments?.length ?? 0) ||
-            refs.pages.length < (entry.pages?.length ?? 0) ||
-            refs.places.length < (entry.places?.length ?? 0),
+          ...(truncated ? { truncated: true } : {}),
           published: entry.published ?? true,
         },
       });
@@ -441,41 +445,100 @@ export function mockScopedDetail(
       ] as const
     ).flatMap(([kind, entries]) => (entries.length > 20 ? [[kind, `${revision}:20`]] : [])),
   );
+  const snapshotThread = {
+    ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
+    thread: toThread(thread),
+  };
+  const activeItems = [...tools, ...nodes].slice(0, 20);
+  const nodeSubject = node ? mockScopedItem(node, "1", revision) : undefined;
+  const pendingRequests = requests.slice(0, 20);
+  const rawQueueEntries = nodeId ? undefined : (inputQueue?.items ?? []);
+  const queueEntries =
+    rawQueueEntries && utf8ByteLength(JSON.stringify(rawQueueEntries)) <= 24 * 1024
+      ? rawQueueEntries
+      : undefined;
+  const queueState = {
+    revision,
+    paused: thread.inputQueuePaused,
+    steerRunId: inputQueue?.steerRunId ?? null,
+    inputs: inputQueue?.items.map(({ message }) => message.id) ?? [],
+    runs: snapshot.runQueue
+      .filter((run) => run.threadId === threadId)
+      .slice(0, 2)
+      .map(({ id, status, createdAt, runOrdinal }) => ({
+        id,
+        status,
+        createdAt,
+        runOrdinal,
+        revision,
+        finishing: false,
+      })),
+  };
+  const overheadBytes = utf8ByteLength(
+    JSON.stringify({
+      thread: snapshotThread,
+      activeItems,
+      ...(nodeSubject ? { nodeSubject } : {}),
+      pendingRequests,
+      overlayCursors,
+      ...(queueEntries ? { inputQueue: queueEntries } : {}),
+      queue: queueState,
+    }),
+  );
+  const historyBudget = Math.max(0, Math.min(768 * 1024, 960 * 1024 - overheadBytes));
   const anchorIndex = anchor ? all.findIndex(({ id }) => id === anchor) : -1;
-  const end = anchorIndex < 0 ? all.length : Math.min(all.length, anchorIndex + 25);
-  const start = Math.max(0, end - 50);
-  const items = all.slice(start, end);
+  const rawEnd = anchorIndex < 0 ? all.length : Math.min(all.length, anchorIndex + 25);
+  const rawStart = Math.max(0, rawEnd - 50);
+  const window = all.slice(rawStart, rawEnd);
+  let items: TranscriptItem[];
+  if (anchorIndex < 0) {
+    items = boundedMockPage(window, false, historyBudget);
+  } else {
+    const anchorPos = anchorIndex - rawStart;
+    const anchorItem = mockCardWithinCeiling(window[anchorPos]!, historyBudget);
+    let size = utf8ByteLength(JSON.stringify(anchorItem));
+    let left = anchorPos;
+    let right = anchorPos;
+    while (left > 0 || right < window.length - 1) {
+      let grew = false;
+      if (right < window.length - 1) {
+        const next = utf8ByteLength(JSON.stringify(window[right + 1]!));
+        if (size + next <= historyBudget) {
+          size += next;
+          right += 1;
+          grew = true;
+        }
+      }
+      if (left > 0) {
+        const next = utf8ByteLength(JSON.stringify(window[left - 1]!));
+        if (size + next <= historyBudget) {
+          size += next;
+          left -= 1;
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    items = [
+      ...window.slice(left, anchorPos),
+      anchorItem,
+      ...window.slice(anchorPos + 1, right + 1),
+    ];
+  }
+  const start = items[0] ? all.findIndex(({ id }) => id === items[0]!.id) : all.length;
+  const end = items.at(-1) ? all.findIndex(({ id }) => id === items.at(-1)!.id) + 1 : all.length;
   return PersonalDetailSnapshotSchema.parse({
-    thread: {
-      ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
-      thread: toThread(thread),
-    },
+    thread: snapshotThread,
     ...(anchor ? { anchorItemId: anchorIndex === -1 ? null : anchor } : {}),
     items,
-    activeItems: [...tools, ...nodes].slice(0, 20),
-    ...(node ? { nodeSubject: mockScopedItem(node, "1", revision) } : {}),
-    pendingRequests: requests.slice(0, 20),
+    activeItems,
+    ...(nodeSubject ? { nodeSubject } : {}),
+    pendingRequests,
     nextBefore: start ? mockScopedCursor(snapshot, threadId, nodeId, items[0]) : null,
     nextAfter: end < all.length ? mockScopedCursor(snapshot, threadId, nodeId, items.at(-1)) : null,
     overlayCursors,
-    ...(nodeId ? {} : { inputQueue: inputQueue?.items ?? [] }),
-    queue: {
-      revision,
-      paused: thread.inputQueuePaused,
-      steerRunId: inputQueue?.steerRunId ?? null,
-      inputs: inputQueue?.items.map(({ message }) => message.id) ?? [],
-      runs: snapshot.runQueue
-        .filter((run) => run.threadId === threadId)
-        .slice(0, 2)
-        .map(({ id, status, createdAt, runOrdinal }) => ({
-          id,
-          status,
-          createdAt,
-          runOrdinal,
-          revision,
-          finishing: false,
-        })),
-    },
+    ...(queueEntries ? { inputQueue: queueEntries } : {}),
+    queue: queueState,
   });
 }
 
@@ -527,18 +590,21 @@ function mockScopedNodeItems(
       createdAt: event.createdAt,
     };
     switch (event.type) {
-      case "node.message":
+      case "node.message": {
+        const fitsInline = fitsInlineTranscriptText(event.data.text);
         items.push(
           TranscriptItemSchema.parse({
             ...base,
             kind: "node-message",
+            ...(fitsInline ? { text: event.data.text } : {}),
             view: {
               preview: event.data.text.slice(0, 400),
-              truncated: event.data.text.length > 400,
+              ...(fitsInline ? {} : { truncated: true }),
             },
           }),
         );
         break;
+      }
       case "reasoning.completed":
         items.push(
           TranscriptItemSchema.parse({
@@ -667,13 +733,24 @@ export function mockScopedResource(
   }
 }
 
-export function boundedMockPage(items: TranscriptItem[], ascending = false) {
+function mockCardWithinCeiling(item: TranscriptItem, maxBytes: number): TranscriptItem {
+  if (utf8ByteLength(JSON.stringify(item)) <= maxBytes) return item;
+  if (item.kind !== "message" && item.kind !== "node-message") return item;
+  const { text: _text, ...rest } = item;
+  return { ...rest, view: { ...rest.view, truncated: true } };
+}
+
+export function boundedMockPage(items: TranscriptItem[], ascending = false, maxBytes = 768 * 1024) {
   const ordered = ascending ? items : items.slice().reverse();
   let size = 0;
-  const bounded = ordered.filter((item) => {
-    size += utf8ByteLength(JSON.stringify(item));
-    return size <= 64 * 1024;
-  });
+  const bounded: TranscriptItem[] = [];
+  for (const raw of ordered) {
+    const item = bounded.length === 0 ? mockCardWithinCeiling(raw, maxBytes) : raw;
+    const next = utf8ByteLength(JSON.stringify(item));
+    if (bounded.length > 0 && size + next > maxBytes) break;
+    size += next;
+    bounded.push(item);
+  }
   return ascending ? bounded : bounded.reverse();
 }
 

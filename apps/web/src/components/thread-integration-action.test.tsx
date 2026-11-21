@@ -126,6 +126,7 @@ describe("resolveIntegrationAccess", () => {
         access: "read",
         accountsCount: 1,
         installationTitle: "Calendar",
+        expectedRevision: "20",
         requestId: "request-project",
         selectedAccount: {
           accountIdentifier: null,
@@ -283,6 +284,7 @@ function requestRecord(loaded: LoadedAccessRequest, title: string) {
     kind: "integration.access",
     mode: "live",
     payload: loaded.request,
+    reviewedRevision: "17",
     presentation: { kind: "external", title },
     status: "pending",
   } as unknown as Request;
@@ -295,6 +297,7 @@ function computerRequestRecord() {
     kind: "integration.access",
     mode: "live",
     payload: computerRequest().request,
+    reviewedRevision: "17",
     presentation: { kind: "external", title: "Connect Messages" },
     status: "pending",
   } as never;

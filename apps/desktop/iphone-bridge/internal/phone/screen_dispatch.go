@@ -29,16 +29,15 @@ func (m *Manager) screenCall(ctx context.Context, ref wire.ScreenRef, control bo
 			return nil
 		}
 		result, err := call(ctx, session.screenState(), guard)
-		if observation, ok := result.(*Observation); ok {
-			session.mu.Lock()
-			session.state = observation.State
-			session.stateReason = ""
-			session.mu.Unlock()
-		} else if err != nil && !control {
-			session.mu.Lock()
-			session.state = unknownState()
-			session.stateReason = Classify(err, wire.NativeServiceFailed).Code
-			session.mu.Unlock()
+		switch observation := result.(type) {
+		case *Observation:
+			session.recordScreenState(observation.State, "")
+		case *ScreenStatus:
+			session.recordScreenState(observation.State, "")
+		default:
+			// Cancellation, stale geometry, and capture errors are call outcomes.
+			// They do not establish a different lock or display state.
+			return result, err
 		}
 		m.mu.Lock()
 		m.revision++

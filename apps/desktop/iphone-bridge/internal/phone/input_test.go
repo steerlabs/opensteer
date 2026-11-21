@@ -263,11 +263,59 @@ func TestObserveUsesSameGeometryWithoutReturningImage(t *testing.T) {
 	if observation.Screenshot != nil || observation.Geometry.Width != 100 || observation.Geometry.Height != 200 || observation.ObservationToken == "o" {
 		t.Fatal("invalid image-free observation")
 	}
-	b.state.Lock = "unknown"
-	include = true
-	if _, err := s.observe(context.Background(), &wire.ObserveParams{IncludeScreenshot: &include}, okay); err == nil {
-		t.Fatal("unknown protection published screenshot")
+}
+
+func TestBlockedObservationExposesOnlyStateAndInvalidatesInput(t *testing.T) {
+	for _, tc := range []struct {
+		lock, display string
+		reason        wire.Reason
+	}{
+		{"locked", "on", wire.PhoneLocked},
+		{"unknown", "on", wire.LockUnknown},
+		{"unlocked", "off", wire.WakeRequired},
+		{"unlocked", "unknown", wire.DisplayUnknown},
+	} {
+		t.Run(string(tc.reason), func(t *testing.T) {
+			s, b, input := screenFixture(t)
+			b.state.Lock, b.state.Display = tc.lock, tc.display
+			include := true
+			value, err := s.observe(context.Background(), &wire.ObserveParams{
+				ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include,
+			}, okay)
+			result, isStatus := value.(*ScreenStatus)
+			if err != nil || !isStatus || result.Reason != tc.reason || b.captures != 0 {
+				t.Fatalf("expected a state-only result without capture, got %T / %v", value, err)
+			}
+			_, err = s.perform(context.Background(), input, okay, noWait)
+			failure(t, err, wire.StaleObservation, "not-started")
+			if len(b.channel.sent) != 0 {
+				t.Fatal("a state-only observation admitted input")
+			}
+		})
 	}
+}
+
+type lockDuringCapture struct{ *fixtureScreen }
+
+func (f lockDuringCapture) Capture(ctx context.Context, display string) ([]byte, error) {
+	data, err := f.fixtureScreen.Capture(ctx, display)
+	f.state.Lock = "locked"
+	return data, err
+}
+
+func TestRelockingDuringCaptureDiscardsScreenContent(t *testing.T) {
+	s, b, input := screenFixture(t)
+	s.backend = lockDuringCapture{b}
+	include := true
+	value, err := s.observe(context.Background(), &wire.ObserveParams{
+		ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include,
+	}, okay)
+	status, ok := value.(*ScreenStatus)
+	if err != nil || !ok || status.Reason != wire.PhoneLocked || b.captures != 1 {
+		t.Fatalf("expected a redacted locked status, got %T / %v", value, err)
+	}
+	_, err = s.perform(context.Background(), input, okay, noWait)
+	failure(t, err, wire.StaleObservation, "not-started")
 }
 func TestDragMovesUseOneContactAndBoundedMonotonicIntervals(t *testing.T) {
 	s, b, p := screenFixture(t)
@@ -437,7 +485,11 @@ func TestObserveKeepsTheScreenshotWhenTheFrontAppIsUnknown(t *testing.T) {
 	// The person left Opensteer between the capture's readings: its pixels stay private.
 	backend.foregroundReads = []*Foreground{{AppID: opensteerAppID}, nil}
 	result, err = s.observe(context.Background(), &wire.ObserveParams{ScreenRef: wire.ScreenRef{NativeEpoch: 1}, IncludeScreenshot: &include}, okay)
-	if err != nil || result.(*Observation).Foreground.AppID != opensteerAppID {
-		t.Fatal("a capture around Opensteer's own screen lost its identity", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := result.(*Observation)
+	if o.Foreground == nil || o.Foreground.AppID != opensteerAppID || o.Screenshot != nil || len(o.Nodes) != 0 {
+		t.Fatal("expected only the identity of Opensteer's own screen")
 	}
 }

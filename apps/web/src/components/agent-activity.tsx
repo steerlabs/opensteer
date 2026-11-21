@@ -1270,8 +1270,7 @@ function ReplyBubble({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [expanded, setExpanded] = useState(false);
-  const message = useTranscriptMessage(client, threadId, preview, expanded);
+  const message = useTranscriptMessage(client, threadId, preview, true);
   const replyWith = useContext(ReplyWith);
   const openActivity = useContext(OpenActivity);
   const activity = useContext(ActivityOfTurn).get(turnKey ?? "");
@@ -1310,11 +1309,6 @@ function ReplyBubble({
         />
       ))}
       {parts.length === 0 ? <div className="reply__line">{more}</div> : null}
-      {preview.previewTruncated && !expanded ? (
-        <button className="btn" onClick={() => setExpanded(true)} type="button">
-          Read full reply
-        </button>
-      ) : null}
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
@@ -2082,12 +2076,11 @@ function SubagentMessage({
   entry: Extract<SubagentDetailEntry, { kind: "message" }>;
   scope?: TranscriptTextScope | undefined;
 }) {
-  const [expanded, expand] = useState(false);
   const text = useTranscriptText({
     ...scope,
     itemId: entry.id,
     revision: entry.itemRevision,
-    expanded: expanded && entry.previewTruncated === true,
+    expanded: entry.previewTruncated === true,
     preview: entry.text,
   });
   return (
@@ -2097,11 +2090,6 @@ function SubagentMessage({
       >
         <Markdown streaming={text.streaming} text={text.text} />
       </Suspense>
-      {entry.previewTruncated && !expanded ? (
-        <button type="button" className="btn btn--small" onClick={() => expand(true)}>
-          Show full message
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -2396,8 +2384,7 @@ function Reply({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [expanded, setExpanded] = useState(false);
-  const message = useTranscriptMessage(client, threadId, preview, expanded);
+  const message = useTranscriptMessage(client, threadId, preview, true);
   const streaming = wasStreaming || message.streaming === true;
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
@@ -2412,11 +2399,6 @@ function Reply({
       <MessagePages pages={message.pages ?? []} />
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
-      {preview.previewTruncated && !expanded ? (
-        <button className="btn" onClick={() => setExpanded(true)} type="button">
-          Read full reply
-        </button>
-      ) : null}
       {copyable && !streaming && message.body ? (
         <div className="msg--assistant__marks">
           <CopyMark label="Copy reply" text={message.body} />

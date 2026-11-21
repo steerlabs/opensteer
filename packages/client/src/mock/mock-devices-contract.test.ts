@@ -94,8 +94,9 @@ it.each(["fulfilled", "declined"] as const)(
   async (decision) => {
     const client = new MockHostClient({ latencyMs: 0, devices: "seeded" });
     try {
-      const request = Object.values(client.getSnapshot().requests)
-        .flat()
+      const request = client
+        .getSnapshot()
+        .waitingRequests.map((entry) => entry.request)
         .find((entry) => entry.payload.kind === "device.access")!;
       if (request.payload.kind !== "device.access")
         throw new Error("Expected device access fixture");
@@ -146,7 +147,10 @@ it("turns Files on while preserving saved folders, commands and forwarding", asy
     });
     const before = client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!
       .policy;
-    await answerDeviceAccessRequest(client, request, "fulfilled");
+    const reviewed = client
+      .getSnapshot()
+      .waitingRequests.find(({ request: entry }) => entry.id === request.id);
+    await answerDeviceAccessRequest(client, reviewed!.request, "fulfilled");
     expect(
       client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!.policy,
     ).toEqual({ ...before, reach: "owner" });

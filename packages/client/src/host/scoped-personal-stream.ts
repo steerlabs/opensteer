@@ -730,6 +730,12 @@ export class ScopedPersonalStream {
         if (change.operation === "remove" || finalizedItemText(change.value))
           detail.text.finishItem(change.entityId);
       }
+    else if (frame.type === "host.snapshot" && "items" in frame.snapshot) {
+      for (const item of frame.snapshot.items)
+        if (finalizedItemText(item)) detail.text.finishItem(item.id);
+      for (const item of frame.snapshot.activeItems)
+        if (finalizedItemText(item)) detail.text.finishItem(item.id);
+    }
     if (detail.held) {
       for (const [key, live] of detail.held) {
         if (BigInt(frame.throughSequence) < BigInt(live.afterSequence)) continue;

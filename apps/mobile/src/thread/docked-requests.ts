@@ -4,13 +4,9 @@ import {
   deriveSurface,
   requestsWaitingOn,
   type SurfaceModel,
+  type WaitingRequestView,
 } from "@opensteer/client/host";
-import {
-  requestTitleText,
-  type AuthenticatedUser,
-  type Request,
-  type WaitingRequest,
-} from "@opensteer/core";
+import { requestTitleText, type AuthenticatedUser, type Request } from "@opensteer/core";
 
 /** What a Request is called on its card: a sign-in by its site, anything else by its own title. */
 export function requestTitle(request: Request): string {
@@ -38,11 +34,11 @@ export function requestTitleLine(request: Request): string {
  * composer's own, unless `own` says it has none.
  */
 export function waitingQuestion(
-  waitingRequests: readonly WaitingRequest[],
+  waitingRequests: readonly WaitingRequestView[],
   threadId: string,
   user: Pick<AuthenticatedUser, "id">,
   options: { readonly own?: boolean } = {},
-): { readonly surface: SurfaceModel; readonly waiting: WaitingRequest | null } | null {
+): { readonly surface: SurfaceModel; readonly waiting: WaitingRequestView | null } | null {
   const waiting = requestsWaitingOn(waitingRequests, threadId).filter(
     ({ request }) => options.own === true || request.originatingThreadId !== threadId,
   );

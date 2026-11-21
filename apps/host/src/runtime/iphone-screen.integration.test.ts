@@ -21,6 +21,7 @@ import {
   runnerIntegrationsProtocolVersion,
   machineAccessPolicyDefault,
   type IphoneScreenObservation,
+  type IphoneScreenStatus,
   type DeviceScreenDriverAssignment,
   type RunnerIntegrationsDeviceStatus,
 } from "@opensteer/protocol";
@@ -71,6 +72,7 @@ function fakeScreenPort() {
   let sink: Parameters<PhoneScreenDriver["connect"]>[0] | undefined;
   const assignments = new Map<DeviceId, DeviceScreenDriverAssignment>();
   const observes: PhoneScreenContext[] = [];
+  const liveStatus = new Map<DeviceId, IphoneScreenStatus>();
   const actions: PhoneScreenContext[] = [];
   const displays: PhoneScreenDisplayFrame[] = [];
   const recorded: Parameters<PhoneScreenDriverConnection["stopRecorded"]>[0][] = [];
@@ -78,6 +80,7 @@ function fakeScreenPort() {
     deviceId: DeviceId,
     availability: RunnerIntegrationsDeviceStatus["availability"] = { state: "ready", reason: null },
     inputVersion: 1 | null = 1,
+    viewVersion: 1 | null = 1,
   ) => {
     const assignment = assignments.get(deviceId);
     if (!sink || !assignment) throw new Error("Screen port has no assigned Device");
@@ -97,8 +100,8 @@ function fakeScreenPort() {
       actions: ["tap", "navigate", "launch", "wait"],
       wake: false,
       lock: false,
-      displayVersion: 1,
-      ownerViewVersion: 1,
+      displayVersion: viewVersion,
+      ownerViewVersion: viewVersion,
       inputVersion,
       powerVersion: null,
     });
@@ -114,7 +117,8 @@ function fakeScreenPort() {
         },
         observe: async (context) => {
           observes.push(context);
-          return { observation: observation() };
+          const state = liveStatus.get(context.deviceId);
+          return state ? { observation: null, status: state } : { observation: observation() };
         },
         act: async (context) => {
           actions.push(context);
@@ -149,6 +153,7 @@ function fakeScreenPort() {
     driver,
     assignments,
     observes,
+    liveStatus,
     actions,
     displays,
     recorded,
@@ -470,54 +475,66 @@ integration("iPhone screen routing on an authenticated Mac", () => {
       name: "First iPhone",
       access: "read-write",
     });
-    await port.status(first.deviceId, { state: "unavailable", reason: { kind: "locked" } }, null);
+    await port.status(
+      first.deviceId,
+      { state: "unavailable", reason: { kind: "locked" } },
+      null,
+      null,
+    );
     await vi.waitFor(
       () =>
         expect(computerApps.deviceStatus(first.deviceId)?.availability.reason?.kind).toBe("locked"),
       { timeout: 5_000 },
     );
-    const locked = await phoneRow();
-    expect(locked).toEqual({
+    expect(await phoneRow()).toEqual({
       computerId: first.deviceId,
       definitionId: "iphone-screen",
       name: "First iPhone",
-      blocked: {
-        code: "permission_required",
-        message: "First iPhone is locked.",
-        next: "Ask the person to unlock the iPhone physically, then observe again. Never enter or ask for its passcode.",
-      },
+      access: "read-write",
+      lastKnown: "locked",
     });
-    const bindLocked = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
-      code: `await phone(${JSON.stringify(first.deviceId)})`,
+    port.liveStatus.set(first.deviceId, {
+      locked: false,
+      screen: "unknown",
+      reason: "screen-state-unknown",
     });
-    expect(bindLocked.isError).toBe(true);
-    expect(bindLocked.structuredContent).toMatchObject({ error: locked.blocked });
+    const statusOnly = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
+      code: `globalThis.iphone = await phone(${JSON.stringify(first.deviceId)}); return await iphone.observe()`,
+    });
+    expect(statusOnly.isError, JSON.stringify(statusOnly)).toBeUndefined();
+    expect(statusOnly.content).toContainEqual({
+      type: "text",
+      text: '{"locked":false,"screen":"unknown","reason":"screen-state-unknown"}',
+    });
+    if (!Array.isArray(statusOnly.content)) throw new Error("Expected computer tool content.");
+    expect(statusOnly.content.some(({ type }) => type === "image")).toBe(false);
+
+    // Change the live phone only. Neither the cached locked reason nor the absent
+    // owner viewer can veto binding by tab and observing the same device.
+    port.liveStatus.delete(first.deviceId);
+    const recovered = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
+      code: "globalThis.iphone = await tab(iphone.tabId); return (await iphone.observe()).locked",
+    });
+    expect(recovered.isError, JSON.stringify(recovered)).toBeUndefined();
+    expect(recovered.content).toContainEqual({ type: "text", text: "false" });
+    const firstSession = port.observes.at(-1)!.sessionId;
+    const action = await callMcpTool(host.origin, run.toolsToken, "computer_use", {
+      code: "await iphone.navigate('home')",
+    });
+    expect(action.isError, JSON.stringify(action)).toBeUndefined();
+    expect(port.actions[0]?.deviceId).toBe(first.deviceId);
     await port.status(first.deviceId, { state: "ready", reason: null }, null);
     await vi.waitFor(
       () => expect(computerApps.deviceStatus(first.deviceId)?.availability.state).toBe("ready"),
       { timeout: 5_000 },
     );
-    const firstSession = await observe(first.deviceId);
     await observe(second.deviceId);
     expect(port.observes.map(({ deviceId }) => deviceId)).toEqual([
+      first.deviceId,
       first.deviceId,
       second.deviceId,
     ]);
     expect(port.observes.every(({ driverGeneration }) => driverGeneration === 1)).toBe(true);
-    const lease = await computerUse.prepare(
-      { deviceId: first.deviceId, deviceName: "First iPhone", ownerUserId: host.ownerId },
-      claims,
-    );
-    const sent = await computerUse.sendAct(
-      lease,
-      target,
-      { observationId: "phone-observation", actions: [{ type: "wait", ms: 10 }] },
-      false,
-      undefined,
-      (action) => computerApps.withDeviceAdmission(first.deviceId, action),
-    );
-    expect((await sent.settle()).error).toBeNull();
-    expect(port.actions[0]?.deviceId).toBe(first.deviceId);
     await port.status(first.deviceId);
     await vi.waitFor(
       () => expect(computerApps.deviceStatus(first.deviceId)?.inputVersion).toBe(1),

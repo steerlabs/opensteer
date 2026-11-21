@@ -196,7 +196,7 @@ export async function buildPersonalDetailSnapshot(
     // A task's own read is authorized above; a node's still checks its node.
     ...(scope.kind === "thread" ? { authorized: { state, thread } } : {}),
     limit: 50,
-    maxBytes: 64 * 1024,
+    maxBytes: 768 * 1024,
     maxTurns: 10,
     ...(anchorItemId ? { anchorItemId } : {}),
   });

@@ -40,13 +40,16 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 64;
+export const scopedPersonalApiVersion = 65;
 export const personalClientFrameMaxBytes = 32 * 1024;
-export const personalChangesFrameMaxBytes = 64 * 1024;
+export const personalChangesFrameMaxBytes = 512 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
 export const personalShellFrameMaxBytes = 128 * 1024;
-export const personalDetailFrameMaxBytes = 128 * 1024;
+export const personalDetailFrameMaxBytes = 1024 * 1024;
 export const personalControlFrameMaxBytes = 4 * 1024;
+/** Flow-control credit budgets shared by PersonalSyncSocket and the WebSocket transport. */
+export const personalScopeBudget = 2 * 1024 * 1024;
+export const personalSocketBudget = 4 * 1024 * 1024;
 /** The most streams one live reset names; any other open stream is named again when it next changes. */
 export const personalLiveResetMaxStreams = 16;
 

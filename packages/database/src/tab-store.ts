@@ -440,6 +440,7 @@ export class TabStore {
         await this.#save(tx, ownerId, state.layout);
         mutation.bumpResource("tab-layout");
         mutation.bumpResource("tab");
+        mutation.changeTabs(tabIds);
       }
       const result = { tabIds, layout: state.layout };
       const principal = await tx
@@ -861,6 +862,7 @@ export class TabStore {
         .where("id", "=", tabId)
         .execute(databaseOperationOptions());
       mutation.bumpResource("tab");
+      mutation.changeTabs([tabId]);
       return true;
     });
   }
@@ -905,6 +907,7 @@ export class TabStore {
         .where("id", "=", tabId)
         .execute(databaseOperationOptions());
       mutation.bumpResource("tab");
+      mutation.changeTabs([tabId]);
       return true;
     });
   }
@@ -931,6 +934,7 @@ export class TabStore {
       if (owned.length) {
         mutation.bumpResource("tab");
         mutation.bumpResource("tab-layout");
+        mutation.changeTabs(owned.map((row) => row.id));
       }
       return owned.map((row) => row.id);
     });

@@ -183,6 +183,8 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     if (!connections.some((entry) => isPhoneDisplayDefinitionId(entry.definitionId)))
       return unavailable("access-denied", "This phone is unavailable.");
     const reason = this.#options.phoneUnavailable(computerId);
+    if (reason === "unsupported")
+      return unavailable(reason, "Live viewing is unavailable for this phone.");
     if (reason) return unavailable(reason, `This phone is ${reason}.`);
     const usedBy = this.#options.users(ownerId, computerId);
     const views = await this.#options.views.list(ownerId, computerId);

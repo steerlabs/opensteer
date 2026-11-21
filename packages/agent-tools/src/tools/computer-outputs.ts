@@ -18,6 +18,7 @@ const PhoneSchema = z
     computerId: z.string(),
     name: z.string(),
     definitionId: z.enum(["android-phone", "iphone-screen"]),
+    lastKnown: z.string().optional(),
   })
   .and(AccessSchema);
 export const ComputerAppsOutputSchema = z.object({

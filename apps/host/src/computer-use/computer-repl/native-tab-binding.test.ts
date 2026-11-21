@@ -3,7 +3,7 @@ import { createId, TabIdSchema, WindowIdSchema, type Tab } from "@opensteer/core
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core/models";
 import { describe, expect, it, vi } from "vitest";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
-import type { TabServicePort, NativeTargetAcquiredHandler } from "../../tabs/ports.js";
+import type { NativeTargetAcquiredHandler, TabServicePort } from "../../tabs/ports.js";
 import { bindNativeTab, type NativeTabBindingOptions } from "./native-tab-binding.js";
 import { NativeTabTargets } from "../native-tab-targets.js";
 
@@ -57,7 +57,7 @@ describe("native tab binding", () => {
       selfDeviceId: async (id) => DeviceIdSchema.parse(id),
       tabs: {
         get: async () => ({ ...tab, kind: "phone" }) as Tab,
-        authorizeShow: async () => undefined,
+        authorizeBind: async () => undefined,
       },
       lookup: async () => ({ kind: "phone", computerId, tabGeneration: 1 }),
       connections: async () => [],
@@ -69,35 +69,31 @@ describe("native tab binding", () => {
       code: "forbidden",
       reason: blocked.code,
     });
-    options.tabs.authorizeShow = async () => {
+    options.tabs.authorizeBind = async () => {
       throw new Error("concealed");
     };
     await expect(bindNativeTab(options, claims, tabId)).rejects.toThrow("concealed");
   });
-  it("uses the private exact-window lookup and rechecks closure before acquisition", async () => {
+  it("binds the exact existing window and rechecks its tab", async () => {
     let open = true;
     let tabGeneration = 1;
-    const tabs: Pick<TabServicePort, "get" | "authorizeShow"> = {
+    const tabs: Pick<TabServicePort, "get" | "authorizeBind"> = {
       get: async () => tab,
-      authorizeShow: async () => {
+      authorizeBind: async () => {
         if (!open) throw new Error("not_found");
       },
     };
-    const acquired = vi.fn<NativeTargetAcquiredHandler>(async () => tabId);
     const bind = vi.fn<NativeTabBindingOptions["bind"]>(
-      async (_connection, target, beforeAcquired) => {
+      async (_connection, target, existingTab) => {
         expect(target).toMatchObject({ windowId });
-        await beforeAcquired();
-        await acquired({
-          ownerId,
-          runClaims: claims,
-          computerId,
-          kind: "window",
-          windowId,
-          membershipRevision: 0,
-          key: "acquire",
-        });
-        return { value: { tabId, window: { windowId, title: "Note", ref: "ref", focused: true } } };
+        expect(existingTab.tabId).toBe(tabId);
+        await existingTab.authorize();
+        return {
+          value: {
+            tabId: existingTab.tabId,
+            window: { windowId, title: "Note", ref: "ref", focused: true },
+          },
+        };
       },
     );
     const options = {
@@ -113,7 +109,7 @@ describe("native tab binding", () => {
       tabId,
       window: { windowId, title: "Note", ref: "ref" },
     });
-    expect(acquired).toHaveBeenCalledOnce();
+    expect(bind).toHaveBeenCalledOnce();
     options.connections = async () => {
       tabGeneration++;
       return [connection];
@@ -123,7 +119,6 @@ describe("native tab binding", () => {
     open = false;
     await expect(bindNativeTab(options, claims, tabId)).rejects.toThrow("not_found");
     expect(bind).toHaveBeenCalledOnce();
-    expect(acquired).toHaveBeenCalledOnce();
   });
 
   it("retains exact unavailable reasons without opening a viewing lease", async () => {

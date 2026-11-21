@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
 import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
@@ -1324,4 +1325,45 @@ it("requires iPhone opt-in and fences slot and generation on the shared bridge",
     params: { ...ownerB, assignments: [assignment] },
   });
   await vi.waitFor(() => expect(h.closedSockets()).toBe(2), { timeout: 1000 });
+});
+
+it.each(["deadline", "disconnect"])("aborts an iPhone observation on %s", async (interruption) => {
+  const started = Promise.withResolvers<AbortSignal>();
+  const harness = await bridgeHarness({
+    graceMs: 20,
+    iphone: {
+      connect: () => ({
+        async request(method, _params, { signal }) {
+          if (method !== "iphone.observe" || !signal) throw new Error("No active observation.");
+          started.resolve(signal);
+          return new Promise<never>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        close() {},
+      }),
+    },
+  });
+  const socket = await harness.connect(harness.token, undefined, undefined, true);
+  const response = socket.call(
+    1,
+    "iphone.observe",
+    {
+      deviceId: createId("device"),
+      driverGeneration: 1,
+      sessionId: "session",
+      runId: "run",
+      includeScreenshot: true,
+    },
+    interruption === "deadline" ? 100 : 10_000,
+  );
+  const signal = await started.promise;
+  if (interruption === "deadline") {
+    expect(await response).toMatchObject({
+      error: { code: "failed", message: "The iPhone did not answer in time." },
+    });
+  } else {
+    socket.close();
+  }
+  await vi.waitFor(() => expect(signal.aborted).toBe(true));
 });

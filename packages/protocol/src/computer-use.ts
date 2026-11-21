@@ -3,7 +3,7 @@ import {
   iphoneRunnerParams,
   iphoneRunnerEventSchema,
 } from "./iphone-bridge.js";
-import { WindowIdSchema, TabIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { WindowIdSchema, TabIdSchema, DeviceIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { ComputerViewSchema } from "./computer-view.js";
 import { DeviceRefusalContextSchema } from "./devices.js";
 import {
@@ -1408,7 +1408,7 @@ export const ComputerUseTabBindingSchema = z.discriminatedUnion("kind", [
     connectionId: z.string().min(1).max(255),
     tabId: TabIdSchema,
     name: z.string().max(200),
-    computerId: RunnerIdSchema,
+    computerId: z.union([DeviceIdSchema, RunnerIdSchema]),
   }),
 ]);
 export type ComputerUseTabBinding = z.infer<typeof ComputerUseTabBindingSchema>;

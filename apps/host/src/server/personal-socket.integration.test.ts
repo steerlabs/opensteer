@@ -1462,3 +1462,128 @@ it("reads a commit's cut once for two devices on the same scope and sends them t
     await database.drop();
   }
 });
+
+it("delivers detail snapshots between 512 KiB and 1 MiB over WebSocket and survives reconnect", async () => {
+  const database = await cloneTestDatabase("host");
+  const sockets: WebSocket[] = [];
+  let runtime: PrivateMachineHost | undefined;
+  try {
+    runtime = await startPrivateMachineHost(database.url);
+    const tasks = createPersonalRunFixturePort(runtime.store);
+    const { threadId } = await tasks.createTask({
+      ownerId: runtime.ownerId,
+      suffix: "large-snapshot",
+    });
+    await tasks.startTask(threadId, "Large snapshot test");
+    const db = runtime.store.database;
+    const template = await db
+      .selectFrom("messages")
+      .selectAll()
+      .where("threadId", "=", threadId)
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    const replyA = `${"A".repeat(250 * 1024)}END_A`;
+    const replyB = `${"B".repeat(250 * 1024)}END_B`;
+    const replyC = `${"C".repeat(150 * 1024)}END_C`;
+    const idA = createId("message");
+    const idB = createId("message");
+    const idC = createId("message");
+    const author = {
+      kind: "agent" as const,
+      displayName: "Opensteer",
+      threadId,
+      runId: template.runId ?? createId("run"),
+    };
+    const sync = await db
+      .selectFrom("clientSyncState")
+      .select("sequence")
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    for (const [id, text, sequence] of [
+      [idA, replyA, "50"],
+      [idB, replyB, "51"],
+      [idC, replyC, "52"],
+    ] as const) {
+      const content = [{ type: "text" as const, text }];
+      const createdAt = new Date();
+      await db
+        .insertInto("messages")
+        .values({
+          ...template,
+          id,
+          sequence,
+          kind: "assistant",
+          author: sql`${JSON.stringify(author)}::jsonb`,
+          content: sql`${JSON.stringify(content)}::jsonb`,
+          published: true,
+          createdAt,
+        })
+        .execute();
+      await db
+        .insertInto("transcriptItems")
+        .values({
+          id,
+          threadId,
+          runId: template.runId,
+          attemptId: null,
+          nodeId: null,
+          kind: "message",
+          position: sequence,
+          revision: sync.sequence,
+          visible: true,
+          isTurnStart: false,
+          createdAt,
+          messageId: id,
+          view: {
+            preview: text.slice(0, 128),
+            truncated: true,
+            messageKind: "assistant",
+            messageAuthor: author,
+          },
+          refs: null,
+        })
+        .execute();
+    }
+
+    const attachAndVerify = async (attempt: string) => {
+      const peer = await connect(runtime!.origin, runtime!.ownerHeaders.cookie!);
+      sockets.push(peer.socket);
+      peer.send({
+        type: "client.attach",
+        apiVersion: hostApiVersion,
+        generation: 1,
+        interests: [],
+        installed: {},
+        selected: {
+          subscriptionId: "detail:0",
+          generation: 1,
+          scope: { kind: "thread", threadId },
+        },
+      });
+      await peer.read(
+        (frame) => frame.type === "host.synchronized" && frame.subscriptionId === "detail:0",
+        `Large snapshot (${attempt}) did not synchronize`,
+      );
+      const snapshot = peer.frames.find(
+        (frame) => frame.type === "host.snapshot" && frame.subscriptionId === "detail:0",
+      );
+      if (snapshot?.type !== "host.snapshot" || !("items" in snapshot.snapshot))
+        throw new Error(`Expected detail snapshot on ${attempt}`);
+      const encodedBytes = Buffer.byteLength(JSON.stringify(snapshot));
+      expect(encodedBytes).toBeGreaterThan(512 * 1024);
+      expect(encodedBytes).toBeLessThanOrEqual(1024 * 1024);
+      const byId = new Map(snapshot.snapshot.items.map((item) => [item.id, item]));
+      expect(byId.get(idA)).toMatchObject({ kind: "message", text: replyA });
+      expect(byId.get(idB)).toMatchObject({ kind: "message", text: replyB });
+      expect(byId.get(idC)).toMatchObject({ kind: "message", text: replyC });
+      peer.socket.close();
+    };
+
+    await attachAndVerify("initial connect");
+    await attachAndVerify("reconnect");
+  } finally {
+    for (const socket of sockets) socket.terminate();
+    await runtime?.close();
+    await database.drop();
+  }
+});

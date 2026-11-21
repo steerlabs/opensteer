@@ -1994,6 +1994,7 @@ export async function createHostServer(
         if (expectedRevision === undefined)
           throw new OpensteerError({
             code: "bad_request",
+            reason: "request-review-required",
             message: "Review the current Request before answering.",
           });
         const pending = await dependencies.store.requests.get(command.requestId);

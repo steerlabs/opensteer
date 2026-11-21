@@ -32,15 +32,24 @@ type DeviceState struct {
 }
 
 func unknownState() DeviceState { return DeviceState{Lock: "unknown", Display: "unknown"} }
+func (s DeviceState) screenBlocker() wire.Reason {
+	switch {
+	case s.Lock == "locked":
+		return wire.PhoneLocked
+	case s.Lock != "unlocked":
+		return wire.LockUnknown
+	case s.Display == "off":
+		return wire.WakeRequired
+	case s.Display != "on":
+		return wire.DisplayUnknown
+	default:
+		return ""
+	}
+}
+
 func (s DeviceState) safe() error {
-	if s.Lock == "locked" {
-		return wire.Fail(wire.PhoneLocked)
-	}
-	if s.Lock != "unlocked" {
-		return wire.Fail(wire.LockUnknown)
-	}
-	if s.Display != "on" {
-		return wire.Fail(wire.WakeRequired)
+	if reason := s.screenBlocker(); reason != "" {
+		return wire.Fail(reason)
 	}
 	return nil
 }
@@ -128,6 +137,12 @@ func readDeviceState(ctx context.Context, open channelOpener, lock func(context.
 		state.Display = "on"
 	case "off", "inactiveOn":
 		state.Display = "off"
+	default:
+		reading := "unrecognized"
+		if backlight == "" {
+			reading = "missing-or-non-string"
+		}
+		slog.Debug("bridge.screen-state", "lock", state.Lock, "display", state.Display, "reason", reading)
 	}
 	orientation, _ := d["currentOrientation"].(string)
 	if r, ok := map[string]int{"rot0": 0, "rot90": 90, "rot180": 180, "rot270": 270}[orientation]; ok {

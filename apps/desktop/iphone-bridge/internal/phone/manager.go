@@ -750,7 +750,6 @@ func (m *Manager) open(ctx context.Context, params *wire.SessionParams) (interfa
 		if err := m.ensureDeveloperServices(ctx, p, session); err != nil {
 			return nil, err
 		}
-		_ = session.Probe(ctx)
 		m.mu.Lock()
 		if p.binding != params.BindingToken || p.epoch != ref.NativeEpoch || p.session != session || p.sessionID != params.SessionID || ctx.Err() != nil {
 			m.mu.Unlock()

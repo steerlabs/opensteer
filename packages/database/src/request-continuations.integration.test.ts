@@ -72,6 +72,58 @@ async function finish(store: OpensteerStore, fixture: Started, interrupted = fal
   });
 }
 describeStore("Request continuation admission", (it) => {
+  it("settles a durable question after reopening the store and refuses a stale revision", async ({
+    storeFixture: { store, database, startRunFixture },
+  }) => {
+    const fixture = await startRunFixture("durable-question-reopen");
+    const { request } = await store.requests.create({
+      callId: "choose-export",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: fixture.run.id,
+      originatingThreadId: fixture.thread.id,
+      requestedBy: fixture.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Choose export",
+        fields: [
+          {
+            id: "format",
+            prompt: "Which format?",
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      },
+    });
+    await open(store, fixture, "another-request");
+    await finish(store, fixture, true);
+    const reopened = new OpensteerStore(database);
+    const page = await reopened.requests.waitingOnUserPage({ userId: fixture.userId, limit: 10 });
+    expect(page.requests.map((entry) => entry.request.id)).toContain(request.id);
+    const expectedRevision = page.reviewedRevisions[request.id]!;
+    expect(expectedRevision).toBe(await reopened.requests.revision(request.id));
+    expect(expectedRevision).not.toBe(page.pendingRequestsRevision);
+    expect(BigInt(expectedRevision)).toBeGreaterThan(0n);
+    const answer = {
+      requestId: request.id,
+      resolvedBy: fixture.userId,
+      response: { kind: "form" as const, answers: { format: ["CSV"] } },
+    };
+    await expect(
+      reopened.requests.answerPersonQuestion({ ...answer, expectedRevision: "0" }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "request-changed" });
+    expect(await reopened.requests.get(request.id)).toMatchObject({
+      status: "pending",
+      response: null,
+    });
+    expect(
+      (await reopened.requests.answerPersonQuestion({ ...answer, expectedRevision })).request,
+    ).toMatchObject({ status: "fulfilled", response: answer.response });
+  });
   for (const [narration, heldStop] of [
     [null, false],
     ["Let me check your calendar", false],

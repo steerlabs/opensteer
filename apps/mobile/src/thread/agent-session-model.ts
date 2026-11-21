@@ -12,10 +12,11 @@ import {
   type AgentWho,
   type HostSnapshot,
   type OperationRequestView,
+  type RequestView,
   type SessionAgent,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import type { AgentOperationView, Request } from "@opensteer/core";
+import type { AgentOperationView } from "@opensteer/core";
 
 type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
@@ -53,7 +54,7 @@ export function sessionRowOf(
 
 /** One direct operation's Request, with what the card shows of it. */
 export interface OperationRequestItem {
-  readonly request: Request;
+  readonly request: RequestView;
   readonly view: OperationRequestView;
 }
 
@@ -64,7 +65,7 @@ export interface OperationRequestItem {
 export function operationRequestsOf(
   snapshot: AgentWorkSource,
   threadId: string,
-  requests: readonly Request[],
+  requests: readonly RequestView[],
 ): readonly OperationRequestItem[] {
   const session = slotOf(snapshot, threadId);
   const items = requests.flatMap((request): OperationRequestItem[] => {

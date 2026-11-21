@@ -19,10 +19,14 @@ import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import {
   answeredQuestionRecordsMigrationName,
   applyAnsweredQuestionRecords,
+  applyBrowserSessionTabsIndex,
+  applyInlineTranscriptMessages,
   applyPersonalStateSchema,
+  browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
+  inlineTranscriptMessagesMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
@@ -607,9 +611,11 @@ export function migrationProvider(options?: {
               [taskApprovalReceiptsMigrationName]: { up: applyTaskApprovalReceipts },
               [answeredQuestionRecordsMigrationName]: { up: applyAnsweredQuestionRecords },
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
+              [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
+              [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
-              "0044_chrome_live_tabs_source": {
+              "0046_chrome_live_tabs_source": {
                 async up(database: Kysely<unknown>) {
                   await sql`alter table browser_sources add column live_tabs_only boolean not null default false`.execute(
                     database,
@@ -617,7 +623,7 @@ export function migrationProvider(options?: {
                 },
               },
               [agentDirectoryMigrationName]: { up: applyAgentDirectoryVerification },
-              "0046_shared_chrome_grants": {
+              "0048_shared_chrome_grants": {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table browser_source_pairings add column device_id text;

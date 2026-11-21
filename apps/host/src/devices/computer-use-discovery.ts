@@ -60,18 +60,12 @@ type ComputerAccess =
 function blocked(code: string, message: string, next: string): { blocked: Blocked } {
   return { blocked: { code, message, next } };
 }
-export function computerMachineProblem(machine: {
+type ComputerToolSupport = {
   name: string;
-  state: string;
   computerToolEnabled?: boolean;
   computerUseVersion?: number | null;
-}): { blocked: Blocked } | null {
-  if (machine.state === "offline")
-    return blocked(
-      "computer_offline",
-      `${machine.name} is offline.`,
-      "The person can bring it online; other work can continue.",
-    );
+};
+function computerToolVersionProblem(machine: ComputerToolSupport): { blocked: Blocked } | null {
   if (
     machine.computerToolEnabled === false ||
     (machine.computerUseVersion !== undefined && machine.computerUseVersion !== 2)
@@ -81,6 +75,19 @@ export function computerMachineProblem(machine: {
       `${machine.name} needs an Opensteer update.`,
       "The person can update Opensteer on the task's computer and the target computer.",
     );
+  return null;
+}
+export function computerMachineProblem(
+  machine: ComputerToolSupport & { state: string },
+): { blocked: Blocked } | null {
+  if (machine.state === "offline")
+    return blocked(
+      "computer_offline",
+      `${machine.name} is offline.`,
+      "The person can bring it online; other work can continue.",
+    );
+  const versionProblem = computerToolVersionProblem(machine);
+  if (versionProblem) return versionProblem;
   if (machine.state === "permission-required")
     return blocked(
       "permission_required",
@@ -185,7 +192,18 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): ComputerAccess {
       `${name} is blocked by its owner.`,
       "The owner can unblock it from any Opensteer app.",
     );
-  const problem = phoneProblem(facts.phone, facts.connectedAgent);
+  // An iPhone's last lock/display reading describes hardware, not this task's grant.
+  // The driver checks live state when the authorized task observes it.
+  const reason = facts.phone.availability?.reason?.kind;
+  const refreshScreenState =
+    facts.phone.definitionId === "iphone-screen" &&
+    facts.phone.state !== "offline" &&
+    (reason === "locked" || reason === "protected") &&
+    facts.callable &&
+    !facts.heldByAnotherRun;
+  const problem = refreshScreenState
+    ? computerToolVersionProblem(facts.phone)
+    : phoneProblem(facts.phone, facts.connectedAgent);
   if (problem) return problem;
   if (facts.callable && !facts.heldByAnotherRun)
     return { access: facts.canAct ? "read-write" : "read" };
@@ -239,7 +257,7 @@ function phoneProblem(
     );
   switch (reason) {
     case "approval-required":
-      return computerMachineProblem({ ...phone, state: "ready" });
+      return computerToolVersionProblem(phone);
     case "locked":
       return blocked(
         "permission_required",

@@ -17,11 +17,12 @@ const (
 	UnsupportedClear         Reason = "unsupported-clear"
 	LockUnknown              Reason = "lock-state-unknown"
 	WakeRequired             Reason = "wake-on-phone-required"
+	DisplayUnknown           Reason = "screen-state-unknown"
 	AppUnavailable           Reason = "app-not-launchable"
 	NativeLimit              Reason = "native-limit-exceeded"
 )
 
-var screenReasons = []Reason{StaleObservation, OutcomeUnknown, DisplayUnsupported, GeometryUnavailable, AccessibilityUnavailable, UnsupportedText, UnsupportedClear, LockUnknown, WakeRequired, AppUnavailable, NativeLimit}
+var screenReasons = []Reason{StaleObservation, OutcomeUnknown, DisplayUnsupported, GeometryUnavailable, AccessibilityUnavailable, UnsupportedText, UnsupportedClear, LockUnknown, WakeRequired, DisplayUnknown, AppUnavailable, NativeLimit}
 
 type ScreenRef struct {
 	BindingToken string `json:"bindingToken"`

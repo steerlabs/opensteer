@@ -151,6 +151,7 @@ const notify: RequestFormField = {
   prompt: "Who should hear about a failure?",
   secret: false,
 };
+const reviewedRevision = "0";
 
 function asking(
   fields: readonly RequestFormField[],
@@ -165,6 +166,7 @@ function asking(
     presentation: { fields, kind: "form", title: "A question" },
     requestedBy: "usr_00000000-0000-4000-8000-000000000001",
     requiredActor: "requester",
+    reviewedRevision,
     status: "pending",
   } as unknown as Request;
   return { denied: null, queued: 0, queuedTitle: null, request, textRole: "answer" };
@@ -267,6 +269,7 @@ async function type(words: string, field = "textarea"): Promise<void> {
 
 const answered = (answers: Record<string, string[]>) =>
   expect.objectContaining({
+    expectedRevision: reviewedRevision,
     requestId: "req_00000000-0000-4000-8000-000000000001",
     response: { answers, kind: "form" },
     type: "request.respond",
@@ -399,6 +402,7 @@ describe("answering a question", () => {
     await tap("Dismiss");
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
+        expectedRevision: reviewedRevision,
         response: { kind: "external", value: { decision: "declined" } },
         type: "request.respond",
       }),
