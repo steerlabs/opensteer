@@ -850,3 +850,77 @@ it("hands off new popups synchronously even while restored tabs are parked, with
   expect(sawSyncHandOff).toBe(true);
   expect(handOffOpenerMatched).toBe(true);
 });
+
+it("refuses closing a sleeping tab retryably until Chromium confirms removal, then succeeds on retry", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-f7-close-proof-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+
+  const ledger = new SurfaceLedger(launched.context, { savedLineageId: "profile-f7" });
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+
+  const closedEvents: string[] = [];
+  ledger.subscribe((event) => {
+    if (event.type === "changed" && event.change === "closed") closedEvents.push(event.surface.id);
+  });
+
+  const url = `${server.originForSite(1)}/article`;
+  const surface = await ledger.openSurface();
+  const live = ledger.binding(surface.id)!;
+  await live.cdp.send("Page.navigate", { url });
+  await waitLoaded(live.cdp, "/article");
+  expect(await ledger.sleep(surface.id, () => null)).toBe(true);
+  await launched.context.sessionRestore!.flush!();
+
+  // Fail removeByTabId once -> closeSurface must reject retryably, keep tab listed, emit no closed event.
+  const removeSpy = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValueOnce(false);
+  await expect(ledger.closeSurface(surface.id)).rejects.toThrow(/This tab is still closing/);
+  expect(ledger.snapshot().some((s) => s.id === surface.id)).toBe(true);
+  expect(closedEvents).toEqual([]);
+  // Sidecar must already have removed the closing tab.
+  await launched.context.sessionRestore!.flush!();
+  const { readFile } = await import("node:fs/promises");
+  const sidecarAfterFailedClose = JSON.parse(
+    await readFile(path.join(directory, "opensteer-tabs.json"), "utf8"),
+  ) as { tabs: readonly { surfaceId: string }[] };
+  expect(sidecarAfterFailedClose.tabs.some((t) => t.surfaceId === surface.id)).toBe(false);
+  removeSpy.mockRestore();
+
+  // Retry succeeds once Chromium confirms removal.
+  await ledger.closeSurface(surface.id);
+  expect(ledger.snapshot().some((s) => s.id === surface.id)).toBe(false);
+  expect(closedEvents).toEqual([surface.id]);
+  const invAfter = await lifecycle.inventory();
+  expect(invAfter.some((tab) => tab.url === url)).toBe(false);
+
+  // Same proof for closeDurableSurface!
+  const url2 = `${server.originForSite(2)}/article`;
+  const s2 = await ledger.openSurface();
+  const live2 = ledger.binding(s2.id)!;
+  await live2.cdp.send("Page.navigate", { url: url2 });
+  await waitLoaded(live2.cdp, "/article");
+  expect(await ledger.sleep(s2.id, () => null)).toBe(true);
+
+  const removeSpy2 = vi.spyOn(lifecycle, "removeByTabId").mockResolvedValueOnce(false);
+  await expect(ledger.closeDurableSurface(s2.id)).rejects.toThrow(/This tab is still closing/);
+  expect(ledger.snapshot().some((s) => s.id === s2.id)).toBe(true);
+  removeSpy2.mockRestore();
+
+  await ledger.closeDurableSurface(s2.id);
+  expect(ledger.snapshot().some((s) => s.id === s2.id)).toBe(false);
+  const invAfter2 = await lifecycle.inventory();
+  expect(invAfter2.some((tab) => tab.url === url2)).toBe(false);
+});

@@ -1379,6 +1379,8 @@ export class SurfaceLedger {
       !(await this.pages.tabSettled(this.session, surfaceId, "host-closed", tabCloseWaitMs, true))
     )
       throw stillClosing("This tab is still closing.");
+    if (record && !(await this.releaseSleepingRestore(record, tabCloseWaitMs)))
+      throw stillClosing("This tab is still closing.");
     if (record) await this.remove(record);
   }
 
@@ -1400,6 +1402,8 @@ export class SurfaceLedger {
     for (const page of this.pages.tabPages(this.session, surfaceId))
       this.pages.destroy(page, reason);
     if (live && !(await this.pages.confirmed(live.page, tabCloseWaitMs)))
+      throw stillClosing("This tab is still closing.");
+    if (!(await this.releaseSleepingRestore(record, tabCloseWaitMs)))
       throw stillClosing("This tab is still closing.");
     await this.remove(record);
   }
@@ -1451,42 +1455,45 @@ export class SurfaceLedger {
     this.agentCommandListeners.clear();
   }
 
+  private async releaseSleepingRestore(
+    record: TabRecord,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const engine = record.restore?.engine;
+    if (engine == null) return true;
+    const release = this.context.releaseRestore;
+    if (!release) {
+      if (record.restore) {
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
+      return true;
+    }
+    try {
+      const outcome = await withTimeout(
+        Promise.resolve(release.call(this.context, engine)),
+        timeoutMs,
+        { timeoutError: () => new Error("Restore cleanup is still running.") },
+      );
+      const released = outcome !== false;
+      if (released && record.restore?.engine === engine) {
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
+      return released;
+    } catch {
+      return false;
+    }
+  }
+
   private async releaseSleepingRestores(
     records: readonly TabRecord[],
     confirm: boolean,
   ): Promise<boolean> {
-    const release = this.context.releaseRestore;
     const pending = records.filter((record) => record.restore?.engine != null);
     if (pending.length === 0) return true;
-    if (!release) {
-      for (const record of pending) {
-        if (record.restore) {
-          record.restore.engine = null;
-          record.restore.bytes = 0;
-        }
-      }
-      return true;
-    }
     const results = await Promise.all(
-      pending.map(async (record) => {
-        const engine = record.restore?.engine;
-        if (engine == null) return true;
-        try {
-          const outcome = await withTimeout(
-            Promise.resolve(release.call(this.context, engine)),
-            pageCloseWaitMs,
-            { timeoutError: () => new Error("Restore cleanup is still running.") },
-          );
-          const released = outcome !== false;
-          if (released && record.restore?.engine === engine) {
-            record.restore.engine = null;
-            record.restore.bytes = 0;
-          }
-          return released;
-        } catch {
-          return false;
-        }
-      }),
+      pending.map((record) => this.releaseSleepingRestore(record, pageCloseWaitMs)),
     );
     return confirm ? results.every(Boolean) : true;
   }
