@@ -10,6 +10,27 @@ export function redact(value) {
 
 export const requiredFreeKiB = 50 * 1024 * 1024;
 
+export function homeImageBuilds(builder) {
+  const bake = ["buildx", "bake", "--builder", builder, "-f", "deploy/container/docker-bake.hcl"];
+  return [
+    {
+      platform: "linux/amd64",
+      args: [
+        ...bake,
+        "--set",
+        "home-*.platform=linux/amd64",
+        "--set",
+        "home-*.output=type=cacheonly",
+        "home",
+      ],
+    },
+    {
+      platform: "linux/arm64",
+      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+    },
+  ];
+}
+
 export function assertBuildSpace(location, dfOutput) {
   const rows = dfOutput.trim().split("\n").slice(1);
   if (!rows.length) throw new Error(`No filesystem usage returned for ${location}.`);

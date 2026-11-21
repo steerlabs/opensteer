@@ -164,11 +164,19 @@ Generate the standalone cloud-init artifact with
 The installer bundles shell scripts and Compose files for both AMD64 and ARM64.
 The `home` Bake group in `deploy/container/docker-bake.hcl` defines six images
 for `linux/amd64` and `linux/arm64`. Inspect the resolved targets locally with
-`docker buildx bake -f deploy/container/docker-bake.hcl home --print`. The
-release publisher builds and pushes that group with `--push`, verifies both
-platforms in each registry manifest, and pins the six manifest-list digests in
-the Home release manifest. Publish the installer at the manifest's HTTPS URL
-with its SHA-256. The Home Provisioner renders cloud-init user data. On the
+`docker buildx bake -f deploy/container/docker-bake.hcl home --print`. The local
+verifier builds AMD64 into the BuildKit cache and loads ARM64 for the Colima
+deployment test. Building AMD64 locally requires a builder that can execute
+AMD64 instructions, either natively or through emulation.
+
+The release owner must complete these steps.
+
+1. Build and push the six Home images for both platforms with the `home` Bake group.
+2. Check that each registry manifest lists both platforms and pin the manifest-list digests in the Home release manifest.
+3. Publish the installer at the manifest's HTTPS URL with its SHA-256.
+4. Run one AMD64 Home end to end.
+
+The Home Provisioner renders cloud-init user data. On the
 VM, cloud-init writes `/root/opensteer-home-boot.json` and
 `/root/opensteer-home-bootstrap-token` and enables a systemd download unit. The
 unit downloads the installer, verifies its SHA-256, and passes the files to it

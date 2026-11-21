@@ -8,10 +8,39 @@ import { parseHostConfig } from "../packages/config/src/config.ts";
 import { expandSecretFiles } from "../deploy/container/opensteer-entrypoint.mjs";
 import {
   assertBuildSpace,
+  homeImageBuilds,
   quote,
   redact,
   requiredFreeKiB,
 } from "./verify-home-deployment-support.mjs";
+
+await test("builds AMD64 locally and loads only ARM64 for the Colima deployment proof", () => {
+  const bake = [
+    "buildx",
+    "bake",
+    "--builder",
+    "test-builder",
+    "-f",
+    "deploy/container/docker-bake.hcl",
+  ];
+  assert.deepEqual(homeImageBuilds("test-builder"), [
+    {
+      platform: "linux/amd64",
+      args: [
+        ...bake,
+        "--set",
+        "home-*.platform=linux/amd64",
+        "--set",
+        "home-*.output=type=cacheonly",
+        "home",
+      ],
+    },
+    {
+      platform: "linux/arm64",
+      args: [...bake, "--set", "home-*.platform=linux/arm64", "--load", "home"],
+    },
+  ]);
+});
 
 await test("Colima test input keeps whitespace, quotes and shell metacharacters literal", () => {
   const value = "'a b' `printf substituted` $(printf substituted)\n--arg";

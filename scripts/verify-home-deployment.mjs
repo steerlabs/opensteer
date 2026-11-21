@@ -24,7 +24,12 @@ import {
 import { decodeBrowserFrameEnvelope } from "../packages/protocol/src/browser.ts";
 import { scopedPersonalApiVersion } from "../packages/protocol/src/personal-sync.ts";
 
-import { assertBuildSpace, quote, redact } from "./verify-home-deployment-support.mjs";
+import {
+  assertBuildSpace,
+  homeImageBuilds,
+  quote,
+  redact,
+} from "./verify-home-deployment-support.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const requireHost = createRequire(resolve(root, "apps/host/package.json"));
@@ -1446,24 +1451,11 @@ try {
   );
   if (!contract) throw new Error("Home Account contract failed");
   resourcesAllowed = true;
-  const built = await check("build all six Home images for Colima linux/arm64", () => {
-    const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
-    builderUsed = true;
-    const build = result(
-      "docker",
-      [
-        "buildx",
-        "bake",
-        "--builder",
-        builder,
-        "-f",
-        "deploy/container/docker-bake.hcl",
-        "--set",
-        "home-*.platform=linux/arm64",
-        "--load",
-        "home",
-      ],
-      {
+  const revision = checked(result("git", ["rev-parse", "HEAD"]), "Cannot read source revision");
+  for (const { platform, args } of homeImageBuilds(builder)) {
+    const built = await check(`build all six Home images for ${platform}`, () => {
+      builderUsed = true;
+      const build = result("docker", args, {
         env: {
           ...builderEnv,
           REGISTRY: "local",
@@ -1474,11 +1466,11 @@ try {
           CACHE_EXPORT: "false",
         },
         stdio: ["ignore", "inherit", "inherit"],
-      },
-    );
-    checked(build, "Home build failed");
-  });
-  if (!built) throw new Error("The deployment proof needs the source-built images.");
+      });
+      checked(build, "Home build failed");
+    });
+    if (!built) throw new Error(`The deployment proof needs the source-built ${platform} images.`);
+  }
   const prepared = await check("prepare the local Home and stage the standalone installer", () => {
     checked(
       result("bash", [resolve(recipe, "package-installer.sh"), bootPackage]),
