@@ -19,11 +19,13 @@ import {
 import {
   AgentConnectionStore,
   NotificationStore,
+  installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
   decideAgentOperation,
   listAgentOperations,
   needsYouPage,
   readTranscriptItem,
+  readBrowserPoolSlot,
   reopenAgentOperation,
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
@@ -33,6 +35,7 @@ import { randomUUID } from "node:crypto";
 import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
+import { BrowserPoolGate } from "../browser/browser-pool-gate.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -117,6 +120,7 @@ async function setUp(
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
+    readonly pooledBrowser?: BrowserToolPorts["pooledBrowser"];
   } = {},
 ) {
   const f = options.run ?? (await storeFixture.startRunFixture(key));
@@ -163,6 +167,7 @@ async function setUp(
       ],
       requireDevice: async () => DeviceIdSchema.parse(home.runnerId),
       issueTicket: options.browserConnect?.issueTicket ?? unexpectedTabOperation,
+      ...(options.pooledBrowser ? { pooledBrowser: options.pooledBrowser } : {}),
       origin: new URL("https://home.example.test"),
     }),
   });
@@ -201,6 +206,170 @@ async function setUp(
 }
 
 describeStore("an external agent's direct work through sessions", (it) => {
+  for (const cut of [
+    "Stop",
+    "Disconnect",
+    "grant cut",
+    "task-mode cut",
+    "no cut",
+    "refused before any send",
+  ] as const) {
+    it(`keeps an approved pooled script outside hand-off during wake with ${cut}`, async ({
+      storeFixture,
+    }) => {
+      const { database, store } = storeFixture;
+      const f = await storeFixture.startRunFixture(`approved-pool-${cut}`);
+      const identity = {
+        runnerId: f.runnerId,
+        runtimeId: "pooled-browser",
+        slotId: "slot",
+        instanceId: randomUUID(),
+        term: 1,
+        epoch: 1,
+      };
+      const releaseWake = Promise.withResolvers<void>();
+      const wakeStarted = Promise.withResolvers<void>();
+      const waking = Promise.withResolvers<void>();
+      const reserveCancelled = Promise.withResolvers<void>();
+      const read = () => readBrowserPoolSlot(database, identity.runnerId);
+      await installBrowserPoolSlot(database, identity);
+      // The driver parks without touching the slot row, so only the gate holds work back.
+      const gate = new BrowserPoolGate();
+      gate.attach({
+        park: async () => "parked",
+        wake: async () => {
+          wakeStarted.resolve();
+          try {
+            await releaseWake.promise;
+            gate.settle("open");
+          } finally {
+            waking.resolve();
+          }
+        },
+      });
+      gate.settle("open");
+      expect(await gate.tryPark()).toBe("parked");
+      const s = await setUp(storeFixture, `approved-pool-${cut}`, {
+        run: f,
+        accessMode: cut === "task-mode cut" ? "auto" : "approval-required",
+        grant: {
+          ...granted,
+          resources: [...granted.resources, { kind: "browser-profile", profileId: other }],
+        },
+        pooledBrowser: () => ({
+          identity: () => identity,
+          pageDocument: () => undefined,
+          reserve: async (signal) => {
+            try {
+              return await gate.reserve(signal);
+            } finally {
+              if (signal.aborted) reserveCancelled.resolve();
+            }
+          },
+        }),
+      });
+      s.runBrowserScript.mockImplementation(async ({ browserSend }) => {
+        expect(browserSend?.target).toEqual(identity);
+        // The send-side check refuses after hand-off and before any command left the Home.
+        if (cut === "refused before any send")
+          throw new OperationOutcomeUnknown(
+            "The connected agent's access changed during this work.",
+          );
+        await browserSend!.recheck();
+        browserSend!.submitted();
+        browserSend!.acknowledged();
+        return { content: [{ type: "text", text: "done" }] };
+      });
+      const pending = await s.ok("browser_use", script);
+      expect(pending.status).toBe("pending");
+      const requestId = pending.requestId as RequestId;
+      const revision = (await store.requests.revision(requestId))!;
+      await s.sessions.respond({
+        requestId,
+        expectedRevision: revision,
+        resolvedBy: f.userId,
+        response: { kind: "form", answers: { decision: ["allow"] } },
+      });
+      const operation = () =>
+        database
+          .selectFrom("agentOperations")
+          .selectAll()
+          .where("requestId", "=", requestId)
+          .executeTakeFirstOrThrow();
+      expect(await operation()).toMatchObject({ state: "approved", handedOffAt: null });
+      const resumed = s.call("browser_use", { ...script, operationId: pending.operationId }).then(
+        (result) => result,
+        () => null,
+      );
+      try {
+        await wakeStarted.promise;
+        expect(s.runBrowserScript).not.toHaveBeenCalled();
+        expect(gate.phase).toBe("waking");
+        expect(await read()).toMatchObject({ phase: "running" });
+        expect(await operation()).toMatchObject({ state: "approved", handedOffAt: null });
+        const current = await operation();
+        const threadId = ThreadIdSchema.parse(pending.taskId);
+        const home = commands(storeFixture, f.userId, {
+          afterStop: (id, reason) => s.sessions.closeConnection(id, reason === "disconnect"),
+        });
+        switch (cut) {
+          case "Stop":
+            await s.sessions.stopSession({
+              ownerUserId: f.userId,
+              sessionId: current.sessionId,
+              threadId,
+            });
+            break;
+          case "Disconnect":
+            await home.revoke(s.agent.id);
+            break;
+          case "grant cut":
+            await home.update(s.agent.id, { grant: granted });
+            break;
+          case "task-mode cut":
+            await store.updateThreadAccessMode({
+              threadId,
+              requestedBy: f.userId,
+              accessMode: "approval-required",
+            });
+            await s.sessions.lowerTaskMode(threadId, "approval-required");
+            break;
+          case "refused before any send":
+            releaseWake.resolve();
+            expect(await resumed).toMatchObject({
+              structuredContent: { status: "refused", error: { code: "access_changed" } },
+            });
+            expect(await operation()).toMatchObject({
+              state: "refused",
+              outcome: "refused",
+              handedOffAt: expect.any(Date),
+              terminalEvidenceAt: expect.any(Date),
+            });
+            break;
+          case "no cut":
+            releaseWake.resolve();
+            expect(await resumed).toMatchObject({ structuredContent: { status: "completed" } });
+            expect(await operation()).toMatchObject({
+              state: "completed",
+              terminalEvidenceAt: expect.any(Date),
+            });
+            expect(s.runBrowserScript).toHaveBeenCalledOnce();
+            break;
+        }
+        if (cut !== "no cut" && cut !== "refused before any send") {
+          await reserveCancelled.promise;
+          await s.sessions.drain();
+          expect(await operation()).toMatchObject({ state: "refused", handedOffAt: null });
+          expect(s.runBrowserScript).not.toHaveBeenCalled();
+        }
+      } finally {
+        releaseWake.resolve();
+        await resumed;
+        await waking.promise;
+      }
+    });
+  }
+
   it("records a fake background model's allow decision before executing an Auto effect", async ({
     storeFixture,
   }) => {

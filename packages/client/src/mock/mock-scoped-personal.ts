@@ -680,6 +680,8 @@ export function mockScopedResource(
       profiles: unknown;
       profileDeletions?: unknown;
       placements: unknown;
+      /** A pooled browser's report, as only a Home with one sends it. */
+      pools?: unknown;
       profileHomes: unknown;
       available: boolean;
     };
@@ -715,7 +717,11 @@ export function mockScopedResource(
         deletions: bootstrap.browser.profileDeletions,
       };
     case "browser-placement":
-      return { kind, placements: bootstrap.browser.placements };
+      return {
+        kind,
+        placements: bootstrap.browser.placements,
+        ...(bootstrap.browser.pools ? { pools: bootstrap.browser.pools } : {}),
+      };
     case "browser-home":
       return { kind, homes: bootstrap.browser.profileHomes };
     case "plugin":

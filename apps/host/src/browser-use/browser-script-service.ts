@@ -1,6 +1,7 @@
 import { agentGrantAllows, BrowserProfileIdSchema, refused, TabIdSchema } from "@opensteer/core";
 import { executionAccess, selectedGrantOf, type OpensteerStore } from "@opensteer/database";
 import type { ChromeSharedTabs } from "../browser/chrome-shared-tabs.js";
+import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor } from "../tabs/ports.js";
@@ -18,7 +19,8 @@ type Services = {
     | "detachAgentSessionsForBinding"
     | "tabOccupants"
     | "browserBindingEnded"
-  >;
+  > &
+    Partial<Pick<BrowserService, "pooledScriptPageWitness">>;
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
 };
@@ -30,7 +32,7 @@ function tabAccess(
   { browser, store, tabs }: Services,
   authority: CdpAuthority,
 ): BrowserUseTabAccess {
-  const actorFor = async (signal: AbortSignal) => {
+  const actorFor = async (signal: AbortSignal, browserSend?: PooledBrowserSend) => {
     signal.throwIfAborted();
     if (authority.expiresAt !== undefined && authority.expiresAt <= Date.now())
       throw refused("forbidden", "Browser authority expired.");
@@ -48,6 +50,7 @@ function tabAccess(
         authority,
         threadId: execution.threadId,
         signal,
+        ...(browserSend ? { browserSend } : {}),
       } satisfies BrowserBindingTabActor,
     };
   };
@@ -57,7 +60,7 @@ function tabAccess(
   });
   return {
     async *pages(call) {
-      const { actor, execution } = await actorFor(call.signal);
+      const { actor, execution } = await actorFor(call.signal, call.browserSend);
       await browser.flushPendingTabDescriptors();
       for await (const row of tabs.browserScriptPages(actor)) {
         if (!row.url || (execution.agentConnection && !row.profileId)) continue;
@@ -76,8 +79,8 @@ function tabAccess(
         };
       }
     },
-    async bind(tabId, signal) {
-      const { actor, execution } = await actorFor(signal);
+    async bind(tabId, signal, browserSend) {
+      const { actor, execution } = await actorFor(signal, browserSend);
       await browser.flushPendingTabDescriptors();
       return {
         binding: await tabs.bindBrowserScript(actor, TabIdSchema.parse(tabId), {
@@ -86,8 +89,8 @@ function tabAccess(
         threadId: actor.threadId,
       };
     },
-    async open(input, key, signal) {
-      const { execution, actor } = await actorFor(signal);
+    async open(input, key, signal, browserSend) {
+      const { execution, actor } = await actorFor(signal, browserSend);
       const grant = selectedGrantOf(execution);
       const requested = BrowserProfileIdSchema.safeParse(input.profileId).data;
       if (input.profileId !== undefined && !requested)
@@ -161,6 +164,12 @@ export class BrowserScriptService {
             return target.port.command(target, method, params, sessionId, call);
           return target.port.command(target, method, params, sessionId, call);
         },
+        rebind: (target, call) => {
+          byContext(call.contextKey);
+          if ("share" in target || !target.port.rebind)
+            throw refused("conflict", "This browser page is stale.");
+          return target.port.rebind(target, call);
+        },
         release: (target) => {
           if ("share" in target) target.port.release?.(target);
           else target.port.release?.(target);
@@ -180,6 +189,7 @@ export class BrowserScriptService {
     code,
     signal,
     recheck,
+    browserSend,
   }: {
     authority: CdpAuthority;
     sharedChromeTabId?: string;
@@ -187,6 +197,7 @@ export class BrowserScriptService {
     code: string;
     signal?: AbortSignal;
     recheck?: () => Promise<void>;
+    browserSend?: PooledBrowserSend;
   }) {
     signal?.throwIfAborted();
     if (this.#closed) throw refused("conflict", "The browser script service has closed.");
@@ -253,6 +264,7 @@ export class BrowserScriptService {
       callSignal ? AbortSignal.any([callSignal, binding.lifetime.signal]) : binding.lifetime.signal,
       JSON.stringify([ownerId, agentBindingId]),
       recheck,
+      browserSend,
     );
   }
 

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -21,6 +21,8 @@ import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserController,
   BrowserRuntime,
+  browserPoolControlBytes,
+  type BrowserPoolControl,
   SessionFiles,
   SurfaceLedger,
 } from "@opensteer/browser-runtime-core";
@@ -65,6 +67,107 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+
+it("adopts a frozen Chromium document, streams it, and edits its unsent draft", async () => {
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  const launch = vi.spyOn(launcher, "launch");
+  const claims = validClaims({ actor: "person", creationOrigin: "person", tabRestoreVersion: 1 });
+  const keys = generateKeyPairSync("ed25519");
+  const verifier = new FakeTicketVerifier(claims);
+  const runtime = new BrowserRuntime({
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: verifier,
+    // This fixture owns a single blank document, with no downloads, workers or sites.
+    pool: { controllerKey: keys.publicKey, probePage: async () => [] },
+  });
+  cleanup.push(() => runtime.shutdown());
+  // Stands in for the controller: each control is numbered and names the fence it replaces.
+  let sequence = 0;
+  let held: BrowserPoolControl["expect"] = null;
+  const signed = (input: Omit<BrowserPoolControl, "sequence" | "expect">) => {
+    const request: BrowserPoolControl = { ...input, sequence: ++sequence, expect: held };
+    if (input.kind === "install" || input.kind === "adopt") held = input.fence;
+    return runtime.controlPool(
+      request,
+      sign(null, browserPoolControlBytes(request), keys.privateKey),
+    );
+  };
+  let fence = { slot: "slot", term: 1, instance: randomUUID(), epoch: 1 };
+  const intent = { id: randomUUID(), sequence: 1 };
+  const control = (kind: BrowserPoolControl["kind"], attempt?: number) =>
+    signed({ kind, fence, intent, ...(attempt ? { attempt } : {}) });
+  await signed({ kind: "install", fence });
+  verifier.setClaims("first", { ...claims, pool: { ...fence, attachment: 1 } });
+  const first = await runtime.attach("first", new FakeSink());
+  const page = (await launch.mock.results[0]?.value)?.context.pages()[0];
+  if (!page) throw new Error("Missing initial page");
+  const cdp = await page.cdp();
+  const target = await page.targetId();
+  await cdp.send("Runtime.evaluate", {
+    expression:
+      "document.body.innerHTML = '<input>'; document.querySelector('input').focus(); window.marker = 99;",
+  });
+  await cdp.send("Input.insertText", { text: "unsent draft" });
+  await first.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  const retired = await control("retire");
+  expect(retired).toMatchObject({
+    phase: "retired",
+    retired: { documents: [expect.any(Object)], sessions: [claims.sessionId] },
+  });
+  const documents = retired.retired!.documents;
+  await control("seal");
+  await expect(control("release")).rejects.toThrow("park was committed");
+  // The controller issues the next epoch on resume; adoption installs it.
+  const stale = fence;
+  fence = { ...fence, epoch: 2 };
+  const adoption = await control("adopt");
+  expect(adoption.fence?.epoch).toBe(2);
+  expect(await control("adopt")).toEqual(adoption);
+  verifier.setClaims("old", {
+    ...claims,
+    reattach: true,
+    initialNavigation: undefined,
+    pool: { ...stale, attachment: 2 },
+  });
+  await expect(runtime.attach("old", new FakeSink())).rejects.toThrow("authority has changed");
+  verifier.setClaims("fresh", {
+    ...claims,
+    reattach: true,
+    initialNavigation: undefined,
+    pool: { ...fence, attachment: 2 },
+  });
+  const view = new FakeSink();
+  const attached = await runtime.attach("fresh", view);
+  const surfaceId = documents[0]!.surfaceId;
+  expect(view.tabs.rows.get(surfaceId)?.documentId).toBe(documents[0]!.documentId);
+  const completed = await control("complete", 2);
+  expect(completed.adoption?.outcome).toEqual({ adopted: [claims.sessionId], lost: [] });
+  expect(await control("complete", 2)).toEqual(completed);
+  const subscribe = JSON.stringify({ type: "stream.subscribe", surfaceId });
+  await attached.handle(subscribe);
+  await waitFor(() => view.frames.length > 0);
+  expect(await page.targetId()).toBe(target);
+  const draft = async () =>
+    evaluationValue(
+      await cdp.send("Runtime.evaluate", {
+        expression: "JSON.stringify([document.querySelector('input').value, window.marker])",
+        returnByValue: true,
+      }),
+    );
+  expect(await draft()).toBe('["unsent draft",99]');
+  await cdp.send("Input.insertText", { text: " edited" });
+  expect(await draft()).toBe('["unsent draft edited",99]');
+  expect(launch).toHaveBeenCalledTimes(1);
+});
+
 it("keeps the person's live page state through Stop and Resume", async () => {
   const launcher = new PlaywrightChromiumLauncher({
     chromiumSandbox: false,

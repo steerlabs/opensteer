@@ -94,6 +94,66 @@ afterEach(async () => {
   await Promise.all(applications.splice(0).map((application) => application.close()));
 });
 
+it.each(["trigger", "watch"] as const)(
+  "cancels the actual pooled %s waiter when its client closes before it opens a session",
+  async (kind) => {
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const entered = Promise.withResolvers<void>();
+    const stopped = Promise.withResolvers<void>();
+    const attach = vi.fn();
+    const browser = {
+      usesPoolAdmission: true,
+      openAgentSession: async ({ signal }: { signal: AbortSignal }) => {
+        entered.resolve();
+        try {
+          await new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        } finally {
+          stopped.resolve();
+        }
+      },
+      attachCdpForAgent: attach,
+      closeTriggerSessionsForBinding: vi.fn(async () => []),
+    } as unknown as BrowserService;
+    const userId = createId("user");
+    if (kind === "trigger")
+      registerTriggerCdpBridge(app, browser, {
+        authenticate: async () => ({
+          requestedBy: userId,
+          environmentId: createId("environment"),
+          occurrenceId: createId("triggerOccurrence"),
+        }),
+      } as unknown as TriggerControlTokenService);
+    else
+      registerWatchCdpBridge(app, browser, {
+        authenticate: async () => ({
+          createdBy: userId,
+          environmentId: createId("environment"),
+          activationId: "watch-activation",
+          exp: Math.ceil(Date.now() / 1000) + 60,
+        }),
+      } as unknown as WatchCapabilityTokenService<"opensteer-watch-browser-cdp">);
+    const port = await listen(app);
+    const { socket, closed } = await connect(
+      `ws://127.0.0.1:${port}/internal/v1/${kind}-cdp`,
+      "program-control-token-1234567890",
+    );
+    try {
+      await entered.promise;
+      socket.close();
+      await Promise.all([closed, stopped.promise]);
+      expect(attach).not.toHaveBeenCalled();
+      expect(browser.closeTriggerSessionsForBinding).not.toHaveBeenCalled();
+    } finally {
+      socket.terminate();
+      await closed;
+    }
+  },
+);
+
 describe("Trigger CDP bridge", () => {
   it("adapts standard CDP WebSocket frames to the Browser Runtime", async () => {
     const requestedBy = createId("user");

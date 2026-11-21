@@ -130,6 +130,8 @@ export interface BrowserToolPorts {
   /** Refuses as the browser does for an agent: Device stopped, asleep, offline or switched off. */
   readonly requireDevice: (runnerId: RunnerId) => Promise<DeviceId>;
   readonly issueTicket: BrowserService["issueStandardCdpTicket"];
+  readonly pooledBrowser?: BrowserService["pooledDirectBrowser"];
+  readonly pooledTab?: TabService["connectionTab"];
   /** The Home's own origin, the one connected agents already reach it at. */
   readonly origin: URL;
 }
@@ -139,6 +141,7 @@ type BrowserTarget = { readonly operation: AgentOperationTarget } & (
       readonly profileId: BrowserProfileId;
       readonly tabId: TabId | null;
       readonly generation: number | null;
+      readonly runnerId: RunnerId;
     }
   | { readonly profileId: null; readonly tabId: TabId; readonly generation: string }
 );
@@ -225,6 +228,7 @@ export class BrowserToolHandlers {
         `Browser scripts can contain at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters.`,
       );
     const target = await this.#target(connection, { tabId, profileId });
+    const pooled = await this.#pooledTarget(connection, target);
     const outcome = await requireDirectWork(this.#ports.sessions).run({
       ownerUserId: connection.userId,
       agentConnectionId: connection.connectionId,
@@ -234,7 +238,9 @@ export class BrowserToolHandlers {
       tool: "browser_use",
       input,
       target: target.operation,
-      targetGeneration: target.generation === null ? null : String(target.generation),
+      targetGeneration:
+        pooled?.generation ?? (target.generation === null ? null : String(target.generation)),
+      ...(pooled ? { pooledBrowser: pooled } : {}),
       effect: "write",
       calls: code,
       execute: async (context) => {
@@ -249,6 +255,7 @@ export class BrowserToolHandlers {
               code,
               signal: context.signal,
               recheck: context.recheck,
+              ...(context.browserSend ? { browserSend: context.browserSend } : {}),
             }),
           );
         const result =
@@ -274,6 +281,7 @@ export class BrowserToolHandlers {
     const connection = requireConnection(caller);
     const { tabId, profileId, taskId, reason } = input;
     const target = await this.#target(connection, { tabId, profileId });
+    const pooled = await this.#pooledTarget(connection, target);
     const where = target.operation.device ? ` on ${target.operation.device.name}` : "";
     const outcome = await requireDirectWork(this.#ports.sessions).run({
       ownerUserId: connection.userId,
@@ -284,7 +292,9 @@ export class BrowserToolHandlers {
       tool: "browser_connect",
       input,
       target: target.operation,
-      targetGeneration: target.generation === null ? null : String(target.generation),
+      targetGeneration:
+        pooled?.generation ?? (target.generation === null ? null : String(target.generation)),
+      ...(pooled ? { pooledBrowser: pooled } : {}),
       effect: "write",
       calls:
         target.profileId === null
@@ -293,7 +303,7 @@ export class BrowserToolHandlers {
       execute: async (context) => {
         await context.recheck();
         await this.#checkTab(connection, target);
-        return browserEffect(() => this.#attach(context, target));
+        return browserEffect(() => this.#attach(context, target, pooled?.recheckTarget));
       },
       summarize: (result) => ({ tabId: result.tabId, mode: result.mode }),
     });
@@ -325,13 +335,55 @@ export class BrowserToolHandlers {
     if (generation !== target.generation) throw tabNotFound();
   }
 
-  async #attach(context: DirectOperationContext, target: BrowserTarget) {
+  async #pooledTarget(caller: ConnectionCaller, target: BrowserTarget) {
+    if (target.profileId === null) return;
+    const pool = this.#ports.pooledBrowser?.(target.runnerId);
+    if (!pool) return;
+    const actor = { kind: "connection", caller } as const;
+    const witness = async (tabId: TabId) => {
+      const row = await this.#ports.pooledTab?.(actor, tabId);
+      if (
+        !row ||
+        row.generation !== target.generation ||
+        row.profileId !== target.profileId ||
+        row.computerId !== target.operation.device?.id ||
+        row.pageBinding?.surfaceId !== tabId
+      )
+        throw tabNotFound();
+      const { sessionId, lineageId } = row.pageBinding;
+      const document = pool.pageDocument(sessionId, tabId);
+      if (!document) throw tabNotFound();
+      return JSON.stringify([row.generation, sessionId, lineageId, document]);
+    };
+    const generation = target.tabId ? await witness(target.tabId) : null;
+    return {
+      ...pool,
+      generation,
+      recheckTarget: async () => {
+        const profile = (await this.#ports.profiles(caller.userId)).find(
+          ({ id }) => id === target.profileId,
+        );
+        if (
+          profile?.home?.runnerId !== target.runnerId ||
+          (await this.#ports.requireDevice(target.runnerId)) !== target.operation.device?.id ||
+          (target.tabId && (await witness(target.tabId)) !== generation)
+        )
+          throw tabNotFound();
+      },
+    };
+  }
+
+  async #attach(
+    context: DirectOperationContext,
+    target: BrowserTarget,
+    recheckPooledTarget?: () => Promise<void>,
+  ) {
     const actor = sessionActor(context);
     const tabId =
       target.tabId ??
       (
         await this.#ports.tabs.open(
-          actor,
+          context.browserSend ? { ...actor, browserSend: context.browserSend } : actor,
           { kind: "page", profileId: target.profileId!, url: "about:blank" },
           `operation:${context.operationId}`,
         )
@@ -372,6 +424,15 @@ export class BrowserToolHandlers {
             mode: context.mode,
             targetGeneration: target.generation,
           },
+          ...(recheckPooledTarget
+            ? {
+                recheckPooledTarget: async () => {
+                  await context.recheck();
+                  await recheckPooledTarget();
+                  context.signal.throwIfAborted();
+                },
+              }
+            : {}),
         });
       }
     } catch (error) {
@@ -477,6 +538,7 @@ export class BrowserToolHandlers {
       profileId: profile.id,
       tabId,
       generation,
+      runnerId: profile.home.runnerId,
       operation: {
         grant: { kind: "browser-profile", profileId: profile.id },
         name: profile.name,

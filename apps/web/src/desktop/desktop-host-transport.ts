@@ -1,6 +1,7 @@
 import type { DeploymentId } from "@opensteer/core";
 import { HostTransportError } from "@opensteer/client/connections";
 import { fileTransferHeadersTimeoutMs } from "@opensteer/protocol";
+import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import {
   DesktopHostTransportErrorCodeSchema,
   type DesktopHostTransportErrorCode,
@@ -14,7 +15,6 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import type { WebSocketClient } from "@opensteer/client/host";
-import { responseChunkReader } from "@opensteer/shared/boundedJson";
 
 const socketRegistries = new WeakMap<OpensteerDesktopBridge, DesktopHostSocketRegistry>();
 

@@ -1,7 +1,10 @@
 import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import type { Clock } from "@opensteer/shared/clock";
-import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
+import {
+  OperationOutcomeUnknown,
+  type PooledBrowserSend,
+} from "../agent-sessions/agent-session-service.js";
 import {
   ReplService,
   type ComputerReplContext,
@@ -26,7 +29,9 @@ import {
 } from "./browser-repl-messages.js";
 
 export type BrowserUsePage = z.infer<typeof browserPageSchema>;
-export type BrowserUseTarget = z.infer<typeof browserTargetSchema>;
+export type BrowserUseTarget = z.infer<typeof browserTargetSchema> & {
+  readonly pooledWitness?: string;
+};
 export interface BrowserUseEvent {
   readonly method: string;
   readonly paramsJson: string;
@@ -42,6 +47,7 @@ export interface BrowserUseCall extends BrowserUseBudget {
   readonly contextKey: string;
   readonly signal: AbortSignal;
   readonly deadline: number;
+  readonly browserSend?: PooledBrowserSend;
 }
 
 export class BrowserUseCdpError extends Error {
@@ -82,6 +88,7 @@ export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarg
     call: BrowserUseCall,
   ): Promise<string>;
   release?(target: Target): void;
+  rebind?(previous: Target, call: BrowserUseCall): Promise<Target>;
   subscribe(
     target: Target,
     onEvent: (event: BrowserUseEvent) => void,
@@ -95,6 +102,9 @@ type Binding<Target> = {
   target: Target;
   value: ReplReply["value"];
   unsubscribe?: () => void;
+  detached?: true;
+  reattaching?: Promise<Target>;
+  originalTarget?: Target;
 };
 type BrowserContext<Target> = {
   nextHandle: number;
@@ -222,15 +232,16 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     signal?: AbortSignal,
     bindingKey?: string,
     recheck?: () => Promise<void>,
+    browserSend?: PooledBrowserSend,
   ): Promise<ReplResult> {
     return this.#repl.execute(
       { runId: contextKey, generation: 0 },
       code,
       signal,
-      recheck
+      recheck || browserSend
         ? async (request) => {
-            await recheck();
-            return this.#invoke(request);
+            await recheck?.();
+            return this.#invoke(request, browserSend);
           }
         : undefined,
       bindingKey,
@@ -284,6 +295,70 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     this.#unsubscribe(binding);
     state.dirty = true;
     this.#repl.eventsAvailable(context);
+  }
+
+  #subscribe(
+    context: ComputerReplContext,
+    state: BrowserContext<Target>,
+    binding: Binding<Target>,
+  ) {
+    const { target, handle } = binding;
+    binding.unsubscribe = this.#port.subscribe(
+      target,
+      (event) => this.#event(context, state, handle, event),
+      () => {
+        if (target.pooledWitness && this.#port.rebind) {
+          binding.detached = true;
+          this.#unsubscribe(binding);
+          delete binding.unsubscribe;
+        } else this.#retire(context, state, binding);
+      },
+      eventBudget,
+    );
+    if (binding.detached || !state.targets.has(handle)) {
+      this.#unsubscribe(binding);
+      delete binding.unsubscribe;
+    }
+  }
+
+  async #currentTarget(
+    context: ComputerReplContext,
+    state: BrowserContext<Target>,
+    binding: Binding<Target>,
+    call: BrowserUseCall,
+  ): Promise<Target> {
+    const { target } = binding;
+    if (!binding.detached) return target;
+    if (binding.reattaching) return binding.reattaching;
+    const reattach = async () => {
+      let replacement: Target | undefined;
+      try {
+        if (call.browserSend && target.pooledWitness)
+          replacement = await this.#port.rebind?.(target, call);
+        if (
+          !replacement ||
+          replacement.tabId !== target.tabId ||
+          replacement.pooledWitness !== target.pooledWitness ||
+          this.#contexts.get(context.runId) !== state
+        )
+          throw new BrowserBridgeError("page-ended", "This browser page handle is stale.");
+        call.signal.throwIfAborted();
+        binding.originalTarget ??= target;
+        binding.target = replacement;
+        delete binding.detached;
+        this.#subscribe(context, state, binding);
+        if (binding.detached)
+          throw new BrowserBridgeError("page-ended", "This browser page handle is stale.");
+        return replacement;
+      } catch (error) {
+        if (replacement) this.#port.release?.(replacement);
+        this.#retire(context, state, binding);
+        throw error;
+      }
+    };
+    const reconnecting = reattach().finally(() => delete binding.reattaching);
+    binding.reattaching = reconnecting;
+    return reconnecting;
   }
 
   #event(
@@ -428,21 +503,14 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
       };
       state.targets.set(handle, binding);
       state.byTab.set(tabId, binding);
-      let unsubscribe: () => void;
       try {
-        unsubscribe = this.#port.subscribe(
-          target,
-          (event) => this.#event(request.context, state, handle, event),
-          () => this.#retire(request.context, state, binding),
-          eventBudget,
-        );
+        this.#subscribe(request.context, state, binding);
       } catch (error) {
         this.#retire(request.context, state, binding);
         throw error;
       }
-      binding.unsubscribe = unsubscribe;
-      if (!state.targets.has(handle)) {
-        this.#unsubscribe(binding);
+      if (!state.targets.has(handle) || binding.detached) {
+        this.#retire(request.context, state, binding);
         throw new BrowserBridgeError(
           "page-ended",
           "This page handle has ended. Bind the tab again with openPage(tabId).",
@@ -456,7 +524,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     }
   }
 
-  async #invoke(request: BrowserInvocation): Promise<ReplReply> {
+  async #invoke(request: BrowserInvocation, browserSend?: PooledBrowserSend): Promise<ReplReply> {
     const { signal, deadline } = request;
     signal.throwIfAborted();
     const screenshot =
@@ -471,6 +539,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
       maxEntries: browserReplLimits.jsonEntries,
       maxBytes: limits.bridgeBytes,
       ...request.replyBudget,
+      ...(browserSend ? { browserSend } : {}),
     };
     switch (request.operation) {
       case "browser.pages": {
@@ -488,14 +557,27 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
       case "browser.new":
         return this.#open(request, call);
       case "browser.command": {
-        const binding = this.#contexts.get(request.context.runId)?.targets.get(request.target);
-        if (!binding)
+        const state = this.#contexts.get(request.context.runId);
+        const binding = state?.targets.get(request.target);
+        if (!state || !binding)
           throw new BrowserBridgeError(
             "page-ended",
             "This page handle has ended. Bind the tab again with openPage(tabId).",
           );
         const { method, params, sessionId } = request.args;
-        const encoded = await this.#port.command(binding.target, method, params, sessionId, call);
+        const target = binding.detached
+          ? await this.#currentTarget(request.context, state, binding, call)
+          : binding.target;
+        const original = binding.originalTarget;
+        const encoded = await this.#port.command(
+          target,
+          method,
+          original && params?.targetId === original.targetId
+            ? { ...params, targetId: target.targetId }
+            : params,
+          original && sessionId === original.sessionId ? target.sessionId : sessionId,
+          call,
+        );
         signal.throwIfAborted();
         if (screenshot && typeof encoded === "string" && encoded.length > call.maxBytes)
           throw screenshotTooLarge();

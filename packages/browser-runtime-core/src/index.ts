@@ -1,4 +1,5 @@
 export * from "./browser/backend.js";
+export * from "./browser-pool.js";
 export { browserMemoryBudgetBytes } from "./browser/memory-budget.js";
 export * from "./browser/viewport-capture.js";
 export * from "./browser/controller.js";

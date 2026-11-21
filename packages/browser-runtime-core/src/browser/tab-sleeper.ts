@@ -46,6 +46,7 @@ export interface SleepHost {
   readonly blocked: boolean;
 }
 interface TabSleeperOptions {
+  readonly scheduling?: boolean;
   readonly memoryBudgetBytes?: number | undefined;
   readonly memory?: () => { total: number; available: number };
   readonly hostCost?: "process" | "partition" | undefined;
@@ -238,6 +239,9 @@ export class TabSleeper {
     if (session) session.hostState = null;
     this.poke();
   }
+  poolState(id: string): BrowserSessionState | null {
+    return this.sessions.get(id)?.hostState ?? null;
+  }
   setSessionState(id: string, state: BrowserSessionState): void {
     const session = this.sessions.get(id);
     if (!session) return;
@@ -304,7 +308,7 @@ export class TabSleeper {
   poke(minimumDelay = 0): void {
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.closed || this.running) return;
+    if (this.closed || this.running || this.options.scheduling === false) return;
     this.trimRestore();
     const now = Date.now();
     // The reclaim waiting on confirmation is sampled as soon as that arrives.
