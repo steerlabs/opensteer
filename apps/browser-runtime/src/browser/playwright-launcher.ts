@@ -228,7 +228,8 @@ export async function probePasskeySecurityState(
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
   readonly hostCost = "process" as const;
   readonly rendererUsage?: () => BrowserRendererUsage | Promise<BrowserRendererUsage>;
-  readonly memoryPressure?: () => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
+  readonly memoryPressure?: () =>
+    BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>;
   private preparation: Promise<void> | undefined;
   private readonly ownedBrowserPids = new Set<number>();
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
@@ -943,7 +944,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             } | null;
             if (!targets) break;
             const survivors = (targets.targetInfos ?? []).filter(
-              (info) =>
+              (info): info is { targetId: string; type: string } =>
                 info.type === "page" &&
                 typeof info.targetId === "string" &&
                 info.targetId !== helperTargetId,
@@ -1383,7 +1384,8 @@ class PlaywrightContextHandle implements BrowserContext {
             }
             if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
             const delayedHandle = this.wrap(page);
-            for (const listener of this.handOffs) listener(delayedHandle, delayedHandle.openerHandle);
+            for (const listener of this.handOffs)
+              listener(delayedHandle, delayedHandle.openerHandle);
             for (const listener of this.pageListeners) listener(delayedHandle);
           })();
           return;
@@ -1519,8 +1521,7 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     const run = this.reconcileTail.then(() =>
       withTimeout(this.reconcileSavedTabsOnce(savedTabIds, lineageId), 6_000, {
-        timeoutError: () =>
-          new Error("Saved-tab reconciliation exceeded the runtime deadline."),
+        timeoutError: () => new Error("Saved-tab reconciliation exceeded the runtime deadline."),
       }),
     );
     this.reconcileTail = run.then(
@@ -1536,7 +1537,7 @@ class PlaywrightContextHandle implements BrowserContext {
   ): Promise<void> {
     if (!this.lifecycle || !this.profileDirectory) return;
     let failedRemovals = 0;
-    for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
+    for (const [surfaceId, entry] of this.restoredBySurfaceId) {
       if (savedTabIds.has(surfaceId) && (!lineageId || entry.lineageId === lineageId)) continue;
       this.restoredBySurfaceId.delete(surfaceId);
       this.unclaimedRestoredTabs.delete(entry.tab.tabId);
@@ -1570,7 +1571,7 @@ class PlaywrightContextHandle implements BrowserContext {
     let failedRemovals = 0;
     const inventory = await this.lifecycle.inventory().catch(() => null);
     if (!inventory) {
-      for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
+      for (const [surfaceId, entry] of this.restoredBySurfaceId) {
         this.restoredBySurfaceId.delete(surfaceId);
         this.unclaimedRestoredTabs.delete(entry.tab.tabId);
         if (entry.tab.targetId) this.unclaimedRestoredTargetIds.delete(entry.tab.targetId);
@@ -1585,7 +1586,7 @@ class PlaywrightContextHandle implements BrowserContext {
       return failedRemovals;
     }
     const byTabId = new Map(inventory.map((tab) => [tab.tabId, tab]));
-    for (const [surfaceId, entry] of [...this.restoredBySurfaceId]) {
+    for (const [surfaceId, entry] of Array.from(this.restoredBySurfaceId)) {
       const current = byTabId.get(entry.tab.tabId);
       if (!current) {
         this.restoredBySurfaceId.delete(surfaceId);
@@ -1999,15 +2000,17 @@ class PlaywrightContextHandle implements BrowserContext {
     if (current.surfaceId) this.scheduleSidecarWrite();
   }
 
-  private async resolveUnknownSleepingTabId(
-    probe: {
-      readonly originalTabId: number;
-      readonly url: string;
-      readonly windowId: number;
-      readonly index: number;
-      readonly priorDiscardedIds: ReadonlySet<number>;
-    },
-  ): Promise<{ readonly status: "found"; readonly tabId: number } | { readonly status: "absent" } | { readonly status: "unknown" }> {
+  private async resolveUnknownSleepingTabId(probe: {
+    readonly originalTabId: number;
+    readonly url: string;
+    readonly windowId: number;
+    readonly index: number;
+    readonly priorDiscardedIds: ReadonlySet<number>;
+  }): Promise<
+    | { readonly status: "found"; readonly tabId: number }
+    | { readonly status: "absent" }
+    | { readonly status: "unknown" }
+  > {
     if (!this.lifecycle) return { status: "unknown" };
     const after = await this.lifecycle.inventory().catch(() => null);
     if (!after) return { status: "unknown" };
@@ -2049,7 +2052,7 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private async drainPendingSleepingRemovals(): Promise<void> {
     if (this.closed || !this.lifecycle) return;
-    for (const [tokenId, tracker] of [...this.pendingSleepingRemovals]) {
+    for (const [tokenId, tracker] of this.pendingSleepingRemovals) {
       if (this.closed) return;
       const sleeping = this.sleepingTabs.get(tokenId);
       if (!sleeping) {

@@ -206,9 +206,13 @@ export class ChromiumTabLifecycleBridge {
       await withTimeout(session.send("ServiceWorker.enable"), stepMs, {
         timeoutError: () => new Error("Helper ServiceWorker.enable timed out."),
       });
-      await withTimeout(session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` }), stepMs, {
-        timeoutError: () => new Error("Helper ServiceWorker.startWorker timed out."),
-      });
+      await withTimeout(
+        session.send("ServiceWorker.startWorker", { scopeURL: `${origin}/` }),
+        stepMs,
+        {
+          timeoutError: () => new Error("Helper ServiceWorker.startWorker timed out."),
+        },
+      );
     } catch {
       // Best effort: ensureWorker continues polling until deadline.
     } finally {

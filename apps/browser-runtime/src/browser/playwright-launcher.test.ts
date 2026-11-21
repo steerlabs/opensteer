@@ -1368,7 +1368,12 @@ describe("native Chromium profiles", () => {
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const sidecarUrl = "https://person-private.test/";
     await writeTabRestoreSidecar(f.directory, [
-      { index: 0, surfaceId: "surface_00000000-0000-4000-8000-00000000r201", url: sidecarUrl, lineageId: "lin-1" },
+      {
+        index: 0,
+        surfaceId: "surface_00000000-0000-4000-8000-00000000r201",
+        url: sidecarUrl,
+        lineageId: "lin-1",
+      },
     ]);
     const restoredTab = {
       tabId: 88,
@@ -1421,9 +1426,8 @@ describe("native Chromium profiles", () => {
         },
       } as unknown as Page;
       for (const handler of pageHandlers) handler(latePage);
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.waitFor(() => expect(closeLate).toHaveBeenCalled());
       expect(handedOff).toHaveLength(0);
-      expect(closeLate).toHaveBeenCalled();
     } finally {
       invSpy.mockRestore();
       remSpy.mockRestore();
@@ -1489,7 +1493,8 @@ describe("native Chromium profiles", () => {
       const second = launched.context.sessionRestore!.reconcile(new Set(), "lin-r5").then(() => {
         secondResolved = true;
       });
-      await new Promise((r) => setTimeout(r, 30));
+      await Promise.resolve();
+      await Promise.resolve();
       expect(secondResolved).toBe(false);
 
       // Once the in-flight removal finishes, the second reconcile resolves cleanly.
@@ -1554,9 +1559,7 @@ describe("native Chromium profiles", () => {
       }),
       newCDPSession: vi.fn(async () => ({
         send: vi.fn(async (method: string) =>
-          method === "Target.getTargetInfo"
-            ? { targetInfo: { targetId: "target-sleep-1" } }
-            : {},
+          method === "Target.getTargetInfo" ? { targetInfo: { targetId: "target-sleep-1" } } : {},
         ),
         on: vi.fn(),
         off: vi.fn(),

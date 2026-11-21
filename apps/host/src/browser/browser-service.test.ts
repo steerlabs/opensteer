@@ -19,8 +19,10 @@ import { browserRows } from "./browser-rows.test-support.js";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserTabRecordSchema,
+  type BrowserEngine,
   type BrowserTabRecord,
   type BrowserSurface,
+  type BrowserSurfaceId,
   type BrowserViewerSurface,
 } from "@opensteer/protocol/browser";
 import {
@@ -7863,9 +7865,6 @@ it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs re
     const profile = await repository.createBrowserProfile({
       ownerId,
       name: `Profile-${engine}`,
-      homeRunnerId: runnerId,
-      storageInstanceId: storage.storageInstanceId,
-      engine,
     });
     const memory = memoryTabs();
     Object.assign(memory.store, {
@@ -7874,7 +7873,11 @@ it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs re
         id: string,
         _expectedGeneration: unknown,
         _previousBinding: unknown,
-        next: { lineageId: BrowserSessionId; sessionId: BrowserSessionId; surfaceId: BrowserSurfaceId },
+        next: {
+          lineageId: BrowserSessionId;
+          sessionId: BrowserSessionId;
+          surfaceId: BrowserSurfaceId;
+        },
       ) => {
         const current = memory.rows.get(id);
         if (!current) return false;
@@ -7921,17 +7924,14 @@ it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs re
 
     const activating = service.pageTabs.activate(ownerId, row, `activate-${engine}`);
 
-    let done = false;
-    void activating.finally(() => {
-      done = true;
-    });
+    const settled = activating.then(
+      () => "done" as const,
+      () => "done" as const,
+    );
     const drain = (async () => {
-      while (!done) {
-        const command = await Promise.race([
-          runtime.nextCommand(),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 150)),
-        ]);
-        if (!command) continue;
+      for (;;) {
+        const command = await Promise.race([runtime.nextCommand(), settled]);
+        if (command === "done") break;
         sentCommands.push(command);
         if (
           answerListTabs &&
@@ -7973,7 +7973,7 @@ it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs re
         (cmd.command as { method?: string } | undefined)?.method === "Opensteer.listTabs",
     ),
   ).toBe(true);
-}, 20_000);
+});
 
 it("sends authoritative sleep state after commit and keeps two viewers and Watch independent of Run holds", async () => {
   const keys = generateKeyPairSync("ed25519");

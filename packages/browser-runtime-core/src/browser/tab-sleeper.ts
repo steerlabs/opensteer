@@ -65,8 +65,7 @@ interface TabSleeperOptions {
   readonly retireHost?: (key: string) => Promise<void>;
   readonly rendererUsage?: (() => BrowserRendererUsage | Promise<BrowserRendererUsage>) | undefined;
   readonly memoryPressure?:
-    | (() => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>)
-    | undefined;
+    (() => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>) | undefined;
   readonly onPass?: ((pass: TabSleepPass) => void) | undefined;
   readonly pageCounts?: (() => PageCounts) | undefined;
   /** Native pages with no live tab across the runtime, those of ended sessions included. */
@@ -94,7 +93,10 @@ export class TabSleeper {
   private rendererUsage: BrowserRendererUsage | null = null;
   private nextRendererSample = 0;
   private samplingRenderers = false;
-  private memoryPressureState: { readonly known: boolean; readonly reading: BrowserMemoryPressure | null } = {
+  private memoryPressureState: {
+    readonly known: boolean;
+    readonly reading: BrowserMemoryPressure | null;
+  } = {
     known: false,
     reading: null,
   };
@@ -153,7 +155,9 @@ export class TabSleeper {
     );
   }
   private usesLinuxMemoryPressure(): boolean {
-    return this.options.memoryBudgetBytes === undefined && this.options.memoryPressure !== undefined;
+    return (
+      this.options.memoryBudgetBytes === undefined && this.options.memoryPressure !== undefined
+    );
   }
   private overBudget(pendingPages = 0): boolean {
     if (this.usesLinuxMemoryPressure()) {
@@ -416,7 +420,8 @@ export class TabSleeper {
     if (!measure) return;
     const now = Date.now();
     if (now < this.nextPressureSample) return;
-    this.nextPressureSample = now + (this.releasing ? linuxPressureSettleMs : linuxPressureSampleMs);
+    this.nextPressureSample =
+      now + (this.releasing ? linuxPressureSettleMs : linuxPressureSampleMs);
     const result = measure();
     if (
       result &&
@@ -491,7 +496,8 @@ export class TabSleeper {
           this.samplingRenderers = false;
           if (this.closed) return;
           this.applyRendererSample(usage, Date.now());
-          if (this.releasing && !this.usesLinuxMemoryPressure()) this.pendingAsyncPressurePass = true;
+          if (this.releasing && !this.usesLinuxMemoryPressure())
+            this.pendingAsyncPressurePass = true;
           this.poke();
         },
         () => {
@@ -693,15 +699,9 @@ export class TabSleeper {
         }
         if (this.reclaimFrom) {
           if (pressureDriven) {
-            this.nextPressureSample = Math.min(
-              this.nextPressureSample,
-              this.reclaimFrom.settledAt,
-            );
+            this.nextPressureSample = Math.min(this.nextPressureSample, this.reclaimFrom.settledAt);
           } else {
-            this.nextRendererSample = Math.min(
-              this.nextRendererSample,
-              this.reclaimFrom.settledAt,
-            );
+            this.nextRendererSample = Math.min(this.nextRendererSample, this.reclaimFrom.settledAt);
           }
         }
       }

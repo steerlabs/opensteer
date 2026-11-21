@@ -705,9 +705,9 @@ it("discards all parked saved tabs on reconcile so Chromium never runs unowned b
   expect(liveProfileTabs).toHaveLength(1);
   expect(liveProfileTabs[0]!.url).toContain("tab=p0");
   const parkedTabs = profileTabs.filter((t) => !t.url.includes("tab=p0"));
-  expect(
-    parkedTabs.map((t) => ({ discarded: t.discarded, status: t.status })),
-  ).toEqual(parkedTabs.map(() => ({ discarded: true, status: "unloaded" })));
+  expect(parkedTabs.map((t) => ({ discarded: t.discarded, status: t.status }))).toEqual(
+    parkedTabs.map(() => ({ discarded: true, status: "unloaded" })),
+  );
   // Only the claimed tab has a live Playwright Page in the context (zero parked live pages).
   expect(browser2.context.pages()).toHaveLength(1);
   expect(browser2.context.pages()[0]!.url()).toContain("tab=p0");

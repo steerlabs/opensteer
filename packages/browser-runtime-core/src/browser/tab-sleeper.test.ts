@@ -574,7 +574,8 @@ describe("TabSleeper", () => {
     const fOverride = await fixture({
       memoryBudgetBytes: 50 * 1024 ** 2,
       rendererUsage: () => Promise.resolve({ processes: 4, bytes: 200 * 1024 ** 2 }),
-      memoryPressure: () => Promise.resolve({ usedBytes: Math.round(limit * 0.2), limitBytes: limit }),
+      memoryPressure: () =>
+        Promise.resolve({ usedBytes: Math.round(limit * 0.2), limitBytes: limit }),
     });
     try {
       const p = await fOverride.ledger.openSurface();
@@ -609,9 +610,9 @@ describe("TabSleeper", () => {
         pinned: [],
       });
       await vi.advanceTimersByTimeAsync(15_000);
-      expect(ids.filter((id) => fFallback.ledger.stateOf(id) === "suspended").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        ids.filter((id) => fFallback.ledger.stateOf(id) === "suspended").length,
+      ).toBeGreaterThan(0);
     } finally {
       await fFallback.close();
     }

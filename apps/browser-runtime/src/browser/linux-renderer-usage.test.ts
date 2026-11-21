@@ -142,7 +142,7 @@ describe("linux-renderer-usage", () => {
       readTextStatus: async (filePath) => {
         active++;
         peakActive = Math.max(peakActive, active);
-        await new Promise((r) => setTimeout(r, 1));
+        await Promise.resolve();
         active--;
         if (filePath === "/proc/1000/stat") {
           return { status: "ok", text: "1000 (chrome) S 1 1000 1000" };
@@ -183,7 +183,8 @@ describe("linux-renderer-usage", () => {
     // 2. Bare Linux (memory.max === "max"): uses MemTotal - MemAvailable from /proc/meminfo.
     const bare = fakeProc({
       "/sys/fs/cgroup/memory.max": "max\n",
-      "/proc/meminfo": "MemTotal:       16000000 kB\nMemFree:         2000000 kB\nMemAvailable:    6000000 kB\n",
+      "/proc/meminfo":
+        "MemTotal:       16000000 kB\nMemFree:         2000000 kB\nMemAvailable:    6000000 kB\n",
     });
     expect(parseProcMeminfoBytes("MemTotal: 16000000 kB\nMemAvailable: 6000000 kB\n")).toEqual({
       totalBytes: 16_000_000 * 1024,
