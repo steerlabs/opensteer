@@ -238,12 +238,27 @@ async function run(command) {
       // Round D, D1: what one slot's proxy holds now: established connections and memory.
       const established = spawnSync(
         "ip",
-        ["netns", "exec", `osp${command.index}`, "ss", "-Htn", "state", "established", "( sport = :3128 )"],
+        [
+          "netns",
+          "exec",
+          `osp${command.index}`,
+          "ss",
+          "-Htn",
+          "state",
+          "established",
+          "( sport = :3128 )",
+        ],
         { encoding: "utf8" },
       ).stdout.trim();
       const memory = spawnSync(
         "systemctl",
-        ["show", "-p", "MemoryCurrent", "--value", `opensteer-pool-egress-${command.index}.service`],
+        [
+          "show",
+          "-p",
+          "MemoryCurrent",
+          "--value",
+          `opensteer-pool-egress-${command.index}.service`,
+        ],
         { encoding: "utf8" },
       ).stdout.trim();
       return {
@@ -256,7 +271,9 @@ async function run(command) {
       // start limit must stop restarting it. PID 1's CPU time across the loop is reported.
       const unit = `opensteer-pool-egress-${command.index}.service`;
       const show = (property, name = unit) =>
-        spawnSync("systemctl", ["show", "-p", property, "--value", name], { encoding: "utf8" }).stdout.trim();
+        spawnSync("systemctl", ["show", "-p", property, "--value", name], {
+          encoding: "utf8",
+        }).stdout.trim();
       const pid1 = () => {
         const fields = readFileSync("/proc/1/stat", "utf8").split(") ")[1].split(" ");
         return (Number(fields[11]) + Number(fields[12])) * 10;
