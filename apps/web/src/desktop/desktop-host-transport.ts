@@ -164,7 +164,13 @@ function streamWithTransportErrors(
           return;
         }
         const code = await lookupStreamError(fetch, requestId);
-        controller.error(code ? new HostTransportError(code, { cause: error }) : error);
+        controller.error(
+          signal.aborted
+            ? signal.reason
+            : code
+              ? new HostTransportError(code, { cause: error })
+              : error,
+        );
       }
     },
     cancel(reason) {
