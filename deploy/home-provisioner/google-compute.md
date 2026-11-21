@@ -6,8 +6,22 @@ before the provisioner switches to Google. Give the new deployment its own
 Account desired state and DNS configuration if the existing deployment has
 Hetzner computers.
 
-The provisioner stops if it finds a managed VM anywhere else in the project.
-Keep the configured zone fixed while the project has managed VMs.
+Keep the configured zone fixed while the project has managed VMs. Every pass
+also lists the project's instances in all zones. A managed VM outside the
+configured zone is never touched: its Cloud Computer is reported failed and the
+provisioner logs `home-provisioner.provider.wrong-zone` with the VM, its zone
+and the configured zone. Every other Cloud Computer is reconciled as usual. To
+recover, do one of these:
+
+- Delete the stray VM if it is not the Home's data, for example
+  `gcloud compute instances delete "$VM" --project="$PROJECT" --zone="$ZONE"`.
+- Remove its management label so the provisioner ignores it:
+  `gcloud compute instances remove-labels "$VM" --project="$PROJECT" --zone="$ZONE" --labels=opensteer-managed-by`.
+- Set `OPENSTEER_HOME_GCP_ZONE` back to the VM's zone.
+
+A zone the listing cannot reach is logged as
+`home-provisioner.provider.zones-unreachable` and skipped. The configured zone
+is read on its own.
 
 ## Set up the project
 

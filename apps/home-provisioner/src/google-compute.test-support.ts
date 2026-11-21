@@ -81,6 +81,9 @@ export class ComputeFake {
     }
   >();
   readonly otherZones = new Map<string, Instance[]>();
+  /** Scopes the aggregated listing reports as unreachable. */
+  unreachable: string[] = [];
+  readonly logs: Record<string, unknown>[] = [];
   readonly instanceStates: { name: string; status: string }[] = [];
   readonly started = new Map<string, Operation>();
   readonly waitCalls: number[] = [];
@@ -116,6 +119,7 @@ export class ComputeFake {
       actionTimeoutMs: 5000,
       baseUrl: new URL("https://compute.test/compute/v1/"),
       fetch: this.fetch,
+      log: (entry) => this.logs.push(entry),
       wait: async (ms, signal) => {
         this.waitCalls.push(ms);
         signal.throwIfAborted();
@@ -179,9 +183,14 @@ export class ComputeFake {
         ...this.otherZones,
       ];
       const page = this.#slice(zones, req.query);
+      const partial = req.query.get("returnPartialSuccess") === "true";
+      if (this.unreachable.length && !partial) return json({}, 503);
       return json({
         ...page,
         items: Object.fromEntries(page.items.map(([zone, instances]) => [zone, { instances }])),
+        ...(this.unreachable.length && !page.nextPageToken
+          ? { unreachables: this.unreachable }
+          : {}),
       });
     }
     if (path.startsWith(`${globalPath}/firewalls`)) return this.#firewallRequest(req);

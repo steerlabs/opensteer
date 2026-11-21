@@ -5,12 +5,7 @@ import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
-import {
-  ProviderPlacementError,
-  ProviderRateLimited,
-  provisionerFailure,
-  RemoteRequestError,
-} from "./http.js";
+import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -46,6 +41,7 @@ async function main(): Promise<void> {
             diskType: config.diskType,
             diskSizeGb: config.diskSizeGb,
             actionTimeoutMs: config.actionTimeoutMs,
+            log: (entry) => console.error(JSON.stringify(entry)),
           })
         : new HetznerCloud({
             ...http,
@@ -76,7 +72,6 @@ async function main(): Promise<void> {
         // A provider rate limit postpones the next pass until the provider accepts requests.
         if (error instanceof ProviderRateLimited)
           waitMs = Math.max(waitMs, error.retryAt - Date.now());
-        if (error instanceof ProviderPlacementError) throw error;
         if (!shutdown.signal.aborted) logFailure(error);
         if (
           accountRefused(error) ||

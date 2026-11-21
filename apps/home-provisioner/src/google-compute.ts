@@ -142,6 +142,7 @@ interface GoogleComputeOptions extends HttpOptions {
   readonly baseUrl?: URL;
   readonly accessToken?: ComputeAccessToken;
   readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  readonly log?: (entry: Record<string, unknown>) => void;
 }
 
 type Check = () => Promise<void>;
@@ -159,6 +160,8 @@ type Address = z.infer<typeof address>;
 interface Inventory {
   readonly instances: Map<string, Instance>;
   readonly addresses: Map<string, Address>;
+  /** Managed instances found in another zone, by the Cloud Computer their labels name. */
+  readonly strays: Map<CloudComputerId, { name: string; scope: string }>;
 }
 type PendingOperation = { requestId: string; initial?: Operation };
 
@@ -195,13 +198,15 @@ export class GoogleCompute implements VmProvider {
    */
   async beginPass(signal: AbortSignal) {
     this.#inventory = undefined;
-    const [instances, addresses] = await Promise.all([
+    const [instances, addresses, strays] = await Promise.all([
       this.#list(`${this.#zone}/instances`, instance, signal, { fields: instanceFields }),
       this.#list(this.#addressesPath(), address, signal, { fields: addressFields }),
+      this.#strayInstances(signal),
     ]);
     this.#inventory = {
       instances: new Map(instances.map((vm) => [vm.name, vm])),
       addresses: new Map(addresses.map((entry) => [entry.name, entry])),
+      strays,
     };
   }
 
@@ -312,6 +317,13 @@ export class GoogleCompute implements VmProvider {
   async find(id: CloudComputerId, signal: AbortSignal, expected?: ExpectedVm) {
     if (expected?.providerServerId || expected?.previousProviderServerId)
       throw refused("conflict", "This Cloud Computer is recorded with a different VM provider");
+    const stray = this.#inventory?.strays.get(id);
+    if (stray)
+      throw new ProviderPlacementError(
+        `Managed Compute instance ${stray.name} of ${id} is in ${stray.scope}, outside the ` +
+          `configured zone ${this.#options.zone}. Nothing is done to this Cloud Computer until ` +
+          "an operator deletes or relabels that instance or sets the zone back.",
+      );
     const found = new Map<GoogleComputeServerRef, VmServer<GoogleComputeServerRef>>();
     const add = (vm: Instance, generation?: number) => {
       const identity = managedInstance(vm);
@@ -366,7 +378,13 @@ export class GoogleCompute implements VmProvider {
     return [...found.values()];
   }
 
-  async validatePlacement(signal: AbortSignal) {
+  /**
+   * Finds managed instances outside the configured zone. "returnPartialSuccess: Opt-in for
+   * partial success behavior which provides partial results in case of failure"; a zone the
+   * listing could not reach is logged and skipped, since the configured zone is read on its own.
+   * https://cloud.google.com/compute/docs/reference/rest/v1/instances/aggregatedList
+   */
+  async #strayInstances(signal: AbortSignal) {
     const page = z.object({
       items: z
         .record(
@@ -382,21 +400,28 @@ export class GoogleCompute implements VmProvider {
       nextPageToken: z.string().min(1).optional(),
       unreachables: z.array(z.string()).default([]),
     });
-    for await (const result of this.#pages(`${this.#project}/aggregated/instances`, page, signal)) {
-      if (result.unreachables.length)
-        throw refused("internal", "Compute Engine did not report every zone");
+    const strays = new Map<CloudComputerId, { name: string; scope: string }>();
+    const unreachable = new Set<string>();
+    for await (const result of this.#pages(`${this.#project}/aggregated/instances`, page, signal, {
+      returnPartialSuccess: "true",
+    })) {
+      for (const scope of result.unreachables) unreachable.add(scope);
       for (const [scope, { instances, warning }] of Object.entries(result.items)) {
-        if (warning && warning.code !== "NO_RESULTS_ON_PAGE")
-          throw refused("internal", "Compute Engine did not report every zone");
+        if (warning && warning.code !== "NO_RESULTS_ON_PAGE") unreachable.add(scope);
         if (scope === `zones/${this.#options.zone}`) continue;
-        const other = instances.find(({ labels }) => labels[managedLabel] === managedBy);
-        if (other) {
-          throw new ProviderPlacementError(
-            `Managed Compute instance ${other.name} is in ${scope}, outside configured zone ${this.#options.zone}.`,
-          );
+        for (const vm of instances) {
+          const identity = managedIdentity(vm.labels);
+          if (identity && !strays.has(identity.id))
+            strays.set(identity.id, { name: vm.name, scope });
         }
       }
     }
+    if (unreachable.size)
+      this.#options.log?.({
+        event: "home-provisioner.provider.zones-unreachable",
+        scopes: [...unreachable].sort(),
+      });
+    return strays;
   }
 
   async #instances(signal: AbortSignal) {

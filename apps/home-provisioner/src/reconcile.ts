@@ -55,7 +55,6 @@ export class Reconciler {
     const signal = AbortSignal.any([shutdown, abort.signal]);
     await account.acquire(signal);
     await provider.beginPass?.(signal);
-    await provider.validatePlacement?.(signal);
     const desired = await account.desired(signal);
     const ids = new Set(desired.map(({ id }) => id));
     for (const id of this.#reports.keys()) if (!ids.has(id)) this.#reports.delete(id);

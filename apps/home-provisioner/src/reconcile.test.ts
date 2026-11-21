@@ -789,32 +789,61 @@ describe("Cloud Computer reconciliation", () => {
     expect(h.dns.ensureRecords).not.toHaveBeenCalled();
   });
 
-  it("stops before writes when a later Compute inventory page shows a managed VM in another zone", async () => {
+  it("leaves a Cloud Computer with a managed VM in another zone to an operator and reconciles the rest", async () => {
     const compute = new ComputeFake();
     const h = harness({ compute });
-    h.status.desired = [{ ...home }];
+    h.status.desired = [{ ...home }, { ...second }];
     await h.pass();
-    const [instance] = compute.instances.values();
-    compute.instances.clear();
-    compute.otherZones.set("zones/us-east1-b", [instance!]);
+    const stray = [...compute.instances.values()].find(
+      ({ labels }) => labels["opensteer-cloud-computer"] === home.id,
+    )!;
+    compute.instances.delete(stray.name);
+    compute.otherZones.set("zones/us-east1-b", [stray]);
+    compute.unreachable = ["zones/asia-east1-a"];
     compute.pageSize = 1;
+    h.status.desired = h.status.desired.map((row) => ({
+      ...row,
+      revision: row.revision + 1,
+      state: "suspended" as const,
+      bootstrapToken: undefined,
+    }));
     const start = compute.requests.length;
-    const message = `Managed Compute instance ${instance!.name} is in zones/us-east1-b, outside configured zone us-central1-a.`;
-    const error = await h.restart().catch((error: unknown) => error);
-    expect(provisionerFailure(error)).toEqual({
-      event: "home-provisioner.provider.wrong-zone",
-      message,
-    });
+    await h.pass();
     const requests = compute.requests.slice(start);
-    expect(requests.map(({ path }) => path)).toEqual([
-      `${zonePath}/instances`,
-      `${regionPath}/addresses`,
-      "projects/test-project/aggregated/instances",
-      "projects/test-project/aggregated/instances",
-    ]);
-    expect(requests[3]?.query.get("pageToken")).toBe("1");
-    expect(requests.every(({ method }) => method === "GET")).toBe(true);
-    expect(h.account.desired).toHaveBeenCalledOnce();
+    const aggregated = requests.filter(({ path }) => path.endsWith("/aggregated/instances"));
+    expect(aggregated.length).toBeGreaterThan(1);
+    expect(aggregated.every(({ query }) => query.get("returnPartialSuccess") === "true")).toBe(
+      true,
+    );
+    expect(
+      requests.filter(
+        ({ method, path }) => method !== "GET" && path.includes(home.id.replace("_", "-")),
+      ),
+    ).toEqual([]);
+    const other = [...compute.instances.values()].find(
+      ({ labels }) => labels["opensteer-cloud-computer"] === second.id,
+    )!;
+    expect(other.status).toBe("TERMINATED");
+    const byId = new Map(h.reports.slice(-2).map((report) => [report.id, report]));
+    expect(byId.get(second.id)).toMatchObject({ phase: "suspended" });
+    expect(byId.get(home.id)).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer provider operation failed.",
+    });
+    const placement = h.onError.mock.calls
+      .map(([error]) => provisionerFailure(error))
+      .find(({ event }) => event === "home-provisioner.provider.wrong-zone");
+    expect(placement).toEqual({
+      event: "home-provisioner.provider.wrong-zone",
+      message:
+        `Managed Compute instance ${stray.name} of ${home.id} is in zones/us-east1-b, outside ` +
+        "the configured zone us-central1-a. Nothing is done to this Cloud Computer until an " +
+        "operator deletes or relabels that instance or sets the zone back.",
+    });
+    expect(compute.logs).toContainEqual({
+      event: "home-provisioner.provider.zones-unreachable",
+      scopes: ["zones/asia-east1-a"],
+    });
   });
 
   it("sweeps an address-only Google orphan after the grace period and a fresh Account check", async () => {
