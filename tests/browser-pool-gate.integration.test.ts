@@ -24,6 +24,7 @@ import {
 } from "../packages/protocol/src/browser.js";
 import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
+import pg from "pg";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
@@ -365,6 +366,52 @@ it("carries the tabs the person used to the adopted broker of a restored session
     await vi.waitFor(() => expect(marked(parked)).toContain(tabId));
   } finally {
     vi.restoreAllMocks();
+    await j.close();
+  }
+});
+
+it("lets a Stop asked as the reattach ticket leaves wait for the broker, and close it the way Stop does", async () => {
+  const j = await journey("stop-at-ticket");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("stop-at"));
+    const page = await j.draft();
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    let stopping: Promise<void> | undefined;
+    // Any read of the session's lineage made after the ticket left waits until Stop committed:
+    // the widest a Stop between the ticket and the broker's registration can be.
+    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+    const query = prototype.query;
+    let afterTicket = false;
+    const held = vi.spyOn(prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const text = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string })?.text;
+      if (afterTicket && stopping && text?.includes('select "tab_group_id"')) {
+        afterTicket = false;
+        const waiting = stopping;
+        return waiting.then(() => Reflect.apply(query, this, args));
+      }
+      return Reflect.apply(query, this, args);
+    });
+    j.onNextTicket(() => {
+      afterTicket = true;
+      stopping = home.service.stop(j.task.userId, sessionId);
+    });
+    try {
+      const woken = await home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+      woken.release();
+    } finally {
+      held.mockRestore();
+    }
+    expect(stopping).toBeDefined();
+    await stopping;
+    expect((await j.row(sessionId))?.state).toBe("closed");
+    // Stop found the registered broker and closed it: the page ends now, not at a deadline.
+    await vi.waitFor(() => expect(page.page.isClosed()).toBe(true), { timeout: 5_000 });
+    expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
+  } finally {
     await j.close();
   }
 });

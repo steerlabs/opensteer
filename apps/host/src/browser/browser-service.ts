@@ -1186,7 +1186,8 @@ export class BrowserService {
     const target = this.#resolveTarget({ kind: "runner", runnerId });
     if (!pool || !target || this.#closed || !(this.#repository instanceof OpensteerStore))
       return [];
-    const owner = await readBrowserPoolOwner(this.#repository.database);
+    const database = this.#repository.database;
+    const owner = await readBrowserPoolOwner(database);
     const record = owner
       ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
       : null;
@@ -1216,106 +1217,111 @@ export class BrowserService {
     // A Stop that committed during the lookups above wins: the row is read again before attach.
     const stillReady = async () =>
       (await this.#repository.getBrowserSessionForOwner(sessionId, ownerId))?.state === "ready";
-    if (!(await stillReady()) || this.#closed) return [];
-    const socket = target.connect(
-      this.#signer.issue({
-        creationOrigin:
-          origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
-        actor: origin,
-        access: "read-write",
-        reattach: true,
-        pool: { ...fence, attachment: attempt },
-        identity,
-        runtimeId: target.runtimeId,
-        sessionId,
-        subject: ownerId,
-        ...(target.tabRestoreVersion ? { tabRestoreVersion: 1 as const } : {}),
-        ...(target.surfaceState ? { surfaceState: target.surfaceState } : {}),
-        ...(target.basicInput ? { basicInput: target.basicInput } : {}),
-        ...(target.navigationVersion ? { navigationVersion: 1 as const } : {}),
-        ...(target.navigationAttributionVersion
-          ? { navigationAttributionVersion: 1 as const }
-          : {}),
-        ...(target.popupFollowVersion ? { popupFollowVersion: 1 as const } : {}),
-        ...(target.editing ? { editingVersion: target.editing } : {}),
-        ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
-      }),
-    );
-    // Person use is keyed by the session's persistent lineage, which survives the old broker.
-    const groupId =
-      (await readBrowserPoolSessionLineage(this.#repository.database, sessionId)) ?? sessionId;
-    // The person's use of tabs survives the park with the session.
-    const personUse = this.#personUseGroups.get(groupId) ?? {
-      tabs: new Set<BrowserSurfaceId>(),
-      ended: false,
-      ownerId,
-      profileId: record.profileId,
-    };
     const adopting = { active: true };
-    const broker = new HostedBrowserBroker({
-      poolAdmission: this.#poolAdmission(pool, adopting),
-      onChannelLost: () => pool.channelLost(sessionId),
-      adoptedFromPool: true,
-      personUse,
-      onPersonUseChanged: () => {
-        if (personUse.ended) return;
-        if (personUse.tabs.size) this.#personUseGroups.set(groupId, personUse);
-        else if (this.#personUseGroups.get(groupId) === personUse)
-          this.#personUseGroups.delete(groupId);
-      },
-      sessionId,
-      socket,
-      groupId,
-      profileId: record.profileId,
-      tabRestoreVersion: target.tabRestoreVersion === true,
-      ...(this.#workspaceTabs
-        ? {
-            personTabGeneration: async (surfaceId: BrowserSurfaceId) => {
-              const tab = await this.#workspaceTabs!.get(ownerId, surfaceId);
-              return tab?.pageBinding?.sessionId === sessionId ? tab.generation : null;
-            },
+    // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
+    // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
+    const broker = await this.#serialize(async () => {
+      if (!(await stillReady()) || this.#closed) return undefined;
+      // Person use is keyed by the session's persistent lineage, which survives the old broker.
+      const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
+      const socket = target.connect(
+        this.#signer.issue({
+          creationOrigin:
+            origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
+          actor: origin,
+          access: "read-write",
+          reattach: true,
+          pool: { ...fence, attachment: attempt },
+          identity,
+          runtimeId: target.runtimeId,
+          sessionId,
+          subject: ownerId,
+          ...(target.tabRestoreVersion ? { tabRestoreVersion: 1 as const } : {}),
+          ...(target.surfaceState ? { surfaceState: target.surfaceState } : {}),
+          ...(target.basicInput ? { basicInput: target.basicInput } : {}),
+          ...(target.navigationVersion ? { navigationVersion: 1 as const } : {}),
+          ...(target.navigationAttributionVersion
+            ? { navigationAttributionVersion: 1 as const }
+            : {}),
+          ...(target.popupFollowVersion ? { popupFollowVersion: 1 as const } : {}),
+          ...(target.editing ? { editingVersion: target.editing } : {}),
+          ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
+        }),
+      );
+      // The person's use of tabs survives the park with the session.
+      const personUse = this.#personUseGroups.get(groupId) ?? {
+        tabs: new Set<BrowserSurfaceId>(),
+        ended: false,
+        ownerId,
+        profileId: record.profileId,
+      };
+      const broker = new HostedBrowserBroker({
+        poolAdmission: this.#poolAdmission(pool, adopting),
+        onChannelLost: () => pool.channelLost(sessionId),
+        adoptedFromPool: true,
+        personUse,
+        onPersonUseChanged: () => {
+          if (personUse.ended) return;
+          if (personUse.tabs.size) this.#personUseGroups.set(groupId, personUse);
+          else if (this.#personUseGroups.get(groupId) === personUse)
+            this.#personUseGroups.delete(groupId);
+        },
+        sessionId,
+        socket,
+        groupId,
+        profileId: record.profileId,
+        tabRestoreVersion: target.tabRestoreVersion === true,
+        ...(this.#workspaceTabs
+          ? {
+              personTabGeneration: async (surfaceId: BrowserSurfaceId) => {
+                const tab = await this.#workspaceTabs!.get(ownerId, surfaceId);
+                return tab?.pageBinding?.sessionId === sessionId ? tab.generation : null;
+              },
+            }
+          : {}),
+        historyWrite: (operation) => {
+          if (!this.#history || !profile) return;
+          void this.#historyOperation(profile.id, async () => {
+            if (await operation(this.#history!)) this.#onHistoryChanged(ownerId, profile.id);
+          }).catch(() => this.#onError(new Error("Browser history persistence failed")));
+        },
+        readSessionState: () => this.#sessionState(sessionId),
+        onPageChanged: () => this.#announcePresence(sessionId),
+        onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+        onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
+        onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
+        cdpBoundary: target.cdpBoundary === true,
+        agentActions: target.agentActions === true,
+        basicInput: target.basicInput,
+        surfaceState: target.surfaceState,
+        sharedControl: target.sharedControl === true,
+        navigation: target.navigationVersion === true,
+        targetControl: target.targetControl === true,
+        captureRegion: target.captureRegion === true,
+        rasterDemand: target.rasterDemand === true,
+        passkeys: false,
+        passkeyOwnOrigins: this.#passkeyOwnOrigins,
+        editing: target.editing,
+        clipboard: target.editing === 1 || target.clipboard === true,
+        computer: target.computer ?? null,
+        connectTimeoutMs: this.#connectTimeoutMs,
+        fileStaging: false,
+        signIn: false,
+        stateImport: false,
+        onState: (state) => this.#transitionBrowserSession({ sessionId, state }),
+        onTerminal: () => {
+          if (this.#brokers.get(sessionId) === broker) {
+            this.#brokers.delete(sessionId);
+            this.#sessionProfiles.delete(sessionId);
           }
-        : {}),
-      historyWrite: (operation) => {
-        if (!this.#history || !profile) return;
-        void this.#historyOperation(profile.id, async () => {
-          if (await operation(this.#history!)) this.#onHistoryChanged(ownerId, profile.id);
-        }).catch(() => this.#onError(new Error("Browser history persistence failed")));
-      },
-      readSessionState: () => this.#sessionState(sessionId),
-      onPageChanged: () => this.#announcePresence(sessionId),
-      onTabsChanged: () => this.#queueTabDescriptors(sessionId),
-      onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
-      onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
-      cdpBoundary: target.cdpBoundary === true,
-      agentActions: target.agentActions === true,
-      basicInput: target.basicInput,
-      surfaceState: target.surfaceState,
-      sharedControl: target.sharedControl === true,
-      navigation: target.navigationVersion === true,
-      targetControl: target.targetControl === true,
-      captureRegion: target.captureRegion === true,
-      rasterDemand: target.rasterDemand === true,
-      passkeys: false,
-      passkeyOwnOrigins: this.#passkeyOwnOrigins,
-      editing: target.editing,
-      clipboard: target.editing === 1 || target.clipboard === true,
-      computer: target.computer ?? null,
-      connectTimeoutMs: this.#connectTimeoutMs,
-      fileStaging: false,
-      signIn: false,
-      stateImport: false,
-      onState: (state) => this.#transitionBrowserSession({ sessionId, state }),
-      onTerminal: () => {
-        if (this.#brokers.get(sessionId) === broker) {
-          this.#brokers.delete(sessionId);
-          this.#sessionProfiles.delete(sessionId);
-        }
-        this.#onTabsChanged();
-      },
+          this.#onTabsChanged();
+        },
+      });
+      this.#brokers.set(sessionId, broker);
+      if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
+      return broker;
     });
-    this.#brokers.set(sessionId, broker);
-    if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
+    if (!broker) return [];
     let stopped = false;
     try {
       await withTimeout(broker.ready(), this.#connectTimeoutMs, {

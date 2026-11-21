@@ -219,8 +219,12 @@ export async function journey(
   let withholdNext = false;
   let runnerDown = false;
   const connections: TestRuntimeConnection[] = [];
+  let onTicket: ((ticket: string) => void) | undefined;
   const connect = (ticket: string) => {
     issued.push(ticket);
+    const hook = onTicket;
+    onTicket = undefined;
+    hook?.(ticket);
     if (withholdNext) {
       withholdNext = false;
       withheld.push(ticket);
@@ -414,6 +418,10 @@ export async function journey(
     withheld,
     withholdNextTicket: () => {
       withholdNext = true;
+    },
+    /** Runs once, as the next ticket leaves the Home for the runtime. */
+    onNextTicket: (hook: (ticket: string) => void) => {
+      onTicket = hook;
     },
     /**
      * The Runner restarts: every channel drops, the guest keeps running. `homeCode` is the close
