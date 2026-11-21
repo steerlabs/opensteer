@@ -5,6 +5,8 @@
  * acknowledgement, compared and discarded.
  */
 
+import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
+
 export interface GuestBoot {
   readonly slotId: string;
   /** Unique per VMM process for the life of the host; a jail is never reused. */
@@ -52,6 +54,8 @@ export interface HypervisorDriver {
   incarnation(): Promise<string>;
   /** The hardware and software a saved image is bound to. */
   fingerprint(): Promise<string>;
+  /** Refuses a guest whose host paths are not inside the roots configured for them. */
+  confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void>;
   /** Prepares the slot's network namespace, TAP and host-side egress. Idempotent. */
   prepareSlot(slotId: string, egress: SlotEgress | undefined): Promise<void>;
   /** Removes everything prepareSlot made. Idempotent. */

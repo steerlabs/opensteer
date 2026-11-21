@@ -32,7 +32,9 @@ import { slotKey } from "../agent.js";
 import { firecrackerApi } from "./api.js";
 import { GuestCgroups } from "./cgroup.js";
 import { requireEncryptedArray } from "./array.js";
+import { confine } from "./paths.js";
 import { SlotNumbers } from "./slot-numbers.js";
+import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   egressActive,
   startEgress,
@@ -70,6 +72,10 @@ export interface FirecrackerDriverConfig {
    */
   readonly arrayIdFile: string;
   readonly cgroupBase?: string | undefined;
+  /** Every slot's profile disk is inside this directory (review G9). */
+  readonly profilesRoot: string;
+  /** Every slot's egress credential file is inside this directory. */
+  readonly credentialsRoot: string;
   /** Each slot gets uid/gid `slotUidBase + index` for its VMM and `egressUidBase + index` for its proxy. */
   readonly slotUidBase: number;
   readonly egressUidBase: number;
@@ -117,6 +123,14 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   async fingerprint(): Promise<string> {
     return this.#fingerprint;
+  }
+
+  async confineGuest(guest: BrowserPoolAgentGuestSpec): Promise<void> {
+    await confine(guest.profilePath, this.#config.profilesRoot, "profile");
+    const egress = guest.egress;
+    if (egress)
+      for (const file of [egress.usernameFile, egress.passwordFile, egress.caFile])
+        if (file) await confine(file, this.#config.credentialsRoot, "credential");
   }
 
   // ---- Network ------------------------------------------------------------------------------
@@ -425,10 +439,12 @@ export class FirecrackerDriver implements HypervisorDriver {
         timeoutMs: 30_000,
       });
     const uid = this.#uid(index);
-    await chown(boot.profilePath, uid, uid);
-    await setFileMode(boot.profilePath, 0o600);
+    // Checked again where it is used: the path may have changed since the slot was created.
+    const profile = await confine(boot.profilePath, this.#config.profilesRoot, "profile");
+    await chown(profile, uid, uid);
+    await setFileMode(profile, 0o600);
     await writeFile(join(root, "profile.ext4"), "");
-    await run("mount", ["--bind", boot.profilePath, join(root, "profile.ext4")]);
+    await run("mount", ["--bind", profile, join(root, "profile.ext4")]);
     await mkdir(join(root, "snap"), { mode: 0o700 });
     await chown(join(root, "snap"), uid, uid);
     return root;

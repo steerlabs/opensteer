@@ -77,7 +77,11 @@ const envelopeSchema = z.strictObject({
 });
 
 const spki = z.string().min(40).max(200);
-const hostFile = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u);
+/** An absolute host path with no `.` or `..` part; the driver also confines it by real path. */
+const hostFile = z
+  .string()
+  .regex(/^\/[A-Za-z0-9._/-]{1,255}$/u)
+  .refine((value) => !value.split("/").some((part) => part === ".." || part === "."));
 const adminSchema = z.strictObject({
   v: z.literal(1),
   issuedAt: z.string().datetime(),
@@ -91,7 +95,7 @@ const adminSchema = z.strictObject({
       guest: z.strictObject({
         vcpus: z.number().int().min(1).max(32),
         memoryMib: z.number().int().min(256).max(65_536),
-        profilePath: z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u),
+        profilePath: hostFile,
         egress: z
           .strictObject({
             upstreamUrl: z.string().regex(/^https:\/\/[^\s/?#@]+:[0-9]{1,5}$/u),

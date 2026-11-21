@@ -131,6 +131,8 @@ describe("finding 11: retention is at most 24 hours", () => {
         savedRoot: "/srv/s",
         stateDirectory: "/var/d",
         arrayIdFile: "/run/a",
+        profilesRoot: "/var/p",
+        credentialsRoot: "/etc/c",
         slotUidBase: 200_000,
         egressUidBase: 300_000,
         egress: { node: "/opt/n", main: "/opt/m" },

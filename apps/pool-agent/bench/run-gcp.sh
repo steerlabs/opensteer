@@ -80,6 +80,8 @@ agent() {
     "savedRoot": "/srv/opensteer-pool/saved",
     "stateDirectory": "/var/lib/opensteer-pool/driver",
     "arrayIdFile": "/srv/opensteer-pool/array-id",
+    "profilesRoot": "/var/lib/opensteer-pool/profiles",
+    "credentialsRoot": "/etc/opensteer-pool-bench",
     "slotUidBase": 200000,
     "egressUidBase": 300000,
     "egress": { "node": "/opt/opensteer-pool/node/bin/node", "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js" },

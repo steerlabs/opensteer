@@ -31,6 +31,8 @@ export const agentConfigSchema = z.strictObject({
     stateDirectory: path,
     arrayIdFile: path,
     cgroupBase: z.string().max(255).optional(),
+    profilesRoot: path,
+    credentialsRoot: path,
     slotUidBase: z.number().int().min(10_000),
     egressUidBase: z.number().int().min(10_000),
     egress: z.strictObject({ node: path, main: path }),

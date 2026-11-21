@@ -382,6 +382,12 @@ export class PoolAgent {
       results: [],
       effects: [],
     };
+    // Review G9: the host paths a provisioner names stay under their configured roots.
+    await this.#step("verify", () => this.#driver.confineGuest(input.guest)).catch(
+      (error: unknown) => {
+        throw new SlotConflict(messageOf(error));
+      },
+    );
     await this.#step("network", () => this.#driver.prepareSlot(input.slotId, input.guest.egress));
     await this.#write(record);
     const slot = this.#load(record);

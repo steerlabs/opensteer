@@ -97,6 +97,8 @@ is saved to disk or stopped.
     "savedRoot": "/srv/opensteer-pool/saved",
     "stateDirectory": "/var/lib/opensteer-pool/driver",
     "arrayIdFile": "/srv/opensteer-pool/array-id",
+    "profilesRoot": "/var/lib/opensteer-pool/profiles",
+    "credentialsRoot": "/etc/opensteer-pool/credentials",
     "slotUidBase": 200000,
     "egressUidBase": 300000,
     "egress": {

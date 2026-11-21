@@ -111,6 +111,11 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     return this.#fingerprint;
   }
 
+  async confineGuest(guest: { readonly profilePath: string }): Promise<void> {
+    if (guest.profilePath.split("/").includes(".."))
+      throw new Error("The profile path leaves its root.");
+  }
+
   async prepareSlot(slotId: string, _egress: SlotEgress | undefined): Promise<void> {
     this.prepared.add(slotId);
     this.networks.set(slotId, this.networks.get(slotId) ?? "closed");
