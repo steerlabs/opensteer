@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolAdopter,
@@ -370,14 +369,14 @@ for (const [point, when, ends] of crashes)
       const dying = f.home(crash);
       await dying.recover();
       crash.arm(point, when);
-      const parking = dying.tryPark();
-      void parking.catch(() => undefined);
-      const waking = (async () => {
-        if ((await Promise.race([parking, delay(1_500)])) === "parked")
-          await dying.gate.reserve(AbortSignal.timeout(1_500));
-      })().catch(() => undefined);
-      await Promise.race([waking, delay(2_000)]);
-      expect(crash.dead).toBe(true);
+      // A park, and a wake once it is parked: the Home dies at the armed point of either.
+      void dying
+        .tryPark()
+        .then((parked) =>
+          parked === "parked" ? dying.gate.reserve(AbortSignal.timeout(10_000)) : undefined,
+        )
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(crash.dead).toBe(true));
       dying.close();
       // The old process's sockets close with it.
       await f.crashSockets();
@@ -526,8 +525,9 @@ it("records an adoption the runtime ended at its window while the Home was gone"
     await dying.recover();
     expect(dying.gate.phase).toBe("parked");
     crash.arm("runtime:adopt", "after");
-    void dying.gate.reserve(AbortSignal.timeout(500)).catch(() => undefined);
-    await delay(400);
+    void dying.gate.reserve(AbortSignal.timeout(10_000)).catch(() => undefined);
+    // The Home died just after adopt; the runtime ends the adoption at its window by itself.
+    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("running"));
     dying.close();
     expect(f.runtime.poolState()).toMatchObject({
       phase: "running",

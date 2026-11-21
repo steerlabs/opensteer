@@ -1,6 +1,5 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   browserPoolControlBytes,
   type BrowserPoolControl,
@@ -230,7 +229,7 @@ it("ends the adoption by itself at its window and loses only what was not reatta
     await f.controls("seal");
     const adopting = await f.resume();
     expect(adopting).toMatchObject({ phase: "adopting", fence: { epoch: 2 } });
-    await delay(120);
+    await vi.waitFor(() => expect(f.runtime.poolState()?.phase).toBe("running"));
     expect(f.runtime.poolState()).toMatchObject({
       phase: "running",
       adoption: {

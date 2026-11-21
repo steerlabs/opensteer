@@ -33,6 +33,11 @@ export class BrowserPoolGate {
     return this.#phase;
   }
 
+  /** Reservations held now, including queued sends with no consumer. */
+  get held(): number {
+    return this.#active;
+  }
+
   /** Every send that arrives after D waits; the retained documents stand for live ones. */
   get retiringOrAdopting(): boolean {
     return this.#phase === "parking" || this.#phase === "parked" || this.#phase === "waking";

@@ -622,7 +622,8 @@ export class BrowserRuntime implements NativePresentationSource {
   /** The loopback stand-in for a newly started guest: no page of the previous one survives. */
   private async discardForPool(): Promise<void> {
     this.frozenPages.clear();
-    for (const session of [...this.sessions.values()]) {
+    // A copy: ending a session removes it from the map.
+    for (const session of Array.from(this.sessions.values())) {
       session.poolDetached = true;
       await session.controller.detachForPool().catch(() => undefined);
       await this.detach(session.sessionId, session.generation, false, false, true);

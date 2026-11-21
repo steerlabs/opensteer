@@ -1,4 +1,11 @@
-import { TabStore } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  TabStore,
+  admitAgentOperation,
+  beginAgentSession,
+  decideAgentOperation,
+  handOffAgentOperation,
+} from "@opensteer/database";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -94,6 +101,197 @@ it.skipIf(Boolean(reportPath))(
       } finally {
         await database.drop();
       }
+    }
+  },
+);
+
+const parityReport = process.env.OPENSTEER_POOL_PARITY_REPORT;
+
+/**
+ * The pooled browser must leave an ordinary Home's statements alone. These numbers were
+ * recorded with this same test on the base before the pool (54e33c8fc), three runs each side,
+ * and the distinct statement texts of every path were equal there and here.
+ */
+it.skipIf(Boolean(reportPath))(
+  "keeps an ordinary Home's browser and direct-work statements as they were before the pool",
+  async () => {
+    const database = await cloneTestDatabase("host");
+    const close: (() => unknown | Promise<unknown>)[] = [() => database.drop()];
+    let tracing: string[] | undefined;
+    const trace = traceQueries((statement) => tracing?.push(statement));
+    const recorded: Record<string, string[]> = {};
+    const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
+      const sql: string[] = [];
+      tracing = sql;
+      try {
+        return await action();
+      } finally {
+        tracing = undefined;
+        recorded[path] = sql;
+      }
+    };
+    try {
+      const host = await startPrivateMachineHost(database.url, { logger: false });
+      close.unshift(() => host.close());
+      const runner = await connectCallerMachine(host, {
+        name: "Parity fixture",
+        token: host.hostingRunnerEnrollmentToken,
+        browser: {
+          runtimeId: "browser-runtime-integration",
+          wireVersion: 2,
+          cdpBoundary: 1,
+          sharedControl: 1,
+          tabRestoreVersion: 1,
+          surfaceState: 1,
+        },
+      });
+      close.unshift(() => runner.close());
+      const browser = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
+        primary: runner.primary,
+        agentReady: true,
+        targetedStreaming: true,
+        personalTabs: true,
+        surfaceState: true,
+        uniqueTabs: true,
+        tabCommands: true,
+      });
+      close.unshift(() => browser.close());
+      await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
+      await record("startup sweep", () => host.runtime.browser.initialize());
+      const rpc = async (
+        result: Promise<{ ok: true; data: unknown } | { ok: false; error: { message: string } }>,
+      ) => {
+        const reply = await result;
+        if (!reply.ok) throw new Error(reply.error.message);
+        return reply.data;
+      };
+      const target = { kind: "page", guest: true, url: "about:blank" } as const;
+      const opened = (await record("person tab open", () =>
+        rpc(host.api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+      )) as { tab: { tabId: Parameters<TabStore["get"]>[1] } };
+      const tabId = opened.tab.tabId;
+      const row = await new TabStore(host.store.database).get(host.ownerId, tabId);
+      const sessionId = row?.pageBinding?.sessionId;
+      if (!sessionId) throw new Error("No Browser Session");
+      const viewer = await record("viewer attach", () =>
+        host.runtime.browser.attach(
+          host.ownerId,
+          sessionId,
+          { id: "parity-owner", isOpen: () => true, close() {}, async send() {} },
+          { authSessionId: createId("authSession"), mode: "control", signedIn: async () => true },
+        ),
+      );
+      close.unshift(() => viewer.close());
+      await record("workspace activation", () =>
+        rpc(
+          host.api["commands.dispatch"]({
+            type: "tab.activate",
+            idempotencyKey: "parity-activate",
+            tabId,
+          }),
+        ),
+      );
+      const run = await dispatchCallerRun(host, runner, { key: "parity", title: "Parity Run" });
+      const authority = {
+        agentBindingId: `run:${run.runId}`,
+        ownerId: host.ownerId,
+        environmentId: runner.environmentId,
+      };
+      const own = await host.runtime.browser.openAgentTab(
+        { ...authority, threadId: run.threadId },
+        { identity: { kind: "guest", computer: runner.runnerId }, operationKey: "parity-run" },
+      );
+      const issued = await record("standard CDP issue", () =>
+        host.runtime.browser
+          .issueStandardCdpTicket({
+            authority,
+            browserSessionId: own.sessionId,
+            seedTabId: own.tabId,
+            mode: "session",
+          })
+          .then(
+            () => "issued",
+            (error: unknown) => (error instanceof Error ? error.message : "refused"),
+          ),
+      );
+      const connections = new AgentConnectionStore(host.store.database);
+      const connection = await connections.create({
+        userId: host.ownerId,
+        label: "Parity connection",
+        clientName: "Parity agent",
+        accessMode: "full-access",
+        grant: { scope: "everything" },
+        resource: "https://parity.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(connection.id, crypto.randomUUID())).toBe(true);
+      const { grantRevision } = await host.store.database
+        .selectFrom("agentConnections")
+        .select("grantRevision")
+        .where("id", "=", connection.id)
+        .executeTakeFirstOrThrow();
+      const lineage = { userId: host.ownerId, agentConnectionId: connection.id };
+      const profile = await host.store.createBrowserProfile({
+        name: "Parity profile",
+        ownerId: host.ownerId,
+        homeRunnerId: runner.runnerId,
+        idempotencyKey: "parity-profile",
+      });
+      const { session } = await beginAgentSession(host.store.database, lineage);
+      const { operation } = await admitAgentOperation(host.store.database, {
+        ...lineage,
+        sessionId: session.id,
+        operationKey: "parity",
+        tool: "browser_use",
+        argumentDigest: "parity",
+        target: {
+          grant: { kind: "browser-profile", profileId: profile.id },
+          name: "Parity profile",
+          device: null,
+        },
+        targetGeneration: null,
+        grantRevision,
+        mode: "full-access",
+        effect: "write",
+        calls: "parity",
+        agentReason: null,
+      } as Parameters<typeof admitAgentOperation>[1]);
+      const reviewed = await decideAgentOperation(host.store.database, operation, {
+        by: "full-access",
+      });
+      const handed = await record("direct hand-off", () =>
+        handOffAgentOperation(host.store.database, { ...lineage, reviewed }),
+      );
+      expect(handed?.state).toBe("handed-off");
+      if (parityReport)
+        await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
+      expect(
+        Object.values(recorded)
+          .flat()
+          .filter((sql) => /browser_pool/u.test(sql)),
+      ).toEqual([]);
+      // Background work of the Runner and the Run interleaves with the busier paths, so those
+      // pin the statements on browser tables and agent operations; the quiet ones pin all.
+      const browserStatements = (sql: readonly string[]) =>
+        sql.filter((statement) => /browser_|agent_operations/u.test(statement)).length;
+      expect(
+        Object.fromEntries(
+          Object.entries(recorded).map(([path, sql]) => [path, browserStatements(sql)]),
+        ),
+      ).toEqual({
+        "startup sweep": 6,
+        "person tab open": 24,
+        "viewer attach": 1,
+        "workspace activation": 4,
+        "standard CDP issue": 3,
+        "direct hand-off": 2,
+      });
+      expect(recorded["viewer attach"]).toHaveLength(1);
+      expect(recorded["workspace activation"]).toHaveLength(27);
+      expect(recorded["direct hand-off"]).toHaveLength(6);
+    } finally {
+      trace.mockRestore();
+      for (const step of close) await step();
     }
   },
 );

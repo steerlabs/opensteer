@@ -167,82 +167,82 @@ async function fixture() {
     admitted,
     emit: (frame: Buffer) => read?.(frame),
   };
-
-  it("transfers the same pooled reservation into the upgrade and keeps it during pending attach cleanup", async () => {
-    const f = await fixture();
-    const hold = pooledTicket();
-    const entered = Promise.withResolvers<void>();
-    const cancelled = Promise.withResolvers<void>();
-    const finish = Promise.withResolvers<void>();
-    const released = Promise.withResolvers<void>();
-    f.attach.mockImplementationOnce(async (_claims, signal, _admission, reserve) => {
-      expect(reserve).toBe(hold);
-      signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
-      entered.resolve();
-      try {
-        await finish.promise;
-        signal.throwIfAborted();
-        throw new Error("Expected the upgrading client to close.");
-      } finally {
-        reserve!.release();
-        released.resolve();
-      }
-    });
-    const ticket = f.tickets.issue(claims, hold);
-    const socket = await f.connect(ticket);
-    try {
-      await entered.promise;
-      socket.send('{"id":1,"method":"Browser.getVersion"}');
-      await expect(f.connect(ticket)).rejects.toThrow("Unexpected server response: 401");
-      const closed = once(socket, "close");
-      socket.close();
-      await Promise.all([closed, cancelled.promise]);
-      expect(hold.release).not.toHaveBeenCalled();
-      expect(f.send).not.toHaveBeenCalled();
-    } finally {
-      finish.resolve();
-      await released.promise;
-    }
-    expect(hold.release).toHaveBeenCalledOnce();
-  });
-
-  it("releases a pooled reservation when the WebSocket upgrade fails", async () => {
-    const f = await fixture();
-    const hold = pooledTicket();
-    const ticket = f.tickets.issue(claims, hold);
-    const status = await new Promise<number | undefined>((resolve, reject) => {
-      const request = get(
-        new URL(`${standardCdpConnectPrefix}${ticket}`, f.address),
-        {
-          headers: {
-            connection: "Upgrade",
-            upgrade: "websocket",
-            "sec-websocket-key": "invalid-key",
-            "sec-websocket-version": "13",
-          },
-        },
-        (response) => {
-          response.resume();
-          response.on("end", () => resolve(response.statusCode));
-        },
-      );
-      request.on("error", reject);
-    });
-    expect(status).toBe(400);
-    await vi.waitFor(() => expect(hold.release).toHaveBeenCalledOnce());
-    expect(f.attach).not.toHaveBeenCalled();
-  });
-
-  it("releases the pooled reservation on upgrade capacity refusal", async () => {
-    const f = await fixture();
-    for (let n = 0; n < 4; n++) await f.connect();
-    const hold = pooledTicket();
-    const socket = await f.connect(f.tickets.issue(claims, hold));
-    expect((await once(socket, "close"))[0]).toBe(1013);
-    expect(hold.release).toHaveBeenCalledOnce();
-    expect(f.attach).toHaveBeenCalledTimes(4);
-  });
 }
+
+it("transfers the same pooled reservation into the upgrade and keeps it during pending attach cleanup", async () => {
+  const f = await fixture();
+  const hold = pooledTicket();
+  const entered = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  f.attach.mockImplementationOnce(async (_claims, signal, _admission, reserve) => {
+    expect(reserve).toBe(hold);
+    signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+    entered.resolve();
+    try {
+      await finish.promise;
+      signal.throwIfAborted();
+      throw new Error("Expected the upgrading client to close.");
+    } finally {
+      reserve!.release();
+      released.resolve();
+    }
+  });
+  const ticket = f.tickets.issue(claims, hold);
+  const socket = await f.connect(ticket);
+  try {
+    await entered.promise;
+    socket.send('{"id":1,"method":"Browser.getVersion"}');
+    await expect(f.connect(ticket)).rejects.toThrow("Unexpected server response: 401");
+    const closed = once(socket, "close");
+    socket.close();
+    await Promise.all([closed, cancelled.promise]);
+    expect(hold.release).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+  } finally {
+    finish.resolve();
+    await released.promise;
+  }
+  expect(hold.release).toHaveBeenCalledOnce();
+});
+
+it("releases a pooled reservation when the WebSocket upgrade fails", async () => {
+  const f = await fixture();
+  const hold = pooledTicket();
+  const ticket = f.tickets.issue(claims, hold);
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const request = get(
+      new URL(`${standardCdpConnectPrefix}${ticket}`, f.address),
+      {
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-key": "invalid-key",
+          "sec-websocket-version": "13",
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode));
+      },
+    );
+    request.on("error", reject);
+  });
+  expect(status).toBe(400);
+  await vi.waitFor(() => expect(hold.release).toHaveBeenCalledOnce());
+  expect(f.attach).not.toHaveBeenCalled();
+});
+
+it("releases the pooled reservation on upgrade capacity refusal", async () => {
+  const f = await fixture();
+  for (let n = 0; n < 4; n++) await f.connect();
+  const hold = pooledTicket();
+  const socket = await f.connect(f.tickets.issue(claims, hold));
+  expect((await once(socket, "close"))[0]).toBe(1013);
+  expect(hold.release).toHaveBeenCalledOnce();
+  expect(f.attach).toHaveBeenCalledTimes(4);
+});
 
 it("relays original text and refuses replay even with ambient credentials", async () => {
   const f = await fixture();

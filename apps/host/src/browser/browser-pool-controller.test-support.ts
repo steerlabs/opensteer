@@ -19,7 +19,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
   readonly #privateKey: KeyObject;
   readonly #results = new Map<string, BrowserPoolControllerResult>();
   readonly #faults: { kind: string; fault: BrowserPoolFault }[] = [];
-  readonly #holds = new Map<BrowserPoolPhysicalKind, Promise<void>>();
+  readonly #holds = new Map<BrowserPoolPhysicalKind, () => Promise<void>>();
   readonly log: string[] = [];
   readonly retentionMs: number;
   #status: BrowserPoolPhysicalStatus;
@@ -47,8 +47,8 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
     this.#faults.push({ kind, fault });
   }
 
-  /** The next matching call waits for this promise before it applies. */
-  hold(kind: BrowserPoolPhysicalKind, until: Promise<void>): void {
+  /** The next matching call runs this when it arrives, and applies once it settles. */
+  hold(kind: BrowserPoolPhysicalKind, until: () => Promise<void>): void {
     this.#holds.set(kind, until);
   }
 
@@ -83,7 +83,7 @@ export class FakeBrowserPoolController implements BrowserPoolPhysicalController 
     const hold = this.#holds.get(call.kind);
     if (hold) {
       this.#holds.delete(call.kind);
-      await hold;
+      await hold();
     }
     const result = this.#apply(call);
     if (fault === "duplicate") this.#apply(call);

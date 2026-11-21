@@ -1302,13 +1302,14 @@ export class BrowserService {
       const live = this.pageInventory(sessionId)?.records;
       const losses: { surfaceId: string; documentId: string | null }[] = [];
       for (const document of documents.filter((document) => document.sessionId === sessionId)) {
-        const tab = await this.#workspaceTabs?.get(ownerId, document.surfaceId);
+        const tab = await this.#workspaceTabs?.get(ownerId, document.surfaceId, true);
         const page = live?.get(document.surfaceId);
         if (!page) {
           losses.push({ surfaceId: document.surfaceId, documentId: document.documentId });
           continue;
         }
-        if (tab && tab.pageBinding?.sessionId === sessionId) {
+        // Only a tab the person closed, or one now bound elsewhere, has its page closed.
+        if (!tab || (!tab.closedAt && tab.pageBinding?.sessionId === sessionId)) {
           if (page.documentId !== document.documentId)
             losses.push({ surfaceId: document.surfaceId, documentId: document.documentId });
           continue;
@@ -4744,27 +4745,29 @@ export class BrowserService {
       readonly targetGeneration: number | null;
     };
   }): Promise<{ readonly ticket: string; readonly path: string; readonly mode: StandardCdpMode }> {
-    const { facts, mode, record } = await this.#standardCdpAdmission(input, input.seedTabId);
-    const witness = input.operationWitness;
-    if (
-      witness &&
-      (facts.grantRevision !== witness.grantRevision ||
-        facts.accessMode !== witness.mode ||
-        (witness.targetGeneration !== null && facts.seed?.generation !== witness.targetGeneration))
-    )
-      throw new BrowserCdpConnectionEnded(
-        "This browser authority changed. Request a new attachment.",
-      );
-    if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
-      throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+    const reserve = await this.#reserveBeforeCdpIssue(input);
+    const { facts, mode, record } = await this.#standardCdpAdmission(input, input.seedTabId).catch(
+      (error: unknown) => {
+        reserve?.release();
+        throw error;
+      },
+    );
     const pooled = this.#poolTabTarget(record.runnerId);
-    // A parked browser wakes before the ticket is issued; there is no wake after issue.
-    const reserve = pooled
-      ? await pooled.gate.reserve(
-          AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
-        )
-      : undefined;
     try {
+      const witness = input.operationWitness;
+      if (
+        witness &&
+        (facts.grantRevision !== witness.grantRevision ||
+          facts.accessMode !== witness.mode ||
+          (witness.targetGeneration !== null &&
+            facts.seed?.generation !== witness.targetGeneration))
+      )
+        throw new BrowserCdpConnectionEnded(
+          "This browser authority changed. Request a new attachment.",
+        );
+      if (this.#closed || this.#endedBindings.has(input.authority.agentBindingId))
+        throw new BrowserCdpConnectionEnded("This browser authority has ended.");
+      if (pooled && !reserve) throw new BrowserCdpConnectionEnded("The browser runtime changed.");
       let pool: StandardCdpPoolReservation | undefined;
       if (pooled && reserve) {
         if (!(this.#repository instanceof OpensteerStore) || !facts.agentConnectionId)
@@ -4789,6 +4792,31 @@ export class BrowserService {
       reserve?.release();
       throw error;
     }
+  }
+
+  /**
+   * A parked pooled browser wakes before a ticket is issued, never after. Visibility comes from
+   * Home data first, so a session outside the task's reach is refused with no wake.
+   */
+  async #reserveBeforeCdpIssue(input: {
+    readonly authority: CdpAuthority;
+    readonly browserSessionId: BrowserSessionId;
+  }): Promise<BrowserPoolReservation | undefined> {
+    if (!this.#managedPoolTestRunner) return undefined;
+    const record = await this.#repository.getBrowserSessionForOwner(
+      input.browserSessionId,
+      input.authority.ownerId,
+    );
+    const pooled = record && !isTerminal(record.state) && this.#poolTabTarget(record.runnerId);
+    if (!record || !pooled) return undefined;
+    const held = await this.#repository.listActiveBrowserSessionsForAgentBinding(
+      input.authority.agentBindingId,
+    );
+    if (!held.some(({ id }) => id === record.id))
+      throw new BrowserCdpConnectionEnded("This task does not have access to that browser tab.");
+    return pooled.gate.reserve(
+      AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
+    );
   }
 
   async attachStandardCdpForAgent(
