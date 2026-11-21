@@ -3333,9 +3333,12 @@ describe("native Chromium profiles", () => {
       vi.useRealTimers();
       await second;
 
-      // U's removal ends and the timed-out body finishes while S's discard is still held.
+      // U's removal ends and the timed-out body finishes while S's discard is still held; any
+      // removal chained behind that body has run by the time the reconcile tail settles.
       removeUGate.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await (launched as unknown as { contextHandle: { reconcileTail: Promise<void> } })
+        .contextHandle.reconcileTail;
+      expect(tabs.some((t) => t.tabId === 902)).toBe(false);
       discardGate.resolve();
 
       // S's replacement 951 is removed: "901 is gone" was never taken as evidence.

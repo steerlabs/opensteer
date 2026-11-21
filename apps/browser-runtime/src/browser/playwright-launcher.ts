@@ -1601,7 +1601,7 @@ class PlaywrightContextHandle implements BrowserContext {
       !this.identifyingPages.has(page) ||
       this.claimedWakePages.has(page);
     // A page this context is creating is its own: its creator releases it when it resolves.
-    if (this.openingPages.size > 0) await Promise.allSettled([...this.openingPages]);
+    if (this.openingPages.size > 0) await Promise.allSettled(this.openingPages);
     for (let attempt = 0; attempt < arrivalIdentifyAttempts; attempt++) {
       if (taken()) return;
       const targetId = syncTargetId ?? (await this.targetIdOfPage(page));
