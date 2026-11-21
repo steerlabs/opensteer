@@ -7,6 +7,7 @@
 import type { BrowserPoolControl, BrowserPoolRuntimeState } from "@opensteer/browser-runtime-core";
 import { createPublicKey } from "node:crypto";
 import {
+  PoolRelayRefused,
   poolRelayTransport,
   requestOverTunnel,
   type PoolRelayEndpoint,
@@ -78,8 +79,25 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     return body.state;
   }
 
+  /**
+   * A tunnel the relay could not connect (`unavailable`: a runtime still starting, say) carried
+   * nothing, so it is opened again for a while; anything sent is never sent twice.
+   */
+  async #open(signal?: AbortSignal) {
+    const until = Date.now() + 30_000;
+    for (let wait = 100; ; wait = Math.min(wait * 2, 2_000)) {
+      try {
+        return await this.#transport.open();
+      } catch (error) {
+        if (!(error instanceof PoolRelayRefused) || error.code !== "unavailable") throw error;
+        if (Date.now() + wait > until || signal?.aborted) throw error;
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+    }
+  }
+
   async #send(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
-    const { socket, bridgeToken } = await this.#transport.open();
+    const { socket, bridgeToken } = await this.#open(signal);
     return requestOverTunnel(socket, {
       method,
       path,
