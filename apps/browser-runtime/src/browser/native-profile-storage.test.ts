@@ -105,4 +105,56 @@ describe("matchRestoredTabs", () => {
     expect(personPlusAgent.matched.size).toBe(0);
     expect(personPlusAgent.orphans.map((t) => t.tabId)).toEqual([50, 51]);
   });
+
+  it("never binds a person tab to an agent tab on the same URL across crash drift using full-strip placeholders (R4)", () => {
+    const placeholder = (index: number, url: string): TabRestoreSidecarEntry => ({
+      index,
+      surfaceId: null,
+      url,
+      lineageId: null,
+    });
+
+    // Subcase 4a: sidecar has [0: agent placeholder(X), 1: person(X)] after person navigated W->X,
+    // while Chromium Session_* still has [0: agent(X), 1: person(W)].
+    // Tested BOTH at launch (no savedTabIds) AND at reconcile: agent tab MUST be an orphan!
+    for (const opts of [
+      {},
+      { savedTabIds: new Set(["surf-person"]), lineageId: "bsn_lineage_1" },
+    ]) {
+      const crashNavDrift = matchRestoredTabs(
+        [restored(60, 0, "https://shared.test/x"), restored(61, 1, "https://old.test/w")],
+        [
+          placeholder(0, "https://shared.test/x"),
+          sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
+        ],
+        opts,
+      );
+      expect(crashNavDrift.matched.size).toBe(0);
+      expect(crashNavDrift.orphans.map((t) => t.tabId)).toEqual([60, 61]);
+    }
+
+    // Subcase 4b: person tab opened at X never reached Session_*, only agent(X) is in Session_*.
+    const crashUnflushedPerson = matchRestoredTabs(
+      [restored(70, 0, "https://shared.test/x")],
+      [
+        placeholder(0, "https://shared.test/x"),
+        sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
+      ],
+    );
+    expect(crashUnflushedPerson.matched.size).toBe(0);
+    expect(crashUnflushedPerson.orphans.map((t) => t.tabId)).toEqual([70]);
+
+    // Subcase 4e: both flushed [0: agent(X), 1: person(X)] -> agent slot 0 is excluded orphan,
+    // person slot 1 restores cleanly as surf-person (even without savedTabIds at launch)!
+    const bothFlushed = matchRestoredTabs(
+      [restored(80, 0, "https://shared.test/x"), restored(81, 1, "https://shared.test/x")],
+      [
+        placeholder(0, "https://shared.test/x"),
+        sidecar(1, "surf-person", "https://shared.test/x", "bsn_lineage_1"),
+      ],
+    );
+    expect([...bothFlushed.matched.keys()]).toEqual(["surf-person"]);
+    expect(bothFlushed.matched.get("surf-person")?.tab.tabId).toBe(81);
+    expect(bothFlushed.orphans.map((t) => t.tabId)).toEqual([80]);
+  });
 });

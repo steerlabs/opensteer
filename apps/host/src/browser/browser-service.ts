@@ -6780,6 +6780,7 @@ export class BrowserService {
         origin !== "trigger" &&
         !input.agentBindingId?.startsWith("trigger:") &&
         !input.agentBindingId?.startsWith("watch:");
+      const groupId = input.tabGroupId ?? sessionId;
       const attachAuthority: Parameters<BrowserAttachTicketSigner["issue"]>[0] = {
         creationOrigin:
           origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
@@ -6804,6 +6805,7 @@ export class BrowserService {
         ...(tabRestore
           ? {
               tabRestoreVersion: 1,
+              ...(localIdentity?.binding.engine === "chromium" ? { tabGroupId: groupId } : {}),
               initialSurfaceId: input.initialSurfaceId,
             }
           : {}),
@@ -6866,7 +6868,6 @@ export class BrowserService {
         throw browserStartUnavailable(correlationId, stage, error);
       }
       let readinessBudget = input.operationBudget;
-      const groupId = input.tabGroupId ?? sessionId;
       const personUse = this.#personUseGroups.get(groupId) ?? {
         tabs: new Set<BrowserSurfaceId>(),
         ended: false,

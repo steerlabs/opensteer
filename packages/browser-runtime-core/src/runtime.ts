@@ -1275,7 +1275,7 @@ export class BrowserRuntime implements NativePresentationSource {
             claims.identity.kind === "profile-local" &&
             (claims.initialSurfaceId !== undefined ||
               (claims.actor !== "agent" && claims.creationOrigin !== "agent"))
-              ? claims.identity.binding.profileId
+              ? (claims.tabGroupId ?? claims.sessionId)
               : undefined;
           // A new host's launch page is this session's root unless another already owns it.
           const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
@@ -1546,8 +1546,8 @@ export class BrowserRuntime implements NativePresentationSource {
         if (!stateHost.restoredReconciled) {
           stateHost.restoredReconciled = true;
           const lineageId =
-            claims.identity.kind === "profile-local"
-              ? claims.identity.binding.profileId
+            claims.tabRestoreVersion === 1 && claims.identity.kind === "profile-local"
+              ? (claims.tabGroupId ?? claims.sessionId)
               : undefined;
           await hostBrowser.context.sessionRestore?.reconcile(savedTabIds, lineageId);
         }

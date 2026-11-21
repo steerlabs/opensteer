@@ -72,6 +72,7 @@ import {
   readTabRestoreSidecar,
   writeTabRestoreSidecar,
   type MatchedRestoredTab,
+  type TabRestoreSidecarEntry,
 } from "./native-profile-storage.js";
 
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
@@ -1036,6 +1037,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       profileDirectory,
       matchedRestored,
       preHelperPages,
+      privatePageTargetId,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -1202,6 +1204,7 @@ class PlaywrightContextHandle implements BrowserContext {
   readonly sessionRestore: BrowserSessionRestore | undefined;
   private readonly profileDirectory: string | undefined;
   private readonly privatePage: Page | undefined;
+  private readonly helperTargetId: string | undefined;
   private readonly sleepingTabs = new Map<
     string,
     | {
@@ -1258,8 +1261,10 @@ class PlaywrightContextHandle implements BrowserContext {
     profileDirectory?: string,
     matchedRestored: ReadonlyMap<BrowserSurfaceId, MatchedRestoredTab> = new Map(),
     preHelperPages: ReadonlySet<Page> = new Set(),
+    helperTargetId?: string,
   ) {
     this.privatePage = privatePage;
+    this.helperTargetId = helperTargetId;
     this.lifecycle = lifecycle;
     this.profileDirectory = profileDirectory;
     this.authenticator = authenticator;
@@ -1694,62 +1699,68 @@ class PlaywrightContextHandle implements BrowserContext {
       this.sidecarDirty = false;
       const inventory = await this.lifecycle.inventory().catch(() => null);
       if (!inventory) return;
-      const byTargetId = new Map<string, ChromiumTabEntry>();
-      const byTabId = new Map<number, ChromiumTabEntry>();
-      for (const entry of inventory) {
-        byTabId.set(entry.tabId, entry);
-        if (entry.targetId) byTargetId.set(entry.targetId, entry);
-      }
-      const mapped: Array<{
-        windowId: number;
-        stripIndex: number;
-        surfaceId: string;
-        url: string;
-        lineageId: string;
-      }> = [];
-      const seenSurfaceIds = new Set<string>();
+      const byTargetId = new Map<string, { surfaceId: string; lineageId: string; url: string }>();
+      const byTabId = new Map<number, { surfaceId: string; lineageId: string; url: string }>();
       for (const [surfaceId, saved] of this.savedTabsBySurfaceId) {
-        let entry: ChromiumTabEntry | undefined;
         if (saved.page && !saved.page.isClosed()) {
           const targetId = await saved.page.targetId().catch(() => null);
-          if (targetId) entry = byTargetId.get(targetId);
+          if (targetId) {
+            byTargetId.set(targetId, {
+              surfaceId,
+              lineageId: saved.lineageId,
+              url: saved.page.url() || "",
+            });
+          }
         } else if (saved.sleepingTokenId) {
           const sleeping = this.sleepingTabs.get(saved.sleepingTokenId);
-          if (sleeping?.state === "discarded") entry = byTabId.get(sleeping.tabId);
+          if (sleeping?.state === "discarded") {
+            byTabId.set(sleeping.tabId, {
+              surfaceId,
+              lineageId: saved.lineageId,
+              url: sleeping.url,
+            });
+          }
         }
-        if (!entry) continue;
-        seenSurfaceIds.add(surfaceId);
-        mapped.push({
-          windowId: entry.windowId,
-          stripIndex: entry.index,
-          surfaceId,
-          url: entry.url || saved.page?.url() || "",
-          lineageId: saved.lineageId,
-        });
       }
       for (const [surfaceId, parked] of this.restoredBySurfaceId) {
-        if (seenSurfaceIds.has(surfaceId)) continue;
-        const entry = byTabId.get(parked.tab.tabId);
-        if (!entry) continue;
-        seenSurfaceIds.add(surfaceId);
-        mapped.push({
-          windowId: entry.windowId,
-          stripIndex: entry.index,
-          surfaceId,
-          url: entry.url || parked.tab.url,
-          lineageId: parked.lineageId,
-        });
+        if (!byTabId.has(parked.tab.tabId)) {
+          byTabId.set(parked.tab.tabId, {
+            surfaceId,
+            lineageId: parked.lineageId,
+            url: parked.tab.url,
+          });
+        }
       }
-      mapped.sort((a, b) => a.windowId - b.windowId || a.stripIndex - b.stripIndex);
-      await writeTabRestoreSidecar(
-        this.profileDirectory,
-        mapped.map((item, index) => ({
-          index,
-          surfaceId: item.surfaceId,
-          url: item.url,
-          lineageId: item.lineageId,
-        })),
+      const orderedInventory = [...inventory].sort(
+        (a, b) => a.windowId - b.windowId || a.index - b.index,
       );
+      const entries: TabRestoreSidecarEntry[] = [];
+      const seenSurfaceIds = new Set<string>();
+      for (const tab of orderedInventory) {
+        if (tab.targetId !== null && tab.targetId === this.helperTargetId) continue;
+        if (isInternalExtensionUrl(tab.url)) continue;
+        if (tab.url === "" || tab.url === "about:blank" || tab.url === "chrome://newtab/") continue;
+        const matched =
+          (tab.targetId ? byTargetId.get(tab.targetId) : undefined) ?? byTabId.get(tab.tabId);
+        if (matched && !seenSurfaceIds.has(matched.surfaceId)) {
+          seenSurfaceIds.add(matched.surfaceId);
+          entries.push({
+            index: entries.length,
+            surfaceId: matched.surfaceId,
+            url: tab.url || matched.url,
+            lineageId: matched.lineageId,
+          });
+        } else {
+          // Record unsaved/agent tabs as strip-order placeholders so crash drift can never bind them to saved tabs.
+          entries.push({
+            index: entries.length,
+            surfaceId: null,
+            url: tab.url,
+            lineageId: null,
+          });
+        }
+      }
+      await writeTabRestoreSidecar(this.profileDirectory, entries);
     });
     this.sidecarTail = write.catch(() => undefined);
     return write;
@@ -2001,7 +2012,25 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
       this.pagesByPlaywrightPage.set(page, handle);
-      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
+      if (this.lifecycle && this.profileDirectory && !this.trackedNavigationPages.has(page)) {
+        this.trackedNavigationPages.add(page);
+        page.on("framenavigated", (frame) => {
+          if (frame === page.mainFrame()) this.scheduleSidecarWrite();
+        });
+      }
+      page.once("close", () => {
+        this.pagesByPlaywrightPage.delete(page);
+        if (this.lifecycle && this.profileDirectory) {
+          const saved = this.savedSurfaceByPage.get(handle!);
+          if (saved) {
+            const current = this.savedTabsBySurfaceId.get(saved.surfaceId);
+            if (current && current.page === handle) {
+              this.savedTabsBySurfaceId.delete(saved.surfaceId);
+            }
+          }
+          this.scheduleSidecarWrite();
+        }
+      });
     }
     return handle;
   }

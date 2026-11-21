@@ -218,6 +218,8 @@ export const BrowserAttachTicketClaimsSchema = z
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     tabRestoreVersion: z.literal(1).optional(),
+    /** Home tab-group lineage id for native session restore; sent only to Chromium local runtimes. */
+    tabGroupId: BrowserSessionIdSchema.optional(),
     /** The Host relays `browser.popup.opened`, so the runtime may send it. */
     popupFollowVersion: z.literal(1).optional(),
     /**

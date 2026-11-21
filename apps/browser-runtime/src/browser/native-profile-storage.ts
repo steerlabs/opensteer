@@ -9,15 +9,23 @@ import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 
 export const tabRestoreSidecarFilename = "opensteer-tabs.json";
 
-const tabRestoreSidecarEntrySchema = z.object({
-  index: z.number().int().nonnegative(),
-  surfaceId: z.string().min(1),
-  url: z.string(),
-  lineageId: z.string().min(1),
-});
+const tabRestoreSidecarEntrySchema = z.union([
+  z.object({
+    index: z.number().int().nonnegative(),
+    surfaceId: z.string().min(1),
+    url: z.string(),
+    lineageId: z.string().min(1),
+  }),
+  z.object({
+    index: z.number().int().nonnegative(),
+    surfaceId: z.null(),
+    url: z.string(),
+    lineageId: z.null(),
+  }),
+]);
 
 const tabRestoreSidecarSchema = z.object({
-  version: z.literal(2),
+  version: z.literal(3),
   tabs: z.array(tabRestoreSidecarEntrySchema),
 });
 
@@ -127,7 +135,7 @@ export async function writeTabRestoreSidecar(
       lineageId: entry.lineageId,
     }));
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFileAtomic(sidecarPath, JSON.stringify({ version: 2, tabs: normalized }));
+  await writeFileAtomic(sidecarPath, JSON.stringify({ version: 3, tabs: normalized }));
 }
 
 export interface MatchedRestoredTab {
@@ -192,6 +200,11 @@ export function matchRestoredTabs(
     // Duplicate URLs require the entire strip to match URL-for-URL so a shift never swaps tabs.
     if (isDuplicateUrl && !stripUrlsEqual) continue;
     consumedSidecarIndices.add(i);
+    if (sidecar.surfaceId === null || sidecar.lineageId === null) {
+      // Placeholder for an unsaved/agent tab: never claim or reuse this restored slot.
+      excludedTabIds.add(restored.tabId);
+      continue;
+    }
     const eligible =
       (!options.savedTabIds || options.savedTabIds.has(sidecar.surfaceId)) &&
       (!options.lineageId || sidecar.lineageId === options.lineageId);
@@ -204,10 +217,11 @@ export function matchRestoredTabs(
     }
   }
 
-  // Pass 2: unique-address fallback (strictly 1 occurrence in sidecar AND 1 in restored).
+  // Pass 2: unique-address fallback (strictly 1 occurrence in sidecar — placeholders included — AND 1 in restored).
   for (let i = 0; i < orderedSidecar.length; i++) {
     if (consumedSidecarIndices.has(i)) continue;
     const sidecar = orderedSidecar[i]!;
+    if (sidecar.surfaceId === null || sidecar.lineageId === null) continue;
     if (matched.has(sidecar.surfaceId)) continue;
     if (sidecarUrlCounts.get(sidecar.url) !== 1 || restoredUrlCounts.get(sidecar.url) !== 1) {
       continue;
