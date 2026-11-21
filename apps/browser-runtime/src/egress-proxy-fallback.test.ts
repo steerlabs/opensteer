@@ -6,7 +6,11 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { afterEach, expect, it } from "vitest";
-import { PublicBrowserEgressProxy } from "./egress-proxy.js";
+import {
+  BrowserEgressRefusalCounts,
+  PublicBrowserEgressProxy,
+  type BrowserEgressRefusal,
+} from "./egress-proxy.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -101,9 +105,9 @@ it("tries no other address when the first connects", async () => {
   expect(second.connections()).toBe(0);
 });
 
-it("tells a debug listener why a tunnel was refused, and nothing for one that opened", async () => {
+it("tells a debug listener why a tunnel was refused, never where it was going", async () => {
   const site = await serve("127.0.0.1");
-  const events: unknown[] = [];
+  const events: BrowserEgressRefusal[] = [];
   const proxy = new PublicBrowserEgressProxy({
     port: 0,
     // One address for every name; nothing listens on port 9 there.
@@ -114,8 +118,14 @@ it("tells a debug listener why a tunnel was refused, and nothing for one that op
   cleanups.push(() => proxy.close());
   expect(await tunnel(port, `open.test:${site.port}`)).toContain("200");
   expect(events).toEqual([]);
-  expect(await tunnel(port, "closed.test:9")).not.toContain("200");
-  expect(events).toEqual([
-    expect.objectContaining({ kind: "tunnel", host: "closed.test:9", error: expect.any(String) }),
-  ]);
+  expect(await tunnel(port, "secret-destination.test:9")).not.toContain("200");
+  expect(events).toHaveLength(1);
+  // Round D, D5: a reason and nothing about the destination.
+  expect(Object.keys(events[0]!).sort()).toEqual(["kind", "reason"]);
+  expect(JSON.stringify(events)).not.toMatch(/secret-destination|127\.0\.0\.1|:9\b/u);
+  const counts = new BrowserEgressRefusalCounts();
+  for (const event of events) counts.add(event);
+  counts.add(events[0]!);
+  expect(counts.take()).toEqual([{ kind: "tunnel", reason: events[0]!.reason, count: 2 }]);
+  expect(counts.take()).toEqual([]);
 });

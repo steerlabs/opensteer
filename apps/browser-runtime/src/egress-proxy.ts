@@ -44,6 +44,32 @@ interface EgressTransport {
   connect(address: ResolvedPublicAddress, port: number, signal: AbortSignal): Promise<Socket>;
 }
 
+/** A refused request or tunnel: its kind and a fixed reason, and nothing about its destination. */
+export interface BrowserEgressRefusal {
+  readonly kind: "request" | "tunnel";
+  readonly reason: string;
+}
+
+/** Counts refusals by kind and reason; a diagnostics host prints the counts, never a destination. */
+export class BrowserEgressRefusalCounts {
+  readonly #counts = new Map<string, number>();
+
+  add(event: BrowserEgressRefusal): void {
+    const key = `${event.kind} ${event.reason}`;
+    this.#counts.set(key, (this.#counts.get(key) ?? 0) + 1);
+  }
+
+  /** The counts since the last call, one line each, and starts again. */
+  take(): readonly { readonly kind: string; readonly reason: string; readonly count: number }[] {
+    const lines = [...this.#counts].map(([key, count]) => {
+      const [kind, reason] = key.split(" ") as [string, string];
+      return { kind, reason, count };
+    });
+    this.#counts.clear();
+    return lines;
+  }
+}
+
 interface PublicBrowserEgressProxyOptions {
   readonly host?: string;
   /** A listening socket handed over by the service manager (socket activation), instead of host and port. */
@@ -61,12 +87,7 @@ interface PublicBrowserEgressProxyOptions {
   readonly upstream?: BrowserEgressUpstream;
   readonly upstreamRequired?: boolean;
   /** Every request or tunnel refused, and why (diagnostics; off unless asked for). */
-  readonly onRefusal?: (event: {
-    readonly kind: "request" | "tunnel";
-    readonly host: string | null;
-    readonly status: 403 | 502;
-    readonly error: string;
-  }) => void;
+  readonly onRefusal?: (event: BrowserEgressRefusal) => void;
 }
 
 /**
@@ -168,21 +189,25 @@ export class PublicBrowserEgressProxy {
     await closed;
   }
 
-  #refused(kind: "request" | "tunnel", url: string | undefined, error: unknown): void {
+  /**
+   * Round D, D5: a refusal is reported by its kind and a fixed reason only, never by where it
+   * was going: no host name, address, path or message (a message can carry a name).
+   */
+  #refused(kind: "request" | "tunnel", error: unknown): void {
     if (!this.#onRefusal) return;
-    let host: string | null = null;
-    try {
-      host = kind === "tunnel" ? (url ?? null) : new URL(url ?? "").host;
-    } catch {
-      host = null;
-    }
-    const cause =
-      error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : "";
+    const code = (error as { code?: unknown } | undefined)?.code;
+    const cause = (error as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+    const system = [code, cause].find(
+      (value): value is string => typeof value === "string" && /^E[A-Z0-9_]{1,30}$/u.test(value),
+    );
     this.#onRefusal({
       kind,
-      host,
-      status: error === upstreamUnavailable ? 502 : 403,
-      error: `${error instanceof Error ? error.message : String(error)}${cause}`.slice(0, 300),
+      reason:
+        error === upstreamUnavailable
+          ? "upstream-unavailable"
+          : system
+            ? `error-${system}`
+            : "denied",
     });
   }
 
@@ -278,7 +303,7 @@ export class PublicBrowserEgressProxy {
     } catch (error) {
       tunnel?.destroy();
       outgoing?.destroy();
-      this.#refused("request", request.url, error);
+      this.#refused("request", error);
       if (response.destroyed || response.headersSent) return;
       if (error === upstreamUnavailable) {
         response.writeHead(502, { connection: "close" }).end();
@@ -423,7 +448,7 @@ export class PublicBrowserEgressProxy {
       client.pipe(upstream).pipe(client);
     } catch (error) {
       upstream?.destroy();
-      this.#refused("tunnel", request.url, error);
+      this.#refused("tunnel", error);
       if (client.destroyed) return;
       if (error === upstreamUnavailable) {
         refuseConnection(client, 502, "Bad Gateway");

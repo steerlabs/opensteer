@@ -1,25 +1,28 @@
 import { readBrowserEgressUpstream } from "./egress-config.js";
-import { PublicBrowserEgressProxy } from "./egress-proxy.js";
+import { BrowserEgressRefusalCounts, PublicBrowserEgressProxy } from "./egress-proxy.js";
 import { shutdownSignals } from "@opensteer/shared/processControl";
 
 async function main(): Promise<void> {
   const upstream = await readBrowserEgressUpstream(process.env);
+  const refusals =
+    process.env.OPENSTEER_BROWSER_EGRESS_DEBUG === "1"
+      ? new BrowserEgressRefusalCounts()
+      : undefined;
   const proxy = new PublicBrowserEgressProxy({
     host: process.env.OPENSTEER_BROWSER_EGRESS_HOST?.trim() || "127.0.0.1",
     port: port(process.env.OPENSTEER_BROWSER_EGRESS_PORT),
     ...activatedSocket(process.env),
     upstreamRequired: process.env.OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED === "true",
     ...(upstream ? { upstream } : {}),
-    // A debug pool host asks for every refusal on stderr.
-    ...(process.env.OPENSTEER_BROWSER_EGRESS_DEBUG === "1"
-      ? {
-          onRefusal: (event: Readonly<Record<string, unknown>>) =>
-            process.stderr.write(
-              `${JSON.stringify({ event: "browser-egress.refused", ...event })}\n`,
-            ),
-        }
-      : {}),
+    // A diagnostics pool host asks for refusal counts on stderr (round D, D5): a reason and a
+    // count, every ten seconds; never where a person browsed.
+    ...(refusals ? { onRefusal: (event) => refusals.add(event) } : {}),
   });
+  if (refusals)
+    setInterval(() => {
+      for (const line of refusals.take())
+        process.stderr.write(`${JSON.stringify({ event: "browser-egress.refused", ...line })}\n`);
+    }, 10_000).unref();
   const address = await proxy.start();
   process.stdout.write(`${JSON.stringify({ event: "browser-egress.ready", ...address })}\n`);
   let closing = false;

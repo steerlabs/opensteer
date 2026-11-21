@@ -1,7 +1,8 @@
 /**
  * The slot's egress proxy: our browser-egress, on the host, in the slot's namespace, as its
  * own unprivileged user in a transient systemd unit. It holds every outside connection, so a
- * parked guest holds none. Its output is discarded: what it would log is the person's browsing.
+ * parked guest holds none. Its output is discarded; on a diagnostics host (driver.egressLog) it
+ * prints refusal counts by reason only, never a host name, address or path (round D, D5).
  *
  * Review G6(a): the listening socket is a socket unit in the slot's namespace that stays open for
  * the slot's whole life, and the proxy process is a separate service started on demand. A slot
