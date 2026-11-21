@@ -121,15 +121,9 @@ it("answers a wake that runs out of time with a refusal before any effect", asyn
   g.wake.resolve();
 });
 
-/** Whether a reservation has been granted by the next macrotask. */
-async function granted(reservation: Promise<unknown>): Promise<boolean> {
-  let done = false;
-  void reservation.then(
-    () => (done = true),
-    () => undefined,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  return done;
+/** Lets every queued promise reaction run, so a reservation that could be granted is. */
+async function settled(): Promise<void> {
+  for (let turn = 0; turn < 20; turn++) await Promise.resolve();
 }
 
 it("stays released for good when a park in flight finishes after the removal, and never wakes", async () => {
@@ -167,7 +161,8 @@ for (const during of ["park", "reconnect"] as const)
       expect(await parking).toBe("vetoed");
     } else g.subject.settle("open");
     // Where the browser is was reported, but nothing is admitted, woken or parked.
-    expect(await granted(waiting)).toBe(false);
+    await settled();
+    expect(g.subject.held).toBe(0);
     expect(await g.subject.tryPark()).toBe("vetoed");
     expect(g.wakes()).toBe(0);
     // The restart installs its fresh guest and lets go: only now is the waiter admitted.

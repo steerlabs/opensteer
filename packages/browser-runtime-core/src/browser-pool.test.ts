@@ -297,10 +297,13 @@ it("loses only the page that did not thaw, closed with its note, and keeps both 
     await f.controls("retire");
     await f.controls("seal");
     // Chromium refuses to thaw session B's page.
-    pageB.cdpSession.responses.set("Page.setWebLifecycleState", (parameters) => {
-      if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
-      return {};
-    });
+    pageB.cdpSession.responses.set(
+      "Page.setWebLifecycleState",
+      (parameters: Record<string, unknown> | undefined) => {
+        if (parameters?.state === "active") throw new Error("The page cannot be thawed.");
+        return {};
+      },
+    );
     await f.resume();
     await f.reattach(2);
     f.verifier.setClaims("reattach-b", {

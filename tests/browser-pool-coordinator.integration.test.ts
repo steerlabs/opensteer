@@ -1169,10 +1169,12 @@ for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const
     const f = await poolFixture(`release-${fault}`);
     try {
       let failing = 3;
+      let refused = 0;
       const physical: BrowserPoolPhysicalController = {
         status: async (slot, term) => {
           if (fault === "status-fails" && failing > 0) {
             failing--;
+            refused++;
             throw new Error("The pool controller is unreachable.");
           }
           return f.controller.status(slot, term);
@@ -1181,6 +1183,7 @@ for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const
         apply: async (call) => {
           if (call.kind === "stop" && fault !== "status-fails" && failing > 0) {
             failing--;
+            refused++;
             if (fault === "stop-throws") throw new Error("The stop request was lost.");
             return {
               id: call.id,
@@ -1207,7 +1210,9 @@ for (const fault of ["status-fails", "stop-throws", "stop-not-applied"] as const
       expect((await f.row())?.state).toBe("failed");
       expect(await f.slot()).toMatchObject({ phase: "releasing" });
       expect(removing.gate.phase).toBe("released");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The driver keeps asking; however often it is refused, the row stays.
+      const before = refused;
+      await vi.waitFor(() => expect(refused).toBeGreaterThanOrEqual(before + 3));
       expect(await f.slot()).toMatchObject({ phase: "releasing" });
       expect(f.controller.effects).toEqual(["start"]);
       // A Home restart resumes the stop; once it is known, the slot goes with its journal.
@@ -1377,17 +1382,15 @@ it("reports a lost session whose end could not be confirmed, and keeps the other
     expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
     expect((await f.row(other))?.state).toBe("ready");
     await expect(
-      f.sinks
-        .get(other)!
-        .handle(
-          JSON.stringify({
-            type: "session.state",
-            runs: 0,
-            personUsed: [],
-            viewed: [],
-            pinned: [],
-          }),
-        ),
+      f.sinks.get(other)!.handle(
+        JSON.stringify({
+          type: "session.state",
+          runs: 0,
+          personUsed: [],
+          viewed: [],
+          pinned: [],
+        }),
+      ),
     ).resolves.toBeUndefined();
   } finally {
     await f.close();

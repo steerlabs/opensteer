@@ -133,6 +133,7 @@ it("tells the Home of a seen note it gave an id, and of no other", async () => {
   const { client, seen } = home("rnr_cloud", () => undefined, withNotice);
   await client.load();
   await vi.waitFor(() => expect(client.getSnapshot().browserPools).toHaveLength(1));
+  const told = vi.spyOn(client, "browserNoticeSeen");
   const notes = browserReturnNotes(client);
   const view = (tabId: string) =>
     browserSleepFromHome(client.getSnapshot().browserPools, "rnr_cloud", tabId).tab;
@@ -151,6 +152,6 @@ it("tells the Home of a seen note it gave an id, and of no other", async () => {
   );
   // Seen once, said once.
   notes.seen("rnr_cloud", "srf_page", view("srf_page"));
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(told).toHaveBeenCalledTimes(1);
   expect(seen).toHaveLength(1);
 });
