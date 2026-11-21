@@ -1183,6 +1183,8 @@ const sidecarFailureBound = 3;
 const sidecarCloseWaitMs = 500;
 /** How long a claim waits for a parked run on its surface before giving the tab up. */
 const claimQueueWaitMs = 6_000;
+/** Looks at an arriving page that cannot be identified at once, about 300 ms apart, then closes it. */
+const arrivalIdentifyAttempts = 3;
 
 /**
  * Reads a Playwright Chromium page's CDP targetId synchronously from its
@@ -1320,11 +1322,16 @@ class PlaywrightContextHandle implements BrowserContext {
   private sidecarVersion = 0;
   private sidecarFailures = 0;
   private sidecarRetryTimer: ReturnType<typeof setTimeout> | undefined;
-  private creatingNewPage = 0;
+  /** `newPage` calls in flight; a page they create is identified by their answer. */
+  private readonly openingPages = new Set<Promise<Page>>();
+  private readonly ownCreatedPages = new WeakSet<Page>();
+  /** Pages held hidden while `identifyArrival` decides what they are. */
+  private readonly identifyingPages = new WeakSet<Page>();
   private wakeTail: Promise<void> = Promise.resolve();
   private activeWake: {
     readonly tabId: number;
-    readonly expectedTargetId: string | null;
+    /** Learnt from the inventory when the wake began without it. */
+    expectedTargetId: string | null;
     readonly resolve: (page: Page) => void;
   } | null = null;
 
@@ -1396,122 +1403,190 @@ class PlaywrightContextHandle implements BrowserContext {
           void page.close({ runBeforeUnload: false }).catch(() => undefined);
           return;
         }
+        const handle = this.wrap(page);
+        if (!handle.openerHandle) handle.openerHandle = this.wrap(opener);
+        for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+        for (const listener of this.pageListeners) listener(handle);
+        return;
       }
-      if (this.activeWake && opener === null && this.creatingNewPage === 0) {
-        const waiter = this.activeWake;
-        if (waiter.expectedTargetId !== null && targetId === waiter.expectedTargetId) {
-          this.activeWake = null;
-          this.hiddenRestoredPages.delete(page);
-          this.claimedWakePages.add(page);
-          waiter.resolve(page);
-          return;
-        }
-        if (waiter.expectedTargetId === null || targetId === null) {
-          // Verify identity strictly against expectedTargetId or Chromium's tabId inventory
-          // before claiming, so a concurrent unrelated page is never stolen by activeWake.
-          void (async () => {
-            const resolvedTargetId = targetId ?? (await this.targetIdOfPage(page));
-            let matched = false;
-            if (this.activeWake === waiter && resolvedTargetId) {
-              if (waiter.expectedTargetId !== null) {
-                matched = resolvedTargetId === waiter.expectedTargetId;
-              } else if (this.lifecycle) {
-                const inv = await this.lifecycle.inventory().catch(() => null);
-                const tabEntry = inv?.find((entry) => entry.tabId === waiter.tabId);
-                matched = tabEntry?.targetId === resolvedTargetId;
-              }
-            }
-            if (matched && this.activeWake === waiter) {
-              this.activeWake = null;
-              this.hiddenRestoredPages.delete(page);
-              this.claimedWakePages.add(page);
-              waiter.resolve(page);
-              return;
-            }
-            if (resolvedTargetId && this.neverHandOffTargetIds.has(resolvedTargetId)) {
-              this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
-              return;
-            }
-            if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
-            const delayedHandle = this.wrap(page);
-            for (const listener of this.handOffs)
-              listener(delayedHandle, delayedHandle.openerHandle);
-            for (const listener of this.pageListeners) listener(delayedHandle);
-          })();
-          return;
-        }
+      // The tab a wake waits for is a restored or sleeping tab, so the wake is asked first.
+      const wake = this.activeWake;
+      if (wake && targetId !== null && targetId === wake.expectedTargetId) {
+        this.resolveWake(page, wake);
+        return;
       }
       if (targetId && this.neverHandOffTargetIds.has(targetId)) {
         this.handleHiddenRestoredPageArrival(page, targetId);
         return;
       }
-      if (opener === null && this.creatingNewPage === 0 && this.neverHandOffTabIds.size > 0) {
-        // Guard restored tabs whose initial inventory row had no targetId: hide synchronously
-        // until inventory confirms whether this page belongs to an unclaimed restored tab.
+      if (!this.ownCreatedPages.has(page) && this.arrivalNeedsIdentity(targetId)) {
+        // Rule A: this page may be a restored or woken tab; it is hidden at once and handed off
+        // only on positive evidence that it is neither.
         this.hiddenRestoredPages.add(page);
-        void (async () => {
-          const resolvedTargetId = targetId ?? (await this.targetIdOfPage(page));
-          if (this.claimedWakePages.has(page) || this.closed) return;
-          if (resolvedTargetId && this.neverHandOffTargetIds.has(resolvedTargetId)) {
-            this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
-            return;
-          }
-          if (resolvedTargetId && this.lifecycle) {
-            const inv = await this.lifecycle.inventory().catch(() => null);
-            const matchedTab = inv?.find((entry) => entry.targetId === resolvedTargetId);
-            if (
-              matchedTab &&
-              (this.neverHandOffTabIds.has(matchedTab.tabId) ||
-                this.unclaimedRestoredTabs.has(matchedTab.tabId))
-            ) {
-              this.neverHandOffTabIds.delete(matchedTab.tabId);
-              this.neverHandOffTargetIds.add(resolvedTargetId);
-              if (this.unclaimedRestoredTabs.has(matchedTab.tabId)) {
-                this.unclaimedRestoredTabs.set(matchedTab.tabId, matchedTab);
-                this.unclaimedRestoredTargetIds.add(resolvedTargetId);
-              }
-              for (const [surfaceId, entry] of this.restoredBySurfaceId) {
-                if (entry.tab.tabId === matchedTab.tabId) {
-                  this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: matchedTab });
-                  break;
-                }
-              }
-              this.handleHiddenRestoredPageArrival(page, resolvedTargetId);
-              return;
-            }
-          }
-          if (this.claimedWakePages.has(page) || this.closed) return;
-          this.hiddenRestoredPages.delete(page);
-          const delayedHandle = this.wrap(page);
-          for (const listener of this.handOffs) listener(delayedHandle, delayedHandle.openerHandle);
-          for (const listener of this.pageListeners) listener(delayedHandle);
-        })();
+        this.identifyingPages.add(page);
+        void this.identifyArrival(page, targetId).catch(() => undefined);
         return;
       }
       const handle = this.wrap(page);
-      if (opener) {
-        if (!handle.openerHandle) handle.openerHandle = this.wrap(opener);
+      queueMicrotask(() => {
+        if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
         for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-      } else {
-        queueMicrotask(() => {
-          if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
-          if (!targetId && this.neverHandOffTargetIds.size > 0) {
-            void this.targetIdOfPage(page).then((resolved) => {
-              if (this.claimedWakePages.has(page) || this.hiddenRestoredPages.has(page)) return;
-              if (resolved && this.neverHandOffTargetIds.has(resolved)) {
-                this.handleHiddenRestoredPageArrival(page, resolved);
-                return;
-              }
-              for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-            });
-            return;
-          }
-          for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-        });
-      }
+      });
       for (const listener of this.pageListeners) listener(handle);
     });
     this.openDialogs = openDialogs;
+  }
+
+  /**
+   * Whether an opener-less page we did not create can be handed off on what is known at once.
+   * It cannot while a restored tab has no target id yet, while a wake waits for a tab whose
+   * target is not known, or while the page's own target is not known and restored targets are.
+   */
+  private arrivalNeedsIdentity(targetId: string | null): boolean {
+    if (this.neverHandOffTabIds.size > 0) return true;
+    const wake = this.activeWake;
+    if (wake && (wake.expectedTargetId === null || targetId === null)) return true;
+    return targetId === null && this.neverHandOffTargetIds.size > 0;
+  }
+
+  private resolveWake(page: Page, waiter: NonNullable<PlaywrightContextHandle["activeWake"]>): void {
+    if (this.activeWake !== waiter) return;
+    this.activeWake = null;
+    this.identifyingPages.delete(page);
+    this.hiddenRestoredPages.delete(page);
+    this.claimedWakePages.add(page);
+    waiter.resolve(page);
+  }
+
+  /** Hands off a page that was held back while it was identified. */
+  private releaseIdentifiedPage(page: Page): void {
+    if (!this.identifyingPages.delete(page)) return;
+    if (this.closed || page.isClosed() || this.claimedWakePages.has(page)) return;
+    this.hiddenRestoredPages.delete(page);
+    const handle = this.wrap(page);
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+    for (const listener of this.pageListeners) listener(handle);
+  }
+
+  /**
+   * Guards a restored tab's current row: by its target id when Chromium names one, else by its
+   * tab id, so a page it later loads is never handed off before it is identified.
+   */
+  private protectRestoredRow(row: ChromiumTabEntry): void {
+    if (row.targetId === null) {
+      this.neverHandOffTabIds.add(row.tabId);
+      return;
+    }
+    this.neverHandOffTargetIds.add(row.targetId);
+    if (this.unclaimedRestoredTabs.has(row.tabId)) {
+      this.unclaimedRestoredTargetIds.add(row.targetId);
+      this.unclaimedRestoredTabs.set(row.tabId, row);
+      for (const [surfaceId, entry] of this.restoredBySurfaceId) {
+        if (entry.tab.tabId === row.tabId) {
+          this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: row });
+          break;
+        }
+      }
+    }
+    this.neverHandOffTabIds.delete(row.tabId);
+  }
+
+  /** A parked entry now lives in `row` (the same tab, or what a discard replaced it with). */
+  private rebindRestoredEntry(
+    surfaceId: BrowserSurfaceId,
+    entry: MatchedRestoredTab,
+    row: ChromiumTabEntry,
+  ): void {
+    if (row.tabId !== entry.tab.tabId) {
+      this.unclaimedRestoredTabs.delete(entry.tab.tabId);
+      this.neverHandOffTabIds.delete(entry.tab.tabId);
+      this.restoredPagesByTabId.delete(entry.tab.tabId);
+    }
+    this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: row });
+    this.unclaimedRestoredTabs.set(row.tabId, row);
+    this.protectRestoredRow(row);
+  }
+
+  /** Restored tabs whose target id the inventory now names are guarded by that id instead. */
+  private learnRestoredTargets(inventory: readonly ChromiumTabEntry[]): void {
+    const wake = this.activeWake;
+    for (const row of inventory) {
+      if (wake && wake.expectedTargetId === null && row.tabId === wake.tabId && row.targetId) {
+        wake.expectedTargetId = row.targetId;
+      }
+      if (row.targetId !== null && this.neverHandOffTabIds.has(row.tabId)) {
+        this.protectRestoredRow(row);
+      }
+    }
+  }
+
+  /**
+   * Rule A for an arriving page: it is a restored tab (kept hidden), the tab a wake waits for,
+   * or positively neither (handed off). What cannot be told within the bound is closed with a
+   * diagnostic, never handed off.
+   */
+  private async identifyArrival(page: Page, syncTargetId: string | null): Promise<void> {
+    const taken = () =>
+      this.closed ||
+      page.isClosed() ||
+      !this.identifyingPages.has(page) ||
+      this.claimedWakePages.has(page);
+    // A page this context is creating is its own: its creator releases it when it resolves.
+    if (this.openingPages.size > 0) await Promise.allSettled([...this.openingPages]);
+    for (let attempt = 0; attempt < arrivalIdentifyAttempts; attempt++) {
+      if (taken()) return;
+      const targetId = syncTargetId ?? (await this.targetIdOfPage(page));
+      if (taken()) return;
+      if (targetId !== null) {
+        const wake = this.activeWake;
+        if (wake && wake.expectedTargetId === targetId) {
+          this.resolveWake(page, wake);
+          return;
+        }
+        if (this.neverHandOffTargetIds.has(targetId)) {
+          this.identifyingPages.delete(page);
+          this.handleHiddenRestoredPageArrival(page, targetId);
+          return;
+        }
+        if (!this.arrivalNeedsIdentity(targetId)) {
+          this.releaseIdentifiedPage(page);
+          return;
+        }
+        const inventory = await this.lifecycle?.inventory().catch(() => null);
+        if (taken()) return;
+        if (inventory) {
+          this.learnRestoredTargets(inventory);
+          const row = inventory.find((entry) => entry.targetId === targetId);
+          // The inventory names this page's tab as the one a wake waits for.
+          const waiting = this.activeWake;
+          if (row && waiting && row.tabId === waiting.tabId) {
+            this.resolveWake(page, waiting);
+            return;
+          }
+          if (row && this.unclaimedRestoredTabs.has(row.tabId)) {
+            // A restored tab whose target changed since it was last seen.
+            this.protectRestoredRow(row);
+          }
+          if (row && this.neverHandOffTargetIds.has(targetId)) {
+            this.identifyingPages.delete(page);
+            this.handleHiddenRestoredPageArrival(page, targetId);
+            return;
+          }
+          // The inventory names this page's tab, and it is no restored tab and no awaited wake.
+          if (row && !this.unclaimedRestoredTabs.has(row.tabId)) {
+            this.releaseIdentifiedPage(page);
+            return;
+          }
+        }
+      }
+      if (attempt < arrivalIdentifyAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
+    if (taken()) return;
+    this.identifyingPages.delete(page);
+    process.stderr.write('{"event":"browser-runtime.unidentified-page-closed"}\n');
+    await page.close({ runBeforeUnload: false }).catch(() => undefined);
   }
 
   private isHiddenPage(page: Page): boolean {
@@ -1738,15 +1813,14 @@ class PlaywrightContextHandle implements BrowserContext {
         this.restoredPagesByTabId.delete(entry.tab.tabId);
         continue;
       }
+      if (current.discarded) {
+        this.rebindRestoredEntry(surfaceId, entry, current);
+        this.restoredPagesByTabId.delete(current.tabId);
+        continue;
+      }
       if (current.targetId) {
         this.neverHandOffTargetIds.add(current.targetId);
         this.unclaimedRestoredTargetIds.add(current.targetId);
-      }
-      if (current.discarded) {
-        this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
-        this.unclaimedRestoredTabs.set(current.tabId, current);
-        this.restoredPagesByTabId.delete(current.tabId);
-        continue;
       }
       const hasLivePage =
         this.restoredPagesByTabId.has(current.tabId) ||
@@ -1763,8 +1837,7 @@ class PlaywrightContextHandle implements BrowserContext {
         // Inert unloaded tab: leave untouched so Chromium keeps its SessionStorageNamespace
         // intact. If Chromium's background loader brings it alive later before a session claims
         // it, handleHiddenRestoredPageArrival discards it immediately.
-        this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
-        this.unclaimedRestoredTabs.set(current.tabId, current);
+        this.rebindRestoredEntry(surfaceId, entry, current);
         continue;
       }
       // Take already-loaded parked tab discards off the path to ready with bounded concurrency.
@@ -1952,12 +2025,7 @@ class PlaywrightContextHandle implements BrowserContext {
           return 0;
         }
         if (current.discarded) {
-          if (current.targetId) {
-            this.unclaimedRestoredTargetIds.add(current.targetId);
-            this.neverHandOffTargetIds.add(current.targetId);
-          }
-          this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: current });
-          this.unclaimedRestoredTabs.set(current.tabId, current);
+          this.rebindRestoredEntry(surfaceId, entry, current);
           this.restoredPagesByTabId.delete(current.tabId);
           return 0;
         }
@@ -2015,6 +2083,7 @@ class PlaywrightContextHandle implements BrowserContext {
   ): void {
     if (this.closed) return;
     if (targetId) this.neverHandOffTargetIds.add(targetId);
+    else this.neverHandOffTabIds.add(tabId);
     if (!this.pendingRestoredRemovals.has(tabId)) {
       this.pendingRestoredRemovals.set(tabId, { targetId, epoch, attempts: 0 });
     }
@@ -2055,6 +2124,7 @@ class PlaywrightContextHandle implements BrowserContext {
       });
       if (confirmed) {
         if (tracker.targetId) this.neverHandOffTargetIds.delete(tracker.targetId);
+        this.neverHandOffTabIds.delete(tabId);
         this.pendingRestoredRemovals.delete(tabId);
       }
     }
@@ -2095,6 +2165,7 @@ class PlaywrightContextHandle implements BrowserContext {
     const epoch = options?.latestTabId !== undefined ? options.latestEpoch : entry.tab.helperEpoch;
     if (entry.tab.targetId) this.neverHandOffTargetIds.add(entry.tab.targetId);
     if (targetId) this.neverHandOffTargetIds.add(targetId);
+    else this.neverHandOffTabIds.add(tabId);
 
     const livePage =
       this.findLivePageForRestoredTab(tabId, targetId, options?.page) ??
@@ -2116,6 +2187,8 @@ class PlaywrightContextHandle implements BrowserContext {
     if (confirmed) {
       if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
       if (targetId) this.neverHandOffTargetIds.delete(targetId);
+      this.neverHandOffTabIds.delete(entry.tab.tabId);
+      this.neverHandOffTabIds.delete(tabId);
       this.scheduleSidecarWrite();
       return 0;
     }
@@ -2182,11 +2255,13 @@ class PlaywrightContextHandle implements BrowserContext {
         // Entry was evicted (e.g., deadline timeout) while discard was in flight: do not
         // resurrect it; remove the replacement tabId with evidence instead.
         if (newTargetId) this.neverHandOffTargetIds.add(newTargetId);
+        else this.neverHandOffTabIds.add(newTabId);
         const removed = await this.removeTabWithEvidence(newTabId, newTargetId, 3, {
           epoch: current.helperEpoch,
         });
         if (removed) {
           if (newTargetId) this.neverHandOffTargetIds.delete(newTargetId);
+          this.neverHandOffTabIds.delete(newTabId);
         } else {
           this.enqueuePendingRestoredRemoval(newTabId, newTargetId, current.helperEpoch);
         }
@@ -2195,7 +2270,11 @@ class PlaywrightContextHandle implements BrowserContext {
       if (newTargetId) {
         this.unclaimedRestoredTargetIds.add(newTargetId);
         this.neverHandOffTargetIds.add(newTargetId);
+      } else {
+        // A replacement Chromium names no target for yet: a page it loads later is guarded by tab.
+        this.neverHandOffTabIds.add(newTabId);
       }
+      this.neverHandOffTabIds.delete(entry.tab.tabId);
       const parked: ChromiumTabEntry = {
         ...current,
         tabId: newTabId,
@@ -2249,12 +2328,7 @@ class PlaywrightContextHandle implements BrowserContext {
       return 0;
     }
     if (after.discarded || (after.targetId === null && after.status === "unloaded")) {
-      if (after.targetId) {
-        this.unclaimedRestoredTargetIds.add(after.targetId);
-        this.neverHandOffTargetIds.add(after.targetId);
-      }
-      this.restoredBySurfaceId.set(surfaceId, { ...entry, tab: after });
-      this.unclaimedRestoredTabs.set(after.tabId, after);
+      this.rebindRestoredEntry(surfaceId, entry, after);
       this.restoredPagesByTabId.delete(after.tabId);
       return 0;
     }
@@ -2388,6 +2462,12 @@ class PlaywrightContextHandle implements BrowserContext {
         const restoredPage = await this.claimRestoredTab(entry.tab);
         this.neverHandOffTabIds.delete(entry.tab.tabId);
         if (entry.tab.targetId) this.neverHandOffTargetIds.delete(entry.tab.targetId);
+        // The page may have been named by a target learnt after the entry was taken.
+        const claimedTargetId = syncTargetIdOfPage(restoredPage);
+        if (claimedTargetId) {
+          this.neverHandOffTargetIds.delete(claimedTargetId);
+          this.unclaimedRestoredTargetIds.delete(claimedTargetId);
+        }
         const handle = this.wrap(restoredPage);
         handle.restoredFromSession = true;
         this.trackSavedTab(surfaceId, handle);
@@ -2718,8 +2798,8 @@ class PlaywrightContextHandle implements BrowserContext {
       await this.ensurePagePolicyOnRestoredPage(woken);
       return woken;
     } finally {
+      // The tab-id guard stays on failure: the eviction lifts it once removal is confirmed.
       this.unclaimedRestoredTabs.delete(tab.tabId);
-      this.neverHandOffTabIds.delete(tab.tabId);
       if (tab.targetId) this.unclaimedRestoredTargetIds.delete(tab.targetId);
       this.restoredPagesByTabId.delete(tab.tabId);
     }
@@ -2839,6 +2919,7 @@ class PlaywrightContextHandle implements BrowserContext {
       tracker.attempts++;
       const removed = await this.attemptSleepingRemoval(tokenId, sleeping);
       if (removed) {
+        if (sleeping.state === "discarded") this.neverHandOffTabIds.delete(sleeping.tabId);
         this.sleepingTabs.delete(tokenId);
         this.pendingSleepingRemovals.delete(tokenId);
       }
@@ -2977,11 +3058,16 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   private async openFreshPage(): Promise<Page> {
-    this.creatingNewPage++;
+    const opening = this.context.newPage();
+    this.openingPages.add(opening);
     try {
-      return await this.context.newPage();
+      const page = await opening;
+      // Positive evidence: Playwright answered this call with this page.
+      this.ownCreatedPages.add(page);
+      this.releaseIdentifiedPage(page);
+      return page;
     } finally {
-      this.creatingNewPage--;
+      this.openingPages.delete(opening);
     }
   }
 
@@ -3024,8 +3110,11 @@ class PlaywrightContextHandle implements BrowserContext {
             options?.own?.(handle);
             return handle;
           } catch {
+            // Rule B: the wake gave up its page, so a page that tab loads late is never handed off.
+            this.neverHandOffTabIds.add(tabId);
             const removed = await this.removeTabWithEvidence(tabId, null);
-            if (!removed) {
+            if (removed) this.neverHandOffTabIds.delete(tabId);
+            else {
               this.sleepingTabs.set(discardRestore.tokenId, {
                 state: "discarded",
                 tabId,

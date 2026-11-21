@@ -3353,6 +3353,157 @@ describe("native Chromium profiles", () => {
     }
   });
 
+  it.each(["inventory-down", "wake"] as const)(
+    "hands an arriving page off only on positive evidence that it is no restored tab (C2, %s)",
+    async (scenario) => {
+      const f = await nativeCloseFixture();
+      const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
+      const surfN = "srf_00000000-0000-4000-8000-00000000c201" as BrowserSurfaceId;
+      await writeTabRestoreSidecar(f.directory, [
+        { index: 0, surfaceId: surfN, url: "https://c2.test/" },
+      ]);
+      const pageHandlers: Array<(page: Page) => void> = [];
+      const makePage = (id: string, url: string) => {
+        const state = { closed: false };
+        return {
+          state,
+          page: {
+            url: () => url,
+            isClosed: () => state.closed,
+            close: vi.fn(async () => {
+              state.closed = true;
+            }),
+            waitForLoadState: vi.fn(async () => undefined),
+            bringToFront: vi.fn(async () => undefined),
+            addInitScript: vi.fn(async () => undefined),
+            on: vi.fn(),
+            once: vi.fn(),
+            off: vi.fn(),
+            frames: () => [],
+            mainFrame: () => ({}),
+            _opener: null,
+            _connection: { toImpl: () => ({ delegate: { _targetId: id } }) },
+          } as unknown as Page,
+        };
+      };
+      const helper = makePage("target-c2-helper", "about:blank");
+      const late = makePage("target-c2-late", "https://c2.test/");
+      let tabs: ChromiumTabEntry[] = [
+        {
+          tabId: 1,
+          windowId: 1,
+          index: 0,
+          url: "about:blank",
+          title: "",
+          active: true,
+          discarded: false,
+          status: "complete",
+          targetId: "target-c2-helper",
+        },
+        {
+          // Restored and never loaded: Chromium names no target for it yet.
+          tabId: 701,
+          windowId: 1,
+          index: 1,
+          url: "https://c2.test/",
+          title: "N",
+          active: false,
+          discarded: scenario === "wake",
+          status: "unloaded",
+          targetId: null,
+        },
+      ];
+      let pagesNow: Page[] = [helper.page];
+      Object.assign(f.context, {
+        serviceWorkers: () => [],
+        pages: () => pagesNow.filter((p) => !p.isClosed()),
+        newPage: vi.fn(async () => helper.page),
+        newCDPSession: vi.fn(async () => ({
+          send: vi.fn(async () => ({})),
+          detach: vi.fn(async () => undefined),
+        })),
+        on: vi.fn((event: string, listener: (page: Page) => void) => {
+          if (event === "page") pageHandlers.push(listener);
+        }),
+      });
+      let failInventory = 0;
+      const invSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+        .mockImplementation(async () => {
+          if (failInventory > 0) {
+            failInventory--;
+            throw new Error("inventory down");
+          }
+          return [...tabs];
+        });
+      const arrive = () => {
+        tabs = tabs.map((t) =>
+          t.tabId === 701
+            ? { ...t, discarded: false, status: "complete", targetId: "target-c2-late" }
+            : t,
+        );
+        pagesNow = [helper.page, late.page];
+        for (const handler of pageHandlers) handler(late.page);
+      };
+      const actSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId")
+        .mockImplementation(async () => {
+          // The woken tab's page arrives while the helper cannot answer once.
+          failInventory = 1;
+          setTimeout(arrive, 0);
+          return true;
+        });
+      const remSpy = vi
+        .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
+        .mockImplementation(async (tabId) => {
+          tabs = tabs.filter((t) => t.tabId !== tabId);
+          return true;
+        });
+      const diagnostic = vi.spyOn(process.stderr, "write");
+      let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+      try {
+        launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        const handedOff: string[] = [];
+        launched.context.handOff((p) => handedOff.push(p.url()));
+        await launched.context.sessionRestore!.reconcile(new Set([surfN]));
+
+        if (scenario === "inventory-down") {
+          // The restored tab loads while the helper cannot answer at all.
+          failInventory = Number.POSITIVE_INFINITY;
+          arrive();
+          expect(launched.context.pages().map((p) => p.url())).not.toContain("https://c2.test/");
+          await vi.waitFor(() => expect(late.state.closed).toBe(true), {
+            timeout: 3_000,
+            interval: 20,
+          });
+          expect(
+            diagnostic.mock.calls.some(([line]) =>
+              String(line).includes('"event":"browser-runtime.unidentified-page-closed"'),
+            ),
+          ).toBe(true);
+        } else {
+          const claimed = await launched.context.sessionRestore!.claim(surfN, "https://c2.test/");
+          expect(claimed?.url()).toBe("https://c2.test/");
+          expect(late.state.closed).toBe(false);
+        }
+        // Never handed off as an unowned page, and never in the page list as one.
+        expect(handedOff).not.toContain("https://c2.test/");
+        if (scenario === "inventory-down") {
+          expect(launched.context.pages().map((p) => p.url())).not.toContain("https://c2.test/");
+        }
+      } finally {
+        failInventory = 0;
+        invSpy.mockRestore();
+        actSpy.mockRestore();
+        remSpy.mockRestore();
+        diagnostic.mockRestore();
+        f.exit();
+        await launched?.close();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("blocks popups of hidden restored pages, hides null-targetId restored tabs, closes un-unfreezable frozen claims, and bounds closeTarget/bringToFront (F4)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");

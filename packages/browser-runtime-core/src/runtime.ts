@@ -1285,8 +1285,15 @@ export class BrowserRuntime implements NativePresentationSource {
             claims.identity.kind === "profile-local" &&
             (claims.initialSurfaceId !== undefined ||
               (claims.actor !== "agent" && claims.creationOrigin !== "agent"));
-          // A new host's launch page is this session's root unless another already owns it.
-          const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
+          // A new host's launch page is this session's root unless another already owns it. On
+          // an engine that restores tabs (a native profile), no launch page is ever made: launch
+          // removes Chromium's blank tabs and hides every restored one, so `pages()[0]` could only
+          // be some page that arrived later, in arrival order. The root is then this session's
+          // own claim or a new page by address, never the first page the browser has.
+          const launchPage =
+            createdHost && !host.browser.context.sessionRestore
+              ? host.browser.context.pages()[0]
+              : undefined;
           if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
           else {
             // Owned by this session from its handle on; rollback ends it.
