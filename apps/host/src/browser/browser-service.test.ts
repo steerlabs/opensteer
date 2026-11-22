@@ -78,6 +78,7 @@ import {
   BrowserService,
   BrowserConsumerOutlet,
   HostedBrowserBroker,
+  loadOwnedBrowserSession,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
   type BrowserRuntimeTarget,
@@ -86,6 +87,7 @@ import {
   type BrowserSessionRepository,
   type BrowserUsageCredit,
   type BrowserUsePage,
+  type OwnedBrowserSessionRecord,
 } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { RunnerBrowserHub, type RunnerBrowserPeer } from "./runner-browser-hub.js";
@@ -9483,5 +9485,210 @@ describe("work under a connection's authority never uses the clipboard or change
     expect(resolveAccess).toHaveBeenCalledTimes(1);
     expect(getSession).toHaveBeenCalledTimes(1);
     expect(requireAgentAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a CDP command when the session profile is deleted during resolveResourceAccess", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    let profileDeleted = false;
+    const origGetSession = repository.getBrowserSessionForOwner.bind(repository);
+    vi.spyOn(repository, "getBrowserSessionForOwner").mockImplementation(async (id, owner) =>
+      profileDeleted ? null : origGetSession(id, owner),
+    );
+    const origResolve = repository.resolveResourceAccess.bind(repository);
+    vi.spyOn(repository, "resolveResourceAccess").mockImplementation(async (...args) => {
+      const result = await origResolve(...args);
+      profileDeleted = true;
+      return result;
+    });
+
+    const forwardedBefore = runtime.receivedCommands().length;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+    expect(runtime.receivedCommands()).toHaveLength(forwardedBefore);
+  });
+
+  it("brands owned session records via loadOwnedBrowserSession and exposes no unchecked boolean on admitAgentBrowser", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+
+    const owned = await loadOwnedBrowserSession(repository, opened.session.id, ownerId);
+    expect(owned?.id).toBe(opened.session.id);
+    const acceptOwned = (record: OwnedBrowserSessionRecord) => record.id;
+    expect(acceptOwned(owned!)).toBe(opened.session.id);
+    const unbranded = (await repository.listBrowserSessions(ownerId))[0]!;
+    // @ts-expect-error An unverified BrowserSessionRecord cannot be treated as an OwnedBrowserSessionRecord.
+    acceptOwned(unbranded);
+    void (() =>
+      service.admitAgentBrowser(
+        authority,
+        "read-write",
+        [unbranded],
+        repository,
+        false,
+        undefined,
+        undefined,
+        // @ts-expect-error Public admitAgentBrowser accepts no unchecked ownedRecordsVerified boolean.
+        true,
+      ));
+  });
+
+  it.each(["session", "run"] as const)(
+    "refuses a second CDP command when grant, device switch, or profile changes between commands (%s binding)",
+    async (bindingKind) => {
+      const startSession = async (
+        requireAgentAccess: (runnerId: RunnerId) => Promise<void> = async () => undefined,
+      ) => {
+        const ownerId = createId("user");
+        const repository = new SelectedGrantRepository(ownerId);
+        const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+        const other = await repository.createBrowserProfile({ ownerId, name: "Other" });
+        repository.granted = [profile.id];
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository, requireAgentAccess });
+        cleanups.push(async () => service.close());
+        const authority = {
+          agentBindingId: bindingKind === "session" ? "session:selected" : `run:${createId("run")}`,
+          ownerId,
+        };
+        const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+        const cdp = await service.attachCdpForAgent(
+          { ...authority, sessionId: opened.session.id },
+          () => undefined,
+        );
+        const first = cdp.request({ method: "Browser.getVersion" });
+        const cmd = await runtime.nextCommand();
+        runtime.sendServer({ type: "cdp.result", requestId: cmd.requestId, result: {} });
+        await first;
+        return { ownerId, repository, profile, other, runtime, service, authority, opened, cdp };
+      };
+
+      // 1. Grant narrowed between two commands on the same session.
+      {
+        const { repository, other, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        repository.granted = [other.id];
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject(
+          bindingKind === "session"
+            ? { code: "not_found", message: "Tab not found." }
+            : { code: "forbidden" },
+        );
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 2. Device switch turned off between two commands on the same session.
+      {
+        let deviceOff = false;
+        const machineId = DeviceIdSchema.parse(createId("device"));
+        const { runtime, cdp } = await startSession(async () => {
+          if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+        });
+        const before = runtime.receivedCommands().length;
+        deviceOff = true;
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+          code: "forbidden",
+          reason: "device-access-off",
+        });
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 3. Profile removed between two commands on the same session.
+      {
+        const { repository, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        vi.spyOn(repository, "getBrowserSessionForOwner").mockResolvedValue(null);
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+    },
+  );
+
+  it("refuses an ended Run's late CDP command when device access is off", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let deviceOff = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    await service.detachAgentSessionsForBinding(authority.agentBindingId);
+    const before = runtime.receivedCommands().length;
+    deviceOff = true;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "device-access-off",
+    });
+    expect(runtime.receivedCommands()).toHaveLength(before);
+  });
+
+  it("answers not_found before device-offline on issueStandardCdpTicket for a tab outside a selected grant", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const hidden = await repository.createBrowserProfile({ ownerId, name: "Hidden" });
+    repository.granted = [kept.id, hidden.id];
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let offline = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (offline)
+          throw new DeviceAccessRefusal("device-offline", machineId, "browser", "Work Mac");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:selected", ownerId, threadId: createId("thread") };
+    const opened = await service.openAgentSession({ ...authority, profileId: hidden.id });
+    repository.granted = [kept.id];
+    offline = true;
+
+    await expect(
+      service.issueStandardCdpTicket({
+        authority,
+        browserSessionId: opened.session.id,
+        mode: "whole-context",
+      }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "Tab not found.",
+    });
   });
 });

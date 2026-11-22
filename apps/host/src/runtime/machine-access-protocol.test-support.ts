@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
@@ -95,9 +95,23 @@ export const builtPluginEngine = {
   bridge: fileURLToPath(new URL("../../dist/plugin-engine-bridge.json", import.meta.url)),
 };
 /** Prebuilt REPL worker emitted by the integration launcher, avoiding cold tsx startup per Host. */
-const builtReplWorkerUrl = new URL("../../dist/computer-repl-worker.js", import.meta.url);
-export function builtReplWorkerEntry(): URL | undefined {
-  return existsSync(fileURLToPath(builtReplWorkerUrl)) ? builtReplWorkerUrl : undefined;
+const builtReplWorkerPath = fileURLToPath(
+  new URL("../../dist/computer-repl-worker.js", import.meta.url),
+);
+const replWorkerSourceDir = fileURLToPath(
+  new URL("../computer-use/computer-repl", import.meta.url),
+);
+export function builtReplWorkerEntry(
+  builtPath = builtReplWorkerPath,
+  sourceDir = replWorkerSourceDir,
+): URL | undefined {
+  if (!existsSync(builtPath)) return undefined;
+  const builtMtimeMs = statSync(builtPath).mtimeMs;
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
+    if (statSync(join(sourceDir, entry.name)).mtimeMs > builtMtimeMs) return undefined;
+  }
+  return pathToFileURL(builtPath);
 }
 export async function startMachineAccessWireHost(
   databaseUrl: string,
