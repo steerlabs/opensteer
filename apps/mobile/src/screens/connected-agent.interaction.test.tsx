@@ -647,4 +647,67 @@ describe("a chat on the phone", () => {
       disabled: false,
     });
   });
+
+  it("saves an anyone chat's safety mode and then a plugin, refusing neither", async () => {
+    const client = await open(chat(2), chats());
+    const dispatch = vi.spyOn(client, "dispatch");
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.update", accessMode: "auto" }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+    await vi.waitFor(() => expect(section("status")).toBeDefined());
+    await press(row("resources", "plugins"));
+    await vi.waitFor(() => expect(section("plugins", state.sheet)?.rows.length).toBeGreaterThan(0));
+    const plugin = section("plugins", state.sheet)!.rows[0]!;
+    if (plugin.kind !== "chips") throw new Error("Not a plugin choice");
+    await act(async () => plugin.onChange("read"));
+    await act(async () => state.sheet!.sheet!.onClose());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: expect.objectContaining({
+            scope: "selected",
+            tasks: true,
+            resources: [expect.objectContaining({ kind: "plugin" })],
+          }),
+        }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+  });
+
+  it("offers no Chrome pairing note and no Plugins where the chat's shape does not", async () => {
+    const scene = mockConnectedAgents("chats");
+    const client = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      chromeTabs: { chromeTabs: [], chromeTabsNeedPairing: true },
+      connections: scene.connections.map((row) =>
+        row.id === chat(3)
+          ? {
+              ...row,
+              bridge: {
+                ...row.bridge!,
+                grantShape: { everything: false, resources: [], tasks: "required" as const },
+              },
+            }
+          : row,
+      ),
+    });
+    await open(chat(2), client);
+    const texts = () =>
+      (state.page?.sections ?? []).flatMap((s) => [
+        ...s.rows.map((r) => r.label),
+        s.footer?.text ?? "",
+      ]);
+    await vi.waitFor(() => expect(texts()).toContain(agentWords("consent.plugins.title")));
+    expect(texts()).not.toContain(agentWords("consent.chromeTabs.repair"));
+    act(() => root?.unmount());
+    await open(chat(3), client);
+    expect(texts()).not.toContain(agentWords("consent.plugins.title"));
+  });
 });

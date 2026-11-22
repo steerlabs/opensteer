@@ -9,6 +9,7 @@ import {
   connectionsRead,
   connectedAgentDetail,
   createDedicatedProfile,
+  chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
   sameGrant,
@@ -23,7 +24,7 @@ import {
   useConnectedAgents,
   useWorkPolicy,
 } from "@opensteer/client/react";
-import { chatGrantRefusal, type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
+import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
@@ -119,7 +120,7 @@ export function ConnectedAgentPage({
   const connected = connectedAgentConnected(detail.row.phase);
   // An edit belongs to the revision it was made against; a newer one shows what is set now.
   const current = edit && edit.revision === detail.revision ? edit : null;
-  const draft = current?.draft ?? draftFromGrant(detail.grant);
+  const draft = current?.draft ?? draftFromGrant(detail.grant, chatShape);
   const mode = current?.mode ?? detail.accessMode;
   const dirty =
     current !== null &&
@@ -138,12 +139,7 @@ export function ConnectedAgentPage({
     let draftToSave = current.draft;
     let created: string | undefined;
     // Nothing is created for a grant the Home would refuse: asked of the Home's own rule first.
-    const refusal = chatShape
-      ? chatGrantRefusal(
-          chatShape,
-          grantFromDraft(draftToSave, "bpr_00000000-0000-4000-8000-000000000000" as never),
-        )
-      : null;
+    const refusal = chatShape ? chatDraftRefusal(chatShape, draftToSave) : null;
     if (refusal) {
       setProfileError(refusal.message);
       return;

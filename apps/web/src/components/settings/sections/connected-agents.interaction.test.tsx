@@ -650,4 +650,107 @@ describe("a chat, as a connected agent", () => {
     expect(page.querySelector('[role="alert"]')?.textContent).not.toContain("down");
     expect(buttonNamed(page, "Stop")).toBeTruthy();
   });
+
+  it("saves an anyone chat's safety mode and then a plugin, refusing neither", async () => {
+    host = chats();
+    const dispatch = vi.spyOn(host, "dispatch");
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack · #team"));
+    await act(async () => page.querySelector<HTMLInputElement>('input[value="auto"]')!.click());
+    await act(async () => buttonNamed(page, "Save").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.update", accessMode: "auto" }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+    await vi.waitFor(() => expect(page.textContent).toContain("Saved."));
+    await act(async () =>
+      page.querySelector<HTMLButtonElement>('button[aria-controls="agent-grant-plugins"]')!.click(),
+    );
+    await vi.waitFor(() =>
+      expect(page.querySelector("#agent-grant-plugins .agent-grant__plugin")).not.toBeNull(),
+    );
+    const plugin = page.querySelector("#agent-grant-plugins .agent-grant__plugin")!;
+    const read = [...plugin.querySelectorAll<HTMLElement>("button, input")].find(
+      (element) =>
+        element.textContent === agentWords("consent.plugins.read") ||
+        element.getAttribute("aria-label") === agentWords("consent.plugins.read") ||
+        (element as HTMLInputElement).value === "read",
+    )!;
+    await act(async () => read.click());
+    await act(async () => buttonNamed(page, "Save").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: expect.objectContaining({
+            scope: "selected",
+            tasks: true,
+            resources: [expect.objectContaining({ kind: "plugin" })],
+          }),
+        }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("narrows a chat that could do everything to what you choose, with Tasks kept on", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      connections: scene.connections.map((row) =>
+        row.id === chat(1) ? { ...row, grant: { scope: "everything" as const } } : row,
+      ),
+    });
+    const dispatch = vi.spyOn(host, "dispatch");
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack"));
+    await act(async () => page.querySelector<HTMLInputElement>('input[value="selected"]')!.click());
+    // What is drawn is what is saved.
+    expect(
+      page.querySelector<HTMLInputElement>('input[aria-labelledby="agent-grant-tasks"]')!.checked,
+    ).toBe(true);
+    expect(page.textContent).not.toContain("can’t use anything until you choose something");
+    await act(async () => buttonNamed(page, "Save").click());
+    await act(async () => buttonNamed(page, "Limit").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: { scope: "selected", tasks: true, resources: [] },
+        }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("offers no Chrome pairing note and no Plugins where the chat's shape does not", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      chromeTabs: { chromeTabs: [], chromeTabsNeedPairing: true },
+      connections: scene.connections.map((row) =>
+        row.id === chat(3)
+          ? {
+              ...row,
+              bridge: {
+                ...row.bridge!,
+                grantShape: { everything: false, resources: [], tasks: "required" as const },
+              },
+            }
+          : row,
+      ),
+    });
+    const team = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    expect(team.textContent).toContain(agentWords("consent.plugins.title"));
+    expect(team.textContent).not.toContain(agentWords("consent.chromeTabs.repair"));
+    act(() => root?.unmount());
+    const tasksOnly = await mount(host, `${base}/${chat(3)}`);
+    await vi.waitFor(() => expect(tasksOnly.textContent).toContain("Disconnect iMessage"));
+    expect(tasksOnly.textContent).not.toContain(agentWords("consent.plugins.title"));
+  });
 });

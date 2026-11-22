@@ -165,7 +165,9 @@ export function AgentGrantEditor({
                     </span>
                   </label>
                 ))}
-            {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
+            {chrome.repair && offers("chrome-tabs") ? (
+              <p className="settings-footnote">{chrome.repair}</p>
+            ) : null}
             {offers("computer-app") ? (
               <>
                 <DisclosureRow
@@ -210,19 +212,21 @@ export function AgentGrantEditor({
                 ) : null}
               </>
             ) : null}
-            <DisclosureRow
-              disabled={disabled}
-              icon="puzzle"
-              id="plugins"
-              onToggle={() => toggle("plugins")}
-              open={open === "plugins"}
-              summary={draftPluginsSummary(
-                draft,
-                plugins.status === "ready" ? plugins.data.options : null,
-              )}
-              title={agentWords("consent.plugins.title")}
-            />
-            {open === "plugins" ? (
+            {offers("plugin") ? (
+              <DisclosureRow
+                disabled={disabled}
+                icon="puzzle"
+                id="plugins"
+                onToggle={() => toggle("plugins")}
+                open={open === "plugins"}
+                summary={draftPluginsSummary(
+                  draft,
+                  plugins.status === "ready" ? plugins.data.options : null,
+                )}
+                title={agentWords("consent.plugins.title")}
+              />
+            ) : null}
+            {open === "plugins" && offers("plugin") ? (
               <div className="card__form agent-grant__list" id="agent-grant-plugins">
                 <OptionsState read={plugins}>
                   {({ options, more }) =>
@@ -273,7 +277,7 @@ export function AgentGrantEditor({
                 <input
                   aria-describedby="agent-grant-tasks-detail"
                   aria-labelledby="agent-grant-tasks"
-                  checked={chat ? true : draft.tasks}
+                  checked={draft.tasks}
                   className="switch"
                   disabled={
                     disabled || chat !== undefined || (limits.tasks !== null && !draft.tasks)

@@ -161,23 +161,28 @@ export function agentGrantSections(
               },
             ] satisfies NativeSettingsRow[])
           : []),
-        {
-          key: "plugins",
-          kind: "button",
-          label: agentWords("consent.plugins.title"),
-          detail: draftPluginsSummary(
-            draft,
-            context.plugins.status === "ready" ? context.plugins.data.options : null,
-          ),
-          symbol: "puzzlepiece.extension",
-          opens: true,
-          disabled,
-          onPress: () => context.onOpen("plugins"),
-        },
+        ...(offers("plugin")
+          ? ([
+              {
+                key: "plugins",
+                kind: "button",
+                label: agentWords("consent.plugins.title"),
+                detail: draftPluginsSummary(
+                  draft,
+                  context.plugins.status === "ready" ? context.plugins.data.options : null,
+                ),
+                symbol: "puzzlepiece.extension",
+                opens: true,
+                disabled,
+                onPress: () => context.onOpen("plugins"),
+              },
+            ] satisfies NativeSettingsRow[])
+          : []),
       ],
       ...(resourcesFooter ? { footer: resourcesFooter } : {}),
     },
-    ...(chrome.repair
+    // Every row and note is what this chat's shape offers: no pairing note where tabs can't be.
+    ...(chrome.repair && offers("chrome-tabs")
       ? [{ key: "chrome-pairing", title: "", rows: [], footer: { text: chrome.repair } }]
       : []),
     {
@@ -191,7 +196,7 @@ export function agentGrantSections(
           detail: chat
             ? agentWords("chat.grant.tasks")
             : (limits.tasks ?? agentWords("consent.tasks.detail", { home: context.home })),
-          value: chat ? true : draft.tasks,
+          value: draft.tasks,
           disabled: disabled || chat !== undefined || (limits.tasks !== null && !draft.tasks),
           onChange: context.onTasks,
         },

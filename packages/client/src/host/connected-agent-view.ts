@@ -2,6 +2,8 @@ import { workWords } from "./agent-work-copy.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
+  chatGrantRefusal,
+  type ChatGrantShape,
   agentGrantResourceKey,
   type AgentGrant,
   type AgentGrantResource,
@@ -527,10 +529,37 @@ export interface AgentGrantDraft {
   readonly newProfile: { readonly homeRunnerId: string | null } | null;
 }
 
-export function draftFromGrant(grant: AgentGrant): AgentGrantDraft {
+/**
+ * A grant as a draft. For a chat (`chat`, the shape the Home sends) Tasks is on in the draft
+ * itself, whatever the scope: a chat always holds tasks, so what the editor draws and what it
+ * saves are the same value, on the web and on the phone.
+ */
+export function draftFromGrant(grant: AgentGrant, chat?: ChatGrantShape): AgentGrantDraft {
   return grant.scope === "everything"
-    ? { scope: "everything", tasks: false, resources: [], newProfile: null }
-    : { scope: "selected", tasks: grant.tasks, resources: grant.resources, newProfile: null };
+    ? { scope: "everything", tasks: chat !== undefined, resources: [], newProfile: null }
+    : {
+        scope: "selected",
+        tasks: chat !== undefined || grant.tasks,
+        resources: grant.resources,
+        newProfile: null,
+      };
+}
+
+/** Stands for a profile a draft would create; the Home's rule only reads its kind. */
+const profileToCreate = "bpr_00000000-0000-4000-8000-000000000000";
+
+/**
+ * Whether the Home would refuse this draft for a chat of this shape: asked of the exact grant
+ * the person is about to save, with a stand-in profile only when the draft creates one.
+ */
+export function chatDraftRefusal(chat: ChatGrantShape, draft: AgentGrantDraft) {
+  return chatGrantRefusal(
+    chat,
+    grantFromDraft(
+      draft,
+      draft.scope === "selected" && draft.newProfile !== null ? profileToCreate : undefined,
+    ),
+  );
 }
 
 /** The grant a draft stands for, once any new profile exists. */

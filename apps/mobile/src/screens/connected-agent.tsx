@@ -10,6 +10,7 @@ import {
   connectionsRead,
   connectedAgentDetail,
   createDedicatedProfile,
+  chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
   agentWhoOriginLine,
@@ -27,7 +28,7 @@ import {
   useConnectedAgents,
   useWorkPolicy,
 } from "@opensteer/client/react";
-import { chatGrantRefusal, type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
+import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
@@ -153,7 +154,7 @@ export function ConnectedAgentController(props: {
     disabled: busy,
     ...(workPolicy ? { workPolicy } : {}),
   };
-  const current = draftFromGrant(detail.grant);
+  const current = draftFromGrant(detail.grant, chatShape);
   const save = async (next: {
     readonly draft?: AgentGrantDraft;
     readonly mode?: ThreadAccessMode;
@@ -163,12 +164,7 @@ export function ConnectedAgentController(props: {
     let created: string | undefined;
     setNote(null);
     // Nothing is created for a grant the Home would refuse: asked of the Home's own rule first.
-    const refusal = chatShape
-      ? chatGrantRefusal(
-          chatShape,
-          grantFromDraft(draft, "bpr_00000000-0000-4000-8000-000000000000" as never),
-        )
-      : null;
+    const refusal = chatShape ? chatDraftRefusal(chatShape, draft) : null;
     if (refusal) {
       Alert.alert(agentWords("chat.grant.refused"), refusal.message);
       return;
@@ -214,13 +210,8 @@ export function ConnectedAgentController(props: {
         text: agentWords("agent.narrow.confirm"),
         onPress: () =>
           void save({
-            // A chat always holds Tasks: limiting it keeps that.
-            draft: {
-              scope: "selected",
-              tasks: chatShape !== undefined,
-              resources: [],
-              newProfile: null,
-            },
+            // A chat always holds Tasks: limiting it keeps that (the same draft function).
+            draft: draftFromGrant({ scope: "selected", tasks: false, resources: [] }, chatShape),
           }),
       },
     ]);
