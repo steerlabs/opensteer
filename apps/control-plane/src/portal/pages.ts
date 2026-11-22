@@ -14,7 +14,13 @@ import {
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
-import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
+import {
+  cloudComputerPriceLine,
+  cloudWords,
+  homesListTitle,
+  orgWords,
+  type CloudComputerOfferResponse,
+} from "@opensteer/control-plane-protocol";
 import type { ConsentGrant } from "../account/account-oauth.js";
 
 /**
@@ -278,6 +284,8 @@ export function portalHomeBody(input: {
   readonly signOutAction: string;
   /** The Cloud Computer page, when this Account service offers one. */
   readonly cloudComputerHref?: string | null;
+  /** What checkout sells a Cloud Computer for now; null while it sells none. */
+  readonly cloudOffer?: CloudComputerOfferResponse["plan"];
   /** The organizations page, when this Account service has organizations. */
   readonly organizationsHref?: string | null;
 }): string {
@@ -304,30 +312,45 @@ export function portalHomeBody(input: {
       : "",
   ].join("");
   if (input.rows.length === 0) {
+    // No Opensteer yet: where should it live? A Mac, free while it is awake, or a Cloud
+    // Computer at the price checkout sells now, always on.
+    const mac = input.desktopDownloadUrl
+      ? `<a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">On your Mac</a>`
+      : `<span class="place__name">On your Mac</span>`;
+    const cloudNote = input.cloudOffer
+      ? `${cloudComputerPriceLine(input.cloudOffer, "en-US").line}. Always on.`
+      : "Always on.";
+    const where = [
+      `<li class="place place--add"><span class="device">${icon("laptop")}</span><span class="place__body">${mac}<span class="place__note">Free. Works while your Mac is awake.</span></span></li>`,
+      input.cloudComputerHref
+        ? `<li class="place place--add"><span class="device">${icon("cloud")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.cloudComputerHref)}">On an Opensteer Cloud Computer</a><span class="place__note">${escapeHtml(cloudNote)}</span></span></li>`
+        : "",
+      input.organizationsHref
+        ? `<li class="place place--add"><span class="device">${icon("person")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.organizationsHref)}">${escapeHtml(orgWords("org.title"))}</a></span></li>`
+        : "",
+    ].join("");
     return `${masthead}<main class="column"><div class="empty">
-      <span class="device">${icon("laptop")}</span>
-      <h1 class="title title--page">Set up Opensteer</h1>
-      <p class="lead">Opensteers you set up or join show up here.</p>
-      ${input.desktopDownloadUrl ? `<a class="btn btn--primary" href="${escapeHtml(input.desktopDownloadUrl)}">${icon("download")}Get the desktop app</a>` : ""}
-    </div>${more ? `<ul class="places">${more}</ul>` : ""}${fallbackSignOut}</main>`;
+      <h1 class="title title--page">Where should your Opensteer live?</h1>
+      <p class="lead">Your browser profiles, apps, plugins, tasks and rules live in one Home.</p>
+    </div><ul class="places">${where}</ul>${fallbackSignOut}</main>`;
   }
   const download = input.desktopDownloadUrl
     ? `<li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li>`
     : "";
   return `${masthead}<main class="column">
-    <h1 class="title title--page">Your Opensteers</h1>
+    <h1 class="title title--page">${escapeHtml(homesListTitle)}</h1>
     <ul class="places">${input.rows.join("")}${download}${more}</ul>
     ${fallbackSignOut}
   </main>`;
 }
 
 /**
- * How a row draws each kind of Home: its mark, and whether it says the kind in words (a
- * Cloud Computer and a server do; a Mac is told by its mark). A Home
- * whose kind isn't known draws none.
+ * How a row draws each kind of Home: its mark, and whether it says the kind in words, from the
+ * one table every client reads ("Mac", "Cloud Computer", "Server"). A Home whose kind isn't
+ * known draws none.
  */
 const placeMarks = {
-  personal: { icon: "laptop", said: false },
+  personal: { icon: "laptop", said: true },
   cloud: { icon: "cloud", said: true },
   server: { icon: "server", said: true },
   unknown: { icon: null, said: false },
@@ -384,7 +407,7 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
-  // A Cloud Computer or a server says so in words, a work Home with its organization's badge.
+  // Every known kind says so in words, a work Home with its organization's badge.
   const kindLine = placeMarks[input.kind].said
     ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
     : "";

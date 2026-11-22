@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useShell } from "./app-shell.js";
 import { useHomeKind } from "./devices/home-facts.js";
+import { useSignInInvitePending } from "./sign-in-invite.js";
 import { cloudComputerAccountFor, cloudComputerPath } from "./settings/sections/cloud-computer.js";
 
 /** This device's memory of the Cloud Computer suggestion; storage can be missing or blocked. */
@@ -41,9 +42,11 @@ function writeMemory(memory: CloudSuggestionMemory): void {
  * Whether the Cloud Computer suggestion shows for this moment, read once when the moment
  * appears, and remembered on this device the first time it does.
  */
-function useCloudSuggestion(moment: string, homeKind: HomeKind | null) {
-  const [visible, setVisible] = useState(() =>
-    cloudSuggestionVisible({ homeKind, memory: readMemory(), moment, now: Date.now() }),
+function useCloudSuggestion(moment: string, homeKind: HomeKind | null, held = false) {
+  // One prompt at a time: while this Mac's Opensteer is invited to sign in, this waits.
+  const [visible, setVisible] = useState(
+    () =>
+      !held && cloudSuggestionVisible({ homeKind, memory: readMemory(), moment, now: Date.now() }),
   );
   useEffect(() => {
     if (!visible) return;
@@ -104,7 +107,8 @@ export function AsleepStepLine({ tool }: { readonly tool: ToolEntry }) {
   const navigate = useNavigate();
   const home = useHomeKind();
   const failure = asleepToolFailure(tool, snapshot.machines);
-  const suggestion = useCloudSuggestion(`tool:${tool.callId}`, home.kind);
+  const held = useSignInInvitePending();
+  const suggestion = useCloudSuggestion(`tool:${tool.callId}`, home.kind, held);
   if (!failure) return null;
   return (
     <p className="asleep-moment">

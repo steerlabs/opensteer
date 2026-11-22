@@ -1,3 +1,7 @@
+import { cloudComputerWebsite } from "@opensteer/client/computers";
+import { useCloudComputer } from "@opensteer/client/react";
+import { useCopy } from "../ui/copy-mark.js";
+import { phoneShowsCloudComputerPrice } from "./cloud-computer-entry.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -34,6 +38,7 @@ import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import {
   color,
   controlFontScaleLimit,
+  statusFontScaleLimit,
   radius,
   space,
   touchTarget,
@@ -82,6 +87,7 @@ import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
+import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -91,7 +97,7 @@ const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus
   "signed-in",
 ]);
 
-const DeploymentListRow = memo(function DeploymentListRow(props: {
+export const DeploymentListRow = memo(function DeploymentListRow(props: {
   /** This computer's one read when the list opened; undefined until it answers. */
   readonly attention: ComputerAttention | null | undefined;
   readonly current: boolean;
@@ -122,8 +128,8 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
       <Pressable
         accessibilityHint={
           openable
-            ? "Opens this deployment and signs in when needed"
-            : "Explains what must be fixed before this deployment can open"
+            ? "Opens this Opensteer and signs in when needed"
+            : "Explains what must be fixed before this Opensteer can open"
         }
         accessibilityLabel={deploymentOpenLabel(row)}
         accessibilityRole="button"
@@ -142,9 +148,8 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
           </AppText>
         </View>
         <View style={styles.copy}>
-          <AppText numberOfLines={1} role="title">
-            {row.name}
-          </AppText>
+          {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
+          <AppText role="title">{row.name}</AppText>
           {props.work ? (
             <AppText numberOfLines={1} role="caption" tone="muted">
               {props.work}
@@ -155,7 +160,7 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
               live={row.status === "connecting" || row.status === "reconnecting"}
               tone={statusTone(row.status)}
             />
-            <AppText role="caption" tone="muted">
+            <AppText maxFontSizeMultiplier={statusFontScaleLimit} role="caption" tone="muted">
               {deploymentStatusLabel(row.status)}
             </AppText>
             <AppText role="caption" tone="muted">
@@ -404,7 +409,7 @@ export function DeploymentsScreen(): ReactNode {
   const open = useCallback(
     (row: DeploymentRow) => {
       if (!deploymentCanOpen(row)) {
-        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This deployment cannot open yet.", [
+        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This Opensteer cannot open yet.", [
           ...(row.verification === "host-too-old"
             ? [{ text: "Update", onPress: () => resetToDeployment(row.deploymentId) }]
             : []),
@@ -452,7 +457,7 @@ export function DeploymentsScreen(): ReactNode {
           // An alert survives that reset, so a rejected callback does not
           // disappear with this screen's local state.
           if (line !== null && opened)
-            Alert.alert(line.text, "Try again from Computers.", [{ text: "Done" }]);
+            Alert.alert(line.text, `Try again from ${deploymentsTitle}.`, [{ text: "Done" }]);
           else if (attempt.active) setFailure(line);
           attempt.cancel();
         });
@@ -590,7 +595,7 @@ export function DeploymentsScreen(): ReactNode {
       row.name,
       `${row.kindLabel}\n${row.origin}${
         row.accountManaged
-          ? "\n\nThis deployment is managed by your Opensteer account. Remove it from the Account to stop it appearing here."
+          ? "\n\nThis Opensteer is in your Opensteer account. Remove it there to stop it appearing here."
           : ""
       }`,
       [{ text: "Done" }],
@@ -612,9 +617,12 @@ export function DeploymentsScreen(): ReactNode {
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
     if (switching) return;
-    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : "Computers" });
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : deploymentsTitle });
   }, [navigation, switching, welcome]);
 
+  // A price is read only where the phone may show one (phoneShowsCloudComputerPrice).
+  const cloud = useCloudComputer(phoneShowsCloudComputerPrice ? client.cloudComputers : null);
+  const { copied, copy } = useCopy();
   const enterAddress = useCallback(() => {
     accountFlowGeneration.current += 1;
     setStartingAccountSignIn(false);
@@ -641,6 +649,7 @@ export function DeploymentsScreen(): ReactNode {
   }
 
   if (presentation === "signed-in-empty") {
+    const cloudScreen = cloud.screen;
     const listed = signedInDirectoryPresentation({
       detail: directory.detail,
       status: directory.status,
@@ -657,6 +666,12 @@ export function DeploymentsScreen(): ReactNode {
           portalOrigin={client.portalOrigin}
           signedInAs={accountIdentityLabel(identity!)}
           signingIn={false}
+          cloudAddress={
+            client.portalOrigin ? cloudComputerWebsite(client.portalOrigin, "checkout") : null
+          }
+          cloudCopied={copied}
+          cloudPrice={cloudScreen.kind === "offer" ? (cloudScreen.plan?.line ?? null) : null}
+          onCopyCloudAddress={(address) => void copy(address)}
         />
       </SignedInWaiting>
     );
@@ -736,10 +751,10 @@ function UnavailableAccountDeployments(props: {
   if (props.entries.length === 0) return null;
   return (
     <View style={styles.unavailable}>
-      <AppText role="secondaryMedium">Some Account deployments need attention</AppText>
+      <AppText role="secondaryMedium">Some Opensteers in your account need attention</AppText>
       {props.hasAvailableRows ? (
         <AppText role="secondary" tone="muted">
-          Deployments this phone could verify are still shown above.
+          Opensteers this phone could verify are still shown above.
         </AppText>
       ) : null}
       {props.entries.map((entry) => {
@@ -810,7 +825,15 @@ const styles = StyleSheet.create({
     minHeight: 60,
     paddingRight: space[4],
   },
-  statusLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
+  // At a large text size the status and kind move to the next line whole, never broken
+  // inside a word.
+  statusLine: {
+    alignItems: "center",
+    columnGap: space[6],
+    flexDirection: "row",
+    flexWrap: "wrap",
+    minWidth: 0,
+  },
   needsYou: {
     alignItems: "center",
     backgroundColor: color.amber,

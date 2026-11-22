@@ -2,6 +2,7 @@ import { useUnreadableResources, useWorkPolicy } from "@opensteer/client/react";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
+import { AddDeviceGuide, addDeviceGuideSections } from "./add-device-guide.js";
 import {
   unwrapRpcResult,
   workDeviceLimit,
@@ -10,7 +11,6 @@ import {
 } from "@opensteer/client/host";
 import { deviceWords } from "@opensteer/client/computers";
 import { pluginChangeAffects } from "@opensteer/client/plugins";
-import { iphoneSetupNeeds, iphoneSetupOnMacSteps } from "@opensteer/client/integrations";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
@@ -334,96 +334,13 @@ export function DevicesSettingsController(): ReactNode {
         {adding && selection.hostClient ? (
           <SettingsComputerEnrollment host={selection.hostClient} />
         ) : null}
-        <NativeSettingsPage
-          sections={[
-            {
-              key: "sign-in",
-              title: "Sign in on it",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Install Opensteer on the Mac or phone, then sign in with this account. It shows up here, and you choose what your agent can use.",
-                },
-              ],
+        <AddDeviceGuide
+          sections={addDeviceGuideSections({
+            onConnectSomethingElse: () => {
+              setAdding(false);
+              void leave.openNewTask(connectDeviceDraftText);
             },
-            {
-              key: "server",
-              title: "Server",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label: "Create a command above, then run it on the server you want to add.",
-                },
-              ],
-            },
-            {
-              key: "iphone-screen",
-              title: "iPhone screen control",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Your agent sees and controls an iPhone’s screen through one of your Macs, plugged in or on the same Wi‑Fi. Setup happens in Opensteer on that Mac.",
-                },
-              ],
-            },
-            {
-              key: "iphone-screen-needs",
-              title: "You’ll need",
-              rows: iphoneSetupNeeds.map((need) => ({
-                key: need.id,
-                kind: "text" as const,
-                label: need.title,
-                detail: need.detail,
-              })),
-            },
-            {
-              key: "iphone-screen-steps",
-              title: "On your Mac",
-              rows: iphoneSetupOnMacSteps.map((step, index) => ({
-                key: `step-${index}`,
-                kind: "text" as const,
-                label: `${index + 1}. ${step}`,
-              })),
-            },
-            {
-              key: "phone",
-              title: "Agent Phone",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "Connect your Android phone by USB to one of your Macs. Open Devices there and choose Set up Agent Phone.",
-                },
-              ],
-            },
-            {
-              key: "other",
-              title: "Something else",
-              rows: [
-                {
-                  key: "instructions",
-                  kind: "text",
-                  label:
-                    "A TV, speaker, light or anything else on your network. An agent sets it up in a new task.",
-                },
-                {
-                  key: "connect",
-                  kind: "button",
-                  label: "Connect something else",
-                  onPress: () => {
-                    setAdding(false);
-                    void leave.openNewTask(connectDeviceDraftText);
-                  },
-                },
-              ],
-            },
-          ]}
+          })}
         />
       </Sheet>
     </>

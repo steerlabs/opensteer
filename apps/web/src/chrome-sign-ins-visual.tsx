@@ -79,7 +79,7 @@ const environment: ChromeConnectEnvironment = {
   copy: async () => true,
   hostHere: true,
   openExtensionConnect: () => true,
-  openInDefaultBrowser: async () => undefined,
+  openInChrome: async () => "opened",
   place,
   probeExtension: async () =>
     extension === "installed" || (extension === "later" && Date.now() - loadedAt > 6_000),

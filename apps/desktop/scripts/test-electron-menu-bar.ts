@@ -131,6 +131,7 @@ const results: {
   trial: string;
   outcome: MenuBarTrialOutcome;
   claims: string[];
+  stopConfirmations?: Record<string, unknown>[];
   seconds: number;
   exitCode: number | null;
   error?: string;
@@ -204,6 +205,9 @@ for (const { trial, needsHome, drive } of plan) {
   }
   const seen = events();
   const claims = seen.flatMap((row) => (row.event === "test.held" ? [String(row.claim)] : []));
+  const stopConfirmations = seen
+    .filter((row) => row.event === "test.stop-confirmation-timing")
+    .map(({ event: _event, time: _time, ...fields }) => fields);
   const survivors = tree.filter((owned) => owned !== pid && alive(owned));
   const failed = seen.find((row) => row.event === "test.failed" || row.event === "test.modal");
   let outcome: MenuBarTrialOutcome =
@@ -220,6 +224,7 @@ for (const { trial, needsHome, drive } of plan) {
     trial,
     outcome,
     claims,
+    ...(stopConfirmations.length ? { stopConfirmations } : {}),
     seconds: (performance.now() - started) / 1000,
     exitCode,
     ...(error || failed || survivors.length
@@ -239,6 +244,13 @@ for (const { trial, needsHome, drive } of plan) {
       2,
     ),
   );
-  process.stdout.write(`${JSON.stringify({ event: "menu-bar.trial", trial, outcome })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "menu-bar.trial",
+      trial,
+      outcome,
+      ...(stopConfirmations.length ? { stopConfirmations } : {}),
+    })}\n`,
+  );
 }
 process.exitCode = results.some((row) => row.outcome === "fail") ? 1 : 0;

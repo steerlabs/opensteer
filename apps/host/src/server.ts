@@ -3269,7 +3269,7 @@ function attachBrowserSocket(
     } finally {
       attachment.close();
     }
-  })().catch((error) => closeProtocolSocket(socket, error));
+  })().catch((error) => closeBrowserViewerSocket(socket, error));
 }
 
 function attachRunnerSocket(
@@ -4081,6 +4081,20 @@ function parseFrame(frame: RawData): unknown {
   } catch {
     throw badMessage("WebSocket frame is not valid JSON");
   }
+}
+
+function closeBrowserViewerSocket(socket: WebSocket, error: unknown): void {
+  if (socket.readyState !== socket.OPEN) return;
+  const message = error instanceof Error ? error.message : "Protocol error";
+  // A viewer that arrived while the browser computer was restarting or the
+  // Host was temporarily unavailable did nothing wrong: ask it to try again
+  // rather than ending the watch permanently with a protocol violation.
+  const code =
+    error instanceof OpensteerError &&
+    (error.retryable === true || error.code === "runner_offline" || error.code === "timeout")
+      ? browserViewerCloseCodes.tryAgain
+      : browserViewerCloseCodes.protocolViolation;
+  socket.close(code, message.slice(0, 123));
 }
 
 function closeProtocolSocket(socket: WebSocket, error: unknown): void {

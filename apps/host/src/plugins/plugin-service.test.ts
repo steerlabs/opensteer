@@ -4,8 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { createId } from "@opensteer/core";
+import type { RunnerIdentity } from "@opensteer/orchestration";
 import { HostMessageSchema } from "./engine-protocol.js";
 import { PluginService } from "./plugin-service.js";
+import { PluginStopCoordinator } from "./plugin-stop-coordinator.js";
 
 vi.mock("node:child_process", () => ({ fork: vi.fn() }));
 vi.mock("./engine-resources.js", () => ({ pluginEngineUnavailableReason: async () => undefined }));
@@ -204,6 +207,74 @@ it("uses the matching engine drain report when the stop reply is lost", async ()
     child.emit("message", { type: "execution", execution: receipt });
     await expect(stopping).resolves.toEqual(receipt);
   } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("proves idle Stop without launching the engine, and starts a later engine with agentWorkStopped: true", async () => {
+  const initConfigs: Array<{ agentWorkStopped?: boolean | undefined }> = [];
+  const child = Object.assign(new EventEmitter(), {
+    connected: true,
+    exitCode: null,
+    signalCode: null,
+    send(raw: unknown) {
+      const message = HostMessageSchema.parse(raw);
+      if (message.type === "init") {
+        initConfigs.push({ agentWorkStopped: message.config.agentWorkStopped });
+        child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+      }
+      if (message.type === "stop") child.emit("exit");
+      if (message.type === "request" && message.operation === "health") {
+        child.emit("message", {
+          type: "result",
+          id: message.id,
+          operation: message.operation,
+          result: { pid: 1, rss: 1, startupMs: 0 },
+        });
+      }
+    },
+  });
+  vi.mocked(fork).mockClear();
+  vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-idle-stop-"));
+  let stopped = true;
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+    agentWorkStopped: () => stopped,
+  });
+  const runnerId = createId("runner");
+  const stoppedAt = "2026-11-22T09:00:00.000Z";
+  const coordinator = new PluginStopCoordinator({
+    pluginService: () => service,
+    pluginExecutions: () => ({ stopAgentWork: async () => true }),
+    hasUnfinishedWorkflows: async () => false,
+    isCurrent: () => true,
+    log: { warn: vi.fn() },
+  });
+  try {
+    await service.start();
+    expect(service.state().status).toBe("idle");
+    coordinator.onHostingRunnerRegistered({
+      runnerId,
+      runnerKind: "main",
+      agentsStoppedSince: stoppedAt,
+    } as unknown as RunnerIdentity);
+    await vi.waitFor(() => expect(coordinator.proofFor(runnerId, stopped)).toBe(stoppedAt));
+    expect(fork).not.toHaveBeenCalled();
+
+    // Starting the engine later while still stopped initializes it with agentWorkStopped: true.
+    await service.health({}, { caller: "owner", mode: "automatic" });
+    expect(fork).toHaveBeenCalledOnce();
+    expect(initConfigs).toEqual([{ agentWorkStopped: true }]);
+  } finally {
+    coordinator.close();
+    stopped = false;
     await service.close();
     await rm(directory, { recursive: true, force: true });
   }

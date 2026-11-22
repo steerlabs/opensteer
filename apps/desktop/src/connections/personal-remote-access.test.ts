@@ -1,3 +1,5 @@
+import { RemoteAccessHelperUnavailableError } from "../releases/cloudflared-release.js";
+import { remoteAccessFailureDetail } from "./remote-administration-executor.js";
 import { createId } from "@opensteer/core";
 import {
   ConnectOperationIdSchema,
@@ -19,6 +21,31 @@ import { type PersonalHostRuntimeRecord } from "../supervisor/personal-host-runt
 import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-test-support.js";
 
 describe("DesktopPersonalRemoteAccessService", () => {
+  it("lets the turn-on through while a missing tunnel helper keeps failing, and says so plainly", async () => {
+    const fixture = remoteAccessFixture();
+    const missing = new RemoteAccessHelperUnavailableError(
+      new Error("ENOENT: no such file or directory, lstat '/x/resources/cloudflared/release.json'"),
+    );
+    const service = new DesktopPersonalRemoteAccessService({
+      connectFactory: () => {
+        throw missing;
+      },
+      host: fixture.host,
+      runtime: { current: async () => fixture.runtime },
+    });
+    // In the background, bringing Remote access up fails, again and again.
+    for (let attempt = 0; attempt < 3; attempt += 1)
+      await expect(service.initialize()).rejects.toBe(missing);
+    // The turn-on still gets its turn, and ends in one sentence a person can act on.
+    const turningOn = service.configure({ mode: "connect", privateOrigin: null });
+    await expect(turningOn).rejects.toBe(missing);
+    const said = await turningOn.catch((error: unknown) => remoteAccessFailureDetail(error));
+    expect(said).toBe(
+      "Remote access can’t start because part of Opensteer is missing or damaged on this Mac. Reinstall Opensteer, then turn it on again.",
+    );
+    expect(said).not.toMatch(/ENOENT|release\.json|\//u);
+  });
+
   it("cleans up a failed share that may have applied during this run", async () => {
     const fixture = remoteAccessFixture();
     let handler = false;

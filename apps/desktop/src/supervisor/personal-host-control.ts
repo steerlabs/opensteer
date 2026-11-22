@@ -87,14 +87,14 @@ export interface PersonalHostControlPort {
     /** Hears what the Host says it is still waiting for, on each not-ready answer. */
     onPending?: (pending: "agent-home" | undefined) => void,
   ): Promise<void>;
-  waitForPluginAgentWorkStopped?(
+  checkPluginAgentWorkStopped?(
     origin: string,
     deploymentId: string,
     environmentId: EnvironmentId,
     runnerId: RunnerId,
     stoppedSince: string,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<boolean>;
   waitForBrowserPlacement(
     origin: string,
     deploymentId: string,
@@ -310,26 +310,27 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       origin,
       { kind: "runner", environmentId, runnerId },
       signal,
-      undefined,
       onPending,
     );
   }
 
-  async waitForPluginAgentWorkStopped(
+  async checkPluginAgentWorkStopped(
     origin: string,
-    deploymentId: string,
-    environmentId: EnvironmentId,
-    runnerId: RunnerId,
+    deploymentIdInput: string,
+    environmentIdInput: EnvironmentId,
+    runnerIdInput: RunnerId,
     stoppedSince: string,
     signal: AbortSignal,
-  ): Promise<void> {
-    await this.#waitForReadiness(
-      deploymentId,
-      origin,
-      { kind: "runner", environmentId, runnerId },
-      signal,
-      stoppedSince,
+  ): Promise<boolean> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
+    const runnerId = RunnerIdSchema.parse(runnerIdInput);
+    const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
+    const result = await this.#withDeadline(signal, (deadline) =>
+      read({ kind: "runner", environmentId, runnerId }, { signal: deadline }),
     );
+    if (!result.ok) throw bootstrapRefusal(result.error);
+    return result.data.ready && result.data.pluginAgentWorkStoppedSince === stoppedSince;
   }
 
   async waitForBrowserPlacement(
@@ -355,7 +356,6 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     origin: string,
     target: Parameters<HostApiClient["personal.readiness.get"]>[0],
     signal: AbortSignal,
-    stoppedSince?: string,
     onPending?: (pending: "agent-home" | undefined) => void,
   ) {
     const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
@@ -367,11 +367,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
         );
         if (!result.ok) throw bootstrapRefusal(result.error);
         onPending?.(result.data.ready ? undefined : result.data.pending);
-        if (
-          result.data.ready &&
-          (stoppedSince === undefined || result.data.pluginAgentWorkStoppedSince === stoppedSince)
-        )
-          return;
+        if (result.data.ready) return;
       } catch (error) {
         throwIfAborted(signal, "Personal setup was cancelled.");
         if (error instanceof PersonalHostBootstrapRefusedError) throw error;

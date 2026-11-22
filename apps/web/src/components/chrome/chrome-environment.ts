@@ -9,7 +9,7 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
  * - `chromium`: a Chromium browser on a computer. The page can see the
  *   extension and open its connect tab itself.
  * - `desktop`: the Opensteer app. Its window cannot reach Chrome's extensions,
- *   so it hands the step to the default browser.
+ *   so it hands the step to Google Chrome itself, whatever the default browser is.
  * - `other-browser`: Safari, Firefox and friends. The link has to be opened in Chrome.
  * - `phone`: no extensions at all.
  */
@@ -22,7 +22,11 @@ export interface ChromeConnectEnvironment {
   copy(text: string): Promise<boolean>;
   /** Opens the extension's connect tab; false when Chrome blocked the tab. */
   openExtensionConnect(invitation: string): boolean;
-  openInDefaultBrowser(url: string): Promise<void>;
+  /**
+   * Opens a page in Google Chrome itself, which connecting needs: "no-chrome" when this
+   * computer has no Chrome to open it in.
+   */
+  openInChrome(url: string): Promise<"opened" | "no-chrome">;
   probeExtension(): Promise<boolean>;
 }
 
@@ -30,7 +34,7 @@ export interface ChromeConnectEnvironment {
 export const ChromeConnectEnvironmentContext = createContext<ChromeConnectEnvironment | null>(null);
 
 export function useChromeConnectEnvironment(input: {
-  readonly desktopBridge: Pick<OpensteerDesktopBridge, "openExternalUrl"> | null;
+  readonly desktopBridge: Pick<OpensteerDesktopBridge, "openExternalUrl" | "openInChrome"> | null;
   /** Null when this page cannot tell; loopback pages are always on the Deployment's computer. */
   readonly hostHere: boolean | null;
 }): ChromeConnectEnvironment {
@@ -44,7 +48,7 @@ export function useChromeConnectEnvironment(input: {
 }
 
 function browserChromeConnectEnvironment(
-  desktopBridge: Pick<OpensteerDesktopBridge, "openExternalUrl"> | null,
+  desktopBridge: Pick<OpensteerDesktopBridge, "openExternalUrl" | "openInChrome"> | null,
   hostHere: boolean | null,
 ): ChromeConnectEnvironment {
   return {
@@ -52,14 +56,20 @@ function browserChromeConnectEnvironment(
     hostHere: hostHere ?? isLoopbackHostname(window.location.hostname),
     openExtensionConnect: (invitation) =>
       window.open(chromeExtensionConnectUrl(invitation), "_blank") !== null,
-    openInDefaultBrowser: async (url) => {
+    openInChrome: async (url) => {
+      if (desktopBridge?.openInChrome) {
+        const result = await desktopBridge.openInChrome({ url });
+        return result.opened ? "opened" : "no-chrome";
+      }
+      // An app without the Chrome route still opens the page, as it always did.
       if (desktopBridge) {
         await desktopBridge.openExternalUrl({ url });
-        return;
+        return "opened";
       }
       if (window.open(url, "_blank", "noopener") === null) {
         throw new Error("Your browser blocked the new tab. Copy the link instead.");
       }
+      return "opened";
     },
     place: desktopBridge ? "desktop" : browserPlace(),
     probeExtension: probeOpensteerExtension,

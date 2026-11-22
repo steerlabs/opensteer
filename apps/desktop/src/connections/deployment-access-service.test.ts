@@ -9,6 +9,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { HostSessionObservation } from "@opensteer/client/auth";
 import {
+  DeploymentAccessRefusal,
   DeploymentAccessService,
   classifyPortFailure,
   type CatalogProjection,
@@ -717,7 +718,7 @@ describe("DeploymentAccessService", () => {
       fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
       closeGate.resolve();
       await settle();
-      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() rejects,
+      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() of the same Home adopts the open in flight,
       // all while catalog.select() is still in flight: none of them may release the guard or leak (ready, idle).
       read.reject(new Error("transient catalog read failure"));
       await settle();
@@ -725,11 +726,14 @@ describe("DeploymentAccessService", () => {
       fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
       await settle();
       check(service.snapshot());
-      await expect(service.select(local.id)).rejects.toThrow(/already running/u);
+      // Opening the same Home again is the open already under way: it adopts that outcome.
+      const again = service.select(local.id);
       check(service.snapshot());
       expect(service.snapshot().personalSetup?.state).toBe("starting");
       selectGate.resolve({ deployments: [local], revision: 3, selectedDeploymentId: local.id });
       await reselecting;
+      await expect(again).resolves.toBeUndefined();
+      expect(fixture.ports.catalog.select).toHaveBeenCalledTimes(1);
       await settle();
       expect(leaked).toEqual([]);
       expect(fixture.establish).toHaveBeenCalledOnce();
@@ -1764,6 +1768,288 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
+  describe("one foreground operation at a time", () => {
+    const unlinked = {
+      account: null,
+      deploymentId: readyPersonalStatus.deploymentId,
+      displayName: "This computer",
+      status: "unlinked" as const,
+      unlinkStep: null,
+    };
+    /** This Mac's Home is set up and reported ready, while its setup is still finishing. */
+    async function settingUp() {
+      const fixture = fakePorts();
+      const started = deferred<typeof readyPersonalStatus>();
+      vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(started.promise);
+      fixture.personalAccountStatus.mockResolvedValue(unlinked);
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      const creating = service.createPersonalDeployment();
+      await settle();
+      // The supervisor says ready before its start has finished its last steps.
+      fixture.emitPersonal(readyPersonalStatus);
+      await settle();
+      return { creating, fixture, service, started };
+    }
+
+    it("lets a link asked while this Mac is still being set up wait its turn, then run as its own outcome", async () => {
+      const { creating, fixture, service, started } = await settingUp();
+      const linking = service.linkPersonal();
+      await settle();
+      expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
+      started.resolve(readyPersonalStatus);
+      await creating;
+      await expect(linking).resolves.toBeUndefined();
+      expect(fixture.ports.personalAccount.link).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("lets a second ask for the link that is running adopt its outcome, in either order of callers", async () => {
+      const { creating, fixture, service, started } = await settingUp();
+      started.resolve(readyPersonalStatus);
+      await creating;
+      const link = deferred<typeof unlinked>();
+      vi.mocked(fixture.ports.personalAccount.link).mockReturnValueOnce(link.promise as never);
+      const first = service.linkPersonal();
+      await settle();
+      const second = service.linkPersonal();
+      link.resolve({ ...unlinked, status: "linked" } as never);
+      await expect(first).resolves.toBeUndefined();
+      await expect(second).resolves.toBeUndefined();
+      expect(fixture.ports.personalAccount.link).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("refuses a turn that never comes in a plain sentence, never as already running", async () => {
+      const { fixture, service } = await settingUp();
+      vi.useFakeTimers();
+      try {
+        const linking = service.linkPersonal();
+        const refused = expect(linking).rejects.toEqual(
+          new DeploymentAccessRefusal(
+            "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+          ),
+        );
+        fixture.clock.now += 2 * 60_000;
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await refused;
+        // Refused on purpose, with the words a person reads, not as a fault.
+        expect(await linking.catch((error: unknown) => error)).toBeInstanceOf(
+          DeploymentAccessRefusal,
+        );
+        expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        service.dispose();
+      }
+    });
+  });
+
+  /*
+   * Whether two asks are the same is what they ask for, not what kind of change they are. The
+   * same ask twice runs once and both hear its outcome; the same kind for another target waits
+   * its turn and runs for its own target, never adopting the first one's result.
+   */
+  describe("the same request, by what it asks for", () => {
+    const origin = (name: string) => `https://${name}.example.test`;
+
+    async function listing(deployments: CatalogProjection["deployments"], signedIn = false) {
+      const fixture = fakePorts({ deployments });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      if (signedIn) {
+        fixture.emitAccount(signedInAccount());
+        await settle();
+      }
+      return { fixture, service };
+    }
+
+    /** Holds the port's next answers until each is released, in the order they were asked. */
+    function held<T>(
+      port: { mockImplementationOnce(fn: () => Promise<T>): unknown },
+      count: number,
+    ) {
+      const gates = Array.from({ length: count }, () => deferred<T>());
+      for (const gate of gates) port.mockImplementationOnce(() => gate.promise);
+      return gates;
+    }
+
+    it("adds a route for each Home asked, in order, when two different ones are asked at once", async () => {
+      const a = deployment({ name: "A" });
+      const b = deployment({ name: "B" });
+      const { fixture, service } = await listing([a, b]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const catalog = await fixture.ports.catalog.read();
+      const [first, second] = held(addRoute, 2);
+      const forA = service.addDirect({ deploymentId: a.id as never, origin: origin("a") });
+      const forB = service.addDirect({ deploymentId: b.id as never, origin: origin("b") });
+      await settle();
+      expect(addRoute.mock.calls.map(([input]) => input.deploymentId)).toEqual([a.id]);
+      first!.resolve(catalog);
+      await expect(forA).resolves.toBeUndefined();
+      await settle();
+      expect(addRoute.mock.calls.map(([input]) => input.deploymentId)).toEqual([a.id, b.id]);
+      second!.resolve(catalog);
+      await expect(forB).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("adds one route when the same one is asked twice, and both callers hear it", async () => {
+      const a = deployment({ name: "A" });
+      const { fixture, service } = await listing([a]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const [only] = held(addRoute, 1);
+      const input = { deploymentId: a.id as never, origin: origin("a") };
+      const one = service.addDirect(input);
+      const two = service.addDirect({ ...input });
+      await settle();
+      only!.reject(new Error("That address didn't answer."));
+      await expect(one).rejects.toThrow("That address didn't answer.");
+      await expect(two).rejects.toThrow("That address didn't answer.");
+      expect(addRoute).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("connects each address asked, in order, and the same address once", async () => {
+      const { fixture, service } = await listing([]);
+      const connect = vi.mocked(fixture.ports.direct.connect);
+      const catalog = await fixture.ports.catalog.read();
+      const [first, second] = held(connect, 2);
+      const a = service.connectPrivate({ kind: "address", origin: origin("a") });
+      const aAgain = service.connectPrivate({ kind: "address", origin: origin("a") });
+      const b = service.connectPrivate({ kind: "address", origin: origin("b") });
+      await settle();
+      expect(connect.mock.calls.map(([input]) => input.origin)).toEqual([origin("a")]);
+      first!.resolve(catalog);
+      await expect(a).resolves.toBeUndefined();
+      await expect(aAgain).resolves.toBeUndefined();
+      await settle();
+      expect(connect.mock.calls.map(([input]) => input.origin)).toEqual([origin("a"), origin("b")]);
+      second!.resolve(catalog);
+      await expect(b).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("removes each Home asked from the account, in order, and the same Home once", async () => {
+      const a = deployment({ accountAccess: "member", name: "A", source: "account" });
+      const b = deployment({ accountAccess: "member", name: "B", source: "account" });
+      const { fixture, service } = await listing([a, b], true);
+      const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+      remove.mockClear();
+      const [first, second] = held(remove, 2);
+      const removingA = service.removeFromAccount(a.id);
+      const removingAAgain = service.removeFromAccount(a.id);
+      const removingB = service.removeFromAccount(b.id);
+      await settle();
+      expect(remove.mock.calls.map(([id]) => id)).toEqual([a.id]);
+      first!.resolve(undefined);
+      await expect(removingA).resolves.toBeUndefined();
+      await expect(removingAAgain).resolves.toBeUndefined();
+      await settle();
+      expect(remove.mock.calls.map(([id]) => id)).toEqual([a.id, b.id]);
+      second!.resolve(undefined);
+      await expect(removingB).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("opens a Home after a route added for another, never taking that route's outcome as its own", async () => {
+      const a = deployment({ name: "A" });
+      const b = deployment({ name: "B" });
+      const { fixture, service } = await listing([a, b]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const catalog = await fixture.ports.catalog.read();
+      const [route] = held(addRoute, 1);
+      const adding = service.addDirect({ deploymentId: a.id as never, origin: origin("a") });
+      const opening = service.select(b.id);
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      route!.resolve(catalog);
+      await adding;
+      await expect(opening).resolves.toBeUndefined();
+      expect(fixture.select).toHaveBeenCalledExactlyOnceWith(b.id);
+      service.dispose();
+    });
+
+    it("runs a removal and an open of the same Home in the order asked, each for itself", async () => {
+      const a = deployment({
+        accountAccess: "member",
+        connect: { livenessExpiresAt: "2026-10-20T20:01:30.000Z" },
+        name: "A",
+        source: "account",
+      });
+      // Removal first, then the open waits its turn.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        const [removal] = held(remove, 1);
+        const removing = service.removeFromAccount(a.id);
+        const opening = service.select(a.id);
+        await settle();
+        expect(fixture.select).not.toHaveBeenCalled();
+        removal!.resolve(undefined);
+        await removing;
+        await expect(opening).resolves.toBeUndefined();
+        expect(fixture.select).toHaveBeenCalledExactlyOnceWith(a.id);
+        service.dispose();
+      }
+      // The removal takes the Home off the list, as the account does: the open that waited
+      // behind it finds nothing to open and is refused as not there, never run against it.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        const [removal] = held(remove, 1);
+        const removing = service.removeFromAccount(a.id);
+        const opening = service.select(a.id);
+        await settle();
+        fixture.replaceCatalog({ deployments: [], selectedDeploymentId: null });
+        removal!.resolve(undefined);
+        await removing;
+        const refused = await opening.catch((error: unknown) => error);
+        expect(refused).toBeInstanceOf(DeploymentAccessRefusal);
+        expect((refused as DeploymentAccessRefusal).words).toBe(
+          "A is no longer in your Opensteers.",
+        );
+        expect(fixture.select).not.toHaveBeenCalled();
+        expect(service.snapshot().deployments).toEqual([]);
+        service.dispose();
+      }
+      // The open finishes first and its Home leaves the list: the removal that waited is told so.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        remove.mockClear();
+        const [open] = held(fixture.select, 1);
+        const opening = service.select(a.id);
+        const removing = service.removeFromAccount(a.id);
+        await settle();
+        fixture.replaceCatalog({ deployments: [], selectedDeploymentId: null });
+        open!.resolve({ deployments: [], revision: 9, selectedDeploymentId: null });
+        await opening.catch(() => undefined);
+        await expect(removing).rejects.toEqual(
+          new DeploymentAccessRefusal("A is no longer in your Opensteers."),
+        );
+        expect(remove).not.toHaveBeenCalled();
+        service.dispose();
+      }
+      // Open first, then the removal waits its turn.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        remove.mockClear();
+        const [open] = held(fixture.select, 1);
+        const opening = service.select(a.id);
+        const removing = service.removeFromAccount(a.id);
+        await settle();
+        expect(remove).not.toHaveBeenCalled();
+        open!.resolve(await fixture.ports.catalog.read());
+        await opening;
+        await expect(removing).resolves.toBeUndefined();
+        expect(remove).toHaveBeenCalledExactlyOnceWith(a.id);
+        service.dispose();
+      }
+    });
+  });
+
   /*
    * What the place list may claim. Every case below is a way the list could
    * tell a person something untrue: a computer that is fine shown as offline,
@@ -1797,6 +2083,150 @@ describe("DeploymentAccessService", () => {
       fixture.emitAccount(expiredAccount());
       await settle();
       expect(service.snapshot().deployments.map(({ name }) => name)).toEqual(["Lab server"]);
+      service.dispose();
+    });
+
+    const accountB = {
+      issuer: testAccount.issuer,
+      subject: "acct_0192f4a1-2222-4000-8000-000000000002",
+    };
+    /** The person presses Sign in here, and the browser comes back signed in as `who`. */
+    async function signInHere(
+      fixture: ReturnType<typeof fakePorts>,
+      service: DeploymentAccessService,
+      who: { readonly issuer: string; readonly subject: string } = testAccount,
+    ) {
+      await service.signIn();
+      fixture.emitAccount(signedInAccount(who));
+      await settle();
+    }
+
+    it("opens the one Home an account has, after a sign-in the person started, never on a token refresh", async () => {
+      const server = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [server] });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(fixture.select).not.toHaveBeenCalled();
+
+      await signInHere(fixture, service);
+      expect(fixture.select).toHaveBeenCalledExactlyOnceWith(server.id);
+      fixture.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(fixture.select).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("opens nothing for a sign-in this Mac didn't start, or a re-authorisation", async () => {
+      const server = otherMac({ livenessExpiresAt: liveLease });
+      const restored = fakePorts({ deployments: [server] });
+      const quiet = new DeploymentAccessService(restored.ports, restored.options);
+      await quiet.initialize();
+      restored.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(restored.select).not.toHaveBeenCalled();
+      // Confirming it's still them passes through authorizing and back: still not a sign-in.
+      await quiet.reauthorize();
+      restored.emitAccount({
+        account: { available: true, detail: null, identity: null, status: "authorizing" },
+        schemaVersion: 2,
+      });
+      restored.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(restored.select).not.toHaveBeenCalled();
+      quiet.dispose();
+    });
+
+    it("leaves several Homes, or one beside a place of this Mac's own, as a list to choose from", async () => {
+      const studio = otherMac({ livenessExpiresAt: liveLease });
+      const lab = otherMac({ livenessExpiresAt: liveLease });
+      const two = fakePorts({ deployments: [studio, lab] });
+      const listed = new DeploymentAccessService(two.ports, two.options);
+      await listed.initialize();
+      await signInHere(two, listed);
+      expect(two.select).not.toHaveBeenCalled();
+      listed.dispose();
+
+      const added = deployment({ name: "Added by hand" });
+      const beside = fakePorts({ deployments: [studio, added] });
+      const mixed = new DeploymentAccessService(beside.ports, beside.options);
+      await mixed.initialize();
+      await signInHere(beside, mixed);
+      expect(beside.select).not.toHaveBeenCalled();
+      mixed.dispose();
+    });
+
+    it("never opens a Home this Mac remembers from another account, read or not", async () => {
+      const ofA = { ...otherMac({ livenessExpiresAt: liveLease }), accountOwner: testAccount };
+      // The read fails: the remembered Home of A is all there is to see.
+      const failing = fakePorts({ deployments: [ofA], joined: [ofA.id] });
+      vi.mocked(failing.ports.directory.syncAccountDeployments).mockRejectedValue(
+        new Error("The Account did not answer."),
+      );
+      const failed = new DeploymentAccessService(failing.ports, failing.options);
+      await failed.initialize();
+      await signInHere(failing, failed, accountB);
+      expect(failing.select).not.toHaveBeenCalled();
+      failed.dispose();
+
+      // The read succeeds and still lists only A's Home, which this Mac joined.
+      const reading = fakePorts({ deployments: [ofA], joined: [ofA.id] });
+      const read = new DeploymentAccessService(reading.ports, reading.options);
+      await read.initialize();
+      await signInHere(reading, read, accountB);
+      expect(reading.select).not.toHaveBeenCalled();
+      read.dispose();
+    });
+
+    it("opens nothing when the person signs out, or another account signs in, while the read is out", async () => {
+      for (const next of ["signed-out", "account B"] as const) {
+        const home = otherMac({ livenessExpiresAt: liveLease });
+        const fixture = fakePorts({ deployments: [home] });
+        const sync = deferred<{ changed: boolean; unavailable: [] }>();
+        vi.mocked(fixture.ports.directory.syncAccountDeployments).mockReturnValueOnce(sync.promise);
+        const service = new DeploymentAccessService(fixture.ports, fixture.options);
+        await service.initialize();
+        await signInHere(fixture, service);
+        fixture.emitAccount(
+          next === "signed-out"
+            ? {
+                account: { available: true, detail: null, identity: null, status: "signed-out" },
+                schemaVersion: 2,
+              }
+            : signedInAccount(accountB),
+        );
+        await settle();
+        sync.resolve({ changed: true, unavailable: [] });
+        await settle();
+        expect(fixture.select, next).not.toHaveBeenCalled();
+        service.dispose();
+      }
+    });
+
+    it("shows the list when a catalog reload is still on its way with a second Home", async () => {
+      const first = otherMac({ livenessExpiresAt: liveLease });
+      const second = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [first] });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      const stale = deferred<CatalogProjection>();
+      const fresh = deferred<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read)
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(fresh.promise);
+      await service.signIn();
+      fixture.emitAccount(signedInAccount(testAccount));
+      await settle();
+      // While the read's own catalog read is out, a write with a second Home starts another.
+      fixture.emitCatalog({ deployments: [first, second], selectedDeploymentId: null });
+      await settle();
+      // The older read answers first, with one Home, and is superseded; the newer is still out.
+      stale.resolve({ deployments: [first], revision: 2, selectedDeploymentId: null });
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      fresh.resolve({ deployments: [first, second], revision: 3, selectedDeploymentId: null });
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      expect(service.snapshot().deployments).toHaveLength(2);
       service.dispose();
     });
 
@@ -2301,15 +2731,23 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function signedInAccount(): DesktopAccountAuthState {
+/** The account `signedInAccount()` signs in by default, and the one Account rows belong to. */
+const testAccount = {
+  issuer: "https://accounts.opensteer.test",
+  subject: "acct_0192f4a1-1111-4000-8000-000000000001",
+};
+
+function signedInAccount(
+  identity: { readonly issuer: string; readonly subject: string } = {
+    issuer: testAccount.issuer,
+    subject: `acct_${crypto.randomUUID()}`,
+  },
+): DesktopAccountAuthState {
   return {
     account: {
       available: true,
       detail: null,
-      identity: {
-        issuer: "https://accounts.opensteer.test",
-        subject: `acct_${crypto.randomUUID()}`,
-      },
+      identity,
       status: "signed-in",
     },
     schemaVersion: 2,
@@ -2531,6 +2969,8 @@ function deployment(
     readonly onThisComputer?: boolean;
     readonly routes?: readonly { readonly kind: "canonical" | "direct"; readonly origin: string }[];
     readonly source?: "account" | "manual" | "this-device";
+    /** Which account listed an Account row; by default the one `signedInAccount()` signs in. */
+    readonly accountOwner?: { readonly issuer: string; readonly subject: string } | null;
     /** An Account Personal row's signed Connect route and its liveness lease. */
     readonly connect?: { readonly livenessExpiresAt: string | null } | null;
   } = {},
@@ -2554,6 +2994,12 @@ function deployment(
   return {
     ...summary,
     accountAccess: overrides.accountAccess ?? null,
+    accountOwner:
+      overrides.accountOwner !== undefined
+        ? overrides.accountOwner
+        : overrides.source === "account"
+          ? testAccount
+          : null,
     accountLivenessExpiresAt: overrides.connect?.livenessExpiresAt ?? null,
     hasAccountConnectRoute: overrides.connect != null,
     hasVerifiedAccountRoute: overrides.connect != null,

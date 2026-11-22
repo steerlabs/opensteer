@@ -6,7 +6,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { AddDeviceDialog } from "./add-device-dialog.js";
 
 let shell: unknown;
-vi.mock("../app-shell.js", () => ({ useShell: () => shell }));
+vi.mock("../app-shell.js", () => ({ useOptionalShell: () => shell, useShell: () => shell }));
 let root: Root | undefined;
 let client: MockHostClient | undefined;
 afterEach(() => {
@@ -72,7 +72,7 @@ it.each(["https://home.connect.example", "https://home.private.example", null])(
     await act(async () => {
       root!.render(<AddDeviceDialog homeName="Home" onClose={() => undefined} />);
     });
-    await click("Server");
+    await click("Linux server");
     await click("Create connection command");
     expect(target).toHaveBeenCalledOnce();
     if (route) {
@@ -116,8 +116,43 @@ it.each([
   await act(async () => {
     root!.render(<AddDeviceDialog homeName="Home" onClose={() => undefined} />);
   });
-  await click("Sign in on it");
+  await click("Use a pairing code");
   const text = (container.textContent ?? "").replace(/\s+/gu, " ");
   expect(text).toContain(says);
   expect(text).not.toContain(never);
+});
+
+it("lists what can be added by the thing itself, with a pairing code under Advanced", async () => {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  shell = { hostClient: client, snapshot: client.getSnapshot() };
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(<AddDeviceDialog homeName="Home" onClose={() => undefined} />);
+  });
+  const titles = [...container.querySelectorAll(".add-device__choices .option-row__title")].map(
+    (element) => element.textContent,
+  );
+  expect(titles).toEqual([
+    "A Mac",
+    "A phone",
+    "Chrome",
+    "iPhone screen control",
+    "Android Agent Phone",
+    "Linux server",
+    "Use a pairing code",
+  ]);
+  const advanced = container.querySelector("details.add-device__advanced");
+  expect(advanced?.textContent).toContain("Use a pairing code");
+  expect(advanced?.hasAttribute("open")).toBe(false);
+  await click("A phone");
+  expect(container.textContent).toContain(
+    "Get the Opensteer app on the phone and sign in with the same Opensteer account.",
+  );
+  await click("Back");
+  // Chrome opens the one panel the first run's "Connect your Chrome" opens too.
+  await click("Chrome");
+  expect(container.querySelector('[data-testid="add-chrome"]')).not.toBeNull();
 });

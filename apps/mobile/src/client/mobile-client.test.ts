@@ -2536,7 +2536,7 @@ describe("MobileClient sign-in", () => {
       status: "unverified",
       verification: "identity-mismatch",
     });
-    await expect(client.signIn(serverId)).rejects.toThrow(/different deployment/u);
+    await expect(client.signIn(serverId)).rejects.toThrow(/different Opensteer/u);
     expect(opened).toEqual([]);
     client.dispose();
   });

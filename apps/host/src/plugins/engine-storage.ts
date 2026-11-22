@@ -59,6 +59,10 @@ export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
 export async function hasUnfinishedPluginWorkflows(
   database: Kysely<DatabaseSchema>,
 ): Promise<boolean> {
+  const exists = await sql<{ present: boolean }>`
+    SELECT to_regclass('plugin_engine.plugin_engine_workflow_runs') IS NOT NULL AS present
+  `.execute(database);
+  if (!exists.rows[0]?.present) return false;
   const result = await sql<{ unfinished: boolean }>`
     SELECT ${sql.raw(unfinishedWorkflows)} AS unfinished
   `.execute(database);
