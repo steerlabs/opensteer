@@ -1,6 +1,7 @@
 import { chromium, type Browser, type CDPSession, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { EditingOperation } from "../packages/client/src/editing/types.js";
+import type { EditingOperation, EditingProxyEvent } from "../packages/client/src/editing/types.js";
+import { createEditingState, reduceEditing } from "../packages/client/src/editing/reducer.js";
 import type { CdpSession } from "../packages/browser-runtime-core/src/browser/backend.js";
 import { editingCommandParameters } from "../packages/browser-runtime-core/src/browser/editing-commands.js";
 import { PageEditingObserver } from "../packages/browser-runtime-core/src/browser/editing-observer.js";
@@ -410,6 +411,74 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     ).toBe(true);
     expect(await read(page, kind)).toEqual({ value: "ab日本x", caret: 5, collapsed: true });
     expect(record).toEqual(["attributed A", "attributed A", "text 日本", "attributed A", "text x"]);
+  });
+
+  /*
+   * CU5: a composition the transport refused before it left (no change of context: the page never
+   * saw it) is sent again as a fresh start, restating what it replaces. A recomposition of "ab"
+   * whose first update was refused would otherwise go on without its before, and the page would
+   * hold "ababcd". The reducer runs as the editing proxy drives it: what sendOperation refuses is
+   * told back to it.
+   */
+  it("sends a composition the transport refused again as a fresh start", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    const context = observer.context;
+    let state = createEditingState("ios", {
+      composition: true,
+      rangeEdits: true,
+      commands: true,
+      clipboard: "full",
+    });
+    let refuseCompose = true;
+    const sent: EditingOperation[] = [];
+    const step = async (event: EditingProxyEvent) => {
+      const result = reduceEditing(state, event);
+      state = result.state;
+      for (const operation of result.operations) {
+        // The transport is down for the first composition: nothing leaves.
+        if (operation.kind === "compose" && refuseCompose) {
+          refuseCompose = false;
+          state = reduceEditing(state, { type: "refused", operation } as EditingProxyEvent).state;
+          continue;
+        }
+        sent.push(operation);
+        expect(await send(operation), `${operation.kind} refused by the page`).toBe(true);
+      }
+    };
+    const proxy = (value: string, at: number, marked?: [number, number]) => ({
+      value,
+      selectionStart: at,
+      selectionEnd: at,
+      ...(marked ? { markedRange: { start: marked[0], end: marked[1] } } : {}),
+    });
+    await step({ type: "context", context });
+    await step({ type: "beforeinput", inputType: "insertText", data: "ab" });
+    await step({ type: "input", inputType: "insertText", composing: false, proxy: proxy("ab", 2) });
+    // The input method takes "ab" back into a composition and adds to it.
+    await step({ type: "beforeinput", inputType: "insertCompositionText", data: "abc" });
+    await step({ type: "compositionstart", proxy: proxy("abc", 3, [0, 3]) });
+    await step({ type: "compositionupdate", data: "abc", proxy: proxy("abc", 3, [0, 3]) });
+    await step({
+      type: "input",
+      inputType: "insertCompositionText",
+      composing: true,
+      proxy: proxy("abc", 3, [0, 3]),
+    });
+    await step({ type: "beforeinput", inputType: "insertCompositionText", data: "abcd" });
+    await step({ type: "compositionupdate", data: "abcd", proxy: proxy("abcd", 4, [0, 4]) });
+    await step({
+      type: "input",
+      inputType: "insertCompositionText",
+      composing: true,
+      proxy: proxy("abcd", 4, [0, 4]),
+    });
+    await step({ type: "beforeinput", inputType: "insertFromComposition", data: "abcd" });
+    await step({ type: "compositionend", data: "abcd", proxy: proxy("abcd", 4) });
+    expect(sent.filter((operation) => operation.kind === "compose")).toMatchObject([
+      { composition: { text: "abcd", before: "ab", after: "" } },
+    ]);
+    expect(await read(page, kind)).toEqual({ value: "abcd", caret: 4, collapsed: true });
   });
 
   // CS1: where the page itself moves on (focus leaves the field), Blink ends the composition by

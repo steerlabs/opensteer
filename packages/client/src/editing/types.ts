@@ -77,7 +77,13 @@ export type EditingProxyEvent =
   | { readonly type: "pointerdown" }
   | { readonly type: "blur" }
   /** The target's focused field changed, or it refused an edit as stale. */
-  | { readonly type: "context"; readonly context: EditingContext | null };
+  | { readonly type: "context"; readonly context: EditingContext | null }
+  /**
+   * The transport refused an operation before it left (the editing proxy's sendOperation said
+   * no): the target never saw it, and the context did not change. A composition it carried is
+   * sent again as a fresh start.
+   */
+  | { readonly type: "refused"; readonly operation: EditingOperation };
 
 /** What the person did, ready for the target's wire. */
 export type EditingOperation =

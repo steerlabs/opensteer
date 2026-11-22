@@ -454,6 +454,24 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       state.context = event.context;
       break;
     }
+    case "refused": {
+      // CU5: a composition the transport refused never reached the target, and the field is the
+      // same one (a change of context ends the composition, and nothing is sent again across it:
+      // the reducer cannot know where the person is then). Its next send is a fresh start,
+      // restating what it replaces.
+      const transaction = state.composition;
+      const operation = event.operation;
+      if (
+        operation.kind === "compose" &&
+        transaction &&
+        !transaction.detached &&
+        transaction.sent &&
+        transaction.contextId === operation.composition.contextId &&
+        transaction.contextId === state.context?.contextId
+      )
+        state.composition = { ...transaction, sent: false };
+      break;
+    }
     case "pointerdown":
     case "blur":
       interrupt();

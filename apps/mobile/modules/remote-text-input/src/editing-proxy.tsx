@@ -138,6 +138,8 @@ export function NativeEditingProxy({
             }
             for (const operation of result.operations)
               if (!sendOperation(operation)) {
+                // It never left: a composition it carried goes again as a fresh start.
+                step({ type: "refused", operation });
                 setRefusal("Editing refused. Waiting for the remote field.");
                 return { preventDefault: true };
               }

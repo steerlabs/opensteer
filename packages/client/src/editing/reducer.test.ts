@@ -892,3 +892,71 @@ it.each(["ios", "android"] as const)(
     );
   },
 );
+
+// CU5: a composition the transport refused (the editing proxy's sendOperation said no) is sent
+// again as a fresh start only within the same field; tests/editing-far-model.test.ts holds the
+// resend to the real applier.
+describe("a composition the transport refused", () => {
+  const marked = (value: string, start: number, end: number) => ({
+    ...proxy(value),
+    markedRange: { start, end },
+  });
+  const recomposition: EditingProxyEvent[] = [
+    { type: "beforeinput", inputType: "insertText", data: "ab" },
+    input("ab"),
+    { type: "beforeinput", inputType: "insertCompositionText", data: "abc" },
+    { type: "compositionstart", proxy: marked("abc", 0, 3) },
+    { type: "compositionupdate", data: "abc", proxy: marked("abc", 0, 3) },
+  ];
+  const run = (between: EditingProxyEvent[]) => {
+    let { state, operations } = replay(recomposition, "ios");
+    const refused = operations.at(-1)!;
+    expect(refused).toMatchObject({ kind: "compose", composition: { before: "ab" } });
+    const sent: EditingOperation[] = [];
+    for (const event of [
+      { type: "refused", operation: refused } as const,
+      ...between,
+      { type: "beforeinput", inputType: "insertCompositionText", data: "abcd" } as const,
+      { type: "compositionupdate", data: "abcd", proxy: marked("abcd", 0, 4) } as const,
+    ]) {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      sent.push(...step.operations);
+    }
+    return sent;
+  };
+  it("is sent again as a fresh start in the same field", () => {
+    expect(run([])).toEqual([
+      {
+        kind: "compose",
+        composition: {
+          contextId: context.contextId,
+          text: "abcd",
+          selectionStart: 4,
+          selectionEnd: 4,
+          before: "ab",
+          after: "",
+        },
+      },
+    ]);
+  });
+  it("is not sent again across a change of context", () => {
+    const next = { ...context, contextId: "00000000-0000-4000-8000-000000000002" };
+    const sent = run([{ type: "context", context: next }]);
+    expect(sent.filter((operation) => operation.kind === "compose")).toEqual([]);
+  });
+  it("leaves the composition as it was when the refused operation was not the composition", () => {
+    let { state } = replay(recomposition, "ios");
+    state = reduceEditing(state, {
+      type: "refused",
+      operation: { kind: "command", command: "moveBackward" },
+    }).state;
+    const step = reduceEditing(state, {
+      type: "compositionupdate",
+      data: "abcd",
+      proxy: marked("abcd", 0, 4),
+    });
+    expect(step.operations).toMatchObject([{ kind: "compose", composition: { text: "abcd" } }]);
+    expect(step.operations[0]).not.toHaveProperty("composition.before");
+  });
+});
