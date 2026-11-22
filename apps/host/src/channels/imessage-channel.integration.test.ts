@@ -344,19 +344,21 @@ integration("iMessage channel", () => {
       const beforeUncertain = messages.sends.length;
       messages.loseNextConfirmation();
       const uncertainReply = await uncertainRun.reply("This reply may have arrived.");
-      await waitForCondition(async () => (await deliveryStatus(uncertainReply)) === "dead");
+      // The helper cannot confirm it: it may have been sent, so it is unknown (Disconnect shows
+      // it, nothing prunes it) and it is never sent again.
+      await waitForCondition(async () => (await deliveryStatus(uncertainReply)) === "unknown");
       const stopped = await host.store.database
         .selectFrom("bridgeDeliveries")
         .select(["lastError", "status", "attempts"])
         .where("messageId", "=", uncertainReply)
         .executeTakeFirstOrThrow();
       expect(stopped).toMatchObject({
-        status: "dead",
+        status: "unknown",
         attempts: 1,
         lastError: expect.stringContaining("Check Messages"),
       });
       expect(messages.sends.slice(beforeUncertain)).toHaveLength(1);
-      record("unconfirmed reply stopped for attention without a repeat", stopped);
+      record("unconfirmed reply unknown, without a repeat", stopped);
 
       const lostExecution = waitForExecute(caller.primary.socket);
       messages.receive(ownerPhone, "Recover the lost bridge answer");
