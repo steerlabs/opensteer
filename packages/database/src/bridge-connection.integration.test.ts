@@ -127,14 +127,13 @@ describeStore("a messaging bridge is a connection", (it) => {
         },
       }),
     ).rejects.toMatchObject({ constraint: "agent_connections_bridge" });
-    // A bridge always holds tasks: without them it can do nothing.
-    await expect(
-      insertBridgeRow(database, {
-        ...base,
-        conversationId: "C-no-tasks",
-        grant: { scope: "selected", tasks: false, resources: [] },
-      }),
-    ).rejects.toMatchObject({ constraint: "agent_connections_bridge" });
+    // A grant without tasks can always be written (a policy taking tasks away must never fail);
+    // such a bridge is simply not live.
+    await insertBridgeRow(database, {
+      ...base,
+      conversationId: "C-no-tasks",
+      grant: { scope: "selected", tasks: false, resources: [] },
+    });
     // Two live bridges never cover the same conversation.
     await insertBridgeRow(database, { ...base, conversationId: "C-shared", senders: "anyone" });
     await expect(

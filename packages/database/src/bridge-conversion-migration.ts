@@ -114,13 +114,15 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
       select owner.created_by as user_id, 'mcn_' || gen_random_uuid() as id
       from (select distinct created_by from bridge_conversion_unpersonal) owner;
 
+    -- Its sender rule is "anyone": the same rule that keeps work from an "anyone" bridge out of
+    -- the person's personal context keeps these tasks out of it, for ever.
     insert into agent_connections (
       id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
       expires_at, revoked_at, "grant", grant_revision, consent_version,
-      cleanup_reason, cleanup_requested_at)
+      cleanup_reason, cleanup_requested_at, bridge_senders)
     select legacy.id, legacy.user_id, 'Messages before the update', 'Messaging',
       'approval-required', 'opensteer:bridge', null, now(), now(), now(),
-      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now()
+      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), 'anyone'
     from bridge_conversion_legacy legacy;
 
     update threads t set origin_connection_id = legacy.id

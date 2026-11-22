@@ -1,6 +1,7 @@
 import { createId, ThreadIdSchema, type AgentGrant } from "@opensteer/core";
 import {
   admitExecution,
+  AgentConnectionStore,
   authorizeTarget,
   ChannelStore,
   lineagePersonalContext,
@@ -360,6 +361,85 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
         "Opensteer couldn't start this. Open Opensteer to see why.",
         "Opensteer couldn't start this. Open Opensteer to see why.",
       ]);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+
+  it("never lets a stranger's queued message run with the person's context: who may speak is fixed", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(
+      storeFixture,
+      { senders: "anyone", conversation: { id: "C-fixed", name: "#fixed" } },
+      "senders-fixed",
+    );
+    try {
+      // A stranger's message starts a task; their next one waits in its queue.
+      const stranger = { externalUserId: "U-STRANGER", displayName: "Eve" };
+      expect(await f.send({ eventId: "s1", ...stranger, text: "Start" })).toMatchObject({
+        status: "adopted",
+      });
+      expect(
+        await f.send({
+          eventId: "s2",
+          ...stranger,
+          text: "Then this",
+          trigger: "conversation-followup",
+        }),
+      ).toMatchObject({ status: "adopted" });
+      const [task] = await f.tasks();
+      const inputs = () =>
+        storeFixture.database
+          .selectFrom("threadInputs")
+          .select(["messageId", "state"])
+          .where("threadId", "=", task!.id)
+          .orderBy("createdAt")
+          .execute();
+      expect((await inputs()).map(({ state }) => state)).toContain("pending");
+      // Who may speak cannot be changed on the bridge, by the store or in the database.
+      const connections = new AgentConnectionStore(storeFixture.database);
+      await expect(
+        connections.update(f.fixture.userId, {
+          connectionId: f.bridge.id,
+          expectedRevision: f.bridge.grantRevision!,
+          senders: "owner",
+        } as never),
+      ).rejects.toMatchObject({ code: "bad_request", reason: "bridge-senders-fixed" });
+      await expect(
+        storeFixture.database
+          .updateTable("agentConnections")
+          .set({ bridgeSenders: "owner" })
+          .where("id", "=", f.bridge.id)
+          .execute(),
+      ).rejects.toMatchObject({ constraint: "agent_connections_bridge_senders_fixed" });
+      // To change it, the bridge is disconnected: its queued work never runs.
+      await connections.revoke(f.fixture.userId, f.bridge.id);
+      await storeFixture.store.driveConnectionCleanups({
+        stopper: { stop: async () => undefined },
+      });
+      expect((await inputs()).every(({ state }) => state !== "pending")).toBe(true);
+      // And its lineage never gains the person's personal context, whatever comes after.
+      expect(await lineagePersonalContext(storeFixture.database, f.bridge.id)).toBe(false);
+      const onlyMe = await connections.createBridge({
+        userId: f.fixture.userId,
+        accountId: f.configured.account.id,
+        conversation: { id: "C-fixed", name: "#fixed" },
+        senders: "owner",
+        accessMode: "approval-required",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+      expect(await lineagePersonalContext(storeFixture.database, f.bridge.id)).toBe(false);
+      expect(await f.send({ eventId: "s3", ...stranger, text: "Again" })).toMatchObject({
+        status: "ignored",
+      });
+      expect(
+        await storeFixture.database
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", onlyMe.id)
+          .execute(),
+      ).toEqual([]);
     } finally {
       await f.service.close();
       await storeFixture.close();

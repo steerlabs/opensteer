@@ -17,16 +17,32 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
       add column bridge_from_binding_id text,
       add column bridge_notice text check (bridge_notice in ('converted', 'converted-without-channels')),
       add constraint agent_connections_bridge check (
-        (bridge_account_id is null) = (bridge_senders is null)
+        -- A bridge says who may speak. A sender rule without an account is only the ended row
+        -- that ties the messages from before the update to "anyone".
+        (bridge_account_id is null or bridge_senders is not null)
+        and (bridge_senders is null or bridge_account_id is not null or revoked_at is not null)
         and (bridge_account_id is not null or (bridge_conversation_id is null
           and bridge_from_binding_id is null and bridge_notice is null))
         and (bridge_account_id is null or token_hash is null)
-        and (bridge_account_id is null or "grant"->>'scope' = 'everything'
-          or ("grant"->>'tasks')::boolean)
-        -- Anyone in one named conversation, never in direct messages, and only tasks and plugins.
-        and (bridge_senders is distinct from 'anyone' or (bridge_conversation_id is not null
-          and "grant"->>'scope' = 'selected'
-          and not jsonb_path_exists("grant", '$.resources[*] ? (@.kind != "plugin")'))));
+        -- Anyone in one named conversation, never in direct messages, and only tasks and
+        -- plugins. A grant without tasks is allowed (a policy must always be writable, by this
+        -- image and the previous one); such a bridge is simply not live.
+        and (bridge_account_id is null or bridge_senders is distinct from 'anyone'
+          or (bridge_conversation_id is not null and "grant"->>'scope' = 'selected'
+            and not jsonb_path_exists("grant", '$.resources[*] ? (@.kind != "plugin")'))));
+    -- Who may speak is fixed for the life of a bridge: to change it, it is disconnected and
+    -- another is made, so everything it admitted is swept with it.
+    create function bridge_senders_fixed() returns trigger language plpgsql as $fixed$
+    begin
+      if new.bridge_senders is distinct from old.bridge_senders then
+        raise exception 'Who may speak to a chat connection is fixed for its life'
+          using errcode = 'check_violation', constraint = 'agent_connections_bridge_senders_fixed';
+      end if;
+      return new;
+    end
+    $fixed$;
+    create trigger bridge_senders_fixed before update of bridge_senders on agent_connections
+      for each row execute function bridge_senders_fixed();
     create unique index agent_connections_bridge_cover
       on agent_connections(bridge_account_id, coalesce(bridge_conversation_id, ''))
       where bridge_account_id is not null and revoked_at is null;

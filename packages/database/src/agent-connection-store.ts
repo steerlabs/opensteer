@@ -461,6 +461,14 @@ export class AgentConnectionStore {
         code: "not_found",
         message: "This connected agent is no longer connected.",
       });
+    // Who may speak is chosen when a bridge is made and never changes on that row.
+    if ("senders" in input || "bridgeSenders" in input)
+      throw new OpensteerError({
+        code: "bad_request",
+        reason: "bridge-senders-fixed",
+        message:
+          "Who may message a chat connection is chosen when it is set up. Disconnect it and set it up again to change it.",
+      });
     if (current.grantRevision !== input.expectedRevision)
       throw new OpensteerError({
         code: "conflict",
