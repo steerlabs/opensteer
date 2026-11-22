@@ -1592,6 +1592,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     readonly at: number;
     readonly height: unknown;
     readonly method: string;
+    /** For a cast start, who sent it: the nearest frames of the sender's stack. */
+    readonly sender?: readonly string[];
     readonly target: Debugger;
     readonly width: unknown;
   }> = [];
@@ -1609,6 +1611,14 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           at: performance.now(),
           height,
           method,
+          ...(method === "Page.startScreencast"
+            ? {
+                sender: (new Error().stack ?? "")
+                  .split("\n")
+                  .slice(2, 8)
+                  .map((frame) => frame.trim()),
+              }
+            : {}),
           target,
           width,
         });
@@ -2841,6 +2851,15 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const personTabCasts = {
       castStarts: castStartsOn(personTabDebugger, openSince, performance.now()),
       redraws: redrawsBetween(openSince, performance.now(), personTabDebugger),
+      // Who started each cast, so a count over the bound names its senders.
+      senders: debuggerCommands
+        .filter(
+          (command) =>
+            command.method === "Page.startScreencast" &&
+            command.target === personTabDebugger &&
+            command.at >= openSince,
+        )
+        .map((command) => ({ afterMs: Math.round(command.at - openSince), from: command.sender })),
     };
     await controller.handle({
       surfaceId: personTab.surface.id,
