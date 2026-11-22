@@ -384,10 +384,19 @@ export function connectedAgentStatus(
   const { connection } = row;
   const agent = row.identity.label;
   const ended = connection.revokedAt ?? null;
+  // A chat's work is the task list its page draws (the Home's `bridge.tasks`): one source, so the
+  // status never says "Not doing anything" above a task it lists as running.
+  const chatWork = connection.bridge?.tasks?.find(({ running }) => running);
+  const working = live ?? (chatWork ? { what: chatWork.title, threadId: chatWork.id } : null);
   switch (row.phase) {
     case "active":
-      return live
-        ? { label: agentWords("agent.status.working"), detail: live.what, tone: "good", steps: [] }
+      return working
+        ? {
+            label: agentWords("agent.status.working"),
+            detail: working.what,
+            tone: "good",
+            steps: [],
+          }
         : {
             label: agentWords("agent.status.idle"),
             detail: usedLine(connection.lastUsedAt, now),

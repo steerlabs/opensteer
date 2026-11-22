@@ -787,4 +787,12 @@ describe("a chat, as a connected agent", () => {
       act(() => root?.unmount());
     }
   });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    expect(status(page)).not.toContain("Not doing anything");
+    expect(status(page)).toContain("Summarize my week");
+  });
 });

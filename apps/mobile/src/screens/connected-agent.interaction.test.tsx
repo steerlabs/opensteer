@@ -736,4 +736,10 @@ describe("a chat on the phone", () => {
       act(() => root?.unmount());
     }
   });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    await open(chat(1), chats());
+    expect(status().label).not.toBe("Not doing anything");
+    expect(section("status")?.footer?.text).toContain("Summarize my week");
+  });
 });
