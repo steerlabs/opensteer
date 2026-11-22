@@ -95,3 +95,43 @@ it("offers the full label for each Android choice and dispatches the selected va
     act(() => root.unmount());
   }
 });
+
+it("puts a footer's sentence above its link, and lets a sheet's title take the row", async () => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sheet={{ title: "Apps and phone screens", onClose: vi.fn() }}
+          sections={[
+            {
+              key: "read",
+              title: "Messaging",
+              rows: [],
+              footer: {
+                text: "Couldn’t read your messaging accounts.",
+                link: { label: "Try again", onPress: vi.fn() },
+              },
+            },
+          ]}
+        />,
+      ),
+    );
+    const sentence = [...element.querySelectorAll("span")].find(
+      (span) => span.textContent === "Couldn’t read your messaging accounts.",
+    )!;
+    const retry = [...element.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    )!;
+    // At the largest text size a Row pushes the link off screen; a Column keeps both.
+    expect(sentence.parentElement?.getAttribute("data-layout")).toBe("Column");
+    expect(retry.parentElement).toBe(sentence.parentElement);
+    const title = [...element.querySelectorAll("span")].find(
+      (span) => span.textContent === "Apps and phone screens",
+    )!;
+    expect(title.getAttribute("data-weight")).toBe("true");
+  } finally {
+    act(() => root.unmount());
+  }
+});

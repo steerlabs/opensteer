@@ -72,7 +72,7 @@ import {
   sendEligible,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
-import { admitLineageExecution } from "./execution-authority.js";
+import { admitLineageExecution, lineageExecutionStanding } from "./execution-authority.js";
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import type {
   DatabaseSchema,
@@ -1642,6 +1642,16 @@ export class TriggerStore {
   async claimDueSchedules(
     now = new Date(),
     limit = 64,
+    /**
+     * Tests only: `afterDueRead` runs after the due schedules are read and before their
+     * authority is; `afterAuthority` after the authority is read; `beforeEnqueue` just before
+     * the occurrence is recorded.
+     */
+    seam?: {
+      readonly afterDueRead?: () => Promise<void>;
+      readonly afterAuthority?: () => Promise<void>;
+      readonly beforeEnqueue?: () => Promise<void>;
+    },
   ): Promise<{
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
@@ -1680,10 +1690,16 @@ export class TriggerStore {
       // batch and starving every schedule behind it on every pass.
       const claim = async (
         trigger: (typeof due)[number],
-      ): Promise<TriggerOccurrence | undefined> => {
+      ): Promise<TriggerOccurrence | typeof held | undefined> => {
         if (!trigger.nextFireAt) return undefined;
         let occurrence: TriggerOccurrence | undefined;
-        if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
+        await seam?.afterDueRead?.();
+        // Held or lost, read as one fact in one statement: a chat that started waiting since the
+        // due read is held (nothing created, nothing moved); only an end pauses the automation.
+        const standing = await triggerLaunchStanding(transaction, trigger);
+        await seam?.afterAuthority?.();
+        if (standing.kind === "waiting") return held;
+        if (standing.kind === "lost") {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
@@ -1712,6 +1728,7 @@ export class TriggerStore {
         // from forming while the clock keeps advancing. Running Occurrences do
         // not suppress a tick — overlap up to Runner capacity is intended.
         if (!(await pendingScheduleOccurrenceExists(transaction, trigger.id))) {
+          await seam?.beforeEnqueue?.();
           const enqueued = await enqueueOccurrence(
             transaction,
             trigger,
@@ -1744,11 +1761,18 @@ export class TriggerStore {
         await sql`savepoint claim_schedule`.execute(transaction);
         try {
           const occurrence = await claim(trigger);
+          if (occurrence === held) {
+            // Held changes nothing: the savepoint holds nothing to keep.
+            await sql`rollback to savepoint claim_schedule`.execute(transaction);
+            continue;
+          }
           await sql`release savepoint claim_schedule`.execute(transaction);
           if (occurrence) occurrences.push(occurrence);
           claimed += 1;
         } catch (error) {
           await sql`rollback to savepoint claim_schedule`.execute(transaction);
+          // Its chat started waiting before the occurrence was recorded: held, not a failure.
+          if (error instanceof TriggerChatWaiting) continue;
           failures.push(error);
         }
       }
@@ -2689,21 +2713,42 @@ async function triggerExecutionAuthorityAvailable(
   });
   return admission !== null;
 }
-async function requireTriggerLaunchAuthority(
+/** A claim's answer for a schedule whose chat is waiting: nothing created, nothing moved. */
+const held = Symbol("held");
+
+/**
+ * The launch refusal for an automation whose chat is waiting. Callers read it as the refusal it
+ * always was (`forbidden`, the same words); a schedule's claim reads it as held.
+ */
+class TriggerChatWaiting extends OpensteerError {
+  constructor() {
+    super({ code: "forbidden", message: "Automation execution authority is no longer active" });
+  }
+}
+
+/** Admitted, held (its chat is waiting) or lost, as one fact (`lineageExecutionStanding`). */
+function triggerLaunchStanding(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
 ) {
-  const admission = await admitLineageExecution(database, {
+  return lineageExecutionStanding(database, {
     threadId: trigger.anchorThreadId,
     userId: trigger.createdBy,
     agentConnectionId: trigger.originConnectionId,
   });
-  if (!admission)
+}
+async function requireTriggerLaunchAuthority(
+  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
+) {
+  const standing = await triggerLaunchStanding(database, trigger);
+  if (standing.kind === "waiting") throw new TriggerChatWaiting();
+  if (standing.kind === "lost")
     throw new OpensteerError({
       code: "forbidden",
       message: "Automation execution authority is no longer active",
     });
-  return admission;
+  return { environmentId: standing.environmentId };
 }
 async function requireTriggerExecutionAuthority(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,

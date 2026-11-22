@@ -1,6 +1,7 @@
 import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   admitBridgeSender,
+  chatTasksWithdrawnMessage,
   chatWaitingError,
   type BridgeChatSource,
   type OpensteerStore,
@@ -30,7 +31,7 @@ export async function resolveBridgeCaller(
   if (admitted.kind !== "admitted")
     throw new OpensteerError({
       code: "forbidden",
-      message: "This chat may no longer ask your agents to work.",
+      message: chatTasksWithdrawnMessage,
     });
   const connection = admitted.connection;
   return {

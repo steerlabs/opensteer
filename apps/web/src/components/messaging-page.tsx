@@ -13,6 +13,9 @@ import {
   agentWords,
   chatsOfAccount,
   connectedAgentRow,
+  connectionsRead,
+  messagingAccountView,
+  type ConnectionsRead,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type CreatedChannelConnection,
@@ -206,7 +209,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         type: "channel.connection.status.set",
       });
       await reload();
-      agents.refresh?.();
+      void agents.refresh?.();
     });
   }
 
@@ -283,6 +286,9 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         {view === "overview" ? (
           <ChannelOverview
             chats={agents.connections}
+            chatsRead={connectionsRead(agents)}
+            onRetryChats={() => void agents.refresh?.()}
+            onRetry={() => void reload().catch(() => setReadFailed(true))}
             client={hostClient}
             code={code}
             dashboard={
@@ -421,6 +427,9 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
  */
 export function ChannelOverview({
   chats,
+  chatsRead,
+  onRetryChats,
+  onRetry,
   client,
   code,
   dashboard,
@@ -437,6 +446,11 @@ export function ChannelOverview({
   readFailed,
 }: {
   readonly chats: readonly AgentConnection[] | null;
+  /** Where the read of the chats stands: only a read answer says an account has none. */
+  readonly chatsRead: ConnectionsRead;
+  readonly onRetryChats: () => void;
+  /** Read the accounts again after a read that failed. */
+  readonly onRetry: () => void;
   readonly client: Pick<HostClient, "dispatch">;
   readonly code: ShownCode | null;
   readonly dashboard: ChannelDashboard | null;
@@ -458,7 +472,10 @@ export function ChannelOverview({
     return (
       <p className="notice notice--error" role="alert">
         <Icon name="alert-circle" />
-        <span>{agentWords("messaging.readFailed")}</span>
+        <span>{agentWords("messaging.readFailed")}</span>{" "}
+        <button className="btn btn--small" onClick={onRetry} type="button">
+          {agentWords("common.tryAgain")}
+        </button>
       </p>
     );
   if (!dashboard)
@@ -477,7 +494,10 @@ export function ChannelOverview({
     <>
       {readFailed ? (
         <p className="notice notice--error" role="alert">
-          {agentWords("messaging.readFailed")}
+          {agentWords("messaging.readFailed")}{" "}
+          <button className="btn btn--small" onClick={onRetry} type="button">
+            {agentWords("common.tryAgain")}
+          </button>
         </p>
       ) : null}
       {error ? (
@@ -509,10 +529,8 @@ export function ChannelOverview({
         const accounts = dashboard.accounts.filter(
           ({ connectionId }) => connectionId === connection.id,
         );
-        // A channel on one of your computers is fixed on that computer and resumes by
-        // itself; there are no credentials here to replace.
-        const repairable =
-          connection.status === "needs-attention" && connection.transportKind !== "computer";
+        // The account as the Home states it, and the controls it accepts (shared with the phone).
+        const view = messagingAccountView(connection, manifest);
         return (
           <section className="section messaging-account" key={connection.id}>
             <div className="card">
@@ -523,28 +541,19 @@ export function ChannelOverview({
                     <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
                       {connection.displayName}
                     </Link>
-                    <span className={`chip ${statusChip(connection.status)}`}>
-                      {statusLabel(connection.status)}
+                    {/* A read that failed leaves the last answer on screen, never as current. */}
+                    <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
+                      {readFailed ? agentWords("messaging.status.stale") : view.label}
                     </span>
                   </span>
                   <span className="card__row-detail">{providerLabel}</span>
-                  {connection.status === "paused" ? (
-                    <span className="card__row-detail">
-                      {agentWords("messaging.pausedNote", {
-                        sent: agentWords(
-                          manifest?.pausedMessages === "kept"
-                            ? "chat.paused.kept"
-                            : "chat.paused.lost",
-                        ),
-                      })}
-                    </span>
+                  {view.pausedNote ? (
+                    <span className="card__row-detail">{view.pausedNote}</span>
                   ) : null}
-                  {connection.statusDetail ? (
-                    <span className="card__row-detail">{connection.statusDetail}</span>
-                  ) : null}
+                  {view.detail ? <span className="card__row-detail">{view.detail}</span> : null}
                 </div>
                 <div className="card__row-actions">
-                  {repairable ? (
+                  {view.canFix ? (
                     <button
                       className="btn btn--small"
                       disabled={pending}
@@ -553,11 +562,11 @@ export function ChannelOverview({
                     >
                       {agentWords("messaging.fix")}
                     </button>
-                  ) : connection.status === "revoked" ? null : (
+                  ) : !view.canPause && !view.canResume ? null : (
                     <SettingsSwitch
-                      label={`${connection.status === "paused" ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
-                      checked={connection.status !== "paused"}
-                      disabled={pending}
+                      label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
+                      checked={view.canPause}
+                      disabled={pending || readFailed}
                       onChange={(enabled) =>
                         onStatus(connection.id, enabled ? "connected" : "paused")
                       }
@@ -587,7 +596,8 @@ export function ChannelOverview({
               {accounts.map((account) => (
                 <AccountChats
                   account={account}
-                  chats={chatsOfAccount(chats, account.id)}
+                  chats={chatsRead === "read" ? chatsOfAccount(chats, account.id) : chatsRead}
+                  onRetryChats={onRetryChats}
                   client={client}
                   code={code?.accountId === account.id ? code : null}
                   key={account.id}
@@ -596,6 +606,8 @@ export function ChannelOverview({
                   names={names}
                   onChatAdded={onChatAdded}
                   onLinkMe={() => onLinkMe(account.id)}
+                  paused={view.canResume}
+                  needsAttention={connection.status === "needs-attention"}
                   pending={pending}
                   providerLabel={providerLabel}
                 />
@@ -637,6 +649,7 @@ export function ChannelOverview({
 export function AccountChats({
   account,
   chats,
+  onRetryChats,
   client,
   code,
   manifest,
@@ -644,11 +657,15 @@ export function AccountChats({
   names,
   onChatAdded,
   onLinkMe,
+  paused,
+  needsAttention,
   pending,
   providerLabel,
 }: {
   readonly account: ChannelAccount;
-  readonly chats: readonly AgentConnection[];
+  /** Its chats once read; or that they are still being read, or could not be. */
+  readonly chats: readonly AgentConnection[] | "loading" | "failed";
+  readonly onRetryChats: () => void;
   readonly client: Pick<HostClient, "dispatch">;
   readonly code: ShownCode | null;
   readonly manifest: ChannelProviderManifest | undefined;
@@ -656,6 +673,10 @@ export function AccountChats({
   readonly names: Parameters<typeof connectedAgentRow>[1];
   readonly onChatAdded: () => void;
   readonly onLinkMe: () => void;
+  /** Its account is paused: a code sent now links it only once the account is resumed. */
+  readonly paused: boolean;
+  /** Its account needs attention: a code links it only once it is fixed. */
+  readonly needsAttention: boolean;
   readonly pending: boolean;
   readonly providerLabel: string;
 }) {
@@ -684,6 +705,8 @@ export function AccountChats({
                   minute: "2-digit",
                 }),
               })}
+              {paused ? ` ${agentWords("messaging.me.whenResumed")}` : null}
+              {needsAttention ? ` ${agentWords("messaging.me.whenFixed")}` : null}
             </span>
           ) : null}
           {me ? (
@@ -710,7 +733,18 @@ export function AccountChats({
       <div className="card__row messaging-chats">
         <div className="card__row-body">
           <span className="card__row-title">{agentWords("messaging.chats.title")}</span>
-          {chats.length === 0 ? (
+          {chats === "loading" ? (
+            <span className="card__row-detail" role="status">
+              {agentWords("messaging.chats.loading")}
+            </span>
+          ) : chats === "failed" ? (
+            <span className="card__row-detail" role="alert">
+              {agentWords("messaging.chats.readFailed")}{" "}
+              <button className="btn btn--small" onClick={onRetryChats} type="button">
+                {agentWords("common.tryAgain")}
+              </button>
+            </span>
+          ) : chats.length === 0 ? (
             <span className="card__row-detail">{agentWords("messaging.chats.empty")}</span>
           ) : (
             <ul className="messaging-chats__list">
@@ -744,7 +778,7 @@ export function AccountChats({
       {adding ? (
         <AddChatForm
           account={account}
-          channels={manifest?.provider === "slack"}
+          channels={manifest?.channelChats === true}
           client={client}
           onCancel={() => setAdding(false)}
           onCreated={() => {
@@ -938,9 +972,7 @@ function ProviderPicker({
           </div>
         ))}
         {dashboard && dashboard.providers.length === 0 ? (
-          <div className="card__empty">
-            No messaging providers are available on this deployment yet.
-          </div>
+          <div className="card__empty">No messaging providers are available on this Home yet.</div>
         ) : null}
       </div>
     </section>
@@ -1047,7 +1079,10 @@ function ProviderCredentials({
             {field.help ? <span className="field__hint">{field.help}</span> : null}
           </label>
         ))}
-        <p className="notice">Credentials are encrypted and never enter agent context.</p>
+        <p className="notice">
+          These tokens are stored encrypted and are not given to connected agents or your own
+          agents.
+        </p>
       </div>
     </div>
   );
@@ -1115,11 +1150,11 @@ function heading(view: View, providerLabel = "provider"): string {
 }
 
 function subheading(view: View): string {
-  if (view === "providers") return "Choose where you want to message your agents from.";
+  if (view === "providers") return "Choose where you want to message your own agents from.";
   if (view === "success") return "Link your own account, then add a chat.";
   if (view === "repair")
     return "Finish any provider-side changes, check again, or replace the saved credentials.";
-  if (view === "computer-setup") return "Your agents answer from one of your own Macs.";
+  if (view === "computer-setup") return "Your own agents answer from one of your Macs.";
   return "Bring a provider app you control. Its tokens are checked before anything is saved.";
 }
 
@@ -1131,12 +1166,6 @@ function statusChip(status: string): string {
       : status === "revoked"
         ? "chip--bad"
         : "";
-}
-
-function statusLabel(status: string): string {
-  const known = ["connected", "pending", "paused", "needs-attention", "revoked"] as const;
-  const id = known.find((candidate) => candidate === status);
-  return id ? agentWords(`messaging.status.${id}`) : status;
 }
 
 function message(reason: unknown): string {

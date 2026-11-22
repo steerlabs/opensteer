@@ -398,6 +398,14 @@ export class ChannelStore {
           .where("id", "=", connectionId)
           .where("connectionKind", "=", "channel")
           .executeTakeFirstOrThrow();
+        // A connection may hold several accounts (a shared bot): they are taken in id order.
+        await transaction
+          .selectFrom("channelAccounts")
+          .select("id")
+          .where("connectionId", "=", connectionId)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
         await transaction
           .updateTable("channelAccounts")
           .set({ status: status === "paused" ? "paused" : "connected", updatedAt: new Date() })

@@ -145,6 +145,9 @@ export const connectedAgentsCopy = {
   "common.close": "Close",
   "common.loading": "Loading…",
   "common.tryAgain": "Try again",
+  "agent.readFailed": "Couldn’t read your connected agents.",
+  "messaging.chats.loading": "Reading this account’s chats…",
+  "messaging.chats.readFailed": "Couldn’t read this account’s chats.",
   "common.cancel": "Cancel",
   "common.save": "Save",
   "common.saving": "Saving…",
@@ -157,9 +160,10 @@ export const connectedAgentsCopy = {
   "agent.status.unknown": "Not known to this app",
   "agent.status.unknownDetail":
     "Your Home says something this version of Opensteer doesn’t know. Update Opensteer to see whether it can still act.",
-  "chat.paused.you": "You paused this chat.",
+  "chat.paused.you": "You paused its messaging account.",
+  "chat.paused.unknown": "This chat is paused.",
   "chat.paused.attention": "Paused because {account} needs attention.",
-  "chat.paused.replies": "Its replies are held, and are sent in order when it’s back.",
+  "chat.paused.replies": "Its replies are held to be sent in order when it’s back.",
   "chat.paused.kept":
     "Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
   "chat.paused.lost": "Messages sent while this is paused are not delivered.",
@@ -183,6 +187,7 @@ export const connectedAgentsCopy = {
   "chat.speakers.fixed":
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
+  "chat.ended.unknown": "This chat has ended.",
   "chat.ended.organization": "Your organization turned off tasks for chats.",
   "chat.ended.account": "Its messaging account was disconnected.",
   "chat.ended.computer": "The Mac it used was removed, or can no longer use Messages.",
@@ -200,11 +205,13 @@ export const connectedAgentsCopy = {
   "chat.tasks.stopping": "Stopping…",
   "chat.tasks.open": "Open",
   "chat.row": "{where} · {summary}",
+  "chat.grant.tasks": "Always on: a chat can only ask your own agents to work.",
+  "chat.grant.refused": "This chat can’t use that",
   "messaging.title": "Messaging",
   "messaging.lead":
     "Message your own agents from Slack or iMessage. Each chat is a connected agent: you choose what it can use, and you can stop or disconnect it like any other.",
   "messaging.add": "Add an account",
-  "messaging.empty": "No messaging account yet. Add one to message your agents.",
+  "messaging.empty": "No messaging account yet. Add one to message your own agents.",
   "messaging.loading": "Loading your messaging accounts…",
   "messaging.readFailed": "Couldn’t read your messaging accounts.",
   "messaging.status.connected": "Connected",
@@ -212,6 +219,8 @@ export const connectedAgentsCopy = {
   "messaging.status.paused": "Paused",
   "messaging.status.needs-attention": "Needs attention",
   "messaging.status.revoked": "Removed",
+  "messaging.status.unknown": "Not known to this app",
+  "messaging.status.stale": "Not read just now",
   "messaging.pause": "Pause",
   "messaging.resume": "Resume",
   "messaging.check": "Check again",
@@ -219,16 +228,22 @@ export const connectedAgentsCopy = {
   "messaging.remove": "Remove account",
   "messaging.remove.title": "Remove {account}?",
   "messaging.remove.body":
-    "Every chat on it ends, and nothing sent there gives your agents work again. Replies that may already have been sent can’t be taken back.",
+    "Every chat on it ends, and nothing sent there gives your own agents work again. Replies that may already have been sent can’t be taken back.",
+  "messaging.pausedNoteUnknown": "Paused: its chats hold their replies until you resume it.",
   "messaging.pausedNote": "Paused: its chats hold their replies until you resume it. {sent}",
   "messaging.me.title": "You on {provider}",
-  "messaging.me.linked": "{identity} is you. Only messages from it give your chats work.",
+  "messaging.me.linked": "{identity} is you. Messages from it count as you in your chats.",
   "messaging.me.none": "No {provider} account is linked as you yet.",
   "messaging.me.link": "Link my account",
   "messaging.me.relink": "Link another account",
   "messaging.me.code":
     "Send {code} to {account} in a direct message from your own {provider} account. It works once, until {time}. Nothing is said in the chat; this page shows your account once it’s linked.",
   "messaging.me.replaces": "Linking another account replaces {identity} as you.",
+  "messaging.computer.none":
+    "No online Mac of yours has Messages turned on yet. Turn it on from that Mac’s Devices page first.",
+  "messaging.me.whenFixed":
+    "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
+  "messaging.me.whenResumed": "Once this account is resumed, sending the code links your account.",
   "messaging.chats.title": "Chats",
   "messaging.chats.empty": "No chat on this account yet.",
   "messaging.chats.add": "Add a chat",
@@ -290,7 +305,7 @@ export const connectedAgentsCopy = {
   "disconnect.step.stopped": "Stopped",
   "disconnect.stopping.label": "Stopping its work",
   "disconnect.stopping.detailGeneric":
-    "Waiting for your devices to confirm its work stopped. {agent} already can’t use anything.",
+    "Confirming with your devices that its work stopped. {agent} already can’t use anything.",
   "disconnect.stopped.label": "Disconnected",
   "disconnect.stopped.detailRevokedAt":
     "Its access ended at {time}, and everything it was doing has stopped.",

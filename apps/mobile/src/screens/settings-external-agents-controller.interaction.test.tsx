@@ -106,6 +106,25 @@ describe("Connected agents on the phone", () => {
     });
   });
 
+  it("lists chats with the connected agents, each opening as the connected agent it is", async () => {
+    await open(new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") }));
+    await vi.waitFor(() => expect(section("disconnected")).toBeDefined());
+    expect(lines("connected")).toEqual([
+      ["Claude", "Everything · Full access"],
+      ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
+      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
+      ["iMessage", "Paused · its replies are held until it’s back"],
+      ["Slack · On-call", "Paused · its replies are held until it’s back"],
+    ]);
+    expect(lines("disconnected")).toEqual([["Slack · #standup", "Disconnected"]]);
+    const team = section("connected")!.rows[2] as Extract<NativeSettingsRow, { kind: "button" }>;
+    await act(async () => team.onPress());
+    expect(state.navigate).toHaveBeenCalledWith("ConnectedAgent", {
+      deploymentId: "deployment-a",
+      connectionId: "mcn_00000000-0000-4000-8000-0000000000c2",
+    });
+  });
+
   it("lists only connected agents from a Home without grants", async () => {
     await open(
       new MockHostClient({

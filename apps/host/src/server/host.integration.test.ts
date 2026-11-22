@@ -2650,6 +2650,13 @@ describe("durable harness catalogs", () => {
         harnessInstanceId,
         id: threadId,
       }),
+      // A command on a task reads it through the reader rule (`readTask`), as the real store does.
+      readTask: async () => ({
+        accessMode: "full-access" as const,
+        environmentId,
+        harnessInstanceId,
+        id: threadId,
+      }),
       notificationState: {
         quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [

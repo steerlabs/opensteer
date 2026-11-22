@@ -2,6 +2,8 @@ import { workWords } from "./agent-work-copy.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
+  chatGrantRefusal,
+  type ChatGrantShape,
   agentGrantResourceKey,
   type AgentGrant,
   type AgentGrantResource,
@@ -344,25 +346,33 @@ function usedLine(lastUsedAt: string | null, now: Date): string {
  */
 export function pausedDetail(connection: Pick<AgentConnection, "bridge">): string {
   const bridge = connection.bridge;
-  const attention = bridge?.pausedBy === "needs-attention";
-  const sent =
-    bridge?.pausedMessages === "kept"
-      ? agentWords("chat.paused.kept")
-      : agentWords("chat.paused.lost");
-  return [
-    attention
+  // Each sentence only from a value the Home sent: a missing or new one says nothing it can't.
+  const by = bridge?.pausedBy;
+  const cause =
+    by === "needs-attention"
       ? agentWords("chat.paused.attention", {
           account: bridge?.accountName ?? bridge?.provider ?? "",
         })
-      : agentWords("chat.paused.you"),
-    agentWords("chat.paused.replies"),
-    sent,
-    attention
+      : by === "you"
+        ? agentWords("chat.paused.you")
+        : agentWords("chat.paused.unknown");
+  const sent =
+    bridge?.pausedMessages === "kept"
+      ? agentWords("chat.paused.kept")
+      : bridge?.pausedMessages === "lost"
+        ? agentWords("chat.paused.lost")
+        : null;
+  const next =
+    by === "needs-attention"
       ? bridge?.pauseDetail
         ? agentWords("chat.paused.attentionDetail", { detail: bridge.pauseDetail })
         : agentWords("chat.paused.attentionFix")
-      : agentWords("chat.paused.resume"),
-  ].join(" ");
+      : by === "you"
+        ? agentWords("chat.paused.resume")
+        : null;
+  return [cause, agentWords("chat.paused.replies"), sent, next]
+    .filter((part): part is string => part !== null)
+    .join(" ");
 }
 
 /** The status at the top of an agent's page. */
@@ -481,14 +491,20 @@ export function connectedAgentDetail(
     accessMode: connection.accessMode,
     live,
     activity: options.activity ?? { kind: "unavailable" },
+    // What it calls itself and the address it signed in from are facts of an agent that signed
+    // in; a chat did neither, so it shows neither.
     about: [
-      ...(identity.clientName !== identity.label
-        ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
-        : []),
-      {
-        label: agentWords("agent.about.origin"),
-        value: identity.origin ?? agentWords("agent.about.originUnknown"),
-      },
+      ...(connection.bridge
+        ? []
+        : [
+            ...(identity.clientName !== identity.label
+              ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
+              : []),
+            {
+              label: agentWords("agent.about.origin"),
+              value: identity.origin ?? agentWords("agent.about.originUnknown"),
+            },
+          ]),
       { label: agentWords("agent.about.connected"), value: formatDay(connection.createdAt) },
       ...(row.phase === "active" && connection.expiresAt
         ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]
@@ -513,10 +529,37 @@ export interface AgentGrantDraft {
   readonly newProfile: { readonly homeRunnerId: string | null } | null;
 }
 
-export function draftFromGrant(grant: AgentGrant): AgentGrantDraft {
+/**
+ * A grant as a draft. For a chat (`chat`, the shape the Home sends) Tasks is on in the draft
+ * itself, whatever the scope: a chat always holds tasks, so what the editor draws and what it
+ * saves are the same value, on the web and on the phone.
+ */
+export function draftFromGrant(grant: AgentGrant, chat?: ChatGrantShape): AgentGrantDraft {
   return grant.scope === "everything"
-    ? { scope: "everything", tasks: false, resources: [], newProfile: null }
-    : { scope: "selected", tasks: grant.tasks, resources: grant.resources, newProfile: null };
+    ? { scope: "everything", tasks: chat !== undefined, resources: [], newProfile: null }
+    : {
+        scope: "selected",
+        tasks: chat !== undefined || grant.tasks,
+        resources: grant.resources,
+        newProfile: null,
+      };
+}
+
+/** Stands for a profile a draft would create; the Home's rule only reads its kind. */
+const profileToCreate = "bpr_00000000-0000-4000-8000-000000000000";
+
+/**
+ * Whether the Home would refuse this draft for a chat of this shape: asked of the exact grant
+ * the person is about to save, with a stand-in profile only when the draft creates one.
+ */
+export function chatDraftRefusal(chat: ChatGrantShape, draft: AgentGrantDraft) {
+  return chatGrantRefusal(
+    chat,
+    grantFromDraft(
+      draft,
+      draft.scope === "selected" && draft.newProfile !== null ? profileToCreate : undefined,
+    ),
+  );
 }
 
 /** The grant a draft stands for, once any new profile exists. */

@@ -3,7 +3,7 @@ import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -356,6 +356,19 @@ describe("one connected agent", () => {
     expect(buttonNamed(page, "Remove from list")).toBeTruthy();
   });
 
+  it("stays on the page, saying why, when Remove from list was not confirmed", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${oldNotes}`);
+    await vi.waitFor(() => expect(status(page)).toContain("Disconnected"));
+    vi.spyOn(host, "dispatch").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await act(async () => buttonNamed(page, "Remove from list").click());
+    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')).not.toBeNull());
+    expect(path).toBe(`${base}/${oldNotes}`);
+    expect(buttonNamed(page, "Remove from list")).toBeTruthy();
+  });
+
   it("says when an agent isn't connected anymore", async () => {
     host = seeded([]);
     const page = await mount(host, `${base}/${grok}`);
@@ -380,6 +393,21 @@ describe("one connected agent", () => {
   });
 });
 
+/** Pauses Workshop, as a person does on Messaging: its chats pause with it. */
+async function pauseWorkshop(client: MockHostClient) {
+  const dashboard = await client.rpc["channels.get"]({});
+  if (!dashboard.ok) throw new Error("No messaging accounts");
+  const workshop = dashboard.data.connections.find(
+    ({ displayName }) => displayName === "Workshop",
+  )!;
+  await client.dispatch({
+    type: "channel.connection.status.set",
+    connectionId: workshop.id,
+    status: "paused",
+    idempotencyKey: mutationIdempotencyKey("channel-status"),
+  });
+}
+
 describe("a chat, as a connected agent", () => {
   const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
   const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
@@ -388,9 +416,11 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const page = await mount(host);
     await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
+    // Beside an ordinary connected agent; #team speaks through Workshop, which is connected.
     expect(rows(page, "Connected")).toEqual([
+      ["Claude", "Everything · Full access"],
       ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
-      ["Slack · #team", "Paused · its replies are held until it’s back"],
+      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
       ["iMessage", "Paused · its replies are held until it’s back"],
       ["Slack · On-call", "Paused · its replies are held until it’s back"],
     ]);
@@ -430,20 +460,22 @@ describe("a chat, as a connected agent", () => {
   it.each([
     [
       2,
-      "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
     ],
     [
       3,
-      "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held to be sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
     ],
     [
       4,
-      "Paused because On-call needs attention. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
+      "Paused because On-call needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
     ],
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
     async (n, sentence) => {
       host = chats();
+      // #team speaks through Workshop: paused only once Workshop is.
+      if (n === 2) await pauseWorkshop(host);
       const page = await mount(host, `${base}/${chat(n)}`);
       await vi.waitFor(() => expect(status(page)).toContain("Paused"));
       expect(status(page)).toContain(sentence);
@@ -483,6 +515,65 @@ describe("a chat, as a connected agent", () => {
     );
   });
 
+  it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
+    host = chats();
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn’t read your connected agents."),
+    );
+    expect(page.textContent).not.toContain(agentWords("agent.notFound"));
+    expect(buttonNamed(page, "Try again")).toBeTruthy();
+  });
+
+  it("shows a chat none of a signed-in agent's identity lines", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    for (const id of [
+      "agent.about.says",
+      "agent.about.origin",
+      "agent.about.originUnknown",
+    ] as const)
+      expect(page.textContent, id).not.toContain(agentWords(id));
+    expect(page.textContent).not.toMatch(/Says it is|an app on this computer/u);
+  });
+
+  it("offers an anyone chat only what the Home says it may hold, and keeps Tasks on", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    const text = page.textContent ?? "";
+    for (const id of [
+      "consent.scope.everything.label",
+      "consent.browser.title",
+      "consent.apps.title",
+    ] as const)
+      expect(text, id).not.toContain(agentWords(id));
+    expect(text).toContain(agentWords("consent.plugins.title"));
+    const tasks = page.querySelector<HTMLInputElement>(
+      'input[aria-labelledby="agent-grant-tasks"]',
+    );
+    expect(tasks).toMatchObject({ checked: true, disabled: true });
+    expect(text).toContain("Always on: a chat can only ask your own agents to work.");
+  });
+
+  it("offers a chat for you alone everything a connected agent may hold, with Tasks still on", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("You, as Tim"));
+    expect(page.textContent).toContain(agentWords("consent.scope.everything.label"));
+    expect(page.textContent).toContain(agentWords("consent.browser.title"));
+    expect(
+      page.querySelector<HTMLInputElement>('input[aria-labelledby="agent-grant-tasks"]'),
+    ).toMatchObject({ checked: true, disabled: true });
+  });
+
   it("says why an ended chat ended and offers nothing that pretends to resume it", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(5)}`);
@@ -494,5 +585,187 @@ describe("a chat, as a connected agent", () => {
     const labels = [...page.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(labels.some((label) => /resume|disconnect|stop$/iu.test(label))).toBe(false);
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).toBeNull();
+  });
+
+  it("previews a Home that can't be read: a chat's page says so, never that it is gone", async () => {
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-unreadable") });
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn’t read your connected agents."),
+    );
+    expect(page.textContent).not.toContain("isn’t connected anymore");
+    expect(buttonNamed(page, "Try again")).toBeTruthy();
+  });
+
+  it("says who can give a chat work when nobody is linked as you yet", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(4)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("You, once you link your account"));
+    expect(page.textContent).toContain(
+      "No Slack account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
+    );
+  });
+
+  it("says a chat ended with its account, and one ended for a reason this app doesn’t know as ended", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      connections: scene.connections.map((row) =>
+        row.id === chat(5)
+          ? { ...row, bridge: { ...row.bridge!, endedBy: "newer" as never } }
+          : row,
+      ),
+    });
+    const dashboard = await host.rpc["channels.get"]({});
+    if (!dashboard.ok) throw new Error("No messaging accounts");
+    await host.dispatch({
+      type: "channel.connection.status.set",
+      connectionId: dashboard.data.connections.find(({ displayName }) => displayName === "On-call")!
+        .id,
+      status: "revoked",
+      idempotencyKey: mutationIdempotencyKey("channel-remove"),
+    });
+    const page = await mount(host, `${base}/${chat(4)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain(
+        "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
+      ),
+    );
+    act(() => root?.unmount());
+    const other = await mount(host, `${base}/${chat(5)}`);
+    await vi.waitFor(() => expect(other.textContent).toContain("This chat has ended."));
+    expect(other.textContent).not.toContain("You disconnected it.");
+  });
+
+  it("says why a task could not be stopped, and keeps its Stop", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    vi.spyOn(host, "stopRun").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await act(async () => buttonNamed(page, "Stop").click());
+    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')?.textContent).toBeTruthy());
+    expect(page.querySelector('[role="alert"]')?.textContent).not.toContain("down");
+    expect(buttonNamed(page, "Stop")).toBeTruthy();
+  });
+
+  it("saves an anyone chat's safety mode and then a plugin, refusing neither", async () => {
+    host = chats();
+    const dispatch = vi.spyOn(host, "dispatch");
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack · #team"));
+    await act(async () => page.querySelector<HTMLInputElement>('input[value="auto"]')!.click());
+    await act(async () => buttonNamed(page, "Save").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.update", accessMode: "auto" }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+    await vi.waitFor(() => expect(page.textContent).toContain("Saved."));
+    await act(async () =>
+      page.querySelector<HTMLButtonElement>('button[aria-controls="agent-grant-plugins"]')!.click(),
+    );
+    await vi.waitFor(() =>
+      expect(page.querySelector("#agent-grant-plugins .agent-grant__plugin")).not.toBeNull(),
+    );
+    const plugin = page.querySelector("#agent-grant-plugins .agent-grant__plugin")!;
+    const read = [...plugin.querySelectorAll<HTMLElement>("button, input")].find(
+      (element) =>
+        element.textContent === agentWords("consent.plugins.read") ||
+        element.getAttribute("aria-label") === agentWords("consent.plugins.read") ||
+        (element as HTMLInputElement).value === "read",
+    )!;
+    await act(async () => read.click());
+    await act(async () => buttonNamed(page, "Save").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: expect.objectContaining({
+            scope: "selected",
+            tasks: true,
+            resources: [expect.objectContaining({ kind: "plugin" })],
+          }),
+        }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("narrows a chat that could do everything to what you choose, with Tasks kept on", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      connections: scene.connections.map((row) =>
+        row.id === chat(1) ? { ...row, grant: { scope: "everything" as const } } : row,
+      ),
+    });
+    const dispatch = vi.spyOn(host, "dispatch");
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Disconnect Slack"));
+    await act(async () => page.querySelector<HTMLInputElement>('input[value="selected"]')!.click());
+    // What is drawn is what is saved.
+    expect(
+      page.querySelector<HTMLInputElement>('input[aria-labelledby="agent-grant-tasks"]')!.checked,
+    ).toBe(true);
+    expect(page.textContent).not.toContain("can’t use anything until you choose something");
+    await act(async () => buttonNamed(page, "Save").click());
+    await act(async () => buttonNamed(page, "Limit").click());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: { scope: "selected", tasks: true, resources: [] },
+        }),
+      ),
+    );
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("offers no Chrome pairing note and no Plugins where the chat's shape does not", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      chromeTabs: { chromeTabs: [], chromeTabsNeedPairing: true },
+      connections: scene.connections.map((row) =>
+        row.id === chat(3)
+          ? {
+              ...row,
+              bridge: {
+                ...row.bridge!,
+                grantShape: { everything: false, resources: [], tasks: "required" as const },
+              },
+            }
+          : row,
+      ),
+    });
+    const team = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    expect(team.textContent).toContain(agentWords("consent.plugins.title"));
+    expect(team.textContent).not.toContain(agentWords("consent.chromeTabs.repair"));
+    act(() => root?.unmount());
+    const tasksOnly = await mount(host, `${base}/${chat(3)}`);
+    await vi.waitFor(() => expect(tasksOnly.textContent).toContain("Disconnect iMessage"));
+    expect(tasksOnly.textContent).not.toContain(agentWords("consent.plugins.title"));
+  });
+
+  it("warns about Tasks only where Tasks is the person's choice, never on a chat", async () => {
+    host = chats();
+    const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
+    const team = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    expect(team.textContent).toContain("Only what you pick below.");
+    expect(team.textContent).not.toContain(warning);
+    act(() => root?.unmount());
+    host.dispose();
+    host = seeded();
+    const trips = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
+    await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect Trip planner"));
+    expect(trips.textContent).toContain(warning);
   });
 });

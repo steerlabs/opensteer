@@ -6,8 +6,10 @@ import {
   agentWords,
   chatFacts,
   connectedAgentConnected,
+  connectionsRead,
   connectedAgentDetail,
   createDedicatedProfile,
+  chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
   sameGrant,
@@ -22,7 +24,7 @@ import {
   useConnectedAgents,
   useWorkPolicy,
 } from "@opensteer/client/react";
-import type { ThreadAccessMode } from "@opensteer/core";
+import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
@@ -69,18 +71,35 @@ export function ConnectedAgentPage({
     </Link>
   );
   if (!connection) {
-    if (agents.connections === null && !agents.error)
+    // Only a read answer may say it is gone: still reading, or a read that failed, says so.
+    const read = connectionsRead(agents);
+    if (read === "loading")
       return (
         <>
           {back}
           <p role="status">{agentWords("common.loading")}</p>
         </>
       );
+    if (read === "failed")
+      return (
+        <>
+          {back}
+          <p className="notice notice--error" role="alert">
+            {agentWords("agent.readFailed")}{" "}
+            <button
+              className="btn btn--small"
+              onClick={() => void agents.refresh?.()}
+              type="button"
+            >
+              {agentWords("common.tryAgain")}
+            </button>
+          </p>
+        </>
+      );
     return (
       <>
         {back}
         <SectionHeader title={agentWords("agent.notFound")} />
-        <SettingsError message={agents.error} />
       </>
     );
   }
@@ -96,10 +115,12 @@ export function ConnectedAgentPage({
   const agent = detail.row.identity.label;
   // A chat is a connected agent with two facts of its own: where it listens, who may speak.
   const chat = chatFacts(connection, detail.row.phase);
+  // What a chat's grant may hold, as the Home says; the editor offers only that.
+  const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const connected = connectedAgentConnected(detail.row.phase);
   // An edit belongs to the revision it was made against; a newer one shows what is set now.
   const current = edit && edit.revision === detail.revision ? edit : null;
-  const draft = current?.draft ?? draftFromGrant(detail.grant);
+  const draft = current?.draft ?? draftFromGrant(detail.grant, chatShape);
   const mode = current?.mode ?? detail.accessMode;
   const dirty =
     current !== null &&
@@ -117,6 +138,12 @@ export function ConnectedAgentPage({
     if (!current || !agents.update) return;
     let draftToSave = current.draft;
     let created: string | undefined;
+    // Nothing is created for a grant the Home would refuse: asked of the Home's own rule first.
+    const refusal = chatShape ? chatDraftRefusal(chatShape, draftToSave) : null;
+    if (refusal) {
+      setProfileError(refusal.message);
+      return;
+    }
     if (draftToSave.scope === "selected" && draftToSave.newProfile) {
       setCreating(true);
       setProfileError(null);
@@ -192,6 +219,7 @@ export function ConnectedAgentPage({
       {detail.editable && workPolicy !== undefined ? (
         <>
           <AgentGrantEditor
+            chat={chatShape}
             agent={agent}
             browser={browser}
             chromeTabs={chromeTabs}
@@ -265,7 +293,12 @@ export function ConnectedAgentPage({
           <button
             className="btn"
             disabled={busy}
-            onClick={() => void agents.remove?.(connection.id).then(() => navigate(".."))}
+            onClick={() =>
+              // Leaves the page only once it is gone; otherwise the page says why it is not.
+              void agents.remove?.(connection.id).then((removed) => {
+                if (removed) void navigate("..");
+              })
+            }
             type="button"
           >
             {pending === "remove"

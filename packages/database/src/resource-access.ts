@@ -126,7 +126,10 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
-export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
+export const tasksWithdrawnMessage =
+  "This connected agent may no longer ask your own agents to work.";
+/** The same refusal for a chat; it is recorded with the message the chat sent. */
+export const chatTasksWithdrawnMessage = "This chat may no longer ask your own agents to work.";
 
 interface ConnectionTargetCheck {
   readonly grantTarget?: AgentGrantTarget | undefined;
@@ -258,6 +261,28 @@ export async function connectionWaiting(
     .where("userId", "=", ownerUserId)
     .executeTakeFirst();
   return row?.state === "waiting";
+}
+
+/**
+ * Where a connection stands for new delegated work, read as one fact in one statement: `live`
+ * (its state is live and its grant holds Tasks), `waiting` (a chat whose account is paused or
+ * needs attention: its work is held) or `ended`. The same state and grant rule as
+ * `liveDelegatingConnection`, for a caller that must tell held from lost.
+ */
+export async function delegatingConnectionStanding(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<"live" | "waiting" | "ended"> {
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(["grant", connectionState(database).as("state")])
+    .where("id", "=", agentConnectionId)
+    .where("userId", "=", ownerUserId)
+    .executeTakeFirst();
+  if (!row || row.state === "ended") return "ended";
+  if (row.state === "waiting") return "waiting";
+  return agentGrantAllowsTasks(AgentGrantSchema.parse(row.grant)) ? "live" : "ended";
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */

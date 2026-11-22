@@ -72,8 +72,20 @@ export const AgentConnectionBridgeSchema = z.object({
   provider: z.string().min(1).max(100),
   conversationId: z.string().min(1).max(512).nullable(),
   senders: BridgeSendersSchema,
+  /**
+   * What its grant may contain (core's `chatGrantShape`): whether everything may be chosen,
+   * which kinds of resource, and that Tasks is required. A screen offers only this.
+   */
+  grantShape: z
+    .object({
+      everything: z.boolean(),
+      resources: z.array(z.string().min(1).max(64)).max(16),
+      tasks: z.literal("required"),
+    })
+    .optional(),
   /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
-  notice: z.enum(["converted", "converted-without-channels"]).optional(),
+  // A notice from a newer Home reads as none: there is nothing this app could show for it.
+  notice: z.enum(["converted", "converted-without-channels"]).optional().catch(undefined),
   /** The chat account it speaks through: the Slack workspace, or the Mac's iMessage address. */
   accountName: z.string().min(1).max(160).optional(),
   /** The channel's name, for a chat in one channel; null for direct messages. */
@@ -89,16 +101,17 @@ export const AgentConnectionBridgeSchema = z.object({
     .nullable()
     .optional(),
   /** Why a paused chat is paused: the person paused it, or its account needs attention. */
-  pausedBy: z.enum(["you", "needs-attention"]).optional(),
+  // A value from a newer Home reads as not said, never as a list that can't be read.
+  pausedBy: z.enum(["you", "needs-attention"]).optional().catch(undefined),
   /** What the account needs, when it needs attention, as the account reports it. */
   pauseDetail: z.string().max(500).nullable().optional(),
   /**
    * What happens to a message sent to a paused chat: `kept`, it arrives when the chat is back
    * (one more than an hour old is answered that it came too late); `lost`, it is not delivered.
    */
-  pausedMessages: z.enum(["kept", "lost"]).optional(),
-  /** Why an ended chat ended. */
-  endedBy: ChatEndedBySchema.optional(),
+  pausedMessages: z.enum(["kept", "lost"]).optional().catch(undefined),
+  /** Why an ended chat ended; a cause from a newer Home reads as not said. */
+  endedBy: ChatEndedBySchema.optional().catch(undefined),
   /** Replies whose delivery is not known: they may have been sent, and are never sent again. */
   unknownReplies: z.number().int().nonnegative().optional(),
   /** Its most recent tasks, newest first: its recent work, and what Stop can stop. */
@@ -132,7 +145,12 @@ export const AgentConnectionSchema = z.object({
       redirectOrigin: z.string().max(2048).nullable(),
     })
     .optional(),
-  state: AgentConnectionStateSchema.optional(),
+  /**
+   * Where it stands. A state from a newer Home is kept as it was said, so the row reads as
+   * unknown (`connectedAgentPhase`), never as active or ended, and the rest of the list still
+   * reads; nothing here may turn it into undefined, which means active.
+   */
+  state: z.union([AgentConnectionStateSchema, z.string().min(1).max(64)]).optional(),
   /** Contact was lost with work in its lineage mid-effect while it was being stopped. */
   lastActionUncertain: z.boolean().optional(),
   /** What to check: the Device, the task or tool, and when contact was lost. */

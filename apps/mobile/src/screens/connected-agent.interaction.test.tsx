@@ -3,7 +3,7 @@
 import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -278,7 +278,7 @@ describe("one connected agent on the phone", () => {
     });
     await press(row("mode", "auto"));
     await vi.waitFor(() =>
-      expect(section("status")?.footer?.text).toBe(
+      expect(section("conflict")?.footer?.text).toBe(
         "This changed on another device. Showing what’s set now.",
       ),
     );
@@ -391,6 +391,16 @@ describe("one connected agent on the phone", () => {
     expect(row("end", "remove").label).toBe("Remove from list");
   });
 
+  it("stays on the page, saying why, when Remove from list was not confirmed", async () => {
+    const client = await open(oldNotes);
+    vi.spyOn(client, "dispatch").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await press(row("end", "remove"));
+    await vi.waitFor(() => expect(section("error")?.footer?.tone).toBe("danger"));
+    expect(state.goBack).not.toHaveBeenCalled();
+  });
+
   it("says when an agent isn't connected anymore", async () => {
     host = new MockHostClient({ latencyMs: 0 });
     root = createRoot(document.body.appendChild(document.createElement("div")));
@@ -423,6 +433,21 @@ describe("one connected agent on the phone", () => {
   });
 });
 
+/** Pauses Workshop, as a person does on Messaging: its chats pause with it. */
+async function pauseWorkshop(client: MockHostClient) {
+  const dashboard = await client.rpc["channels.get"]({});
+  if (!dashboard.ok) throw new Error("No messaging accounts");
+  const workshop = dashboard.data.connections.find(
+    ({ displayName }) => displayName === "Workshop",
+  )!;
+  await client.dispatch({
+    type: "channel.connection.status.set",
+    connectionId: workshop.id,
+    status: "paused",
+    idempotencyKey: mutationIdempotencyKey("channel-status"),
+  });
+}
+
 describe("a chat on the phone", () => {
   const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
   const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
@@ -444,6 +469,40 @@ describe("a chat on the phone", () => {
     expect(row("end", "disconnect").label).toBe("Disconnect Slack");
   });
 
+  it("shows a Stop in flight as Stopping and sends no second one", async () => {
+    const client = await open(chat(1), chats());
+    let finish = () => {};
+    const stop = vi
+      .spyOn(client, "stopRun")
+      .mockImplementation(() => new Promise<void>((done) => (finish = done)));
+    const key = "thr_00000000-0000-4000-8000-0000000000c1-stop";
+    await press(row("chat-tasks", key));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+    await press(row("chat-tasks", key));
+    expect(stop).toHaveBeenCalledOnce();
+    await act(async () => finish());
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+  });
+
+  it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
+    const client = await open(chat(3), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "connection.update")
+        throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
+      return real(command);
+    });
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(section("conflict")?.footer?.text).toBe(
+        "This changed on another device. Showing what’s set now.",
+      ),
+    );
+    expect(section("status")?.footer?.text).toContain(
+      "Messages sent while this is paused arrive when it’s back;",
+    );
+  });
+
   it.each([
     [2, "Messages sent while this is paused are not delivered."],
     [
@@ -454,12 +513,79 @@ describe("a chat on the phone", () => {
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
     async (n, sentence) => {
-      await open(chat(n), chats());
+      const client = chats();
+      // #team speaks through Workshop: paused only once Workshop is.
+      if (n === 2) await pauseWorkshop(client);
+      await open(chat(n), client);
       expect(status()).toMatchObject({ label: "Paused", tone: "attention" });
       expect(section("status")?.footer?.text).toContain(sentence);
       expect(section("end")?.rows[0]?.label).toMatch(/^Disconnect /u);
     },
   );
+
+  it("offers an anyone chat only what it may hold, keeps Tasks on, and limits a chat with Tasks kept", async () => {
+    await open(chat(2), chats());
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of [
+      "consent.scope.everything.label",
+      "consent.browser.title",
+      "consent.apps.title",
+    ] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels).toContain(agentWords("consent.plugins.title"));
+    expect(row("tasks", "tasks")).toMatchObject({ value: true, disabled: true });
+    // A chat for you alone that can do everything is limited with Tasks kept, never refused.
+    const scene = mockConnectedAgents("chats");
+    const everything = scene.connections.map((row) =>
+      row.id === chat(1) ? { ...row, grant: { scope: "everything" as const } } : row,
+    );
+    const owner = new MockHostClient({ latencyMs: 0, ...scene, connections: everything });
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), owner);
+    const dispatch = vi.spyOn(owner, "dispatch");
+    await press(row("scope", "selected"));
+    await answer(agentWords("agent.narrow.confirm"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      }),
+    );
+  });
+
+  it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
+    const client = chats();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    host = client;
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () =>
+      root!.render(
+        <ConnectedAgentController
+          connectionId={chat(1)}
+          deploymentId="deployment-a"
+          host={client}
+        />,
+      ),
+    );
+    await vi.waitFor(() => expect(section("unreadable")).toBeDefined());
+    expect(row("unreadable", "unreadable").label).toBe("Couldn’t read your connected agents.");
+    expect(section("gone")).toBeUndefined();
+  });
+
+  it("shows a chat none of a signed-in agent's identity lines", async () => {
+    await open(chat(2), chats());
+    expect(section("who")).toBeUndefined();
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of ["agent.about.says", "agent.about.origin"] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels.join(" ")).not.toMatch(/Says it is|an app on this computer/u);
+  });
 
   it("says a reply may have been sent, never that it failed", async () => {
     await open(chat(4), chats());
@@ -477,5 +603,121 @@ describe("a chat on the phone", () => {
       s.rows.filter((r) => r.kind === "button").map((r) => r.label),
     );
     expect(buttons.filter((label) => /^(Stop|Disconnect|Resume)/u.test(label))).toEqual([]);
+  });
+
+  it("says who can give a chat work when nobody is linked as you yet", async () => {
+    await open(chat(4), chats());
+    expect(row("chat-speakers", "speakers")).toMatchObject({
+      label: "You, once you link your account",
+      detail:
+        "No Slack account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
+    });
+  });
+
+  it("says a chat ended with its account", async () => {
+    const client = chats();
+    const dashboard = await client.rpc["channels.get"]({});
+    if (!dashboard.ok) throw new Error("No messaging accounts");
+    await client.dispatch({
+      type: "channel.connection.status.set",
+      connectionId: dashboard.data.connections.find(({ displayName }) => displayName === "On-call")!
+        .id,
+      status: "revoked",
+      idempotencyKey: mutationIdempotencyKey("channel-remove"),
+    });
+    await open(chat(4), client);
+    await vi.waitFor(() =>
+      expect(row("chat-ended", "ended").label).toBe(
+        "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
+      ),
+    );
+  });
+
+  it("says why a task could not be stopped, in words, never the raw error", async () => {
+    const client = await open(chat(1), chats());
+    vi.spyOn(client, "stopRun").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toBeTruthy();
+    expect(state.alerts.at(-1)?.body).not.toContain("down");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
+  });
+
+  it("saves an anyone chat's safety mode and then a plugin, refusing neither", async () => {
+    const client = await open(chat(2), chats());
+    const dispatch = vi.spyOn(client, "dispatch");
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "connection.update", accessMode: "auto" }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+    await vi.waitFor(() => expect(section("status")).toBeDefined());
+    await press(row("resources", "plugins"));
+    await vi.waitFor(() => expect(section("plugins", state.sheet)?.rows.length).toBeGreaterThan(0));
+    const plugin = section("plugins", state.sheet)!.rows[0]!;
+    if (plugin.kind !== "chips") throw new Error("Not a plugin choice");
+    await act(async () => plugin.onChange("read"));
+    await act(async () => state.sheet!.sheet!.onClose());
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          type: "connection.update",
+          grant: expect.objectContaining({
+            scope: "selected",
+            tasks: true,
+            resources: [expect.objectContaining({ kind: "plugin" })],
+          }),
+        }),
+      ),
+    );
+    expect(state.alerts).toEqual([]);
+  });
+
+  it("offers no Chrome pairing note and no Plugins where the chat's shape does not", async () => {
+    const scene = mockConnectedAgents("chats");
+    const client = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      chromeTabs: { chromeTabs: [], chromeTabsNeedPairing: true },
+      connections: scene.connections.map((row) =>
+        row.id === chat(3)
+          ? {
+              ...row,
+              bridge: {
+                ...row.bridge!,
+                grantShape: { everything: false, resources: [], tasks: "required" as const },
+              },
+            }
+          : row,
+      ),
+    });
+    await open(chat(2), client);
+    const texts = () =>
+      (state.page?.sections ?? []).flatMap((s) => [
+        ...s.rows.map((r) => r.label),
+        s.footer?.text ?? "",
+      ]);
+    await vi.waitFor(() => expect(texts()).toContain(agentWords("consent.plugins.title")));
+    expect(texts()).not.toContain(agentWords("consent.chromeTabs.repair"));
+    act(() => root?.unmount());
+    await open(chat(3), client);
+    expect(texts()).not.toContain(agentWords("consent.plugins.title"));
+  });
+
+  it("warns about Tasks only where Tasks is the person's choice, never on a chat", async () => {
+    const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
+    const footers = () => (state.page?.sections ?? []).map((s) => s.footer?.text ?? "");
+    await open(chat(2), chats());
+    expect(footers().some((text) => text.startsWith(warning))).toBe(false);
+    act(() => root?.unmount());
+    await open("mcn_00000000-0000-4000-8000-000000000003");
+    expect(footers().some((text) => text.startsWith(warning))).toBe(true);
   });
 });

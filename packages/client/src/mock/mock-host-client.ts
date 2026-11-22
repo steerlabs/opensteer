@@ -49,13 +49,20 @@ import {
   mockIphoneScreenSession,
   type MockIphoneScreenState,
 } from "./mock-screen-devices.js";
-import { DeviceIdSchema, isPhoneDisplayDefinitionId } from "@opensteer/core";
+import {
+  chatAddRefusals,
+  chatConsentRefusal,
+  chatGrantRefusal,
+  chatGrantShape,
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+} from "@opensteer/core";
 import {
   DeviceMachineAccessUpdateCommandSchema,
   type IphoneScreenAttachCommand,
   type IphoneScreenDetachCommand,
 } from "@opensteer/protocol";
-import { NeedsYouPageSchema } from "@opensteer/protocol";
+import { NeedsYouPageSchema, PersonalRemoteAccessStatusSchema } from "@opensteer/protocol";
 import {
   agentConnectionConsentRefusals,
   agentConnectionVerificationChangedMessage,
@@ -1872,6 +1879,8 @@ export interface MockHostClientOptions {
   chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
   grantsAvailable?: boolean;
+  /** Messaging accounts and connected agents can't be read, as on an unreachable Home. */
+  unreadable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
   portalOrigin?: string;
   /** How the Home is reached: a networked server or Cloud Computer, not this computer. */
@@ -2142,6 +2151,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "threads.activity": async (input) =>
       rpcSuccess(client.agentActivity({ threadId: input.threadId })),
     "connections.list": async (input) => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
       if (!client.grantsAvailable) return rpcSuccess({ connections });
       const activeIds = new Set(connections.map((connection) => connection.id));
@@ -2539,8 +2549,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     },
     "channel.connection.check": async (input) =>
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
-    "channels.get": async () =>
-      rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
+    "channels.get": async () => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
+      return rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels()));
+    },
     "plugins.overview.get": async () => {
       const deploymentId = DeploymentIdSchema.parse(client.getSnapshot().deploymentId!);
       const overview = client.settings.overview(deploymentId);
@@ -3491,7 +3503,9 @@ async function executeMockCommand(
       return unsupportedMockRpc();
     case "channel.chat.create":
       try {
-        return rpcSuccess({ connection: client.createChat(command), type: command.type });
+        const connection = client.createChat(command);
+        for (const listener of client.connectionsListeners) listener();
+        return rpcSuccess({ connection, type: command.type });
       } catch (error) {
         return mockRefusal(error);
       }
@@ -3509,6 +3523,8 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "channel.connection.status.set":
       await client.setChannelConnectionStatus(command.connectionId, command.status);
+      // Its chats paused, resumed or ended with it.
+      for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type });
     case "node.stop":
       await client.stopNode(command.threadId, command.nodeId);
@@ -4308,6 +4324,39 @@ export class MockHostClient implements HostClient {
     body: string,
   ): void {
     this.#state.receiveAgentInput(threadId, MessageAuthorSchema.parse(author), body);
+  }
+
+  /**
+   * Remote access on through Connect at `origin`, as a Home that has it reports it: an active
+   * Opensteer Account link and a signed route for this Home's own authority. It passes the
+   * protocol's own rules, so a preview never shows a status a Home could not send.
+   */
+  connectRemoteAccess(origin: string): void {
+    const authority = this.#state.remoteAdministration.authorityEnvelope;
+    this.setPersonalRemoteAccessStatus(
+      PersonalRemoteAccessStatusSchema.parse({
+        accountLink: {
+          issuer: "https://account.opensteer.invalid",
+          subject: "acct_00000000-0000-4000-8000-000000000001",
+          generation: "A".repeat(43),
+          state: "active",
+        },
+        generation: 1,
+        mode: "connect",
+        route: {
+          document: {
+            authority: authority.document,
+            documentVersion: 2,
+            purpose: "opensteer-personal-access-route",
+            route: { generation: 1, kind: "connect", origin },
+          },
+          publicKey: authority.publicKey,
+          schemaVersion: 1,
+          signature: authority.signature,
+        },
+        schemaVersion: 2,
+      }),
+    );
   }
 
   setPersonalRemoteAccessStatus(
@@ -5574,6 +5623,8 @@ export class MockHostClient implements HostClient {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
+    // A chat's task the Home lists as at work is stopped there (`MockHostState.stopRun`).
+    if (!run && !expectedRunId) return this.#state.stopRun(threadId);
     if (!run || (expectedRunId && run.id !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     await this.dispatch({
@@ -5905,6 +5956,7 @@ class MockHostState {
   agentHomeSettingsFile: AgentHomeSettingsFileView = { status: "missing" };
   readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
   readonly grantsAvailable: boolean;
+  readonly unreadable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private channels: import("@opensteer/channel-core").ChannelDashboard | null;
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
@@ -6007,6 +6059,18 @@ class MockHostState {
     if (!current) throw mockConflict("This connected agent is no longer connected.");
     if ((current.grantRevision ?? 1) !== command.expectedRevision)
       throw mockConflict("This connected agent changed since you opened it.");
+    // A chat's grant is refused by the Home's own rule, here as there.
+    const refusal =
+      current.bridge && command.grant
+        ? chatGrantRefusal(chatGrantShape(current.bridge.senders), command.grant)
+        : null;
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        reason: refusal.reason,
+        message: refusal.message,
+        status: 400,
+      });
     const next = {
       ...current,
       ...(command.label !== undefined ? { label: command.label } : {}),
@@ -6880,6 +6944,7 @@ class MockHostState {
       ]),
     ];
     this.grantsAvailable = options.grantsAvailable ?? true;
+    this.unreadable = options.unreadable === true;
     this.latencyMs = options.latencyMs ?? 420;
     this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());
@@ -10910,17 +10975,25 @@ class MockHostState {
   }
 
   async loadChannels() {
-    return (
-      this.channels ?? {
-        accounts: [],
-        connections: [],
-        deliveriesNeedingAttention: 0,
-        providers: [...channelProviderCatalog],
-      }
-    );
+    // As the Home lists them: a removed account and its connection are not listed.
+    const channels = this.channels ?? {
+      accounts: [],
+      connections: [],
+      deliveriesNeedingAttention: 0,
+      providers: [...channelProviderCatalog],
+    };
+    return {
+      ...channels,
+      accounts: channels.accounts.filter(({ status }) => status !== "revoked"),
+      connections: channels.connections.filter(({ status }) => status !== "revoked"),
+    };
   }
 
-  /** A chat added on a mock account: a connection with a grant, live at once. */
+  /**
+   * A chat added on a mock account, refused and placed as the Home does: who may speak and the
+   * grant by core's rule (`chatConsentRefusal`), a removed account and a conversation another
+   * chat answers in by the Home's words (`chatAddRefusals`), and its state by its account's.
+   */
   createChat(input: {
     readonly accountId: string;
     readonly conversation: { readonly id: string; readonly name: string } | null;
@@ -10928,13 +11001,56 @@ class MockHostState {
     readonly accessMode: import("@opensteer/core").ThreadAccessMode;
     readonly grant: import("@opensteer/core").AgentGrant;
   }): import("@opensteer/protocol").AgentConnection {
+    const refusal = chatConsentRefusal(input.senders, input.conversation !== null, input.grant);
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        ...(refusal.reason ? { reason: refusal.reason } : {}),
+        message: refusal.message,
+        status: 400,
+      });
     const account = this.channels?.accounts.find(({ id }) => id === input.accountId);
-    if (!account) throw new Error("Messaging account not found.");
+    if (!account || account.status === "revoked")
+      throw new HostClientRequestError({
+        code: "not_found",
+        message: chatAddRefusals.accountGone,
+        status: 404,
+      });
+    if (
+      this.connections.some(
+        (row) =>
+          row.bridge?.accountId === account.id &&
+          !row.revokedAt &&
+          (row.bridge.conversationId ?? "") === (input.conversation?.id ?? ""),
+      )
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: chatAddRefusals.conversationTaken,
+        status: 409,
+      });
     const provider =
       channelProviderCatalog.find((entry) => entry.provider === account.provider)?.label ??
       account.provider;
     const me = this.channels?.me?.find(({ accountId }) => accountId === account.id) ?? null;
     const now = this.now().toISOString();
+    // As on the Home: a chat is live while its account is connected and its channel is on
+    // (connecting counts), and waits, saying why, while its account is paused or needs attention.
+    const connection = this.channels?.connections.find(({ id }) => id === account.connectionId);
+    const live =
+      account.status === "connected" &&
+      ["pending", "connected", "needs-attention"].includes(connection?.status ?? "");
+    const paused = live
+      ? {}
+      : {
+          pausedBy:
+            account.status === "needs-attention" ? ("needs-attention" as const) : ("you" as const),
+          pauseDetail:
+            account.status === "needs-attention" ? (connection?.statusDetail ?? null) : null,
+          pausedMessages:
+            channelProviderCatalog.find((entry) => entry.provider === account.provider)
+              ?.pausedMessages ?? ("lost" as const),
+        };
     const chat: import("@opensteer/protocol").AgentConnection = {
       id: `mcn_${crypto.randomUUID()}`,
       userId: this.snapshot.user!.id,
@@ -10945,7 +11061,7 @@ class MockHostState {
       grantRevision: 1,
       consentVersion: 2,
       client: { fingerprint: null, redirectOrigin: null },
-      state: account.status === "connected" ? "active" : "paused",
+      state: live ? "active" : "paused",
       lastActionUncertain: false,
       revokedAt: null,
       createdAt: now,
@@ -10956,12 +11072,17 @@ class MockHostState {
         provider,
         conversationId: input.conversation?.id ?? null,
         senders: input.senders,
+        grantShape: {
+          ...chatGrantShape(input.senders),
+          resources: [...chatGrantShape(input.senders).resources],
+        },
         accountName: account.handle ?? account.displayName,
         conversationName: input.conversation?.name ?? null,
         channelConnectionId: account.connectionId,
         me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
         unknownReplies: 0,
         tasks: [],
+        ...paused,
       },
     };
     this.connections = [...this.connections, chat];
@@ -11047,10 +11168,40 @@ class MockHostState {
     _credentials: Readonly<Record<string, string>>,
   ): Promise<void> {}
 
+  /** What checking an account finds: ready when connected, otherwise what it reports. */
   async checkChannelConnection(
-    _connectionId: string,
+    connectionId: string,
   ): Promise<import("@opensteer/channel-core").ChannelConnectionInspection> {
-    throw new Error("The mock Host does not persist channel connections.");
+    const connection = this.channels?.connections.find(({ id }) => id === connectionId);
+    const account = this.channels?.accounts.find((row) => row.connectionId === connectionId);
+    if (!connection || !account) throw new Error("Messaging account not found.");
+    if (connection.status === "needs-attention")
+      return {
+        capabilities: [...connection.capabilities],
+        identity: null,
+        issues: [
+          {
+            code: "needs-attention",
+            kind: connection.statusReason ?? "credentials",
+            message: connection.statusDetail ?? "It needs attention.",
+            missing: [],
+          },
+        ],
+        ready: false,
+      };
+    return {
+      capabilities: [...connection.capabilities],
+      identity: {
+        accountDisplayName: account.displayName,
+        connectionDisplayName: connection.displayName,
+        externalAccountId: account.externalAccountId,
+        externalIdentityId: connection.externalIdentityId,
+        handle: account.handle,
+        metadata: {},
+      },
+      issues: [],
+      ready: true,
+    };
   }
 
   /** Pausing or resuming an account pauses or resumes every chat that speaks through it. */
@@ -11069,8 +11220,10 @@ class MockHostState {
         connection.id === connectionId
           ? {
               ...connection,
-              status: status === "connected" ? "connected" : status,
-              statusDetail: null,
+              // As on the Home: a resumed account connects again, and says so first.
+              status: status === "connected" ? "pending" : status,
+              statusDetail: status === "connected" ? "Reconnecting to messaging provider" : null,
+              statusReason: null,
             }
           : connection,
       ),
@@ -11078,19 +11231,20 @@ class MockHostState {
     const ended = new Date().toISOString();
     this.connections = this.connections.map((row) => {
       if (row.bridge?.channelConnectionId !== connectionId || row.revokedAt) return row;
-      if (status === "revoked")
-        return {
-          ...row,
-          state: "stopped",
-          revokedAt: ended,
-          bridge: { ...row.bridge, endedBy: "account" },
-        };
       const {
         pausedBy: _by,
         pauseDetail: _detail,
         pausedMessages: _messages,
         ...bridge
       } = row.bridge;
+      // Ended with its account: it is no longer paused, so nothing says why it was.
+      if (status === "revoked")
+        return {
+          ...row,
+          state: "stopped",
+          revokedAt: ended,
+          bridge: { ...bridge, endedBy: "account" },
+        };
       return status === "paused"
         ? {
             ...row,
@@ -12369,6 +12523,29 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
+    // A chat's task at work is stopped as the Home stops it: the stop is taken, and the task
+    // reads as running until its device answers, as it does on a Home.
+    if (
+      runId === undefined &&
+      expectedRunId === undefined &&
+      this.connections.some((row) =>
+        (row.bridge?.tasks ?? []).some(({ id, running }) => id === threadId && running),
+      )
+    ) {
+      // The stop changes the task, so the Home lists it first among its chat's recent work.
+      this.connections = this.connections.map((row) => {
+        const tasks = row.bridge?.tasks;
+        const task = tasks?.find(({ id }) => id === threadId);
+        return task && row.bridge
+          ? {
+              ...row,
+              bridge: { ...row.bridge, tasks: [task, ...tasks!.filter((t) => t !== task)] },
+            }
+          : row;
+      });
+      for (const listener of this.connectionsListeners) listener();
+      return;
+    }
     if (runId === undefined || (expectedRunId && runId !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
