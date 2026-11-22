@@ -319,6 +319,36 @@ describe("Stop everything", () => {
       await view.close();
     }
   });
+
+  it("shows a plain waiting line with Resume available while waiting for Home proof, then switches to the timestamp", async () => {
+    const waitingState: MenuBarStatus = {
+      ...menuBarStates.stopped,
+      stop: {
+        phase: "stopped",
+        stoppedAt: null,
+        offline: null,
+        problem: null,
+        confirmed: null,
+        waiting: "Stopped on this Mac. Waiting for your Home to confirm…",
+      },
+    };
+    const value = bridge(waitingState);
+    const view = await render(value);
+    try {
+      expect(view.text()).toContain("Stopped on this Mac. Waiting for your Home to confirm…");
+      expect(view.text()).not.toContain("confirmed");
+      expect(view.text()).not.toContain("Couldn’t");
+      expect(view.text()).not.toMatch(/Stopped everything on this Mac at/);
+      expect(view.node.querySelector('[role="alert"]')).toBeNull();
+      expect(view.button("Resume")).toBeDefined();
+
+      await act(async () => value.push(menuBarStates.stopped));
+      expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
+      expect(view.text()).not.toContain("Waiting for your Home");
+    } finally {
+      await view.close();
+    }
+  });
 });
 
 describe("footer", () => {

@@ -22,8 +22,19 @@ const unreadStop = menuBarWords("menubar.stop.unread");
 const unsavedResume = menuBarWords("menubar.resume.unsaved");
 const unconfirmedStop = menuBarWords("menubar.stop.unconfirmed");
 
+export type LocalStopHomeProofOutcome = "confirmed" | "not-needed" | "ended";
+
 interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
+  /**
+   * Keeps looking for the hosted Home's Stop proof after local containment
+   * finishes. Reject only on a permanent refusal; return `"ended"` if the Home
+   * was removed or replaced, or `"not-needed"` when this Mac hosts no Home.
+   */
+  readonly confirm?: (
+    stoppedSince: string,
+    signal: AbortSignal,
+  ) => Promise<LocalStopHomeProofOutcome>;
   readonly store: LocalStopStore;
   readonly log: ShutdownLog;
   readonly now?: () => Date;
@@ -35,7 +46,11 @@ export class DesktopLocalStop {
   #problem: string | null = null;
   #phase: MenuBarStopPhase = "stopping";
   #mode: string | null = null;
+  #locallyContained = false;
   #confirmedAt: string | null = null;
+  #confirming = false;
+  #lookGeneration = 0;
+  #lookAbort: AbortController | null = null;
   #transaction: Promise<void> = Promise.resolve();
 
   constructor(options: DesktopLocalStopOptions) {
@@ -62,21 +77,42 @@ export class DesktopLocalStop {
     return this.#phase === "stopped" ? this.#confirmedAt : null;
   }
 
+  get confirming(): boolean {
+    return (
+      this.#phase === "stopped" &&
+      this.#confirming &&
+      this.#confirmedAt === null &&
+      this.#problem === null
+    );
+  }
+
+  dispose(): void {
+    this.#cancelLook();
+  }
+
   async restore(): Promise<void> {
+    this.#cancelLook();
+    this.#confirmedAt = null;
+    this.#locallyContained = false;
     try {
       const saved = await this.#options.store.load();
       this.#mode = saved.stopped ? (saved.at ?? this.#now()) : null;
+      this.#locallyContained = saved.stopped;
     } catch (error) {
       this.#mode = this.#now();
       this.#problem = unreadStop;
       this.#options.log("desktop.local-stop.read-failed", { message: messageOf(error) });
     }
     this.#phase = this.stopped ? "stopped" : "running";
+    if (this.#phase === "stopped" && this.#mode && this.#locallyContained && this.#options.confirm)
+      this.#startHomeProofLook(this.#mode);
     this.#emit();
   }
 
   noteUncontainedBoot(mode: string): void {
     if (mode !== this.#mode) return;
+    this.#locallyContained = false;
+    this.#cancelLook();
     this.#confirmedAt = null;
     if (this.#problem?.includes(unconfirmedStop)) return;
     this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
@@ -108,9 +144,11 @@ export class DesktopLocalStop {
   #choose(at: string | null): Promise<void> {
     return this.whileModeStable(async () => {
       if (at === null && !this.stopped) return;
+      this.#cancelLook();
       this.#phase = "stopping";
       this.#problem = null;
       this.#confirmedAt = null;
+      this.#locallyContained = false;
       this.#emit();
       try {
         await this.#options.store.save({ stopped: at !== null, at });
@@ -128,8 +166,13 @@ export class DesktopLocalStop {
       const saveProblem = this.#problem;
       try {
         await this.#options.restart();
-        if (this.#problem === saveProblem) this.#confirmedAt = at;
+        if (at !== null && this.#problem === saveProblem) {
+          this.#locallyContained = true;
+          if (this.#options.confirm) this.#startHomeProofLook(at);
+          else this.#confirmedAt = at;
+        }
       } catch (error) {
+        this.#locallyContained = false;
         const failure = messageOf(error);
         if (at !== null && !this.#problem?.includes(unconfirmedStop))
           this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
@@ -140,10 +183,64 @@ export class DesktopLocalStop {
       this.#options.log("desktop.local-stop.restarted", {
         stopped: at !== null,
         confirmed: this.#confirmedAt !== null || (at === null && this.#problem === null),
+        confirming: this.confirming,
         elapsedMs: performance.now() - started,
       });
       this.#emit();
     });
+  }
+
+  #cancelLook(): void {
+    this.#lookGeneration += 1;
+    this.#lookAbort?.abort();
+    this.#lookAbort = null;
+    this.#confirming = false;
+  }
+
+  #startHomeProofLook(at: string): void {
+    const confirm = this.#options.confirm;
+    if (!confirm || !this.#locallyContained || this.#mode !== at) return;
+    this.#cancelLook();
+    const generation = this.#lookGeneration;
+    const controller = new AbortController();
+    this.#lookAbort = controller;
+    this.#confirming = true;
+    void confirm(at, controller.signal).then(
+      (outcome) => {
+        if (
+          controller.signal.aborted ||
+          generation !== this.#lookGeneration ||
+          this.#mode !== at ||
+          !this.#locallyContained
+        )
+          return;
+        this.#lookAbort = null;
+        this.#confirming = false;
+        if (outcome === "confirmed" || outcome === "not-needed") {
+          this.#confirmedAt = at;
+          this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at, outcome });
+        } else {
+          this.#options.log("desktop.local-stop.home-proof-ended", { stoppedAt: at });
+        }
+        this.#emit();
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted || generation !== this.#lookGeneration || this.#mode !== at)
+          return;
+        this.#lookAbort = null;
+        this.#confirming = false;
+        const failure = messageOf(error);
+        if (!this.#problem?.includes(unconfirmedStop))
+          this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
+        if (!this.#problem?.includes(failure))
+          this.#problem = this.#problem ? `${this.#problem} ${failure}` : failure;
+        this.#options.log("desktop.local-stop.home-proof-failed", {
+          stoppedAt: at,
+          message: failure,
+        });
+        this.#emit();
+      },
+    );
   }
 
   #now(): string {

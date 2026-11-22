@@ -40,7 +40,10 @@ import {
   PersonalPrivatePortUnavailableError,
   type PersonalLoopbackPortPort,
 } from "./personal-deployment-supervisor.js";
-import type { PersonalHostControlPort } from "./personal-host-control.js";
+import {
+  PersonalHostBootstrapRefusedError,
+  type PersonalHostControlPort,
+} from "./personal-host-control.js";
 import type {
   PersonalLocalBrowserHandle,
   PersonalLocalRuntimePort,
@@ -1852,6 +1855,10 @@ function supervisorFixture(
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
     readonly agentsStoppedSince?: () => string | null;
+    readonly stopProofPollMs?: number;
+    readonly checkPluginAgentWorkStopped?: NonNullable<
+      PersonalHostControlPort["checkPluginAgentWorkStopped"]
+    >;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1902,6 +1909,9 @@ function supervisorFixture(
     waitForRunner: vi.fn<PersonalHostControlPort["waitForRunner"]>(async () => {
       lifecycle.push("host.waitForRunner");
     }),
+    ...(restarts.checkPluginAgentWorkStopped
+      ? { checkPluginAgentWorkStopped: restarts.checkPluginAgentWorkStopped }
+      : {}),
   } satisfies PersonalHostControlPort;
   const browsers: TestLocalBrowserHandle[] = [];
   const localRuntimes = {
@@ -1937,6 +1947,9 @@ function supervisorFixture(
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     ...(restarts.agentsStoppedSince ? { agentsStoppedSince: restarts.agentsStoppedSince } : {}),
+    ...(restarts.stopProofPollMs !== undefined
+      ? { stopProofPollMs: restarts.stopProofPollMs }
+      : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),
@@ -2402,3 +2415,90 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps looking for Home Stop proof across transient faults and Home restarts, ends when Home changes or is removed, and fails on permanent refusal", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const seenOrigins: string[] = [];
+  let checks = 0;
+  let mode: "slow-then-restart" | "refuse" | "remove" | "replace" = "slow-then-restart";
+
+  let fixture!: ReturnType<typeof supervisorFixture>;
+  fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      restartBackoffMs: 5,
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async (origin, _dep, _env, _runner, since) => {
+        expect(since).toBe(stoppedSince);
+        seenOrigins.push(origin);
+        checks += 1;
+        if (mode === "refuse") {
+          throw new PersonalHostBootstrapRefusedError("unauthorized", "Sign in required");
+        }
+        if (mode === "slow-then-restart") {
+          if (checks === 1) throw new Error("transient fault while Home restarts");
+          // Wait until the crashed Host has restarted and reported ready again.
+          return (
+            childrenOf(fixture, "host").length >= 2 && fixture.supervisor.status.state === "ready"
+          );
+        }
+        return false;
+      }),
+    },
+  );
+
+  try {
+    // 1. Before any hosted Home exists: returns "not-needed".
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe("not-needed");
+
+    // 2. Start Home, begin looking for proof, restart Home mid-look, confirm once restarted.
+    await fixture.supervisor.start();
+    const looking = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+    await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(2));
+    // Crash the Host process so the supervisor restarts it mid-look.
+    childrenOf(fixture, "host")[0]!.emit("exit", 1, null);
+    await expect(looking).resolves.toBe("confirmed");
+    expect(childrenOf(fixture, "host").length).toBeGreaterThanOrEqual(2);
+    expect(seenOrigins.length).toBeGreaterThanOrEqual(3);
+
+    // 3. Permanent Home refusal rethrows PersonalHostBootstrapRefusedError.
+    mode = "refuse";
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).rejects.toBeInstanceOf(PersonalHostBootstrapRefusedError);
+
+    // 4. Different Home (manifest deploymentId changes mid-look) ends the look cleanly.
+    mode = "replace";
+    const originalLoad = fixture.files.load.bind(fixture.files);
+    let loadCount = 0;
+    const loadSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      const current = await originalLoad();
+      loadCount += 1;
+      if (!current) return null;
+      return loadCount >= 2 ? { ...current, deploymentId: createId("deployment") } : current;
+    });
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe("ended");
+    loadSpy.mockRestore();
+
+    // 5. Removed Home (manifest becomes null mid-look) ends the look cleanly.
+    mode = "remove";
+    let removeCount = 0;
+    const removeSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      removeCount += 1;
+      return removeCount >= 2 ? null : originalLoad();
+    });
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe("ended");
+    removeSpy.mockRestore();
+  } finally {
+    await fixture.supervisor.stop();
+  }
+});

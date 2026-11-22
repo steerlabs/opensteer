@@ -50,6 +50,7 @@ export const menuBarCopy = {
   "menubar.stopAll": "Stop everything on this Mac",
   "menubar.stopAll.offline": "Works even while {home} is unreachable.",
   "menubar.stopped": "Stopped everything on this Mac at {time}.",
+  "menubar.stopped.waiting": "Stopped on this Mac. Waiting for your Home to confirm…",
   "menubar.stopped.detail":
     "Agents can’t use this Mac until you resume. Your own tabs keep working, and you can still watch this Mac from your phone.",
   "menubar.stopping": "Stopping agents on this Mac…",

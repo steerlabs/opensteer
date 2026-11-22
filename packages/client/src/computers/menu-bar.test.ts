@@ -540,6 +540,18 @@ describe("This Mac and Stop everything", () => {
       expect(status.icon.stopped).toBe(true);
     }
   });
+
+  it("shows a plain waiting line while local Stop waits for Home confirmation", () => {
+    const status = menuBarStatus({
+      ...base,
+      hostedHome: studio("ready"),
+      stop: { phase: "stopped", stoppedAt: null, problem: null, confirming: true },
+    });
+    expect(status.stop.stoppedAt).toBeNull();
+    expect(status.stop.problem).toBeNull();
+    expect(status.stop.waiting).toBe("Stopped on this Mac. Waiting for your Home to confirm…");
+    expect(status.stop.waiting).not.toMatch(/confirmed|couldn’t|couldn't|\d:\d\d/i);
+  });
 });
 
 it("keeps quit's activity lines for its question", () => {

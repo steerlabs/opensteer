@@ -72,6 +72,7 @@ import {
 import type { ComputerUseRunnerTargetResult } from "./local-runner-authority.js";
 import {
   PersonalHostAuthorityMismatchError,
+  PersonalHostBootstrapRefusedError,
   PersonalOwnerClaimRequiredError,
   type PersonalHostBootstrapResult,
   type PersonalHostControlPort,
@@ -123,6 +124,7 @@ interface PersonalDeploymentSupervisorOptions {
    */
   readonly agentsStoppedSince?: () => string | null;
   readonly onUncontainedBoot?: (mode: string) => void;
+  readonly stopProofPollMs?: number;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -270,6 +272,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #messagingRestartPolicy: RestartPolicy;
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
+  readonly #stopProofPollMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
@@ -341,6 +344,10 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#shutdownTimeoutMs = boundedDuration(
       options.shutdownTimeoutMs ?? defaultShutdownTimeoutMs,
       "Personal shutdown timeout",
+    );
+    this.#stopProofPollMs = boundedDuration(
+      options.stopProofPollMs ?? 250,
+      "Stop proof poll interval",
     );
     const restartBackoffMs = boundedDuration(
       options.restartBackoffMs ?? defaultRestartBackoffMs,
@@ -1489,35 +1496,69 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         );
         if (!earlierBootsContained) errors.push(new Error(hostedStopProblem));
       }
-      const mode = this.#agentsStoppedSince?.();
-      const waitForPlugins = this.#host.waitForPluginAgentWorkStopped;
-      if (mode && waitForPlugins) {
-        const runtime = this.#runtime;
-        const manifest = await this.#files.load();
-        if (!runtime || !manifest) errors.push(new Error(hostedStopProblem));
-        else {
-          const deadline = AbortSignal.timeout(8_000);
-          await this.#raceChild(
-            child,
-            waitForPlugins.call(
-              this.#host,
-              runtime.localOrigin,
-              manifest.deploymentId,
-              manifest.environmentId as EnvironmentId,
-              manifest.runnerId,
-              mode,
-              deadline,
-            ),
-            deadline,
-            "Runner",
-          ).catch((error: unknown) => errors.push(error));
-        }
-      }
       this.#setStatus({
         components: componentState(this.#status.components, "runner", "ready"),
       });
       if (errors.length) throw new AggregateError(errors, hostedStopProblem);
     });
+  }
+
+  /**
+   * Polls this Mac's hosted Home until it proves plugin agent work is stopped
+   * for `stoppedSince`, keeping up across transient faults and Home restarts.
+   * Returns `"not-needed"` when this Mac hosts no Home, `"ended"` when the look
+   * is cancelled or the Home is removed/replaced, and throws on permanent Home
+   * refusal.
+   */
+  async waitForStopProof(
+    stoppedSince: string,
+    signal: AbortSignal,
+  ): Promise<"confirmed" | "not-needed" | "ended"> {
+    const check = this.#host.checkPluginAgentWorkStopped;
+    const wait = this.#host.waitForPluginAgentWorkStopped;
+    if (!check && !wait) return "not-needed";
+    let seenDeploymentId: string | null = null;
+    for (;;) {
+      if (signal.aborted || this.#shutdownRequested) return "ended";
+      const manifest = await this.#files.load().catch(() => null);
+      if (signal.aborted || this.#shutdownRequested) return "ended";
+      if (!manifest) return seenDeploymentId === null ? "not-needed" : "ended";
+      if (seenDeploymentId !== null && manifest.deploymentId !== seenDeploymentId) return "ended";
+      seenDeploymentId = manifest.deploymentId;
+      const runtime = this.#runtime;
+      if (runtime) {
+        try {
+          if (check) {
+            const confirmed = await check.call(
+              this.#host,
+              runtime.localOrigin,
+              manifest.deploymentId,
+              manifest.environmentId as EnvironmentId,
+              manifest.runnerId,
+              stoppedSince,
+              signal,
+            );
+            if (confirmed) return "confirmed";
+          } else if (wait) {
+            const slice = AbortSignal.any([signal, AbortSignal.timeout(1_000)]);
+            await wait.call(
+              this.#host,
+              runtime.localOrigin,
+              manifest.deploymentId,
+              manifest.environmentId as EnvironmentId,
+              manifest.runnerId,
+              stoppedSince,
+              slice,
+            );
+            return "confirmed";
+          }
+        } catch (error: unknown) {
+          if (signal.aborted || this.#shutdownRequested) return "ended";
+          if (error instanceof PersonalHostBootstrapRefusedError) throw error;
+        }
+      }
+      await delay(this.#stopProofPollMs, signal).catch(() => undefined);
+    }
   }
 
   #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {

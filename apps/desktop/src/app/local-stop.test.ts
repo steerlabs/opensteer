@@ -128,3 +128,165 @@ it("queues Stop behind the update handoff's final idle check", async () => {
   await Promise.all([handoff, stop]);
   expect(store.save).toHaveBeenCalledWith({ stopped: true, at });
 });
+
+it("keeps looking for Home Stop proof after local containment, keeps Resume usable, and confirms when proof arrives", async () => {
+  const proof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  const confirm = vi.fn((_stoppedSince: string, _signal: AbortSignal) => proof.promise);
+  const service = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm,
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await service.restore();
+  await service.stop();
+
+  expect(service.phase).toBe("stopped");
+  expect(service.stoppedAt).toBeNull();
+  expect(service.problem).toBeNull();
+  expect(service.confirming).toBe(true);
+  expect(confirm).toHaveBeenCalledWith(at, expect.any(AbortSignal));
+
+  proof.resolve("confirmed");
+  await vi.waitFor(() => expect(service.stoppedAt).toBe(at));
+  expect(service.confirming).toBe(false);
+  expect(service.problem).toBeNull();
+});
+
+it("cancels an in-flight Home proof look and ignores late answers on Resume or a second Stop", async () => {
+  const at2 = "2026-11-20T09:05:00.000Z";
+  let clock = at;
+  const calls: Array<{
+    stoppedSince: string;
+    signal: AbortSignal;
+    deferred: PromiseWithResolvers<"confirmed" | "not-needed" | "ended">;
+  }> = [];
+  const service = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: (stoppedSince, signal) => {
+      const deferred = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+      calls.push({ stoppedSince, signal, deferred });
+      return deferred.promise;
+    },
+    log: vi.fn(),
+    now: () => new Date(clock),
+  });
+  await service.restore();
+
+  // First Stop starts look #1; Resume aborts it and ignores a late confirmation.
+  await service.stop();
+  expect(calls).toHaveLength(1);
+  await service.resume();
+  expect(calls[0]!.signal.aborted).toBe(true);
+  calls[0]!.deferred.resolve("confirmed");
+  await Promise.resolve();
+  expect(service.phase).toBe("running");
+  expect(service.stoppedAt).toBeNull();
+
+  // Second Stop while stopped aborts the previous Stop's look and accepts only its own proof.
+  await service.stop();
+  expect(calls).toHaveLength(2);
+  clock = at2;
+  await service.stop();
+  expect(calls).toHaveLength(3);
+  expect(calls[1]!.signal.aborted).toBe(true);
+  calls[1]!.deferred.resolve("confirmed");
+  await Promise.resolve();
+  expect(service.stoppedAt).toBeNull();
+  expect(service.confirming).toBe(true);
+
+  calls[2]!.deferred.resolve("confirmed");
+  await vi.waitFor(() => expect(service.stoppedAt).toBe(at2));
+  expect(service.confirming).toBe(false);
+});
+
+it("never lets Home proof override failed local containment, handles permanent Home refusal, ends cleanly when Home changes, and looks again on restore()", async () => {
+  // 1. Permanent Home refusal surfaces an error and ends the look.
+  const refused = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: async () => {
+      throw new Error("Personal Host refused the setup read (unauthorized): sign in required");
+    },
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await refused.restore();
+  await refused.stop();
+  await vi.waitFor(() => expect(refused.confirming).toBe(false));
+  expect(refused.stoppedAt).toBeNull();
+  expect(refused.problem).toContain("Couldn’t confirm everything stopped");
+  expect(refused.problem).toContain("Personal Host refused");
+
+  // 2. Removed or replaced Home ends the look without claiming confirmed or showing a failure.
+  const ended = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: async () => "ended",
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await ended.restore();
+  await ended.stop();
+  await vi.waitFor(() => expect(ended.confirming).toBe(false));
+  expect(ended.stoppedAt).toBeNull();
+  expect(ended.problem).toBeNull();
+
+  // 3. Failed local containment (restart error) never starts a Home proof look.
+  const confirmOnLocalFail = vi.fn(async () => "confirmed" as const);
+  const localFailed = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {
+      throw new Error("Runner did not exit");
+    },
+    confirm: confirmOnLocalFail,
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await localFailed.restore();
+  await localFailed.stop();
+  expect(confirmOnLocalFail).not.toHaveBeenCalled();
+  expect(localFailed.stoppedAt).toBeNull();
+  expect(localFailed.problem).toContain("Couldn’t confirm everything stopped");
+
+  // 4. restore() on app reopen starts looking again and confirms once proof arrives;
+  //    if noteUncontainedBoot fires before proof arrives, Home proof never overrides it.
+  const reopenProof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  const reopened = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: true, at }), save: async () => {} },
+    restart: async () => {},
+    confirm: () => reopenProof.promise,
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await reopened.restore();
+  expect(reopened.phase).toBe("stopped");
+  expect(reopened.confirming).toBe(true);
+  expect(reopened.stoppedAt).toBeNull();
+  reopenProof.resolve("confirmed");
+  await vi.waitFor(() => expect(reopened.stoppedAt).toBe(at));
+  expect(reopened.confirming).toBe(false);
+
+  const uncontainedProof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  let uncontainedSignal: AbortSignal | undefined;
+  const uncontained = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: true, at }), save: async () => {} },
+    restart: async () => {},
+    confirm: (_since, signal) => {
+      uncontainedSignal = signal;
+      return uncontainedProof.promise;
+    },
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await uncontained.restore();
+  uncontained.noteUncontainedBoot(at);
+  expect(uncontainedSignal?.aborted).toBe(true);
+  uncontainedProof.resolve("confirmed");
+  await Promise.resolve();
+  expect(uncontained.stoppedAt).toBeNull();
+  expect(uncontained.confirming).toBe(false);
+  expect(uncontained.problem).toBe("Couldn’t confirm everything stopped");
+});

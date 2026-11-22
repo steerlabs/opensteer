@@ -116,6 +116,8 @@ export const MenuBarStatusSchema = z.strictObject({
     problem: Text.nullable(),
     /** The Home the window shows says this Mac is stopped too, once it does. */
     confirmed: Text.nullable(),
+    /** Shown after local containment while waiting for this Mac's Home to confirm Stop. */
+    waiting: Text.nullable().optional(),
   }),
   /** What macOS will do at login, and whether this Mac has anything to open for. */
   openAtLogin: z.strictObject({ on: z.boolean(), available: z.boolean() }),
@@ -178,6 +180,7 @@ export interface MenuBarInput {
     readonly phase: MenuBarStopPhase;
     readonly stoppedAt: string | null;
     readonly problem: string | null;
+    readonly confirming?: boolean;
   };
   /** This Mac's row in the Home the window shows, once that Home answered. */
   readonly thisMac: ({ readonly deploymentId: string } & MenuBarMachine) | null;
@@ -276,6 +279,12 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
               home: homeNames(input).get(input.thisMac.deploymentId) ?? "Your Home",
             })
           : null,
+      ...(input.stop.phase === "stopped" &&
+      input.stop.confirming === true &&
+      !input.stop.stoppedAt &&
+      !input.stop.problem
+        ? { waiting: menuBarWords("menubar.stopped.waiting") }
+        : {}),
     },
     openAtLogin: input.openAtLogin,
     icon: {

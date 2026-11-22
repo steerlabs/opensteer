@@ -269,6 +269,7 @@ async function popoverPhases(): Promise<void> {
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
+      confirming: localStop.confirming,
     }),
     openAtLogin: async () => ({ on: false, available: false }),
     log,
@@ -504,6 +505,7 @@ async function homeStop(): Promise<void> {
   let restartInFlight = false;
   let restartCompleted = 0;
   let prematureConfirmedStop = false;
+  let startedHome: Awaited<ReturnType<typeof startHome>> | null = null;
   const localStop = new DesktopLocalStop({
     restart: async () => {
       restartInFlight = true;
@@ -514,9 +516,14 @@ async function homeStop(): Promise<void> {
         restartInFlight = false;
       }
     },
+    confirm: (stoppedSince, signal) =>
+      startedHome
+        ? startedHome.supervisor.waitForStopProof(stoppedSince, signal)
+        : Promise.resolve("not-needed"),
     store: localStopFileStore(stopFile),
     log,
   });
+  shutdown.signal.addEventListener("abort", () => localStop.dispose(), { once: true });
   localStop.subscribe(() => {
     if (restartInFlight && (localStop.stoppedAt !== null || localStop.phase === "stopped")) {
       prematureConfirmedStop = true;
@@ -524,6 +531,7 @@ async function homeStop(): Promise<void> {
   });
   await localStop.restore();
   const home = await startHome({ agentsStoppedSince: () => localStop.agentsStoppedSince, gate });
+  startedHome = home;
   assert.equal(localStop.phase, "running");
   const homeRunnerId = home.manifest.runnerId;
 
@@ -894,6 +902,7 @@ async function homeStop(): Promise<void> {
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
+      confirming: localStop.confirming,
     }),
     openAtLogin: async () => ({ on: false, available: false }),
     log,
@@ -1041,7 +1050,7 @@ async function homeStop(): Promise<void> {
   await Promise.all([localStop.stop(), localStop.stop()]);
   assert.equal(localStop.phase, "stopped", "Double Stop did not settle as stopped");
   assert.equal(localStop.stopped, true);
-  assert(localStop.stoppedAt !== null, "Double Stop lost confirmed stoppedAt");
+  await waitFor("Double Stop Home confirmation", () => localStop.stoppedAt !== null, 30_000);
   assert.equal(localStop.problem, null, `Double Stop reported a problem: ${localStop.problem}`);
   await waitFor(
     "Home confirming double Stop",

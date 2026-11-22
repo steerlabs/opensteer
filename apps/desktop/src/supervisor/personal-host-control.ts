@@ -99,6 +99,14 @@ export interface PersonalHostControlPort {
     stoppedSince: string,
     signal: AbortSignal,
   ): Promise<void>;
+  checkPluginAgentWorkStopped?(
+    origin: string,
+    deploymentId: string,
+    environmentId: EnvironmentId,
+    runnerId: RunnerId,
+    stoppedSince: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
   waitForBrowserPlacement(
     origin: string,
     deploymentId: string,
@@ -339,6 +347,25 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       signal,
       stoppedSince,
     );
+  }
+
+  async checkPluginAgentWorkStopped(
+    origin: string,
+    deploymentIdInput: string,
+    environmentIdInput: EnvironmentId,
+    runnerIdInput: RunnerId,
+    stoppedSince: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const environmentId = EnvironmentIdSchema.parse(environmentIdInput);
+    const runnerId = RunnerIdSchema.parse(runnerIdInput);
+    const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
+    const result = await this.#withDeadline(signal, (deadline) =>
+      read({ kind: "runner", environmentId, runnerId }, { signal: deadline }),
+    );
+    if (!result.ok) throw bootstrapRefusal(result.error);
+    return result.data.ready && result.data.pluginAgentWorkStoppedSince === stoppedSince;
   }
 
   async waitForBrowserPlacement(

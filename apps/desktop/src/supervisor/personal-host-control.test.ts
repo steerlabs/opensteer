@@ -223,6 +223,41 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(stop.stoppedAt).toBe(stoppedSince);
   });
 
+  it("checks plugin Stop proof once per call, rejecting stale proof and permanent refusals", async () => {
+    const deployment = manifest();
+    const stoppedSince = "2026-11-20T09:00:00.000Z";
+    const responses = [
+      json({ ok: true, data: { ready: true } }),
+      json({
+        ok: true,
+        data: { ready: true, pluginAgentWorkStoppedSince: "2026-11-20T08:00:00.000Z" },
+      }),
+      json({ ok: true, data: { ready: true, pluginAgentWorkStoppedSince: stoppedSince } }),
+      rpcError({ code: "unauthorized", message: "Sign in required" }, 401),
+    ];
+    let index = 0;
+    const control = new NativePersonalHostControl({
+      fetch: async () => responses[index++]!,
+      pollIntervalMs: 1,
+    });
+    const check = () =>
+      control.checkPluginAgentWorkStopped(
+        hostOrigin,
+        deployment.deploymentId,
+        deployment.environmentId,
+        deployment.runnerId,
+        stoppedSince,
+        new AbortController().signal,
+      );
+    await expect(check()).resolves.toBe(false);
+    await expect(check()).resolves.toBe(false);
+    await expect(check()).resolves.toBe(true);
+    await expect(check()).rejects.toMatchObject({
+      code: "unauthorized",
+      name: "PersonalHostBootstrapRefusedError",
+    });
+  });
+
   it("keeps polling while a starting Host answers with a retryable fault", async () => {
     const deployment = manifest();
     let requests = 0;
