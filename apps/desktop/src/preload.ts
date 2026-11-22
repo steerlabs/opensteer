@@ -100,6 +100,7 @@ import type {
   DesktopDeviceSessionBinding,
   DesktopOpenExternalUrlInput,
   DesktopOpenExternalUrlResult,
+  DesktopOpenInChromeResult,
   DesktopOpenHostWebSocketInput,
   DesktopOpenHostWebSocketResult,
   DesktopOpenIntegrationAuthorizationInput,
@@ -154,6 +155,7 @@ import {
   DesktopLocalExecutionStatusSchema,
   DesktopOpenExternalUrlInputSchema,
   DesktopOpenExternalUrlResultSchema,
+  DesktopOpenInChromeResultSchema,
   DesktopPickFolderResultSchema,
   DesktopOpenHostWebSocketInputSchema,
   DesktopOpenHostWebSocketResultSchema,
@@ -861,6 +863,13 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     DesktopOpenExternalUrlResultSchema.parse(
       await invoke<DesktopOpenExternalUrlResult>(
         desktopBridgeChannels.openExternalUrl,
+        DesktopOpenExternalUrlInputSchema.parse(input),
+      ),
+    ),
+  openInChrome: async (input: DesktopOpenExternalUrlInput) =>
+    DesktopOpenInChromeResultSchema.parse(
+      await invoke<DesktopOpenInChromeResult>(
+        desktopBridgeChannels.openInChrome,
         DesktopOpenExternalUrlInputSchema.parse(input),
       ),
     ),

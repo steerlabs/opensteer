@@ -1,3 +1,4 @@
+import { openInChrome } from "./app/open-in-chrome.js";
 import { IphoneService } from "./iphone/iphone-service.js";
 import { IphoneStore } from "./iphone/iphone-store.js";
 import { IphoneSetup } from "./iphone/iphone-setup.js";
@@ -1469,6 +1470,7 @@ async function runDesktop(
       openExternal: async (url) => {
         await shell.openExternal(url, { activate: true });
       },
+      openInChrome: (url) => openInChrome(url),
       pickFolder: async () => {
         const chosen = await dialog.showOpenDialog({
           properties: ["openDirectory", "createDirectory"],

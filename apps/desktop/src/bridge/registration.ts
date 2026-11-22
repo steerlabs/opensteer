@@ -108,7 +108,7 @@ import {
   handleBindDeviceSession,
 } from "./methods/local-execution.js";
 import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
-import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
+import { handleOpenExternalUrl, handleOpenInChrome, handlePickFolder } from "./methods/window.js";
 
 /** Admits 120 records per ten seconds, answering how many it held back since the last. */
 function diagnosticBudget(): () => number | null {
@@ -360,6 +360,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     );
   });
   register(desktopBridgeChannels.openExternalUrl, handleOpenExternalUrl(context));
+  register(desktopBridgeChannels.openInChrome, handleOpenInChrome(context));
   register(desktopBridgeChannels.getNotificationSupport, handleGetNotificationSupport(context));
   register(desktopBridgeChannels.showNotification, handleShowNotification(context));
   register(desktopBridgeChannels.testNotification, handleTestNotification(context));

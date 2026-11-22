@@ -484,6 +484,12 @@ export const DesktopOpenExternalUrlInputSchema = z.strictObject({
 export type DesktopOpenExternalUrlInput = z.infer<typeof DesktopOpenExternalUrlInputSchema>;
 export const DesktopOpenExternalUrlResultSchema = z.strictObject({ opened: z.literal(true) });
 export type DesktopOpenExternalUrlResult = z.infer<typeof DesktopOpenExternalUrlResultSchema>;
+/** A page opened in Google Chrome itself, or why it couldn't be: Chrome isn't installed. */
+export const DesktopOpenInChromeResultSchema = z.discriminatedUnion("opened", [
+  z.strictObject({ opened: z.literal(true) }),
+  z.strictObject({ opened: z.literal(false), reason: z.literal("chrome-not-installed") }),
+]);
+export type DesktopOpenInChromeResult = z.infer<typeof DesktopOpenInChromeResultSchema>;
 
 /**
  * One notification the Host decided this person gets, as the operating system
@@ -1931,6 +1937,8 @@ export interface OpensteerDesktopBridge {
   tailscaleShare(): Promise<DesktopTailscaleShareResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
+  /** Opens a page in Google Chrome itself, which connecting Chrome needs. */
+  openInChrome?(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenInChromeResult>;
   /** Called before `begin`, because the Account seals the port into the attempt. */
   prepareIntegrationAuthorizationReturn(
     input: DesktopPrepareIntegrationAuthorizationReturnInput,
