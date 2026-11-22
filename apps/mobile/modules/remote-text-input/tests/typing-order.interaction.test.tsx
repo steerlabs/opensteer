@@ -676,14 +676,6 @@ describe("a person's caret moves and selections in the native field", () => {
           (f) => f.replaceRange(start, end, word),
         );
       },
-      /** UIKit's Backspace naming a combining mark alone (caught up): the page's Backspace. */
-      deleteMark: async (at: number) =>
-        settledHere() &&
-        does(
-          `deleteMark(${at})`,
-          (p) => p.backspace(),
-          (f) => f.shouldChangeText({ start: at, end: at + 1 }, ""),
-        ),
       paste: (text: string) =>
         does(
           `paste(${said(text)})`,
@@ -772,8 +764,7 @@ describe("a person's caret moves and selections in the native field", () => {
   /*
    * The second generator: also a target without range edits, a multi-character replacement at a
    * range (autocorrect), paste, composition between other steps, a context rotation while edits
-   * wait, right-to-left letters, and decomposed é with the mark alone named for deletion, as
-   * UIKit can name it. Its draws are kept as they were for the seeds it found. On a target
+   * wait, right-to-left letters and decomposed é. Its draws are kept as they were for the seeds it found. On a target
    * without range edits it skips what such a target cannot take (a range selected, replaced or
    * deleted), drawing nothing more.
    */
@@ -853,11 +844,10 @@ describe("a person's caret moves and selections in the native field", () => {
         // Regime A: the page does nothing by itself, so no context change; an answer instead.
         await run.answer(1);
       } else if (choice < 0.78) {
-        // UIKit names a combining mark alone only for a Backspace right after it.
-        const { end } = run.native.selection;
-        const before = run.native.text.slice(0, end);
-        const last = Array.from(before).at(-1);
-        if (last && /\p{M}/u.test(last) && !display) await run.deleteMark(end - last.length);
+        // Once a combining mark named alone for deletion, as UIKit was thought to name it; no
+        // recording of the real view shows UIKit naming a range by itself
+        // (ios/Tests/Cases/uikit-recordings.json), so nothing is drawn. The draw is kept so the
+        // other seeds still replay what they found.
       } else await run.answer(1 + Math.floor(next() * 3));
     }
     await run.check(third ? `${seed} (third)` : seed);

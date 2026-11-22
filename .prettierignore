@@ -50,3 +50,5 @@ packages/protocol/src/device-wire-v60.fixture.json
 patches/plugin-engine-*.patch
 # Recorded from the TypeScript port by typing-order.interaction.test.tsx, which compares it byte for byte.
 apps/mobile/modules/remote-text-input/ios/Tests/Cases/typing-sequences.json
+# Recorded from UIKit's own UITextView by UIKitRecordingTests.swift, which compares it byte for byte.
+apps/mobile/modules/remote-text-input/ios/Tests/Cases/uikit-recordings.json

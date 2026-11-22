@@ -8,8 +8,10 @@ import { splitGraphemes } from "unicode-segmenter/grapheme";
  * run against both (edits-cases.test.ts and RemoteInputEditsCasesTests.swift). NativeField mirrors
  * the view's UIKit entry points (insertText, the delegate's shouldChangeTextIn, replace,
  * deleteBackward, setMarkedText, unmarkText, paste and the selection callback) with UIKit's own
- * effects as UITextView has them on Mac Catalyst: nothing checks that half against the Swift but
- * review, and the view's own tests (RemoteTextInputTests.swift) are the truth for it.
+ * effects as UITextView has them on Mac Catalyst. Those effects are UIKit's as recorded from the
+ * real UITextView (ios/Tests/Cases/uikit-recordings.json, uikit-recordings.test.ts), and the
+ * whole field is the view: regime A's sequences recorded here are replayed step by step on the
+ * real RemoteInputTextView (ios/Tests/Cases/typing-sequences.json, RemoteTextInputReplayTests.swift).
  */
 
 export interface Place {
