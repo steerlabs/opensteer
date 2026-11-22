@@ -140,7 +140,11 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
 }
 export function messageSource(caller: AgentCaller, observationId: string) {
   if (caller.kind === "connection")
-    return { kind: "connection" as const, connectionId: caller.connectionId };
+    return {
+      kind: "connection" as const,
+      connectionId: caller.connectionId,
+      ...(caller.chat ? { chat: caller.chat } : {}),
+    };
   const origin = delegationOrigin(caller, observationId);
   if (origin.kind === "run") return { kind: "agent" as const, runId: origin.parentRunId };
   if (origin.kind === "trigger")

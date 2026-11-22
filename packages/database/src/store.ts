@@ -1997,7 +1997,7 @@ export type { RevokedRunGrant } from "./run-grants.js";
 
 export type { CreateThreadInput } from "./thread-store.js";
 export type { ThreadCreationResult } from "./thread-store.js";
-export type { ThreadInputSource } from "./thread-store.js";
+export type { BridgeChatSource, ThreadInputSource } from "./thread-store.js";
 export type { EnqueueThreadInputRequest } from "./thread-store.js";
 export type { EnqueuedThreadInput } from "./thread-store.js";
 export type { SteerThreadInputRequest } from "./thread-store.js";

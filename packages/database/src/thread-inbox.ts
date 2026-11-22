@@ -2380,6 +2380,15 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
       return {
         kind: "connection",
         connectionId: source.connectionId,
+        // Where the reply goes is part of the request; who wrote it is not.
+        ...(source.chat
+          ? {
+              chat: {
+                conversationId: source.chat.conversationId,
+                sender: { displayName: "", owner: source.chat.sender.owner },
+              },
+            }
+          : {}),
       };
     case "agent":
       return {
@@ -3376,13 +3385,54 @@ async function resolveThreadInputFacts(
         code: "forbidden",
         message: "Connected agent source is invalid",
       });
+    const chat = source.chat;
+    // Chat facts only from the bridge itself, for a conversation it covers, from a sender its
+    // rule admits: read under the same live connection as everything else here.
+    if (
+      chat &&
+      (connection.bridgeAccountId === null ||
+        (!chat.sender.owner && connection.bridgeSenders !== "anyone") ||
+        !(await transaction
+          .selectFrom("bridgeConversations")
+          .select("id")
+          .where("id", "=", ChannelConversationIdSchema.parse(chat.conversationId))
+          .where("bridgeId", "=", connection.id)
+          .executeTakeFirst()))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Connected agent source is invalid",
+      });
+    const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
+    const owner =
+      chat?.sender.owner === true
+        ? await transaction
+            .selectFrom("principals")
+            .select("displayName")
+            .where("id", "=", actorPrincipalId)
+            .executeTakeFirstOrThrow()
+        : null;
     return {
-      actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-      author: MessageAuthorSchema.parse({
-        kind: "connection",
-        connectionId: connection.id,
-        displayName: connection.label,
-      }),
+      actorPrincipalId,
+      // The person writing from their own linked account is the person; anyone else in a
+      // bridge's conversation is named, and is never the person.
+      author: MessageAuthorSchema.parse(
+        owner
+          ? {
+              kind: "human",
+              displayName: `${owner.displayName} (via ${connection.label})`.slice(0, 160),
+              principalId: actorPrincipalId,
+              userId: input.requestedBy,
+            }
+          : {
+              kind: "connection",
+              connectionId: connection.id,
+              displayName: (chat
+                ? `${chat.sender.displayName} in ${connection.label}`
+                : connection.label
+              ).slice(0, 160),
+            },
+      ),
       authoritySource: {
         kind: "connection",
         connectionId: connection.id,
@@ -3390,7 +3440,9 @@ async function resolveThreadInputFacts(
       },
       causalChainId: null,
       kind: "input",
-      replyTarget: null,
+      replyTarget: chat
+        ? ReplyTargetSchema.parse({ kind: "channel", conversationId: chat.conversationId })
+        : null,
     };
   }
   if (source.kind === "agent") {

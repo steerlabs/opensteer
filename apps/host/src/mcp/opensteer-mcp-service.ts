@@ -690,10 +690,17 @@ export class OpensteerMcpService {
       readonly operationKey: string;
       readonly signal?: AbortSignal;
       readonly caller?: AgentCaller;
+      /**
+       * How the Home re-resolves a caller it holds no bearer for (a messaging bridge): the same
+       * live re-check a signed-in caller gets before its effect.
+       */
+      readonly resolveCaller?: () => Promise<AgentCaller>;
     },
   ): Promise<Record<string, unknown> | string> {
     if (!toolNamed(name) && name !== "discover") throw unknownTool();
-    let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    const authenticate = () =>
+      identity.resolveCaller ? identity.resolveCaller() : this.options.callers.authenticate(bearer);
+    let caller = identity.caller ?? (await authenticate());
     const found = toolNamed(name, caller);
     if (!found) throw unknownTool();
     const tool = found;
@@ -847,7 +854,7 @@ export class OpensteerMcpService {
     const invoke = async () => {
       const liveCaller = async () => {
         identity.signal?.throwIfAborted();
-        caller = await this.options.callers.authenticate(bearer);
+        caller = await authenticate();
         await check();
         return caller;
       };

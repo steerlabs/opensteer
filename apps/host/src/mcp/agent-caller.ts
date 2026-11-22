@@ -5,7 +5,11 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import type { AgentConnectionAuthority, OpensteerStore } from "@opensteer/database";
+import type {
+  AgentConnectionAuthority,
+  BridgeChatSource,
+  OpensteerStore,
+} from "@opensteer/database";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type {
   TriggerControlScope,
@@ -42,6 +46,11 @@ export interface ConnectionCaller extends AgentCallerBase {
   readonly grantRevision: number;
   /** When the credential stops working, in epoch milliseconds. */
   readonly expiresAt?: number;
+  /**
+   * Set only by the Home for a messaging bridge: the conversation a message came from and who
+   * wrote it. Never taken from a tool's input.
+   */
+  readonly chat?: BridgeChatSource;
 }
 export type AgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
 

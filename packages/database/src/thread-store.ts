@@ -176,6 +176,10 @@ export interface ThreadUpdateResult {
  * Thread and Run copied from the sending Run's authenticated capability, never
  * a value the sending model supplied.
  */
+export interface BridgeChatSource {
+  readonly conversationId: string;
+  readonly sender: { readonly displayName: string; readonly owner: boolean };
+}
 export type ThreadInputSource =
   | {
       readonly kind: "human";
@@ -186,6 +190,11 @@ export type ThreadInputSource =
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /**
+       * A message that came through a messaging bridge: the conversation the reply goes back
+       * to and who wrote it. Set by the Home from the chat, never from a tool's input.
+       */
+      readonly chat?: BridgeChatSource;
     }
   | {
       readonly kind: "agent";
