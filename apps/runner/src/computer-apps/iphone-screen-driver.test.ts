@@ -1208,8 +1208,9 @@ it("wakes a screen-off iPhone from a native screen status with a wakeToken and r
   expect(f.events.at(-1)).toMatchObject({
     availability: { state: "ready", reason: null },
     wake: true,
+    lock: true,
     powerVersion: 1,
-    inputVersion: null,
+    inputVersion: 1,
     actions: ["wake"],
   });
   expect(
@@ -1270,4 +1271,37 @@ it("stops a late display start before opening either media socket", async () => 
   start.resolve({ attachmentToken: "late-token" });
   await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
   expect(f.bridge.openVideoAttachment).not.toHaveBeenCalled();
+});
+
+it("advertises live navigation and lock/wake controls before any agent observation", async () => {
+  const f = fixture();
+  f.bridge.capabilities = fullCapabilities;
+  for (const listener of f.bridge.events)
+    listener({
+      kind: "event",
+      event: "iphone.targetsChanged",
+      params: {
+        deviceId: f.a.deviceId,
+        driverGeneration: 1,
+        nativeEpoch: 2,
+        ready: true,
+        reason: null,
+        capabilities: fullCapabilities,
+      },
+    });
+  expect(f.events.at(-1)).toMatchObject({
+    availability: { state: "ready", reason: null },
+    displayVersion: 1,
+    ownerViewVersion: 1,
+    inputVersion: 1,
+    powerVersion: 1,
+    wake: true,
+    lock: true,
+    actions: expect.arrayContaining(["navigate", "tap", "type", "clear", "wake"]),
+    navigationButtons: expect.arrayContaining([
+      { id: "home", label: "Home" },
+      { id: "recents", label: "App Switcher" },
+      { id: "notifications", label: "Notification Center" },
+    ]),
+  });
 });
