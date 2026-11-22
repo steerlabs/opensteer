@@ -319,6 +319,55 @@ describe("Stop everything", () => {
       await view.close();
     }
   });
+
+  it("shows the plain checking line, escalates to the overdue alert line with Resume still offered, then switches to the timestamp when confirmed", async () => {
+    const checkingState: MenuBarStatus = {
+      ...menuBarStates.stopped,
+      stop: {
+        phase: "stopped",
+        stoppedAt: null,
+        offline: null,
+        problem: null,
+        confirmed: null,
+        waiting:
+          "Agents on this Mac are stopped. Checking that this Mac’s Home stopped everything too…",
+      },
+    };
+    const overdueState: MenuBarStatus = {
+      ...checkingState,
+      stop: {
+        ...checkingState.stop,
+        waiting:
+          "Agents on this Mac are stopped. Couldn’t confirm yet that this Mac’s Home stopped everything. Still checking.",
+        waitingOverdue: true,
+      },
+    };
+    const value = bridge(checkingState);
+    const view = await render(value);
+    try {
+      expect(view.text()).toContain(
+        "Agents on this Mac are stopped. Checking that this Mac’s Home stopped everything too…",
+      );
+      expect(view.text()).not.toContain("Couldn’t");
+      expect(view.text()).not.toMatch(/Stopped everything on this Mac at/);
+      expect(view.node.querySelector('[role="alert"]')).toBeNull();
+      expect(view.button("Resume")).toBeDefined();
+
+      await act(async () => value.push(overdueState));
+      expect(view.node.querySelector('[role="alert"]')?.textContent).toBe(
+        "Agents on this Mac are stopped. Couldn’t confirm yet that this Mac’s Home stopped everything. Still checking.",
+      );
+      expect(view.text()).not.toMatch(/Stopped everything on this Mac at/);
+      expect(view.button("Resume")).toBeDefined();
+
+      await act(async () => value.push(menuBarStates.stopped));
+      expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
+      expect(view.node.querySelector('[role="alert"]')).toBeNull();
+      expect(view.text()).not.toContain("Still checking");
+    } finally {
+      await view.close();
+    }
+  });
 });
 
 describe("footer", () => {

@@ -651,6 +651,7 @@ async function runDesktop(
   const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
     agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onContainedBoot: (mode: string) => localStop.noteContainedBoot(mode),
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
@@ -933,9 +934,11 @@ async function runDesktop(
       );
       if (errors.length) throw new Error(errors.join(" "));
     },
+    confirm: (stoppedSince, signal) => personal.waitForStopProof(stoppedSince, signal),
     store: localStopFileStore(localStopPath),
     log: reportEvent,
   });
+  shutdown.signal.addEventListener("abort", () => localStop.dispose(), { once: true });
   // Before any Runner starts: a Stop the person left in place still holds.
   await localStop.restore();
   shutdown.signal.throwIfAborted();
@@ -1650,6 +1653,8 @@ async function runDesktop(
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
+      confirming: localStop.confirming,
+      confirmOverdue: localStop.confirmOverdue,
     }),
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,

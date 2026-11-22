@@ -4,6 +4,7 @@ import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import {
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
+  runEventsCapability,
   runnerAgentStopCapability,
   type RunnerOperationalMessage,
 } from "@opensteer/protocol";
@@ -21,6 +22,7 @@ import {
   waitForMessage,
   type PrimaryConnection,
 } from "./private-machine-host.test-support.js";
+import { hasUnfinishedPluginWorkflows } from "../plugins/engine-storage.js";
 
 const shell = {
   fullDiskAccess: false,
@@ -267,3 +269,98 @@ it("says a Device is stopped while its person has agents stopped, through a reco
 function send(primary: PrimaryConnection, message: RunnerOperationalMessage): void {
   primary.socket.send(JSON.stringify(message));
 }
+
+it("proves plugin agent work stopped on a fresh database with an idle plugin engine without cold-starting it", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
+  let primary: PrimaryConnection | undefined;
+  try {
+    const home = await startPrivateMachineHost(database.url, { remoteAccess: true });
+    host = home;
+    expect(await hasUnfinishedPluginWorkflows(home.store.database)).toBe(false);
+
+    const stoppedAt = new Date().toISOString();
+    primary = await connectPrimary(
+      home.hostPort,
+      RunnerDescriptorSchema.parse({
+        agentsStoppedSince: stoppedAt,
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        capabilities: [runEventsCapability, runnerAgentStopCapability],
+        device,
+        modules: {
+          agents: {
+            environmentIds: [home.ownerEnvironmentId],
+            harnessDrivers: [],
+            maxConcurrentRuns: 1,
+            providerStateModes: ["isolated"],
+          },
+          shell,
+        },
+        name: "Hosting computer",
+        runnerId: home.hostingComputerId,
+        runnerKind: "main",
+        runtimeVersion: "integration",
+      }),
+      { privateKey: home.hostingPrivateKey },
+    );
+
+    const readStopProof = async () => {
+      const response = await home.api["personal.readiness.get"]({
+        kind: "runner",
+        environmentId: home.ownerEnvironmentId,
+        runnerId: home.hostingComputerId,
+      });
+      if (!response.ok) throw new Error(response.error.message);
+      return response.data;
+    };
+
+    await vi.waitFor(
+      async () => {
+        expect(await readStopProof()).toMatchObject({
+          ready: true,
+          pluginAgentWorkStoppedSince: stoppedAt,
+        });
+      },
+      { timeout: 5_000 },
+    );
+
+    // Resuming clears pluginAgentWorkStoppedSince.
+    primary.socket.close();
+    await closed(primary.socket);
+    primary = await connectPrimary(
+      home.hostPort,
+      RunnerDescriptorSchema.parse({
+        agentsStoppedSince: null,
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        capabilities: [runEventsCapability, runnerAgentStopCapability],
+        device,
+        modules: {
+          agents: {
+            environmentIds: [home.ownerEnvironmentId],
+            harnessDrivers: [],
+            maxConcurrentRuns: 1,
+            providerStateModes: ["isolated"],
+          },
+          shell,
+        },
+        name: "Hosting computer",
+        runnerId: home.hostingComputerId,
+        runnerKind: "main",
+        runtimeVersion: "integration",
+      }),
+      { privateKey: home.hostingPrivateKey },
+    );
+    await vi.waitFor(
+      async () => {
+        const answer = await readStopProof();
+        expect(answer.ready).toBe(true);
+        expect(answer.pluginAgentWorkStoppedSince).toBeUndefined();
+      },
+      { timeout: 5_000 },
+    );
+  } finally {
+    primary?.socket.terminate();
+    await host?.close();
+    await database.drop();
+  }
+});
