@@ -14,8 +14,10 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { createId, type AgentGrant } from "@opensteer/core";
 import {
+  admitCommand,
   AgentConnectionStore,
   beginAgentSession,
+  commandSubject,
   createDatabase,
   liveAgentConnection,
   OpensteerStore,
@@ -173,6 +175,30 @@ describeStore("work Home", (it) => {
     expect(await f.home.applied()).toMatchObject({ ...permissive, appliedRevision: 1 });
     expect(await f.connect({ scope: "everything" })).toMatchObject({ accessMode: "full-access" });
     a.service.close();
+  });
+
+  it("holds a connected agent's commands to the organization's ceiling, read with its grant", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect({ scope: "everything" });
+    const admit = async () =>
+      (
+        await admitCommand(f.database, {
+          ownerUserId: f.task.userId,
+          subject: commandSubject(`connection:${connection.id}`),
+          command: {
+            type: "harness.rename",
+            idempotencyKey: randomUUID(),
+            environmentId: createId("environment"),
+            harnessInstanceId: createId("harnessInstance"),
+            name: "Renamed",
+          } as never,
+        })
+      ).answer;
+    expect(await admit()).toBe("now");
+    // The organization lowers what outside agents may do: the same command now asks the person.
+    await f.home.apply(f.document(2, { ...permissive, externalMaxMode: "approval-required" }));
+    expect(await admit()).toBe("ask");
   });
 
   it("reads one snapshot when a Work policy narrows immediately after the authority SELECT", async () => {

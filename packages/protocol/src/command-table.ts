@@ -88,6 +88,9 @@ export type CommandResourceKind =
   | "request"
   | "automation"
   | "tabs"
+  | "tab-group"
+  | "assignment"
+  | "device-setup"
   | "app"
   | "engine"
   | "device"
@@ -110,10 +113,35 @@ export type CommandResourceKind =
   | "chat-account"
   | "home";
 
-/** The thing a command changes, read from its input. `id` is null for a new or Home-wide one. */
+/**
+ * The thing a command changes, read from its input and nothing else: stable ids, sorted, no
+ * prose, so two commands that change the same thing name it the same way. `id` is null for a new
+ * or Home-wide one; `ids` holds a set of them (sorted); `task` is the task the input says the
+ * effect happens in; `mode` is the access mode new work asks for.
+ */
 export interface CommandResource {
   readonly kind: CommandResourceKind;
   readonly id: string | null;
+  readonly ids?: readonly string[];
+  readonly task?: string;
+  readonly mode?: string;
+}
+
+/** The resource as one canonical string: the same thing always reads the same. */
+export function commandResourceKey(resource: CommandResource): string {
+  return JSON.stringify([
+    resource.kind,
+    resource.id,
+    resource.ids ? [...resource.ids].sort() : null,
+    resource.task ?? null,
+    resource.mode ?? null,
+  ]);
+}
+
+/** Which existing ask the person already has, when this command is the answer to it. */
+export interface CommandAnsweredAsk {
+  readonly kind: "request" | "consent" | "device-setup" | "plugin-approval";
+  readonly id: string;
 }
 
 export interface CommandRow<K extends CommandType = CommandType> {
@@ -135,8 +163,27 @@ export interface CommandRow<K extends CommandType = CommandType> {
    */
   readonly face?: (command: Command<K>) => number | undefined;
   readonly governs: (command: Command<K>) => CommandResource;
-  /** Top-level input fields only the person types; an agent's command never carries them. */
+  /**
+   * Input paths only the person types (dotted, nested included); an agent's command never
+   * carries them, and a stored proposal never holds them.
+   */
   readonly secretFields?: readonly string[];
+  /**
+   * The faces that answer an ask the person already has (a Request, a consent, a setup, a plugin
+   * approval) and what they answer. An agent's ask on such a face points at that ask; it never
+   * opens another one.
+   */
+  readonly answersAsk?: {
+    readonly faces: readonly number[];
+    readonly of: (command: Command<K>) => CommandAnsweredAsk;
+  };
+  /** Where the person reviews and changes it before approving; null where no screen exists. */
+  readonly editor?: CommandEditor | null;
+}
+
+/** The screen that performs a command, filled in for the person to review. */
+export interface CommandEditor {
+  readonly screen: string;
 }
 
 export type CommandTable = { readonly [K in CommandType]: CommandRow<K> };
@@ -146,6 +193,7 @@ const resource = (kind: CommandResourceKind, id: string | null = null): CommandR
   id,
 });
 const task = (command: { readonly threadId: string }) => resource("task", command.threadId);
+const sorted = (ids: readonly string[]) => [...new Set(ids)].sort();
 const home = (area: string) => () => resource("home", area);
 const one = (cls: EffectClass, extra: Omit<CommandFace, "class"> = {}) =>
   [{ class: cls, ...extra }] as const;
@@ -161,7 +209,10 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("widen-self"),
-    governs: (c) => resource("task", c.parentThreadId ?? null),
+    governs: (c) => ({
+      ...resource("task", c.parentThreadId ?? null),
+      ...(c.accessMode ? { mode: c.accessMode } : {}),
+    }),
   },
   "thread.rename": {
     family: "tasks",
@@ -284,7 +335,7 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("narrow"),
-    governs: (c) => resource("request", c.assignmentId),
+    governs: (c) => resource("assignment", c.assignmentId),
   },
   "request.respond": {
     family: "tasks",
@@ -298,13 +349,14 @@ export const commandTable: CommandTable = {
     ],
     face: stored,
     governs: (c) => resource("request", c.requestId),
+    answersAsk: { faces: [1], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
   "agent.session.stop": {
     family: "tasks",
     scope: "connection",
     step: "B",
     faces: one("narrow"),
-    governs: (c) => resource("agent-session", c.agentSessionId),
+    governs: (c) => ({ ...resource("agent-session", c.agentSessionId), task: c.threadId }),
   },
   "attachment.upload.create": {
     family: "tasks",
@@ -326,7 +378,11 @@ export const commandTable: CommandTable = {
     family: "settings",
     scope: "home",
     step: "A",
-    faces: one("preference"),
+    // Raising the mode new tasks start in lifts a gate the person set; only the stored default
+    // says whether it rises.
+    faces: two({ class: "preference" }, { class: "approve", step: "none" }),
+    face: (c) =>
+      c.accessMode === undefined || c.accessMode === "approval-required" ? 0 : undefined,
     governs: home("defaults"),
   },
   "viewer.timeZone.update": {
@@ -555,8 +611,9 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "approve", step: "none" }, { class: "narrow" }),
     face: (c) => (c.decision === "allow" ? 0 : 1),
-    governs: (c) => resource("request", c.setupRequestId),
+    governs: (c) => resource("device-setup", c.setupRequestId),
     secretFields: ["secrets"],
+    answersAsk: { faces: [0], of: (c) => ({ kind: "device-setup", id: c.setupRequestId }) },
   },
   "integration.computer.setup.set": {
     family: "device-apps",
@@ -630,7 +687,15 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "narrow" }, { class: "approve" }),
     face: (c) => (c.enabled ? 1 : 0),
-    governs: (c) => resource("plugin-setting", JSON.stringify(c.target)),
+    governs: (c) =>
+      resource(
+        "plugin-setting",
+        c.target.kind === "device-app"
+          ? `device-app:${c.target.definitionId}`
+          : c.target.kind === "plugin"
+            ? `plugin:${c.target.pluginId}`
+            : `skill:${c.target.fullName}`,
+      ),
   },
 
   // Remote access, account link, sign-ins
@@ -694,8 +759,11 @@ export const commandTable: CommandTable = {
     family: "connections",
     scope: "other-connection",
     step: "none",
-    faces: one("widen-other"),
+    // Approving a consent gives an agent authority; denying it ends the ask.
+    faces: two({ class: "widen-other" }, { class: "narrow" }),
+    face: (c) => (c.decision.kind === "deny" ? 1 : 0),
     governs: (c) => resource("connection", c.requestId),
+    answersAsk: { faces: [0], of: (c) => ({ kind: "consent", id: c.requestId }) },
   },
   "connection.update": {
     family: "connections",
@@ -793,16 +861,22 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     stepFor: { connections: "B" },
-    faces: two({ class: "widen-self" }, { class: "narrow" }),
-    face: (c) => (c.enabled ? 0 : 1),
+    // Approval set to automatic lifts the browser approval the person would otherwise give.
+    faces: [{ class: "widen-self" }, { class: "narrow" }, { class: "approve", step: "none" }],
+    face: (c) => (c.approvalMode === "automatic" ? 2 : c.enabled ? 0 : 1),
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.schedule.answer": {
     family: "plugins",
     scope: "nameable",
     step: "none",
-    faces: one("approve"),
+    faces: two({ class: "approve" }, { class: "narrow" }),
+    face: (c) => (c.action === "decline" ? 1 : 0),
     governs: (c) => resource("plugin", c.pluginId),
+    answersAsk: {
+      faces: [0],
+      of: (c) => ({ kind: "plugin-approval", id: `${c.pluginId}:${c.runId}` }),
+    },
   },
   "plugins.workflow.start": {
     family: "plugins",
@@ -857,6 +931,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: one("secret"),
     governs: () => resource("plugin-sign-in"),
+    secretFields: ["input.client.clientSecret"],
   },
   "plugin.authorization.return": {
     family: "plugins",
@@ -864,6 +939,8 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: one("secret"),
     governs: (c) => resource("plugin-sign-in", c.attemptId),
+    // The proof the provider's redirect handed to the person's browser.
+    secretFields: ["returnProof"],
   },
   "plugin.authorization.cancel": {
     family: "plugins",
@@ -878,7 +955,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: one("secret"),
     governs: home("oauth-apps"),
-    secretFields: ["input"],
+    secretFields: ["input.clientSecret"],
   },
   "plugin.oauthApp.remove": {
     family: "plugins",
@@ -942,8 +1019,10 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "B",
     faces: one("widen-self"),
-    governs: (c) =>
-      resource("browser-profile", "profileId" in c.input ? (c.input.profileId ?? null) : null),
+    governs: (c) => ({
+      ...resource("browser-profile", "profileId" in c.input ? (c.input.profileId ?? null) : null),
+      ...(c.input.threadId ? { task: c.input.threadId } : {}),
+    }),
   },
   "browser.session.close": {
     family: "browser",
@@ -1031,13 +1110,17 @@ export const commandTable: CommandTable = {
     faces: two({ class: "approve", step: "none" }, { class: "narrow", step: "B" }),
     face: (c) => (c.decision.decision === "allow" ? 0 : 1),
     governs: (c) => resource("request", c.requestId),
+    answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
   "browser.password-sign-in.respond": {
     family: "browser",
     scope: "task",
     step: "B",
-    faces: one("narrow"),
+    // Releasing a saved login or a card to a page lifts a gate; declining ends the ask.
+    faces: two({ class: "approve", step: "none" }, { class: "narrow" }),
+    face: (c) => (c.decision.kind === "decline" ? 1 : 0),
     governs: (c) => resource("request", c.requestId),
+    answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
   "browser.pool.restart": {
     family: "browser",
@@ -1060,49 +1143,52 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     faces: one("widen-self"),
-    governs: () => resource("tabs"),
+    governs: (c) =>
+      c.target.kind === "page" && "profileId" in c.target
+        ? resource("browser-profile", c.target.profileId)
+        : resource("tabs"),
   },
   "tab.close": {
     family: "tabs-apps",
     scope: "task",
     step: "A",
     faces: one("narrow"),
-    governs: (c) => resource("tabs", c.tabIds.join(",")),
+    governs: (c) => ({ ...resource("tabs"), ids: sorted(c.tabIds) }),
   },
   "tab.reopen": {
     family: "tabs-apps",
     scope: "task",
     step: "B",
     faces: one("widen-self"),
-    governs: (c) => resource("tabs", c.tabId ?? null),
+    governs: (c) => ({ ...resource("tabs"), ...(c.tabId ? { ids: [c.tabId] } : {}) }),
   },
   "tab.activate": {
     family: "tabs-apps",
     scope: "task",
     step: "none",
     faces: [personView],
-    governs: (c) => resource("tabs", c.tabId),
+    governs: (c) => ({ ...resource("tabs"), ids: [c.tabId] }),
   },
   "tab.organize": {
     family: "tabs-apps",
     scope: "task",
     step: "A",
     faces: one("preference"),
-    governs: (c) => resource("tabs", c.tabIds.join(",")),
+    governs: (c) => ({ ...resource("tabs"), ids: sorted(c.tabIds) }),
   },
   "tab.group.update": {
     family: "tabs-apps",
     scope: "task",
     step: "A",
     faces: one("preference"),
-    governs: (c) => resource("tabs", c.groupId),
+    governs: (c) => resource("tab-group", c.groupId),
   },
   "tab.group.delete": {
     family: "tabs-apps",
     scope: "task",
     step: "B",
     faces: one("preference"),
-    governs: (c) => resource("tabs", c.groupId),
+    governs: (c) => resource("tab-group", c.groupId),
   },
   "app.rename": {
     family: "tabs-apps",
@@ -1194,4 +1280,17 @@ export function commandFaceStep(
   if (caller.connection && row.stepFor?.connections) return row.stepFor.connections;
   if (caller.selected && row.stepFor?.selected) return row.stepFor.selected;
   return step;
+}
+
+/**
+ * What an agent may read of a command's result. A command that hands out a secret or an identity
+ * (a device's one-use token, a pairing code, a sign-in link, a chat's link code) returns only its
+ * type to an agent: the value is for the person's screen.
+ */
+export function commandAgentOutput(command: Command, output: unknown): unknown {
+  const row = commandRow(command.type) as CommandRow;
+  const sensitive = row.faces.some(
+    (face) => face.class === "secret" || face.class === "identity" || face.also === "secret",
+  );
+  return sensitive ? { type: command.type } : output;
 }

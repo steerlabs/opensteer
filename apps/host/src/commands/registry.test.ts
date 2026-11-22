@@ -38,6 +38,7 @@ vi.mock("../plugins/plugin-oauth-routes.js", async (original) => ({
 }));
 
 const { createCommandRegistry } = await import("./registry.js");
+type PersonCommandHandler<K extends CommandType> = import("./registry.js").PersonCommandHandler<K>;
 const { personActor } = await import("./actor.js");
 
 /** Where the person's `commands.dispatch` sent each type before the door existed. */
@@ -90,7 +91,7 @@ describe("the command registry", () => {
     for (const type of Object.keys(commandTable) as CommandType[]) {
       routed.family.length = 0;
       expect(registry[type].accepts).toBe("person");
-      await registry[type].run(
+      await (registry[type] as PersonCommandHandler<CommandType>).run(
         personActor(context),
         { type } as unknown as Extract<HostApiCommand, { type: typeof type }> as never,
         context,

@@ -1,5 +1,5 @@
 {
-  "source": "briefs/agent-control-table rows.json (overhaul 82c279dc7) with rows.messaging.json applied (generate.py --messaging): 136 rows. The expected answer per type, face and caller; command-table.ts is checked against it.",
+  "source": "briefs/agent-control-table rows.json (overhaul 82c279dc7) with rows.messaging.json applied (generate.py --messaging): 136 rows. The expected answer per type, face and caller; command-table.ts is checked against it. Rows changed after the foundation review (G2) say so in their note.",
   "callers": {
     "a": "your own agent, Full access",
     "b": "your own agent below Full access",
@@ -493,7 +493,7 @@
       "governs": "new-task defaults ← `selection`,`accessMode` (mode above the caller's own is approve)",
       "faces": [
         {
-          "when": null,
+          "when": "no accessMode, or approval-required",
           "class": "preference",
           "answers": {
             "a": "now",
@@ -501,10 +501,21 @@
             "c": "now",
             "d": "not_found"
           }
+        },
+        {
+          "when": "accessMode above the stored default (the store reports it)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
         }
       ],
       "step": "A",
-      "note": "`admin-svc:369`"
+      "note": "`admin-svc:369`; review G2: raising the mode new tasks start in lifts a gate (`packages/database/src/harness-store.ts:1098-1131`)"
     },
     {
       "type": "viewer.timeZone.update",
@@ -1482,7 +1493,7 @@
       "governs": "a pending consent ← its request id",
       "faces": [
         {
-          "when": null,
+          "when": "decision approve",
           "class": "widen-other",
           "answers": {
             "a": "ask",
@@ -1490,10 +1501,20 @@
             "c": "not_found",
             "d": "not_found"
           }
+        },
+        {
+          "when": "decision deny",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
         }
       ],
       "step": "—",
-      "note": "the ask points at the consent screen itself"
+      "note": "the ask points at the consent screen itself; review G2: denying a consent ends the ask (`apps/host/src/mcp/connections/connection-oauth.ts:374-408`)"
     },
     {
       "type": "connection.update",
@@ -1751,7 +1772,7 @@
       "governs": "a plugin schedule ← `pluginId`,`scheduleId`; enable widen-self / disable narrow",
       "faces": [
         {
-          "when": "enables a schedule",
+          "when": "enabled: true",
           "class": "widen-self",
           "answers": {
             "a": "now",
@@ -1761,7 +1782,7 @@
           }
         },
         {
-          "when": "disables a schedule",
+          "when": "enabled: false",
           "class": "narrow",
           "answers": {
             "a": "now",
@@ -1769,10 +1790,21 @@
             "c": "now",
             "d": "now"
           }
+        },
+        {
+          "when": "approvalMode: automatic",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
         }
       ],
       "step": "A",
-      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d)",
+      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d); review G2: automatic approval lifts the browser approval (`apps/host/src/plugins/plugin-owner-api.ts:1150-1159`)",
       "stepFor": {
         "c": "B",
         "d": "B"
@@ -1784,7 +1816,7 @@
       "governs": "a scheduled approval",
       "faces": [
         {
-          "when": null,
+          "when": "action accept",
           "class": "approve",
           "answers": {
             "a": "ask",
@@ -1792,10 +1824,20 @@
             "c": "ask",
             "d": "ask"
           }
+        },
+        {
+          "when": "action decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
         }
       ],
       "step": "—",
-      "note": "the ask points at the approval itself"
+      "note": "the ask points at the approval itself; review G2: declining a scheduled run narrows (`packages/protocol/src/plugins.ts:607-612`)"
     },
     {
       "type": "plugins.workflow.start",
@@ -2415,7 +2457,18 @@
       "governs": "decline a saved-password sign-in ← `requestId`",
       "faces": [
         {
-          "when": null,
+          "when": "decision approve or approve-card",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision decline",
           "class": "narrow",
           "answers": {
             "a": "now",
@@ -2426,7 +2479,7 @@
         }
       ],
       "step": "B",
-      "note": "needs `context.session` (`bsr:150-154`)"
+      "note": "needs `context.session` (`bsr:150-154`); review G2: approve and approve-card release a saved login or a card (`apps/host/src/browser/password-sign-in-service.ts:815-927`); the allow face points at the same Request"
     },
     {
       "type": "browser.pool.restart",

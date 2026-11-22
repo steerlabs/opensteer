@@ -21,10 +21,20 @@ const belowFullAccess = ThreadAccessModeSchema.options.filter(
 
 /** The four callers of the data file; each covers the resource the command governs. */
 const callers: Readonly<Record<Column, (mode?: ThreadAccessMode) => CommandRuleCaller>> = {
-  a: () => ({ connection: null, mode: "full-access", reach: true }),
-  b: (mode = "auto") => ({ connection: null, mode, reach: true }),
-  c: (mode = "full-access") => ({ connection: { grant: "everything" }, mode, reach: true }),
-  d: (mode = "full-access") => ({ connection: { grant: "selected" }, mode, reach: true }),
+  a: () => ({ connection: null, mode: "full-access", reach: true, ownWork: true }),
+  b: (mode = "auto") => ({ connection: null, mode, reach: true, ownWork: true }),
+  c: (mode = "full-access") => ({
+    connection: { grant: "everything" },
+    mode,
+    reach: true,
+    ownWork: true,
+  }),
+  d: (mode = "full-access") => ({
+    connection: { grant: "selected" },
+    mode,
+    reach: true,
+    ownWork: true,
+  }),
 };
 const row = (type: string) => commandTable[type as CommandType] as CommandRow;
 const answer = (type: string, face: number, caller: CommandRuleCaller) =>
@@ -68,20 +78,27 @@ describe("the command rule, generated from the table", () => {
       });
   });
 
-  it("reads anything outside a connection's reach exactly like something that does not exist", () => {
+  it("reads anything outside the caller's reach exactly like something that does not exist", () => {
+    // Outside a grant, outside a lineage, another principal's, or not there at all: one answer,
+    // for connections and for your own agents alike. Only a Home-wide thing (decided by the grant)
+    // and a new one (nothing exists yet to be outside of) have no reach to miss.
     for (const type of Object.keys(commandTable)) {
       const table = row(type);
       table.faces.forEach((_, index) => {
-        for (const grant of ["everything", "selected"] as const) {
-          const outside = answer(type, index, {
-            connection: { grant },
-            mode: "full-access",
-            reach: false,
-          });
-          // A new thing has nothing to be outside of; a Home-wide one is decided by the grant.
-          if (table.scope === "new" || table.scope === "home")
-            expect(outside).toBe(answer(type, index, callers[grant === "selected" ? "d" : "c"]()));
-          else expect(outside, `${type} face ${index} (${grant})`).toBe("not_found");
+        for (const connection of [
+          null,
+          { grant: "everything" as const },
+          { grant: "selected" as const },
+        ]) {
+          for (const mode of ["full-access", "auto"] as const) {
+            const outside = answer(type, index, { connection, mode, reach: false, ownWork: true });
+            const label = `${type} face ${index} (${connection?.grant ?? "own"} ${mode})`;
+            if (table.scope === "home")
+              expect(outside, label).toBe(
+                answer(type, index, { connection, mode, reach: true, ownWork: true }),
+              );
+            else expect(outside, label).toBe("not_found");
+          }
         }
       });
     }
@@ -91,21 +108,29 @@ describe("the command rule, generated from the table", () => {
     for (const [type, table] of Object.entries(commandTable)) {
       if (table.scope !== "connection" && table.scope !== "other-connection") continue;
       table.faces.forEach((_, index) => {
-        for (const grant of ["everything", "selected"] as const)
-          expect(
-            answer(type, index, { connection: { grant }, mode: "full-access", reach: false }),
-            `${type} (${grant})`,
-          ).toBe("not_found");
+        for (const grant of ["everything", "selected"] as const) {
+          const caller = { connection: { grant }, mode: "full-access" as const, ownWork: true };
+          expect(answer(type, index, { ...caller, reach: false }), `${type} (${grant})`).toBe(
+            "not_found",
+          );
+          if (table.scope === "other-connection")
+            expect(answer(type, index, { ...caller, reach: true }), `${type} (${grant})`).toBe(
+              "not_found",
+            );
+        }
       });
     }
   });
 
-  it("asks your own agent below Full access about a task that is not its own work", () => {
+  it("asks your own agent below Full access about a task above its mode", () => {
+    // In reach (the person's own task) but not its own work: a higher mode than it holds.
     for (const [type, table] of Object.entries(commandTable)) {
       if (table.scope !== "task") continue;
       table.faces.forEach((face, index) => {
-        const got = answer(type, index, { connection: null, mode: "auto", reach: false });
-        expect(got, type).toBe(face.class === "person-view" ? "not_found" : "ask");
+        for (const mode of belowFullAccess) {
+          const got = answer(type, index, { connection: null, mode, reach: true, ownWork: false });
+          expect(got, `${type} ${mode}`).toBe(face.class === "person-view" ? "not_found" : "ask");
+        }
       });
     }
   });

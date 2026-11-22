@@ -1,9 +1,12 @@
 import { OpensteerError } from "@opensteer/core";
 import {
   admitCommand,
+  commandAdmission,
+  commandNotFoundMessage,
   commandSubject,
   type CommandAdmission,
   type CommandAskReason,
+  type CommandIdentity,
   type DatabaseSchema,
 } from "@opensteer/database";
 import type {
@@ -11,17 +14,32 @@ import type {
   HostApiCommandOutput,
   HostApiServerContext,
 } from "@opensteer/protocol";
-import { commandRow, type CommandRow } from "@opensteer/protocol/command-table";
+import {
+  commandAgentOutput,
+  commandRow,
+  commandTable,
+  type CommandAnsweredAsk,
+  type CommandRow,
+} from "@opensteer/protocol/command-table";
 import type { Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
-import type { Actor, PersonActor } from "./actor.js";
-import type { CommandRegistry } from "./registry.js";
+import { isPersonActor, type Actor, type PersonActor } from "./actor.js";
+import type { CommandHandler, CommandRegistry } from "./registry.js";
 
-/** An agent's command that waits for the person. Nothing ran. */
-export interface CommandAsk {
-  readonly status: "ask";
-  readonly reason: CommandAskReason;
-}
+/**
+ * What an agent's command came to. `done`: it ran, and `output` is what an agent may read of the
+ * result. `ask`: it waits for the person; nothing ran. When it is the answer to an ask the person
+ * already has (a Request, a consent), `answers` names that ask, and no other opens.
+ */
+export type AgentCommandOutcome =
+  | { readonly status: "done"; readonly output: unknown }
+  | {
+      readonly status: "ask";
+      readonly reason: CommandAskReason;
+      readonly answers?: CommandAnsweredAsk;
+    };
+/** The earlier name of the waiting outcome. */
+export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }>;
 
 export interface CommandDoor {
   readonly registry: CommandRegistry;
@@ -41,11 +59,15 @@ export function agentCommandAdmission(database: Kysely<DatabaseSchema>): AgentCo
     });
 }
 
+const notFound = () => new OpensteerError({ code: "not_found", message: commandNotFoundMessage });
+
 /**
  * The one door every Home command passes. The person's command runs as it always has: no
- * statement before the handler, the same handler. An agent's command is admitted by the one rule;
- * a handler written for the person is never given an agent, so the agent's command waits for the
- * person instead.
+ * statement before the handler, the same handler; only an actor `personActor` made is the person.
+ * An agent's command is, in this order: a type the table knows, or the fixed not found; admitted
+ * by the one rule, and not found if it is outside the agent's reach; free of anything only the
+ * person types; then run by a handler written for agents, with the authority the store rechecks at
+ * commit, or put to the person.
  */
 export function dispatchCommand(
   actor: PersonActor,
@@ -57,38 +79,93 @@ export function dispatchCommand(
   actor: AgentCaller,
   command: HostApiCommand,
   door: AgentCommandDoor,
-): Promise<CommandAsk>;
+): Promise<AgentCommandOutcome>;
 export async function dispatchCommand(
   actor: Actor,
   command: HostApiCommand,
   door: CommandDoor | AgentCommandDoor,
   context?: HostApiServerContext,
-): Promise<HostApiCommandOutput | CommandAsk> {
+): Promise<HostApiCommandOutput | AgentCommandOutcome> {
   if (actor.kind === "person") {
+    // A copy, a cast or a structural look-alike is not the person.
+    if (!isPersonActor(actor))
+      throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
     if (!context) throw new OpensteerError({ code: "internal", message: "Missing request" });
-    const handler = door.registry[command.type] as CommandRegistry[HostApiCommand["type"]];
-    return handler.run(actor, command as never, context);
+    const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
+    return handler.accepts === "person"
+      ? handler.run(actor, command as never, context)
+      : handler.run(actor, command as never, { context, authority: null });
   }
   if (!("admit" in door))
     throw new OpensteerError({ code: "internal", message: "This door admits no agent" });
+  if (!Object.hasOwn(commandTable, command.type)) throw notFound();
   const row = commandRow(command.type) as CommandRow;
-  assertNoSecretFields(row, command);
   const admission = await door.admit(actor, command);
-  if (admission.answer === "not_found")
-    throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  // Every handler takes the person's session as its authority in this step: even a `now` waits.
+  if (admission.answer === "not_found") throw notFound();
+  assertNoSecretPaths(row, command);
+  const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
+  if (admission.answer === "now" && handler.accepts === "any") {
+    const authority = commandAuthority(actor, command);
+    const output = await handler.run(actor, command as never, { context: null, authority });
+    return { status: "done", output: commandAgentOutput(command, output) };
+  }
+  const answers =
+    row.answersAsk && admission.face !== undefined && row.answersAsk.faces.includes(admission.face)
+      ? (row.answersAsk.of as (c: HostApiCommand) => CommandAnsweredAsk)(command)
+      : undefined;
   return {
     status: "ask",
+    // A `now` whose handler is still the person's waits for the person too.
     reason: admission.answer === "now" ? "step" : (admission.reason ?? "step"),
+    ...(answers ? { answers } : {}),
   };
 }
 
-/** A value only the person types never passes through an agent. */
-function assertNoSecretFields(row: CommandRow, command: HostApiCommand): void {
-  for (const field of row.secretFields ?? [])
-    if (field in command && (command as Record<string, unknown>)[field] !== undefined)
+/** What a handler written for agents is given: the identity its store admits at commit. */
+export interface CommandAuthority {
+  readonly caller: AgentCaller;
+  readonly identity: CommandIdentity;
+}
+const authorities = new WeakSet<object>();
+
+function commandAuthority(caller: AgentCaller, command: HostApiCommand): CommandAuthority {
+  const { type, idempotencyKey, ...request } = command as HostApiCommand & {
+    readonly idempotencyKey?: string;
+  };
+  if (!idempotencyKey)
+    throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
+  const authority = Object.freeze({
+    caller,
+    identity: {
+      requestedBy: caller.userId,
+      idempotencyKey,
+      type,
+      request: JSON.parse(JSON.stringify(request)) as Record<string, unknown>,
+      authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
+      ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
+    },
+  });
+  authorities.add(authority);
+  return authority;
+}
+
+/** Whether the door made this authority: a store given one admits it again at commit. */
+export function isCommandAuthority(value: unknown): value is CommandAuthority {
+  return typeof value === "object" && value !== null && authorities.has(value);
+}
+
+/** A value only the person types never passes through an agent: found by the table's paths. */
+function assertNoSecretPaths(row: CommandRow, command: HostApiCommand): void {
+  for (const path of row.secretFields ?? []) {
+    let at: unknown = command;
+    for (const key of path.split(".")) {
+      at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;
+      if (at === undefined) break;
+    }
+    if (at !== undefined)
       throw new OpensteerError({
         code: "bad_request",
-        message: `Leave ${field} out: the person types it.`,
+        message: `Leave ${path} out: the person types it.`,
       });
+  }
 }

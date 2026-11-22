@@ -160,9 +160,19 @@ async function retryAfterPersonChange(
 }
 
 describeStore("MCP administration", (it) => {
-  for (const [name, change] of [
-    ["mode lowered", { accessMode: "approval-required" }],
-    ["grant narrowed", { grant: { scope: "selected", tasks: true, resources: [] } }],
+  for (const [name, change, refusal] of [
+    // A mode that no longer reaches asks the person: authority-changed, as the tools map it.
+    [
+      "mode lowered",
+      { accessMode: "approval-required" },
+      { code: "forbidden", reason: "authority-changed" },
+    ],
+    // A grant that no longer names the Home's devices reads as not there at all.
+    [
+      "grant narrowed",
+      { grant: { scope: "selected", tasks: true, resources: [] } },
+      { code: "not_found", message: "That item is unavailable." },
+    ],
   ] as const) {
     it(`refuses settings writes and replays with stale MCP authority after ${name}`, async ({
       storeFixture: fixture,
@@ -208,7 +218,7 @@ describeStore("MCP administration", (it) => {
               }),
             },
           }),
-        ).rejects.toMatchObject({ code: "forbidden" });
+        ).rejects.toMatchObject(refusal);
         expect(
           await fixture.database
             .selectFrom("runners")

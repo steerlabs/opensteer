@@ -37,7 +37,8 @@
     "./resources": "./src/resources.ts",
     "./transcript": "./src/transcript.ts",
     "./test-support/personal-wire": "./src/personal-wire.test-support.ts",
-    "./command-table": "./src/command-table.ts"
+    "./command-table": "./src/command-table.ts",
+    "./command-words": "./src/command-words.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

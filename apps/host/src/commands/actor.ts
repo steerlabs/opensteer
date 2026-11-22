@@ -6,22 +6,51 @@ import { requireSession } from "../server/rpc-context.js";
 /** Only `personActor` can make a value carrying it: no other module can name this key. */
 declare const heldSession: unique symbol;
 
+/** The command Request an approval answers: which one, at which revision, proposed by whom. */
+export interface CommandProposal {
+  readonly requestId: string;
+  readonly revision: string;
+  /** Who proposed it, as the Request recorded it; written to the command's ledger row. */
+  readonly proposedBy: Readonly<Record<string, unknown>>;
+}
+
 /**
  * The person, proven by the signed-in session of this request. It is the only way to the owner's
- * authority: a user id alone is not a `PersonActor`, and nothing outside this module can build one.
+ * authority: a user id alone is not a `PersonActor`, and nothing outside this module can build one,
+ * in types (the key above) or at runtime (the set below).
  */
 export interface PersonActor {
   readonly kind: "person";
   readonly userId: UserId;
   readonly session: AuthenticatedSession;
+  /** Set only when the person approves an agent's command Request. */
+  readonly proposal?: CommandProposal;
   readonly [heldSession]: true;
 }
 
 /** Who sends a command: the person on their session, or one of the agents the Home authenticated. */
 export type Actor = PersonActor | AgentCaller;
 
+/** Every person's actor this module made, and only those: a copy or a cast is not among them. */
+const madeHere = new WeakSet<object>();
+
 /** The person behind this request's session; refuses a request without one. Reads nothing. */
-export function personActor(context: HostApiServerContext): PersonActor {
+export function personActor(
+  context: HostApiServerContext,
+  proposal?: CommandProposal,
+): PersonActor {
   const session = requireSession(context);
-  return { kind: "person", userId: session.user.id, session } as PersonActor;
+  const actor = Object.freeze({
+    kind: "person",
+    userId: session.user.id,
+    session,
+    ...(proposal ? { proposal } : {}),
+  }) as PersonActor;
+  madeHere.add(actor);
+  return actor;
+}
+
+/** Whether this is a person's actor `personActor` made, not one shaped like it. */
+export function isPersonActor(actor: unknown): actor is PersonActor {
+  return typeof actor === "object" && actor !== null && madeHere.has(actor);
 }

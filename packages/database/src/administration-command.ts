@@ -45,6 +45,11 @@ export interface CommandIdentity {
    * state can tell: such a command that reaches its commit without a reported face refuses.
    */
   readonly faced?: (transaction: Transaction<DatabaseSchema>) => boolean;
+  /**
+   * Settles what this command answers in the same transaction as its effect, once the effect is
+   * written: an approved command Request is marked fulfilled only if the effect commits.
+   */
+  readonly settle?: (transaction: Transaction<DatabaseSchema>, result: unknown) => Promise<void>;
 }
 /** The earlier name, kept for the stores that take it. */
 export type AdministrationCommandIdentity = CommandIdentity;
@@ -59,24 +64,24 @@ export function commandAdmission(input: {
   readonly ownerUserId: UserId;
   readonly callerKey: string;
   readonly command: Command;
-  readonly face?: number | undefined;
 }): Pick<CommandIdentity, "admit" | "face" | "faced"> &
   Required<Pick<CommandIdentity, "admit" | "face">> {
   const subject = commandSubject(input.callerKey);
-  const admitted = {
-    ownerUserId: input.ownerUserId,
-    subject,
-    command: input.command,
-    face: input.face,
-  };
+  const admitted = { ownerUserId: input.ownerUserId, subject, command: input.command };
+  // A caller never says which face it is: only the input, or the store's own report, can.
+  const storeDecides = commandFace(input.command) === undefined;
   let reportedIn: Transaction<DatabaseSchema> | null = null;
   return {
-    admit: (transaction) => assertCommandAdmitted(transaction, admitted),
+    admit: (transaction) =>
+      assertCommandAdmitted(transaction, {
+        ...admitted,
+        ...(storeDecides ? { awaitingStore: true as const } : {}),
+      }),
     face: async (transaction, stored) => {
       await assertCommandAdmitted(transaction, { ...admitted, stored });
       reportedIn = transaction;
     },
-    ...(commandFace(input.command) === undefined
+    ...(storeDecides
       ? { faced: (transaction: Transaction<DatabaseSchema>) => reportedIn === transaction }
       : {}),
   };
@@ -134,9 +139,10 @@ export async function administrationCommand<Result>(
   if (identity.faced && !identity.faced(transaction))
     throw new OpensteerError({
       code: "forbidden",
-      reason: "access-changed",
+      reason: "authority-changed",
       message: "This change can't be made until the Home has checked what it does.",
     });
+  await identity.settle?.(transaction, result);
   await transaction
     .insertInto("commands")
     .values({

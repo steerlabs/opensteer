@@ -19,6 +19,7 @@ import {
   emptyExecutionPreferences,
   type ExecutionChoice,
   rememberExecutionChoice as rememberExecutionChoiceInStore,
+  threadAccessModeAtMost,
 } from "@opensteer/core";
 import {
   type HarnessInstanceCatalog,
@@ -1116,10 +1117,15 @@ export async function rememberExecutionChoice(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     return administrationCommand(transaction, administration, async () => {
-      const merged = rememberExecutionChoiceInStore(
-        ExecutionPreferencesSchema.parse(existing.executionPreferences),
-        choice,
-      );
+      const current = ExecutionPreferencesSchema.parse(existing.executionPreferences);
+      // Raising the mode new tasks start in lifts a gate the person set: the store says which.
+      if (choice.accessMode !== undefined)
+        await administration?.face?.(transaction, {
+          face: threadAccessModeAtMost(choice.accessMode, current.accessMode)
+            ? "preference"
+            : "approve",
+        });
+      const merged = rememberExecutionChoiceInStore(current, choice);
       await transaction
         .updateTable("personalSettings")
         .set({ executionPreferences: jsonValue(merged) })

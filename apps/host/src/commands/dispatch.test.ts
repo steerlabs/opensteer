@@ -10,7 +10,7 @@ import {
 } from "@opensteer/protocol/command-table";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
-import { dispatchCommand, type CommandAsk } from "./dispatch.js";
+import { dispatchCommand, type AgentCommandOutcome } from "./dispatch.js";
 import type { CommandRegistry, PersonCommandHandler } from "./registry.js";
 
 const userId = "usr_owner" as UserId;
@@ -24,6 +24,19 @@ function sample(type: CommandType): HostApiCommand {
     "personal.remoteAccess.request": { intent: { action: "rotate" } },
     "browser.sign-in.respond": { decision: { decision: "decline" } },
     "integration.computer.setup.respond": { decision: "deny" },
+    "browser.password-sign-in.respond": { decision: { kind: "decline" } },
+    "connection.authorize": { decision: { kind: "deny" } },
+    "plugins.schedule.answer": { action: "decline" },
+    "tab.open": { target: { kind: "page", url: "about:blank", guest: true } },
+    "settings.plugin.enabled.set": { target: { kind: "plugin", pluginId: "p" } },
+    "browser.session.start": { input: { threadId: "thr_x" } },
+    "trigger.create": { input: { anchorThreadId: "thr_x" } },
+    "iphone.screen.attach": { target: { kind: "new", name: "iPhone" } },
+    "integration.computer.policy.set": { input: { runnerId: "run_x", appApproval: "ask" } },
+    "integration.grant.create": { input: { connectionId: "ic_x" } },
+    "plugin.authorization.prepare": { input: { plugin: "p" } },
+    "tab.close": { tabIds: ["t"] },
+    "tab.organize": { tabIds: ["t"] },
   };
   return { type, idempotencyKey: "k", ...fields[type] } as unknown as HostApiCommand;
 }
@@ -87,11 +100,24 @@ const agents: readonly (readonly [string, AgentCaller])[] = [
   ["a Run for a connection with everything", run("full-access", everything)],
   ["a Run for a connection with a selected grant", run("full-access", selected)],
   ["a connection with everything", connection("full-access", everything)],
-  ["a connection with everything, Supervised", connection("auto", everything)],
+  ["a connection with everything, Auto", connection("auto", everything)],
   ["a connection with a selected grant", connection("full-access", selected)],
 ];
 
-/** Refuses at once: a secret field must be refused before any admission is read. */
+/** A copy of the command with a value at a dotted path, as an agent might send it. */
+function withPath(command: HostApiCommand, path: string, value: unknown): HostApiCommand {
+  const copy = structuredClone(command) as Record<string, unknown>;
+  const keys = path.split(".");
+  let at = copy;
+  for (const key of keys.slice(0, -1)) {
+    at[key] = typeof at[key] === "object" && at[key] !== null ? at[key] : {};
+    at = at[key] as Record<string, unknown>;
+  }
+  at[keys.at(-1)!] = value;
+  return copy as HostApiCommand;
+}
+
+/** Refuses at once: nothing may read an admission. */
 const admitNothing = async (): Promise<never> => {
   throw new Error("admitted");
 };
@@ -121,6 +147,7 @@ describe("dispatchCommand", () => {
               : null,
         mode: caller.accessMode,
         reach: true,
+        ownWork: true,
       });
       return { ...rule, face, execution: null };
     };
@@ -162,21 +189,77 @@ describe("dispatchCommand", () => {
     });
   });
 
-  it("refuses an agent's command that carries a value only the person types", async () => {
+  it("refuses an agent's command that carries a value only the person types, nested included", async () => {
     const { registry, calls } = spyRegistry();
+    const admitted = async () => ({ answer: "ask" as const, face: 0, execution: null });
     for (const type of types) {
       const row = commandTable[type] as CommandRow;
-      for (const field of row.secretFields ?? [])
+      for (const path of row.secretFields ?? [])
         await expect(
-          dispatchCommand(
-            run("full-access"),
-            { ...sample(type), [field]: "typed-by-the-agent" } as HostApiCommand,
-            { registry, admit: admitNothing },
-          ),
-          `${type}.${field}`,
+          dispatchCommand(run("full-access"), withPath(sample(type), path, "typed-by-the-agent"), {
+            registry,
+            admit: admitted,
+          }),
+          `${type}.${path}`,
         ).rejects.toMatchObject({ code: "bad_request" });
     }
+    // Only those paths: a custom sign-in app proposed without its client secret is fine.
+    await expect(
+      dispatchCommand(
+        run("full-access"),
+        {
+          type: "plugin.oauthApp.save",
+          idempotencyKey: "k",
+          input: { issuer: "https://issuer.example", clientId: "client" },
+        } as HostApiCommand,
+        { registry, admit: admitted },
+      ),
+    ).resolves.toMatchObject({ status: "ask" });
     expect(calls).toEqual([]);
+  });
+
+  it("answers not found before anything else is said, secrets included", async () => {
+    const { registry, calls } = spyRegistry();
+    const outside = async () => ({ answer: "not_found" as const, face: 0, execution: null });
+    const fixed = { code: "not_found", message: "That item is unavailable." };
+    // An unknown type reads like something that does not exist, never a crash.
+    await expect(
+      dispatchCommand(
+        connection("full-access", selected),
+        { type: "no.such.command", idempotencyKey: "k" } as unknown as HostApiCommand,
+        { registry, admit: outside },
+      ),
+    ).rejects.toMatchObject(fixed);
+    // Outside the grant with a secret in it: the same not found, not "leave it out".
+    for (const type of types)
+      for (const path of (commandTable[type] as CommandRow).secretFields ?? [])
+        await expect(
+          dispatchCommand(
+            connection("full-access", selected),
+            withPath(sample(type), path, "typed-by-the-agent"),
+            { registry, admit: outside },
+          ),
+          `${type}.${path}`,
+        ).rejects.toMatchObject(fixed);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses at runtime a person's actor that personActor did not make", async () => {
+    const { registry, calls } = spyRegistry();
+    const real = personActor(context);
+    const command = sample("thread.rename");
+    for (const [label, forged] of [
+      ["a structural copy", { kind: "person", userId, session }],
+      ["a spread copy", { ...real }],
+      ["a cast", JSON.parse(JSON.stringify(real))],
+    ] as const)
+      await expect(
+        dispatchCommand(forged as unknown as PersonActor, command, { registry }, context),
+        label,
+      ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(calls).toEqual([]);
+    await dispatchCommand(real, command, { registry }, context);
+    expect(calls).toEqual(["thread.rename"]);
   });
 
   it("lets only a held session stand for the person", () => {
@@ -192,8 +275,10 @@ describe("dispatchCommand", () => {
     }
     const dispatchAsAgent = () =>
       dispatchCommand(agent, command, { registry: spyRegistry().registry, admit: admitNothing });
-    // An agent's dispatch never hands back a handler's output: only what waits for the person.
-    expectTypeOf<ReturnType<typeof dispatchAsAgent>>().toEqualTypeOf<Promise<CommandAsk>>();
+    // An agent's dispatch never hands back a handler's raw output: what it may read, or what waits.
+    expectTypeOf<ReturnType<typeof dispatchAsAgent>>().toEqualTypeOf<
+      Promise<AgentCommandOutcome>
+    >();
     expect(() => personActor({ session: null } as unknown as HostApiServerContext)).toThrow(
       "Authentication required",
     );

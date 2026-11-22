@@ -26,7 +26,8 @@ import {
 import { requireSession } from "../server/rpc-context.js";
 import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
-import type { PersonActor } from "./actor.js";
+import type { Actor, PersonActor } from "./actor.js";
+import type { CommandAuthority } from "./dispatch.js";
 
 /**
  * A handler written for the person: it reaches the store with the session's user as authority, so
@@ -40,13 +41,30 @@ export interface PersonCommandHandler<K extends CommandType> {
     context: HostApiServerContext,
   ): Promise<HostApiCommandOutput>;
 }
-export type CommandHandler<K extends CommandType> = PersonCommandHandler<K>;
+/**
+ * A handler written for agents too: it takes the actor and hands its store the authority the door
+ * made, which the store admits again in the effect's transaction. The person reaches it with no
+ * authority, as today.
+ */
+export interface ActorCommandHandler<K extends CommandType> {
+  readonly accepts: "any";
+  run(
+    actor: Actor,
+    command: Command<K>,
+    on: {
+      readonly context: HostApiServerContext | null;
+      readonly authority: CommandAuthority | null;
+    },
+  ): Promise<HostApiCommandOutput>;
+}
+export type CommandHandler<K extends CommandType> =
+  PersonCommandHandler<K> | ActorCommandHandler<K>;
 export type CommandRegistry = { readonly [K in CommandType]: CommandHandler<K> };
 
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
 export type CoreCommand = Exclude<
   HostApiCommand,
-  | Extract<HostApiCommand, { type: `computer.view.${string}` | "phone.tab.close" }>
+  | Extract<HostApiCommand, { type: `computer.view.${string}` }>
   | TriggerCommand
   | DeviceCommand
   | ChannelCommand

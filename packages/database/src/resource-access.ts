@@ -16,6 +16,7 @@ import {
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
+  type RequestId,
   type AgentGrantTarget,
   type ResourceAccessLevel,
   type RunId,
@@ -37,6 +38,7 @@ import {
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { connectionState, liveConnection } from "./connection-liveness.js";
+import { withDatabaseTransaction } from "./connection.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -710,11 +712,13 @@ export interface CommandRuleCaller {
   /** The lineage's mode, with the organization's ceiling already applied to a connection. */
   readonly mode: ThreadAccessMode;
   /**
-   * The governed resource is within the caller's reach: for a `task` row, its own task work (in
-   * its lineage, at a mode no higher than its own); for a connection, a resource its grant names
-   * or its own connection. Your own agents reach every other kind of resource.
+   * The governed thing exists and is within the caller's reach: for a connection, inside its
+   * grant and its lineage, or its own connection; for your own agents, one of the person's.
+   * Outside reach reads exactly like something that does not exist.
    */
   readonly reach: boolean;
+  /** For a task row: the task's mode is no higher than the caller's, so it is its own work. */
+  readonly ownWork: boolean;
 }
 
 export interface CommandRuleAnswer {
@@ -725,6 +729,9 @@ export interface CommandRuleAnswer {
 const answerOrder: readonly CommandAnswer[] = ["now", "ask", "not_found"];
 function stricter(left: CommandRuleAnswer, right: CommandRuleAnswer): CommandRuleAnswer {
   return answerOrder.indexOf(right.answer) > answerOrder.indexOf(left.answer) ? right : left;
+}
+function looser<T extends CommandRuleAnswer>(left: T, right: T): T {
+  return answerOrder.indexOf(right.answer) < answerOrder.indexOf(left.answer) ? right : left;
 }
 
 /**
@@ -758,12 +765,12 @@ function classRule(
   const notFound = { answer: "not_found" } as const;
   // The person's own screen and device state: never an agent's, not even to ask about.
   if (effect === "person-view") return notFound;
+  // Outside reach, or not there at all, reads the same: a Home-wide thing has no reach to miss.
+  if (!caller.reach && scope !== "home") return notFound;
   const connection = caller.connection;
   if (connection) {
     // Another connection is another principal's, `everything` included.
     if (scope === "other-connection") return notFound;
-    // Outside the grant reads exactly like something that does not exist.
-    if (!caller.reach && scope !== "new" && scope !== "home") return notFound;
     if (connection.grant === "selected" && (scope === "home" || effect === "identity"))
       return notFound;
   }
@@ -788,7 +795,7 @@ function classRule(
   // Below Full access the person is asked for every effect outside the caller's own task work.
   const ownTaskWork =
     scope === "task" &&
-    caller.reach &&
+    caller.ownWork &&
     !face.fullAccess &&
     (effect === "preference" || effect === "narrow" || effect === "widen-self");
   return ownTaskWork ? { answer: "now" } : { answer: "ask", reason: "mode" };
@@ -818,12 +825,16 @@ export function commandSubject(callerKey: string): AuthoritySubject {
 
 /**
  * The one admission for Home commands: `now`, `ask` the person, or `not_found`. The person is
- * admitted by the session and reads nothing. An agent's execution is read live (its binding, every
- * mode in its lineage, its connection's grant with the organization's ceiling in the same
- * statement), then the rule decides. A handler that is not yet written for agents turns its `now`
- * into `ask` (its step). With `lock`, at commit, the connection row is held `FOR SHARE` so a
- * Disconnect or a narrowed grant cannot pass the effect. With `stored`, the store's own view picks
- * the face.
+ * admitted by the session and reads nothing. For an agent, in one transaction under its
+ * connection row's `FOR SHARE`: its execution as `admitExecution` reads it (binding, every mode
+ * in its lineage, the grant with the organization's ceiling in the same statement), then the
+ * governed thing itself (the task it belongs to and that task's lineage and mode, a profile in
+ * the grant, its own session), then the rule. A handler not yet written for agents turns its
+ * `now` into `ask` (its step).
+ *
+ * The face is the input's, or the store's when it reports one (`stored`). With `awaitingStore`,
+ * at commit before the store has looked, a command only the store can tell passes if some face of
+ * it could be `now`; it must then be reported before it commits (`administrationCommand`).
  */
 export async function admitCommand(
   database: Kysely<DatabaseSchema>,
@@ -832,82 +843,104 @@ export async function admitCommand(
     readonly subject: AuthoritySubject;
     readonly command: Command;
     readonly stored?: CommandStoredFace | undefined;
-    /** The face the caller was admitted on, before the store could tell. */
-    readonly face?: number | undefined;
-    readonly lock?: true;
+    readonly awaitingStore?: true;
   },
 ): Promise<CommandAdmission> {
-  const row = commandRow(input.command.type) as CommandRow;
+  const row = commandRow(input.command.type) as CommandRow | undefined;
+  if (!row) return { answer: "not_found", face: undefined, execution: null };
   const face = commandFaceFor(row, input);
   if (input.subject.kind === "person") return { answer: "now", face, execution: null };
-  if (input.lock) {
+  const admit = async (transaction: Kysely<DatabaseSchema>) => {
     const connectionId =
       input.subject.kind === "connection"
         ? input.subject.agentConnectionId
-        : await bindingAgentConnectionId(database, input.subject.bindingId);
+        : await bindingAgentConnectionId(
+            transaction,
+            (input.subject as Extract<AuthoritySubject, { kind: "binding" }>).bindingId,
+          );
     if (connectionId)
-      await database
+      await transaction
         .selectFrom("agentConnections")
         .select("id")
         .where("id", "=", connectionId)
         .forShare()
         .executeTakeFirst();
-  }
-  const execution = await admitExecution(database, {
-    ownerUserId: input.ownerUserId,
-    subject: input.subject,
-  });
-  const connection = execution.agentConnection;
-  const rule = commandRule(row, face, {
-    // Work from a chat anyone may speak in reaches no more than a selected grant would.
-    connection: connection
-      ? { grant: lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected" }
-      : null,
-    mode: execution.mode,
-    reach: commandReach(execution, row, row.governs(input.command as never)),
-  });
-  if (rule.answer !== "now") return { ...rule, face, execution };
-  const caller = {
-    connection: connection !== null,
-    selected: connection !== null && connection.grant.scope === "selected",
+    const execution = await admitExecution(transaction, {
+      ownerUserId: input.ownerUserId,
+      subject: input.subject,
+    });
+    const reach = await commandReach(
+      transaction,
+      execution,
+      row,
+      (row.governs as (command: Command) => CommandResource)(input.command),
+    );
+    return { execution, reach };
   };
-  const faces = face === undefined ? row.faces.map((_, index) => index) : [face];
-  if (faces.some((index) => commandFaceStep(row, index, caller) !== "A"))
-    return { answer: "ask", reason: "step", face, execution };
-  return { answer: "now", face, execution };
+  const { execution, reach } = database.isTransaction
+    ? await admit(database)
+    : await withDatabaseTransaction(database, admit);
+  const connection = execution.agentConnection;
+  const scope = effectiveGrantScope(execution);
+  const caller: CommandRuleCaller = {
+    connection: scope ? { grant: scope } : null,
+    mode: execution.mode,
+    ...reach,
+  };
+  const steps = { connection: connection !== null, selected: scope === "selected" };
+  const decide = (at: number | undefined): CommandAdmission => {
+    const rule = commandRule(row, at, caller);
+    if (rule.answer !== "now") return { ...rule, face: at, execution };
+    const faces = at === undefined ? row.faces.map((_, index) => index) : [at];
+    if (faces.some((index) => commandFaceStep(row, index, steps) !== "A"))
+      return { answer: "ask", reason: "step", face: at, execution };
+    return { answer: "now", face: at, execution };
+  };
+  if (face !== undefined || !input.awaitingStore) return decide(face);
+  // Before the store has looked: the most this command could be. The store's report decides.
+  const best = row.faces
+    .map((_, index) => decide(index))
+    .reduce((left, right) => looser(left, right));
+  return { ...best, face: undefined };
 }
+
+/** The grant scope the rule reads: a chat anyone may speak in reaches no more than a selected grant. */
+function effectiveGrantScope(
+  execution: Pick<ExecutionAuthority, "agentConnection">,
+): "everything" | "selected" | null {
+  const connection = execution.agentConnection;
+  if (!connection) return null;
+  return lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected";
+}
+
+export const commandNotFoundMessage = "That item is unavailable.";
 
 /**
  * At commit, inside the effect's transaction: the command must still be `now` for this agent, on
- * the face the store sees. Anything else refuses and nothing is written; the agent asks again and
- * is told what it may do now.
+ * the face the store sees. What is no longer reachable reads as the fixed not found; what now
+ * needs the person refuses with `authority-changed`. Nothing is written either way.
  */
 export async function assertCommandAdmitted(
   transaction: Kysely<DatabaseSchema>,
-  input: Omit<Parameters<typeof admitCommand>[1], "lock">,
+  input: Parameters<typeof admitCommand>[1],
 ): Promise<void> {
-  const admission = await admitCommand(transaction, { ...input, lock: true });
-  if (admission.answer !== "now")
-    throw new OpensteerError({
-      code: "forbidden",
-      reason: "access-changed",
-      message:
-        admission.reason === "mode"
-          ? "Changing settings requires full-access"
-          : "This agent's access changed before the change was made.",
-    });
+  const admission = await admitCommand(transaction, input);
+  if (admission.answer === "now") return;
+  if (admission.answer === "not_found")
+    throw new OpensteerError({ code: "not_found", message: commandNotFoundMessage });
+  throw new OpensteerError({
+    code: "forbidden",
+    reason: "authority-changed",
+    message: "This agent's access changed before the change was made.",
+  });
 }
 
 function commandFaceFor(
   row: CommandRow,
-  input: {
-    readonly command: Command;
-    readonly stored?: CommandStoredFace | undefined;
-    readonly face?: number | undefined;
-  },
+  input: { readonly command: Command; readonly stored?: CommandStoredFace | undefined },
 ): number | undefined {
   const fromInput = commandFace(input.command);
-  if (!input.stored) return fromInput ?? input.face;
+  if (!input.stored) return fromInput;
   // The store's view decides; an input that says otherwise is not the command that was admitted.
   const index = row.faces.findIndex(
     (face, at) =>
@@ -916,34 +949,167 @@ function commandFaceFor(
   return index === -1 ? (row.faces.length > 1 ? undefined : 0) : index;
 }
 
+interface CommandReach {
+  readonly reach: boolean;
+  readonly ownWork: boolean;
+}
+const inReach: CommandReach = { reach: true, ownWork: true };
+const outOfReach: CommandReach = { reach: false, ownWork: false };
+
 /**
- * Whether the governed resource is within the agent's reach, from facts already read. A task's
- * own store admits its caller against the task in the effect's transaction (`assertThreadCaller`),
- * so a task row reads nothing more here. A selected grant reaches a nameable thing only when the
- * input names it the way the grant does; one the Home would have to read first (a device app, a
- * device-data grant, a plugin account) is outside until its store resolves it.
+ * Whether the governed thing exists and is within this agent's reach, and whether a task row's
+ * task is its own work. A task is reached in its lineage (a connection's own, or the person's
+ * with `everything`) and only with Tasks in the grant; its mode decides own work. A Request,
+ * a delegation, an automation and a direct session are reached through the task they belong to.
+ * A selected grant reaches a nameable thing only when the input names it the way the grant does;
+ * one the Home cannot name from the input (a device app, a device-data grant, a plugin account,
+ * a tab without a profile) is outside until its family's store resolves it. Agents only: the
+ * person never comes here.
  */
-function commandReach(
+async function commandReach(
+  database: Kysely<DatabaseSchema>,
   execution: ExecutionAuthority,
   row: CommandRow,
   resource: CommandResource,
-): boolean {
+): Promise<CommandReach> {
   const connection = execution.agentConnection;
-  switch (row.scope) {
-    case "task":
-    case "home":
-    case "new":
-      return true;
-    case "other-connection":
-      return connection === null;
-    case "connection":
-      return connection === null || resource.id === connection.agentConnectionId;
-    case "nameable": {
-      if (!connection || connection.grant.scope === "everything") return true;
-      const target = grantTargetOf(resource);
-      return target !== null && authorizeTarget(execution, target) !== null;
+  const scope = effectiveGrantScope(execution);
+  const selected = scope === "selected";
+  const own = (mode: ThreadAccessMode) => threadAccessModeAtMost(mode, execution.mode);
+  const task = async (threadId: string, origin?: string | null): Promise<CommandReach> => {
+    const thread = await database
+      .selectFrom("threads")
+      .select(["createdBy", "accessMode", "originConnectionId"])
+      .where("id", "=", threadId as ThreadId)
+      .executeTakeFirst();
+    if (!thread || thread.createdBy !== execution.ownerUserId) return outOfReach;
+    if (connection) {
+      if (!agentGrantAllowsTasks(connection.grant)) return outOfReach;
+      const lineage = origin === undefined ? thread.originConnectionId : origin;
+      if (!sendEligible({ ...connection, grant: scopedGrant(connection.grant, scope) }, lineage))
+        return outOfReach;
     }
+    return { reach: true, ownWork: own(thread.accessMode) };
+  };
+  const both = (left: CommandReach, right: CommandReach): CommandReach => ({
+    reach: left.reach && right.reach,
+    ownWork: left.ownWork && right.ownWork,
+  });
+  const named = async (): Promise<CommandReach> => {
+    if (!connection || !selected) return inReach;
+    const target = grantTargetOf(resource);
+    return target !== null && authorizeTarget(execution, target) !== null ? inReach : outOfReach;
+  };
+  const within = async (reach: CommandReach) =>
+    resource.task === undefined ? reach : both(reach, await task(resource.task));
+  if (row.scope === "home") return inReach;
+  if (row.scope === "other-connection") return connection ? outOfReach : inReach;
+  switch (resource.kind) {
+    case "task": {
+      const requested: CommandReach = {
+        reach: true,
+        ownWork: resource.mode === undefined || own(resource.mode as ThreadAccessMode),
+      };
+      if (resource.id === null)
+        return connection && !agentGrantAllowsTasks(connection.grant) ? outOfReach : requested;
+      return both(await task(resource.id), requested);
+    }
+    case "request": {
+      const request = await database
+        .selectFrom("requests")
+        .select(["originatingThreadId", "requestedBy"])
+        .where("id", "=", resource.id as RequestId)
+        .executeTakeFirst();
+      if (!request || request.requestedBy !== execution.ownerUserId) return outOfReach;
+      return task(request.originatingThreadId);
+    }
+    case "assignment": {
+      const assignment = await database
+        .selectFrom("delegations")
+        .select("parentThreadId")
+        .where("id", "=", resource.id as never)
+        .executeTakeFirst();
+      return assignment ? task(assignment.parentThreadId) : outOfReach;
+    }
+    case "automation": {
+      const trigger = await database
+        .selectFrom("triggers")
+        .select(["anchorThreadId", "originConnectionId", "createdBy"])
+        .where("id", "=", resource.id as never)
+        .executeTakeFirst();
+      if (!trigger || trigger.createdBy !== execution.ownerUserId) return outOfReach;
+      return task(trigger.anchorThreadId, trigger.originConnectionId);
+    }
+    case "agent-session": {
+      const session = await database
+        .selectFrom("agentSessions")
+        .select(["connectionId", "threadId", "userId"])
+        .where("id", "=", resource.id as never)
+        .executeTakeFirst();
+      if (!session || session.userId !== execution.ownerUserId) return outOfReach;
+      if (resource.task !== undefined && resource.task !== session.threadId) return outOfReach;
+      // A connected agent stops only its own session.
+      return connection && session.connectionId !== connection.agentConnectionId
+        ? outOfReach
+        : inReach;
+    }
+    case "connection":
+      return !connection || resource.id === connection.agentConnectionId ? inReach : outOfReach;
+    case "tabs": {
+      const ids = resource.ids ?? [];
+      // Opening a tab with no profile (a Guest page, a window, an app): no selected grant names it.
+      if (ids.length === 0) return within(selected ? outOfReach : inReach);
+      const tabs = await database
+        .selectFrom("personalTabs")
+        .select(["profileId", "ownerId"])
+        .where("id", "in", ids as never)
+        .execute();
+      if (tabs.length !== ids.length || tabs.some((tab) => tab.ownerId !== execution.ownerUserId))
+        return outOfReach;
+      if (
+        selected &&
+        tabs.some(
+          (tab) =>
+            tab.profileId === null ||
+            authorizeTarget(execution, { kind: "browser-profile", profileId: tab.profileId }) ===
+              null,
+        )
+      )
+        return outOfReach;
+      return inReach;
+    }
+    case "tab-group":
+      return selected ? outOfReach : inReach;
+    case "browser-session": {
+      const session = await database
+        .selectFrom("browserSessions")
+        .select("profileId")
+        .where("id", "=", resource.id as never)
+        .executeTakeFirst();
+      if (!session) return outOfReach;
+      if (!selected) return inReach;
+      return session.profileId !== null &&
+        authorizeTarget(execution, { kind: "browser-profile", profileId: session.profileId }) !==
+          null
+        ? inReach
+        : outOfReach;
+    }
+    case "browser-profile": {
+      // A page with no profile is a Guest page: no selected grant names one.
+      if (resource.id === null) return within(selected ? outOfReach : inReach);
+      return within(await named());
+    }
+    default:
+      // A new thing (no id yet) has nothing to be outside of; an existing one is named or not.
+      if (row.scope === "new" && resource.id === null) return within(inReach);
+      return within(await named());
   }
+}
+
+function scopedGrant(grant: AgentGrant, scope: "everything" | "selected" | null): AgentGrant {
+  return scope === "selected" && grant.scope === "everything"
+    ? { scope: "selected", tasks: true, resources: [] }
+    : grant;
 }
 
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {
