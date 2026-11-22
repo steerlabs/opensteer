@@ -9454,4 +9454,34 @@ describe("work under a connection's authority never uses the clipboard or change
     expect(await send("run:own", true)).toBeUndefined();
     expect(await send("run:lineage", false)).toBeUndefined();
   });
+
+  it("checks authority, session ownership, and device access once per dispatched CDP command", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const requireAgentAccess = vi.fn(async () => undefined);
+    const service = freshService({ keys, runtime, repository, requireAgentAccess });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:direct", ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    const resolveAccess = vi.spyOn(repository, "resolveResourceAccess");
+    const getSession = vi.spyOn(repository, "getBrowserSessionForOwner");
+    requireAgentAccess.mockClear();
+
+    const request = cdp.request({ method: "Browser.getVersion" });
+    const command = await runtime.nextCommand();
+    runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+    await request;
+
+    expect(resolveAccess).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(requireAgentAccess).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
@@ -93,6 +94,11 @@ export const builtPluginEngine = {
   processEntry: new URL("../../dist/plugin-engine.js", import.meta.url),
   bridge: fileURLToPath(new URL("../../dist/plugin-engine-bridge.json", import.meta.url)),
 };
+/** Prebuilt REPL worker emitted by the integration launcher, avoiding cold tsx startup per Host. */
+const builtReplWorkerUrl = new URL("../../dist/computer-repl-worker.js", import.meta.url);
+export function builtReplWorkerEntry(): URL | undefined {
+  return existsSync(fileURLToPath(builtReplWorkerUrl)) ? builtReplWorkerUrl : undefined;
+}
 export async function startMachineAccessWireHost(
   databaseUrl: string,
   options: {
@@ -145,6 +151,7 @@ export async function startMachineAccessWireHost(
       }
     };
     try {
+      const replWorkerEntry = builtReplWorkerEntry();
       const created = await createHostRuntime(config, {
         ...(options.logger ? { logger: options.logger } : {}),
         ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
@@ -152,6 +159,7 @@ export async function startMachineAccessWireHost(
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
           : {}),
         ...(options.executionClock ? { executionClock: options.executionClock } : {}),
+        ...(replWorkerEntry ? { replWorkerEntry } : {}),
         pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")

@@ -2261,7 +2261,7 @@ export class BrowserService {
                       opening && "profileId" in opening ? (opening.profileId ?? null) : null,
                   },
             );
-            await this.#requireAgentAccess(runnerId);
+            if (!record) await this.#requireAgentAccess(runnerId);
           }
           const pooled = this.#pool(runnerId);
           if (
@@ -4624,9 +4624,26 @@ export class BrowserService {
     noteAuthority?: (facts: StandardCdpAuthority) => void,
   ) {
     const record = input.sessionId
-      ? await this.#usableAgentSession(input, input.sessionId, captureAuthority === undefined)
-      : await this.#followedAgentSession(input);
-    await this.#requireAgentAccess(record.runnerId);
+      ? await this.#usableAgentSession(input, input.sessionId, false)
+      : await this.#followedAgentSession(input, false);
+    // Attaching is new access; a command on an open attachment follows its Run's end.
+    // Check authority before inspecting the broker so an unauthorized caller never
+    // learns broker state, and defer forwarding captured facts until broker checks pass.
+    let captured: StandardCdpAuthority | undefined;
+    await this.admitAgentBrowser(
+      input,
+      "read-write",
+      [record],
+      this.#repository,
+      !hold && !captureAuthority,
+      undefined,
+      captureAuthority || noteAuthority
+        ? (facts) => {
+            captured = facts;
+          }
+        : undefined,
+      true,
+    );
     const broker = this.#brokers.get(record.id);
     if (!broker)
       throw new BrowserCdpConnectionEnded(
@@ -4649,16 +4666,7 @@ export class BrowserService {
         "unsupported-operation",
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
-    // Attaching is new access; a command on an open attachment follows its Run's end.
-    await this.admitAgentBrowser(
-      input,
-      "read-write",
-      [record],
-      this.#repository,
-      !hold && !captureAuthority,
-      undefined,
-      captureAuthority ?? noteAuthority,
-    );
+    if (captured) (captureAuthority ?? noteAuthority)?.(captured);
     if (hold && input.sessionId) await this.#holdForAgent(input, record);
     return { record, broker, backend };
   }
@@ -7189,9 +7197,16 @@ export class BrowserService {
       (authorize &&
         // A command of an ended Run's open connection still answers, but never acts
         // or holds the session again; new tab operations refuse an ended Run.
-        !(await this.admitAgentBrowser(input, "read-write", [record], this.#repository, true).then(
-          () => true,
-        )))
+        !(await this.admitAgentBrowser(
+          input,
+          "read-write",
+          [record],
+          this.#repository,
+          true,
+          undefined,
+          undefined,
+          true,
+        ).then(() => true)))
     )
       throw new BrowserCdpConnectionEnded(
         connectedAgentBinding(input.agentBindingId)
@@ -7235,6 +7250,8 @@ export class BrowserService {
     /** A browser about to start or restore: its exact profile, or null for Guest. */
     opening?: { readonly profileId: BrowserProfileId | null },
     captureAuthority?: (facts: StandardCdpAuthority) => void,
+    /** Callers that just loaded `records` via `getBrowserSessionForOwner` for `input.ownerId`. */
+    ownedRecordsVerified = false,
   ) {
     if (!input.agentBindingId)
       throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
@@ -7242,9 +7259,18 @@ export class BrowserService {
       if (!endedBindingAnswers)
         throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
       // Its connection's own token check ends it; until then the command only answers.
-      for (const record of records)
-        if (!(await repository.getBrowserSessionForOwner(record.id, input.ownerId)))
-          throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      if (!ownedRecordsVerified) {
+        for (const record of records)
+          if (!(await repository.getBrowserSessionForOwner(record.id, input.ownerId)))
+            throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      }
+      if (records.length) {
+        await Promise.all(
+          [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>
+            this.#requireAgentAccess(runnerId),
+          ),
+        );
+      }
       return null;
     }
     let scope: Awaited<ReturnType<OpensteerStore["runCapabilityScope"]>> = null;
@@ -7314,21 +7340,23 @@ export class BrowserService {
         });
     }
     if (records.length) {
-      const owned = new Set(
-        (records.length === 1
-          ? [await repository.getBrowserSessionForOwner(records[0]!.id, input.ownerId)].filter(
-              (record) => record !== null,
-            )
-          : await repository.listBrowserSessions(input.ownerId)
-        ).map((record) => record.id),
-      );
-      if (records.some((record) => !owned.has(record.id)))
-        throw new OpensteerError({
-          code: "forbidden",
-          message: connectedAgentBinding(input.agentBindingId)
-            ? "This tab is unavailable to this task. Use discover to find an open tab and pass its tabId."
-            : "This tab is unavailable to this task. Use tab_list to find an open page tab.",
-        });
+      if (!ownedRecordsVerified) {
+        const owned = new Set(
+          (records.length === 1
+            ? [await repository.getBrowserSessionForOwner(records[0]!.id, input.ownerId)].filter(
+                (record) => record !== null,
+              )
+            : await repository.listBrowserSessions(input.ownerId)
+          ).map((record) => record.id),
+        );
+        if (records.some((record) => !owned.has(record.id)))
+          throw new OpensteerError({
+            code: "forbidden",
+            message: connectedAgentBinding(input.agentBindingId)
+              ? "This tab is unavailable to this task. Use discover to find an open tab and pass its tabId."
+              : "This tab is unavailable to this task. Use tab_list to find an open page tab.",
+          });
+      }
       await Promise.all(
         [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>
           this.#requireAgentAccess(runnerId),
