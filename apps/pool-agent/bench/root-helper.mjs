@@ -542,6 +542,25 @@ async function run(command) {
         spawnSync("systemctl", ["stop", `opensteer-pool-egress-${command.index}.service`]);
       return { ok: true };
     }
+    case "bench-credentials": {
+      // The bench's own upstream credentials are shared by its slots, and since round G a
+      // delete removes a slot's files once no other live slot names them: the bench keeps a
+      // copy across its own cleanup of an earlier run's slots.
+      const dir = "/etc/opensteer-pool-bench";
+      const copy = "/var/lib/opensteer-pool-bench/credentials-copy";
+      const names = ["upstream-username", "upstream-password", "upstream-ca.pem"];
+      if (command.action === "save") {
+        execFileSync("install", ["-d", "-m", "0700", copy]);
+        for (const name of names)
+          if (existsSync(`${dir}/${name}`))
+            execFileSync("cp", ["-p", `${dir}/${name}`, `${copy}/${name}`]);
+      } else {
+        for (const name of names)
+          if (!existsSync(`${dir}/${name}`) && existsSync(`${copy}/${name}`))
+            execFileSync("cp", ["-p", `${copy}/${name}`, `${dir}/${name}`]);
+      }
+      return { present: names.filter((name) => existsSync(`${dir}/${name}`)).length };
+    }
     case "cross-read": {
       // Round I, run 8: one slot's proxy user tries to read another slot's credentials, in
       // credentialsRoot and in its running proxy's /run/credentials.

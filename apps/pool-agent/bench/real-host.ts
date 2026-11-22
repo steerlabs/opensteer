@@ -1347,8 +1347,9 @@ async function pulledRun8(others: Slot[]) {
   aReply.cdp.close();
   await a.call("stop");
   const before = (await helper({ cmd: "credentials-info", slotId: a.id })).passwordSha;
-  const rotatedAt = Date.now();
   await helper({ cmd: "standins-rotate", slotId: a.id });
+  // From a's start on: its guest's requests, by the username the upstream saw.
+  const rotatedAt = Date.now();
   const began = now();
   await a.call("start");
   aReply = await firstReply(a, began);
@@ -1361,8 +1362,14 @@ async function pulledRun8(others: Slot[]) {
     at: number;
     line?: string;
     authOk?: boolean;
+    slot?: string | null;
   }[];
-  const afterRotation = upstream.filter((row) => row.at >= rotatedAt && row.line);
+  const afterRotation = upstream.filter(
+    (row) => row.at >= rotatedAt && row.line && row.slot === a.id,
+  );
+  const othersAfterRotation = upstream.filter(
+    (row) => row.at >= rotatedAt && row.line && row.slot !== a.id,
+  );
   for (const slot of [a, b, direct]) {
     await slot.ensureStopped().catch(() => undefined);
     await admin({ op: "delete", slotId: slot.id, term: slot.term, eraseProfile: true } as never);
@@ -1381,7 +1388,13 @@ async function pulledRun8(others: Slot[]) {
       fetched: accountAfter - accountBefore,
       credentials: bCredentials,
     },
-    rotation: { before, after, https: rotatedHttps, upstream_after: afterRotation },
+    rotation: {
+      before,
+      after,
+      https: rotatedHttps,
+      upstream_after: afterRotation,
+      others_after: othersAfterRotation.map(({ line: _line, ...row }) => row),
+    },
     ok:
       directUnit.required === false &&
       directAfter.phase === "stopped" &&
@@ -1991,11 +2004,13 @@ async function afterReboot(slots: Slot[]) {
 
 async function main() {
   // A rerun starts clean: the previous run's slots are deleted (their guests ended, state erased).
+  await helper({ cmd: "bench-credentials", action: "save" });
   const listed = await admin({ op: "list" });
   if (listed.op === "list")
     for (const slot of listed.slots)
       if (slot.slotId.startsWith("bench-"))
         await admin({ op: "delete", slotId: slot.slotId, term: slot.term });
+  await helper({ cmd: "bench-credentials", action: "restore" });
   const slots = [0, 1, 2, 3, 4].map((index) => new Slot(`bench-${index}`, index));
   for (const slot of slots) await slot.create();
   const [first] = slots;
