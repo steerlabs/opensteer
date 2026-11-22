@@ -207,19 +207,26 @@ if(a[0]==='find-generic-password'&&a.includes('-w')){console.log('probe');proces
 process.exit(0);
 `;
 // sudo, recorded and never run: what the step asks of root, with what it pipes in.
+// The hosts file ends in a newline unless the case says otherwise (SUDO_HOSTS_TAIL). The case may
+// make one command fail (SUDO_FAIL), or have the step interrupted while one runs (SUDO_KILL: TERM
+// to the step, as a dropped connection or a timeout would).
 const sudoStandIn = String.raw`#!/usr/bin/env node
 const fs=require('node:fs'),a=process.argv.slice(2),home=process.env.HOME;
-let input='';try{if(a.includes('tee')||a.includes('write'))input=fs.readFileSync(0,'utf8')}catch{}
+let input='';try{if(a.includes('tee'))input=fs.readFileSync(0,'utf8')}catch{}
 fs.appendFileSync(home+'/sudo-calls.jsonl',JSON.stringify({args:a,input})+'\n');
-if(a.includes('authorizationdb')&&a.includes('read'))process.stdout.write('<plist>admin</plist>');
-process.exit(0);
+if(a.includes('tail'))process.stdout.write(process.env.SUDO_HOSTS_TAIL??'\n');
+if(process.env.SUDO_KILL&&a.includes(process.env.SUDO_KILL))process.kill(process.ppid,'SIGTERM');
+process.exit(process.env.SUDO_FAIL&&a.includes(process.env.SUDO_FAIL)?1:0);
 `;
+// What the guest's resolver says of the name once the line is in.
+const dscacheutilStandIn =
+  "#!/bin/sh\necho 'name: account.first-run.opensteer.example'\necho 'ip_address: 127.0.0.1'\n";
 const sysctlGuest = '#!/bin/sh\n[ "$2" = kern.hv_vmm_present ] && echo 1\n';
 function keychainCase(
   name: string,
   setup: { readonly guest: boolean; readonly marker: string | null },
   run: (
-    step: (action: string) => number | null,
+    step: (action: string, extra?: NodeJS.ProcessEnv) => number | null,
     root: string,
     diagnose: (job: string | null) => { status: number | null; output: string },
   ) => void,
@@ -232,6 +239,7 @@ function keychainCase(
     mkdirSync(tools, { recursive: true });
     writeFileSync(path.join(tools, "security"), securityStandIn, { mode: 0o700 });
     writeFileSync(path.join(tools, "sudo"), sudoStandIn, { mode: 0o700 });
+    writeFileSync(path.join(tools, "dscacheutil"), dscacheutilStandIn, { mode: 0o700 });
     if (setup.guest) writeFileSync(path.join(tools, "sysctl"), sysctlGuest, { mode: 0o700 });
     if (setup.marker !== null)
       writeFileSync(path.join(root, "opensteer-job/guest-job"), setup.marker);
@@ -240,7 +248,7 @@ function keychainCase(
       path.join(import.meta.dirname, "fixture-authority-files.sh"),
       path.join(root, "opensteer-job/fixture-authority-files.sh"),
     );
-    const step = (action: string) => {
+    const step = (action: string, extra: NodeJS.ProcessEnv = {}) => {
       const r = spawnSync(
         "/bin/bash",
         ["scripts/test-vm/fixture-keychain.sh", action, "opensteer-gui-job-contract"],
@@ -249,6 +257,7 @@ function keychainCase(
             HOME: root,
             // The stand-ins first; Node for the security stand-in; the system's own tools after.
             PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+            ...extra,
           },
           encoding: "utf8",
           timeout: 15_000,
@@ -284,6 +293,11 @@ const sudoCalls = (root: string) =>
         .split("\n")
         .map((line) => JSON.parse(line) as { args: string[]; input: string })
     : [];
+const exactHostsLine =
+  "/^127\\.0\\.0\\.1 account\\.first-run\\.opensteer\\.example # opensteer-job-fixture-authority$/d";
+const authorityRecord = (root: string) =>
+  readFileSync(path.join(root, "opensteer-job/fixture-authority.state"), "utf8").trim().split("\n");
+
 const calls = (root: string) =>
   existsSync(path.join(root, "security-calls.jsonl"))
     ? readFileSync(path.join(root, "security-calls.jsonl"), "utf8")
@@ -335,26 +349,28 @@ keychainCase(
     assert.equal(step("unlock"), 77);
     assert.deepEqual(calls(root), []);
     assert.equal(step("begin"), 0);
-    // The fixture authority: its files, the name on loopback, and the guest's trust, the right
-    // to change trust opened for the one change and put back at once.
+    // The fixture authority: its files and the name on loopback, and of root nothing else: the
+    // guest's trust, and the right to change it, are never touched.
     const authority = path.join(root, "opensteer-job/fixture-authority");
     for (const file of ["ca.pem", "account.pem", "account.key"])
       assert.ok(existsSync(path.join(authority, file)), `no ${file}`);
     const asked = sudoCalls(root).map(({ args, input }) => ({ line: args.join(" "), input }));
-    const hosts = asked.find(({ line }) => line === "-n tee -a /etc/hosts");
+    assert.deepEqual(
+      asked.map(({ line }) => line),
+      ["-n tail -c 1 /etc/hosts", "-n tee -a /etc/hosts"],
+    );
     assert.equal(
-      hosts?.input,
+      asked[1]?.input,
       "127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority\n",
     );
-    const trustLines = asked.map(({ line }) => line).filter((line) => line.includes("security"));
-    assert.deepEqual(trustLines, [
-      "-n security authorizationdb read com.apple.trust-settings.admin",
-      "-n security authorizationdb write com.apple.trust-settings.admin allow",
-      `-n security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ${authority}/ca.pem`,
-      "-n security authorizationdb write com.apple.trust-settings.admin",
+    // Recorded before the line was written.
+    assert.deepEqual(authorityRecord(root), [
+      "hosts 127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority",
     ]);
-    // The right is put back as it was read.
-    assert.equal(asked.at(-1)?.input, "<plist>admin</plist>");
+    assert.match(
+      readFileSync(path.join(root, "begin.log"), "utf8"),
+      /account\.first-run\.opensteer\.example resolves to 127\.0\.0\.1\n/u,
+    );
     const state = () =>
       JSON.parse(readFileSync(path.join(root, "security-state.json"), "utf8")) as {
         default: string;
@@ -404,19 +420,74 @@ keychainCase(
     const ended = sudoCalls(root)
       .slice(beforeEnd)
       .map(({ args }) => args.join(" "));
-    assert.ok(ended.includes(`-n security remove-trusted-cert -d ${authority}/ca.pem`));
-    assert.ok(
-      ended.includes(
-        "-n security delete-certificate -c Opensteer journey fixture authority /Library/Keychains/System.keychain",
-      ),
-    );
-    assert.ok(ended.includes("-n sed -i  / # opensteer-job-fixture-authority$/d /etc/hosts"));
+    // Exactly what it added: the hosts line, matched as itself.
+    assert.deepEqual(ended, [`-n sed -i  ${exactHostsLine} /etc/hosts`]);
     assert.equal(existsSync(authority), false);
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.deepEqual(state(), { default: login, list: [login, other] });
     assert.ok(calls(root).some((c) => c.join(" ") === `delete-keychain ${fixture}`));
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-keychain.state")), false);
   },
 );
+// A hosts file that does not end in a newline would have the line join its last entry: the step
+// refuses before it changes anything.
+keychainCase(
+  "authority-hosts-without-final-newline",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    assert.equal(step("begin", { SUDO_HOSTS_TAIL: "t" }), 77);
+    assert.deepEqual(
+      sudoCalls(root).map(({ args }) => args.join(" ")),
+      ["-n tail -c 1 /etc/hosts"],
+    );
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
+    // `end` still puts the keychain back, and asks nothing of root.
+    assert.equal(step("end"), 0);
+    assert.deepEqual(
+      sudoCalls(root).map(({ args }) => args.join(" ")),
+      ["-n tail -c 1 /etc/hosts"],
+    );
+  },
+);
+
+// Interrupted while it writes the hosts line (a dropped connection, a timeout): the line is on
+// record from before it was written, and `end` removes exactly it.
+keychainCase(
+  "authority-interrupted-while-writing-hosts",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    assert.notEqual(step("begin", { SUDO_KILL: "tee" }), 0);
+    assert.deepEqual(authorityRecord(root), [
+      "hosts 127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority",
+    ]);
+    const before = sudoCalls(root).length;
+    assert.equal(step("end"), 0);
+    assert.deepEqual(
+      sudoCalls(root)
+        .slice(before)
+        .map(({ args }) => args.join(" ")),
+      [`-n sed -i  ${exactHostsLine} /etc/hosts`],
+    );
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
+  },
+);
+
+// A removal that fails keeps the record and the files, so another `end` can finish.
+keychainCase(
+  "authority-removal-fails",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    assert.equal(step("begin"), 0);
+    assert.equal(step("end", { SUDO_FAIL: "sed" }), 1);
+    assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority.state")));
+    assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority/ca.pem")));
+    assert.equal(step("end"), 0);
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
+  },
+);
+
 writeFileSync(path.join(out, "results.json"), JSON.stringify(results, null, 2));
 console.log(out, JSON.stringify(results, null, 2));
 if (results.some((r) => !r.passed)) process.exitCode = 1;
