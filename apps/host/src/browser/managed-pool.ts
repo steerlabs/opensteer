@@ -4,7 +4,11 @@
  * Runner's side uses. Selected only by a managed-pool target in configuration, which no
  * released Home has; nothing here runs for any other Home.
  */
-import type { BrowserPoolControl, BrowserPoolRuntimeState } from "@opensteer/browser-runtime-core";
+import type {
+  BrowserPoolControl,
+  BrowserPoolEndAnswer,
+  BrowserPoolRuntimeState,
+} from "@opensteer/browser-runtime-core";
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import {
   PoolRelayRefused,
@@ -78,6 +82,20 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     if (answer.status !== 200 || !body.state)
       throw new Error(body.message ?? `The runtime refused the ${control.kind} control.`);
     return body.state;
+  }
+
+  /**
+   * The Home's request to end one session (P15). Not sent twice: an answer that did not come is
+   * not knowing, and the end step asks again with a new ticket.
+   */
+  async endSession(ticket: string, signal?: AbortSignal): Promise<BrowserPoolEndAnswer> {
+    const answer = await this.#send("POST", "/v1/pool/end", JSON.stringify({ ticket }), signal);
+    const body = JSON.parse(answer.text || "{}") as Partial<BrowserPoolEndAnswer> & {
+      message?: string;
+    };
+    if (answer.status !== 200 || !body.outcome || !body.state)
+      throw new Error(body.message ?? `The runtime answered ${answer.status}.`);
+    return { outcome: body.outcome, state: body.state };
   }
 
   /**

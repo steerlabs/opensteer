@@ -27,6 +27,12 @@ import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { loopbackPoolChannel } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import type {
+  BrowserPoolEndAnswer,
+  BrowserPoolRuntimeState,
+} from "../packages/browser-runtime-core/src/index.js";
+import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import {
   registerTriggerCdpBridge,
@@ -1042,10 +1048,11 @@ it("lets a Stop during a reconnect end that session's wait at once, and say clos
     ).rejects.toThrow("The browser has ended.");
     const ticketsBefore = j.issued.length;
     j.runnerUp();
-    // The Home reattaches under a fresh attempt and stops it; the runtime's close is the receipt.
+    // The Home asks the guest's runtime to end it; its answer, after its teardown, is the
+    // receipt. No channel is opened for a stopped session (P15).
     await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
-    await until(() => expect(page.page.isClosed()).toBe(true));
-    expect(j.issued.length).toBeGreaterThan(ticketsBefore);
+    expect(page.page.isClosed()).toBe(true);
+    expect(j.issued.length).toBe(ticketsBefore);
   } finally {
     j.runnerUp();
     await j.close();
@@ -1081,6 +1088,93 @@ it("never reads a pooled Stop closed while the guest still holds the page, whate
       { timeout: 20_000 },
     );
     expect(ended).toBe("closed");
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps a Stop's row closing while the guest holds the session on a channel it never saw close, until its pages are gone", async () => {
+  const j = await journey("stop-stalled");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-stalled"));
+    const page = await j.draft();
+    // The tunnel stalls as the Stop's close leaves: the Home's side ends with no answer, and the
+    // guest's channel stays open, so the guest still holds the session and its pages.
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    expect(page.page.isClosed()).toBe(false);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // The Home asks the guest's runtime to end it; the row leaves closing only for closed, and
+    // only once the guest's page is gone.
+    const ended = await vi.waitFor(
+      async () => {
+        const state = (await j.row(sessionId))?.state;
+        expect(state).not.toBe("closing");
+        return state;
+      },
+      { timeout: 20_000 },
+    );
+    expect(ended).toBe("closed");
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("writes closed only for the runtime's ended, from a running runtime under the same fence, and asks again after anything else", async () => {
+  const j = await journey("stop-answers");
+  try {
+    // What the runtime answers first, before its own answer is let through.
+    const answers: ((state: BrowserPoolRuntimeState) => BrowserPoolEndAnswer)[] = [
+      (state) => ({ outcome: "not-yet", state }),
+      (state) => ({ outcome: "unknown", state }),
+      (state) => ({
+        outcome: "ended",
+        state: { ...state, fence: { ...state.fence!, epoch: state.fence!.epoch + 1 } },
+      }),
+      (state) => ({ outcome: "ended", state: { ...state, phase: "retired" } }),
+    ];
+    let sessionId: BrowserSessionId | undefined;
+    let pageClosed: (() => boolean) | undefined;
+    const rows: string[] = [];
+    const home = await j.startHome({
+      ...loopbackPoolChannel(j.guest),
+      endSession: async (ticket) => {
+        rows.push(`${(await j.row(sessionId!))?.state} ${pageClosed?.() ? "gone" : "open"}`);
+        const answer = answers.shift();
+        return answer ? answer(j.guest.poolState()!) : j.guest.endPoolSession(ticket);
+      },
+    });
+    ({ sessionId } = await home.service.openTab(j.task.userId, j.command("stop-answers")));
+    const page = await j.draft();
+    pageClosed = () => page.page.isClosed();
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      await home.service.stop(j.task.userId, sessionId!);
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    await until(async () => expect((await j.row(sessionId!))?.state).toBe("closed"));
+    // Each answer before the runtime's own left the row closing, and the page in the guest.
+    expect(rows).toEqual(Array.from({ length: 5 }, () => "closing open"));
     expect(page.page.isClosed()).toBe(true);
   } finally {
     await j.close();

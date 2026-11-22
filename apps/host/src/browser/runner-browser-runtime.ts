@@ -44,7 +44,6 @@ import type {
   BrowserRuntimeTarget,
   BrowserRuntimeTargetResolver,
 } from "./browser-service.js";
-import { recordRuntimeRefusal } from "./browser-runtime-refusal.js";
 import type {
   BrowserRelayEvent,
   RunnerBrowserHooks,
@@ -1614,14 +1613,10 @@ function capabilityReference(lease: BrowserCapabilityLease): BrowserCapabilityRe
 }
 
 const protocolRejection = new WeakSet<Error>();
-function protocolFailure(error: {
-  readonly code?: string;
-  readonly message: string;
-  readonly retryable: boolean;
-}): Error {
+
+function protocolFailure(error: { readonly message: string; readonly retryable: boolean }): Error {
   const failure = relayError(error.message, error.retryable);
   protocolRejection.add(failure);
-  recordRuntimeRefusal(failure, error.code);
   return failure;
 }
 

@@ -3,31 +3,19 @@
 // apps/control-plane/src/cloud-computers/browser-pool.integration.test.ts, copied so that file
 // stays the account builder's own; only the last test is new.
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import {
   BrowserPoolHostBootCompleteResponseSchema,
   BrowserPoolHostBootResponseSchema,
   BrowserPoolHostDesiredResponseSchema,
-  BrowserPoolHostReplaceUnreadyResponseSchema,
-  BrowserPoolSlotBumpTermResponseSchema,
   BrowserPoolSlotDesiredResponseSchema,
   CloudComputerBootResponseSchema,
-  CloudComputerCheckResponseSchema,
-  CloudComputerEgressResponseSchema,
-  CloudComputerEgressSchema,
   CloudComputerIdentitySchema,
   CloudComputerReportResponseSchema,
   ControlPlaneAccountIdSchema,
-  ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostBootCompletePath,
   browserPoolHostBootPath,
-  browserPoolHostReplaceUnreadyPath,
-  browserPoolHostSlotEgressPath,
-  browserPoolHostSlotEgressSigningBytes,
   browserPoolHostStatusPath,
   browserPoolHostsDesiredPath,
-  browserPoolSlotBumpTermPath,
-  browserPoolSlotCheckPath,
   browserPoolSlotStatusPath,
   browserPoolSlotsDesiredPath,
   cloudComputerBootCompletePath,
@@ -38,9 +26,7 @@ import {
   cloudComputersDesiredPath,
   managedBrowserPoolRegistrationPath,
   managedBrowserPoolRegistrationSigningBytes,
-  managedBrowserPoolTargetPath,
   type BrowserPoolHostId,
-  type BrowserPoolSlotId,
   type CloudComputerDesired,
   type CloudComputerId,
   type ControlPlaneAccountId,
@@ -50,8 +36,7 @@ import {
   hostDiscoverySigningBytes,
   hostKeyFingerprint,
 } from "../packages/deployment-authority/src/index.js";
-import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
-import { Pool } from "pg";
+import { Kysely } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -81,7 +66,6 @@ import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-compu
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";
 import { testBackupVault } from "../apps/control-plane/src/cloud-computers/backup-erasure.test-support.js";
 import { loadCloudComputerConfig } from "../apps/control-plane/src/cloud-computers/config.js";
-import { runCloudComputerOperator } from "../apps/control-plane/src/cloud-computers/operator.js";
 import { resetManagedCloudTables } from "../apps/control-plane/src/cloud-computers/reset.test-support.js";
 import { CloudComputerStore } from "../apps/control-plane/src/cloud-computers/store.js";
 import type {
@@ -107,13 +91,6 @@ const services = [
   "channel-runtime",
   "gateway",
 ];
-
-const uniformEgressRefusal = {
-  error: {
-    code: "unauthorized",
-    message: "Browser pool slot egress request was refused",
-  },
-};
 
 const poolRelease = {
   version: "1.0.0",
@@ -198,22 +175,6 @@ function makeDiscoveryEnvelope(
     document,
     publicKey: { algorithm: "Ed25519" as const, spki: spkiBase64Url },
     signature: sign(null, hostDiscoverySigningBytes(document), privateKey).toString("base64url"),
-  };
-}
-
-function signSlotEgress(
-  hostId: BrowserPoolHostId,
-  slotId: BrowserPoolSlotId,
-  issuedAt: string,
-  privateKey: KeyObject,
-  nonce = Buffer.alloc(16, 1).toString("base64url"),
-) {
-  const payload = { v: 1 as const, hostId, slotId, issuedAt, nonce };
-  return {
-    ...payload,
-    signature: sign(null, browserPoolHostSlotEgressSigningBytes(payload), privateKey).toString(
-      "base64",
-    ),
   };
 }
 

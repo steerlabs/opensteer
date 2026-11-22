@@ -141,6 +141,7 @@ export function dyingAfter(runtime: BrowserRuntime, kind: string): BrowserPoolRu
       }
       return state;
     },
+    endSession: (ticket) => (dead ? new Promise(() => {}) : runtime.endPoolSession(ticket)),
   };
 }
 
@@ -268,9 +269,16 @@ export async function journey(
       })
     : null;
   const homes: Home[] = [];
-  const startHome = async (
-    channel: BrowserPoolRuntimeChannel = loopbackPoolChannel(guest),
-  ): Promise<Home> => {
+  // The journey's Runner stands for the whole way to the guest: while it is away the runtime's
+  // end request is not answered either.
+  const reachableGuest: BrowserPoolRuntimeChannel = {
+    ...loopbackPoolChannel(guest),
+    endSession: (ticket) =>
+      runnerDown
+        ? Promise.reject(new Error("The guest cannot be reached."))
+        : guest.endPoolSession(ticket),
+  };
+  const startHome = async (channel: BrowserPoolRuntimeChannel = reachableGuest): Promise<Home> => {
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,

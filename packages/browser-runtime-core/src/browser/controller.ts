@@ -807,8 +807,17 @@ export class BrowserController {
   }
 
   private closeReason: "retired" | "pooled" | undefined;
-  close(reason?: "retired" | "pooled"): Promise<void> {
-    if (!this.closePromise) this.closeReason = reason;
+  private beforeClosed: (() => Promise<void>) | undefined;
+  /**
+   * `beforeClosed`: run after the session stops and before it says `closed` (a pooled runtime
+   * closes its pages there, so `closed` is said only once they are gone); when it fails,
+   * `closed` is not said.
+   */
+  close(reason?: "retired" | "pooled", beforeClosed?: () => Promise<void>): Promise<void> {
+    if (!this.closePromise) {
+      this.closeReason = reason;
+      this.beforeClosed = beforeClosed;
+    }
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const [surfaceId, offer] of this.saveOffers) this.endPersonSave(surfaceId, offer, "ended");
     for (const entry of this.cursorHints.values()) {
@@ -872,6 +881,7 @@ export class BrowserController {
     }
     this.terminated = true;
     if (this.closeReason === "pooled") return;
+    await this.beforeClosed?.();
     await this.send({
       state: "closed",
       type: "browser.status",

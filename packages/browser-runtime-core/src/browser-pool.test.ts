@@ -503,3 +503,161 @@ it("ends an ordinary runtime's session with its channel, with no window", async 
     await runtime.shutdown();
   }
 });
+
+// ---- P15: the Home's request to end a session, answered after the runtime's own teardown ------
+
+/** The Home's end ticket for the fixture's session, under the fence it holds now. */
+function endRequest(f: Awaited<ReturnType<typeof fixture>>, name: string, fence = f.fence()) {
+  f.verifier.setClaims(name, {
+    ...f.claims,
+    initialNavigation: undefined,
+    pool: { ...fence, end: true },
+  });
+  return f.runtime.endPoolSession(name);
+}
+
+/** The page's close waits until it is let go; then it closes. */
+function holdClose(page: FakePage) {
+  const held = Promise.withResolvers<void>();
+  const close = page.close.bind(page);
+  const spy = vi.spyOn(page, "close").mockImplementation(async () => {
+    await held.promise;
+    await close();
+  });
+  return { spy, release: () => held.resolve() };
+}
+
+it("ends a session it still holds when the Home asks, and says ended only once its pages are gone", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    // The channel stays open: the guest has not seen it close.
+    await f.open();
+    const closing = holdClose(f.page);
+    const first = endRequest(f, "end-1");
+    await vi.waitFor(() => expect(closing.spy).toHaveBeenCalled());
+    // While its pages close, the answer is not yet.
+    expect((await endRequest(f, "end-2")).outcome).toBe("not-yet");
+    expect(f.page.isClosed()).toBe(false);
+    closing.release();
+    expect(await first).toMatchObject({
+      outcome: "ended",
+      state: { phase: "running", fence: f.fence() },
+    });
+    expect(f.page.isClosed()).toBe(true);
+    // Nothing held and nothing being torn down: ended; and the session is never attached again.
+    expect((await endRequest(f, "end-3")).outcome).toBe("ended");
+    await expect(f.reattach(5)).rejects.toThrow("has ended");
+  } finally {
+    await f.runtime.shutdown();
+  }
+});
+
+it("answers unknown after a teardown that failed, never ended, and ends the session when asked again", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = await fixture();
+  try {
+    await f.install();
+    await f.open();
+    const closing = holdClose(f.page);
+    const first = endRequest(f, "end-1");
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect((await first).outcome).toBe("unknown");
+    expect(f.page.isClosed()).toBe(false);
+    closing.release();
+    await vi.waitFor(() => expect(f.page.isClosed()).toBe(true));
+    const again = endRequest(f, "end-2");
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await again).outcome).toBe("ended");
+  } finally {
+    vi.useRealTimers();
+    await f.runtime.shutdown();
+  }
+});
+
+it("never says ended for a session whose channel's teardown failed, and ends it when asked", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = await fixture();
+  try {
+    await f.install();
+    const attachment = await f.open();
+    const closing = holdClose(f.page);
+    // The channel ends the session; its pages do not close.
+    const closed = attachment.close().catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await closed;
+    expect(f.page.isClosed()).toBe(false);
+    const first = endRequest(f, "end-1");
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect((await first).outcome).toBe("unknown");
+    closing.release();
+    await vi.waitFor(() => expect(f.page.isClosed()).toBe(true));
+    const again = endRequest(f, "end-2");
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await again).outcome).toBe("ended");
+  } finally {
+    vi.useRealTimers();
+    await f.runtime.shutdown();
+  }
+});
+
+it("ends a session kept for its lost channel without reviving it or extending its window", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = await fixture();
+  try {
+    await f.install();
+    const attachment = await f.open();
+    await attachment.close(false, false, true);
+    expect(f.page.isClosed()).toBe(false);
+    const answer = endRequest(f, "end-1");
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await answer).outcome).toBe("ended");
+    expect(f.page.isClosed()).toBe(true);
+    await expect(f.reattach(5)).rejects.toThrow("has ended");
+  } finally {
+    vi.useRealTimers();
+    await f.runtime.shutdown();
+  }
+});
+
+it("refuses an end ticket on attach, an attach ticket as an end, another fence, and a runtime outside the pool", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    f.verifier.setClaims("end-as-attach", {
+      ...f.claims,
+      pool: { ...f.fence(), attachment: 1, end: true },
+    });
+    await expect(f.runtime.attach("end-as-attach", new FakeSink())).rejects.toThrow(
+      "only ends a browser session",
+    );
+    expect(f.context.pages()).toHaveLength(1);
+    await f.open();
+    f.verifier.setClaims("attach-as-end", {
+      ...f.claims,
+      initialNavigation: undefined,
+      pool: { ...f.fence(), attachment: 2 },
+    });
+    await expect(f.runtime.endPoolSession("attach-as-end")).rejects.toThrow(
+      "does not end a browser session",
+    );
+    await expect(
+      endRequest(f, "other-fence", { ...f.fence(), epoch: f.fence().epoch + 1 }),
+    ).rejects.toThrow("authority has changed");
+    expect(f.page.isClosed()).toBe(false);
+    // A runtime that does not serve traffic now ends nothing, and says not yet.
+    await f.controls("retire");
+    expect((await endRequest(f, "retired")).outcome).toBe("not-yet");
+    expect(f.page.isClosed()).toBe(false);
+  } finally {
+    await f.runtime.shutdown();
+  }
+  const ordinary = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+    runtimeId: "runtime_ordinary",
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(),
+  });
+  await expect(ordinary.endPoolSession("any")).rejects.toThrow("unavailable");
+  await ordinary.shutdown();
+});

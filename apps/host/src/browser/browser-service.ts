@@ -208,7 +208,6 @@ import { browserViewerEditingVersion, browserViewerMessage } from "./browser-vie
 import type { ShadowCatalog, ShadowInventory } from "./shadow-comparison.js";
 import { ShadowHostSession, ShadowReader } from "./shadow-host.js";
 import { PasskeyService, type PasskeyViewer } from "./passkey-service.js";
-import { runtimeRefusalCode } from "./browser-runtime-refusal.js";
 
 const olderBrowserDialogSchema = BrowserDialogSchema.omit({ id: true });
 
@@ -1140,7 +1139,8 @@ export class BrowserService {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     if (this.#pools.size && !this.#pools.has(runnerId))
       throw new Error("A Home serves at most one pooled browser.");
-    if (this.#pools.has(runnerId)) throw new Error("This pooled browser already has a coordinator.");
+    if (this.#pools.has(runnerId))
+      throw new Error("This pooled browser already has a coordinator.");
     this.#pools.set(runnerId, coordinator);
     coordinator.setAdopter(this.#poolAdopter(runnerId));
     // Its first recovery is not awaited here: a pool host that does not answer holds this
@@ -1221,21 +1221,36 @@ export class BrowserService {
         // One with a broker is being stopped through it.
         return closing.filter((sessionId) => !this.#brokers.has(sessionId));
       },
-      end: async ({ sessionId, fence, attempt, signal }) => {
-        try {
-          return await this.#adoptPooledSession(
-            runnerId,
-            sessionId,
-            [],
-            fence,
-            attempt,
-            signal,
-            "end",
-          );
-        } catch (error) {
-          this.#onError(error);
-          return "unanswered";
-        }
+      endTicket: async ({ sessionId, fence, signal }) => {
+        if (this.#closed || !(this.#repository instanceof OpensteerStore)) return undefined;
+        const runtimeId = this.#pools.get(runnerId)?.runtimeId;
+        const owner = await readBrowserPoolOwner(this.#repository.database);
+        const record = owner
+          ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
+          : null;
+        signal?.throwIfAborted();
+        // A row another path already ended has nothing left to end.
+        if (!record || isTerminal(record.state)) return "gone";
+        if (
+          record.state !== "closing" ||
+          record.runnerId !== runnerId ||
+          record.runtimeId !== runtimeId
+        )
+          return undefined;
+        const origin = record.origin === "person" ? "person" : "agent";
+        // Only an end: the runtime refuses this ticket on every attach, and finds the session by
+        // its id (the identity is not what it ends).
+        return this.#signer.issue({
+          creationOrigin:
+            origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
+          actor: origin,
+          access: "read-write",
+          pool: { ...fence, end: true },
+          identity: { kind: "fresh" },
+          runtimeId,
+          sessionId,
+          subject: owner!,
+        });
       },
       ended: async (sessionId) => {
         // Only a row still closing: another path that ended it has its own evidence.
@@ -1249,7 +1264,6 @@ export class BrowserService {
         if (row?.state !== "closing") return;
         await this.#transitionBrowserSession({ from: ["closing"], sessionId, state: "closed" });
       },
-      reachable: () => this.#resolveTarget({ kind: "runner", runnerId }) !== undefined,
       quiesce: async (signal) => {
         if (!(this.#repository instanceof OpensteerStore)) return;
         const runtimeId = this.#pools.get(runnerId)!.runtimeId;
@@ -1290,7 +1304,6 @@ export class BrowserService {
                 fence,
                 attempt,
                 signal,
-                "adopt",
               )),
             );
           } catch (error) {
@@ -1303,6 +1316,7 @@ export class BrowserService {
     };
   }
 
+  /** A ready session is reattached under a fresh attempt and kept. */
   async #adoptPooledSession(
     runnerId: RunnerId,
     sessionId: BrowserSessionId,
@@ -1310,53 +1324,27 @@ export class BrowserService {
     fence: BrowserPoolRuntimeFence,
     attempt: number,
     signal: AbortSignal | undefined,
-    mode: "adopt",
-  ): Promise<readonly BrowserPoolSessionLoss[]>;
-  async #adoptPooledSession(
-    runnerId: RunnerId,
-    sessionId: BrowserSessionId,
-    documents: readonly BrowserPoolDocument[],
-    fence: BrowserPoolRuntimeFence,
-    attempt: number,
-    signal: AbortSignal | undefined,
-    mode: "end",
-  ): Promise<"acked" | "gone" | "unanswered">;
-  /**
-   * `adopt`: a ready session is reattached and kept. `end`: a session a Stop left closing is
-   * reattached only to be closed the way Stop does, and the answer is the runtime's.
-   */
-  async #adoptPooledSession(
-    runnerId: RunnerId,
-    sessionId: BrowserSessionId,
-    documents: readonly BrowserPoolDocument[],
-    fence: BrowserPoolRuntimeFence,
-    attempt: number,
-    signal: AbortSignal | undefined,
-    mode: "adopt" | "end",
-  ): Promise<readonly BrowserPoolSessionLoss[] | "acked" | "gone" | "unanswered"> {
-    const ending = mode === "end";
+  ): Promise<readonly BrowserPoolSessionLoss[]> {
     const pool = this.#pool(runnerId);
     const target = this.#resolveTarget({ kind: "runner", runnerId });
     if (!pool || !target || this.#closed || !(this.#repository instanceof OpensteerStore))
-      return ending ? "unanswered" : [];
+      return [];
     const database = this.#repository.database;
     const owner = await readBrowserPoolOwner(database);
     const record = owner
       ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
       : null;
-    // A row another path already ended has nothing left to end.
-    if (ending && (!record || isTerminal(record.state))) return "gone";
     // Stop or Disconnect while parked already ended this row: it is not reattached.
     if (
       !record ||
-      record.state !== (ending ? "closing" : "ready") ||
-      // Adoption does not rebuild a Trigger's session yet; a stopped one is still closed by it.
-      (!ending && record.origin === "trigger") ||
+      record.state !== "ready" ||
+      // Adoption does not rebuild a Trigger's session yet; a stopped one is ended by its runtime.
+      record.origin === "trigger" ||
       record.runnerId !== runnerId ||
       record.runtimeId !== target.runtimeId ||
       record.placementKey !== target.placementKey
     )
-      return ending ? "unanswered" : [];
+      return [];
     const ownerId = owner!;
     const profile = record.profileId
       ? await this.#repository.getBrowserProfile(record.profileId, ownerId)
@@ -1379,8 +1367,7 @@ export class BrowserService {
     const origin = record.origin === "person" ? "person" : "agent";
     // A Stop that committed during the lookups above wins: the row is read again before attach.
     const stillReady = async () =>
-      (await this.#repository.getBrowserSessionForOwner(sessionId, ownerId))?.state ===
-      (ending ? "closing" : "ready");
+      (await this.#repository.getBrowserSessionForOwner(sessionId, ownerId))?.state === "ready";
     const adopting = { active: true };
     // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
     // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
@@ -1426,8 +1413,7 @@ export class BrowserService {
       };
       const broker = new HostedBrowserBroker({
         poolAdmission: this.#poolAdmission(pool, adopting),
-        // A stopped session's channel is only closed: losing it is the end step's to retry.
-        onChannelLost: (documents) => (ending ? undefined : pool.channelLost(sessionId, documents)),
+        onChannelLost: (documents) => pool.channelLost(sessionId, documents),
         adoptedFromPool: true,
         personUse,
         onPersonUseChanged: () => {
@@ -1478,9 +1464,7 @@ export class BrowserService {
         fileStaging: false,
         signIn: false,
         stateImport: false,
-        // Ending, the row is written only on the runtime's answer, below.
-        onState: (state) =>
-          ending ? Promise.resolve(record) : this.#transitionBrowserSession({ sessionId, state }),
+        onState: (state) => this.#transitionBrowserSession({ sessionId, state }),
         onTerminal: () => {
           if (this.#brokers.get(sessionId) === broker) {
             this.#brokers.delete(sessionId);
@@ -1489,36 +1473,12 @@ export class BrowserService {
           this.#onTabsChanged();
         },
       });
-      // The end step's channel is only closed: no door can find it.
-      if (!ending) {
-        this.#brokers.set(sessionId, broker);
-        if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
-      }
+      this.#brokers.set(sessionId, broker);
+      if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
       return broker;
     });
     const broker = await enteredOrAborted(lane, () => entered, signal);
-    if (!broker) return ending ? "unanswered" : [];
-    if (ending) {
-      try {
-        try {
-          await withTimeout(broker.ready(), this.#connectTimeoutMs, {
-            ...(signal ? { signal } : {}),
-            timeoutError: () => new Error("The stopped browser session did not reattach."),
-          });
-        } catch (error) {
-          // The runtime's own word over the channel its ticket opened: it has no such session.
-          return runtimeSaysGone(error) ? "gone" : "unanswered";
-        }
-        // The close was taken; that it ended the session is the runtime's to say, on the next
-        // reattach (it answers that the session is gone).
-        return (await broker.stopWithReceipt(this.#connectTimeoutMs, signal))
-          ? "acked"
-          : "unanswered";
-      } finally {
-        adopting.active = false;
-        await broker.detachPooled("The stopped browser session was not closed.");
-      }
-    }
+    if (!broker) return [];
     let stopped = false;
     try {
       await withTimeout(broker.ready(), this.#connectTimeoutMs, {
@@ -11201,17 +11161,6 @@ function safeNavigationUrl(value: string): string {
     });
   }
   return url.toString();
-}
-
-/**
- * The browser runtime refused an attach as `not_found`: in-process as its `browser.error`, from
- * the Runner's local bridge as its runtime error, or relayed by the Runner with its code.
- */
-function runtimeSaysGone(error: unknown): boolean {
-  if (error instanceof OpensteerError && error.code === "not_found") return true;
-  const relayed = (error as { readonly runtimeError?: { readonly code?: unknown } } | null)
-    ?.runtimeError;
-  return relayed?.code === "not_found" || runtimeRefusalCode(error) === "not_found";
 }
 
 /**

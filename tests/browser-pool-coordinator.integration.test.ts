@@ -213,6 +213,7 @@ async function poolFixture(
         crash
           ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
           : runtime.controlPool(control, signature),
+      endSession: (ticket) => runtime.endPoolSession(ticket),
     };
     const port: BrowserPoolPhysicalController = crash
       ? {
@@ -1346,6 +1347,7 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
           return state;
         },
         controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     const recovering = next.recover();
@@ -1763,6 +1765,7 @@ it("aborts a park when a page was ended while its session was suspended", async 
           const state = await f.runtime.controlPool(control, signature);
           return dropAfterRetire && state.phase === "retired" ? { ...state, dropped: 1 } : state;
         },
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await home.recover();
@@ -1827,6 +1830,7 @@ it("discards a running slot whose recovery keeps failing, and never opens it unc
           return f.runtime.poolState() ?? null;
         },
         controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await withTimeout(next.recover(), 10_000, {
@@ -2161,6 +2165,7 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
           control.kind === "release"
             ? Promise.reject(new Error("The release never applies."))
             : f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await next.recover();

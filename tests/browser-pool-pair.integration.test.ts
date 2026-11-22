@@ -308,6 +308,7 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
         crash
           ? crash.pass(`runtime:${control.kind}`, () => deliver(control, signature))
           : deliver(control, signature),
+      endSession: (ticket) => runtime.endPoolSession(ticket),
     };
     const reach = <T>(call: () => Promise<T>) =>
       options.reachable && !options.reachable()

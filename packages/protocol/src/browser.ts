@@ -267,6 +267,11 @@ export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSc
     instance: z.uuid(),
     epoch: z.number().int().positive(),
     attachment: z.number().int().positive().optional(),
+    /**
+     * Only ends this session (the Home's end request, never an attach): the runtime tears it
+     * down without reviving it, and refuses the ticket on every attach.
+     */
+    end: z.literal(true).optional(),
   }),
 });
 type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;

@@ -148,6 +148,16 @@ describe("personal wire compatibility", () => {
     expect(BrowserAttachTicketClaimsSchema.safeParse(pooled).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.safeParse(ordinary).success).toBe(false);
     expect(PooledBrowserAttachTicketClaimsSchema.parse(pooled)).toEqual(pooled);
+    // The Home's end request (P15) is a pooled ticket only: no ordinary ticket carries it.
+    const ending = { ...pooled, pool: { ...pooled.pool, end: true } };
+    expect(PooledBrowserAttachTicketClaimsSchema.parse(ending)).toEqual(ending);
+    expect(BrowserAttachTicketClaimsSchema.safeParse(ending).success).toBe(false);
+    expect(
+      PooledBrowserAttachTicketClaimsSchema.safeParse({
+        ...pooled,
+        pool: { ...pooled.pool, end: false },
+      }).success,
+    ).toBe(false);
   });
 
   it("adds the pooled browser's report and loss notice as optional fields both ways", () => {
