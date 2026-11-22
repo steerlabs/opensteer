@@ -135,7 +135,7 @@ export async function installBrowserPoolSlot(
         .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -215,7 +215,7 @@ export async function beginBrowserPoolPark(
         .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -309,7 +309,7 @@ export async function advanceBrowserPoolSlot(
       return advanced;
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -348,7 +348,7 @@ export async function stopBrowserPoolSession(
       return state;
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -456,7 +456,7 @@ export async function beginBrowserPoolRelease(
       return released;
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -522,7 +522,7 @@ export async function finishBrowserPoolRelease(
         await transitionBrowserSession(tx, { from: ["closing"], sessionId: id, state: "closed" });
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -590,7 +590,7 @@ export async function recordBrowserPoolControllerCall(
       await insert(tx);
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -1082,6 +1082,6 @@ export async function retireBrowserPoolTarget(
           .execute(databaseOperationOptions());
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }

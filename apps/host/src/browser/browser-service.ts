@@ -1490,7 +1490,10 @@ export class BrowserService {
       // own word (the adoption leaves the session out), never written here.
       if (!(await stillReady())) {
         stopped = true;
-        await broker.detachPooled("The retained browser session was stopped while it reattached.");
+        await broker.detachPooled(
+          "The retained browser session was stopped while it reattached.",
+          signal,
+        );
         pool.stopped();
         throw new Error("The retained browser session was stopped while it reattached.");
       }
@@ -1532,7 +1535,7 @@ export class BrowserService {
     } catch (error) {
       if (!stopped)
         await broker
-          .detachPooled("The retained browser session did not reattach.")
+          .detachPooled("The retained browser session did not reattach.", signal)
           .catch(() => undefined);
       throw error;
     } finally {
@@ -9134,7 +9137,11 @@ export class HostedBrowserBroker {
    * A pooled reattach that did not take: this broker goes, and the session's row stays for the
    * next attempt inside its window or the end its deadline records with a note.
    */
-  async detachPooled(reason: string): Promise<void> {
+  /**
+   * `signal`: a step's wait for the frames already received ends with it; the broker still
+   * finishes once they are handled.
+   */
+  async detachPooled(reason: string, signal?: AbortSignal): Promise<void> {
     this.#failure ??= reason;
     // The Home ends this channel itself: its close is not a lost channel.
     this.#stopping = true;
@@ -9143,8 +9150,12 @@ export class HostedBrowserBroker {
       this.#socket.readyState === WebSocket.OPEN
     )
       this.#socket.terminate();
-    await this.#runtimeFrameTail;
-    await this.#finish("pooled", 1011, "Browser Runtime disconnected");
+    const finished = this.#runtimeFrameTail.then(() =>
+      this.#finish("pooled", 1011, "Browser Runtime disconnected"),
+    );
+    if (!signal) return finished;
+    void finished.catch(() => undefined);
+    await untilSettledOrAborted(finished, signal);
   }
 
   async abort(reason: string): Promise<void> {
@@ -11184,6 +11195,25 @@ function safeNavigationUrl(value: string): string {
     });
   }
   return url.toString();
+}
+
+/** `promise`, or the signal's reason once it fires first; what it awaits goes on. */
+function untilSettledOrAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

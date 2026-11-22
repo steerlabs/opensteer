@@ -37,8 +37,14 @@ import {
   FakeTicketVerifier,
   testSessionFilesRoot,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
-import { readBrowserPoolSlot } from "../packages/database/src/browser-pool-store.js";
-import { databaseOperation } from "../packages/database/src/operation-budget.js";
+import {
+  advanceBrowserPoolSlot,
+  readBrowserPoolSlot,
+} from "../packages/database/src/browser-pool-store.js";
+import {
+  databaseOperation,
+  withDatabaseOperationSignal,
+} from "../packages/database/src/operation-budget.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import {
   createBrowserSession,
@@ -677,6 +683,51 @@ it("ends the sessions of a browser whose slot the host deleted, sends nothing mo
   expect(p.answered.length).toBe(calls);
 });
 
+it("ends an over target's sessions as a step repeated until it succeeds", async () => {
+  const mounted = await mountedAgentController("slot-over-retried");
+  const p = await pair("over-retried", mounted);
+  let failing = 2;
+  let home: ReturnType<typeof p.home> | undefined;
+  home = p.home(undefined, {
+    extra: {
+      testHooks: {
+        // Once the target is over, the first reads that end its sessions fail.
+        readSlot: (async (...args: Parameters<typeof readBrowserPoolSlot>) => {
+          if (home?.report()?.refused === "slot-deleted" && failing > 0) {
+            failing--;
+            throw new Error("A statement failed.");
+          }
+          return readBrowserPoolSlot(...args);
+        }) as typeof readBrowserPoolSlot,
+      },
+    },
+  });
+  await home.recover();
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await createBrowserSession(p.fixture.database, {
+    id: sessionId,
+    ownerId: p.task.userId,
+    opener: { kind: "person", userId: p.task.userId },
+    origin: "person",
+    placementKey: "pool-test",
+    profileId: null,
+    runnerId: p.task.runnerId,
+    runtimeId: "pool-runtime",
+  });
+  await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
+  await mounted.agent.agent.deleteSlot("slot-over-retried");
+  await home.restart({ key: "over" }).catch(() => undefined);
+  // The end failed, and was tried again until the session had it.
+  await vi.waitFor(
+    async () =>
+      expect(
+        (await getBrowserSessionForOwner(p.fixture.database, sessionId, p.task.userId))?.state,
+      ).toBe("failed"),
+    { timeout: 10_000 },
+  );
+  expect(failing).toBe(0);
+});
+
 // ---- P11: a refused wake goes back to parked, and a refusal is not a failed start -------------
 
 it("returns a refused wake to parked, and counts a refused restart as no failed start", async () => {
@@ -823,4 +874,43 @@ it("waits out a slow boot, restore and kill by asking for the result by id, and 
   expect(driver.boots.length).toBe(3);
   expect((await p.slot())?.failedStarts).toBe(0);
   expect(home.gate.phase).toBe("open");
+});
+
+// ---- P17: a pool transaction has its step's bound, the row every mutation locks first included -
+
+it("ends a pool transaction blocked on the global row with its operation's signal", async () => {
+  const p = await pair("global-row");
+  const home = p.home();
+  await home.recover();
+  const slot = (await p.slot())!;
+  // Another holder takes the row every personal mutation locks first, and keeps it.
+  const release = Promise.withResolvers<void>();
+  const taken = Promise.withResolvers<void>();
+  const holder = p.fixture.database.transaction().execute(async (tx) => {
+    await tx.selectFrom("clientSyncState").select("ready").forNoKeyUpdate().execute();
+    taken.resolve();
+    await release.promise;
+  });
+  await taken.promise;
+  try {
+    const started = Date.now();
+    const outcome = await withTimeout(
+      withDatabaseOperationSignal(AbortSignal.timeout(500), Date.now() + 500, () =>
+        advanceBrowserPoolSlot(p.fixture.database, slot, { phase: slot.phase }),
+      ).then(
+        () => "committed",
+        () => "ended",
+      ),
+      10_000,
+      {
+        timeoutError: () =>
+          new Error("The pool transaction waits on the global row past its bound."),
+      },
+    );
+    expect(outcome).toBe("ended");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  } finally {
+    release.resolve();
+    await holder;
+  }
 });

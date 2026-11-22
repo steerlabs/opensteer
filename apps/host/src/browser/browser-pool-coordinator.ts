@@ -225,6 +225,12 @@ export class BrowserPoolCoordinator {
    * sessions are ended, nothing more is sent to it, and the loop waits for a new target.
    */
   #over: string | undefined;
+  /**
+   * The end of an over target's sessions: a step of its own, repeated until it has succeeded
+   * (P18). `settle`: holders still sending are settled with their outcomes first (a swap).
+   */
+  #overEnd:
+    { done: boolean; settle: boolean; readonly ended: PromiseWithResolvers<void> } | undefined;
   /** The controller's reason for the last start or wake it refused; cleared once one applies. */
   #refused: { readonly reason: string; readonly since: Date } | undefined;
 
@@ -452,8 +458,11 @@ export class BrowserPoolCoordinator {
         // removal ends the wait; what it had sent is fenced by its id, sequence or predecessor
         // and its outcome read on a later turn. The awaits, and their bounds:
         //   database statements    the signal and the step's deadline: abortable query options
-        //                          outside a transaction, statement_timeout and cancel inside one
-        //   journal insert         the same (browser-pool-store passes the options)
+        //                          outside a transaction (applyDatabaseOperationBudget), and
+        //                          statement_timeout and cancel inside one: the pool store's
+        //                          transactions run once under the operation's transaction
+        //                          budget, the global row's lock that each takes first included
+        //   journal insert         the same
         //   controller calls       the signal and callTimeoutMs; not cancelled at the controller:
         //                          its id is settled later, its predecessor fences it
         //   runtime controls       the signal and callTimeoutMs; not cancelled at the runtime: its
@@ -467,12 +476,14 @@ export class BrowserPoolCoordinator {
         //   document lookup        database statements, as above
         //   a page's close         the signal (a tab the person closed while parked)
         //   broker ready           the signal and connectTimeoutMs
-        //   broker frame drain     the frames already received: after its socket ends none arrive
+        //   broker frame drain     the signal (the broker still finishes once they are handled)
         //   quiesce                the signal and 15 s (each broker's detach goes on; its socket
         //                          is ended at once)
         //   gate idle              the signal and quiesceMs
-        //   holders' settlements   database statements, as above (agent-session-store passes
-        //                          the options for each of them)
+        //   holders' settlements   database statements, as above (applyDatabaseOperationBudget
+        //                          gives each of them the operation's options)
+        //   an over target's end   a step of its own ("end-over"), as above, until it succeeds
+        //   refusal announcement   outside any step: its own bound (5 s) and the turn's change
         //   backoff                the turn's own change signal and five seconds at most (a start
         //                          or wake the controller refused: 5 s doubling to five minutes)
         const deadlineMs = step.deadlineMs ?? defaultStepMs;
@@ -492,7 +503,8 @@ export class BrowserPoolCoordinator {
         refusals = 0;
         failingSince = undefined;
         suspectedAt = undefined;
-        if (step.name !== "end" && step.name !== "reconnect") this.#refused = undefined;
+        if (step.name !== "end" && step.name !== "reconnect" && step.name !== "end-over")
+          this.#refused = undefined;
         this.#publish(this.#slot);
       } catch (error) {
         this.#options.onError?.(error);
@@ -512,7 +524,8 @@ export class BrowserPoolCoordinator {
         }
         const over = targetOver(error);
         if (over && !this.#released) {
-          await this.#endOver(over).catch((failure: unknown) => this.#options.onError?.(failure));
+          this.#beginOver(over);
+          this.#options.onSuspect?.();
           continue;
         }
         if (error instanceof BrowserPoolNotStarted) {
@@ -520,8 +533,18 @@ export class BrowserPoolCoordinator {
           // give live state up, and spaced so the host is not asked in a loop.
           const announce = this.#refused?.reason !== error.reason;
           this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
-          // Subscribed clients learn of a refusal when it begins or its reason changes.
-          if (announce) await announceBrowserPool(this.#options.database).catch(() => undefined);
+          // Subscribed clients learn of a refusal when it begins or its reason changes; the
+          // announcement has its own bound, and a removal ends it.
+          if (announce)
+            await Promise.resolve()
+              .then(() =>
+                withDatabaseOperationSignal(
+                  AbortSignal.any([changed, AbortSignal.timeout(announceMs)]),
+                  Date.now() + announceMs,
+                  () => announceBrowserPool(this.#options.database),
+                ),
+              )
+              .catch(() => undefined);
           const first = this.#options.refusedRetryMs ?? refusedRetryMs;
           await delay(
             Math.min(first * 2 ** Math.min(refusals++, 16), refusedRetryMaxMs),
@@ -556,9 +579,12 @@ export class BrowserPoolCoordinator {
     this.#publish(slot);
     if (this.#released || slot?.phase === "releasing")
       return { name: "release", run: () => this.#releaseStep(slot) };
-    // Nothing more is sent to a target that is over; a new target is a new coordinator.
+    // Nothing more is sent to a target that is over, once its sessions have their end; a new
+    // target is a new coordinator.
     if (this.#over) {
       if (this.#parkWanted) this.#settlePark("vetoed");
+      if (this.#overEnd && !this.#overEnd.done)
+        return { name: "end-over", run: (signal) => this.#endOverStep(signal) };
       return undefined;
     }
     // A restart accepted before a Home crash is finished by this Home, once.
@@ -704,26 +730,53 @@ export class BrowserPoolCoordinator {
    * session of the runtime ends with its note; waiting callers are refused at once (the gate's
    * hold); a restart asked is refused; the loop sends nothing more and waits for a new target.
    */
-  async #endOver(reason: string): Promise<void> {
-    this.#over = reason;
-    this.#refused = { reason, since: new Date() };
-    this.#display = { phase: "failed", since: new Date() };
-    // The gate holds first: a caller is refused from now on.
+  /**
+   * The target is over: callers are refused from now on (the gate holds first), and ending its
+   * sessions is the loop's next step, under its bound, until it has succeeded.
+   */
+  #beginOver(reason: string, settle = false): PromiseWithResolvers<void> {
+    if (!this.#over) {
+      this.#over = reason;
+      this.#refused = { reason, since: new Date() };
+      this.#display = { phase: "failed", since: new Date() };
+    }
+    this.#overEnd ??= { done: false, settle, ended: Promise.withResolvers() };
+    this.#overEnd.settle ||= settle;
     this.#publish(this.#slot);
     this.#settlePark("vetoed");
-    this.#options.onSuspect?.();
     this.#recovered = true;
     this.#recovering.resolve();
-    try {
-      await this.#endOverSessions(reason);
-    } finally {
-      // A restart asked is answered once the sessions have their end.
-      this.#restartWanted?.done.reject(
-        new BrowserPoolAdmissionClosed("This browser is not ready."),
+    this.#kick();
+    return this.#overEnd.ended;
+  }
+
+  /**
+   * An over target's end, as a step: every channel, ticket and viewer of its runtime is closed;
+   * holders still sending are settled with their outcomes (a swap); every session ends with its
+   * note; a restart asked is answered; clients are told. A turn that fails is tried again.
+   */
+  async #endOverStep(signal: AbortSignal): Promise<void> {
+    const end = this.#overEnd!;
+    const reason = this.#over!;
+    await this.#adopter?.quiesce(signal);
+    if (end.settle) {
+      const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
+        signal,
+        timeoutError: () => new Error("A send still holds the browser."),
+      }).then(
+        () => true,
+        () => false,
       );
-      this.#restartWanted = undefined;
-      await announceBrowserPool(this.#options.database).catch(() => undefined);
+      signal.throwIfAborted();
+      if (!idle) await this.gate.settleHolders();
     }
+    await this.#endOverSessions(reason);
+    // A restart asked is answered once the sessions have their end.
+    this.#restartWanted?.done.reject(new BrowserPoolAdmissionClosed("This browser is not ready."));
+    this.#restartWanted = undefined;
+    await announceBrowserPool(this.#options.database);
+    end.done = true;
+    end.ended.resolve();
   }
 
   /**
@@ -736,27 +789,13 @@ export class BrowserPoolCoordinator {
    */
   async retire(reason: string): Promise<void> {
     if (this.#released || this.#ended) return;
-    this.#over = reason;
-    this.#refused = { reason, since: new Date() };
-    this.#display = { phase: "failed", since: new Date() };
-    this.#publish(this.#slot);
+    const ended = this.#beginOver(reason, true);
     this.#step?.preempt.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));
     this.#selecting?.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));
-    this.#settlePark("vetoed");
-    await this.#adopter?.quiesce().catch((error: unknown) => this.#options.onError?.(error));
-    const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
-      timeoutError: () => new Error("A send still holds the browser."),
-    }).then(
-      () => true,
-      () => false,
-    );
-    if (!idle) await this.gate.settleHolders();
-    await this.#endOverSessions(reason);
-    this.#restartWanted?.done.reject(new BrowserPoolAdmissionClosed("This browser is not ready."));
-    this.#restartWanted = undefined;
-    this.#recovered = true;
-    this.#recovering.resolve();
-    await announceBrowserPool(this.#options.database).catch(() => undefined);
+    this.#start();
+    // The end is the loop's step, under its bound, until it has succeeded (or a removal ends
+    // the sessions instead).
+    await Promise.race([ended.promise, this.#releasedForGood.promise]);
     this.close();
     await this.#running?.catch(() => undefined);
   }
@@ -1770,6 +1809,8 @@ class BrowserPoolNotStarted extends Error {
 const defaultStepMs = 60_000;
 /** How long a restart waits for admitted sends to finish once each was asked to stop. */
 const quiesceMs = 15_000;
+/** The bound of a refusal's announcement to clients, outside any step. */
+const announceMs = 5_000;
 const restartKeysKept = 64;
 
 /** One step of the loop: its name for failure counting, its work, and its fallback. */

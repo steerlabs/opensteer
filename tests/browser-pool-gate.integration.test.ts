@@ -29,6 +29,7 @@ import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import { loopbackPoolChannel } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import type {
   BrowserPoolEndAnswer,
   BrowserPoolRuntimeState,
@@ -1290,6 +1291,26 @@ it("never reads a pooled session closed when its channel closes cleanly before i
     expect(cleanly).toBe(1);
     expect(sessionId).toBeDefined();
     expect((await j.row(sessionId!))?.state).not.toBe("closed");
+  } finally {
+    await j.close();
+  }
+});
+
+it("closes the live channels of a target that is over, with its sessions' end", async () => {
+  const j = await journey("over-live");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("over-live"));
+    await j.draft();
+    expect(home.service.pageInventory(sessionId)).toBeDefined();
+    // The host answers, signed, that the slot is gone, from the park's first read on.
+    vi.spyOn(j.controller, "status").mockRejectedValue(
+      new BrowserPoolAgentSlotDeleted("The slot was deleted."),
+    );
+    expect(await home.coordinator.tryPark()).toBe("vetoed");
+    // The session ends with its note, and its live channel here is closed with it.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    await until(() => expect(home.service.pageInventory(sessionId)).toBeUndefined());
   } finally {
     await j.close();
   }
