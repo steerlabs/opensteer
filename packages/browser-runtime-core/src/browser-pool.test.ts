@@ -661,3 +661,30 @@ it("refuses an end ticket on attach, an attach ticket as an end, another fence, 
   await expect(ordinary.endPoolSession("any")).rejects.toThrow("unavailable");
   await ordinary.shutdown();
 });
+
+it("answers not yet while an attach of the session is still opening, and that attach never keeps it", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    // The attach waits for its browser to launch: it is opening when the Home asks.
+    const launched = Promise.withResolvers<void>();
+    const launch = vi
+      .spyOn(FakeLauncher.prototype, "launch")
+      .mockImplementationOnce(async function (this: FakeLauncher) {
+        await launched.promise;
+        return this.browser;
+      });
+    f.verifier.setClaims("opening", { ...f.claims, pool: { ...f.fence(), attachment: 1 } });
+    const opening = f.runtime.attach("opening", new FakeSink());
+    void opening.catch(() => undefined);
+    await vi.waitFor(() => expect(launch).toHaveBeenCalled());
+    expect((await endRequest(f, "end-1")).outcome).toBe("not-yet");
+    launched.resolve();
+    // The attach is refused before it keeps the session, and the page it opened is closed.
+    await expect(opening).rejects.toThrow("has ended");
+    await vi.waitFor(() => expect(f.page.isClosed()).toBe(true));
+    expect((await endRequest(f, "end-2")).outcome).toBe("ended");
+  } finally {
+    await f.runtime.shutdown();
+  }
+});

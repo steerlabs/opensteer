@@ -1316,6 +1316,33 @@ it("closes the live channels of a target that is over, with its sessions' end", 
   }
 });
 
+it("ends an abandoned pooled session through the pool loop when its runtime did not answer the close", async () => {
+  const j = await journey("abandon-stalled");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("abandon"));
+    const page = await j.draft();
+    const stall = function (this: TestRuntimeConnection) {
+      this.lose(1006, "runtime did not answer");
+    };
+    const stalled = [
+      vi.spyOn(TestRuntimeConnection.prototype, "close").mockImplementationOnce(stall),
+      vi.spyOn(TestRuntimeConnection.prototype, "terminate").mockImplementationOnce(stall),
+    ];
+    try {
+      home.service.abandonSession(BrowserSessionIdSchema.parse(sessionId));
+      await until(async () => expect((await j.row(sessionId))?.state).toBe("closing"));
+    } finally {
+      for (const spy of stalled) spy.mockRestore();
+    }
+    // The loop is told: it asks the runtime to end the session, and its answer is the receipt.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
 it("neither reuses nor ends a pooled session a Stop left closing, at any door", async () => {
   const j = await journey("closing-doors");
   try {

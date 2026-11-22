@@ -37,6 +37,8 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { withDatabaseOperationSignal } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import pg from "pg";
 import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
@@ -592,12 +594,30 @@ describeStore("an external agent's direct work through sessions", (it) => {
     // The hand-off's write waits on the lock; the restart begins and settles every holder.
     await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
     gate.set({ hold: "restart" });
-    const settled = gate.settleHolders();
+    // The settlement's own statements, as it sends them.
+    const own = new AsyncLocalStorage<string[]>();
+    const sent: string[] = [];
+    const query = pg.Client.prototype.query;
+    const traced = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0] as string | { text?: string };
+      own.getStore()?.push(typeof first === "string" ? first : (first.text ?? ""));
+      return Reflect.apply(query, this, args) as never;
+    });
+    const settled = own.run(sent, () => gate.settleHolders());
     await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
     // The hand-off commits first, then the settlement's own write.
     unlock.resolve();
     await holder;
     await settled;
+    traced.mockRestore();
+    // Its refusal of the handed-off row wrote: it reads nothing more (one read before each
+    // write, two writes).
+    expect(
+      sent.filter((text) => /^select\b/u.test(text) && text.includes('from "agent_operations"')),
+    ).toHaveLength(2);
     // Before the restart may stop the guest, the handed-off operation has its outcome: refused,
     // since nothing can have been sent while the hold stood.
     expect(
@@ -789,6 +809,47 @@ describeStore("an external agent's direct work through sessions", (it) => {
     ).toMatchObject({ state: "refused", outcome: "refused" });
     await call;
     gate.set({ hold: null });
+  });
+
+  it("refuses a pooled operation whose reservation failed under the revision it holds now, after it was reviewed again", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-reserve-revised");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const database = storeFixture.database;
+    const s = await setUp(storeFixture, "pool-reserve-revised", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        // The operation is reviewed again while its reservation waits; then the reservation
+        // fails, with nothing handed off.
+        reserve: async () => {
+          await database
+            .updateTable("agentOperations")
+            .set({ grantRevision: sql`grant_revision + 1` })
+            .where("tool", "=", "browser_use")
+            .execute();
+          throw new Error("The browser could not be reserved.");
+        },
+      }),
+    });
+    await s.call("browser_use", script).catch(() => undefined);
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
   });
 
   it("records a fake background model's allow decision before executing an Auto effect", async ({
