@@ -495,12 +495,14 @@ COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/sh
 WORKDIR /app
 ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs \
     OPENSTEER_CLI=/app/cli/opensteer-cli.mjs \
+    OPENSTEER_CLI_BIN_DIR=/app/bin \
     OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE=/app/process-supervisor/opensteer-process-supervisor
 COPY --from=runner-build --chown=10001:10001 /output/runner ./
 COPY --from=package-stamps --chown=10001:10001 /output/runner/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
 COPY --from=process-supervisor-build --chmod=0555 /output/opensteer-process-supervisor ./process-supervisor/opensteer-process-supervisor
 COPY --chmod=0555 apps/runner/cli/opensteer-cli.mjs ./cli/opensteer-cli.mjs
+COPY --chmod=0555 apps/runner/bin/opensteer ./bin/opensteer
 COPY --chmod=0555 apps/runner/bin/opensteer /usr/local/bin/opensteer
 COPY --chmod=0555 apps/runner/browser-harness/browser-harness.mjs apps/runner/browser-harness/page.mjs apps/runner/browser-harness/page-functions.mjs apps/runner/browser-harness/keyboard-layout.mjs ./browser-harness/
 COPY --chmod=0444 apps/runner/browser-harness/LICENSE /usr/local/share/licenses/opensteer-browser-harness/LICENSE

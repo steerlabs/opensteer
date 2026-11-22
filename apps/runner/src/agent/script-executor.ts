@@ -9,17 +9,58 @@ import {
   type AutomationScript,
   type TriggerExecutionOutput,
 } from "@opensteer/triggers";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentHomeWorkspace } from "../folders/agent-home.js";
 import type { ProgramEndpoints, ProgramLaunchPlanner } from "./program-executor.js";
 
 const truncationMarker = "\n[Opensteer truncated earlier process output]\n";
 
-const defaultCliBinDirectory = fileURLToPath(new URL("../../bin", import.meta.url));
-const defaultCliScriptPath = fileURLToPath(new URL("../../cli/opensteer-cli.mjs", import.meta.url));
+/**
+ * Resolves the shipped `opensteer` CLI script and launcher bin directory from
+ * either the bundled `dist/main.js` layout (`../cli`, `../bin`) or the source
+ * `src/agent/` layout (`../../cli`, `../../bin`), while honoring explicit
+ * environment overrides (`OPENSTEER_CLI`, `OPENSTEER_CLI_BIN_DIR`) such as the
+ * container image's `/app/cli/opensteer-cli.mjs` (Z2).
+ */
+export function resolveAutomationCliPaths(
+  moduleUrl: string = import.meta.url,
+  environment: NodeJS.ProcessEnv = process.env,
+): { readonly cliBinDirectory: string; readonly cliScriptPath: string } {
+  const envCli = environment.OPENSTEER_CLI?.trim();
+  const envBin = environment.OPENSTEER_CLI_BIN_DIR?.trim();
+
+  const bundledScript = fileURLToPath(new URL("../cli/opensteer-cli.mjs", moduleUrl));
+  const sourceScript = fileURLToPath(new URL("../../cli/opensteer-cli.mjs", moduleUrl));
+  const cliScriptPath =
+    envCli && isAbsolute(envCli)
+      ? resolve(envCli)
+      : existsSync(bundledScript)
+        ? resolve(bundledScript)
+        : existsSync(sourceScript)
+          ? resolve(sourceScript)
+          : resolve(bundledScript);
+
+  const bundledBin = fileURLToPath(new URL("../bin", moduleUrl));
+  const sourceBin = fileURLToPath(new URL("../../bin", moduleUrl));
+  const siblingBin = resolve(dirname(cliScriptPath), "../bin");
+  const cliBinDirectory =
+    envBin && isAbsolute(envBin)
+      ? resolve(envBin)
+      : existsSync(bundledBin)
+        ? resolve(bundledBin)
+        : existsSync(siblingBin)
+          ? siblingBin
+          : existsSync(sourceBin)
+            ? resolve(sourceBin)
+            : resolve(bundledBin);
+
+  return { cliBinDirectory, cliScriptPath };
+}
 
 export interface AutomationScriptEvent {
   readonly automationId: TriggerId;
@@ -63,8 +104,12 @@ export class AutomationScriptExecutor {
 
   constructor(options: AutomationScriptExecutorOptions) {
     this.#baseEnvironment = options.baseEnvironment;
-    this.#cliBinDirectory = resolve(options.cliBinDirectory ?? defaultCliBinDirectory);
-    this.#cliScriptPath = resolve(options.cliScriptPath ?? defaultCliScriptPath);
+    const defaults = resolveAutomationCliPaths(
+      import.meta.url,
+      options.baseEnvironment ?? process.env,
+    );
+    this.#cliBinDirectory = resolve(options.cliBinDirectory ?? defaults.cliBinDirectory);
+    this.#cliScriptPath = resolve(options.cliScriptPath ?? defaults.cliScriptPath);
     this.#nativeFs = new NativeFsHelper({ binary: options.nativeFsHelperBinary });
     this.#nodeExecutable = options.nodeExecutable;
     this.#privateDirectory = resolve(
@@ -84,7 +129,10 @@ export class AutomationScriptExecutor {
     readonly webhookBody?: Buffer | null;
     readonly workspace: AgentHomeWorkspace;
   }): Promise<TriggerExecutionOutput> {
-    const privateExecutionRoot = resolve(this.#privateDirectory, input.firingId);
+    const privateExecutionRoot = resolve(
+      this.#privateDirectory,
+      `${input.firingId}-${randomUUID()}`,
+    );
     assertChildPath(this.#privateDirectory, privateExecutionRoot);
 
     const extension = scriptFileExtension(input.script.interpreter);

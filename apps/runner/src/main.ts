@@ -558,6 +558,7 @@ async function main(): Promise<void> {
   }
 }
 
+export { resolveAutomationCliPaths } from "./agent/script-executor.js";
 const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   main().catch((error: unknown) => {
