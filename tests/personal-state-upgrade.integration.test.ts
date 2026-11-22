@@ -28,10 +28,7 @@ import { agentGrantsMigrationName } from "../packages/database/src/agent-grants-
 import { agentSessionsMigrationName } from "../packages/database/src/agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "../packages/database/src/agent-directory-migration.js";
 import { workHomeMigrationName } from "../packages/database/src/work-home-migration.js";
-import {
-  browserPoolCallKeysMigrationName,
-  browserPoolMigrationName,
-} from "../packages/database/src/browser-pool-migration.js";
+import { browserPoolMigrationName } from "../packages/database/src/browser-pool-migration.js";
 import { OpensteerStore } from "../packages/database/src/store.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import { TabStore } from "../packages/database/src/tab-store.js";
@@ -266,7 +263,6 @@ test("carries a person's work from a database the released Home last migrated th
       "0048_shared_chrome_grants",
       workHomeMigrationName,
       browserPoolMigrationName,
-      browserPoolCallKeysMigrationName,
     ]);
     await migrateToLatest(database, {
       async getMigrations() {
