@@ -135,17 +135,32 @@ const checkFloorMilliseconds = 5_000;
  */
 const checkedAnswerLifetimeMilliseconds = 60_000;
 
-type ForegroundOperationKind =
-  | "account-sign-in"
-  | "create-personal"
-  | "direct-connect"
-  | "open-deployment"
-  | "personal-account-link"
-  | "personal-account-link-repair"
-  | "personal-account-unlink"
-  | "refresh-directory"
-  | "remove-from-account"
-  | "sign-out-of-app";
+/**
+ * One foreground ask, by what it asks for. A kind that acts on something names it in `target`,
+ * which the type requires; a kind with nothing to choose has none. Two asks are the same only
+ * when both match: the same kind for another target is another ask.
+ */
+type ForegroundRequest =
+  | {
+      readonly kind:
+        "create-personal" | "direct-connect" | "open-deployment" | "remove-from-account";
+      readonly target: string;
+    }
+  | { readonly kind: "account-sign-in"; readonly target: "reauthorize" | "sign-in" }
+  | {
+      readonly kind:
+        | "personal-account-link"
+        | "personal-account-link-repair"
+        | "personal-account-unlink"
+        | "refresh-directory"
+        | "sign-out-of-app";
+      readonly target?: never;
+    };
+type ForegroundOperationKind = ForegroundRequest["kind"];
+
+function sameRequest(left: ForegroundRequest, right: ForegroundRequest): boolean {
+  return left.kind === right.kind && left.target === right.target;
+}
 
 export class DeploymentAccessService {
   readonly #listeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
@@ -173,8 +188,7 @@ export class DeploymentAccessService {
   #initialized = false;
   #operation: { readonly kind: ForegroundOperationKind } | null = null;
   /** The running operation and what it settles to: what a second ask for the same adopts. */
-  #running: { readonly kind: ForegroundOperationKind; readonly outcome: Promise<void> } | null =
-    null;
+  #running: { readonly request: ForegroundRequest; readonly outcome: Promise<void> } | null = null;
   /** Settles when the slot next frees. */
   #ended = deferredSignal();
   #operationId = 0;
@@ -376,7 +390,10 @@ export class DeploymentAccessService {
   async addDirect(input: DesktopAddDirectRouteInput): Promise<void> {
     this.#assertActive();
     if (this.#catalog.deployments.length === 0) throw operationUnavailable("addDirect");
-    await this.#catalogMutation("open-deployment", () => this.#ports.direct.addRoute(input));
+    await this.#catalogMutation(
+      { kind: "open-deployment", target: `route ${input.deploymentId} ${input.origin}` },
+      () => this.#ports.direct.addRoute(input),
+    );
   }
 
   async cancel(): Promise<void> {
@@ -385,7 +402,9 @@ export class DeploymentAccessService {
       this.#pendingAttachmentDeploymentId = null;
       this.#selecting = null;
       this.#commitStagedPersonal();
-      await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
+      await this.#accountOperation({ kind: "sign-out-of-app" }, () =>
+        this.#ports.account.signOut(),
+      );
       return;
     }
     const attachment = this.#selectedAttachment();
@@ -412,7 +431,16 @@ export class DeploymentAccessService {
 
   async connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void> {
     this.#assertActive();
-    await this.#catalogMutation("direct-connect", () => this.#ports.direct.connect(input));
+    await this.#catalogMutation(
+      {
+        kind: "direct-connect",
+        target:
+          input.kind === "personal-pairing"
+            ? `pairing ${input.origin} ${input.pairingCode}`
+            : `address ${input.origin}`,
+      },
+      () => this.#ports.direct.connect(input),
+    );
   }
 
   async createPersonalDeployment(input: DesktopCreatePersonalDeploymentInput = {}): Promise<void> {
@@ -428,7 +456,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("createPersonalDeployment");
     }
     await this.#simpleOperation(
-      "create-personal",
+      { kind: "create-personal", target: `name ${input.name ?? ""}` },
       () => this.#ports.personal.start(input),
       (status) => {
         if (
@@ -453,7 +481,7 @@ export class DeploymentAccessService {
     if (this.#personalSetup()?.state !== "ready") throw operationUnavailable("linkPersonal");
     if (this.#personalLink.status === "needs-repair") {
       await this.#simpleOperation(
-        "personal-account-link-repair",
+        { kind: "personal-account-link-repair" },
         () => this.#ports.personalAccount.resetJournal(),
         (status) => {
           this.#personalLink = status;
@@ -468,7 +496,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("linkPersonal");
     }
     await this.#simpleOperation(
-      "personal-account-link",
+      { kind: "personal-account-link" },
       () => this.#ports.personalAccount.link(),
       (status) => {
         this.#personalLink = status;
@@ -479,7 +507,7 @@ export class DeploymentAccessService {
   async reauthorize(): Promise<void> {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("reauthorize");
-    await this.#accountOperation("account-sign-in", () =>
+    await this.#accountOperation({ kind: "account-sign-in", target: "reauthorize" }, () =>
       this.#ports.account.beginReauthorization(),
     );
   }
@@ -488,7 +516,7 @@ export class DeploymentAccessService {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("refreshDirectory");
     await this.#simpleOperation(
-      "refresh-directory",
+      { kind: "refresh-directory" },
       () => this.#refreshDirectory("required", "manual"),
       () => undefined,
     );
@@ -530,6 +558,20 @@ export class DeploymentAccessService {
 
   async removeFromAccount(deploymentId: string): Promise<void> {
     this.#assertActive();
+    this.#assertRemovable(deploymentId);
+    await this.#simpleOperation(
+      { kind: "remove-from-account", target: deploymentId },
+      async () => {
+        // What it waited behind may have signed out or dropped the row.
+        this.#assertRemovable(deploymentId);
+        await this.#ports.directory.removeFromAccount(deploymentId);
+        return this.#refreshDirectory("required", "manual");
+      },
+      () => undefined,
+    );
+  }
+
+  #assertRemovable(deploymentId: string): void {
     if (this.#account.status !== "signed-in") throw operationUnavailable("removeFromAccount");
     const deployment = this.#catalog.deployments.find(({ id }) => id === deploymentId);
     // Dropping an Account listing is a member's preference. An owner's listing
@@ -547,14 +589,6 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("removeFromAccount");
     }
-    await this.#simpleOperation(
-      "remove-from-account",
-      async () => {
-        await this.#ports.directory.removeFromAccount(deploymentId);
-        return this.#refreshDirectory("required", "manual");
-      },
-      () => undefined,
-    );
   }
 
   /**
@@ -607,7 +641,9 @@ export class DeploymentAccessService {
     }
     this.#signInStarted = true;
     try {
-      await this.#accountOperation("account-sign-in", () => this.#ports.account.beginSignIn());
+      await this.#accountOperation({ kind: "account-sign-in", target: "sign-in" }, () =>
+        this.#ports.account.beginSignIn(),
+      );
     } catch (error) {
       this.#signInStarted = false;
       throw error;
@@ -617,7 +653,7 @@ export class DeploymentAccessService {
   async signOut(): Promise<void> {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("signOut");
-    await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
+    await this.#accountOperation({ kind: "sign-out-of-app" }, () => this.#ports.account.signOut());
   }
 
   async unlinkPersonal(): Promise<void> {
@@ -629,7 +665,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("unlinkPersonal");
     }
     await this.#simpleOperation(
-      "personal-account-unlink",
+      { kind: "personal-account-unlink" },
       () => this.#ports.personalAccount.unlink(),
       (status) => {
         this.#personalLink = status;
@@ -662,6 +698,14 @@ export class DeploymentAccessService {
    * is the authority that owns the place saying it is not there at all.
    */
   async #select(deploymentId: string): Promise<void> {
+    this.#assertSelectable(deploymentId);
+    await this.#exclusive(
+      { kind: "open-deployment", target: `select ${deploymentId}` },
+      (operationId) => this.#selectTurn(operationId, deploymentId),
+    );
+  }
+
+  #assertSelectable(deploymentId: string): void {
     const deployment = this.#catalog.deployments.find(({ id }) => id === deploymentId);
     if (
       !deployment ||
@@ -670,21 +714,28 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("select");
     }
-    if (this.#operation || this.#selecting) {
-      throw new Error("Another deployment access operation is already running.");
-    }
+  }
+
+  /** Closing the current Home and opening this one is one turn, so nothing runs in between. */
+  async #selectTurn(operationId: number, deploymentId: string): Promise<void> {
     const selecting = { deploymentId };
-    this.#pendingAttachmentDeploymentId = null;
-    this.#selecting = selecting;
-    if (this.#stagedPersonal?.deploymentId !== deploymentId) {
-      this.#commitStagedPersonal();
-    }
-    this.#selectedAttachment()?.deactivate();
     try {
-      await this.#ports.hostSession.closeCurrent();
-      await this.#catalogMutation("open-deployment", () =>
-        this.#ports.catalog.select(deploymentId),
-      );
+      try {
+        // What it waited behind may have removed the Home or changed what can open.
+        this.#assertSelectable(deploymentId);
+        this.#pendingAttachmentDeploymentId = null;
+        this.#selecting = selecting;
+        if (this.#stagedPersonal?.deploymentId !== deploymentId) {
+          this.#commitStagedPersonal();
+        }
+        this.#selectedAttachment()?.deactivate();
+        await this.#ports.hostSession.closeCurrent();
+      } catch (error) {
+        this.#failOperation(operationId);
+        throw error;
+      }
+      if (operationId !== this.#operationId) return;
+      await this.#catalogMutationTurn(operationId, () => this.#ports.catalog.select(deploymentId));
     } finally {
       if (this.#selecting === selecting) {
         this.#selecting = null;
@@ -697,10 +748,12 @@ export class DeploymentAccessService {
   }
 
   async #catalogMutation(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     operation: () => Promise<CatalogProjection>,
   ): Promise<void> {
-    await this.#exclusive(kind, (operationId) => this.#catalogMutationTurn(operationId, operation));
+    await this.#exclusive(request, (operationId) =>
+      this.#catalogMutationTurn(operationId, operation),
+    );
   }
 
   async #catalogMutationTurn(
@@ -727,10 +780,10 @@ export class DeploymentAccessService {
   }
 
   async #accountOperation(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     operation: () => Promise<DesktopAccountAuthState>,
   ): Promise<void> {
-    await this.#exclusive(kind, (operationId) =>
+    await this.#exclusive(request, (operationId) =>
       this.#accountOperationTurn(operationId, operation),
     );
   }
@@ -755,11 +808,11 @@ export class DeploymentAccessService {
   }
 
   async #simpleOperation<T>(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     run: () => Promise<T>,
     commit: (value: T) => void,
   ): Promise<void> {
-    await this.#exclusive(kind, (operationId) => this.#simpleTurn(operationId, run, commit));
+    await this.#exclusive(request, (operationId) => this.#simpleTurn(operationId, run, commit));
   }
 
   async #simpleTurn<T>(
@@ -802,20 +855,25 @@ export class DeploymentAccessService {
   }
 
   /**
-   * One foreground operation at a time, and nobody told they collided with the app itself. A
-   * request for what is already running adopts its outcome; any other waits its turn and then
-   * runs. Only a turn that never comes, within the bound, is refused, in a plain sentence.
+   * One foreground operation at a time, and nobody told they collided with the app itself. The
+   * same request as the one running (same kind, same target) adopts its outcome; any other
+   * waits its turn and then runs for itself. Only a turn that never comes, within the bound, is
+   * refused, in a plain sentence.
    */
   async #exclusive(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     body: (operationId: number) => Promise<void>,
   ): Promise<void> {
-    const running = this.#running;
-    if (running && this.#operation?.kind === kind && running.kind === kind) return running.outcome;
-    // A free slot is taken at once, in the same turn as the ask.
-    if (this.#operation) await this.#waitForTurn();
-    const operationId = this.#beginOperation(kind);
-    const entry = { kind, outcome: body(operationId) };
+    const deadline = this.#now() + foregroundTurnWaitMilliseconds;
+    // Checked and taken in one synchronous step after every wake, so two waiters woken by the
+    // same end never both take the slot, and one that finds its twin running adopts it.
+    while (this.#operation) {
+      const running = this.#running;
+      if (running && sameRequest(running.request, request)) return running.outcome;
+      await this.#nextEnd(deadline);
+    }
+    const operationId = this.#beginOperation(request.kind);
+    const entry = { outcome: body(operationId), request };
     this.#running = entry;
     try {
       await entry.outcome;
@@ -824,22 +882,19 @@ export class DeploymentAccessService {
     }
   }
 
-  async #waitForTurn(): Promise<void> {
-    if (!this.#operation) return;
-    const deadline = this.#now() + foregroundTurnWaitMilliseconds;
-    while (this.#operation) {
-      const left = deadline - this.#now();
-      if (left <= 0) throw new Error(busyElsewhereSentence);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        this.#ended.promise,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, left);
-        }),
-      ]);
-      clearTimeout(timer);
-      if (this.#operation && this.#now() >= deadline) throw new Error(busyElsewhereSentence);
-    }
+  /** Until the slot next frees, or the bound passes: then a plain sentence, not a collision. */
+  async #nextEnd(deadline: number): Promise<void> {
+    const left = deadline - this.#now();
+    if (left <= 0) throw new Error(busyElsewhereSentence);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.#ended.promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (this.#operation && this.#now() >= deadline) throw new Error(busyElsewhereSentence);
   }
 
   /**

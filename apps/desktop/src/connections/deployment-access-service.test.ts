@@ -717,7 +717,7 @@ describe("DeploymentAccessService", () => {
       fixture.replaceCatalog({ deployments: [local], selectedDeploymentId: local.id });
       closeGate.resolve();
       await settle();
-      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() rejects,
+      // Earlier reload fails, then a recovery read succeeds, AND an overlapping select() of the same Home adopts the open in flight,
       // all while catalog.select() is still in flight: none of them may release the guard or leak (ready, idle).
       read.reject(new Error("transient catalog read failure"));
       await settle();
@@ -725,11 +725,14 @@ describe("DeploymentAccessService", () => {
       fixture.emitCatalog({ deployments: [local], selectedDeploymentId: local.id });
       await settle();
       check(service.snapshot());
-      await expect(service.select(local.id)).rejects.toThrow(/already running/u);
+      // Opening the same Home again is the open already under way: it adopts that outcome.
+      const again = service.select(local.id);
       check(service.snapshot());
       expect(service.snapshot().personalSetup?.state).toBe("starting");
       selectGate.resolve({ deployments: [local], revision: 3, selectedDeploymentId: local.id });
       await reselecting;
+      await expect(again).resolves.toBeUndefined();
+      expect(fixture.ports.catalog.select).toHaveBeenCalledTimes(1);
       await settle();
       expect(leaked).toEqual([]);
       expect(fixture.establish).toHaveBeenCalledOnce();
@@ -1830,6 +1833,189 @@ describe("DeploymentAccessService", () => {
         expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
+        service.dispose();
+      }
+    });
+  });
+
+  /*
+   * Whether two asks are the same is what they ask for, not what kind of change they are. The
+   * same ask twice runs once and both hear its outcome; the same kind for another target waits
+   * its turn and runs for its own target, never adopting the first one's result.
+   */
+  describe("the same request, by what it asks for", () => {
+    const origin = (name: string) => `https://${name}.example.test`;
+
+    async function listing(deployments: CatalogProjection["deployments"], signedIn = false) {
+      const fixture = fakePorts({ deployments });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      if (signedIn) {
+        fixture.emitAccount(signedInAccount());
+        await settle();
+      }
+      return { fixture, service };
+    }
+
+    /** Holds the port's next answers until each is released, in the order they were asked. */
+    function held<T>(
+      port: { mockImplementationOnce(fn: () => Promise<T>): unknown },
+      count: number,
+    ) {
+      const gates = Array.from({ length: count }, () => deferred<T>());
+      for (const gate of gates) port.mockImplementationOnce(() => gate.promise);
+      return gates;
+    }
+
+    it("adds a route for each Home asked, in order, when two different ones are asked at once", async () => {
+      const a = deployment({ name: "A" });
+      const b = deployment({ name: "B" });
+      const { fixture, service } = await listing([a, b]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const catalog = await fixture.ports.catalog.read();
+      const [first, second] = held(addRoute, 2);
+      const forA = service.addDirect({ deploymentId: a.id as never, origin: origin("a") });
+      const forB = service.addDirect({ deploymentId: b.id as never, origin: origin("b") });
+      await settle();
+      expect(addRoute.mock.calls.map(([input]) => input.deploymentId)).toEqual([a.id]);
+      first!.resolve(catalog);
+      await expect(forA).resolves.toBeUndefined();
+      await settle();
+      expect(addRoute.mock.calls.map(([input]) => input.deploymentId)).toEqual([a.id, b.id]);
+      second!.resolve(catalog);
+      await expect(forB).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("adds one route when the same one is asked twice, and both callers hear it", async () => {
+      const a = deployment({ name: "A" });
+      const { fixture, service } = await listing([a]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const [only] = held(addRoute, 1);
+      const input = { deploymentId: a.id as never, origin: origin("a") };
+      const one = service.addDirect(input);
+      const two = service.addDirect({ ...input });
+      await settle();
+      only!.reject(new Error("That address didn't answer."));
+      await expect(one).rejects.toThrow("That address didn't answer.");
+      await expect(two).rejects.toThrow("That address didn't answer.");
+      expect(addRoute).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("connects each address asked, in order, and the same address once", async () => {
+      const { fixture, service } = await listing([]);
+      const connect = vi.mocked(fixture.ports.direct.connect);
+      const catalog = await fixture.ports.catalog.read();
+      const [first, second] = held(connect, 2);
+      const a = service.connectPrivate({ kind: "address", origin: origin("a") });
+      const aAgain = service.connectPrivate({ kind: "address", origin: origin("a") });
+      const b = service.connectPrivate({ kind: "address", origin: origin("b") });
+      await settle();
+      expect(connect.mock.calls.map(([input]) => input.origin)).toEqual([origin("a")]);
+      first!.resolve(catalog);
+      await expect(a).resolves.toBeUndefined();
+      await expect(aAgain).resolves.toBeUndefined();
+      await settle();
+      expect(connect.mock.calls.map(([input]) => input.origin)).toEqual([origin("a"), origin("b")]);
+      second!.resolve(catalog);
+      await expect(b).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("removes each Home asked from the account, in order, and the same Home once", async () => {
+      const a = deployment({ accountAccess: "member", name: "A", source: "account" });
+      const b = deployment({ accountAccess: "member", name: "B", source: "account" });
+      const { fixture, service } = await listing([a, b], true);
+      const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+      remove.mockClear();
+      const [first, second] = held(remove, 2);
+      const removingA = service.removeFromAccount(a.id);
+      const removingAAgain = service.removeFromAccount(a.id);
+      const removingB = service.removeFromAccount(b.id);
+      await settle();
+      expect(remove.mock.calls.map(([id]) => id)).toEqual([a.id]);
+      first!.resolve(undefined);
+      await expect(removingA).resolves.toBeUndefined();
+      await expect(removingAAgain).resolves.toBeUndefined();
+      await settle();
+      expect(remove.mock.calls.map(([id]) => id)).toEqual([a.id, b.id]);
+      second!.resolve(undefined);
+      await expect(removingB).resolves.toBeUndefined();
+      service.dispose();
+    });
+
+    it("opens a Home after a route added for another, never taking that route's outcome as its own", async () => {
+      const a = deployment({ name: "A" });
+      const b = deployment({ name: "B" });
+      const { fixture, service } = await listing([a, b]);
+      const addRoute = vi.mocked(fixture.ports.direct.addRoute);
+      const catalog = await fixture.ports.catalog.read();
+      const [route] = held(addRoute, 1);
+      const adding = service.addDirect({ deploymentId: a.id as never, origin: origin("a") });
+      const opening = service.select(b.id);
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      route!.resolve(catalog);
+      await adding;
+      await expect(opening).resolves.toBeUndefined();
+      expect(fixture.select).toHaveBeenCalledExactlyOnceWith(b.id);
+      service.dispose();
+    });
+
+    it("runs a removal and an open of the same Home in the order asked, each for itself", async () => {
+      const a = deployment({
+        accountAccess: "member",
+        connect: { livenessExpiresAt: "2026-10-20T20:01:30.000Z" },
+        name: "A",
+        source: "account",
+      });
+      // Removal first, then the open waits its turn.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        const [removal] = held(remove, 1);
+        const removing = service.removeFromAccount(a.id);
+        const opening = service.select(a.id);
+        await settle();
+        expect(fixture.select).not.toHaveBeenCalled();
+        removal!.resolve(undefined);
+        await removing;
+        await expect(opening).resolves.toBeUndefined();
+        expect(fixture.select).toHaveBeenCalledExactlyOnceWith(a.id);
+        service.dispose();
+      }
+      // The removal takes the Home off the list, as the account does: the open that waited
+      // behind it finds nothing to open and is refused as not there, never run against it.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        const [removal] = held(remove, 1);
+        const removing = service.removeFromAccount(a.id);
+        const opening = service.select(a.id);
+        await settle();
+        fixture.replaceCatalog({ deployments: [], selectedDeploymentId: null });
+        removal!.resolve(undefined);
+        await removing;
+        await expect(opening).rejects.toThrow("not available now: select");
+        expect(fixture.select).not.toHaveBeenCalled();
+        expect(service.snapshot().deployments).toEqual([]);
+        service.dispose();
+      }
+      // Open first, then the removal waits its turn.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        remove.mockClear();
+        const [open] = held(fixture.select, 1);
+        const opening = service.select(a.id);
+        const removing = service.removeFromAccount(a.id);
+        await settle();
+        expect(remove).not.toHaveBeenCalled();
+        open!.resolve(await fixture.ports.catalog.read());
+        await opening;
+        await expect(removing).resolves.toBeUndefined();
+        expect(remove).toHaveBeenCalledExactlyOnceWith(a.id);
         service.dispose();
       }
     });
