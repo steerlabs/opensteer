@@ -2,13 +2,26 @@
 // One JSON command per connection. Test infrastructure only; never installed on a real host.
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 
 const [socketPath, relayUser] = process.argv.slice(2);
 const agentCgroup = "/sys/fs/cgroup/system.slice/opensteer-pool-agent.service/guests";
 const config = "/etc/opensteer-pool/agent.json";
+
+/** Round H: where the agent derives a slot's profile (profiles.ts). */
+function profileOf(slotId) {
+  return `/var/lib/opensteer-pool/profiles/slot-${createHash("sha256").update(slotId).digest("hex")}.ext4`;
+}
 
 /** The proxies' slice's cgroup: systemd nests a slice by the dashes in its name. */
 function egressSliceCgroup() {
@@ -281,6 +294,258 @@ async function run(command) {
         memory: /^\d+$/u.test(memory) ? Number(memory) : null,
       };
     }
+    case "profile-file": {
+      // Round H: the profile the agent made for a slot, where the agent's derivation puts it.
+      const file = profileOf(command.slotId);
+      if (!existsSync(file)) return { exists: false, file };
+      const info = statSync(file);
+      const type = spawnSync("blkid", ["-o", "value", "-s", "TYPE", file], { encoding: "utf8" });
+      return {
+        exists: true,
+        file,
+        apparentBytes: info.size,
+        allocatedBytes: info.blocks * 512,
+        mode: (info.mode & 0o777).toString(8),
+        uid: info.uid,
+        type: type.stdout.trim(),
+      };
+    }
+    case "profile-marker": {
+      // Round H: a file inside the profile's own filesystem, written and read without mounting.
+      const file = profileOf(command.slotId);
+      if (command.action === "write") {
+        const marker = `/run/opensteer-run-marker-${process.pid}`;
+        writeFileSync(marker, `${command.text}\n`);
+        const out = spawnSync("debugfs", ["-w", "-R", `write ${marker} run-marker`, file], {
+          encoding: "utf8",
+        });
+        rmSync(marker, { force: true });
+        return { status: out.status };
+      }
+      const out = spawnSync("debugfs", ["-R", "cat run-marker", file], { encoding: "utf8" });
+      return { text: out.stdout.trim() };
+    }
+    case "profiles-mount": {
+      const out = spawnSync(
+        "findmnt",
+        ["-n", "-o", "SOURCE,FSTYPE,SIZE,TARGET", "-T", "/var/lib/opensteer-pool/profiles"],
+        { encoding: "utf8" },
+      );
+      return { mount: out.stdout.trim() };
+    }
+    case "mkfs-time": {
+      // Round H, item (e): mkfs.ext4 as the agent runs it, on a sparse file of the size asked for,
+      // on the profiles' filesystem.
+      const file = `/var/lib/opensteer-pool/profiles/.run-mkfs-${command.sizeMib}`;
+      execFileSync("truncate", ["-s", `${command.sizeMib}M`, file]);
+      const started = performance.now();
+      execFileSync("mkfs.ext4", ["-q", "-F", "-m", "0", file]);
+      const ms = Math.round(performance.now() - started);
+      const allocatedBytes = statSync(file).blocks * 512;
+      rmSync(file, { force: true });
+      return { sizeMib: command.sizeMib, ms, allocatedBytes };
+    }
+    case "standins": {
+      // Round H, item (d): a stand-in account service on the host's loopback and a stand-in
+      // upstream on the bench's upstream address, both with certificates from a root that only
+      // this run's instance trusts (put in its system store). Never a real account.
+      const dir = "/run/opensteer-run-standins";
+      execFileSync("install", ["-d", "-m", "0700", dir]);
+      const openssl = (args) => execFileSync("openssl", args, { stdio: "ignore" });
+      if (!existsSync(`${dir}/root.pem`))
+        openssl([
+          "req",
+          "-x509",
+          "-newkey",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:prime256v1",
+          "-nodes",
+          "-days",
+          "1",
+          "-subj",
+          "/CN=opensteer run root",
+          "-addext",
+          "basicConstraints=critical,CA:true",
+          "-addext",
+          "keyUsage=critical,keyCertSign",
+          "-keyout",
+          `${dir}/root.key`,
+          "-out",
+          `${dir}/root.pem`,
+        ]);
+      const ca = (name, san) => {
+        openssl([
+          "req",
+          "-newkey",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:prime256v1",
+          "-nodes",
+          "-subj",
+          `/CN=${name}`,
+          "-keyout",
+          `${dir}/${name}.key`,
+          "-out",
+          `${dir}/${name}.csr`,
+        ]);
+        writeFileSync(`${dir}/${name}.ext`, `subjectAltName=${san}\nbasicConstraints=CA:false\n`);
+        openssl([
+          "x509",
+          "-req",
+          "-in",
+          `${dir}/${name}.csr`,
+          "-CA",
+          `${dir}/root.pem`,
+          "-CAkey",
+          `${dir}/root.key`,
+          "-CAcreateserial",
+          "-days",
+          "1",
+          "-extfile",
+          `${dir}/${name}.ext`,
+          "-out",
+          `${dir}/${name}.pem`,
+        ]);
+      };
+      ca("account", "IP:127.0.0.1");
+      ca("upstream", "IP:192.0.43.10");
+      execFileSync("install", [
+        "-m",
+        "0644",
+        `${dir}/root.pem`,
+        "/usr/local/share/ca-certificates/opensteer-run-root.crt",
+      ]);
+      execFileSync("update-ca-certificates");
+      const assigned = Object.fromEntries(
+        command.assigned.map((slotId) => [
+          slotId,
+          {
+            url: "https://192.0.43.10:8443",
+            username: `run-${slotId}`,
+            password: createHash("sha256").update(`${slotId}${Math.random()}`).digest("base64url"),
+          },
+        ]),
+      );
+      const hostId = JSON.parse(readFileSync(config, "utf8")).admin.hostId;
+      writeFileSync(
+        `${dir}/account.json`,
+        JSON.stringify({
+          key: `${dir}/account.key`,
+          cert: `${dir}/account.pem`,
+          port: 9443,
+          hostId,
+          hostKeyPub: "/etc/opensteer-pool/host-key.pub",
+          assigned,
+          log: `${dir}/account.log`,
+        }),
+        { mode: 0o600 },
+      );
+      writeFileSync(
+        `${dir}/upstream.json`,
+        JSON.stringify({
+          key: `${dir}/upstream.key`,
+          cert: `${dir}/upstream.pem`,
+          port: 8443,
+          address: "192.0.43.10",
+          forwardPort: 3128,
+          assigned,
+          log: `${dir}/upstream.log`,
+        }),
+        { mode: 0o600 },
+      );
+      // The bench's own upstream holds 192.0.43.10:8443; the stand-in takes its place.
+      spawnSync("systemctl", ["stop", "pool-bench-upstream.service"]);
+      const node = "/opt/opensteer-pool/node/bin/node";
+      const bench = "/opt/pool-src/apps/pool-agent/bench";
+      for (const [unit, script, file] of [
+        ["run-account-standin", "account-standin.mjs", "account.json"],
+        ["run-upstream-standin", "upstream-standin.mjs", "upstream.json"],
+      ]) {
+        spawnSync("systemctl", ["stop", `${unit}.service`]);
+        execFileSync("systemd-run", [
+          `--unit=${unit}.service`,
+          "--collect",
+          node,
+          `${bench}/${script}`,
+          `${dir}/${file}`,
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return { origin: "https://127.0.0.1:9443", assigned: Object.keys(assigned) };
+    }
+    case "standin-log": {
+      const file = `/run/opensteer-run-standins/${command.which}.log`;
+      return {
+        lines: existsSync(file)
+          ? readFileSync(file, "utf8")
+              .trim()
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+          : [],
+      };
+    }
+    case "pull-mode": {
+      // Round H, item (d): the agent requires an upstream and pulls each slot's from the
+      // stand-in account service, into a root-only credentials root of its own.
+      const value = JSON.parse(readFileSync(config, "utf8"));
+      value.driver.requireEgressUpstream = true;
+      value.driver.egress.accountOrigin = command.origin;
+      value.driver.credentialsRoot = "/etc/opensteer-pool/credentials";
+      writeFileSync(config, JSON.stringify(value, null, 2), { mode: 0o600 });
+      execFileSync("systemctl", ["restart", "opensteer-pool-agent.service"]);
+      return { ok: true };
+    }
+    case "credentials-info": {
+      const root = "/etc/opensteer-pool/credentials";
+      const base = `slot-${createHash("sha256").update(command.slotId).digest("hex")}`;
+      const files = Object.fromEntries(
+        ["url", "username", "password"].map((kind) => {
+          const file = `${root}/${base}.${kind}`;
+          if (!existsSync(file)) return [kind, null];
+          const info = statSync(file);
+          return [kind, { mode: (info.mode & 0o777).toString(8), uid: info.uid }];
+        }),
+      );
+      const dir = existsSync(root) ? (statSync(root).mode & 0o777).toString(8) : null;
+      const url = files.url ? readFileSync(`${root}/${base}.url`, "utf8") : null;
+      return { dir, files, url };
+    }
+    case "credentials-remove": {
+      // Round H, item (d): the slot's pulled credentials taken away, and its proxy process ended
+      // so its next start reads them again.
+      const root = "/etc/opensteer-pool/credentials";
+      const base = `slot-${createHash("sha256").update(command.slotId).digest("hex")}`;
+      for (const kind of ["url", "username", "password"])
+        rmSync(`${root}/${base}.${kind}`, { force: true });
+      spawnSync("systemctl", ["stop", `opensteer-pool-egress-${command.index}.service`]);
+      return { ok: true };
+    }
+    case "proxy-request": {
+      // Round H, item (d): an HTTPS request through a slot's proxy from inside its namespace.
+      const out = spawnSync(
+        "ip",
+        [
+          "netns",
+          "exec",
+          `osp${command.index}`,
+          "curl",
+          "-s",
+          "-o",
+          "/dev/null",
+          "-m",
+          "8",
+          "-w",
+          "%{http_connect} %{http_code}",
+          "-x",
+          "http://172.16.0.1:3128",
+          "https://example.com/",
+        ],
+        { encoding: "utf8" },
+      );
+      return { status: out.status, result: out.stdout.trim() };
+    }
     case "make-profile": {
       // As the bench's own guests have theirs (run-gcp.sh): a formatted 1 GiB ext4.
       const file = `/var/lib/opensteer-pool/profiles/${command.name}.ext4`;
@@ -321,6 +586,11 @@ async function run(command) {
         .split(" ")
         .find((entry) => entry.startsWith("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL="));
       return {
+        // Round H: whether the unit requires an upstream.
+        required: show(`opensteer-pool-egress-${command.index}.service`, "Environment").includes(
+          "OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true",
+        ),
+        service: show(`opensteer-pool-egress-${command.index}.service`, "ActiveState"),
         socket: show(`opensteer-pool-egress-${command.index}.socket`, "ActiveState"),
         listed: listed
           ? listed.split("\n").map((line) => line.split(/\s+/u).slice(0, 4).join(" "))

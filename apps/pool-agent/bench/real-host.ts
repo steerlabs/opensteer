@@ -108,23 +108,43 @@ function vethHost(index: number): string {
 
 class Slot {
   readonly id: string;
-  readonly index: number;
+  /** The slot's number on the host (its bridge's address); round H reads it after a create. */
+  index: number;
+  /** Round H: a slot made again at a higher term has its own. */
+  readonly term: number;
   readonly #home: KeyObject;
   #agentKey!: KeyObject;
-  readonly #guest: { readonly memoryMib: number; readonly upstreamPort: number };
+  readonly #guest: {
+    readonly memoryMib: number;
+    readonly upstreamPort: number;
+    readonly egress: boolean;
+  };
 
   constructor(
     id: string,
     index: number,
-    guest: { readonly memoryMib?: number; readonly upstreamPort?: number } = {},
+    guest: {
+      readonly memoryMib?: number;
+      readonly upstreamPort?: number;
+      /** Round H: false on a host that pulls its slots' egress. */
+      readonly egress?: boolean;
+      readonly term?: number;
+    } = {},
   ) {
     this.id = id;
     this.index = index;
+    this.term = guest.term ?? term;
     this.#home = generateKeyPairSync("ed25519").privateKey;
     this.#guest = {
       memoryMib: guest.memoryMib ?? 2048,
       upstreamPort: guest.upstreamPort ?? options.upstreamPort,
+      egress: guest.egress ?? true,
     };
+  }
+
+  /** Round H: the number the driver gave it, read once it is created. */
+  async learnIndex(): Promise<void> {
+    this.index = (await helper({ cmd: "slot-number", slotId: this.id })).index as number;
   }
 
   /** This slot's calls signed by its Home's key, at its term: what a replaced Home still has. */
@@ -144,7 +164,7 @@ class Slot {
     const reply = await admin({
       op: "create",
       slotId: this.id,
-      term,
+      term: this.term,
       homeKey: createPublicKey(this.#home)
         .export({ format: "der", type: "spki" })
         .toString("base64"),
@@ -153,12 +173,16 @@ class Slot {
         memoryMib: this.#guest.memoryMib,
         // Round G: the agent makes the slot's profile under its root.
         profileMib: 1024,
-        egress: {
-          upstreamUrl: `https://192.0.43.10:${this.#guest.upstreamPort}`,
-          usernameFile: `${options.credentials}/upstream-username`,
-          passwordFile: `${options.credentials}/upstream-password`,
-          caFile: `${options.credentials}/upstream-ca.pem`,
-        },
+        ...(this.#guest.egress
+          ? {
+              egress: {
+                upstreamUrl: `https://192.0.43.10:${this.#guest.upstreamPort}`,
+                usernameFile: `${options.credentials}/upstream-username`,
+                passwordFile: `${options.credentials}/upstream-password`,
+                caFile: `${options.credentials}/upstream-ca.pem`,
+              },
+            }
+          : {}),
       },
     });
     if (reply.op !== "create") throw new Error("create failed");
@@ -179,7 +203,9 @@ class Slot {
   }
 
   async status(): Promise<BrowserPoolAgentStatus> {
-    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, term, { op: "status" });
+    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, this.term, {
+      op: "status",
+    });
     if (reply.op !== "status") throw new Error("status failed");
     return reply.status;
   }
@@ -189,7 +215,7 @@ class Slot {
     return {
       id: randomUUID(),
       slotId: this.id,
-      term,
+      term: this.term,
       kind,
       expect: {
         instance: status.instance,
@@ -202,7 +228,7 @@ class Slot {
   }
 
   async send(call: BrowserPoolAgentCall): Promise<BrowserPoolAgentResult> {
-    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, term, {
+    const reply = await callBrowserPoolAgent(this.#endpoint(), this.id, this.term, {
       op: "apply",
       call,
     });
@@ -1024,6 +1050,179 @@ async function capacity(others: Slot[]) {
   });
 }
 
+// ---- Round H on the host ------------------------------------------------------------------
+
+/**
+ * Items (a) to (c): the agent makes the profile (mkfs.ext4 and the link into place on the
+ * profiles' own filesystem), the guest boots from it, a delete without eraseProfile keeps it,
+ * a create at a higher term finds the person's marker in it, and a delete with eraseProfile
+ * answers profileErased only with the file gone.
+ */
+async function agentMadeProfile() {
+  const mount = (await helper({ cmd: "profiles-mount" })).mount;
+  const slot = new Slot("bench-prof", -1);
+  await slot.create();
+  await slot.learnIndex();
+  const made = await helper({ cmd: "profile-file", slotId: slot.id });
+  let began = now();
+  await slot.call("start");
+  const first = await firstReply(slot, began);
+  first.cdp.close();
+  await slot.call("stop");
+  await helper({ cmd: "profile-marker", slotId: slot.id, action: "write", text: "round-h-marker" });
+  const kept = await admin({ op: "delete", slotId: slot.id, term: slot.term });
+  const afterDelete = await helper({ cmd: "profile-file", slotId: slot.id });
+  const again = new Slot("bench-prof", -1, { term: slot.term + 1 });
+  await again.create();
+  await again.learnIndex();
+  const marker = (await helper({ cmd: "profile-marker", slotId: slot.id, action: "read" })).text;
+  began = now();
+  await again.call("start");
+  const second = await firstReply(again, began);
+  second.cdp.close();
+  await again.call("stop");
+  const markerAfterBoot = (await helper({ cmd: "profile-marker", slotId: slot.id, action: "read" }))
+    .text;
+  const erased = await admin({
+    op: "delete",
+    slotId: slot.id,
+    term: again.term,
+    eraseProfile: true,
+  } as never);
+  const afterErase = await helper({ cmd: "profile-file", slotId: slot.id });
+  emit({
+    kind: "agent-profile",
+    mount,
+    made,
+    first_reply_ms: Math.round(first.ms),
+    delete_kept: kept,
+    after_delete: afterDelete,
+    marker,
+    second_reply_ms: Math.round(second.ms),
+    marker_after_boot: markerAfterBoot,
+    delete_erased: erased,
+    after_erase: afterErase,
+    ok:
+      made.exists === true &&
+      made.type === "ext4" &&
+      (made.apparentBytes as number) === 1024 * 1024 * 1024 &&
+      kept.op === "delete" &&
+      !("profileErased" in kept) &&
+      afterDelete.exists === true &&
+      marker === "round-h-marker" &&
+      markerAfterBoot === "round-h-marker" &&
+      erased.op === "delete" &&
+      (erased as { profileErased?: boolean }).profileErased === true &&
+      afterErase.exists === false,
+  });
+}
+
+/** Item (e): mkfs.ext4 as the agent runs it, for profile sizes a host may be given. */
+async function mkfsTimes() {
+  const times = [];
+  for (const sizeMib of [2048, 10_240, 51_200])
+    times.push(await helper({ cmd: "mkfs-time", sizeMib }));
+  emit({ kind: "mkfs-time", times, ok: times.every((time) => typeof time.ms === "number") });
+}
+
+/**
+ * Item (d): no upstream, no start, with a stand-in account service and a stand-in upstream
+ * (a root only this instance trusts). None assigned: egress-required, no guest, and the slot's
+ * proxy refuses a request. Assigned: the guest's HTTPS leaves through the upstream with the
+ * slot's credentials. Those credentials removed: the guest's HTTPS fails and nothing more
+ * reaches the upstream.
+ */
+async function pulledEgress(others: Slot[]) {
+  for (const slot of others) await slot.ensureStopped();
+  const standins = await helper({ cmd: "standins", assigned: ["bench-eg-yes"] });
+  await helper({ cmd: "pull-mode", origin: standins.origin });
+  await waitForAgent(others[0]!);
+  const none = new Slot("bench-eg-none", -1, { egress: false });
+  await none.create();
+  await none.learnIndex();
+  const noneStart = await none.call("start").then(
+    () => "started",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  const noneVmms = (await helper({ cmd: "vmm-pids", slotId: none.id })).pids as string[];
+  const noneUnit = await helper({ cmd: "egress-unit", index: none.index });
+  const noneRequest = await helper({ cmd: "proxy-request", index: none.index });
+  const yes = new Slot("bench-eg-yes", -1, { egress: false });
+  await yes.create();
+  await yes.learnIndex();
+  const began = now();
+  await yes.call("start");
+  const reply = await firstReply(yes, began);
+  const work = await setup(reply.cdp);
+  const session = await reply.cdp.attach(work.targets.at(-1)!);
+  const https = await httpsProbe(reply.cdp, session);
+  const yesUnit = await helper({ cmd: "egress-unit", index: yes.index });
+  const credentials = await helper({ cmd: "credentials-info", slotId: yes.id });
+  const upstreamBefore = (await helper({ cmd: "standin-log", which: "upstream" })).lines as {
+    line?: string;
+    authOk?: boolean;
+  }[];
+  await helper({ cmd: "credentials-remove", slotId: yes.id, index: yes.index });
+  const httpsAfter = await httpsProbe(reply.cdp, session);
+  const upstreamAfter = (await helper({ cmd: "standin-log", which: "upstream" }))
+    .lines as unknown[];
+  const unitAfter = await helper({ cmd: "egress-unit", index: yes.index });
+  reply.cdp.close();
+  const account = (await helper({ cmd: "standin-log", which: "account" })).lines as {
+    slotId?: string;
+    signatureOk?: boolean;
+    assigned?: boolean;
+  }[];
+  await yes.call("stop");
+  const deleted = [];
+  for (const slot of [none, yes])
+    deleted.push(
+      await admin({ op: "delete", slotId: slot.id, term: slot.term, eraseProfile: true } as never),
+    );
+  const files = credentials.files as Record<string, { mode: string; uid: number } | null>;
+  emit({
+    kind: "egress-pull",
+    none: { start: noneStart, vmms: noneVmms.length, unit: noneUnit, request: noneRequest },
+    yes: {
+      https,
+      unit: yesUnit,
+      credentials,
+      https_after_removal: httpsAfter,
+      unit_after: unitAfter,
+    },
+    upstream: upstreamBefore,
+    upstream_after_removal: upstreamAfter.length - upstreamBefore.length,
+    account,
+    deleted,
+    ok:
+      /egress-required/u.test(noneStart) &&
+      noneVmms.length === 0 &&
+      noneUnit.required === true &&
+      noneUnit.upstream === null &&
+      !String(noneRequest.result).startsWith("200") &&
+      account.some((row) => row.slotId === none.id && row.signatureOk && !row.assigned) &&
+      account.some((row) => row.slotId === yes.id && row.signatureOk && row.assigned) &&
+      https === "opaque" &&
+      yesUnit.required === true &&
+      yesUnit.upstream === "https://192.0.43.10:8443" &&
+      credentials.dir === "700" &&
+      ["url", "username", "password"].every(
+        (kind) => files[kind]?.mode === "600" && files[kind]?.uid === 0,
+      ) &&
+      upstreamBefore.some(
+        (row) => /^CONNECT example\.com:443 /u.test(row.line ?? "") && row.authOk,
+      ) &&
+      upstreamBefore.every((row) => row.line === undefined || row.authOk) &&
+      httpsAfter !== "opaque" &&
+      upstreamAfter.length === upstreamBefore.length &&
+      deleted.every(
+        (entry) =>
+          entry.op === "delete" &&
+          (entry as { credentialsErased?: boolean }).credentialsErased === true,
+      ),
+  });
+}
+
 /** Round D, D3: the run's own verdict, from every row it wrote. */
 function assertAll() {
   const failed = emitted.filter(
@@ -1656,6 +1855,11 @@ async function main() {
   if (options.phases.includes("e1")) await oldKeyDuringReplacement();
   if (options.phases.includes("e2")) await slowRevive();
   if (options.phases.includes("capacity")) await capacity(slots);
+  // Round H: the agent-made profile, mkfs.ext4's time, and egress pulled (last: it switches
+  // the agent to requireEgressUpstream).
+  if (options.phases.includes("profile")) await agentMadeProfile();
+  if (options.phases.includes("mkfs-time")) await mkfsTimes();
+  if (options.phases.includes("egress-pull")) await pulledEgress(slots);
   assertAll();
   emit({ kind: "done" });
 }
