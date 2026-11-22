@@ -135,7 +135,14 @@ async function open(abilities?: EditingTargetAbilities) {
     root.render(
       <NativeEditingProxy
         context={current}
-        sendOperation={(operation) => remote.take(operation)}
+        sendOperation={(operation) => {
+          if (process.env.OPENSTEER_TYPING_TRACE)
+            console.log(
+              "    OP",
+              JSON.stringify(operation, (k, v) => (k === "bytes" ? "…" : v)),
+            );
+          return remote.take(operation);
+        }}
         onDone={() => undefined}
         {...(abilities ? { abilities } : {})}
       />,
@@ -162,7 +169,10 @@ async function open(abilities?: EditingTargetAbilities) {
     finishComposition: async () => native!.unmarkText(false),
     configure: (contextId) => native!.configure(contextId),
   };
-  native = new NativeField((packet) => harness.field!.deliver(packet));
+  native = new NativeField((packet) => {
+    if (process.env.OPENSTEER_TYPING_TRACE) console.log("    PACKET", JSON.stringify(packet.event));
+    harness.field!.deliver(packet);
+  });
   native.contextId = context.contextId;
   await act(async () => render());
   await vi.waitFor(() => expect(harness.mounted).toBe(true));
@@ -329,7 +339,9 @@ describe("typing into a remote field", () => {
     expect(remote.value).toBe("hello!");
   });
 
-  it("types at a tap made while an earlier keystroke waits", async () => {
+  // A tap moves nothing in the hidden field (C1); a swipe moves the caret by its distance, from
+  // where the person's caret is: here after the "a" still waiting, five characters back.
+  it("moves by the distance swiped while an earlier keystroke waits, and types there", async () => {
     const { remote, native, keyboard, answer, answerAll } = await open();
     await keyboard((field) => field.type("hello"));
     await answerAll();
@@ -338,8 +350,8 @@ describe("typing into a remote field", () => {
     await answer(1);
     await keyboard((field) => field.insertText("X"));
     await answerAll();
-    expect(native.text).toBe("Xhelloa");
-    expect(remote.value).toBe("Xhelloa");
+    expect(native.text).toBe("hXelloa");
+    expect(remote.value).toBe("hXelloa");
   });
 
   // The recheck's fault 1: an edit's event carried a caret chosen after it, so the remote caret
@@ -348,7 +360,7 @@ describe("typing into a remote field", () => {
     ["a page (range edits)", undefined],
     ["an older Host's browser (no range edits)", displayAbilities],
   ] as const)(
-    "on %s, delivers two characters typed before a tap, then moves once",
+    "on %s, delivers two characters typed before a swipe, then moves by its distance",
     async (_name, abilities) => {
       const { remote, native, keyboard, answerAll } = await open(abilities);
       await keyboard((field) => field.type("hello"));
@@ -373,9 +385,11 @@ describe("typing into a remote field", () => {
       expect(sent.slice(lastEdit + 1).every((operation) => operation.kind === "command")).toBe(
         true,
       );
-      // A page follows the tap; a target without range edits gets no caret moves from a selection
-      // (the reducer keeps no mirror to measure them against), so it stays after the "b".
-      expect(remote.caret).toBe(abilities ? 7 : 0);
+      // A page: the swipe went five characters back from the person's caret, after the "b". A
+      // target without range edits keeps the hidden field empty after each edit, so the swipe has
+      // nothing to cross and UIKit reports no move: the caret stays after the "b" (what a person
+      // there loses with the space bar's trackpad; the arrow keys still go to the page).
+      expect(remote.caret).toBe(abilities ? 7 : 2);
     },
   );
 
@@ -495,19 +509,18 @@ describe("a person's caret moves and selections in the native field", () => {
     same(remote, native);
   });
 
-  it("types where the person put the caret while a composition's commit waited", async () => {
-    // A tap during a composition: UIKit commits it (unmarkText), then moves the caret, both
-    // before the composition's own turn. The commit must not leave the native caret at the end
-    // of the composition while the far caret goes where the person put it.
+  it("types where the person swiped the caret while a composition's commit waited", async () => {
+    // The input method commits the composition (unmarkText), then the person swipes one back,
+    // both before the composition's own turn: from after the composition, one back.
     const { remote, native, keyboard, answerAll } = await settled("ab");
     await keyboard((field) => field.setMarkedText("日本"));
     await keyboard((field) => field.unmarkText());
     await keyboard((field) => field.moveSelection(1));
     await answerAll();
-    expect(native.selection).toEqual({ start: 1, end: 1 });
+    expect(native.selection).toEqual({ start: 3, end: 3 });
     await keyboard((field) => field.insertText("x"));
     await answerAll();
-    expect(native.text).toBe("axb日本");
+    expect(native.text).toBe("ab日x本");
     same(remote, native);
   });
 
@@ -553,12 +566,14 @@ describe("a person's caret moves and selections in the native field", () => {
       );
     };
     const traced = native.onTurn;
+    const labels: string[] = [];
     native.onTurn = (turn) => {
       traced?.(turn);
-      trace(`  <${turn}>`);
+      trace(`  <${turn}${turn === "action" ? ` ${labels.shift() ?? ""}` : ""}>`);
     };
     const does = async (step: string, act: Action, call: (field: NativeField) => void) => {
       steps.push(step);
+      labels.push(step);
       oracle.act(act);
       trace(step);
       await keyboard(call);
@@ -571,13 +586,13 @@ describe("a person's caret moves and selections in the native field", () => {
       insertText: (c: string) =>
         does(
           `insertText(${said(c)})`,
-          (p) => p.replace(p.marked ?? p.selection, c),
+          (p) => p.type(c),
           (f) => f.insertText(c),
         ),
       type: (c: string) =>
         does(
           `type(${said(c)})`,
-          (p) => p.replace(p.selection, c),
+          (p) => p.type(c),
           (f) => f.type(c),
         ),
       backspace: async () => {
@@ -593,46 +608,48 @@ describe("a person's caret moves and selections in the native field", () => {
         does(
           "deleteBackward()",
           // Without an input method UITextView deletes the whole marked text.
-          (p) => (p.marked ? p.replace(p.marked, "") : p.backspace()),
+          (p) => (p.marked ? p.compose("") : p.backspace()),
           (f) => f.deleteBackward(),
         ),
+      /** A caret swiped by the distance UIKit moved it, or a range UIKit selects (caught up). */
       moveSelection: async (start: number, end = start) => {
         // A move to where the caret already is makes no callback: it is no event.
         if (native.selection.start === start && native.selection.end === end) return;
-        steps.push(start === end ? `moveSelection(${start})` : `moveSelection(${start}, ${end})`);
-        // A caret moved from a caret is the distance UIKit moved it, in the text it had.
         const previous = native.selection;
         const caret = previous.start === previous.end && start === end;
+        if (!caret && !oracle.caughtUp) return;
+        steps.push(start === end ? `moveSelection(${start})` : `moveSelection(${start}, ${end})`);
         const count = characters(
           native.text.slice(Math.min(previous.end, end), Math.max(previous.end, end)),
         ).length;
-        oracle.select({ start, end }, caret ? (end < previous.end ? -count : count) : undefined);
+        const distance = end < previous.end ? -count : count;
+        const range = oracle.fromNative({ start, end });
+        oracle.choose(caret ? (p) => p.move(distance) : (p) => p.select(range));
         trace(steps.at(-1)!);
         return keyboard((f) => f.moveSelection(start, end));
       },
-      replaceRange: (start: number, end: number, word: string) => {
-        const target = oracle.toPerson({ start, end });
+      /** UIKit's own replacement (an autocorrect), made when the native field has caught up. */
+      replaceRange: async (start: number, end: number, word: string) => {
+        if (!oracle.caughtUp) return;
+        const range = oracle.fromNative({ start, end });
         return does(
           `replaceRange(${start}, ${end}, ${said(word)})`,
-          (p) => p.edit(target, word),
+          (p) => p.replace(range, word),
           (f) => f.replaceRange(start, end, word),
         );
       },
-      deleteMark: (at: number) => {
-        const target = oracle.toPerson({ start: at, end: at + 1 });
-        return does(
+      /** UIKit's Backspace naming a combining mark alone (caught up): the page's Backspace. */
+      deleteMark: async (at: number) =>
+        oracle.caughtUp &&
+        does(
           `deleteMark(${at})`,
-          (p) => p.edit(target, ""),
+          (p) => p.backspace(),
           (f) => f.shouldChangeText({ start: at, end: at + 1 }, ""),
-        );
-      },
+        ),
       paste: (text: string) =>
         does(
           `paste(${said(text)})`,
-          (p) => {
-            p.marked = null;
-            return p.replace(p.selection, text);
-          },
+          (p) => p.paste(text),
           (f) => f.paste(text),
         ),
       setMarkedText: (text: string) =>
@@ -644,10 +661,7 @@ describe("a person's caret moves and selections in the native field", () => {
       unmarkText: () =>
         does(
           "unmarkText()",
-          (p) => {
-            p.marked = null;
-            return [];
-          },
+          (p) => p.commit(),
           (f) => f.unmarkText(),
         ),
       answer: (count: number) => {
@@ -674,9 +688,12 @@ describe("a person's caret moves and selections in the native field", () => {
         // the viewer's preedit, not the page's.
         const shown =
           marked && !target.composition
-            ? text.slice(0, marked.start) + text.slice(marked.end)
+            ? text.slice(0, marked.start) + oracle.person.replaced + text.slice(marked.end)
             : text;
-        expect(remote.value, failure).toBe(shown);
+        expect(
+          remote.value,
+          `${failure} (far ${JSON.stringify(escape(remote.value))}, person ${JSON.stringify(escape(shown))})`,
+        ).toBe(shown);
         if (selection.start === selection.end && marked === null)
           expect(remote.caret, `${failure}: caret`).toBe(selection.start);
         await act(async () => root.render(null));
@@ -863,7 +880,9 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.moveSelection(1);
     await run.insertText("x");
     await run.check("F4");
-    expect(harness.remote).toMatchObject({ value: "axbcP" });
+    // The swipe was two back from the person's caret, after the "P": a distance (the lead's
+    // ruling), not the place UIKit named in "abc".
+    expect(harness.remote).toMatchObject({ value: "abxcP" });
   });
   it("F5: an autocorrect made before the previous answer, on a Mac app or phone screen", async () => {
     const run = await person(targets.display);

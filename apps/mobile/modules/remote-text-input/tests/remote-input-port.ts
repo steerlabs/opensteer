@@ -234,6 +234,8 @@ export class NativeField {
   selection: Span = { start: 0, end: 0 };
   marked: Span | null = null;
   private mutating = false;
+  /** Where the last applied edit or answer left the caret, before a later choice is put back. */
+  private turnCaret: Span = { start: 0, end: 0 };
   /** The selection the view itself last left (RemoteInputTextView.ownSelection). */
   private ownSelection: Span | null = null;
   /**
@@ -272,6 +274,11 @@ export class NativeField {
   }
   private report(job: () => void) {
     this.add(job, true);
+  }
+  /** Whether a report queued now would replace the one queued last (nothing queued after it). */
+  private coalesces(): boolean {
+    const last = this.running ? this.insertion - 1 : this.jobs.length - 1;
+    return last >= 0 && last < this.jobs.length && this.jobs[last]!.report;
   }
   private add(run: () => void, report: boolean) {
     const last = this.running ? this.insertion - 1 : this.jobs.length - 1;
@@ -340,11 +347,26 @@ export class NativeField {
     }
     return this.edits.current(place, this.text.length);
   }
+  /**
+   * The caret as it stands at an action's turn: where the last applied edit or answer left it,
+   * when the person chose another after the action was named (a later choice is not this one's).
+   */
+  private caretAtTurn(place: Place): Span {
+    return this.edits.chosenAfter(place) ? { ...this.turnCaret } : { ...this.selection };
+  }
   private select(place: Place): Span {
-    if (this.marked) return { ...this.marked };
+    // Inside a composition the caret is the composition's, at its end, whatever was chosen since:
+    // the edit's events report its own caret, and the person's choice is put back after it.
+    if (this.marked) {
+      this.selection = { start: this.marked.end, end: this.marked.end };
+      return { ...this.marked };
+    }
     // Typing and deleting backward are relative to the caret: named in an older mirror, they go
-    // where the caret is now.
-    if (this.edits.stale(place)) return { ...this.selection };
+    // where the caret stands at their turn.
+    if (this.edits.stale(place)) {
+      this.selection = this.caretAtTurn(place);
+      return { ...this.selection };
+    }
     const target = this.range(place);
     this.selection = { ...target };
     return target;
@@ -403,6 +425,7 @@ export class NativeField {
     if (cleared) this.edits.clear();
     this.selection = { start: set.selectionStart, end: set.selectionEnd };
     this.ownSelection = { ...this.selection };
+    this.turnCaret = { ...this.selection };
     this.held = null;
     this.mutating = false;
     if (cleared) this.onTurn?.("reset");
@@ -435,8 +458,10 @@ export class NativeField {
   }
   /** Where what the person types now is named: at a caret move still waiting its turn, or at the person's selection. */
   private namedHere(): Place {
-    if (this.pendingMove && !this.held)
-      return { ...this.place(this.selection), move: this.pendingMove };
+    // A move held while a composition hides it, or still waiting its turn, is resolved at its
+    // turn: what is typed now is named at it.
+    const move = this.held && !this.edits.stale(this.held) ? this.held.move : this.pendingMove;
+    if (move) return { ...this.place(this.selection), move };
     return this.place(this.personSelection());
   }
   private change(
@@ -455,6 +480,7 @@ export class NativeField {
           action();
           // The state right after this edit, before the chosen selection is put back.
           const composing = this.marked !== null;
+          this.turnCaret = { ...this.selection };
           const proxy = this.snapshot();
           const marked = this.marked ? this.text.slice(this.marked.start, this.marked.end) : "";
           this.keepChosen(typed);
@@ -491,11 +517,19 @@ export class NativeField {
     const uikit = this.selection;
     const selection = this.personSelection();
     if (replacement === "" && Edits.isBackspace(named, uikit, this.text)) {
-      const caret = this.pendingMove && !this.held ? this.namedHere() : this.place(selection);
+      const caret = this.namedHere();
       this.change("deleteContentBackward", replacement, caret, () => {
         if (this.dropped(caret, false)) return;
-        const at = this.edits.stale(caret) ? this.place(this.selection) : caret;
-        this.replace(this.edits.backspace(at, this.text), "");
+        const at = this.edits.stale(caret) ? this.place(this.caretAtTurn(caret)) : caret;
+        // Its events report its own caret: the deletion's, where the caret was by its turn.
+        const where = this.range(at).start;
+        if (!this.marked) this.selection = { start: where, end: where };
+        this.replace(
+          where > 0
+            ? { start: characterAt(this.text, where - 1).start, end: where }
+            : { start: 0, end: 0 },
+          "",
+        );
       });
       return;
     }
@@ -504,10 +538,7 @@ export class NativeField {
     // place in the text.
     const relative = named.start === selection.start && named.end === selection.end;
     const again = replacement === "" && Edits.deletesSelection(named, selection);
-    const typed =
-      relative && named.start === named.end && this.pendingMove && !this.held
-        ? this.namedHere()
-        : this.place(named);
+    const typed = relative && named.start === named.end ? this.namedHere() : this.place(named);
     this.change(
       replacement ? "insertReplacementText" : "deleteContentBackward",
       replacement,
@@ -515,18 +546,20 @@ export class NativeField {
       () => {
         if (this.dropped(typed, !relative)) return;
         if (this.edits.stale(typed)) {
-          const { start, end } = this.selection;
+          const { start, end } = this.caretAtTurn(typed);
           const target =
             replacement || end > start || start === 0
               ? { start, end }
               : { start: characterAt(this.text, start - 1).start, end: start };
+          // Its events report its own caret, at the place it went.
+          if (!this.marked) this.selection = { start: target.end, end: target.end };
           this.replace(target, replacement);
           return;
         }
-        this.replace(
-          again ? this.edits.deletion(typed, this.text) : this.range(typed),
-          replacement,
-        );
+        const target = again ? this.edits.deletion(typed, this.text) : this.range(typed);
+        // Typing over the selection: its events report its own caret, after what it typed.
+        if (relative && !this.marked) this.selection = { ...target };
+        this.replace(target, replacement);
       },
     );
   }
@@ -593,6 +626,8 @@ export class NativeField {
       if (person) this.onTurn?.("action");
       if (!this.marked) return;
       const data = this.text.slice(this.marked.start, this.marked.end);
+      // Its event reports the composition's own caret, at its end; a later choice is put back after.
+      this.selection = { start: this.marked.end, end: this.marked.end };
       this.marked = null;
       // Its event reports its own caret; the caret the person chose is reported in its turn.
       const proxy = this.snapshot();
@@ -654,12 +689,27 @@ export class NativeField {
     // sent as the distance, never dropped. A range is the place UIKit named; one selected in text
     // that is gone selects nothing.
     const caret = previous.start === previous.end && start === end;
-    if (caret && this.distance !== undefined) this.from ??= this.place(previous);
+    // A move that gets a report of its own starts its own distance.
+    if (!this.coalesces()) {
+      this.distance = 0;
+      this.from = null;
+    }
+    // From the person's caret: an earlier move still waiting its turn is where they were.
+    if (caret && this.distance !== undefined)
+      this.from ??=
+        this.pendingMove && !this.held
+          ? { ...this.place(previous), move: this.pendingMove }
+          : this.place(previous);
     this.distance =
       this.distance === undefined || !caret
         ? undefined
         : this.distance + graphemesBetween(this.text, previous.end, end);
     const distance = this.distance;
+    if (process.env.OPENSTEER_TYPING_TRACE)
+      console.log(
+        "    MOVE",
+        JSON.stringify({ text: this.text, previous, start, end, distance, from: this.from }),
+      );
     const fresh = this.place(this.selection);
     const move: CaretMove | null =
       distance === undefined || !this.from ? null : { from: this.from, distance, resolved: null };
@@ -681,6 +731,17 @@ export class NativeField {
         return;
       }
       const at = this.range(moved);
+      if (process.env.OPENSTEER_TYPING_TRACE && move)
+        console.log(
+          "    RESOLVE",
+          JSON.stringify({
+            text: this.text,
+            from: move.from,
+            fromNow: this.range(move.from),
+            distance: move.distance,
+            at,
+          }),
+        );
       if (move) {
         move.resolved = this.place(at);
         // The native caret is the person's from here on, unless they have moved it since.
