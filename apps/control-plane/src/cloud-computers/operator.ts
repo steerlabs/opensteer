@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { CloudComputerIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  BrowserPoolHostIdSchema,
+  BrowserPoolSlotIdSchema,
+  CloudComputerIdSchema,
+} from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 import { ControlPlaneError } from "../server/errors.js";
 import { billingErrorDetails } from "./billing-error.js";
@@ -14,6 +18,9 @@ export const cloudComputerOperatorUsage = `Usage: cloud-computer-operator-main.j
   egress-address <id> <public-ip|clear> | egress-remove <id>
   egress-rotate <id> <username> <password-file> | egress-assign <computer-id>
   backup-list | backup-add <json-file> | backup-rotate <id> <json-file> | backup-remove <id>
+  pool-host-list | pool-host-show <host-id> | pool-host-drain <host-id>
+  pool-host-replace <host-id> | pool-host-delete <host-id>
+  pool-slot-list | pool-slot-show <slot-id> | pool-slot-retry <slot-id>
   lease-show | lease-release <holder>
   checkout-list | billing-reconcile | claim-retry <computer-id>
 
@@ -69,6 +76,22 @@ export async function runCloudComputerOperator(
   } else if (action === "egress-remove" && args.length === 0) {
     await store.removeEgressEndpoint(z.uuid().parse(subject));
     result = { removed: true };
+  } else if (action === "pool-host-list" && !subject) {
+    result = await store.operatorListPoolHosts();
+  } else if (action === "pool-slot-list" && !subject) {
+    result = await store.operatorListPoolSlots();
+  } else if (action === "pool-host-show" && subject && args.length === 0) {
+    result = await store.operatorShowPoolHost(BrowserPoolHostIdSchema.parse(subject));
+  } else if (action === "pool-host-drain" && subject && args.length === 0) {
+    result = await store.operatorDrainPoolHost(BrowserPoolHostIdSchema.parse(subject));
+  } else if (action === "pool-host-replace" && subject && args.length === 0) {
+    result = await store.operatorReplacePoolHost(BrowserPoolHostIdSchema.parse(subject));
+  } else if (action === "pool-host-delete" && subject && args.length === 0) {
+    result = await store.operatorDeletePoolHost(BrowserPoolHostIdSchema.parse(subject));
+  } else if (action === "pool-slot-show" && subject && args.length === 0) {
+    result = await store.operatorShowPoolSlot(BrowserPoolSlotIdSchema.parse(subject));
+  } else if (action === "pool-slot-retry" && subject && args.length === 0) {
+    result = await store.operatorRetryPoolSlot(BrowserPoolSlotIdSchema.parse(subject));
   } else {
     if (!subject) throw new ControlPlaneError("bad_request", cloudComputerOperatorUsage);
     const id = CloudComputerIdSchema.parse(subject);

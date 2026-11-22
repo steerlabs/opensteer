@@ -2,6 +2,26 @@ import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
   accountCloudComputersPath,
+  BrowserPoolHostBootCompleteRequestSchema,
+  BrowserPoolHostBootCompleteResponseSchema,
+  BrowserPoolHostBootRequestSchema,
+  BrowserPoolHostBootResponseSchema,
+  BrowserPoolHostCheckSchema,
+  BrowserPoolHostDesiredPageSchema,
+  BrowserPoolHostDesiredResponseSchema,
+  BrowserPoolHostIdSchema,
+  BrowserPoolHostReplaceUnreadyRequestSchema,
+  BrowserPoolHostReplaceUnreadyResponseSchema,
+  BrowserPoolHostReportSchema,
+  BrowserPoolSlotBumpTermRequestSchema,
+  BrowserPoolSlotBumpTermResponseSchema,
+  BrowserPoolSlotCheckSchema,
+  BrowserPoolSlotDesiredPageSchema,
+  BrowserPoolSlotDesiredResponseSchema,
+  BrowserPoolSlotIdSchema,
+  BrowserPoolSlotReportSchema,
+  browserPoolHostsDesiredPath,
+  browserPoolSlotsDesiredPath,
   CloudComputerBackupReportSchema,
   CloudComputerBillingUrlResponseSchema,
   CloudComputerBootRequestSchema,
@@ -28,12 +48,18 @@ import {
   cloudComputerStripeWebhookPath,
   cloudComputersDesiredPath,
   CloudComputerViewSchema,
+  ManagedBrowserPoolRegistrationRequestSchema,
+  ManagedBrowserPoolTargetResponseSchema,
+  managedBrowserPoolRegistrationPath,
+  managedBrowserPoolTargetPath,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { ControlPlaneAuthenticator } from "../auth/auth.js";
+import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
 import { decodeStripeEvent, verifyStripeSignature } from "./stripe.js";
 
@@ -49,13 +75,21 @@ export interface CloudComputerRouteOptions {
 }
 
 const params = z.object({ id: CloudComputerIdSchema });
+const poolHostParams = z.object({ id: BrowserPoolHostIdSchema });
+const poolSlotParams = z.object({ slotId: BrowserPoolSlotIdSchema });
 const provisionerPath = "/v1/cloud-computers/:id";
+const poolHostPath = "/v1/browser-pool/hosts/:id";
+const poolSlotPath = "/v1/browser-pool/slots/:slotId";
 const ownerPath = `${accountCloudComputersPath}/:id`;
 
 export function registerCloudComputerRoutes(
   app: FastifyInstance,
   options: CloudComputerRouteOptions & {
     readonly authenticator: Pick<ControlPlaneAuthenticator, "authenticate">;
+    readonly authenticateHostCredential?: Pick<
+      ControlPlaneStore,
+      "authenticateHostCredential"
+    >["authenticateHostCredential"];
   },
 ): void {
   const { store, authenticator } = options;
@@ -99,8 +133,8 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder } = CloudComputerLeaseSchema.parse(request.body);
-    if (!(await store.lease(holder, true))) {
+    const { holder, poolConfigured } = CloudComputerLeaseSchema.parse(request.body);
+    if (!(await store.lease(holder, true, poolConfigured))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };
@@ -184,6 +218,179 @@ export function registerCloudComputerRoutes(
     return reply.code(204).send();
   });
 
+  // --- Browser pool provisioner routes (hosts + slots) ---
+  app.get(browserPoolHostsDesiredPath, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { after, limit, probe } = BrowserPoolHostDesiredPageSchema.parse(request.query);
+    return BrowserPoolHostDesiredResponseSchema.parse(
+      await store.desiredPoolHosts(after, limit, probe ?? false),
+    );
+  });
+
+  app.post(`${poolHostPath}/check`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { id } = poolHostParams.parse(request.params);
+    return CloudComputerCheckResponseSchema.parse({
+      allowed: await store.checkPoolHost(id, BrowserPoolHostCheckSchema.parse(request.body)),
+    });
+  });
+
+  app.post(`${poolHostPath}/status`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { id } = poolHostParams.parse(request.params);
+    const report = BrowserPoolHostReportSchema.parse(request.body);
+    if (report.id !== id) {
+      throw new ControlPlaneError("bad_request", "Pool host report ID does not match the URL");
+    }
+    return CloudComputerReportResponseSchema.parse(await store.reportPoolHost(report));
+  });
+
+  // T8: Provisioner replaces an unenrolled host that missed its readiness window (at most twice).
+  app.post(`${poolHostPath}/replace-unready`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { id } = poolHostParams.parse(request.params);
+    return BrowserPoolHostReplaceUnreadyResponseSchema.parse(
+      await store.replaceUnenrolledPoolHost(
+        id,
+        BrowserPoolHostReplaceUnreadyRequestSchema.parse(request.body),
+      ),
+    );
+  });
+
+  const poolHostBootLimit = new BootRateLimit();
+  for (const action of ["boot", "boot-complete"] as const) {
+    app.post(`${poolHostPath}/${action}`, { bodyLimit: 4096 }, async (request, reply) => {
+      privateResponse(reply);
+      const { id } = poolHostParams.parse(request.params);
+      if (!poolHostBootLimit.allow(id, request.ip)) {
+        return reply
+          .code(429)
+          .header("retry-after", "60")
+          .send({
+            error: { code: "rate_limited", message: "Too many pool host boot requests" },
+          });
+      }
+      if (action === "boot-complete") {
+        const body = BrowserPoolHostBootCompleteRequestSchema.parse(request.body);
+        await store.bootCompletePoolHost(id, body);
+        return BrowserPoolHostBootCompleteResponseSchema.parse({ completed: true });
+      }
+      const body = BrowserPoolHostBootRequestSchema.safeParse(request.body);
+      if (!body.success) {
+        throw new ControlPlaneError("bad_request", "Invalid pool host boot request");
+      }
+      return BrowserPoolHostBootResponseSchema.parse(await store.bootPoolHost(id, body.data));
+    });
+  }
+
+  // S4 + T9 + X5: Two-stage pool host slot-egress rate limiting.
+  // Pre-signature: limit per hostId (and per IP) without reading slotId from the unauthenticated body,
+  // so an unauthenticated flood of random slotIds cannot fill the map or throttle real wakes.
+  // Post-signature: limit per verified (hostId, slotId) at 30/min to permit cold-start bursts while stopping floods.
+  const poolHostEgressPreAuthIpLimit = new BootRateLimit(
+    browserPoolHostSlotEgressPreAuthIpLimitPerMinute,
+  );
+  const poolHostEgressPreAuthHostLimit = new BootRateLimit(
+    browserPoolHostSlotEgressPreAuthHostLimitPerMinute,
+  );
+  const poolHostEgressSlotLimit = new BootRateLimit(browserPoolHostSlotEgressRateLimitPerMinute);
+  app.post(`${poolHostPath}/slot-egress`, { bodyLimit: 4096 }, async (request, reply) => {
+    privateResponse(reply);
+    const rawHostId = String((request.params as { id?: unknown })?.id ?? "");
+    const rateLimited = () =>
+      reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many pool host egress requests" },
+        });
+    if (
+      !poolHostEgressPreAuthIpLimit.allow("ip", request.ip) ||
+      !poolHostEgressPreAuthHostLimit.allow(rawHostId, request.ip)
+    ) {
+      return rateLimited();
+    }
+    try {
+      return CloudComputerEgressResponseSchema.parse(
+        await store.egressForPoolHost(rawHostId, request.body, (verifiedHostId, verifiedSlotId) =>
+          poolHostEgressSlotLimit.allow(`${verifiedHostId}:${verifiedSlotId}`, request.ip),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof PoolSlotEgressRateLimitedError) return rateLimited();
+      throw error;
+    }
+  });
+
+  app.get(browserPoolSlotsDesiredPath, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { after, limit } = BrowserPoolSlotDesiredPageSchema.parse(request.query);
+    return BrowserPoolSlotDesiredResponseSchema.parse(await store.desiredPoolSlots(after, limit));
+  });
+
+  app.post(`${poolSlotPath}/check`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { slotId } = poolSlotParams.parse(request.params);
+    return CloudComputerCheckResponseSchema.parse({
+      allowed: await store.checkPoolSlot(slotId, BrowserPoolSlotCheckSchema.parse(request.body)),
+    });
+  });
+
+  app.post(`${poolSlotPath}/bump-term`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { slotId } = poolSlotParams.parse(request.params);
+    return BrowserPoolSlotBumpTermResponseSchema.parse(
+      await store.bumpPoolSlotTerm(
+        slotId,
+        BrowserPoolSlotBumpTermRequestSchema.parse(request.body),
+      ),
+    );
+  });
+
+  app.post(`${poolSlotPath}/status`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { slotId } = poolSlotParams.parse(request.params);
+    const report = BrowserPoolSlotReportSchema.parse(request.body);
+    if (report.slotId !== slotId) {
+      throw new ControlPlaneError("bad_request", "Pool slot report ID does not match the URL");
+    }
+    return CloudComputerReportResponseSchema.parse(await store.reportPoolSlot(report));
+  });
+
+  // W4 + S5: Pooled Home key registration and target lookup (Host bearer credential + pinned key signature).
+  const requireHomeHost = async (request: FastifyRequest) => {
+    if (!options.authenticateHostCredential) {
+      throw new ControlPlaneError("unavailable", "Host credential verification is unavailable");
+    }
+    const header = request.headers.authorization;
+    return options.authenticateHostCredential(typeof header === "string" ? header : header?.[0]);
+  };
+
+  app.put(managedBrowserPoolRegistrationPath, { bodyLimit: 8192 }, async (request, reply) => {
+    privateResponse(reply);
+    const authority = await requireHomeHost(request);
+    const body = ManagedBrowserPoolRegistrationRequestSchema.parse(request.body);
+    return ManagedBrowserPoolTargetResponseSchema.parse(
+      await store.registerHomeBrowserPoolKeys(authority.deploymentId, body),
+    );
+  });
+
+  app.get(managedBrowserPoolTargetPath, async (request, reply) => {
+    privateResponse(reply);
+    const authority = await requireHomeHost(request);
+    return ManagedBrowserPoolTargetResponseSchema.parse(
+      await store.browserPoolTargetForHome(authority.deploymentId),
+    );
+  });
+
   app.get(accountCloudComputersPath, async (request, reply) => {
     privateResponse(reply);
     const { accountId } = await read(request);
@@ -260,9 +467,19 @@ function privateResponse(reply: FastifyReply) {
   void reply.header("cache-control", "no-store");
 }
 
+export const browserPoolHostSlotEgressPreAuthHostLimitPerMinute = 600;
+export const browserPoolHostSlotEgressPreAuthIpLimitPerMinute = 1200;
+export const browserPoolHostSlotEgressRateLimitPerMinute = 30;
+
 class BootRateLimit {
   readonly #counts = new Map<string, number>();
   #resetAt = 0;
+
+  readonly #maxPerMinute: number;
+
+  constructor(maxPerMinute = 20) {
+    this.#maxPerMinute = maxPerMinute;
+  }
 
   allow(id: string, ip: string): boolean {
     const now = Date.now();
@@ -272,7 +489,7 @@ class BootRateLimit {
     }
     const key = `${id}:${ip}`;
     const count = this.#counts.get(key) ?? 0;
-    if (count >= 20 || (count === 0 && this.#counts.size >= 20_000)) return false;
+    if (count >= this.#maxPerMinute || (count === 0 && this.#counts.size >= 20_000)) return false;
     this.#counts.set(key, count + 1);
     return true;
   }

@@ -199,7 +199,10 @@ export type CloudComputerReport = z.infer<typeof CloudComputerReportSchema>;
 export const CloudComputerReportResponseSchema = z.object({ recorded: z.boolean() });
 export type CloudComputerReportResponse = z.infer<typeof CloudComputerReportResponseSchema>;
 
-export const CloudComputerLeaseSchema = z.strictObject({ holder: z.uuid() });
+export const CloudComputerLeaseSchema = z.strictObject({
+  holder: z.uuid(),
+  poolConfigured: z.boolean().optional(),
+});
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),
   z.strictObject({
@@ -325,6 +328,7 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
   work: WorkHomeMarkerSchema.optional(),
+  browserPool: z.boolean().optional(),
   ipv6Enabled: z.boolean(),
   restoreSnapshot: CloudComputerSnapshotSchema.optional(),
   backup: z.strictObject({
