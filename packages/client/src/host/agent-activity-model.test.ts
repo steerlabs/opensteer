@@ -2359,7 +2359,18 @@ describe("threadWatch", () => {
         thread: { ...thread, status: "idle" },
         waitingRequests: [asked],
       }),
-    ).toEqual({ kind: "needs-you" });
+    ).toEqual({ kind: "needs-you", runId: null, stopping: false });
+  });
+
+  it("keeps the Run a question waits in, so the row can stop it as well as answer", () => {
+    expect(
+      threadWatch({
+        entries: [run({ status: "running" })],
+        runQueue: [{ ...queued, status: "running" }],
+        thread: { ...thread, status: "waiting" },
+        waitingRequests: [asked],
+      }),
+    ).toEqual({ kind: "needs-you", runId: "run-a", stopping: false });
   });
 
   it("says nothing for an idle Thread or another Thread's question", () => {

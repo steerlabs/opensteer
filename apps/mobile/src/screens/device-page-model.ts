@@ -3,8 +3,10 @@ import {
   deviceAsleepDetail,
   deviceRemovalProfiles,
   deviceWords,
+  homeKeptWords,
   isHomeDevice,
   type DeviceCapability,
+  type HomeKind,
 } from "@opensteer/client/computers";
 import type { MachineAccessReach, MachineSummary } from "@opensteer/protocol";
 
@@ -38,11 +40,15 @@ const copy: Readonly<
 };
 
 export const homeFixed = "Always on. Your own agents run here.";
-const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
 
 export function deviceSwitches(
   machine: MachineSummary,
-  options: { readonly devicesAvailable: boolean; readonly noun?: string },
+  options: {
+    readonly devicesAvailable: boolean;
+    readonly noun?: string;
+    /** What the Home is, so its footer never calls a server or Cloud Computer a Mac. */
+    readonly homeKind?: HomeKind;
+  },
 ): {
   readonly rows: readonly DeviceSwitchRow[];
   readonly footer: string | null;
@@ -65,7 +71,7 @@ export function deviceSwitches(
     };
   });
   const footer = isHomeDevice(machine)
-    ? homeFooter
+    ? homeKeptWords(options.homeKind ?? "mac")
     : !machine.access?.policy
       ? machine.status === "pending"
         ? "These switches appear once this device has connected."

@@ -90,6 +90,9 @@ export async function startLocalBrowserRuntime(
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
     onPageCleanupFailure: () => diagnostics.append('{"event":"browser.page.cdp-cleanup.failed"}\n'),
+    // A reason code only: never the frame, the script or what the agent was told.
+    onProfileRefused: (reason) =>
+      diagnostics.append(`${JSON.stringify({ event: "browser.cdp.profile-refused", reason })}\n`),
     onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();

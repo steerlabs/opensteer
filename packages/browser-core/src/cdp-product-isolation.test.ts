@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { CdpProductIsolation } from "./cdp-product-isolation.js";
+import { CdpProductIsolation, cdpProfileRefusal } from "./cdp-product-isolation.js";
 
 it("admits page isolated worlds while isolating product preload, platform objects, scripts and IPC", () => {
   const worlds = new CdpProductIsolation();
@@ -134,4 +134,59 @@ it("refuses CPU profiles containing an internal or unclassified script", async (
   expect(() =>
     worlds.observeResult("Profiler.stop", {}, cpuProfile({ ...syntheticProfileFrame("work") })),
   ).toThrow("Opensteer");
+});
+
+it("names why a CPU profile was refused, in the same words to the agent", async () => {
+  const pageFrame = {
+    scriptId: "17",
+    functionName: "work",
+    url: "https://page.test/code.js",
+    lineNumber: 4,
+    columnNumber: 2,
+  };
+  const refusal = async (
+    frames: Record<string, unknown>[],
+    inspect: (observe: (method: string, parameters: Record<string, unknown>) => void) => void,
+  ) => {
+    const error = await new CdpProductIsolation()
+      .observeProfileResult(
+        cpuProfile(syntheticProfileFrame("(root)"), ...frames),
+        async (observe) => inspect(observe),
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    if (error)
+      expect(error).toMatchObject({
+        code: "forbidden",
+        message: "Profiler.stop returned Opensteer's preload or platform state.",
+      });
+    return error && cdpProfileRefusal(error);
+  };
+  const page = (observe: (method: string, parameters: Record<string, unknown>) => void) => {
+    observe("Runtime.executionContextCreated", { context: { id: 2, name: "" } });
+    observe("Runtime.executionContextCreated", { context: { id: 3, name: "opensteer-editing" } });
+    observe("Debugger.scriptParsed", { scriptId: "17", executionContextId: 2 });
+    observe("Debugger.scriptParsed", { scriptId: "18", executionContextId: 3 });
+  };
+  expect(await refusal([pageFrame], page)).toBeNull();
+  // A platform frame is the reason even beside frames the guard cannot place.
+  expect(
+    await refusal(
+      [
+        { ...pageFrame, scriptId: "99" },
+        syntheticProfileFrame("work"),
+        { ...pageFrame, scriptId: "18" },
+      ],
+      page,
+    ),
+  ).toBe("platform-script");
+  expect(await refusal([pageFrame, syntheticProfileFrame("work")], page)).toBe("native-frame");
+  expect(await refusal([pageFrame, { ...pageFrame, scriptId: "99" }], page)).toBe("unknown-script");
+  expect(await refusal([pageFrame], () => {})).toBe("uninspected");
+  expect(await refusal([{ ...pageFrame, executionContextId: 3 }], page)).toBe("platform-state");
+  expect(
+    cdpProfileRefusal(new Error("Profiler.stop returned Opensteer's preload or platform state.")),
+  ).toBeNull();
 });

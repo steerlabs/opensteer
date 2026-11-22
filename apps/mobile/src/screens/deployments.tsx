@@ -27,6 +27,7 @@ import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   deploymentStatusDetail,
   deploymentStatusLabel,
+  listedKind,
   type DeploymentRow,
   type DeploymentStatus,
 } from "../client/deployment-rows.js";
@@ -84,7 +85,7 @@ import { DeploymentMenu } from "./deployment-menu.js";
 import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
-import { useWorkBadges } from "./work-home.js";
+import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -106,8 +107,11 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
   readonly row: DeploymentRow;
   /** "Work · {organization}" when an organization pays for and governs this Home. */
   readonly work?: string | undefined;
+  /** The Account says this Home is an Opensteer Cloud Computer. */
+  readonly cloud?: boolean;
 }): ReactNode {
   const row = props.row;
+  const kind = listedKind(row, props.cloud === true);
   const detail = deploymentStatusDetail(row);
   const tone = deploymentPaint[deploymentTone(row.deploymentId)];
   const open = useCallback(() => props.onOpen(row), [props.onOpen, row]);
@@ -161,12 +165,19 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
             <AppText role="caption" tone="muted">
               ·
             </AppText>
-            <RowKind
-              current={props.current}
-              kindLabel={row.kindLabel}
-              name={row.name}
-              read={props.attention}
-            />
+            {kind.cloud ? (
+              <View style={styles.cloudKind}>
+                <Symbol name="cloud" size={11} tint={color.muted} />
+                <KindText text={kind.label} />
+              </View>
+            ) : (
+              <RowKind
+                current={props.current}
+                kindLabel={row.kindLabel}
+                name={row.name}
+                read={props.attention}
+              />
+            )}
           </View>
           {detail === null ? null : (
             <AppText numberOfLines={2} role="caption" tone="muted">
@@ -410,6 +421,7 @@ export function DeploymentsScreen(): ReactNode {
   const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
   const workBadges = useWorkBadges();
+  const cloudIds = useCloudComputerIds();
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
@@ -735,6 +747,7 @@ export function DeploymentsScreen(): ReactNode {
               onSignOut={confirmSignOut}
               row={row}
               work={workBadges.get(row.deploymentId)}
+              cloud={cloudIds.has(row.deploymentId)}
             />
           ))}
         </RowGroup>
@@ -808,6 +821,7 @@ function failedLine(error: unknown, text: string, retry?: () => void): ActionLin
 }
 
 const styles = StyleSheet.create({
+  cloudKind: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[2] },
   copy: { flex: 1, gap: space[2], minWidth: 0 },
   indicator: { alignItems: "center", justifyContent: "center", width: space[20] },
   kind: { flexShrink: 1 },

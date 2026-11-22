@@ -1016,6 +1016,8 @@
   margin: 6px 0 18px;
   color: var(--muted);
   font-size: 14px;
+  /* One line before the price arrives and after: the card never moves when it does. */
+  min-height: 1lh;
 }
 .homecard ul {
   display: grid;
@@ -1045,7 +1047,7 @@
   color: var(--muted);
 }
 .homecard__note {
-  margin: auto 0 0;
+  margin: 0 0 20px;
   color: var(--text-soft);
   font-size: 14px;
   line-height: 1.5;

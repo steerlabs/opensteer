@@ -53,6 +53,38 @@ vi.mock("../ui/composer-action.js", () => ({
   ),
 }));
 
+const showTab = vi.fn();
+vi.mock("../tabs/viewer-open.js", () => ({ useShowTab: () => showTab }));
+vi.mock("../ui/mobile-client-context.js", async (actual) => ({
+  ...(await actual<typeof import("../ui/mobile-client-context.js")>()),
+  useMobileClient: () => ({ drafts: {} }),
+}));
+// The question card itself is the one every task uses; here it shows what it was handed.
+vi.mock("./waiting-questions.js", () => ({
+  QuestionCard: (props: {
+    readonly canRespond: boolean;
+    readonly surface: {
+      readonly request: {
+        readonly presentation: {
+          readonly title: string;
+          readonly detail?: string;
+          readonly fields?: readonly { readonly choices?: readonly { readonly label: string }[] }[];
+        };
+      };
+    };
+  }) => (
+    <section data-testid="question-card">
+      <h2>{props.surface.request.presentation.title}</h2>
+      <p>{props.surface.request.presentation.detail}</p>
+      {props.surface.request.presentation.fields?.[0]?.choices?.map(({ label }) => (
+        <button disabled={!props.canRespond} key={label}>
+          {label}
+        </button>
+      ))}
+    </section>
+  ),
+}));
+
 const { AgentSessionPane, useSessionTask } = await import("./agent-session.js");
 const { sessionTaskOf } = await import("./agent-session-model.js");
 
@@ -66,12 +98,12 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function seeded() {
+function seeded(options: { readonly question?: boolean } = {}) {
   host = new MockHostClient({
     latencyMs: 0,
     connections: mockConnectedAgents("seeded").connections,
   });
-  host.mockAgentWork();
+  host.mockAgentWork(options);
   return host;
 }
 const idOf = (client: MockHostClient, title: string) =>
@@ -80,7 +112,13 @@ const idOf = (client: MockHostClient, title: string) =>
 function Pane(props: { readonly client: MockHostClient; readonly threadId: string }) {
   const view = useSessionTask(props.client, props.threadId)!;
   return (
-    <AgentSessionPane hostClient={props.client} threadId={props.threadId} title="t" view={view} />
+    <AgentSessionPane
+      deploymentId="dep_mock"
+      hostClient={props.client}
+      threadId={props.threadId}
+      title="t"
+      view={view}
+    />
   );
 }
 
@@ -163,5 +201,45 @@ describe("a connected agent's own task on the phone", () => {
         response: { kind: "form", answers: { "operation-decision": ["allow"] } },
       }),
     );
+  });
+
+  it("shows what the agent asked the person itself, with the Request's own choices", async () => {
+    const client = seeded({ question: true });
+    const threadId = idOf(client, "Find flights to Lisbon");
+    const page = await render(client, threadId);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Connected agent Claude asks in Find flights to Lisbon"),
+    );
+    const card = page.querySelector('[data-testid="question-card"]')!;
+    expect(card.textContent).toContain("Enter passwords and codes only in the page.");
+    expect([...card.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+      "Done",
+      "Unable to do it",
+    ]);
+    // Never a direct operation's answers: this Request carries its own.
+    expect(button(page, "Allow once")).toBeUndefined();
+    expect(button(page, "Don’t allow")).toBeUndefined();
+  });
+
+  it("opens the page the question is about, and the place the agent is using, in one tap", async () => {
+    const client = seeded({ question: true });
+    const threadId = idOf(client, "Find flights to Lisbon");
+    const page = await render(client, threadId);
+    await vi.waitFor(() => expect(button(page, "Open the page")).toBeDefined());
+    await act(async () => button(page, "Open the page")!.click());
+    expect(showTab).toHaveBeenLastCalledWith("mock-tab-1-0");
+    const using = [...page.querySelectorAll("button")].find((b) =>
+      b.getAttribute("aria-label")?.startsWith("Open "),
+    )!;
+    expect(using.getAttribute("aria-label")).not.toBe("Open the page");
+    await act(async () => using.click());
+    expect(showTab).toHaveBeenLastCalledWith("mock-tab-1-0");
+  });
+
+  it("offers no page for a task whose agent holds none", async () => {
+    const client = seeded();
+    const page = await render(client, idOf(client, "Renew the parking permit"));
+    expect(button(page, "Open the page")).toBeUndefined();
+    expect(page.textContent).not.toContain("Using now");
   });
 });

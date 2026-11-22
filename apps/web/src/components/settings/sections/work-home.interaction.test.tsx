@@ -2,14 +2,14 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { defaultWorkPolicy, WorkAuditRecordSchema } from "@opensteer/control-plane-protocol";
+import { defaultWorkPolicy } from "@opensteer/control-plane-protocol";
 import { MockCloudComputerAccount } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "../../app-shell.js";
 import { PlaceList } from "../../places/place-list.js";
 import { ConnectionModeChoices } from "../agent-grant-editor.js";
 import { HomeCloudComputerRow } from "./cloud-computer.js";
-import { WorkHomeSeePage, workHomeSeePath } from "./work-home.js";
+import { AccountSection } from "./account.js";
 import type { PlaceRow } from "../../../desktop/places.js";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -56,29 +56,32 @@ async function render(
 }
 
 describe("what an organization can see of a work Home", () => {
-  it("lists every record kind the Home sends and what never leaves it", async () => {
-    const page = await render(<WorkHomeSeePage />, { at: workHomeSeePath(assignment) });
-    await vi.waitFor(() => expect(page.querySelector("h1, h2")?.textContent).toBeTruthy());
-    await vi.waitFor(() => expect(page.textContent).toContain("What Acme Robotics can see"));
-    expect(page.querySelectorAll(".work-see__list li")).toHaveLength(
-      WorkAuditRecordSchema.options.length,
+  it("sends the old address of one work Home's page to where the work Homes are listed", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <MemoryRouter initialEntries={[`/settings/account/cloud-computer/work/${assignment}`]}>
+          <Routes>
+            <Route path="/settings/account/cloud-computer" element={<p>Your work Homes</p>} />
+            <Route path="/settings/account/*" element={<AccountSection />} />
+            <Route path="/settings/work" element={<p>Settings → Work</p>} />
+          </Routes>
+        </MemoryRouter>,
+      ),
     );
-    for (const words of [
-      "Acme Robotics can see",
-      "Acme Robotics can never see",
-      "Addresses or titles of pages",
-      "Messages or prompts",
-      "File names or paths",
-      "Screenshots",
-      "Your personal Opensteer and your own computers",
-    ])
-      expect(page.textContent).toContain(words);
+    await vi.waitFor(() => expect(container.textContent).toContain("Your work Homes"));
+    // Never the Work page of the Home that happens to be open, which may be another's.
+    expect(container.textContent).not.toContain("Settings → Work");
+    // The page that never finished loading in a browser is gone.
+    expect(container.textContent).not.toContain("Loading");
   });
 
   it("puts the badge and the link on the work Home's own page, and nothing on another Home", async () => {
     const work = await render(<HomeCloudComputerRow />, { home: workDeployment });
     await vi.waitFor(() => expect(work.textContent).toContain("Work · Acme Robotics"));
-    expect(work.querySelector("a")?.getAttribute("href")).toBe(workHomeSeePath(assignment));
+    expect(work.querySelector("a")?.getAttribute("href")).toBe("/settings/work");
     act(() => root?.unmount());
     document.body.replaceChildren();
     const other = await render(<HomeCloudComputerRow />, {

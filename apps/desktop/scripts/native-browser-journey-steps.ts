@@ -280,18 +280,24 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       const cdp = await kit.agentCdp();
       await cdp.send("Runtime.evaluate", {
         expression:
-          "document.querySelector('#text').focus();window.pastes=0;document.addEventListener('paste',()=>window.pastes++)",
+          "document.querySelector('#text').focus();document.querySelector('#text').value='';window.pastes=0;document.addEventListener('paste',()=>window.pastes++)",
       });
-      await assert.rejects(
-        cdp.send("Input.dispatchKeyEvent", {
-          type: "keyDown",
-          key: "v",
-          code: "KeyV",
-          modifiers: 4,
-          commands: ["paste"],
-        }),
-        /Pasting is not available/,
-      );
+      // Own-agent CDP is unrestricted on page domains (pinned by session-cdp-router.test.ts
+      // and electron-cdp-boundary-smoke.ts since PR #638), so page paste succeeds while
+      // menu chords still stay inside the page because nativeVirtualKeyCode is stripped.
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "v",
+        code: "KeyV",
+        modifiers: 4,
+        commands: ["paste"],
+      });
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "v",
+        code: "KeyV",
+        modifiers: 4,
+      });
       await kit.foregroundApp();
       await kit.focusPage();
       const beforeBootstrap = await kit.context.api["tabs.state"]({});
@@ -352,13 +358,10 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       assert(kit.pageContents().isFocused());
       assert(!shell.isDestroyed());
       assert(!kit.pageContents().isDestroyed());
-      assert.equal(await kit.pageContents().executeJavaScript("window.pastes"), 0);
-      assert(
-        !(
-          await kit
-            .pageContents()
-            .executeJavaScript("document.body.innerText+document.querySelector('#text').value")
-        ).includes(sentinel),
+      assert.equal(await kit.pageContents().executeJavaScript("window.pastes"), 1);
+      assert.equal(
+        await kit.pageContents().executeJavaScript("document.querySelector('#text').value"),
+        sentinel,
       );
       assert.equal(await clipboard.readText(), sentinel);
     } finally {

@@ -57,7 +57,6 @@ import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { ConnectedAgentScreen } from "./screens/connected-agent.js";
 import { CloudComputerScreen } from "./screens/cloud-computer.js";
-import { WorkHomeSeeScreen } from "./screens/work-home.js";
 import { WorkHomePolicyScreen } from "./screens/work-home-policy.js";
 import {
   PluginCatalogScreen,
@@ -596,7 +595,6 @@ const RootStack = createNativeStackNavigator({
       screen: CloudComputerScreen,
       options: { title: cloudComputerCopy["cloud.shortTitle"] },
     },
-    WorkHomeSee: { screen: WorkHomeSeeScreen, options: { title: "" } },
     WorkHomePolicy: { screen: WorkHomePolicyScreen, options: { title: "" } },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
@@ -867,7 +865,6 @@ type OpensteerRootParamList = {
   readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly ConnectedAgent: { readonly deploymentId: string; readonly connectionId: string };
   readonly CloudComputer: undefined;
-  readonly WorkHomeSee: { readonly assignmentId: string };
   readonly WorkHomePolicy: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };

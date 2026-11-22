@@ -55,7 +55,8 @@ export function CloudComputerScreen(): ReactNode {
   const sections = cloudComputerSections({
     screen: cloud.screen,
     work: cloud.work,
-    onSeeWork: (card) => navigation.navigate("WorkHomeSee", { assignmentId: card.assignmentId }),
+    // One page of what an organization can see, read from inside that work Home.
+    onSeeWork: (deploymentId) => navigation.navigate("WorkHomePolicy", { deploymentId }),
     pending: cloud.pending,
     actionFailure: cloud.actionFailure,
     portalOrigin: client.portalOrigin,
@@ -154,7 +155,7 @@ export function cloudComputerSections(props: {
   readonly screen: CloudScreen;
   /** Work Homes organizations assigned this person, shown beside the personal screen. */
   readonly work?: readonly WorkHomeCard[];
-  readonly onSeeWork?: (card: WorkHomeCard) => void;
+  readonly onSeeWork?: (deploymentId: string) => void;
   readonly pending: "suspend" | "resume" | "delete" | null;
   readonly actionFailure: string | null;
   readonly portalOrigin: string | null;

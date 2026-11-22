@@ -16,7 +16,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
 import { AppState, Platform, Text, View } from "react-native";
 import { z } from "zod";
-import { ComputerDisplay, ComputerTaskView } from "../src/computers/phone-display.js";
+import { ComputerDisplay } from "../src/computers/phone-display.js";
 import { openReactNativeSocket } from "../src/platform/react-native-socket.js";
 
 // Separate Metro entry for the device suite; the shipping entry never imports it.
@@ -240,13 +240,18 @@ function Journey() {
                     }}
                     style={{ flex: 1 }}
                   >
-                    <ComputerTaskView
+                    <ComputerDisplay
                       active
-                      appKey={null}
-                      computerSessionId={connection.target.computerSessionId}
+                      bar={{ detail: null, menu: [], onTyping: () => undefined, title: "Phone" }}
                       hostClient={connection.client}
+                      interactive
+                      label="Phone"
                       machineId={connection.target.machineId}
-                      onTyping={() => undefined}
+                      phone
+                      source={{
+                        kind: "task-session",
+                        sessionId: connection.target.computerSessionId,
+                      }}
                     />
                   </View>
                 ) : (
