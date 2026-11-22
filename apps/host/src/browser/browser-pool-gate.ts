@@ -171,6 +171,7 @@ export class BrowserPoolGate {
 
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
+    let asked = false;
     try {
       for (;;) {
         if (signal.aborted)
@@ -185,7 +186,13 @@ export class BrowserPoolGate {
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
         if (this.admits) return this.#take();
         if (this.#preparing) this.#demanded = true;
-        if (demand) this.onChange();
+        // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
+        // during a step for the turn after it, so asking again at every change of the gate
+        // (the loop's own publications included) would only end its backoff each time.
+        if (demand && !asked) {
+          asked = true;
+          this.onChange();
+        }
         await waitForChange(this.#changed.signal, signal);
       }
     } finally {

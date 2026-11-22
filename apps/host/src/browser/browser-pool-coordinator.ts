@@ -120,6 +120,12 @@ export interface BrowserPoolCoordinatorOptions {
   readonly runtime: BrowserPoolRuntimeChannel;
   readonly controller: BrowserPoolPhysicalController;
   readonly retryMs?: number;
+  /**
+   * The first wait after the controller refused a start or a wake it did not apply, and nothing
+   * of the guest was lost (5 s; it doubles to five minutes). Demand, a restart or a removal ends
+   * the wait.
+   */
+  readonly refusedRetryMs?: number;
   /** How long a lost Runner channel may take to come back before its sessions end. */
   readonly channelDeadlineMs?: number;
   /** How long a restart waits for every holder to let go before it settles them itself. */
@@ -195,6 +201,8 @@ export class BrowserPoolCoordinator {
   #signal: AbortSignal | undefined;
   /** Live state is given up for (R3): a step the next turn may choose, never run from a catch. */
   #discardWanted: string | undefined;
+  /** The controller's reason for the last start or wake it refused; cleared once one applies. */
+  #refused: { readonly reason: string; readonly since: Date } | undefined;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -385,6 +393,7 @@ export class BrowserPoolCoordinator {
   async #run(): Promise<void> {
     let failures = 0;
     let failing: string | undefined;
+    let refusals = 0;
     while (!this.#closed && !this.#ended) {
       const changed = this.#changed.signal;
       let step: Step | undefined;
@@ -431,9 +440,25 @@ export class BrowserPoolCoordinator {
           this.#signal = undefined;
         }
         if (failing === step.name) failures = 0;
+        refusals = 0;
+        if (step.name !== "end" && step.name !== "reconnect") this.#refused = undefined;
         this.#publish(this.#slot);
       } catch (error) {
         this.#options.onError?.(error);
+        if (error instanceof BrowserPoolNotStarted) {
+          // Not started, and nothing of the guest lost: asked again later, never a reason to
+          // give live state up, and spaced so the host is not asked in a loop.
+          this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
+          const first = this.#options.refusedRetryMs ?? refusedRetryMs;
+          await delay(
+            Math.min(first * 2 ** Math.min(refusals++, 16), refusedRetryMaxMs),
+            undefined,
+            {
+              signal: changed,
+            },
+          ).catch(() => undefined);
+          continue;
+        }
         if (step) {
           failures = failing === step.name ? failures + 1 : 1;
           failing = step.name;
@@ -1115,7 +1140,19 @@ export class BrowserPoolCoordinator {
       )
         return this.#discard(slot, "live-state-unavailable");
       const result = await this.#call(slot, "resume", status);
-      if (!result.applied) return this.#discard(slot, result.reason ?? "resume-refused");
+      if (!result.applied) {
+        // Refused with the saved state still there (the controller's reason, such as a profile
+        // disk that is missing): not woken, asked again later, and never given up for a fresh
+        // guest. Only a refusal that shows the state gone discards it.
+        const now = result.status;
+        if (
+          now.phase === "paused" &&
+          sameFence(statusFence(now), fenceOf(slot)) &&
+          now.savedState?.id === saved.id
+        )
+          throw new BrowserPoolNotStarted(result.reason);
+        return this.#discard(slot, result.reason ?? "resume-refused");
+      }
       resumed = result;
       status = result.status;
     }
@@ -1240,10 +1277,24 @@ export class BrowserPoolCoordinator {
     }
   }
 
-  /** The phase a client shows: a fresh start or a restart in progress, or a failed start. */
+  /**
+   * The phase a client shows: a fresh start or a restart in progress, or a failed start. A start
+   * or wake the controller refused carries its reason (`egress-required`,
+   * `profile-disk-missing`, or one this Home does not know): the words for it are the client's.
+   */
   report():
-    { readonly phase: "starting" | "restarting" | "failed"; readonly since: Date } | undefined {
-    return this.#display;
+    | {
+        readonly phase: "starting" | "restarting" | "failed";
+        readonly since: Date;
+        readonly refused?: string;
+      }
+    | undefined {
+    const refused = this.#refused;
+    if (!refused) return this.#display;
+    return {
+      ...(this.#display ?? { phase: "failed" as const, since: refused.since }),
+      refused: refused.reason,
+    };
   }
 
   async #startFresh(
@@ -1276,7 +1327,8 @@ export class BrowserPoolCoordinator {
       };
     }
     const { result: startedResult } = started;
-    if (!startedResult.applied || !startedResult.control || !startedResult.signature)
+    if (!startedResult.applied) throw new BrowserPoolNotStarted(startedResult.reason);
+    if (!startedResult.control || !startedResult.signature)
       throw new Error(`The guest did not start: ${startedResult.reason}.`);
     const control = startedResult.control;
     const signature = startedResult.signature;
@@ -1434,7 +1486,8 @@ export class BrowserPoolCoordinator {
       status = stopped.status;
     }
     const started = applied?.result ?? (await this.#call(undefined, "start", status, replacing));
-    if (!started.applied || !started.control || !started.signature)
+    if (!started.applied) throw new BrowserPoolNotStarted(started.reason);
+    if (!started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
     const { state: installed } = await this.#deliver(started.control, started.signature);
     if (installed.phase !== "running" || !sameFence(installed.fence, started.control.fence))
@@ -1488,6 +1541,17 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+const refusedRetryMs = 5_000;
+const refusedRetryMaxMs = 5 * 60_000;
+
+/** The controller answered, signed and stored, that it did not start or wake the guest. */
+class BrowserPoolNotStarted extends Error {
+  readonly reason: string;
+  constructor(reason: string | undefined) {
+    super(`The guest was not started: ${reason ?? "refused"}.`);
+    this.reason = reason ?? "refused";
+  }
+}
 /** How long a step may run before its deadline signal fires. */
 const defaultStepMs = 60_000;
 /** How long a restart waits for admitted sends to finish once each was asked to stop. */

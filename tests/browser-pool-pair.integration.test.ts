@@ -40,6 +40,7 @@ import {
 import { readBrowserPoolSlot } from "../packages/database/src/browser-pool-store.js";
 import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 import { createPoolController } from "./browser-pool-controller-under-test.test-support.js";
+import { FakeHypervisorDriver } from "../apps/pool-agent/src/fake-driver.test-support.js";
 
 const open: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -174,12 +175,57 @@ class Crash {
   }
 }
 
-async function pair(key: string) {
+/** The agent on a fake hypervisor whose profile disk can go and come back. */
+async function mountedAgentController(slotId: string) {
+  const driver = new FakeHypervisorDriver({ startsEmpty: true, profilesMount: {} });
+  driver.profilesMounted = true;
+  const agent = await startTestPoolAgent({ driver });
+  const home = homeKeyPair();
+  const summary = await agent.agent.createSlot({
+    slotId,
+    term: 1,
+    homeKey: home.spki,
+    guest: testGuest,
+  });
+  const publicKey = createPublicKey({
+    key: Buffer.from(summary.controlKey, "base64"),
+    format: "der",
+    type: "spki",
+  });
+  const client = new BrowserPoolAgentClient({
+    url: agent.url,
+    homeKey: home.privateKey,
+    agentKey: publicKey,
+  });
+  const visible = new Set(["start", "pause", "resume", "stop"]);
+  return {
+    driver,
+    agent,
+    controller: {
+      publicKey,
+      get effects() {
+        return agent.agent.effects(slotId).filter((effect) => visible.has(effect));
+      },
+      status: (slot: string, term: number) => client.status(slot, term),
+      result: (slot: string, term: number, id: string) => client.result(slot, term, id),
+      apply: (call: BrowserPoolControllerCall) => client.apply(call),
+      hold: () => {
+        throw new Error("Not held here.");
+      },
+      close: () => agent.close(),
+    },
+  };
+}
+
+async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgentController>>) {
   const fixture = await createStoreFixture();
   open.push(() => fixture.close());
   const task = await fixture.createRunFixture(key);
   const slotId = `slot-${key}`;
-  const controller = await createPoolController({ slotId, term: 1, freshGuests: true });
+  const controller = (mounted?.controller ??
+    (await createPoolController({ slotId, term: 1, freshGuests: true }))) as Awaited<
+    ReturnType<typeof createPoolController>
+  >;
   open.push(async () => controller.close?.());
   const verifier = new FakeTicketVerifier();
   const newRuntime = () =>
@@ -397,4 +443,68 @@ it("refuses a runtime control that lands after its step stopped waiting, by its 
   });
   expect((await p.slot())?.phase).toBe("running");
   expect(home.gate.phase).toBe("open");
+});
+
+// ---- A refusal the Home does not know: not started, asked again later -------------------------
+
+it("keeps a cold start the agent refuses for a missing profile disk not started, spaced, and starts once the disk is back", async () => {
+  const mounted = await mountedAgentController("slot-disk-start");
+  const p = await pair("disk-start", mounted);
+  mounted.driver.profilesMounted = false;
+  const home = p.home();
+  const recovered = home.recover();
+  void recovered.catch(() => undefined);
+  const starts = () => p.answered.filter((kind) => kind === "start").length;
+  await vi.waitFor(() => expect(starts()).toBeGreaterThan(0));
+  const refusedAt = Date.now();
+  const first = starts();
+  // Not a lost profile, not a deleted or replaced slot: nothing was booted and nothing ended.
+  expect(p.controller.effects).toEqual([]);
+  expect(await p.slot()).toBeUndefined();
+  expect(mounted.agent.agent.slotIds()).toContain("slot-disk-start");
+  // Not asked again in a tight loop: one more ask at most in the next two seconds.
+  await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+  expect(starts() - first).toBeLessThanOrEqual(1);
+  // The reason reaches the report, where the words a person sees are chosen.
+  expect(home.report()).toMatchObject({ refused: "profile-disk-missing" });
+  // The disk is back; the person asks for the browser: the same start goes through.
+  mounted.driver.profilesMounted = true;
+  const held = await home.gate.reserve(AbortSignal.timeout(20_000));
+  held.release();
+  await recovered;
+  expect(p.controller.effects).toEqual(["start"]);
+  expect(home.report()).toBeUndefined();
+  expect(Date.now() - refusedAt).toBeLessThan(15_000);
+});
+
+it("keeps a parked browser whose wake from disk the agent refuses for a missing profile disk, and wakes it once the disk is back", async () => {
+  const mounted = await mountedAgentController("slot-disk-wake");
+  const p = await pair("disk-wake", mounted);
+  const home = p.home();
+  await home.recover();
+  expect(await home.tryPark()).toBe("parked");
+  // The host has written the parked guest to disk, and then lost its profile disk.
+  const saved = (await p.status()).savedState!;
+  await mounted.agent.agent.saveToDisk("slot-disk-wake", saved.id);
+  mounted.driver.profilesMounted = false;
+  const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
+  void waiting.catch(() => undefined);
+  const resumes = () => p.answered.filter((kind) => kind === "resume").length;
+  await vi.waitFor(() => expect(resumes()).toBeGreaterThan(0));
+  const first = resumes();
+  await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+  // Its saved state is kept: never discarded for a fresh guest, nothing stopped or started.
+  expect(p.controller.effects).toEqual(["start", "pause"]);
+  expect((await p.status()).savedState?.id).toBe(saved.id);
+  expect((await p.slot())?.phase).not.toBe("running");
+  // Not asked again in a tight loop.
+  expect(resumes() - first).toBeLessThanOrEqual(1);
+  expect(home.report()).toMatchObject({ refused: "profile-disk-missing" });
+  // The disk is back: the same browser wakes, from the state it saved.
+  mounted.driver.profilesMounted = true;
+  const again = await home.gate.reserve(AbortSignal.timeout(20_000));
+  again.release();
+  (await waiting).release();
+  expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
+  expect((await p.slot())?.phase).toBe("running");
 });
