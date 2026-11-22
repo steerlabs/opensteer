@@ -1134,7 +1134,7 @@ export async function retireBrowserPoolTarget(
         .where("runnerId", "=", runnerId)
         .where("settledAt", "is", null)
         .orderBy("id")
-        .forUpdate()
+        .forNoKeyUpdate()
         .execute(databaseOperationOptions());
       for (const { id } of open)
         await tx
@@ -1150,6 +1150,7 @@ export async function retireBrowserPoolTarget(
         .select("id")
         .where("runnerId", "=", runnerId)
         .orderBy("id")
+        // FOR UPDATE: these relays are deleted below; their keys are locked in order.
         .forUpdate()
         .execute(databaseOperationOptions());
       if (relays.length)
