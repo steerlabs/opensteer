@@ -92,6 +92,11 @@ export const AgentConnectionBridgeSchema = z.object({
   pausedBy: z.enum(["you", "needs-attention"]).optional(),
   /** What the account needs, when it needs attention, as the account reports it. */
   pauseDetail: z.string().max(500).nullable().optional(),
+  /**
+   * What happens to a message sent to a paused chat: `kept`, it arrives when the chat is back
+   * (one more than an hour old is answered that it came too late); `lost`, it is not delivered.
+   */
+  pausedMessages: z.enum(["kept", "lost"]).optional(),
   /** Why an ended chat ended. */
   endedBy: ChatEndedBySchema.optional(),
   /** Replies whose delivery is not known: they may have been sent, and are never sent again. */

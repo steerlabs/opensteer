@@ -678,6 +678,8 @@ interface ChatFacts {
   readonly me: { readonly displayName: string; readonly externalUserId: string } | null;
   readonly pausedBy: "you" | "needs-attention";
   readonly pauseDetail: string | null;
+  /** What becomes of a message sent while it is paused, from its transport; never promised. */
+  readonly pausedMessages: "kept" | "lost";
   readonly endedBy: BridgeEndedBy;
   readonly unknownReplies: number;
   readonly tasks: readonly {
@@ -706,6 +708,7 @@ async function chatFacts(
       "agentConnections.bridgeEndedBy",
       "channelAccounts.displayName",
       "channelAccounts.handle",
+      "channelAccounts.provider",
       "channelAccounts.status as accountStatus",
       "channelAccounts.connectionId",
       "integrationConnections.statusDetail",
@@ -750,6 +753,9 @@ async function chatFacts(
             : null,
         pausedBy: row.accountStatus === "needs-attention" ? "needs-attention" : "you",
         pauseDetail: row.accountStatus === "needs-attention" ? row.statusDetail : null,
+        pausedMessages:
+          channelProviderCatalog.find((entry) => entry.provider === row.provider)?.pausedMessages ??
+          "lost",
         endedBy: row.bridgeEndedBy ?? row.endReason,
         unknownReplies: row.unknownReplies,
         tasks: tasksOf(row.id),
@@ -821,7 +827,11 @@ function connectionView(
                   unknownReplies: chat.unknownReplies,
                   tasks: [...chat.tasks],
                   ...(state === "paused"
-                    ? { pausedBy: chat.pausedBy, pauseDetail: chat.pauseDetail }
+                    ? {
+                        pausedBy: chat.pausedBy,
+                        pauseDetail: chat.pauseDetail,
+                        pausedMessages: chat.pausedMessages,
+                      }
                     : {}),
                   ...(state === "stopping" || state === "stopped" ? { endedBy: chat.endedBy } : {}),
                 }

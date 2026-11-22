@@ -86,6 +86,13 @@ export const ChannelProviderManifestSchema = z
      * becomes deliveries, so the adapter never has to.
      */
     maxMessageChars: z.number().int().min(200).max(100_000),
+    /**
+     * What happens to a message sent while a connection is paused or needs attention: `kept`
+     * when the transport reads it on resume (iMessage reads its Mac's Messages history from where
+     * it stopped), `lost` when the provider does not hold it for a closed connection (Slack's
+     * Socket Mode, with no history read on reconnect).
+     */
+    pausedMessages: z.enum(["kept", "lost"]).optional(),
     provider: ChannelProviderSchema,
     setupUrl: z.url().nullable(),
     setupArtifact: z
