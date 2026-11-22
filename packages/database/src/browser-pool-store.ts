@@ -243,8 +243,17 @@ export async function advanceBrowserPoolSlot(
   database: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   next: BrowserPoolSlotChange,
-  losses: readonly BrowserPoolSessionLoss[] = [],
+  /**
+   * Sessions that end with this write, each with its notes. `closing`: the evidence that a
+   * closing row among them ended in its guest (V1); null leaves such rows closing, for the end
+   * step to finish with the runtime's answer.
+   */
+  ending: {
+    readonly losses: readonly BrowserPoolSessionLoss[];
+    readonly closing: BrowserPoolCloseEvidence | null;
+  } = { losses: [], closing: null },
 ): Promise<BrowserPoolSlot> {
+  const losses = ending.losses;
   return commitPersonalMutation(
     database,
     async (tx, mutation) => {
@@ -289,7 +298,7 @@ export async function advanceBrowserPoolSlot(
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      const noted = await recordBrowserPoolLosses(tx, slot, losses);
+      const noted = await recordBrowserPoolLosses(tx, slot, losses, ending.closing);
       // Clients read a pooled browser's phase with its placement: they are told only when
       // something a person sees changed (P20). Sessions ended tell them on their own.
       if (
@@ -313,7 +322,11 @@ export async function advanceBrowserPoolSlot(
           .execute(databaseOperationOptions());
         await endBrowserPoolSessions(
           tx,
-          stopped.map(({ id }) => ({ id, from: ["closing"], state: "closed" })),
+          stopped.map(({ id }) => ({
+            id,
+            from: ["closing"],
+            end: { state: "closed", evidence: { kind: "guest-paused" } },
+          })),
         );
       }
       return advanced;
@@ -350,11 +363,22 @@ export async function stopBrowserPoolSession(
         .executeTakeFirst(databaseOperationOptions());
       if (!row || row.state === "closed" || row.state === "failed") return undefined;
       if (row.state === state) return state;
-      await transitionBrowserSession(tx, {
-        from: ["starting", "ready", "closing"],
-        sessionId: input.sessionId,
-        state,
-      });
+      // On a parked guest the Stop is answered by the pause itself: the next wake ends the
+      // session in the guest before it serves anyone (V2).
+      if (state === "closed")
+        await endBrowserPoolSessions(tx, [
+          {
+            id: input.sessionId,
+            from: ["starting", "ready", "closing"],
+            end: { state: "closed", evidence: { kind: "guest-paused" } },
+          },
+        ]);
+      else
+        await transitionBrowserSession(tx, {
+          from: ["starting", "ready", "closing"],
+          sessionId: input.sessionId,
+          state,
+        });
       return state;
     },
     undefined,
@@ -370,8 +394,8 @@ async function recordBrowserPoolLosses(
   tx: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   losses: readonly BrowserPoolSessionLoss[],
-  /** False when the guest's end is not known yet (a removal's start): closing rows stay. */
-  guestEnded = true,
+  /** The evidence that a closing row ended in its guest; null leaves closing rows closing. */
+  closing: BrowserPoolCloseEvidence | null,
 ): Promise<boolean> {
   let noted = false;
   if (losses.length) {
@@ -413,20 +437,64 @@ async function recordBrowserPoolLosses(
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
     );
-    // One a Stop left closing is answered by this end: it closed, as the person asked. Without
-    // the guest's end it stays closing; the removal's finish closes it.
+    // One a Stop left closing is answered by this end only with its evidence: it closed, as
+    // the person asked. Without it it stays closing, for the end step or the removal's finish.
     await endBrowserPoolSessions(
       tx,
       sessions
-        .filter(({ id, state }) => ended.has(id) && (guestEnded || state !== "closing"))
+        .filter(({ id, state }) => ended.has(id) && (closing !== null || state !== "closing"))
         .map(({ id, state }) => ({
           id,
           from: ["starting", "ready", "closing"],
-          state: state === "closing" ? "closed" : "failed",
+          end:
+            state === "closing" && closing
+              ? { state: "closed", evidence: closing }
+              : { state: "failed" },
         })),
     );
   }
   return noted;
+}
+
+/**
+ * What a pooled session's row may be closed on, and nothing else (V1):
+ * - `runtime-ended`: the running guest runtime under the current fence answered that it ended
+ *   the session (its answer to the end request, its `closed` status, or its adoption's outcome);
+ * - `guest-gone`: the host signed that this guest no longer exists (stopped, replaced, the slot
+ *   deleted, the term fenced);
+ * - `guest-paused`: the guest is paused under the current fence; its next wake ends the session
+ *   before the guest serves anyone (V2).
+ * A caller with none of these writes nothing: the row stays closing.
+ */
+export type BrowserPoolCloseEvidence =
+  | { readonly kind: "runtime-ended" }
+  | {
+      readonly kind: "guest-gone";
+      readonly by: "stopped" | "replaced" | "slot-deleted" | "fenced";
+    }
+  | { readonly kind: "guest-paused" };
+
+/** The one writer of `closed` for pooled rows outside the slot's own writes: its evidence first. */
+export async function closeBrowserPoolSessions(
+  database: Kysely<DatabaseSchema>,
+  sessionIds: readonly BrowserSessionId[],
+  evidence: BrowserPoolCloseEvidence,
+): Promise<void> {
+  if (!sessionIds.length) return;
+  await commitPersonalMutation(
+    database,
+    (tx) =>
+      endBrowserPoolSessions(
+        tx,
+        sessionIds.map((id) => ({
+          id,
+          from: ["starting", "ready", "closing"],
+          end: { state: "closed", evidence },
+        })),
+      ),
+    undefined,
+    "once-bounded",
+  );
 }
 
 /**
@@ -439,7 +507,10 @@ async function endBrowserPoolSessions(
   ends: readonly {
     readonly id: BrowserSessionId;
     readonly from: readonly HostedBrowserSessionState[];
-    readonly state: "closed" | "failed";
+    /** A failed row needs nothing; a closed one, its evidence (V1). */
+    readonly end:
+      | { readonly state: "failed" }
+      | { readonly state: "closed"; readonly evidence: BrowserPoolCloseEvidence };
   }[],
 ): Promise<void> {
   if (!ends.length) return;
@@ -461,7 +532,7 @@ async function endBrowserPoolSessions(
     for (const end of ordered) {
       const row = await transaction
         .updateTable("browserSessions")
-        .set({ closedAt: now, state: end.state, updatedAt: now })
+        .set({ closedAt: now, state: end.end.state, updatedAt: now })
         .where("id", "=", end.id)
         .where("state", "not in", ["closed", "failed"])
         .where("state", "in", [...end.from])
@@ -531,7 +602,8 @@ export async function beginBrowserPoolRelease(
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirst(databaseOperationOptions());
-      await recordBrowserPoolLosses(tx, slot, losses, false);
+      // The guest's end is not known yet: closing rows stay closing until the finish.
+      await recordBrowserPoolLosses(tx, slot, losses, null);
       return released;
     },
     undefined,
@@ -597,9 +669,14 @@ export async function finishBrowserPoolRelease(
         .where("state", "=", "closing")
         .orderBy("id")
         .execute(databaseOperationOptions());
+      // Only after the guest is known stopped, or its host said signed that it is gone.
       await endBrowserPoolSessions(
         tx,
-        closing.map(({ id }) => ({ id, from: ["closing"], state: "closed" })),
+        closing.map(({ id }) => ({
+          id,
+          from: ["closing"],
+          end: { state: "closed", evidence: { kind: "guest-gone", by: "stopped" } },
+        })),
       );
     },
     undefined,
