@@ -343,7 +343,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   /** Slots whose proxy a test made trip its start limit. */
   readonly proxyDown = new Set<string>();
-  /** Slots whose proxy fails readiness verification on start/wake (E2). */
+  /** Slots whose proxy fails readiness verification on start/wake. */
   readonly proxyUnhealthy = new Set<string>();
   readonly revived: string[] = [];
 
