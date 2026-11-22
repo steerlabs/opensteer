@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   AgentGrantSchema,
+  OpensteerError,
   CommandIdSchema,
   ThreadAccessModeSchema,
   agentGrantAccess,
@@ -25,6 +26,7 @@ import type { ChannelBindingId } from "@opensteer/channel-core";
 import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -773,16 +775,34 @@ export async function recordConnectionRunHandoff(
   },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
-    // The one liveness test: a bridge whose account was paused or removed hands nothing off.
+    // The one liveness test: a bridge whose account was paused or removed hands nothing off. In
+    // the same statement, the sender of a chat's message may still speak: a Run whose message
+    // came from an identity no longer "me" is not sent (no other connection reads more).
     const connection = await tx
       .selectFrom("agentConnections")
-      .select("grantRevision")
+      .select([
+        "grantRevision",
+        sql<boolean>`(agent_connections.bridge_senders is distinct from 'owner' or not exists (
+          select 1 from runs speak_run
+          join thread_inputs speak_input on speak_input.message_id = speak_run.seed_input_id
+          where speak_run.id = ${input.runId}
+            and speak_input.authority_source ? 'chat'
+            and not exists (
+              select 1 from channel_identities speak_me
+              where speak_me.account_id = agent_connections.bridge_account_id
+                and speak_me.external_user_id =
+                  speak_input.authority_source->'chat'->>'externalUserId'
+                and speak_me.status = 'linked'
+                and speak_me.linked_user_id = agent_connections.user_id)))`.as("senderMaySpeak"),
+      ])
       .where("id", "=", input.connectionId)
       .where(liveConnection(tx))
       .forShare()
       .executeTakeFirst();
     if (!connection || connection.grantRevision !== input.grantRevision)
       throw new Error("The agent connection changed before this Run could be sent");
+    if (!connection.senderMaySpeak)
+      throw new OpensteerError({ code: "forbidden", message: senderUnlinkedFailure });
     const witness = {
       admittedGrantRevision: input.grantRevision,
       admittedAccessMode: input.mode,

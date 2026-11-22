@@ -821,7 +821,7 @@ export class TriggerStore {
     const trigger = await this.#database
       .selectFrom("triggerOccurrences")
       .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
+      .select(["triggers.originConnectionId"])
       .where("triggerOccurrences.commandId", "=", commandId)
       .executeTakeFirst();
     return trigger ? triggerChatWaiting(this.#database, trigger) : false;
@@ -833,7 +833,7 @@ export class TriggerStore {
     readonly systemRole?: TriggerSystemRole;
     /** Only the automations in one connected agent's lineage. */
     readonly originConnectionId?: string;
-    /** Who reads: a memory pass's lineage sees only automations with personal context. */
+    /** Who reads: a memory worker's own task tree sees only automations with personal context. */
     readonly reader: TaskReader;
   }): Promise<readonly TriggerSummary[]> {
     await requirePersonalOwner(this.#database, input.ownerId);
@@ -1283,7 +1283,7 @@ export class TriggerStore {
     triggerId: TriggerId,
     ownerId: UserId,
     occurrenceLimit: number,
-    /** Who reads: one a memory pass's lineage may not read is null, as a missing one. */
+    /** Who reads: one a memory worker's own task tree may not read is null, as a missing one. */
     reader: TaskReader,
   ): Promise<TriggerDetail | null> {
     await requirePersonalOwner(this.#database, ownerId);
@@ -1628,6 +1628,8 @@ export class TriggerStore {
       .where("triggers.kind", "=", "schedule")
       .where("triggers.status", "=", "active")
       .where(executableProgram)
+      // As the claim: a paused chat's schedule is not due, so the loop neither spins nor backs off.
+      .where((eb) => eb.not(triggerChatHeld(this.#database)))
       .executeTakeFirst();
     return row?.next ? new Date(row.next) : null;
   }
@@ -1653,7 +1655,9 @@ export class TriggerStore {
         .where("triggers.kind", "=", "schedule")
         .where("triggers.status", "=", "active")
         .where("triggers.nextFireAt", "<=", now)
-        .where(executableProgram);
+        .where(executableProgram)
+        // A paused chat's schedule does not fire: no occurrence, no move, no pause, no error.
+        .where((eb) => eb.not(triggerChatHeld(database)));
     const candidate = await dueSchedules(this.#database)
       .select("triggers.id")
       .limit(1)
@@ -1679,12 +1683,7 @@ export class TriggerStore {
       ): Promise<TriggerOccurrence | undefined> => {
         if (!trigger.nextFireAt) return undefined;
         let occurrence: TriggerOccurrence | undefined;
-        // A chat that is only paused keeps its automation: the tick is enqueued and held with the
-        // chat's work (ticks collapse while one waits), and runs once when the chat is back.
-        if (
-          !(await triggerExecutionAuthorityAvailable(transaction, trigger)) &&
-          !(await triggerChatWaiting(transaction, trigger))
-        ) {
+        if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
@@ -2654,22 +2653,30 @@ async function automationHandoffWitness(
  * connection made, that connection still live and still granted Tasks.
  */
 /**
- * The automation works for a chat that is paused (its own lineage, or its anchor task's), asked
- * of the one state function. Its work is held, not failed and not paused.
+ * The automation belongs to a chat (by its own lineage, `triggers.origin_connection_id`, as
+ * authority and Disconnect read it) that is paused, asked of the one state function. Its schedule
+ * does not fire and its work is held until the chat is back.
  */
 export async function triggerChatWaiting(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "originConnectionId">,
+  trigger: Pick<TriggerRow, "originConnectionId">,
 ): Promise<boolean> {
+  if (trigger.originConnectionId === null) return false;
   const { rows } = await sql<{ waiting: boolean }>`
     select ${connectionState(database)} = 'waiting' as waiting
     from agent_connections
     where agent_connections.bridge_account_id is not null
-      and agent_connections.id = coalesce(${trigger.originConnectionId}::text,
-        (select origin_connection_id from threads where id = ${trigger.anchorThreadId}))`.execute(
-    database,
-  );
+      and agent_connections.id = ${trigger.originConnectionId}`.execute(database);
   return rows[0]?.waiting === true;
+}
+
+/** The same, as SQL over the unaliased `triggers` row, for the schedule's claim and deadline. */
+function triggerChatHeld(database: object) {
+  return sql<boolean>`exists (
+    select 1 from agent_connections
+    where agent_connections.id = triggers.origin_connection_id
+      and agent_connections.bridge_account_id is not null
+      and ${connectionState(database)} = 'waiting')`;
 }
 async function triggerExecutionAuthorityAvailable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,

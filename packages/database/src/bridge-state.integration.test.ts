@@ -262,6 +262,75 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
     ).toEqual([]);
   });
 
+  for (const why of ["its sender is no longer me", "its chat ended"] as const)
+    it(`ends a queued Run whose claim decided its end before a restart (${why}): nothing is left stranded`, async ({
+      storeFixture,
+    }) => {
+      const bridge = await storeFixture.createBridgeFixture(`state-restart-${why.length}`);
+      const { database, store } = storeFixture;
+      const { fixture } = bridge;
+      const conversationId = createChannelId("conversation") as ChannelConversationId;
+      await database
+        .insertInto("bridgeConversations")
+        .values({
+          id: conversationId,
+          bridgeId: bridge.bridge.id,
+          accountId: bridge.configured.account.id,
+          externalScopeId: null,
+          externalConversationId: `D-state-restart-${why.length}`,
+          externalThreadId: null,
+          conversationType: "dm",
+          displayName: null,
+          threadId: null,
+        })
+        .execute();
+      await database
+        .updateTable("threads")
+        .set({ originConnectionId: bridge.bridge.id })
+        .where("id", "=", fixture.thread.id)
+        .execute();
+      const queued = await store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: fixture.thread.id,
+        content: [{ type: "text", text: "Before the restart" }],
+        source: {
+          kind: "connection",
+          connectionId: bridge.bridge.id,
+          chat: {
+            conversationId,
+            revision: bridge.bridge.grantRevision!,
+            sender: { displayName: "Tim", externalUserId: bridge.owner },
+          },
+        },
+        policy: "queue",
+        idempotencyKey: `state-restart-${why.length}`,
+      });
+      if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+      if (why === "its sender is no longer me")
+        await database
+          .updateTable("channelIdentities")
+          .set({ status: "unlinked", linkedUserId: null })
+          .where("accountId", "=", bridge.configured.account.id)
+          .where("externalUserId", "=", bridge.owner)
+          .execute();
+      else await new AgentConnectionStore(database).revoke(fixture.userId, bridge.bridge.id);
+      const first = await store.claimCommand(queued.command.id, "before-restart");
+      expect(first?.terminalFailure).toBeDefined();
+      // The Home restarts before it records that end.
+      await store.recoverCommandsAfterHostRestart();
+      const again = await store.claimCommand(queued.command.id, "after-restart");
+      expect(again?.terminalFailure).toBeDefined();
+      await store.failCommand(queued.command.id, again!.terminalFailure!, "seed-input");
+      expect(
+        await database
+          .selectFrom("runs")
+          .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
+          .select(["runs.status as run", "threadInputs.state as input"])
+          .where("runs.id", "=", queued.run.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ run: "failed", input: "cancelled" });
+    });
+
   it("ends when the organization's work Home is offboarding: nothing more is enqueued, sent or handed off", async ({
     storeFixture,
   }) => {

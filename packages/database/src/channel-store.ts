@@ -645,6 +645,14 @@ export class ChannelStore {
       if (result.numUpdatedRows !== 1n) {
         throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
       }
+      // A connection may hold several accounts (a shared bot): they are taken in id order.
+      await transaction
+        .selectFrom("channelAccounts")
+        .select("id")
+        .where("connectionId", "=", input.connectionId)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
       const accountStatus = status === "needs-attention" ? "needs-attention" : "connected";
       // Once connected, the transport keeps its own position: where setup said to start no longer
       // applies (`accountInitialCursor`). The row as it was before is read in the same statement.
