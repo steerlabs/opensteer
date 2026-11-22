@@ -1,4 +1,25 @@
 {
+  "tab.open (guest)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "tab.open (profile)": {
+    "own-full": "refused:conflict",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "tab.close (the person's tab)": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
   "thread.rename": {
     "own-full": "allowed",
     "own-supervised": "allowed",
@@ -97,6 +118,13 @@
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
+  "harness.model.configure": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
   "harness.enabled.set (disable)": {
     "own-full": "allowed",
     "own-supervised": "refused:not_offered",
@@ -112,13 +140,6 @@
     "selected-not": "not_found"
   },
   "harness.default.set": {
-    "own-full": "allowed",
-    "own-supervised": "refused:not_offered",
-    "everything": "refused:not_offered",
-    "selected-covering": "refused:not_offered",
-    "selected-not": "not_found"
-  },
-  "harness.model.configure": {
     "own-full": "allowed",
     "own-supervised": "refused:not_offered",
     "everything": "refused:not_offered",

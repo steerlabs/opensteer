@@ -24,6 +24,8 @@ import { AdministrationService } from "../administration/administration-service.
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { TriggerService } from "../triggers/trigger-service.js";
+import { TabService } from "../tabs/tab-service.js";
+import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 import { sql } from "kysely";
@@ -40,10 +42,11 @@ import {
   dispatchCallerRun,
   enrollmentToken,
   startPrivateMachineHost,
+  waitForValue,
   type CallerRun,
 } from "../runtime/private-machine-host.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
-import { testRpcData } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 
 /**
  * Parity with today's tools, recorded, then frozen (D0a). For each command an agent can send
@@ -86,6 +89,16 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.create / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.open (guest) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.open (profile) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.close (the person's tab) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "tab.open (profile) / own-full":
+    "the test's browser runtime opens guest pages but not a profile's: the open was admitted and failed in the browser (\"The browser could not open this page\")",
+  "tab.close (the person's tab) / own-supervised":
+    "D3, accepted: a Supervised agent is asked about tabs it did not open; today's tab_close lets it close the person's tab",
   // Recorded before A5 removes the administration tools (lead, item 1).
   "harness.enabled.set (disable) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
@@ -146,8 +159,6 @@ const owed: Readonly<Record<string, string>> = {
   "plugins.workflow.start": "opensteer_plugin_resource_update",
   "plugins.workflow.stop": "opensteer_plugin_resource_update",
   "plugins.webhook.remove": "opensteer_plugin_resource_update",
-  "tab.open": "tab_open",
-  "tab.close": "tab_close",
   "tab.organize": "tab_organize",
   "tab.group.update": "tab_group_update",
   "app.start": "app_start",
@@ -176,8 +187,29 @@ it("records what today's tools let each caller do, and the door answers the same
       name: "Parity computer",
       token: host.hostingRunnerEnrollmentToken,
       modelSettings: true,
+      browser: {
+        runtimeId: "browser-runtime-integration",
+        wireVersion: 2,
+        cdpBoundary: 1,
+        sharedControl: 1,
+        tabRestoreVersion: 1,
+        surfaceState: 1,
+      },
     });
     close.unshift(() => machine.close());
+    // Its browser, as the hot-path test runs one: tabs open for real.
+    const browserRuntime = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
+      primary: machine.primary,
+      agentReady: true,
+      targetedStreaming: true,
+      personalTabs: true,
+      surfaceState: true,
+      uniqueTabs: true,
+      tabCommands: true,
+    });
+    close.unshift(() => browserRuntime.close());
+    await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
+    await host.runtime.browser.initialize();
     const owner = host.ownerId;
     // The fixture computer runs automation programs (tool contract version 5), as a released one does.
     await host.store.database
@@ -239,7 +271,7 @@ it("records what today's tools let each caller do, and the door answers the same
       });
       const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
       await connections.activate(record.id, credentialHash(token));
-      return { id: record.id, client: await mcp(connectionUrl, token) };
+      return { id: record.id, token, client: await mcp(connectionUrl, token) };
     };
 
     const full = await runIn("full-access", "parity-full");
@@ -347,6 +379,15 @@ it("records what today's tools let each caller do, and the door answers the same
         idempotencyKey: `parity-profile-${caller}`,
       }),
     );
+    /** A tab the person opened, one per caller: what the tab tools act on that is not theirs. */
+    const personTabs = {} as Record<Caller, string>;
+    const personTab = async (caller: Caller) => {
+      const opened = (await asPerson({
+        type: "tab.open",
+        target: { kind: "page", guest: true, url: "about:blank" },
+      })) as { tab: { tabId: string } };
+      return (personTabs[caller] = opened.tab.tabId);
+    };
     const harness = {
       environmentId: machine.environmentId,
       harnessInstanceId: machine.harnessInstanceId,
@@ -361,19 +402,24 @@ it("records what today's tools let each caller do, and the door answers the same
       stateKind: "isolated",
     });
     const spare = { environmentId: machine.environmentId, harnessInstanceId: spareInstance.id };
-    // Its catalog lists the model whose limits are set, as a refreshed one would.
-    const ready = testReadyHarnessCatalog(spareInstance.id);
-    await host.store.recordHarnessCatalogs({
-      environmentId: machine.environmentId,
-      catalogs: [
-        {
-          ...ready,
-          driverKind: "codex" as never,
-          models: ready.models.map((model) => ({ ...model, modelId: "gpt-5.6-sol" as never })),
-        },
-      ],
-      expectedRevisions: new Map([[spareInstance.id, spareInstance.runtimeRevision]]),
-    });
+    // Its catalog lists the model whose limits are set, as a refreshed one would; recorded again
+    // before that scenario, since a Runner's new descriptor (its browser) re-reads engines.
+    const catalogued = async () => {
+      const ready = testReadyHarnessCatalog(spareInstance.id);
+      const current = (await host.store.getHarnessInstance(spareInstance.id))!;
+      await host.store.recordHarnessCatalogs({
+        environmentId: machine.environmentId,
+        catalogs: [
+          {
+            ...ready,
+            driverKind: "codex" as never,
+            models: ready.models.map((model) => ({ ...model, modelId: "gpt-5.6-sol" as never })),
+          },
+        ],
+        expectedRevisions: new Map([[spareInstance.id, current.runtimeRevision]]),
+      });
+    };
+    await catalogued();
     const modelChoice = {
       modelId: "gpt-5.6-sol",
       options: { effort: "low" },
@@ -615,6 +661,22 @@ it("records what today's tools let each caller do, and the door answers the same
       {
         name: "harness.model.configure",
         tool: "opensteer_ai_account_update",
+        // The person sets the same limits once the engine offers them again: a Runner's new
+        // descriptor (its browser) is read in the background, and the agent's call meets it ready.
+        before: async () => {
+          await catalogued();
+          await waitForValue(async () =>
+            asPerson({
+              type: "harness.model.configure",
+              ...spare,
+              nativeModelId: "gpt-5.6-sol",
+              settings: { contextWindow: 100_000 },
+            }).then(
+              () => true,
+              () => undefined,
+            ),
+          );
+        },
         args: () => ({
           aiAccountId: spare.harnessInstanceId,
           action: "set_model_limits",
@@ -717,6 +779,33 @@ it("records what today's tools let each caller do, and the door answers the same
         tool: "browser_profile_remove",
         args: () => ({ target: "site", site: "https://parity.example" }),
         command: () => ({ type: "browser.site.remove", site: "https://parity.example" }),
+      },
+      // Tabs (X12): the door is held to what today's tab tools do, page by page.
+      {
+        name: "tab.open (guest)",
+        tool: "tab_open",
+        args: () => ({ target: { kind: "page", guest: true, url: "about:blank" } }),
+        command: () => ({
+          type: "tab.open",
+          target: { kind: "page", guest: true, url: "about:blank" },
+        }),
+      },
+      {
+        name: "tab.open (profile)",
+        tool: "tab_open",
+        args: (c) => ({
+          target: { kind: "page", profileId: profiles[c].id, url: "about:blank" },
+        }),
+        command: (c) => ({
+          type: "tab.open",
+          target: { kind: "page", profileId: profiles[c].id, url: "about:blank" },
+        }),
+      },
+      {
+        name: "tab.close (the person's tab)",
+        tool: "tab_close",
+        args: async (c) => ({ tabIds: [await personTab(c)] }),
+        command: (c) => ({ type: "tab.close", tabIds: [personTabs[c]] }),
       },
       {
         name: "browser.profile.delete",
@@ -859,6 +948,8 @@ it("records what today's tools let each caller do, and the door answers the same
         delivery: i.policy,
       };
     });
+    intercept(TabService.prototype, "open", ([, target]) => ({ type: "tab.open", target }));
+    intercept(TabService.prototype, "close", ([, tabIds]) => ({ type: "tab.close", tabIds }));
     intercept(TriggerService.prototype, "manage", ([, value]) => {
       const {
         operation,
@@ -886,6 +977,24 @@ it("records what today's tools let each caller do, and the door answers the same
       }
     });
 
+    // Only the person approves: a connection's token and a Run's tools token are not sessions,
+    // so neither can send the approval through the person's command route.
+    for (const bearer of [everything.token, full.toolsToken]) {
+      const refused = await testRpcRequest(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "request.command.approve",
+          idempotencyKey: randomUUID(),
+          requestId: "req_00000000-0000-4000-8000-000000000001",
+          expectedRevision: "1",
+          command: {},
+        } as never,
+        { headers: { authorization: `Bearer ${bearer}` } },
+      );
+      expect(refused.status, "an agent's credential on the person's command route").toBe(401);
+    }
+
     // Every step-A command has a scenario, or a reason no tool performs it, or is owed by name.
     const covered = new Set(
       scenarios.flatMap((scenario) => scenario.command?.("own-full").type ?? []),
@@ -912,7 +1021,12 @@ it("records what today's tools let each caller do, and the door answers the same
     const differences: string[] = [];
     const unfaithful: string[] = [];
     const sent: Record<string, Caller[]> = {};
-    for (const scenario of scenarios) {
+    // Tabs first, while the browser has done nothing else.
+    const ordered = [
+      ...scenarios.filter((scenario) => scenario.tool.startsWith("tab_")),
+      ...scenarios.filter((scenario) => !scenario.tool.startsWith("tab_")),
+    ];
+    for (const scenario of ordered) {
       recorded[scenario.name] = {} as Record<Caller, Outcome>;
       for (const caller of callerNames) {
         await scenario.before?.();

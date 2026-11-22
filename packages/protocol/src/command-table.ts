@@ -82,6 +82,11 @@ export interface CommandFace {
   readonly step?: CommandStep;
   /** Its handler refuses an agent below Full access today, even on its own task work. */
   readonly fullAccess?: true;
+  /**
+   * Its handler needs the read-write ceiling today (Full access or Auto): below it, even on its
+   * own task work, the person is asked (`effective-grants.ts:125`, the tab tools' check).
+   */
+  readonly readWrite?: true;
   /** Its handler needs the person's signed-in session today: every agent asks. */
   readonly personSession?: true;
   /**
@@ -1236,7 +1241,8 @@ export const commandTable: CommandTable = {
     family: "tabs-apps",
     scope: "task",
     step: "A",
-    faces: one("widen-self"),
+    // Today's tab_open refuses below the read-write ceiling (D0a recording, X12).
+    faces: one("widen-self", { readWrite: true }),
     governs: (c) =>
       c.target.kind === "page" && "profileId" in c.target
         ? resource("browser-profile", c.target.profileId)

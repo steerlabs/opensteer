@@ -3043,14 +3043,15 @@
           "class": "widen-self",
           "answers": {
             "a": "now",
-            "b": "now",
+            "b": "ask",
             "c": "now",
-            "d": "now"
+            "d": "now",
+            "b:auto": "now"
           }
         }
       ],
       "step": "A",
-      "note": "`TabActor` (`apps/host/src/tabs/ports.ts:45-49`)",
+      "note": "`TabActor` (`apps/host/src/tabs/ports.ts:45-49`); X12: today's tab_open refuses below the read-write ceiling (Full access or Auto), recorded in D0a, so the door asks there",
       "effect": {
         "where": "outside",
         "why": "server.ts:596: the browser runtime"

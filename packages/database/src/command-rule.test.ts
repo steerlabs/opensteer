@@ -13,7 +13,12 @@ import { commandRule, type CommandAnswer, type CommandRuleCaller } from "./resou
 type Column = "a" | "b" | "c" | "d";
 interface ExpectedRow {
   readonly type: string;
-  readonly faces: readonly { readonly answers: Readonly<Record<Column, CommandAnswer>> }[];
+  readonly faces: readonly {
+    /** `b:auto` where Auto answers otherwise than the other modes below Full access. */
+    readonly answers: Readonly<Record<Column, CommandAnswer>> & {
+      readonly "b:auto"?: CommandAnswer;
+    };
+  }[];
 }
 const rows = expected.rows as readonly ExpectedRow[];
 const belowFullAccess = ThreadAccessModeSchema.options.filter(
@@ -52,9 +57,13 @@ describe("the command rule, generated from the table", () => {
           const modes = column === "b" ? belowFullAccess : [undefined];
           for (const mode of modes) {
             const got = answer(expectedRow.type, index, callers[column](mode));
-            if (got !== face.answers[column])
+            const want =
+              column === "b" && mode === "auto"
+                ? (face.answers["b:auto"] ?? face.answers.b)
+                : face.answers[column];
+            if (got !== want)
               mismatches.push(
-                `${expectedRow.type} face ${index} (${column}${mode ? ` ${mode}` : ""}): ${got}, expected ${face.answers[column]}`,
+                `${expectedRow.type} face ${index} (${column}${mode ? ` ${mode}` : ""}): ${got}, expected ${want}`,
               );
           }
         }
@@ -71,7 +80,9 @@ describe("the command rule, generated from the table", () => {
         for (const mode of belowFullAccess) {
           for (const column of ["c", "d"] as const) {
             const full = face.answers[column];
-            const want = full === "now" && face.answers.b !== "now" ? "ask" : full;
+            const own =
+              mode === "auto" ? (face.answers["b:auto"] ?? face.answers.b) : face.answers.b;
+            const want = full === "now" && own !== "now" ? "ask" : full;
             expect(
               answer(expectedRow.type, index, callers[column](mode)),
               `${expectedRow.type} face ${index} (${column} ${mode})`,
@@ -263,6 +274,17 @@ describe("the command rule, generated from the table", () => {
       expect(at("full-access"), command.type).toBe("now");
       // Below Full access these need Full access today (D1), so they ask.
       for (const mode of belowFullAccess) expect(at(mode), `${command.type} ${mode}`).toBe("ask");
+    }
+  });
+
+  it("asks before opening a tab below the read-write ceiling, as today's tab_open refuses (X12)", () => {
+    for (const type of ["tab.open"]) {
+      const at = (mode: ThreadAccessMode) =>
+        answer(type, 0, { connection: null, mode, reach: true, ownWork: true });
+      expect(at("full-access"), type).toBe("now");
+      expect(at("auto"), type).toBe("now");
+      expect(at("approval-required"), type).toBe("ask");
+      expect(at("auto-accept-edits"), type).toBe("ask");
     }
   });
 
