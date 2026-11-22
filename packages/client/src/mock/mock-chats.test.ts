@@ -119,4 +119,14 @@ describe("the chats preview", () => {
       client.dispose();
     }
   });
+
+  it("previews a Home whose accounts and connected agents can't be read", async () => {
+    const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-unreadable") });
+    try {
+      expect((await client.rpc["channels.get"]({})).ok).toBe(false);
+      expect((await client.rpc["connections.list"]({})).ok).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
 });

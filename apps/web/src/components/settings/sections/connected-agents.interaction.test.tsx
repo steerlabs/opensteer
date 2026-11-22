@@ -587,6 +587,16 @@ describe("a chat, as a connected agent", () => {
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).toBeNull();
   });
 
+  it("previews a Home that can't be read: a chat's page says so, never that it is gone", async () => {
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-unreadable") });
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn’t read your connected agents."),
+    );
+    expect(page.textContent).not.toContain("isn’t connected anymore");
+    expect(buttonNamed(page, "Try again")).toBeTruthy();
+  });
+
   it("says who can give a chat work when nobody is linked as you yet", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(4)}`);

@@ -25,7 +25,8 @@ import { channelProviderCatalog, type ChannelDashboard } from "@opensteer/channe
  * `changed` (verified when read, no longer by the time the person allows it). `chats` adds
  * chats in each state a person can see (live, paused by the person on Slack and on iMessage,
  * paused because its account needs attention, ended), with the Messaging accounts they speak
- * through; `chats-empty` has those accounts and no chat yet.
+ * through; `chats-empty` has those accounts and no chat yet; `chats-unreadable` is `chats` on a
+ * Home whose Messaging accounts and connected agents can't be read, as when it is unreachable.
  */
 export const mockConnectedAgentScenes = [
   "seeded",
@@ -38,6 +39,7 @@ export const mockConnectedAgentScenes = [
   "changed",
   "chats",
   "chats-empty",
+  "chats-unreadable",
 ] as const;
 export type MockConnectedAgentScene = (typeof mockConnectedAgentScenes)[number];
 
@@ -402,6 +404,8 @@ export function mockConnectedAgents(
   readonly connectionConsent?: AgentConnectionConsent;
   readonly chromeTabs?: ChromeTabGrantCatalog;
   readonly connectionConsentChange?: AgentConnectionConsent;
+  /** The scene's Messaging accounts and connected agents can't be read. */
+  readonly unreadable?: boolean;
 } {
   const connections = [
     agent({
@@ -493,6 +497,12 @@ export function mockConnectedAgents(
   if (scene === "chats")
     return { connections: [connections[1]!, ...mockChats(now)], channels: mockChannels(now) };
   if (scene === "chats-empty") return { connections: [], channels: mockChannels(now) };
+  if (scene === "chats-unreadable")
+    return {
+      connections: [connections[1]!, ...mockChats(now)],
+      channels: mockChannels(now),
+      unreadable: true,
+    };
   const chrome = (computerName: string, n: number, paired = true) => ({
     sourceId: BrowserSourceIdSchema.parse(`bsr_00000000-0000-4000-8000-00000000000${n}`),
     computerName,

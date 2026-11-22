@@ -1877,6 +1877,8 @@ export interface MockHostClientOptions {
   chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
   grantsAvailable?: boolean;
+  /** Messaging accounts and connected agents can't be read, as on an unreachable Home. */
+  unreadable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
   portalOrigin?: string;
   /** How the Home is reached: a networked server or Cloud Computer, not this computer. */
@@ -2147,6 +2149,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "threads.activity": async (input) =>
       rpcSuccess(client.agentActivity({ threadId: input.threadId })),
     "connections.list": async (input) => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
       if (!client.grantsAvailable) return rpcSuccess({ connections });
       const activeIds = new Set(connections.map((connection) => connection.id));
@@ -2544,8 +2547,10 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     },
     "channel.connection.check": async (input) =>
       rpcSuccess(await client.checkChannelConnection(input.connectionId)),
-    "channels.get": async () =>
-      rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
+    "channels.get": async () => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
+      return rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels()));
+    },
     "plugins.overview.get": async () => {
       const deploymentId = DeploymentIdSchema.parse(client.getSnapshot().deploymentId!);
       const overview = client.settings.overview(deploymentId);
@@ -5914,6 +5919,7 @@ class MockHostState {
   agentHomeSettingsFile: AgentHomeSettingsFileView = { status: "missing" };
   readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
   readonly grantsAvailable: boolean;
+  readonly unreadable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
   private channels: import("@opensteer/channel-core").ChannelDashboard | null;
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
@@ -6901,6 +6907,7 @@ class MockHostState {
       ]),
     ];
     this.grantsAvailable = options.grantsAvailable ?? true;
+    this.unreadable = options.unreadable === true;
     this.latencyMs = options.latencyMs ?? 420;
     this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());

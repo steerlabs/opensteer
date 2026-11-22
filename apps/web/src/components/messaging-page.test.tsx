@@ -37,7 +37,7 @@ async function mount(client: MockHostClient, at = "/settings/messaging") {
   return container;
 }
 
-function chats(scene: "chats" | "chats-empty" = "chats") {
+function chats(scene: "chats" | "chats-empty" | "chats-unreadable" = "chats") {
   return new MockHostClient({ latencyMs: 0, ...mockConnectedAgents(scene) });
 }
 
@@ -241,6 +241,20 @@ describe("Messaging", () => {
       );
       expect(page.textContent).not.toContain("Workshop");
       expect(page.textContent).not.toContain("No messaging account yet");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("previews a Home that can't be read as could not read, never as no account", async () => {
+    const client = chats("chats-unreadable");
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Couldn’t read your messaging accounts."),
+      );
+      expect(page.textContent).not.toContain("No messaging account yet");
+      expect(page.textContent).not.toContain("Workshop");
     } finally {
       client.dispose();
     }
