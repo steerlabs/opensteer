@@ -76,10 +76,6 @@ import {
   safeError,
 } from "./store-primitives.js";
 import {
-  channelRunAuthorityIsCurrent,
-  channelInputAuthorityIsCurrent,
-} from "./channel-execution.js";
-import {
   claimConversationBatch,
   claimRunInputBatch,
   deliverConversationInputsInTransaction,
@@ -326,15 +322,6 @@ async function claimObservedCommand(
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
     }
   }
-  if (
-    run &&
-    observed.type === "run.execute" &&
-    !terminalFailure &&
-    !(await channelRunAuthorityIsCurrent(transaction, run.id))
-  ) {
-    terminalFailure = "Messaging access changed before this Run could start.";
-    terminalFailureInput = "seed-input";
-  }
   if (observed.type === "run.execute" && !terminalFailure && !workIsAvailable) {
     terminalFailure = "The queued work item is no longer available.";
     terminalFailureInput = "seed-input";
@@ -345,9 +332,6 @@ async function claimObservedCommand(
       .select(["messageId", "runId", "state"])
       .where("steerCommandId", "=", observed.id)
       .executeTakeFirst();
-    if (steer && !(await channelInputAuthorityIsCurrent(transaction, steer.messageId))) {
-      terminalFailure = "Messaging access changed before this message could be delivered.";
-    }
     await lockThreadRow(transaction, run.threadId);
     const currentThread = await transaction
       .selectFrom("threads")
@@ -1411,99 +1395,6 @@ export async function dispatchRequestResponse(
     if (!result) throw error;
   }
   if (!result) throw requestResponseDispatchConflict();
-  return result;
-}
-
-export async function dispatchChannelCommand(
-  database: Kysely<DatabaseSchema>,
-  commandId: CommandRow["id"],
-  send: (beforeAck: () => Promise<void>) => Promise<void>,
-): Promise<SucceededCommand> {
-  const lockIntent = async (transaction: Transaction<DatabaseSchema>) => {
-    const observed = await transaction
-      .selectFrom("commands")
-      .innerJoin("threads", "threads.id", "commands.threadId")
-      .select(["commands.runId", "commands.type", "commands.authoritySource"])
-      .where("commands.id", "=", commandId)
-      .where("commands.status", "=", "dispatched")
-      .executeTakeFirst();
-    if (
-      !observed?.runId ||
-      observed.authoritySource.kind !== "channel-ingress" ||
-      (observed.type !== "run.execute" && observed.type !== "run.steer")
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-    const run = await transaction
-      .selectFrom("runs")
-      .select(["status", "threadId", "requestedBy", "finishIntent"])
-      .where("id", "=", observed.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (
-      run.finishIntent !== null ||
-      (observed.type === "run.execute"
-        ? run.status !== "starting"
-        : !["running", "waiting"].includes(run.status))
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging Run is no longer active",
-      });
-    }
-    const steer =
-      observed.type === "run.steer"
-        ? await transaction
-            .selectFrom("threadInputs")
-            .select("messageId")
-            .where("steerCommandId", "=", commandId)
-            .executeTakeFirst()
-        : null;
-    const authorized =
-      observed.type === "run.execute"
-        ? await channelRunAuthorityIsCurrent(transaction, observed.runId)
-        : steer !== undefined &&
-          steer !== null &&
-          (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
-    if (
-      !authorized ||
-      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    }
-    await lockThreadRow(transaction, run.threadId);
-    const command = await transaction
-      .selectFrom("commands")
-      .select("status")
-      .where("id", "=", commandId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (command.status !== "dispatched") {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-  };
-  await commitPersonalMutation(database, async (tx) => {
-    await lockIntent(tx);
-    await stampDispatchIntent(tx, commandId);
-  });
-  let result: SucceededCommand | undefined;
-  await send(async () => {
-    result = await commitPersonalMutation(database, async (tx) => {
-      await lockIntent(tx);
-      return succeedCommandInTransaction(tx, commandId);
-    });
-  });
-  if (!result)
-    throw new OpensteerError({ code: "conflict", message: "Messaging command was not accepted" });
   return result;
 }
 

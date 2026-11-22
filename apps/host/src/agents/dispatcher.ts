@@ -791,12 +791,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
-      await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-        await this.#runners.dispatch(runnerCommand, signal, {
-          ...dispatch,
-          beforeAck,
-        });
-      });
+      // Decided by routes that no longer exist: a message from before the update never runs.
+      throw new CommandDispatchError("Messages from before the update are not run.", "failed");
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
@@ -1127,15 +1123,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             throw new CommandDispatchError(error.message, "failed");
           }
         });
-      if (command.authoritySource.kind === "channel-ingress") {
-        await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, {
-            beforeAck,
-            ...(beforeSend ? { beforeSend } : {}),
-          });
-        });
-        return;
-      }
+      if (command.authoritySource.kind === "channel-ingress")
+        throw new CommandDispatchError("Messages from before the update are not run.", "failed");
       await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;

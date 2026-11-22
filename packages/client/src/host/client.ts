@@ -10,7 +10,6 @@ import type { DesktopUpdates } from "../connections/desktop-updates-contract.js"
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
-  ChannelBinding,
   IntegrationConnection,
 } from "@opensteer/channel-core";
 import type {
@@ -1044,7 +1043,6 @@ export interface CreateChannelConnectionInput {
 
 export interface CreatedChannelConnection {
   account: ChannelAccount;
-  binding: ChannelBinding;
   connection: IntegrationConnection;
 }
 

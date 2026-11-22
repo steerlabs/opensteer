@@ -6,6 +6,7 @@ export * from "./app-store.js";
 export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
+export * from "./bridge-ingress.js";
 export * from "./command-delivery.js";
 export * from "./node-control.js";
 export * from "./connection.js";

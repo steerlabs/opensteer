@@ -1,16 +1,10 @@
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { sha256Base64Url } from "@opensteer/core/crypto";
 import {
-  ChannelAccountIdSchema,
-  ChannelAccessPolicySchema,
-  type ChannelAccessPolicy,
-  ChannelBindingIdSchema,
   ChannelDeliveryIdSchema,
   ChannelProviderSchema,
   IntegrationConnectionIdSchema,
   channelProviderCatalog,
-  normalizePersonalAddress,
   type ChannelDashboard,
   type ChannelProvider,
   type ChannelConnectionInspection,
@@ -18,20 +12,19 @@ import {
 } from "@opensteer/channel-core";
 import {
   ChannelStore,
-  ChannelIngressDeferredError,
-  type ChannelIngressNotices,
+  decideBridgeIngress,
+  recordBridgeIngress,
+  startBridgeOwnerLink,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
   OpensteerError,
-  isLoopbackHostname,
+  ThreadIdSchema,
   RunnerIdSchema,
-  type EnvironmentId,
-  type HarnessId,
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { RunnerRegistry } from "@opensteer/orchestration";
+import type {} from "@opensteer/orchestration";
 import {
   ClaimChannelDeliveryResultSchema,
   CommitChannelIngressResultSchema,
@@ -40,49 +33,40 @@ import {
   type RuntimeChannelRequest,
 } from "@opensteer/channel-protocol";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
+import type { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { resolveBridgeCaller } from "./bridge-caller.js";
 import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
 interface ChannelServiceOptions {
   readonly onError?: (error: unknown) => void;
   readonly onChanged?: () => void;
-  /** Where a person signs in to redeem a link code. */
-  readonly canonicalOrigin: string;
   readonly credentials: CredentialService;
-  /** Named because an adopted channel message makes one work location dispatchable. */
-  readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly relay: MessagingRelayHub;
-  readonly runners: ChannelRunners;
   readonly store: OpensteerStore;
   readonly channels: ChannelStore;
+  /** The task tools' own entry points, which a bridge calls as itself. */
+  readonly bridgeTools: () => Pick<OpensteerMcpService, "callTool">;
 }
-type ChannelRunners = Pick<
-  RunnerRegistry,
-  "canRunHarness" | "identityForEnvironment" | "isAvailable"
->;
 
 export class ChannelService {
   readonly #onChanged: () => void;
-  readonly #canonicalOrigin: string;
   readonly #channels: ChannelStore;
   readonly #credentials: CredentialService;
-  readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly #relay: MessagingRelayHub;
-  readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
+  readonly #bridgeTools: () => Pick<OpensteerMcpService, "callTool">;
   #closed = false;
   readonly #drains: DeadlineDrain;
   #nextPruneAt = 0;
 
   constructor(options: ChannelServiceOptions) {
     this.#onChanged = options.onChanged ?? (() => {});
-    this.#canonicalOrigin = options.canonicalOrigin;
     this.#channels = options.channels;
     this.#credentials = options.credentials;
-    this.#onExecutionQueued = options.onExecutionQueued;
     this.#relay = options.relay;
-    this.#runners = options.runners;
     this.#store = options.store;
+    this.#bridgeTools = options.bridgeTools;
     this.#drains = new DeadlineDrain({
       drain: () => this.#drainIngress(),
       ...(options.onError ? { onError: options.onError } : {}),
@@ -118,7 +102,6 @@ export class ChannelService {
   }
 
   async createConnection(input: {
-    readonly accessPolicy: ChannelAccessPolicy;
     readonly credentials: Readonly<Record<string, string>>;
     readonly createdBy: UserId;
     readonly provider: string;
@@ -155,7 +138,6 @@ export class ChannelService {
       identity.externalAccountId,
       `${manifest.label} account ID`,
     );
-    const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
     const credential = await this.#credentials.prepare({
       metadata: { externalAccountId },
       name: `${identity.connectionDisplayName} credentials`,
@@ -164,7 +146,6 @@ export class ChannelService {
       secrets: credentials,
     });
     const created = await this.#channels.createConnection({
-      accessPolicy,
       account: {
         displayName: identity.accountDisplayName,
         externalAccountId,
@@ -184,8 +165,6 @@ export class ChannelService {
       },
       createdBy: input.createdBy,
       credential,
-      executionPolicy: { harness: "default", harnessInstanceId: null },
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -204,12 +183,11 @@ export class ChannelService {
    * iMessage through that Mac's Messages, read and sent by its helper. It is
    * pinned to that computer, holds no secret, and is a use of the computer's
    * app connection at read and write, so turning that app off or down ends
-   * it. The creator's own handles are linked to them now: iMessage says who
-   * sent a text, and a stranger must never be the one handed a link code.
+   * it. "Me" is linked as on any account: the person sends, from their own
+   * phone, the code Opensteer shows them.
    */
   async createComputerConnection(input: {
     readonly createdBy: UserId;
-    readonly ownerHandles: readonly string[];
     readonly provider: string;
     readonly runnerId: string;
   }) {
@@ -222,7 +200,6 @@ export class ChannelService {
       });
     }
     const runnerId = RunnerIdSchema.parse(input.runnerId);
-    const ownerHandles = input.ownerHandles.map(ownerHandle);
     const carries = this.#relay
       .capabilities(runnerId)
       .some(
@@ -261,16 +238,6 @@ export class ChannelService {
       `${manifest.label} account ID`,
     );
     const created = await this.#channels.createConnection({
-      // One-to-one only, from the creator and the people they approve; an
-      // unknown sender waits for approval without being told anything.
-      accessPolicy: {
-        channels: {
-          conversationIds: [],
-          scope: "off",
-          sender: { allowedExternalUserIds: [], mode: "off" },
-        },
-        directMessages: { allowedExternalUserIds: [], mode: "approved" },
-      },
       account: {
         displayName: identity.accountDisplayName,
         externalAccountId,
@@ -291,9 +258,6 @@ export class ChannelService {
       },
       createdBy: input.createdBy,
       credential: null,
-      executionPolicy: { harness: "default", harnessInstanceId: null },
-      linkedExternalUserIds: ownerHandles,
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -413,60 +377,6 @@ export class ChannelService {
     return inspection;
   }
 
-  async revokeBinding(
-    bindingId: string,
-    ownerUserId: UserId,
-    administration?: AdministrationCommandIdentity | undefined,
-  ): Promise<void> {
-    const changed = await this.#channels.revokeBinding({
-      administration,
-      bindingId: ChannelBindingIdSchema.parse(bindingId),
-      ownerUserId,
-    });
-    if (changed) this.#onChanged();
-  }
-
-  updateBinding(input: {
-    readonly bindingId: string;
-    readonly expectedRevision: number;
-    readonly accessPolicy: ChannelAccessPolicy;
-    readonly ownerUserId: UserId;
-  }) {
-    return this.#channels.updateBinding({
-      ...input,
-      bindingId: ChannelBindingIdSchema.parse(input.bindingId),
-    });
-  }
-
-  reviewAccess(input: {
-    readonly bindingId: string;
-    readonly externalUserId: string;
-    readonly expectedRevision: number;
-    readonly decision: "approved" | "declined" | "revoked";
-    readonly ownerUserId: UserId;
-  }) {
-    return this.#channels.reviewAccess({
-      ...input,
-      bindingId: ChannelBindingIdSchema.parse(input.bindingId),
-    });
-  }
-
-  createBinding(input: {
-    readonly accessPolicy: unknown;
-    readonly accountId: string;
-    readonly createdBy: UserId;
-    readonly executionPolicy: unknown;
-    readonly selector: unknown;
-  }) {
-    return this.#channels.createBinding({
-      accessPolicy: input.accessPolicy,
-      accountId: ChannelAccountIdSchema.parse(input.accountId),
-      createdBy: input.createdBy,
-      executionPolicy: input.executionPolicy,
-      selector: input.selector,
-    });
-  }
-
   async setConnectionStatus(
     connectionId: string,
     ownerUserId: UserId,
@@ -495,12 +405,11 @@ export class ChannelService {
   }
 
   /**
-   * Redeem the code the bot handed somebody in their own conversation. The
-   * code travels to the person, not from them, so nothing has to reach the
-   * Host through a provider's slash-command surface.
+   * The code the person sends from their own account to the bot, so that account is "me" on
+   * it. Opensteer shows it; the chat is never asked for anything.
    */
-  linkIdentity(code: string, userId: UserId) {
-    return this.#channels.linkIdentity({ codeHash: digest(normalizeLinkCode(code)), userId });
+  startOwnerLink(accountId: string, userId: UserId) {
+    return startBridgeOwnerLink(this.#store.database, { accountId, userId });
   }
 
   async resolveRuntimeConnection(
@@ -683,9 +592,6 @@ export class ChannelService {
       this.#nextPruneAt = now.getTime() + 60 * 60 * 1_000;
       await this.#channels.pruneHistory(now).catch(() => undefined);
     }
-    // What is connected is a property of the Deployment, not of one message,
-    // so it is read once for the whole drain rather than once per claimed event.
-    const availableEngines = await this.#availableEngines();
     let claimed = 0;
     for (let processed = 0; processed < 100 && !this.#closed; processed += 1) {
       const claim = await this.#channels.claimIngress(`host:${process.pid}`, now);
@@ -694,42 +600,16 @@ export class ChannelService {
       const stale = staleIngress(claim, now.getTime());
       if (stale) {
         await this.#channels
-          .markIngressIgnored(
-            claim.id,
-            claim.claimToken,
-            stale.reason,
-            claim.event.trigger === "conversation-followup"
-              ? null
-              : { accountId: claim.accountId, text: stale.notice },
-          )
+          .markIngressIgnored(claim.id, claim.claimToken, stale.reason, null)
           .catch((error: unknown) => {
             if (!isStaleClaim(error)) throw error;
           });
         continue;
       }
       try {
-        // Routing and identity come before placement inside adoptIngress, so a
-        // person who needs a link code or a route hears about it even while no
-        // computer is awake to run anything — and hears about it in the same
-        // transaction that decided, so a crash cannot swallow the answer.
-        const result = await this.#channels.adoptIngress({
-          claimToken: claim.claimToken,
-          ingressId: claim.id,
-          notices: this.#notices(claim.event.provider),
-          availableEngines,
-        });
-        if (result.kind === "adopted") {
-          this.#store.announceRevokedGrants(result.revokedGrants);
-          if (result.dispatchEnvironmentId) {
-            this.#onExecutionQueued(result.dispatchEnvironmentId);
-          }
-        }
+        await this.#handleIngress(claim);
       } catch (error) {
         if (isStaleClaim(error)) continue;
-        if (error instanceof ChannelIngressDeferredError) {
-          await this.#deferIngress(claim, error.message).catch(() => undefined);
-          continue;
-        }
         await this.#channels
           .releaseIngress(claim.id, claim.claimToken, safeMessage(error, safeMessageOptions))
           .catch(() => undefined);
@@ -744,27 +624,79 @@ export class ChannelService {
   }
 
   /**
-   * What the bot says when a message produces no Run. The Host writes these
-   * because only it knows the origin a person signs in at and what this
-   * provider is called; the store inserts them in the transaction that decided,
-   * so there is no window where somebody is refused in silence.
+   * One chat message, through the bridge that covers its conversation: decided in one
+   * transaction (who may speak, read with the grant), then sent to your own agents through the
+   * task tools' own entry points as that bridge, then recorded. A crash between the steps
+   * repeats them: the operation key is the message itself, so the tools answer with what they
+   * already did.
    */
-  #notices(provider: ChannelProvider): ChannelIngressNotices {
-    const label = providerManifest(provider).label;
-    const hostname = new URL(this.#canonicalOrigin).hostname;
-    const local = isLoopbackHostname(hostname);
-    const verificationLocation = local
-      ? "Open Opensteer on the computer running this bot, then open Messaging"
-      : `Sign in at ${this.#canonicalOrigin}/settings/messaging`;
-    return {
-      approvalPending:
-        "Your access request was sent to the person who connected this bot. I will let you know when it is approved.",
-      linkByDirectMessage: `To link your ${label} account to Opensteer, send me a direct message and I will give you a code.`,
-      linkCode: (code) =>
-        `Verify this ${label} identity: ${verificationLocation} and enter **${code}**. The code expires in 1 hour. Send your message again after verifying.`,
-      noRoute:
-        "This conversation has no Messaging binding. Ask the person who connected this bot to add one.",
-    };
+  async #handleIngress(claim: ClaimedChannelIngress): Promise<void> {
+    const decision = await decideBridgeIngress(this.#store.database, {
+      ingressId: claim.id,
+      claimToken: claim.claimToken,
+    });
+    if (decision.kind !== "work") return;
+    const chat = { conversationId: decision.conversationId, sender: decision.sender };
+    const resolve = () =>
+      resolveBridgeCaller(this.#store, {
+        ownerUserId: decision.ownerUserId,
+        bridgeId: decision.bridgeId,
+        chat,
+        expectedRevision: decision.grantRevision,
+      });
+    let caller;
+    try {
+      caller = await resolve();
+    } catch (error) {
+      if (!(error instanceof OpensteerError)) throw error;
+      await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message, null);
+      return;
+    }
+    const tools = this.#bridgeTools();
+    const call = (name: string, args: Record<string, unknown>) =>
+      tools.callTool("", name, args, {
+        caller,
+        resolveCaller: resolve,
+        operationKey: `ingress:${claim.id}`,
+      });
+    let taskId = decision.taskId;
+    try {
+      if (decision.action === "create") {
+        const created = (await call("opensteer_task_create", { message: decision.text })) as {
+          readonly taskId: string;
+        };
+        taskId = ThreadIdSchema.parse(created.taskId);
+      } else if (decision.action === "send") {
+        await call("opensteer_task_send", {
+          taskId: decision.taskId,
+          message: decision.text,
+          delivery: "queue",
+        });
+      } else {
+        await call("opensteer_task_interrupt", { taskId: decision.taskId });
+      }
+    } catch (error) {
+      // Refused for what it is (no longer admitted, not found, not allowed): nothing runs, and
+      // nothing is said in the chat. Anything else is retried with the same operation key.
+      if (
+        error instanceof OpensteerError &&
+        ["forbidden", "not_found", "bad_request", "unauthorized"].includes(error.code)
+      ) {
+        await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message, null);
+        return;
+      }
+      if (error instanceof OpensteerError && error.retryable) {
+        await this.#deferIngress(claim, error.message);
+        return;
+      }
+      throw error;
+    }
+    await recordBridgeIngress(this.#store.database, {
+      ingressId: claim.id,
+      claimToken: claim.claimToken,
+      conversationId: decision.conversationId,
+      taskId: taskId!,
+    });
   }
 
   /**
@@ -777,45 +709,6 @@ export class ChannelService {
       deferred: true,
     });
   }
-
-  /**
-   * The connected work locations and the engines each can run now, with the
-   * Deployment's own locations first. These are runtime facts only: whose
-   * account a message runs on is decided inside adoptIngress, once the
-   * channel identity has resolved to a person.
-   */
-  async #availableEngines(): Promise<
-    readonly { readonly environmentId: EnvironmentId; readonly driverKinds: readonly HarnessId[] }[]
-  > {
-    const environments = await this.#store.listEnvironments();
-    return [...environments]
-      .sort((left, right) => Number(left.kind === "local") - Number(right.kind === "local"))
-      .filter((environment) => this.#runners.isAvailable(environment.id))
-      .map((environment) => ({
-        environmentId: environment.id,
-        driverKinds: (
-          this.#runners.identityForEnvironment(environment.id)?.modules.agents?.harnessDrivers ?? []
-        )
-          .map((driver) => driver.driverKind)
-          .filter((driverKind) => this.#runners.canRunHarness(environment.id, driverKind)),
-      }));
-  }
-}
-
-/** Accept what a person retyped: the alphabet excludes I, O, 0 and 1 on purpose. */
-function normalizeLinkCode(code: string): string {
-  const normalized = code.trim().toUpperCase().replaceAll(/[\s-]/gu, "");
-  if (!/^[A-HJ-NP-Z2-9]{8}$/u.test(normalized)) {
-    throw new OpensteerError({
-      code: "not_found",
-      message: "That code is invalid or has expired.",
-    });
-  }
-  return normalized;
-}
-
-function digest(value: string): string {
-  return sha256Base64Url(value);
 }
 
 function channelSecret(value: string, label: string): string {
@@ -939,18 +832,4 @@ function isStaleClaim(error: unknown): boolean {
     error.code === "conflict" &&
     /claim is stale/u.test(error.message)
   );
-}
-
-/**
- * A handle as Messages records who wrote: an email address in lower case, or
- * a phone number as `+` and its digits. A number without its country code
- * could be anybody's, so it is refused rather than guessed at.
- */
-function ownerHandle(value: string): string {
-  const handle = normalizePersonalAddress(value);
-  if (handle) return handle;
-  throw new OpensteerError({
-    code: "bad_request",
-    message: `${value.trim().slice(0, 80)} is not an email address or a phone number with its country code, such as +1 555 123 4567.`,
-  });
 }

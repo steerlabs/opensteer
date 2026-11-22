@@ -43,7 +43,6 @@ import {
   threadVisitSelection,
   threadProviderSessionSelection,
 } from "./thread-row-mappers.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -255,32 +254,6 @@ export async function setThreadDone(
           code: "not_found",
           message: "Task not found",
         });
-      await lockThreadChannelAuthorities(transaction, scope.threadIds);
-      // Active bindings must not rotate into this set while scope is checked.
-      const conversations = await transaction
-        .selectFrom("channelConversations")
-        .selectAll()
-        .where("activeThreadId", "in", scope.threadIds)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      if (input.done && conversations.length) {
-        const active = await transaction
-          .selectFrom("channelBindings")
-          .select("id")
-          .where(
-            "id",
-            "in",
-            conversations.map((row) => row.bindingId),
-          )
-          .where("status", "=", "active")
-          .executeTakeFirst();
-        if (active)
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "An active Messaging conversation's task must stay open",
-          });
-      }
       const threads = await transaction
         .selectFrom("threads")
         .selectAll()

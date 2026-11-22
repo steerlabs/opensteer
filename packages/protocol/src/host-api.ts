@@ -1433,14 +1433,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.object({ type: z.literal("channel.connection.credentials.replace") }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.computer.create"),
   }),

@@ -38,7 +38,6 @@ export async function handleChannelCommand(
     case "channel.connection.create":
       return {
         ...(await channels.createConnection({
-          accessPolicy: command.accessPolicy,
           credentials: command.credentials,
           createdBy: userId,
           provider: command.provider,
@@ -50,7 +49,6 @@ export async function handleChannelCommand(
       return {
         ...(await channels.createComputerConnection({
           createdBy: userId,
-          ownerHandles: command.ownerHandles,
           provider: command.provider,
           runnerId: command.runnerId,
         })),
@@ -63,43 +61,17 @@ export async function handleChannelCommand(
         ownerUserId: userId,
       });
       return { type: command.type };
+    // Routes, approvals and link codes in the chat are gone: a bridge is created on its consent
+    // and edited as a connection. These commands leave the wire with this change's next step.
     case "channel.binding.create":
-      return {
-        binding: await channels.createBinding({
-          accessPolicy: command.accessPolicy,
-          accountId: command.accountId,
-          createdBy: userId,
-          executionPolicy: command.executionPolicy,
-          selector: command.selector,
-        }),
-        type: command.type,
-      };
     case "channel.binding.update":
-      return {
-        binding: await channels.updateBinding({
-          bindingId: command.bindingId,
-          expectedRevision: command.expectedRevision,
-          accessPolicy: command.accessPolicy,
-          ownerUserId: userId,
-        }),
-        type: command.type,
-      };
     case "channel.access.review":
-      return {
-        grant: await channels.reviewAccess({
-          bindingId: command.bindingId,
-          externalUserId: command.externalUserId,
-          expectedRevision: command.expectedRevision,
-          decision: command.decision,
-          ownerUserId: userId,
-        }),
-        type: command.type,
-      };
     case "channel.binding.revoke":
-      await channels.revokeBinding(command.bindingId, userId);
-      return { type: command.type };
     case "channel.identity.link":
-      return { ...(await channels.linkIdentity(command.code, userId)), type: command.type };
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Update Opensteer to change Messaging.",
+      });
     case "channel.connection.status.set":
       await channels.setConnectionStatus(command.connectionId, userId, command.status);
       return { type: command.type };

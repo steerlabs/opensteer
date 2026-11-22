@@ -224,7 +224,7 @@ interface PendingRequestContinuation {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
-const personAuthorities = ["user-session", "channel-ingress"];
+const personAuthorities = ["user-session"];
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #links: ChannelLinks;

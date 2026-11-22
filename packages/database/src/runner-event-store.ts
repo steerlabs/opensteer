@@ -6,7 +6,6 @@ import {
   replyPreview,
   writeThreadSummary,
 } from "./thread-status.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
@@ -138,12 +137,7 @@ function assertRunnerEventTransition(
 type StatementThread = Awaited<ReturnType<typeof lockStatementThread>>;
 
 /** lockThreadRow, also reading what a Runner message needs from the locked task. */
-async function lockStatementThread(
-  tx: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-  channelInputs: boolean,
-) {
-  if (channelInputs) await lockThreadChannelAuthorities(tx, [threadId]);
+async function lockStatementThread(tx: Transaction<DatabaseSchema>, threadId: ThreadId) {
   return tx
     .selectFrom("threads")
     .select((eb) => [
@@ -966,7 +960,7 @@ export async function commitRunnerEvent(
             (!lostExecution && !context.threadAdmitted)
           )
             refuseExecutionBinding();
-          const thread = await lockStatementThread(tx, event.threadId, context.channelInputs);
+          const thread = await lockStatementThread(tx, event.threadId);
           if (lostExecution) {
             assertRunnerEventTransition(run, event);
             const recovery = await recoverLostRunTransaction(tx, {

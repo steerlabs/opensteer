@@ -299,10 +299,7 @@ export async function settleFinishChildren(
     const unknown = current.state === "unknown" || (recovering && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
     const stopped =
-      requeue &&
-      stoppedConversation &&
-      (current.authoritySource.kind === "user-session" ||
-        current.authoritySource.kind === "channel-ingress");
+      requeue && stoppedConversation && current.authoritySource.kind === "user-session";
     if (requeue && !stopped)
       await tx.updateTable("messages").set({ runId: null }).where("id", "=", id).execute();
     const row = await tx

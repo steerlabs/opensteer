@@ -226,12 +226,6 @@ export type ThreadInputSource =
       readonly kind: "automation";
       readonly noticeId: string;
       readonly triggerId: TriggerId;
-    }
-  | {
-      readonly kind: "channel";
-      readonly conversationId: string;
-      readonly ingressId: string;
-      readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;

@@ -1,4 +1,3 @@
-import { createChannelId } from "@opensteer/channel-core";
 import {
   enrollTestRunner,
   type StoreFixture,
@@ -20,7 +19,6 @@ import {
   type AdministrationDependencies,
 } from "../administration/administration-service.js";
 import { BrowserService } from "../browser/browser-service.js";
-import { ChannelService } from "../channels/channel-service.js";
 import {
   AdministrationToolHandlers,
   administrationToolHandlers,
@@ -755,78 +753,6 @@ describeStore("MCP administration", (it) => {
     } finally {
       await agent.service.close();
       await browser.close();
-    }
-  });
-  it("pauses/resumes existing channels and revokes a binding without changing its policies", async ({
-    storeFixture: f,
-  }) => {
-    const {
-      configured,
-      fixture: run,
-      channels: store,
-    } = await f.createChannelDeliveryFixture("admin-channel");
-    const changed = vi.fn();
-    const channels = new ChannelService({
-      canonicalOrigin: "http://127.0.0.1",
-      store: f.store,
-      channels: store,
-      credentials: {} as never,
-      relay: { connectedRunnerIds: () => [], supports: () => true } as never,
-      runners: {} as never,
-      onExecutionQueued: () => {},
-
-      onChanged: changed,
-    });
-    const agent = await mcp(
-      {
-        store: f.store,
-        channels: { service: channels },
-        realtime: { broadcast: vi.fn(), publishConnectionsChanged: vi.fn() },
-      } as unknown as AdministrationDependencies,
-      run,
-    );
-    try {
-      const observe = () => channels.dashboard(run.userId);
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_messaging_bridge_update",
-        { bridgeId: configured.connection.id, paused: true },
-        () => channels.setConnectionStatus(configured.connection.id, run.userId, "connected"),
-        observe,
-        { paused: false },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_messaging_bridge_update",
-        { bridgeId: configured.connection.id, paused: false },
-        () => channels.setConnectionStatus(configured.connection.id, run.userId, "paused"),
-        observe,
-        { paused: true },
-      );
-      const resumed = (await channels.dashboard(run.userId)).bindings[0]!;
-      expect(resumed.accessPolicy).toEqual(configured.binding.accessPolicy);
-      expect(resumed.executionPolicy).toEqual(configured.binding.executionPolicy);
-      await retryAfterPersonChange(
-        agent,
-        "opensteer_messaging_bridge_remove",
-        { routeId: configured.binding.id },
-        () => channels.setConnectionStatus(configured.connection.id, run.userId, "connected"),
-        observe,
-        { routeId: createChannelId("binding") },
-      );
-      expect(
-        (
-          await f.database
-            .selectFrom("channelBindings")
-            .select("status")
-            .where("id", "=", configured.binding.id)
-            .executeTakeFirstOrThrow()
-        ).status,
-      ).toBe("revoked");
-      expect(changed).toHaveBeenCalledTimes(6);
-    } finally {
-      await agent.service.close();
-      await channels.close();
     }
   });
 });

@@ -1,44 +1,27 @@
-import { refreshInputQueue } from "./waiting-inputs.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { publishThreadSummary } from "./thread-status.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import { getDeviceSelfRunnerId, getSelfDeviceId } from "./device-inventory-store.js";
-import { retryDatabaseTransaction } from "./connection.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
-import { TransactionScopeChanged } from "./connection.js";
-import { prepareThreadInsertion } from "./thread-insertion.js";
-import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
+import { jsonValue } from "./store-primitives.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  ChannelAccessPolicySchema,
   ChannelAccountSchema,
-  ChannelBindingSchema,
   ChannelDashboardSchema,
   ChannelDeliverySchema,
-  ChannelExecutionPolicySchema,
   ChannelProviderManifestSchema,
   ChannelProviderSchema,
-  ChannelRouteSelectorSchema,
   ChannelTransportKindSchema,
   IntegrationConnectionSchema,
   NormalizedChannelEventSchema,
-  assertUnambiguousBinding,
   channelProviderCatalog,
-  channelAllowsPersonalContext,
   createChannelId,
-  resolveChannelBinding,
   type ChannelAccount,
   type ChannelAccountId,
-  type ChannelAccessGrant,
-  type ChannelBinding,
-  type ChannelBindingId,
   type ChannelDelivery,
   type ChannelDeliveryId,
-  type ChannelIdentityId,
   type ChannelIngressId,
   type ChannelProvider,
   type ChannelProviderManifest,
@@ -48,57 +31,24 @@ import {
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
 import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
-import {
-  deriveThreadStatus,
-  DEFAULT_THREAD_ACCESS_MODE,
-  catalogDefaultCandidate,
-  catalogDefaultModelSelection,
-  OpensteerError,
-  createId,
-  nonTerminalRunStatuses,
-  type CredentialId,
-  type EnvironmentId,
-  type HarnessId,
-  type HarnessInstanceId,
-  type ModelSelection,
-  type Run,
-  type RunnerId,
-  type UserId,
-  type ThreadId,
-  excludedBackgroundAccounts,
-} from "@opensteer/core";
+import { OpensteerError, type CredentialId, type RunnerId, type UserId } from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type {
   ChannelAccountTable,
-  ChannelBindingTable,
   ChannelDeliveryTable,
   DatabaseSchema,
   IntegrationConnectionTable,
 } from "./schema.js";
-import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
-import { readAgentHomeSettings } from "./agent-home-settings-store.js";
-import { enqueueThreadInputInTransaction } from "./store.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
-import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 
-import {
-  channelAccessGrantFromRow,
-  channelSenderPolicy,
-  ensureChannelAccessGrant,
-  resolveChannelAuthority,
-} from "./channel-authority.js";
 import {
   channelSourceAllows,
   insertStatusDelivery,
   revokeChannelConnectionsInTransaction,
 } from "./channel-deliveries.js";
-import { ensureSelectedProviderSession } from "./thread-inbox.js";
-import type { RevokedRunGrant } from "./run-grants.js";
-
-class ChannelAdmissionFenceChanged extends TransactionScopeChanged {}
+import type {} from "./run-grants.js";
 
 export interface CreateChannelConnectionInput {
-  readonly accessPolicy: unknown;
   readonly account: {
     readonly displayName: string;
     readonly externalAccountId: string;
@@ -129,67 +79,14 @@ export interface CreateChannelConnectionInput {
     readonly ownerId: UserId;
     readonly provider: string;
   } | null;
-  readonly executionPolicy: unknown;
-  /**
-   * Senders known to be the creator before they ever write — the handles
-   * the owner texts an iMessage bot from — linked to them at once, so the
-   * owner never needs a code that a stranger could be sent instead.
-   */
-  readonly linkedExternalUserIds?: readonly string[];
-  readonly selector: unknown;
 }
 
-interface ClaimedIngress {
+export interface ClaimedIngress {
   readonly accountId: ChannelAccountId;
   readonly claimToken: string;
   readonly event: NormalizedChannelEvent;
   readonly id: ChannelIngressId;
   readonly receivedAt: Date;
-}
-
-interface AdoptedChannelIngress {
-  readonly dispatchEnvironmentId: EnvironmentId | null;
-
-  readonly kind: "adopted";
-  /** A restart that took the owner's message into the reply under way ended its tools. */
-  readonly revokedGrants: readonly RevokedRunGrant[];
-  readonly run: Run | null;
-}
-
-/**
- * Why an ingress event produced no Run. The two explicit-address reasons are
- * the ones a person is told about: they wrote to the bot and deserve an
- * answer rather than silence.
- */
-export type ChannelIngressIgnoredReason =
-  | "approval-pending"
-  | "conversation-not-owned"
-  | "conversation-owned-by-another-identity"
-  | "identity-not-authorized"
-  | "no-route"
-  | "source-withdrawn";
-
-/**
- * What the bot says when adoption declines, written by the Host because only
- * it knows the canonical origin a person signs in at and the provider's own
- * label. They are passed in rather than built here so that deciding to decline
- * and saying so are one transaction: a crash between them would leave somebody
- * who wrote to the bot with silence and no way to find out why.
- */
-export interface ChannelIngressNotices {
-  /** The owner must approve this provider identity before it may run. */
-  readonly approvalPending: string;
-  /** The provider cannot reach one person privately where they wrote. */
-  readonly linkByDirectMessage: string;
-  readonly linkCode: (code: string) => string;
-  readonly noRoute: string;
-}
-
-interface IgnoredChannelIngress {
-  /** The identity that wrote, once it has been resolved far enough to mint a code for. */
-  readonly identityId: ChannelIdentityId | null;
-  readonly kind: "ignored";
-  readonly reason: ChannelIngressIgnoredReason;
 }
 
 interface ClaimedDeliveryRecord {
@@ -214,7 +111,6 @@ interface ClaimedDeliveryRecord {
   readonly mayHaveBeenSent: boolean;
 }
 
-const linkCodeTtlMs = 60 * 60 * 1_000;
 const atIngressLaneHead = sql<boolean>`not exists (
   select 1 from public.channel_ingress_events ahead
   where ahead.lane_key = claimable.lane_key
@@ -236,8 +132,6 @@ const ingressDeferralRetryMs = 5_000;
 const ingressDeferralSlowRetryMs = 30_000;
 /** How long a message stays "just sent" for the purpose of that cadence. */
 const ingressDeferralFreshMs = 60_000;
-/** The alphabet a person retypes from: no I, O, 0 or 1 to confuse. */
-const linkAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /**
  * What an explicitly addressed message is told when its ingress ran out of
  * attempts. Nothing here knows what actually went wrong twenty times, so it
@@ -266,22 +160,9 @@ export class ChannelIngressDeferredError extends Error {
 
 export class ChannelStore {
   readonly #database: Kysely<DatabaseSchema>;
-  readonly #providers: readonly ChannelProviderManifest[];
 
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    options: {
-      /**
-       * Where `actorDelivery` is read from. It is the shipped catalog in every
-       * deployment; the seam exists so a test can exercise a provider shape
-       * the catalog does not carry yet without inventing a fake provider for
-       * everybody else.
-       */
-      readonly providers?: readonly ChannelProviderManifest[];
-    } = {},
-  ) {
+  constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
-    this.#providers = options.providers ?? channelProviderCatalog;
   }
 
   async dashboard(
@@ -289,7 +170,7 @@ export class ChannelStore {
     providers: readonly ChannelProviderManifest[],
     connectedRunnerIds: readonly RunnerId[],
   ): Promise<ReturnType<typeof ChannelDashboardSchema.parse>> {
-    const [connections, accounts, bindings, accessGrants, attention] = await Promise.all([
+    const [connections, accounts, attention] = await Promise.all([
       this.#database
         .selectFrom("integrationConnections")
         .selectAll()
@@ -313,37 +194,6 @@ export class ChannelStore {
         .limit(500)
         .execute(),
       this.#database
-        .selectFrom("channelBindings")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .selectAll("channelBindings")
-        .where("integrationConnections.ownerUserId", "=", ownerUserId)
-        .where("channelBindings.status", "!=", "revoked")
-        .orderBy("channelBindings.updatedAt", "desc")
-        .limit(2_000)
-        .execute(),
-      this.#database
-        .selectFrom("channelAccessGrants")
-        .innerJoin("channelBindings", "channelBindings.id", "channelAccessGrants.bindingId")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .selectAll("channelAccessGrants")
-        .where("integrationConnections.ownerUserId", "=", ownerUserId)
-        .where("integrationConnections.status", "!=", "revoked")
-        .where("channelAccounts.status", "!=", "revoked")
-        .where("channelBindings.status", "!=", "revoked")
-        .orderBy("channelAccessGrants.requestedAt", "desc")
-        .limit(10_000)
-        .execute(),
-      this.#database
         .selectFrom("channelDeliveries")
         .innerJoin("channelAccounts", "channelAccounts.id", "channelDeliveries.accountId")
         .innerJoin(
@@ -357,9 +207,11 @@ export class ChannelStore {
         .executeTakeFirstOrThrow(),
     ]);
     return ChannelDashboardSchema.parse({
-      accessGrants: accessGrants.map(channelAccessGrantFromRow),
+      // Routes and approvals are gone: what a chat may do is its bridge, listed with the
+      // connected agents. The rows the previous image wrote are never read again.
+      accessGrants: [],
       accounts: accounts.map(channelAccountFromRow),
-      bindings: bindings.map(channelBindingFromRow),
+      bindings: [],
       connections: connections.map((connection) =>
         integrationConnectionFromRow(
           connection,
@@ -371,23 +223,14 @@ export class ChannelStore {
     });
   }
 
+  /**
+   * A provider account, and nothing that decides who may use it: that is a bridge's, chosen on
+   * its consent. "Me" on the account is linked by the person sending a code from it.
+   */
   async createConnection(input: CreateChannelConnectionInput): Promise<{
     readonly account: ChannelAccount;
-    readonly binding: ChannelBinding;
     readonly connection: ReturnType<typeof IntegrationConnectionSchema.parse>;
   }> {
-    const selector = ChannelRouteSelectorSchema.parse(input.selector);
-    const executionPolicy = ChannelExecutionPolicySchema.parse(input.executionPolicy);
-    const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    if (
-      input.account.routingMode === "dedicated" &&
-      Object.values(selector).some((value) => value !== null)
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "A dedicated messaging identity must use one account-wide binding",
-      });
-    }
     return commitPersonalMutation(this.#database, async (transaction) => {
       const externalIdentityId = input.connection.externalIdentityId ?? null;
       if (externalIdentityId) {
@@ -499,200 +342,11 @@ export class ChannelStore {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
-      for (const externalUserId of new Set(input.linkedExternalUserIds ?? [])) {
-        const identity = await upsertChannelIdentity(transaction, {
-          accountId: accountRow.id,
-          displayName: externalUserId,
-          externalUserId,
-        });
-        await transaction
-          .updateTable("channelIdentities")
-          .set({ linkedUserId: input.createdBy, status: "linked", updatedAt: now })
-          .where("id", "=", identity.id)
-          .executeTakeFirstOrThrow();
-      }
-      const bindingRow = await transaction
-        .insertInto("channelBindings")
-        .values({
-          accessPolicy: jsonValue(accessPolicy),
-          accountId: accountRow.id,
-          createdBy: input.createdBy,
-          executionPolicy: jsonValue(executionPolicy),
-          id: createChannelId("binding"),
-          revision: 1,
-          selector: jsonValue(selector),
-          status: "active",
-          updatedAt: now,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
       return {
         account: channelAccountFromRow(accountRow),
-        binding: channelBindingFromRow(bindingRow),
         connection: integrationConnectionFromRow(connectionRow),
       };
     });
-  }
-
-  async createBinding(input: {
-    readonly accessPolicy: unknown;
-    readonly accountId: ChannelAccountId;
-    readonly createdBy: UserId;
-    readonly executionPolicy: unknown;
-    readonly selector: unknown;
-  }): Promise<ChannelBinding> {
-    const selector = ChannelRouteSelectorSchema.parse(input.selector);
-    const executionPolicy = ChannelExecutionPolicySchema.parse(input.executionPolicy);
-    const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      await assertPersonalOwner(transaction, input.createdBy);
-      const account = await ownedAccount(transaction, input.accountId, input.createdBy);
-      if (account.routingMode === "dedicated") {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "A dedicated messaging identity has exactly one binding",
-        });
-      }
-      const existing = await transaction
-        .selectFrom("channelBindings")
-        .selectAll()
-        .where("accountId", "=", account.id)
-        .where("status", "!=", "revoked")
-        .forNoKeyUpdate()
-        .execute();
-      const id = createChannelId("binding");
-      assertUnambiguousBinding(
-        { id, selector, status: "active" },
-        existing.map(channelBindingFromRow),
-      );
-      const row = await transaction
-        .insertInto("channelBindings")
-        .values({
-          accessPolicy: jsonValue(accessPolicy),
-          accountId: input.accountId,
-          createdBy: input.createdBy,
-          executionPolicy: jsonValue(executionPolicy),
-          id,
-          revision: 1,
-          selector: jsonValue(selector),
-          status: "active",
-          updatedAt: new Date(),
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return channelBindingFromRow(row);
-    });
-  }
-
-  async updateBinding(input: {
-    readonly accessPolicy: unknown;
-    readonly bindingId: ChannelBindingId;
-    readonly expectedRevision: number;
-    readonly ownerUserId: UserId;
-  }): Promise<ChannelBinding> {
-    const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
-    const binding = await commitPersonalMutation(this.#database, async (transaction) => {
-      const binding = await ownedBinding(transaction, input.bindingId, input.ownerUserId);
-      await assertPersonalOwner(transaction, input.ownerUserId);
-      if (binding.revision !== input.expectedRevision) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Channel access policy changed while it was being edited",
-        });
-      }
-      const now = new Date();
-      const row = await transaction
-        .updateTable("channelBindings")
-        .set({
-          accessPolicy: jsonValue(accessPolicy),
-          revision: binding.revision + 1,
-          updatedAt: now,
-        })
-        .where("id", "=", input.bindingId)
-        .where("revision", "=", input.expectedRevision)
-        .returningAll()
-        .executeTakeFirst();
-      if (!row) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Channel access policy changed while it was being edited",
-        });
-      }
-      return channelBindingFromRow(row);
-    });
-    await drainRevokedChannelInputs(this.#database, input.bindingId);
-    return binding;
-  }
-
-  async reviewAccess(input: {
-    readonly bindingId: ChannelBindingId;
-    readonly decision: "approved" | "declined" | "revoked";
-    readonly expectedRevision: number;
-    readonly externalUserId: string;
-    readonly ownerUserId: UserId;
-  }): Promise<ChannelAccessGrant> {
-    const grant = await commitPersonalMutation(this.#database, async (transaction) => {
-      await ownedBinding(transaction, input.bindingId, input.ownerUserId);
-      await assertPersonalOwner(transaction, input.ownerUserId);
-      const grant = await transaction
-        .selectFrom("channelAccessGrants")
-        .selectAll()
-        .where("bindingId", "=", input.bindingId)
-        .where("externalUserId", "=", input.externalUserId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!grant) {
-        throw new OpensteerError({
-          code: "not_found",
-          message: "Channel access request not found",
-        });
-      }
-      if (grant.revision !== input.expectedRevision) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Channel access request changed while it was being reviewed",
-        });
-      }
-      const now = new Date();
-      const row = await transaction
-        .updateTable("channelAccessGrants")
-        .set({
-          decidedAt: now,
-          decidedBy: input.ownerUserId,
-          revision: grant.revision + 1,
-          status: input.decision,
-          updatedAt: now,
-        })
-        .where("bindingId", "=", input.bindingId)
-        .where("externalUserId", "=", input.externalUserId)
-        .where("revision", "=", input.expectedRevision)
-        .returningAll()
-        .executeTakeFirst();
-      if (!row) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Channel access request changed while it was being reviewed",
-        });
-      }
-      if (row.requestIngressId) {
-        const text =
-          input.decision === "approved"
-            ? "Your access was approved. Send your message again to start work."
-            : input.decision === "declined"
-              ? "Your access request was declined."
-              : "Your access was revoked.";
-        await insertStatusDelivery(transaction, {
-          accountId: row.accountId,
-          audience: "actor",
-          conversationId: null,
-          ingressId: row.requestIngressId,
-          text,
-        });
-      }
-      return channelAccessGrantFromRow(row);
-    });
-    await drainRevokedChannelInputs(this.#database, input.bindingId);
-    return grant;
   }
 
   async setConnectionStatus(
@@ -737,130 +391,6 @@ export class ChannelStore {
           .execute();
       }),
     );
-    if (status === "revoked") await drainRevokedChannelInputs(this.#database);
-  }
-
-  /**
-   * Retire one route. Conversations already pinned to it decline with
-   * `no-route` on their next message, which is answered the same way any
-   * unrouted conversation is, so nothing has to be torn down here.
-   */
-  async revokeBinding(input: {
-    readonly administration?: AdministrationCommandIdentity | undefined;
-    readonly bindingId: ChannelBindingId;
-    readonly ownerUserId: UserId;
-  }): Promise<boolean> {
-    const revoked = await commitPersonalMutation(this.#database, (transaction) =>
-      administrationCommand(transaction, input.administration, async () => {
-        const binding = await transaction
-          .selectFrom("channelBindings")
-          .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-          .innerJoin(
-            "integrationConnections",
-            "integrationConnections.id",
-            "channelAccounts.connectionId",
-          )
-          .select(["channelBindings.id", "channelBindings.status"])
-          .where("channelBindings.id", "=", input.bindingId)
-          .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-          .forNoKeyUpdate("channelBindings")
-          .executeTakeFirst();
-        if (!binding) {
-          throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
-        }
-        if (binding.status === "revoked") return false;
-        await transaction
-          .updateTable("channelBindings")
-          .set({ status: "revoked", updatedAt: new Date() })
-          .where("id", "=", input.bindingId)
-          .executeTakeFirstOrThrow();
-        return true;
-      }),
-    );
-    await drainRevokedChannelInputs(this.#database, input.bindingId);
-    return revoked;
-  }
-
-  /**
-   * Redeem a link code as the signed-in user. Redemption requires an
-   * authenticated session and the code lives one hour in a 32^8 keyspace, so
-   * guessing is not a threat worth a lockout.
-   */
-  async linkIdentity(input: { readonly codeHash: string; readonly userId: UserId }): Promise<{
-    readonly account: ChannelAccount;
-    readonly identity: { readonly displayName: string; readonly externalUserId: string };
-  }> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      await assertPersonalOwner(transaction, input.userId);
-      const now = new Date();
-      const observedCode = await transaction
-        .selectFrom("channelLinkCodes")
-        .selectAll()
-        .where("codeHash", "=", input.codeHash)
-        .where("consumedAt", "is", null)
-        .where("expiresAt", ">", now)
-        .executeTakeFirst();
-      if (!observedCode) {
-        throw new OpensteerError({
-          code: "not_found",
-          message: "That code is invalid or has expired.",
-        });
-      }
-      const identity = await transaction
-        .selectFrom("channelIdentities")
-        .selectAll()
-        .where("id", "=", observedCode.identityId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      const code = await transaction
-        .selectFrom("channelLinkCodes")
-        .selectAll()
-        .where("codeHash", "=", input.codeHash)
-        .where("consumedAt", "is", null)
-        .where("expiresAt", ">", now)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!code) {
-        throw new OpensteerError({
-          code: "not_found",
-          message: "That code is invalid or has expired.",
-        });
-      }
-      if (identity.linkedUserId && identity.linkedUserId !== input.userId) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "That messaging account is already linked to another person",
-        });
-      }
-      await transaction
-        .updateTable("channelIdentities")
-        .set({ linkedUserId: input.userId, status: "linked", updatedAt: now })
-        .where("id", "=", identity.id)
-        .executeTakeFirstOrThrow();
-      await transaction
-        .updateTable("channelLinkCodes")
-        .set({ consumedAt: now, userId: input.userId })
-        .where("id", "=", code.id)
-        .executeTakeFirstOrThrow();
-      const account = await transaction
-        .selectFrom("channelAccounts")
-        .selectAll()
-        .where("id", "=", code.accountId)
-        .executeTakeFirstOrThrow();
-      if (code.requestIngressId) {
-        await insertStatusDelivery(transaction, {
-          accountId: code.accountId,
-          audience: "actor",
-          conversationId: null,
-          ingressId: code.requestIngressId,
-          text: "Your messaging identity is linked. Send your message again to start work.",
-        });
-      }
-      return {
-        account: channelAccountFromRow(account),
-        identity: { displayName: identity.displayName, externalUserId: identity.externalUserId },
-      };
-    });
   }
 
   /**
@@ -1416,513 +946,6 @@ export class ChannelStore {
     });
   }
 
-  /**
-   * `availableEngines` are the connected work locations, in preference order,
-   * and the engines each can run now: runtime facts, never an account choice.
-   * The account is chosen here, after the channel identity resolves to a
-   * user, from that person's own authorized accounts and automatic-model
-   * exclusions, so one person's message never lands on another's account.
-   */
-  async adoptIngress(input: {
-    readonly claimToken: string;
-    readonly ingressId: ChannelIngressId;
-    readonly notices: ChannelIngressNotices;
-    readonly availableEngines: readonly {
-      readonly environmentId: EnvironmentId;
-      readonly driverKinds: readonly HarnessId[];
-    }[];
-  }): Promise<AdoptedChannelIngress | IgnoredChannelIngress> {
-    return retryDatabaseTransaction(
-      () =>
-        commitPersonalMutation(this.#database, async (transaction) => {
-          const ingress = await transaction
-            .selectFrom("channelIngressEvents")
-            .selectAll()
-            .where("id", "=", input.ingressId)
-            .where("status", "=", "leased")
-            .where("claimTokenHash", "=", digest(input.claimToken))
-            .forNoKeyUpdate()
-            .executeTakeFirst();
-          if (!ingress) throw staleClaim("ingress");
-          await sql`select pg_advisory_xact_lock(hashtextextended(${ingress.laneKey}, 0))`.execute(
-            transaction,
-          );
-          const event = NormalizedChannelEventSchema.parse(ingress.event);
-          // A channel that lost the use it was set up on answers nobody, and says
-          // nothing: its transport, not the person writing, is what changed.
-          if (!(await channelSourceAllows(transaction, ingress.accountId, false))) {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "The computer's app connection no longer allows this channel",
-            );
-            return { identityId: null, kind: "ignored", reason: "source-withdrawn" };
-          }
-          const observedConversation = await transaction
-            .selectFrom("channelConversations")
-            .selectAll()
-            .where("provider", "=", event.provider)
-            .where("externalAccountId", "=", event.accountExternalId)
-            .where(
-              sql<boolean>`external_scope_id is not distinct from ${event.conversation.externalScopeId}`,
-            )
-            .where("externalConversationId", "=", event.conversation.externalConversationId)
-            .where(
-              sql<boolean>`external_thread_id is not distinct from ${event.conversation.externalThreadId}`,
-            )
-            .executeTakeFirst();
-
-          if (observedConversation && observedConversation.accountId !== ingress.accountId) {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "This provider conversation belongs to another messaging identity",
-            );
-            return {
-              identityId: null,
-              kind: "ignored",
-              reason: "conversation-owned-by-another-identity",
-            };
-          }
-          if (!observedConversation && event.trigger === "conversation-followup") {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "No messaging identity owns this provider conversation",
-            );
-            return { identityId: null, kind: "ignored", reason: "conversation-not-owned" };
-          }
-
-          let existingConversation = observedConversation;
-
-          let binding: ChannelBinding | null;
-          if (existingConversation) {
-            const row = await transaction
-              .selectFrom("channelBindings")
-              .selectAll()
-              .where("id", "=", existingConversation.bindingId)
-              .where("status", "=", "active")
-              .executeTakeFirst();
-            binding = row ? channelBindingFromRow(row) : null;
-          } else {
-            const candidates = await transaction
-              .selectFrom("channelBindings")
-              .selectAll()
-              .where("accountId", "=", ingress.accountId)
-              .where("status", "=", "active")
-              .execute();
-            binding = resolveChannelBinding(candidates.map(channelBindingFromRow), {
-              conversationId: event.conversation.externalConversationId,
-              conversationType: event.conversation.type,
-              scopeId: event.conversation.externalScopeId,
-              threadId: event.conversation.externalThreadId,
-            });
-          }
-          // Every decline from here on is written and answered in this one
-          // transaction. A person who addressed the bot hears exactly one thing
-          // about it, or the whole decision rolls back and is taken again.
-          const addressed = event.trigger !== "conversation-followup";
-          if (!binding) {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "No channel route matched this conversation",
-            );
-            if (addressed) {
-              await insertStatusDelivery(transaction, {
-                accountId: ingress.accountId,
-                audience: "actor",
-                conversationId: null,
-                ingressId: ingress.id,
-                text: input.notices.noRoute,
-              });
-            }
-            return { identityId: null, kind: "ignored", reason: "no-route" };
-          }
-
-          const observedIdentity = await transaction
-            .selectFrom("channelIdentities")
-            .select("id")
-            .where("accountId", "=", ingress.accountId)
-            .where("externalUserId", "=", event.actor.externalUserId)
-            .executeTakeFirst();
-          const commandKey = `channel:${ingress.accountId}:${event.eventId}`;
-          await lockCommandIdempotency(transaction, binding.createdBy, commandKey);
-
-          // Thread Inbox steering locks a target Run before task rows.
-          // Existing channel conversations participate in that same order so the
-          // later atomic inbox admission can safely re-lock the observed Run.
-          let activeThreadIds: ThreadId[] = [];
-          if (observedConversation) {
-            activeThreadIds = observedConversation.activeThreadId
-              ? [observedConversation.activeThreadId]
-              : [];
-            if (activeThreadIds.length > 0) {
-              await transaction
-                .selectFrom("runs")
-                .select("id")
-                .where("threadId", "in", activeThreadIds)
-                .where("status", "in", nonTerminalRunStatuses)
-                .orderBy("id", "asc")
-                .forNoKeyUpdate()
-                .execute();
-            }
-          }
-          const personal = await assertPersonalOwner(transaction, binding.createdBy);
-          const specificHarnessId =
-            binding.executionPolicy.harness === "specific"
-              ? binding.executionPolicy.harnessInstanceId
-              : null;
-          const candidateEnvironmentIds = [
-            ...new Set(input.availableEngines.map((available) => available.environmentId)),
-          ];
-          if (candidateEnvironmentIds.length)
-            await transaction
-              .selectFrom("executionEnvironments")
-              .select("id")
-              .where("id", "in", candidateEnvironmentIds)
-              .orderBy("id", "asc")
-              .forShare()
-              .execute();
-          const harnesses =
-            candidateEnvironmentIds.length || specificHarnessId
-              ? await transaction
-                  .selectFrom("harnessInstances")
-                  .select([
-                    "driverKind",
-                    "enabled",
-                    "environmentId",
-                    "id",
-                    "isDefault",
-                    "removedAt",
-                    "sourceId",
-                  ])
-                  .where((eb) =>
-                    eb.or([
-                      ...(candidateEnvironmentIds.length
-                        ? [eb("environmentId", "in", candidateEnvironmentIds)]
-                        : []),
-                      ...(specificHarnessId ? [eb("id", "=", specificHarnessId)] : []),
-                    ]),
-                  )
-                  .orderBy("id", "asc")
-                  .forShare()
-                  .execute()
-              : [];
-          await lockThreadChannelAuthorities(transaction, activeThreadIds, {
-            bindingId: binding.id,
-            ...(observedIdentity ? { identityId: observedIdentity.id } : {}),
-          });
-          if (!(await channelSourceAllows(transaction, ingress.accountId))) {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "The computer's app connection no longer allows this channel",
-            );
-            return { identityId: null, kind: "ignored", reason: "source-withdrawn" };
-          }
-          const connection = await transaction
-            .selectFrom("channelAccounts")
-            .innerJoin(
-              "integrationConnections",
-              "integrationConnections.id",
-              "channelAccounts.connectionId",
-            )
-            .select([
-              "channelAccounts.status as accountStatus",
-              "integrationConnections.status as connectionStatus",
-            ])
-            .where("channelAccounts.id", "=", ingress.accountId)
-            .forShare("channelAccounts")
-            .executeTakeFirst();
-          if (
-            !connection ||
-            connection.accountStatus !== "connected" ||
-            !["pending", "connected", "needs-attention"].includes(connection.connectionStatus)
-          ) {
-            await finishIgnored(transaction, ingress.id, "The messaging connection is not active");
-            return { identityId: null, kind: "ignored", reason: "no-route" };
-          }
-          const lockedBinding = await transaction
-            .selectFrom("channelBindings")
-            .selectAll()
-            .where("id", "=", binding.id)
-            .where("status", "=", "active")
-            .forNoKeyUpdate()
-            .executeTakeFirst();
-          if (!lockedBinding) {
-            await finishIgnored(transaction, ingress.id, "The channel route is no longer active");
-            if (addressed) {
-              await insertStatusDelivery(transaction, {
-                accountId: ingress.accountId,
-                audience: "actor",
-                conversationId: null,
-                ingressId: ingress.id,
-                text: input.notices.noRoute,
-              });
-            }
-            return { identityId: null, kind: "ignored", reason: "no-route" };
-          }
-          if (lockedBinding.createdBy !== binding.createdBy) {
-            throw new ChannelAdmissionFenceChanged(
-              "Channel route authority changed during discovery",
-            );
-          }
-          binding = channelBindingFromRow(lockedBinding);
-
-          const senderPolicy = channelSenderPolicy(binding, event.conversation);
-          if (!senderPolicy || senderPolicy.mode === "off") {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "This conversation is outside the route access policy",
-            );
-            if (addressed) {
-              await insertStatusDelivery(transaction, {
-                accountId: ingress.accountId,
-                audience: "actor",
-                conversationId: null,
-                ingressId: ingress.id,
-                text: input.notices.noRoute,
-              });
-            }
-            return { identityId: null, kind: "ignored", reason: "no-route" };
-          }
-
-          const identity = await upsertChannelIdentity(transaction, {
-            accountId: ingress.accountId,
-            displayName: event.actor.displayName,
-            externalUserId: event.actor.externalUserId,
-          });
-          if (
-            senderPolicy.mode === "approved" &&
-            identity.linkedUserId !== binding.createdBy &&
-            (senderPolicy.allowedExternalUserIds.length === 0 ||
-              senderPolicy.allowedExternalUserIds.includes(identity.externalUserId))
-          ) {
-            const approval = await ensureChannelAccessGrant(transaction, {
-              binding,
-              displayName: identity.displayName,
-              externalUserId: identity.externalUserId,
-              ingressId: ingress.id,
-            });
-            if (approval.grant.status !== "approved") {
-              await finishIgnored(
-                transaction,
-                ingress.id,
-                `Channel access is ${approval.grant.status}`,
-              );
-              if (addressed && approval.grant.status === "pending") {
-                await insertStatusDelivery(transaction, {
-                  accountId: ingress.accountId,
-                  audience: "actor",
-                  conversationId: null,
-                  ingressId: ingress.id,
-                  text: input.notices.approvalPending,
-                });
-              }
-              return { identityId: identity.id, kind: "ignored", reason: "approval-pending" };
-            }
-          }
-          const authority = await resolveChannelAuthority(
-            transaction,
-            binding,
-            identity,
-            event.conversation,
-          );
-          if (!authority) {
-            await finishIgnored(
-              transaction,
-              ingress.id,
-              "This sender is not allowed to use this Messaging binding",
-            );
-            if (addressed) {
-              await this.#offerLinking(transaction, {
-                accountId: ingress.accountId,
-                conversationType: event.conversation.type,
-                identityId: identity.id,
-                ingressId: ingress.id,
-                notices: input.notices,
-                provider: event.provider,
-              });
-            }
-            return { identityId: identity.id, kind: "ignored", reason: "identity-not-authorized" };
-          }
-          const placement = await channelPlacement(transaction, {
-            availableEngines: input.availableEngines,
-            harnesses,
-            specificHarnessId,
-            userId: authority.userId,
-            computerId: personal.hostingComputerId,
-          });
-          const insertThread = await prepareThreadInsertion(transaction, {
-            createdBy: authority.userId,
-            environmentId: placement.environmentId,
-            harnessInstanceId: placement.harnessInstanceId,
-          }).catch((error: unknown) => {
-            if (error instanceof OpensteerError)
-              throw new ChannelIngressDeferredError(error.message);
-            throw error;
-          });
-
-          if (observedConversation) {
-            existingConversation = await transaction
-              .selectFrom("channelConversations")
-              .selectAll()
-              .where("id", "=", observedConversation.id)
-              .forNoKeyUpdate()
-              .executeTakeFirstOrThrow();
-            if (
-              existingConversation.accountId !== observedConversation.accountId ||
-              existingConversation.bindingId !== observedConversation.bindingId
-            ) {
-              throw new OpensteerError({
-                code: "conflict",
-                message: "Channel conversation routing changed during adoption",
-              });
-            }
-          }
-          const personalContext = channelAllowsPersonalContext({
-            conversationType: event.conversation.type,
-            linkedSenderId: identity.status === "linked" ? identity.linkedUserId : null,
-            ownerId: binding.createdBy,
-          });
-          let conversation = existingConversation;
-          if (!conversation) {
-            conversation = await transaction
-              .insertInto("channelConversations")
-              .values({
-                personalContext,
-                accountId: ingress.accountId,
-                activeThreadId: null,
-                bindingId: binding.id,
-                bindingRevision: binding.revision,
-                conversationType: event.conversation.type,
-                displayName: event.conversation.displayName,
-                externalAccountId: event.accountExternalId,
-                externalConversationId: event.conversation.externalConversationId,
-                externalScopeId: event.conversation.externalScopeId,
-                externalThreadId: event.conversation.externalThreadId,
-                id: createChannelId("conversation"),
-                provider: event.provider,
-                providerState: jsonValue({}),
-                updatedAt: new Date(),
-              })
-              .returningAll()
-              .executeTakeFirstOrThrow();
-          }
-          let thread =
-            conversation.bindingRevision === binding.revision && conversation.activeThreadId
-              ? await transaction
-                  .selectFrom("threads")
-                  .selectAll()
-                  .where("id", "=", conversation.activeThreadId)
-                  .forNoKeyUpdate()
-                  .executeTakeFirst()
-              : undefined;
-          const rotate =
-            !thread ||
-            thread.doneAt !== null ||
-            thread.status === "archived" ||
-            thread.environmentId !== placement.environmentId ||
-            thread.harnessInstanceId !== placement.harnessInstanceId;
-
-          if (rotate) {
-            const threadId = createId("thread");
-            const threadRow = await insertThread({
-              accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
-              purpose: "task",
-              createdByPrincipalId: identity.principalId,
-              id: threadId,
-              lineageRootThreadId: threadId,
-              listed: true,
-              modelSelection: jsonValue(placement.modelSelection),
-              parentThreadId: null,
-              status: deriveThreadStatus({
-                earliestActiveRunStatus: null,
-                inputQueuePaused: false,
-                lastRunFailed: false,
-              }),
-              title: channelThreadTitle(event, this.#manifest(event.provider)?.label ?? null),
-              titleSource: "chosen",
-              icon: null,
-              iconSource: "provisional",
-            });
-            thread = threadRow;
-            await ensureSelectedProviderSession(transaction, threadRow, {
-              personalContext,
-            });
-            await publishThreadSummary(transaction, thread.id);
-          }
-          if (!thread) {
-            throw new OpensteerError({
-              code: "internal",
-              message: "Channel Thread was not created",
-            });
-          }
-          const now = new Date();
-          await transaction
-            .updateTable("channelConversations")
-            .set({
-              activeThreadId: thread.id,
-              personalContext,
-              bindingRevision: binding.revision,
-              updatedAt: now,
-            })
-            .where("id", "=", conversation.id)
-            .executeTakeFirstOrThrow();
-
-          // Bind the leased ingress to its authoritative conversation before the
-          // shared Thread Inbox validates and authors the input. The transaction
-          // keeps this invisible until adoption commits, while the inbox never has
-          // to trust caller-supplied routing facts.
-          await transaction
-            .updateTable("channelIngressEvents")
-            .set({ conversationId: conversation.id, updatedAt: new Date() })
-            .where("id", "=", ingress.id)
-            .where("status", "=", "leased")
-            .executeTakeFirstOrThrow();
-
-          const accepted = await enqueueThreadInputInTransaction(transaction, {
-            content: event.content,
-            idempotencyKey: commandKey,
-            policy: "queue",
-            requestedBy: authority.userId,
-            source: {
-              conversationId: conversation.id,
-              ingressId: ingress.id,
-              kind: "channel",
-              principalId: identity.principalId,
-            },
-            threadId: thread.id,
-          });
-          await transaction
-            .updateTable("channelIngressEvents")
-            .set({
-              claimExpiresAt: null,
-              claimOwner: null,
-              claimTokenHash: null,
-              conversationId: conversation.id,
-              lastError: null,
-              messageId: accepted.message.id,
-              processedAt: new Date(),
-              runId: accepted.run?.id ?? null,
-              status: "adopted",
-              updatedAt: new Date(),
-            })
-            .where("id", "=", ingress.id)
-            .executeTakeFirstOrThrow();
-          return {
-            dispatchEnvironmentId: accepted.command?.environmentId ?? null,
-            kind: "adopted",
-            revokedGrants: accepted.revokedGrants,
-            run: accepted.run,
-          };
-        }),
-      (error) => error instanceof ChannelAdmissionFenceChanged,
-    );
-  }
-
   async claimDelivery(workerId: string, leaseMs = 30_000): Promise<ClaimedDeliveryRecord | null> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const now = new Date();
@@ -2095,20 +1118,10 @@ export class ChannelStore {
       if (connections.find((row) => row.id === observed.id)?.status !== "connected")
         throw staleClaim("delivery");
       const sourceAllowed = await channelSourceAllows(transaction, delivery.accountId, false);
-      const reply =
-        delivery.kind === "reply" && delivery.messageId
-          ? await transaction
-              .selectFrom("messages")
-              .select("runId")
-              .where("id", "=", delivery.messageId)
-              .executeTakeFirst()
-          : null;
-      const replyAllowed =
-        delivery.kind !== "reply" ||
-        (reply?.runId !== null &&
-          reply?.runId !== undefined &&
-          (await channelRunAuthorityIsCurrent(transaction, reply.runId)));
-      const allowed = sourceAllowed && replyAllowed;
+      // What the previous image queued here was decided by routes and approvals that no longer
+      // exist; it never leaves the Home. A bridge's messages leave through its own outbox.
+      void sourceAllowed;
+      const allowed = false;
       // Nothing left the Host yet, so a delivery whose channel lost the use it
       // was set up on ends here, known not to have been sent.
       if (!allowed) {
@@ -2191,82 +1204,6 @@ export class ChannelStore {
       .executeTakeFirst();
     if (result.numUpdatedRows !== 1n) throw staleClaim("delivery");
   }
-
-  #manifest(provider: ChannelProvider): ChannelProviderManifest | undefined {
-    return this.#providers.find((candidate) => candidate.provider === provider);
-  }
-
-  /**
-   * Hand one person the code that links their provider account. The code is a
-   * secret, so it only ever goes where nobody else can read it: a provider that
-   * cannot address one person inside a conversation gets told to move to a
-   * direct message instead of having a code posted in front of the room.
-   *
-   * Every explicitly addressed retry receives a fresh code. The previous code
-   * is deleted before the new one is inserted, so the latest private notice is
-   * always redeemable and an older copied code cannot link the identity later.
-   * The caller holds the identity fence, serializing retries and redemption.
-   */
-  async #offerLinking(
-    transaction: Transaction<DatabaseSchema>,
-    input: {
-      readonly accountId: ChannelAccountId;
-      readonly conversationType: NormalizedChannelEvent["conversation"]["type"];
-      readonly identityId: ChannelIdentityId;
-      readonly ingressId: ChannelIngressId;
-      readonly notices: ChannelIngressNotices;
-      readonly provider: ChannelProvider;
-    },
-  ): Promise<void> {
-    if (
-      input.conversationType !== "dm" &&
-      this.#manifest(input.provider)?.actorDelivery === "direct-message-only"
-    ) {
-      await insertStatusDelivery(transaction, {
-        accountId: input.accountId,
-        audience: "conversation",
-        conversationId: null,
-        ingressId: input.ingressId,
-        text: input.notices.linkByDirectMessage,
-      });
-      return;
-    }
-    const now = new Date();
-    await transaction
-      .selectFrom("channelLinkCodes")
-      .select("id")
-      .where("identityId", "=", input.identityId)
-      .where("consumedAt", "is", null)
-      .orderBy("id", "asc")
-      // FOR UPDATE: The previous unconsumed codes are deleted below.
-      .forUpdate()
-      .execute();
-    await transaction
-      .deleteFrom("channelLinkCodes")
-      .where("identityId", "=", input.identityId)
-      .where("consumedAt", "is", null)
-      .execute();
-    const code = randomLinkCode();
-    await transaction
-      .insertInto("channelLinkCodes")
-      .values({
-        accountId: input.accountId,
-        codeHash: digest(code),
-        expiresAt: new Date(now.getTime() + linkCodeTtlMs),
-        id: `link_${globalThis.crypto.randomUUID()}`,
-        identityId: input.identityId,
-        requestIngressId: input.ingressId,
-        userId: null,
-      })
-      .executeTakeFirstOrThrow();
-    await insertStatusDelivery(transaction, {
-      accountId: input.accountId,
-      audience: "actor",
-      conversationId: null,
-      ingressId: input.ingressId,
-      text: input.notices.linkCode(code),
-    });
-  }
 }
 
 /**
@@ -2320,7 +1257,7 @@ async function requireComputerChannelSource(
   }
 }
 
-async function upsertChannelIdentity(
+export async function upsertChannelIdentity(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly accountId: ChannelAccountId;
@@ -2378,140 +1315,6 @@ async function upsertChannelIdentity(
     .executeTakeFirstOrThrow();
 }
 
-async function finishIgnored(
-  transaction: Transaction<DatabaseSchema>,
-  id: ChannelIngressId,
-  reason: string,
-): Promise<void> {
-  await transaction
-    .updateTable("channelIngressEvents")
-    .set({
-      claimExpiresAt: null,
-      claimOwner: null,
-      claimTokenHash: null,
-      lastError: reason.slice(0, 2_000),
-      processedAt: new Date(),
-      status: "ignored",
-      updatedAt: new Date(),
-    })
-    .where("id", "=", id)
-    .executeTakeFirstOrThrow();
-}
-
-async function ownedAccount(
-  transaction: Transaction<DatabaseSchema>,
-  accountId: ChannelAccountId,
-  ownerUserId: UserId,
-) {
-  const account = await transaction
-    .selectFrom("channelAccounts")
-    .innerJoin(
-      "integrationConnections",
-      "integrationConnections.id",
-      "channelAccounts.connectionId",
-    )
-    .selectAll("channelAccounts")
-    .where("channelAccounts.id", "=", accountId)
-    .where("integrationConnections.ownerUserId", "=", ownerUserId)
-    .where("integrationConnections.status", "!=", "revoked")
-    .executeTakeFirst();
-  if (!account) {
-    throw new OpensteerError({ code: "not_found", message: "Channel account not found" });
-  }
-  return account;
-}
-
-async function ownedBinding(
-  transaction: Transaction<DatabaseSchema>,
-  bindingId: ChannelBindingId,
-  ownerUserId: UserId,
-): Promise<Selectable<ChannelBindingTable>> {
-  const binding = await transaction
-    .selectFrom("channelBindings")
-    .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-    .innerJoin(
-      "integrationConnections",
-      "integrationConnections.id",
-      "channelAccounts.connectionId",
-    )
-    .selectAll("channelBindings")
-    .where("channelBindings.id", "=", bindingId)
-    .where("channelBindings.status", "=", "active")
-    .where("integrationConnections.ownerUserId", "=", ownerUserId)
-    .forNoKeyUpdate("channelBindings")
-    .executeTakeFirst();
-  if (!binding) {
-    throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
-  }
-  return binding;
-}
-
-export async function drainRevokedChannelInputs(
-  database: Kysely<DatabaseSchema>,
-  bindingId?: ChannelBindingId,
-): Promise<void> {
-  for (;;) {
-    const retired = await commitPersonalMutation(database, async (tx) => {
-      const rows = await tx
-        .selectFrom("threadInputs")
-        .innerJoin("channelBindings", (join) =>
-          join.on(sql<boolean>`thread_inputs.authority_source->>'bindingId' = channel_bindings.id`),
-        )
-        .select(["threadInputs.messageId", "threadInputs.threadId"])
-        .where(sql<boolean>`thread_inputs.state in ('pending','unknown')`)
-        .where(sql<boolean>`thread_inputs.authority_source->>'kind' = 'channel-ingress'`)
-        .$if(bindingId !== undefined, (query) => query.where("channelBindings.id", "=", bindingId!))
-        .where(
-          sql<boolean>`(
-          channel_bindings.status = 'revoked'
-          or coalesce((thread_inputs.authority_source->>'bindingRevision')::integer, 0) < channel_bindings.revision
-          or (
-            thread_inputs.authority_source->'access'->>'mode' = 'approved'
-            and exists (
-              select 1 from channel_identities identity
-              join channel_access_grants grant_row
-                on grant_row.binding_id = channel_bindings.id
-                and grant_row.external_user_id = identity.external_user_id
-              where identity.account_id = channel_bindings.account_id
-                and identity.principal_id = thread_inputs.actor_principal_id
-                and (thread_inputs.authority_source->'access'->>'grantRevision')::integer < grant_row.revision
-            )
-          )
-        )`,
-        )
-        .orderBy("channelBindings.id")
-        .orderBy("threadInputs.messageId")
-        .limit(32)
-        .execute();
-      if (!rows.length) return 0;
-      await tx
-        .selectFrom("threads")
-        .select("id")
-        .where(
-          "id",
-          "in",
-          rows.map(({ threadId }) => threadId),
-        )
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
-      const cancelled = await tx
-        .updateTable("threadInputs")
-        .set({ state: "cancelled", cancelReason: "channel-access-changed", updatedAt: new Date() })
-        .where(
-          "messageId",
-          "in",
-          rows.map(({ messageId }) => messageId),
-        )
-        .returning(["threadId", "messageId"])
-        .execute();
-      for (const row of cancelled) await refreshInputQueue(tx, row.threadId, row.messageId);
-      return cancelled.length;
-    });
-    if (!retired) return;
-  }
-}
-
 function channelAccountFromRow(row: Selectable<ChannelAccountTable>): ChannelAccount {
   return ChannelAccountSchema.parse({
     ...row,
@@ -2540,14 +1343,6 @@ function integrationConnectionFromRow(
     statusDetail: runtimeOffline ? "Messaging service is reconnecting" : row.statusDetail,
     statusReason: runtimeOffline ? "transport" : row.statusReason,
     transportKind: row.transportKind,
-    updatedAt: row.updatedAt.toISOString(),
-  });
-}
-
-function channelBindingFromRow(row: Selectable<ChannelBindingTable>): ChannelBinding {
-  return ChannelBindingSchema.parse({
-    ...row,
-    createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
 }
@@ -2616,144 +1411,11 @@ function deliveryDestination(row: {
   };
 }
 
-function channelThreadTitle(event: NormalizedChannelEvent, label: string | null): string {
-  const location = event.conversation.displayName ?? event.conversation.externalConversationId;
-  return `${label ?? event.provider} · ${location}`.slice(0, 240);
-}
-
-/** A code somebody retypes from a chat message, so the alphabet is unambiguous. */
-function randomLinkCode(): string {
-  return [...randomBytes(8)].map((value) => linkAlphabet[value % linkAlphabet.length]).join("");
-}
-
 /** See `ingressDeferralRetryMs`: quick while somebody is still watching. */
 function ingressDeferralDelayMs(receivedAt: Date | null): number {
   return receivedAt && Date.now() - receivedAt.getTime() >= ingressDeferralFreshMs
     ? ingressDeferralSlowRetryMs
     : ingressDeferralRetryMs;
-}
-
-/**
- * Where a new channel conversation runs, decided for the person the message
- * resolved to. An explicitly bound account stays exact; otherwise their
- * authorized, non-excluded accounts are taken in the shared automatic order.
- * Either way the model is the account's catalog default, carrying the
- * endpoint's own `nativeModelId`, and never a guess the account may not offer.
- */
-async function channelPlacement(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly availableEngines: readonly {
-      readonly environmentId: EnvironmentId;
-      readonly driverKinds: readonly HarnessId[];
-    }[];
-    readonly harnesses: readonly Pick<
-      Selectable<DatabaseSchema["harnessInstances"]>,
-      "driverKind" | "enabled" | "environmentId" | "id" | "isDefault" | "removedAt" | "sourceId"
-    >[];
-    readonly specificHarnessId: HarnessInstanceId | null;
-    readonly userId: UserId;
-    readonly computerId: RunnerId;
-  },
-): Promise<{
-  readonly environmentId: EnvironmentId;
-  readonly harnessInstanceId: HarnessInstanceId;
-  readonly modelSelection: ModelSelection;
-}> {
-  const environments = await transaction
-    .selectFrom("executionEnvironments")
-    .select("id")
-    .where("runnerId", "=", input.computerId)
-    .execute();
-  const hosted = new Set(environments.map((row) => row.id));
-  const authorized = new Set<EnvironmentId>();
-  for (const { environmentId } of input.availableEngines)
-    if (
-      hosted.has(environmentId) &&
-      (await executionEnvironmentIsAvailableToUser(transaction, environmentId, input.userId))
-    )
-      authorized.add(environmentId);
-  const runnable = (environmentId: EnvironmentId, driverKind: HarnessId) =>
-    authorized.has(environmentId) &&
-    input.availableEngines.some(
-      (available) =>
-        available.environmentId === environmentId && available.driverKinds.includes(driverKind),
-    );
-  const accounts = input.harnesses.filter(
-    (harness) => harness.id === input.specificHarnessId || authorized.has(harness.environmentId),
-  );
-  const catalogs = accounts.length
-    ? await transaction
-        .selectFrom("harnessCatalogs")
-        .select(["catalog", "environmentId", "harnessInstanceId"])
-        .where(
-          "harnessInstanceId",
-          "in",
-          accounts.map((account) => account.id),
-        )
-        .execute()
-    : [];
-  const catalogFor = (harness: (typeof accounts)[number]) =>
-    catalogs.find(
-      (row) => row.harnessInstanceId === harness.id && row.environmentId === harness.environmentId,
-    )?.catalog ?? null;
-  if (input.specificHarnessId) {
-    const harness = accounts.find((account) => account.id === input.specificHarnessId);
-    if (!harness?.enabled || harness.removedAt !== null)
-      throw new ChannelIngressDeferredError("Selected AI engine is unavailable");
-    if (!runnable(harness.environmentId, harness.driverKind))
-      throw new ChannelIngressDeferredError(
-        "Selected AI engine belongs to an unavailable work location",
-      );
-    const catalog = catalogFor(harness);
-    if (catalog?.status !== "ready")
-      throw new ChannelIngressDeferredError("Selected AI engine has reported no models yet");
-    const modelSelection = catalogDefaultModelSelection(catalog);
-    if (!modelSelection)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Selected AI engine reports no default model",
-      });
-    return { environmentId: harness.environmentId, harnessInstanceId: harness.id, modelSelection };
-  }
-  if (authorized.size === 0)
-    throw new ChannelIngressDeferredError("No work location is available with an AI engine");
-  const excludedAccounts = excludedBackgroundAccounts(
-    (await readAgentHomeSettings(transaction, input.userId)).settings,
-  );
-  // Snapshot order follows the connected work locations' preference order.
-  const snapshot = input.availableEngines.flatMap(({ environmentId }) =>
-    accounts
-      .filter((account) => account.environmentId === environmentId)
-      .map((account) => ({
-        environmentId,
-        driverKind: account.driverKind,
-        harnessInstanceId: account.id,
-        isDefault: account.isDefault,
-        sourceId: account.sourceId,
-        enabled: account.enabled,
-        removed: account.removedAt !== null,
-        available: true,
-        catalog: catalogFor(account),
-      })),
-  );
-  const chosen = catalogDefaultCandidate({
-    accounts: snapshot,
-    excludedAccounts,
-    canRun: (account) =>
-      runnable(account.environmentId, account.driverKind)
-        ? { ok: true }
-        : { ok: false, reason: "unsupported-capability" },
-  });
-  if (!chosen)
-    throw new ChannelIngressDeferredError(
-      "No AI account available to this person has a default model ready",
-    );
-  return {
-    environmentId: chosen.account.environmentId,
-    harnessInstanceId: chosen.account.harnessInstanceId,
-    modelSelection: chosen.modelSelection,
-  };
 }
 
 function digest(value: string): string {

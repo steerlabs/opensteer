@@ -3,14 +3,12 @@ export { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { findActiveBrowserSessionForPerson } from "./browser-session-store.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import type { ChannelStore } from "./channel-store.js";
+import type {} from "./channel-store.js";
 import {
   createChannelId,
   slackChannelProviderManifest,
   type ChannelAccountId,
   type ChannelConversationId,
-  type ChannelIngressId,
-  type ChannelProviderManifest,
 } from "@opensteer/channel-core";
 import { RunnerIdSchema, type RunnerId } from "@opensteer/core";
 import {
@@ -314,8 +312,7 @@ export async function createStoreFixture() {
       const fixture = await createRunFixture(`channel-delivery-${suffix}`);
       await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
       const channels = new ChannelStore(database);
-      const configured = await channels.createConnection({
-        accessPolicy: testChannelAccessPolicy("anyone"),
+      const created = await channels.createConnection({
         account: {
           displayName: `Delivery ${suffix}`,
           externalAccountId: `T-${suffix}`,
@@ -339,14 +336,25 @@ export async function createStoreFixture() {
           ownerId: fixture.userId,
           provider: "channel:slack",
         },
-        executionPolicy: { harness: "default", harnessInstanceId: null },
-        selector: {
-          conversationId: null,
-          conversationType: null,
-          scopeId: null,
-          threadId: null,
-        },
       });
+      // What the previous image left on a Home it routed messages for: a route, and a
+      // conversation pinned to it. The new code never reads the route.
+      const binding = { id: createChannelId("binding"), revision: 1 };
+      await database
+        .insertInto("channelBindings")
+        .values({
+          accessPolicy: sql`${JSON.stringify(testChannelAccessPolicy("anyone"))}::jsonb`,
+          accountId: created.account.id,
+          createdBy: fixture.userId,
+          executionPolicy: sql`${JSON.stringify({ harness: "default", harnessInstanceId: null })}::jsonb`,
+          id: binding.id,
+          revision: binding.revision,
+          selector: sql`${JSON.stringify({ conversationId: null, conversationType: null, scopeId: null, threadId: null })}::jsonb`,
+          status: "active",
+          updatedAt: new Date(),
+        })
+        .execute();
+      const configured = { ...created, binding };
       await channels.setRuntimeConnectionHealth({
         connectionId: configured.connection.id,
         detail: null,
@@ -360,7 +368,7 @@ export async function createStoreFixture() {
         .values({
           accountId: configured.account.id,
           activeThreadId: fixture.thread.id,
-          bindingId: configured.binding.id,
+          bindingId: configured.binding.id as never,
           bindingRevision: configured.binding.revision,
           conversationType: "dm",
           displayName: `Delivery ${suffix}`,
@@ -410,32 +418,35 @@ export async function createStoreFixture() {
         .executeTakeFirstOrThrow();
       return id;
     }
-    async function createChannelNoticeFixture(
+    /**
+     * A provider account with one bridge on it, and the chat side of a message: commit it as
+     * the messaging runtime would, claim it, and decide it as the Host does.
+     */
+    async function createBridgeFixture(
       suffix: string,
       options: {
-        readonly accessMode?: "anyone" | "approved" | "owner";
-        readonly providers?: readonly ChannelProviderManifest[];
+        readonly senders?: "owner" | "anyone";
+        readonly conversation?: { readonly id: string; readonly name: string };
+        readonly grant?: import("@opensteer/core").AgentGrant;
+        readonly linkOwner?: boolean;
       } = {},
     ) {
-      const { ChannelStore, ChannelIngressDeferredError } = await import("./channel-store.js");
-      const fixture = await createRunFixture(`channel-notice-${suffix}`);
-      const messagingRunnerId = testMessagingRunnerId;
-      await enrollMessagingRunner(messagingRunnerId, "Test messaging service");
-      const channels = new ChannelStore(
-        database,
-        options.providers ? { providers: options.providers } : {},
-      );
+      const { ChannelStore } = await import("./channel-store.js");
+      const { AgentConnectionStore } = await import("./agent-connection-store.js");
+      const ingress = await import("./bridge-ingress.js");
+      const fixture = await createRunFixture(`bridge-${suffix}`);
+      await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
+      const channels = new ChannelStore(database);
       const configured = await channels.createConnection({
-        accessPolicy: testChannelAccessPolicy(options.accessMode ?? "owner"),
         account: {
-          displayName: `Notice ${suffix}`,
+          displayName: `Bridge ${suffix}`,
           externalAccountId: `T-${suffix}`,
           routingMode: "dedicated",
         },
         connection: {
-          runnerId: messagingRunnerId,
+          runnerId: testMessagingRunnerId,
           connectionMethod: "bring-your-own",
-          displayName: `Notice ${suffix}`,
+          displayName: `Bridge ${suffix}`,
           externalIdentityId: `U-BOT-${suffix}`,
           externalTenantId: `T-${suffix}`,
           provider: "slack",
@@ -443,104 +454,114 @@ export async function createStoreFixture() {
         },
         createdBy: fixture.userId,
         credential: {
-          encryptedPayload: Buffer.from(`notice-${suffix}`),
+          encryptedPayload: Buffer.from(`bridge-${suffix}`),
           encryptionKeyVersion: 1,
           id: createId("credential"),
-          name: `Notice ${suffix}`,
+          name: `Bridge ${suffix}`,
           ownerId: fixture.userId,
           provider: "channel:slack",
         },
-        executionPolicy: { harness: "default", harnessInstanceId: null },
-        selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
       });
       await channels.setRuntimeConnectionHealth({
         connectionId: configured.connection.id,
         detail: null,
         reason: null,
-        runnerId: messagingRunnerId,
+        runnerId: testMessagingRunnerId,
         status: "connected",
       });
+      const bridge = await new AgentConnectionStore(database).createBridge({
+        userId: fixture.userId,
+        accountId: configured.account.id,
+        ...(options.conversation ? { conversation: options.conversation } : {}),
+        senders: options.senders ?? "owner",
+        accessMode: "approval-required",
+        grant: options.grant ?? { scope: "selected", tasks: true, resources: [] },
+      });
+      const owner = `U-OWNER-${suffix}`;
       const event = (input: {
-        readonly displayName?: string;
         readonly eventId: string;
         readonly externalUserId?: string;
-        readonly type?: "channel" | "dm";
-        readonly trigger?: "mention" | "conversation-followup";
+        readonly displayName?: string;
+        readonly text?: string;
+        readonly threadId?: string | null;
+        readonly trigger?: "mention" | "direct-message" | "conversation-followup";
       }) => ({
         accountExternalId: `T-${suffix}`,
         actor: {
-          displayName: input.displayName ?? "External operator",
-          externalUserId: input.externalUserId ?? `U-${suffix}`,
+          displayName: input.displayName ?? "Tim",
+          externalUserId: input.externalUserId ?? owner,
         },
-        content: [{ text: "Look at this", type: "text" as const }],
-        conversation:
-          input.type === "dm"
-            ? {
-                displayName: null,
-                externalConversationId: `D-${suffix}`,
-                externalScopeId: `T-${suffix}`,
-                externalThreadId: null,
-                type: "dm" as const,
-              }
-            : {
-                displayName: suffix.toLowerCase(),
-                externalConversationId: `C-${suffix}`,
-                externalScopeId: `T-${suffix}`,
-                externalThreadId: "1786320000.000100",
-                type: "channel" as const,
-              },
+        content: [{ text: input.text ?? "Look at this", type: "text" as const }],
+        conversation: options.conversation
+          ? {
+              displayName: options.conversation.name,
+              externalConversationId: options.conversation.id,
+              externalScopeId: `T-${suffix}`,
+              externalThreadId: input.threadId ?? "1786320000.000100",
+              type: "channel" as const,
+            }
+          : {
+              displayName: null,
+              externalConversationId: `D-${suffix}`,
+              externalScopeId: `T-${suffix}`,
+              externalThreadId: input.threadId ?? null,
+              type: "dm" as const,
+            },
         eventId: input.eventId,
         occurredAt: new Date().toISOString(),
         provider: "slack" as const,
         providerMessageId: input.eventId,
-        trigger: input.trigger ?? ("mention" as const),
+        trigger:
+          input.trigger ??
+          (options.conversation ? ("mention" as const) : ("direct-message" as const)),
       });
-      const availableEngines = [
-        { environmentId: fixture.environmentId, driverKinds: [fixture.harnessInstance.driverKind] },
-      ];
-      const claimFor = async (
-        ingressId: ChannelIngressId,
-      ): Promise<NonNullable<Awaited<ReturnType<ChannelStore["claimIngress"]>>>> => {
-        const claimed = await channels.claimIngress(`notice-worker-${suffix}`);
-        expect(claimed?.id).toBe(ingressId);
+      const claim = async (input: Parameters<typeof event>[0]) => {
+        const committed = await channels.commitIngress(configured.connection.id, event(input));
+        const claimed = await channels.claimIngress(`bridge-worker-${suffix}`);
+        expect(claimed?.id).toBe(committed.ingressId);
         return claimed!;
       };
-      const adopt = async (
-        input: Parameters<typeof event>[0],
-      ): Promise<{
-        ingressId: ChannelIngressId;
-        result: Awaited<ReturnType<ChannelStore["adoptIngress"]>>;
-      }> => {
-        const committed = await channels.commitIngress(configured.connection.id, event(input));
-        const claimed = await claimFor(committed.ingressId);
-        try {
-          const result = await channels.adoptIngress({
-            claimToken: claimed.claimToken,
+      /** Send a message from the chat and decide it, as the Host's ingress does. */
+      const decide = async (input: Parameters<typeof event>[0]) => {
+        const claimed = await claim(input);
+        return {
+          claimed,
+          decision: await ingress.decideBridgeIngress(database, {
             ingressId: claimed.id,
-            notices: testChannelNotices,
-            availableEngines,
-          });
-          return { ingressId: committed.ingressId, result };
-        } catch (error) {
-          // The ingress worker puts a failed claim back so the conversation's
-          // lane keeps moving; a test that expects the failure must do the same
-          // or its next message can never be claimed.
-          await channels.releaseIngress(
-            claimed.id,
-            claimed.claimToken,
-            error instanceof Error ? error.message : String(error),
-            { deferred: error instanceof ChannelIngressDeferredError },
-          );
-          throw error;
-        }
+            claimToken: claimed.claimToken,
+          }),
+        };
       };
-      const notices = (ingressId: ChannelIngressId) =>
-        database
-          .selectFrom("channelDeliveries")
-          .select(["audience", "content", "kind", "status"])
-          .where("ingressId", "=", ingressId)
-          .execute();
-      return { adopt, channels, claimFor, configured, event, fixture, notices, availableEngines };
+      // "Me" is whoever sends the code Opensteer shows the person, from their own account.
+      if (options.linkOwner !== false) {
+        const { code } = await ingress.startBridgeOwnerLink(database, {
+          userId: fixture.userId,
+          accountId: configured.account.id,
+        });
+        const linked = options.conversation
+          ? await (async () => {
+              const committed = await channels.commitIngress(configured.connection.id, {
+                ...event({ eventId: `link-${suffix}`, text: code }),
+                conversation: {
+                  displayName: null,
+                  externalConversationId: `D-${suffix}`,
+                  externalScopeId: `T-${suffix}`,
+                  externalThreadId: null,
+                  type: "dm" as const,
+                },
+                trigger: "direct-message" as const,
+              });
+              const claimed = await channels.claimIngress(`bridge-worker-${suffix}`);
+              expect(claimed?.id).toBe(committed.ingressId);
+              return ingress.decideBridgeIngress(database, {
+                ingressId: claimed!.id,
+                claimToken: claimed!.claimToken,
+              });
+            })()
+          : (await decide({ eventId: `link-${suffix}`, text: code })).decision;
+        expect(linked).toEqual({ kind: "linked" });
+      }
+      return { bridge, channels, configured, decide, claim, event, fixture, owner };
     }
     async function enablePersonalRemoteAccess() {
       const enabled = {
@@ -733,7 +754,7 @@ export async function createStoreFixture() {
       enrollMessagingRunner,
       createChannelDeliveryFixture,
       insertChannelDelivery,
-      createChannelNoticeFixture,
+      createBridgeFixture,
       triggers,
       enqueueHumanTrigger,
       recordReadyHarnessCatalog,

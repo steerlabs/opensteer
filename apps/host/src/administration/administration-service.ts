@@ -312,14 +312,7 @@ export class AdministrationService {
         };
       }
       case "channel.binding.revoke":
-        await dependencies.channels.service.revokeBinding(
-          command.bindingId,
-          userId,
-          administration,
-        );
-        return {
-          type: command.type,
-        };
+        throw new OpensteerError({ code: "not_found", message: "That route no longer exists." });
       case "channel.connection.status.set":
         await dependencies.channels.service.setConnectionStatus(
           command.connectionId,

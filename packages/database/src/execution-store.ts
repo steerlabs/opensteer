@@ -63,7 +63,6 @@ import {
 import { readRunThreadState } from "./run-thread-state.js";
 import { newestMessageWindow } from "./message-window.js";
 
-import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 import { assertSendEligible } from "./resource-access.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
@@ -668,12 +667,6 @@ export async function acquireExecutionBinding(
       throw new OpensteerError({
         code: "conflict",
         message: "AI engine is unavailable",
-      });
-    }
-    if (!(await channelRunAuthorityIsCurrent(transaction, input.runId))) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before this Run could start",
       });
     }
     const thread = await transaction

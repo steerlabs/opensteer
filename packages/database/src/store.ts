@@ -1666,14 +1666,6 @@ export class OpensteerStore {
       await commandStore.dispatchRequestResponse(this.#database, commandId, send),
     );
   }
-  async dispatchChannelCommand(
-    commandId: CommandRow["id"],
-    send: (beforeAck: () => Promise<void>) => Promise<void>,
-  ): Promise<void> {
-    this.#announceRevokedGrants(
-      await commandStore.dispatchChannelCommand(this.#database, commandId, send),
-    );
-  }
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }

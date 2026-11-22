@@ -1,6 +1,5 @@
 import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import { DeviceIdSchema } from "@opensteer/core";
-import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -17,7 +16,6 @@ import { OpensteerStore, TriggerStore } from "./index.js";
 import {
   describeStore,
   testModelSelection,
-  testChannelNotices,
   pendingEvent,
   liveRequest,
   sealedTestRequestResponse,
@@ -1479,109 +1477,6 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
-  it.for(["creation-first", "retirement-first"] as const)(
-    "fences messaging task creation against profile retirement (%s)",
-    async (order, { storeFixture }) => {
-      const { createChannelNoticeFixture, store, database, recordReadyHarnessCatalog } =
-        storeFixture;
-      const channel = await createChannelNoticeFixture("profile-retirement", {
-        accessMode: "anyone",
-      });
-      const f = channel.fixture;
-      const environmentId = await store.createEnvironment({
-        kind: "local",
-        name: "Messaging engine",
-        runnerId: f.runnerId,
-      });
-      const harness = await store.createHarnessInstance({
-        config: {},
-        driverKind: HarnessIdSchema.parse("native"),
-        environmentId,
-        name: "Messaging profile",
-        stateKind: "isolated",
-      });
-      await recordReadyHarnessCatalog(environmentId, harness);
-      const committed = await channel.channels.commitIngress(
-        channel.configured.connection.id,
-        channel.event({ eventId: "profile-retirement" }),
-      );
-      const claimed = await channel.claimFor(committed.ingressId);
-      const input = {
-        ingressId: claimed.id,
-        claimToken: claimed.claimToken,
-        notices: testChannelNotices,
-        availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
-      };
-      const barrier = pauseAfterLock(
-        database,
-        (node) =>
-          node.includes('"name":"execution_environments"') &&
-          node.includes(order === "creation-first" ? "ForShare" : "ForNoKeyUpdate"),
-      );
-      let adoption: ReturnType<ChannelStore["adoptIngress"]> | undefined;
-      let removal: ReturnType<OpensteerStore["removeHarnessInstance"]> | undefined;
-      try {
-        if (order === "creation-first") {
-          adoption = new ChannelStore(barrier.database).adoptIngress(input);
-          void adoption.catch(() => undefined);
-        } else {
-          removal = new OpensteerStore(barrier.database).removeHarnessInstance(
-            environmentId,
-            harness.id,
-          );
-          void removal.catch(() => undefined);
-        }
-        await withTimeout(barrier.reached, 5_000, {
-          timeoutError: () => new Error("Messaging profile race never held its environment fence"),
-        });
-        if (order === "creation-first")
-          removal = store.removeHarnessInstance(environmentId, harness.id);
-        else adoption = channel.channels.adoptIngress(input);
-        void removal!.catch(() => undefined);
-        void adoption!.catch(() => undefined);
-        await vi.waitFor(
-          async () => {
-            const waiting = await sql<{
-              query: string;
-            }>`select query from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
-              database,
-            );
-            expect(
-              waiting.rows.some(({ query }) => /from "?client_sync_state"?\b/u.test(query)),
-              "Messaging creation and retirement never met at the Personal commit fence",
-            ).toBe(true);
-          },
-          { timeout: 5_000 },
-        );
-        barrier.release();
-        if (order === "creation-first") {
-          await expect(adoption).resolves.toMatchObject({ kind: "adopted" });
-          await expect(removal).rejects.toMatchObject({ code: "conflict" });
-          expect(
-            await database
-              .selectFrom("threads")
-              .select("harnessInstanceId")
-              .where("environmentId", "=", environmentId)
-              .execute(),
-          ).toEqual([{ harnessInstanceId: harness.id }]);
-        } else {
-          await removal;
-          await expect(adoption).rejects.toBeInstanceOf(ChannelIngressDeferredError);
-          expect(
-            await database
-              .selectFrom("threads")
-              .select("id")
-              .where("environmentId", "=", environmentId)
-              .execute(),
-          ).toEqual([]);
-        }
-        expect(barrier.conflicts).toEqual([]);
-      } finally {
-        barrier.release();
-        await Promise.allSettled([adoption, removal]);
-      }
-    },
-  );
   it("keeps durable Request event foreign keys compatible with Runner ingestion", async ({
     storeFixture,
   }) => {

@@ -42,6 +42,10 @@ import {
   bridgeConnectionsMigrationName,
 } from "./bridge-connections-migration.js";
 import {
+  applyBridgeConversion,
+  bridgeConversionMigrationName,
+} from "./bridge-conversion-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -640,6 +644,7 @@ export function migrationProvider(options?: {
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
+              [bridgeConversionMigrationName]: { up: applyBridgeConversion },
             }
           : {}),
       };
