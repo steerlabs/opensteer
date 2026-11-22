@@ -4,7 +4,12 @@ import { sql } from "kysely";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
-import { deviceDriversMigrationName, migrateToLatest, migrationProvider } from "./migrations.js";
+import {
+  deviceDriversMigrationName,
+  migrateToLatest,
+  migrationProvider,
+  RetiredTeamServerDatabaseError,
+} from "./migrations.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import { OpensteerStore } from "./store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
@@ -203,6 +208,44 @@ it("backfills visible active and revoked identities exactly, splits targets and 
   await migrateToLatest(db);
   expect(await catalog()).toEqual(upgraded);
 });
+/** Each table's row count and a digest of its rows, and the migration ledger. */
+async function everyTable() {
+  const tables = (
+    await sql<{
+      name: string;
+    }>`select tablename as name from pg_tables where schemaname='public' order by tablename`.execute(
+      db,
+    )
+  ).rows.map(({ name }) => name);
+  const state: Record<string, { rows: number; digest: string | null }> = {};
+  for (const name of tables) {
+    const { rows } = await sql<{ rows: number; digest: string | null }>`
+      select count(*)::integer as rows, md5(string_agg(t::text, '|' order by t::text)) as digest
+      from ${sql.table(name)} t`.execute(db);
+    state[name] = rows[0]!;
+  }
+  return state;
+}
+
+it("refuses a team server's database before any migration or conversion touches it", async () => {
+  await previous();
+  const deployment = createId("deployment");
+  await sql`insert into deployments(id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape) values(${deployment},'primary',${createId("hostInstance")},'https://team.invalid','active','{"kind":"team"}')`.execute(
+    db,
+  );
+  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,access_policy,access_policy_revision,connection_generation,max_concurrent_runs) values(${createId("runner")},'deployment',null,'Team','main','key','fp','token','[]','["agents"]','{}','{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',1,0,null)`.execute(
+    db,
+  );
+  const before = await everyTable();
+  expect(before["devices"]).toBeUndefined(); // the device model is a later migration
+  const refused = migrateToLatest(db);
+  await expect(refused).rejects.toBeInstanceOf(RetiredTeamServerDatabaseError);
+  await expect(refused).rejects.toThrow(
+    "This database is a team server's. Team servers were removed in this release of Opensteer; the previous release still opens this database.",
+  );
+  expect(await everyTable()).toEqual(before);
+});
+
 it("keeps the previous Host's writes readable after expanding the device model", async () => {
   await previous();
   const fixture = await seedPrivatePublisher(db);

@@ -655,6 +655,15 @@ export function migrationProvider(options?: {
     },
   };
 }
+/** A team server's database, which this release does not open. */
+export class RetiredTeamServerDatabaseError extends Error {
+  constructor() {
+    super(
+      "This database is a team server's. Team servers were removed in this release of Opensteer; the previous release still opens this database.",
+    );
+    this.name = "RetiredTeamServerDatabaseError";
+  }
+}
 export class MigrationLineageError extends Error {
   readonly unknownMigrations: readonly string[];
   constructor(unknownMigrations: readonly string[], options?: ErrorOptions) {
@@ -700,6 +709,17 @@ async function migrateRegisteredLineage(
     hasAppliedMigrations = applied.rows.length > 0;
     const unknown = applied.rows.map((row) => row.name).filter((name) => !known.has(name));
     if (unknown.length) throw new MigrationLineageError(unknown);
+    // Every migrated lineage has its Deployment row; a team server's is refused before any
+    // migration, schema or data, or the personal conversion touches its database.
+    if (hasAppliedMigrations) {
+      const deployment = await sql<{
+        kind: unknown;
+      }>`select deployment_shape->>'kind' as kind from deployments where singleton_key='primary'`.execute(
+        database,
+      );
+      const kind = deployment.rows[0]?.kind;
+      if (kind !== undefined && kind !== "personal") throw new RetiredTeamServerDatabaseError();
+    }
   }
   if (!hasAppliedMigrations) {
     const existing = await sql<{

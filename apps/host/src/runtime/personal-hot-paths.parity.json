@@ -235,6 +235,7 @@
       "select count(*) as \"count\" from (select \"id\" from \"threads\" where \"created_by\" = $1 and \"removed_at\" is null and \"listed\" = $2 and \"done_at\" is null and status in ('running','waiting') order by \"asked_at\" desc, \"id\" desc limit $3) as \"window\"",
       "select count(*) as \"count\" from (select \"id\" from \"threads\" where \"created_by\" = $1 and \"removed_at\" is null and \"listed\" = $2 and \"done_at\" is null and status not in ('archived','running','waiting') order by \"asked_at\" desc, \"id\" desc limit $3) as \"window\"",
       "select deployment_id from client_sync_state limit 1 for no key update",
+      "select deployment_shape->>'kind' as kind from deployments where singleton_key='primary'",
       "select distinct \"sha256\" from \"app_versions\"",
       "select distinct \"thread_id\" from \"thread_work_inputs\" where \"state\" = $1",
       "select extract(epoch from (automation_failure_notices.next_attempt_at - now())) * 1000 as \"wait_ms\" from \"automation_failure_notices\" inner join \"triggers\" on \"triggers\".\"id\" = \"automation_failure_notices\".\"trigger_id\" inner join \"threads\" on \"threads\".\"id\" = \"triggers\".\"anchor_thread_id\" where \"automation_failure_notices\".\"settled_at\" is null order by \"automation_failure_notices\".\"next_attempt_at\" limit $1",
