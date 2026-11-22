@@ -4,7 +4,7 @@ import { hideMenu } from "expo-dev-client";
 import * as SplashScreen from "expo-splash-screen";
 import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, KeyboardAvoidingView, Platform, Text, View } from "react-native";
+import { Button, KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
 import type { EditingOperation } from "@opensteer/client/editing";
 import type { WebSocketClient } from "@opensteer/client/host";
 import { DisplayStreams, type DisplayLease } from "@opensteer/client/integrations";
@@ -194,63 +194,67 @@ function NativeEditingJourney() {
       style={{ flex: 1, backgroundColor: "#101010", paddingTop: 40 }}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <Text style={{ color: "white", padding: 8 }}>
-        Native viewer fixture — local protocol target
-      </Text>
-      <View style={{ flexDirection: "row" }}>
-        {(["browser", "baseline", "phone"] as const).map((value) => (
+      {/* The controls scroll and their rows wrap, so at the largest text size they shrink before
+          the typing field does and the field stays inside the window for the walker to reach. */}
+      <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} keyboardShouldPersistTaps="handled">
+        <Text style={{ color: "white", padding: 8 }}>
+          Native viewer fixture — local protocol target
+        </Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+          {(["browser", "baseline", "phone"] as const).map((value) => (
+            <Button
+              key={value}
+              title={value}
+              onPress={() => {
+                setMode(value);
+                setTyping(true);
+                change();
+              }}
+            />
+          ))}
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           <Button
-            key={value}
-            title={value}
+            title="Refuse next edit"
             onPress={() => {
-              setMode(value);
-              setTyping(true);
-              change();
+              rejectNext.current = true;
             }}
           />
-        ))}
-      </View>
-      <View style={{ flexDirection: "row" }}>
-        <Button
-          title="Refuse next edit"
-          onPress={() => {
-            rejectNext.current = true;
-          }}
-        />
-        <Button title="Open browser keyboard" onPress={() => setTyping(true)} />
-      </View>
-      <View style={{ flexDirection: "row" }}>
-        <Button title="Next field" accessibilityLabel="Next remote field" onPress={change} />
-        <Button
-          title="Seed"
-          accessibilityLabel="Seed system clipboard"
-          onPress={() => {
-            void Clipboard.setStringAsync(copiedText).then(() =>
-              log("clipboard-seeded", { text: copiedText }),
-            );
-          }}
-        />
-        <Button
-          title="Read"
-          accessibilityLabel="Read system clipboard"
-          onPress={() => {
-            void Clipboard.getStringAsync().then((text) => log("clipboard-read", { text }));
-          }}
-        />
-      </View>
-      <Text
-        style={{ color: "white", padding: 4, fontSize: 12 }}
-        accessibilityLabel="Fixture context"
-      >
-        {context.contextId}
-      </Text>
-      <Text
-        style={{ color: fault ? "red" : "white", padding: 8 }}
-        numberOfLines={2}
-        accessibilityLabel="Fixture result"
-      >
-        {fault ?? last}
-      </Text>
+          <Button title="Open browser keyboard" onPress={() => setTyping(true)} />
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+          <Button title="Next field" accessibilityLabel="Next remote field" onPress={change} />
+          <Button
+            title="Seed"
+            accessibilityLabel="Seed system clipboard"
+            onPress={() => {
+              void Clipboard.setStringAsync(copiedText).then(() =>
+                log("clipboard-seeded", { text: copiedText }),
+              );
+            }}
+          />
+          <Button
+            title="Read"
+            accessibilityLabel="Read system clipboard"
+            onPress={() => {
+              void Clipboard.getStringAsync().then((text) => log("clipboard-read", { text }));
+            }}
+          />
+        </View>
+        <Text
+          style={{ color: "white", padding: 4, fontSize: 12 }}
+          accessibilityLabel="Fixture context"
+        >
+          {context.contextId}
+        </Text>
+        <Text
+          style={{ color: fault ? "red" : "white", padding: 8 }}
+          numberOfLines={2}
+          accessibilityLabel="Fixture result"
+        >
+          {fault ?? last}
+        </Text>
+      </ScrollView>
       <View style={{ flex: 1, minHeight: 120 }}>
         {mode === "phone" ? (
           lease && <DisplayControls lease={lease} picture={picture} phone visible />

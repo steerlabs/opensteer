@@ -385,5 +385,19 @@ import UIKit
     XCTAssertEqual([selection?["selectionStart"] as? Int, selection?["selectionEnd"] as? Int], [0, 7])
     XCTAssertEqual(field.view.text, "!")
   }
+
+  // The long-press menu kept for Paste offers nothing that selects in the hidden field: Select
+  // and Select All would select text nobody sees (Cmd+A goes to the page as selectAll instead).
+  // Not a failing-first test: outside a window the view is not first responder, and UITextView
+  // then refuses Select by itself; the explicit refusal is for the editing field on a device.
+  func testTheEditMenuOffersPasteButNoSelection() {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.insertText("hello")
+    view.respond(["id": 1])
+    XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+    XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.select(_:)), withSender: nil))
+    XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.selectAll(_:)), withSender: nil))
+  }
 }
 #endif

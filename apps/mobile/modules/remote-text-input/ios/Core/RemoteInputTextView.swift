@@ -227,6 +227,9 @@ import UniformTypeIdentifiers
   public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     if action == #selector(copy(_:)) || action == #selector(cut(_:)) { return isEditable && !isSecureTextEntry }
     if action == #selector(paste(_:)) { return isEditable }
+    // Nothing in the menu selects in the hidden field: what it selected nobody would see. Cmd+A
+    // reaches the page as its own selectAll instead.
+    if action == #selector(UIResponderStandardEditActions.select(_:)) || action == #selector(UIResponderStandardEditActions.selectAll(_:)) { return false }
     return super.canPerformAction(action, withSender: sender)
   }
   private func hardware(_ press: UIPress, down: Bool, action: @escaping () -> Void) {
