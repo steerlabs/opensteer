@@ -7,6 +7,7 @@ import { AppText, monoFontFamily, PrimaryButton, SecondaryButton } from "../ui/p
 import { Sheet } from "../ui/sheet.js";
 import { Symbol } from "../ui/symbol.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
+import { AddressText } from "../ui/address-text.js";
 
 /**
  * How to add one agent: three plain steps. The only thing that changes while
@@ -100,9 +101,8 @@ function AddressStep(props: {
     );
   return (
     <View style={styles.address}>
-      <AppText selectable role="caption" style={styles.url}>
-        {address.url}
-      </AppText>
+      {/* Copied whole by its button: drawn text holds joiners, so it is not selectable. */}
+      <AddressText role="caption" style={styles.url} value={address.url} />
       <Pressable
         accessibilityLabel={copied ? "Copied" : "Copy address"}
         accessibilityRole="button"

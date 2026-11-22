@@ -54,6 +54,8 @@ export function AppText(props: {
   readonly ellipsizeMode?: "head" | "tail";
   /** Set only where a fixed-height control would clip the text it holds. */
   readonly maxFontSizeMultiplier?: number;
+  /** Never hyphenate on Android, whatever its default: set by `AddressText` (`address-text.tsx`). */
+  readonly noHyphens?: boolean;
   readonly numberOfLines?: number;
   readonly selectable?: boolean;
   readonly role?: TextRole;
@@ -65,6 +67,7 @@ export function AppText(props: {
     <Text
       accessibilityHint={props.accessibilityHint}
       accessibilityLabel={props.accessibilityLabel}
+      {...(props.noHyphens === true ? { android_hyphenationFrequency: "none" as const } : {})}
       ellipsizeMode={props.ellipsizeMode}
       maxFontSizeMultiplier={props.maxFontSizeMultiplier}
       numberOfLines={props.numberOfLines}

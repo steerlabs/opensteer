@@ -30,6 +30,8 @@ import {
 } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
+import { AddressText } from "../ui/address-text.js";
+import { addressWords } from "../ui/address-words.js";
 
 export type ChromeDestination = { readonly deploymentId: string };
 
@@ -407,9 +409,9 @@ function SiteRow(props: {
   const { grant, hostClient } = props;
   const domain = browserSiteLabel(grant.site);
   const removeSpec = {
-    label: `remove ${domain}`,
+    label: `remove ${addressWords(domain)}`,
     done: "removed",
-    happened: `${domain} was removed`,
+    happened: `${addressWords(domain)} was removed`,
   } as const;
   const removal = useScreenAction<void, void>(hostClient, `chrome-site-remove:${grant.site}`, {
     ...removeSpec,
@@ -419,6 +421,7 @@ function SiteRow(props: {
         site: grant.site,
         type: "browser.site.remove",
       });
+      // Spoken, not drawn: VoiceOver reads the site as it is.
       props.onRemoved(`${domain} removed. Your agent asks before using it again.`);
     },
     reconcile: async () =>
@@ -431,9 +434,7 @@ function SiteRow(props: {
     <View style={styles.siteRow}>
       <Symbol name="globe" size={17} tint={color.textSoft} />
       <View style={styles.rowText}>
-        <AppText role="body" selectable>
-          {domain}
-        </AppText>
+        <AddressText role="body" value={domain} />
         <AppText role="caption" tone="muted">
           {grant.lastSignedInAt === null
             ? "Not used yet"

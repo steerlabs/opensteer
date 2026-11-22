@@ -13,8 +13,11 @@ import { notDone, useScreenAction } from "../ui/client-feedback.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { Symbol } from "../ui/symbol.js";
 import { BrowserHistoryMenu } from "./browser-history-menu.js";
+import { AddressText } from "../ui/address-text.js";
+import { addressWords } from "../ui/address-words.js";
 
 export type BrowserHistoryDestination = {
   readonly deploymentId: string;
@@ -224,6 +227,7 @@ function HistoryRow({
   readonly disabled: boolean;
   readonly onRemove: () => void;
 }): ReactNode {
+  const stacked = useStackedLayout();
   const url = new URL(entry.url);
   const host = url.host;
   // The address without its scheme tells apart pages that share a title.
@@ -242,12 +246,17 @@ function HistoryRow({
         <AppText role="bodyMedium" numberOfLines={1}>
           {title}
         </AppText>
-        <AppText role="caption" tone="muted" numberOfLines={1}>
-          {address}
-        </AppText>
+        {/* Host and path, the scheme already gone: one line, where the path gives way first;
+            at an accessibility size the whole of it, wrapping at its joints. */}
+        <AddressText
+          role="caption"
+          tone="muted"
+          {...(stacked ? {} : { numberOfLines: 1 })}
+          value={address}
+        />
       </View>
       <BrowserHistoryMenu
-        title={title === address ? title : `${title}, ${address}`}
+        title={title === address ? title : `${title}, ${addressWords(address)}`}
         disabled={disabled}
         onRemove={onRemove}
       />

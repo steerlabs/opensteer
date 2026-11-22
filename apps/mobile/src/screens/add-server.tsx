@@ -16,6 +16,7 @@ import { AppText, Field, PrimaryButton, RowGroup, SecondaryButton } from "../ui/
 import { ActionLine } from "../ui/action-line.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
+import { AddressText } from "../ui/address-text.js";
 
 /**
  * The address door, for a Home on someone's own server, in two
@@ -126,9 +127,7 @@ export function AddServerScreen(): ReactNode {
                   <AppText role="title">
                     {defaultDeploymentName(verified.endpoint.origin, false)}
                   </AppText>
-                  <AppText role="secondary" tone="soft">
-                    {verified.endpoint.origin}
-                  </AppText>
+                  <AddressText role="secondary" tone="soft" value={verified.endpoint.origin} />
                   <AppText role="caption" tone="muted">
                     Signing key {hostKeyFingerprint(verified.discoveryEnvelope.publicKey.spki)}
                   </AppText>

@@ -16,6 +16,8 @@ import { ActionLine } from "../ui/action-line.js";
 import { AppText, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
+import { AddressText } from "../ui/address-text.js";
+import { addressWords } from "../ui/address-words.js";
 
 /**
  * The personal-computer door.
@@ -126,12 +128,8 @@ export function AddPersonalScreen(): ReactNode {
           <RowGroup>
             {[
               <View key="address" style={styles.summary}>
-                <AppText numberOfLines={2} role="title" selectable>
-                  {hostOf(origin)}
-                </AppText>
-                <AppText numberOfLines={2} role="caption" selectable tone="muted">
-                  {origin}
-                </AppText>
+                <AddressText role="title" value={hostOf(origin)} />
+                <AddressText role="caption" tone="muted" value={origin} />
               </View>,
             ]}
           </RowGroup>
@@ -156,9 +154,9 @@ export function AddPersonalScreen(): ReactNode {
           <RowGroup>
             {[
               <View key="summary" style={styles.summary}>
-                <AppText role="title">{verified.discovery.canonicalOrigin}</AppText>
-                <AppText role="caption" tone="muted">
-                  Reached at {verified.endpoint.origin}
+                <AddressText role="title" value={verified.discovery.canonicalOrigin} />
+                <AppText noHyphens role="caption" tone="muted">
+                  Reached at {addressWords(verified.endpoint.origin)}
                 </AppText>
               </View>,
             ]}

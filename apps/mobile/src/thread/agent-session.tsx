@@ -27,7 +27,11 @@ import { ComposerAction } from "../ui/composer-action.js";
 import { useHostValue, useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { operationRequestsOf, type OperationRequestItem } from "./agent-session-model.js";
+import {
+  operationRequestsOf,
+  sourceLines,
+  type OperationRequestItem,
+} from "./agent-session-model.js";
 import { useAgentSessionStop, useSessionThread } from "./agent-session-hooks.js";
 
 export { useSessionRow, useSessionTask } from "./agent-session-hooks.js";
@@ -65,16 +69,18 @@ export function AgentSessionPane(props: {
   const headerHeight = useHeaderHeight();
   const top = props.headerClearance ?? headerHeight;
   const sides = { paddingLeft: gutter + insets.left, paddingRight: gutter + insets.right };
+  const source = sourceLines(view);
   useEffect(() => {
     onHeader?.({
-      connectionLabel: view.header,
+      connectionLabel: source.short,
+      connectionWraps: true,
       title,
       icon: null,
       color: null,
       isVoice: false,
       task: null,
     });
-  }, [onHeader, title, view.header]);
+  }, [onHeader, title, source.short]);
   const transcript = useThreadTranscript(hostClient, threadId);
   const thread = useSessionThread(hostClient, threadId);
   const requests = useMemo(
@@ -98,6 +104,10 @@ export function AgentSessionPane(props: {
         contentInsetAdjustmentBehavior="never"
         scrollIndicatorInsets={{ right: insets.right, top }}
       >
+        {/* Who works this task, its whole origin: the floating title names only its host. */}
+        <AppText noHyphens role="caption" tone="muted">
+          {source.whole}
+        </AppText>
         {place === null || view.stop === null ? null : (
           <PlaceLink
             label={workWords("work.openPlace", { place: place.title })}

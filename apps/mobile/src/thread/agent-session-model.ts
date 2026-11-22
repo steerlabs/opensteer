@@ -2,6 +2,7 @@ import {
   agentWithdrawnLine,
   operationDecisionField,
   operationRequestView,
+  pageSiteLabel,
   sessionAgent,
   sessionSlotFromHome,
   sessionTaskRow,
@@ -17,6 +18,7 @@ import {
   type SessionTaskView,
 } from "@opensteer/client/host";
 import type { AgentOperationView } from "@opensteer/core";
+import { addressWords } from "../ui/address-words.js";
 
 type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
@@ -155,5 +157,24 @@ export function whoLines(
     verified: who.verified,
     withdrawn: line === null ? null : { line, detail: workWords("who.withdrawnDetail") },
     warning: options.consent ? who.warning : null,
+  };
+}
+
+/**
+ * "Connected agent · claude.ai" for the floating title, where there is one line and a host is what
+ * says who is asking: the scheme gives way, never the host, which the line wraps rather than cut.
+ * The whole origin, "Connected agent · https://claude.ai", heads the pane.
+ */
+export function sourceLines(view: Pick<SessionTaskView, "agent" | "header">): {
+  readonly short: string;
+  readonly whole: string;
+} {
+  const who = view.agent.who;
+  if (who === null || who.local) return { short: view.header, whole: view.header };
+  return {
+    short: workWords("work.header", {
+      origin: addressWords(pageSiteLabel(who.detail) ?? who.detail),
+    }),
+    whole: workWords("work.header", { origin: addressWords(who.detail) }),
   };
 }

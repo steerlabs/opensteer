@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { testHostConnection } from "@opensteer/client/test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { addressValue, addressWords } from "../ui/address-words.js";
 
 const state = vi.hoisted(() => ({
   alert: null as null | { buttons: { onPress?: () => void; text: string }[]; message: string },
@@ -261,7 +262,9 @@ describe("mobile Chrome", () => {
     );
     await render();
 
-    const body = text();
+    // Each site is drawn the one way; what a person reads, in order, is its own name once.
+    expect(text()).toContain(addressWords("github.com"));
+    const body = addressValue(text());
     expect(body.indexOf("example.com")).toBeLessThan(body.indexOf("github.com"));
     expect(body.match(/github\.com/g)).toHaveLength(1);
     expect(body).toContain("Not used yet");

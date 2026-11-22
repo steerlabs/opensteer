@@ -64,6 +64,8 @@ export function ThreadName(props: {
 /** The task's state, apart from its mark. */
 export function ThreadSubtitle(props: {
   readonly connectionLabel: string | null;
+  /** The label names a source whose host is never cut: it wraps instead (`ThreadHeaderState`). */
+  readonly connectionWraps?: boolean;
   readonly onRetry?: (() => void) | undefined;
   readonly task: Pick<TaskHeading, "moving" | "tone" | "word"> | null;
   /** How a menu action on it went, in this line's place while it is worth saying. */
@@ -79,7 +81,7 @@ export function ThreadSubtitle(props: {
       ) : null}
       {props.connectionLabel === null ? null : (
         <AppText
-          numberOfLines={1}
+          {...(props.connectionWraps === true ? { noHyphens: true } : { numberOfLines: 1 })}
           style={styles.workspace}
           maxFontSizeMultiplier={headerFontScaleLimit}
           role="caption"

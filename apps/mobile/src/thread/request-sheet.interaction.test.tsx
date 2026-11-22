@@ -18,6 +18,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient, mockCardUseRequest } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
+import { addressValue, addressWords } from "../ui/address-words.js";
 
 vi.mock("./agent-mark.js", () => ({
   AgentEngine: ({ children }: { readonly children: unknown }) => children,
@@ -659,11 +660,11 @@ describe("RequestSheetContent saved-password sign-ins", () => {
       }));
       await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
       if (onPage) {
-        expect(text()).not.toContain("enterprise.github.com");
+        expect(addressValue(text())).not.toContain("enterprise.github.com");
         await click("Other accounts on github.com (2)");
       }
       for (const host of ["enterprise.github.com", "login.github.com"]) {
-        expect(text()).toContain(host);
+        expect(text()).toContain(addressWords(host));
         expect(button(`Sign in as same@example.com · ${host}`)).toBeDefined();
       }
       await click("Sign in as same@example.com · enterprise.github.com");
@@ -981,8 +982,12 @@ describe("RequestSheetContent external requests", () => {
       expect(text()).toContain("Sign in to github.com");
       expect(text()).toContain("Chrome isn’t connected yet");
 
-      expect(text()).toContain("Your agent wants to use your github.com sign-in from Chrome.");
-      expect(text()).toContain("Your agent will be able to use github.com as you.");
+      expect(text()).toContain(
+        `Your agent wants to use your ${addressWords("github.com")} sign-in from Chrome.`,
+      );
+      expect(text()).toContain(
+        `Your agent will be able to use ${addressWords("github.com")} as you.`,
+      );
       expect(text()).toContain("Connect Chrome from Opensteer on your computer.");
       expect(button("Allow").disabled).toBe(true);
 

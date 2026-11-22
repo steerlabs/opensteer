@@ -16,6 +16,7 @@ import type {
   NativeSettingsRow,
   NativeSettingsSection,
 } from "./native-settings-page.types.js";
+import { addressWords } from "../ui/address-words.js";
 
 interface AlertButton {
   readonly text: string;
@@ -153,7 +154,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     );
     expect(row("website-checkout", "address")).toMatchObject({
       kind: "status",
-      detail: "https://app.opensteer.example/cloud-computer/checkout",
+      detail: addressWords("https://app.opensteer.example/cloud-computer/checkout"),
     });
     expect(section("website-checkout")?.footer?.text).toContain(
       "Set up your Cloud Computer on the Opensteer website",
@@ -230,10 +231,12 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("status", "status")).toMatchObject({
       label: "Running",
       tone: "good",
-      detail: mockCloudComputerAddress,
+      detail: addressWords(mockCloudComputerAddress),
     });
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
-    expect(row("status", "browser-address")).toMatchObject({ detail: "203.0.113.24" });
+    expect(row("status", "browser-address")).toMatchObject({
+      detail: addressWords("203.0.113.24"),
+    });
     expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
     // The plan by its name, never its price.
     expect(row("plan", "plan")).toMatchObject({
@@ -241,7 +244,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
       detail: "Renews Dec 20, 2026",
     });
     expect(row("website-billing", "address")).toMatchObject({
-      detail: "https://app.opensteer.example/cloud-computer/billing",
+      detail: addressWords("https://app.opensteer.example/cloud-computer/billing"),
     });
   });
 
@@ -342,7 +345,10 @@ describe("work Homes on the phone", () => {
   it("shows a work Home as its own card, with no billing, suspend or delete", async () => {
     await open("work");
     expect(section(workKey)?.title).toBe("Acme Robotics · Work Home");
-    expect(row(workKey, "status")).toMatchObject({ label: "Running", detail: mockWorkAddress });
+    expect(row(workKey, "status")).toMatchObject({
+      label: "Running",
+      detail: addressWords(mockWorkAddress),
+    });
     expect(section(workKey)?.footer?.text).toBe(
       "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
     );

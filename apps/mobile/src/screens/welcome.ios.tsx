@@ -39,6 +39,7 @@ import {
   welcomePresentation,
   type WelcomeProps,
 } from "./welcome-model.js";
+import { addressWords } from "../ui/address-words.js";
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const centred = multilineTextAlignment("center");
@@ -104,7 +105,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
           <>
             <Section title={welcomeCopy.onMac}>
               {view.signedInAs === null ? null : (
-                <Lines detail="Opensteer account" title={view.signedInAs} />
+                <Lines detail="Opensteer account" title={addressWords(view.signedInAs)} />
               )}
               <Text modifiers={[font({ textStyle: "body" }), secondary]}>
                 {welcomeCopy.onMacDetail}
@@ -121,7 +122,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
                   {cloud.price === null ? cloud.detail : `${cloud.price}. ${cloud.detail}`}
                 </Text>
                 {cloud.address === null ? null : (
-                  <Lines detail={cloud.address} title={welcomeCopy.cloudAddress} />
+                  <Lines detail={addressWords(cloud.address)} title={welcomeCopy.cloudAddress} />
                 )}
                 {cloud.address === null ? null : (
                   <Button onPress={() => props.onCopyCloudAddress?.(cloud.address!)}>

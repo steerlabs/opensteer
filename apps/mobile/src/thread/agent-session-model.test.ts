@@ -2,12 +2,14 @@ import { connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/hos
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
 import { afterEach, describe, expect, it } from "vitest";
+import { addressValue, addressWords } from "../ui/address-words.js";
 import {
   needsYouOperation,
   operationRequestsOf,
   placeSessionLine,
   sessionRowOf,
   sessionTaskOf,
+  sourceLines,
   whoLines,
 } from "./agent-session-model.js";
 
@@ -212,5 +214,35 @@ describe("who the agent is, on the phone", () => {
     expect(withdrawn.verified).toBe(false);
     expect(withdrawn.withdrawn?.line).toMatch(/^No longer verified since /u);
     expect(withdrawn.withdrawn?.detail).toBe("Check its last action or disconnect it.");
+  });
+});
+
+describe("where a connected agent's task names who works it", () => {
+  const who = (label: string, redirect?: string) =>
+    connectedAgentIdentity(named(label), redirect, null).who;
+  const view = (label: string) => {
+    const agent = who(label);
+    return {
+      agent: { initial: "C", name: label, providerId: null, who: agent },
+      header: `Connected agent · ${agent.detail}`,
+    };
+  };
+
+  it("names the host in the floating title, never cut and never the scheme in its place", () => {
+    const lines = sourceLines(view("Claude"));
+    expect(addressValue(lines.short)).toBe("Connected agent · claude.ai");
+    // Drawn the one way: the host is held together and wraps only at its own joints.
+    expect(lines.short).toContain(addressWords("claude.ai"));
+  });
+
+  it("heads the pane with the whole origin", () => {
+    expect(addressValue(sourceLines(view("Claude")).whole)).toBe(
+      "Connected agent · https://claude.ai",
+    );
+  });
+
+  it("says an app on this computer as it is", () => {
+    const local = view("Claude Code");
+    expect(sourceLines(local)).toEqual({ short: local.header, whole: local.header });
   });
 });

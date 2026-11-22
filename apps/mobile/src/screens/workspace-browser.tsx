@@ -132,11 +132,12 @@ import { Screen } from "../ui/screen.js";
 import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
 import { NewTaskPane } from "./new-task.js";
 import { ThreadTitlePill } from "./thread-header.js";
+import { addressWords } from "../ui/address-words.js";
 
 export function OpeningTabScreen({ route }: StaticScreenProps<OpeningTabRoute>): ReactNode {
   return (
     <Screen>
-      <TabStatus title="Opening…" detail={route.params.address} waiting />
+      <TabStatus title="Opening…" detail={addressWords(route.params.address)} waiting />
     </Screen>
   );
 }

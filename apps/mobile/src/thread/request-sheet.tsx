@@ -116,6 +116,8 @@ import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useRequestResponse, type RequestResponder } from "./use-request-response.js";
 import { QuestionCard } from "./waiting-questions.js";
+import { AddressText } from "../ui/address-text.js";
+import { addressWords } from "../ui/address-words.js";
 
 /** A native answer in English: the same word for a refusal on every kind of Request. */
 const declineLabel = "Don’t Allow";
@@ -1146,10 +1148,10 @@ function BrowserSignInBody(props: {
   return (
     <View style={styles.section}>
       <AppText role="secondary">
-        {`Your agent wants to use your ${domain} sign-in from ${selected?.name ?? "Chrome"}.`}
+        {`Your agent wants to use your ${addressWords(domain)} sign-in from ${selected?.name ?? "Chrome"}.`}
       </AppText>
       <AppText role="caption" tone="soft">
-        {`Your agent will be able to use ${domain} as you.`}
+        {`Your agent will be able to use ${addressWords(domain)} as you.`}
       </AppText>
       <View
         accessibilityLiveRegion="polite"
@@ -1275,9 +1277,7 @@ function PasswordSignInBody(props: {
     list.map((group, index) => (
       <View key={group.host ?? index} style={styles.accounts}>
         {group.host === null ? null : (
-          <AppText role="caption" tone="muted">
-            {group.host}
-          </AppText>
+          <AddressText role="caption" tone="muted" value={group.host} />
         )}
         <View style={styles.group}>
           {group.rows.map(({ account, detail }, row) => (

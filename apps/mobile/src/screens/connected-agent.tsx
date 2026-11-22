@@ -37,6 +37,7 @@ import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
+import { addressWords } from "../ui/address-words.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly connectionId: string }>;
 
@@ -304,13 +305,15 @@ export function connectedAgentSections(props: {
                     ? workWords("who.verified")
                     : workWords("who.verifiedAs", { name: who.heading })
                   : who.heading,
-                ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
+                ...(detail.row.identity.who.origins.length
+                  ? {}
+                  : { detail: addressWords(who.detail) }),
               },
             ]),
         ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
           key: origin.role,
           kind: "text",
-          label: agentWhoOriginLine(origin),
+          label: agentWhoOriginLine({ ...origin, origin: addressWords(origin.origin) }),
         })),
       ],
     },

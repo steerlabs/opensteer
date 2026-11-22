@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AddPersonalScreen } from "./add-personal.js";
+import { addressWords } from "../ui/address-words.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -104,7 +105,7 @@ describe("pairing a computer from its code", () => {
       });
       expect(state.reset).not.toHaveBeenCalled();
       expect(state.client.openDeployment).not.toHaveBeenCalled();
-      expect(container.textContent).toContain(secondOrigin);
+      expect(container.textContent).toContain(addressWords(secondOrigin));
       await act(async () => container.querySelector("button")!.click());
       expect(state.add).toHaveBeenLastCalledWith(
         expect.objectContaining({ pairingCode: secondCode }),
@@ -127,7 +128,7 @@ describe("pairing a computer from its code", () => {
     try {
       await act(async () => root.render(<AddPersonalScreen />));
 
-      expect(container.textContent).toContain("studio-mac.tailnet.ts.net");
+      expect(container.textContent).toContain(addressWords("studio-mac.tailnet.ts.net"));
       expect(container.textContent).not.toContain(code);
       // The code leaves the navigation state as soon as the form has it.
       expect(state.navigation.setParams).toHaveBeenCalledWith({

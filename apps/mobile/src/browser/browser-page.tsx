@@ -102,6 +102,7 @@ import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.j
 import { systemBrowserLabel } from "./system-browser.js";
 import { failureWords, refusal } from "../ui/client-feedback.js";
 import { tabActionSpecs } from "../tabs/tab-actions.js";
+import { addressWords } from "../ui/address-words.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -380,7 +381,7 @@ export function BrowserPage(props: {
         said.ok && offer.kind === "save"
           ? {
               title: said.message,
-              detail: `${offer.username} · ${pageSite(offer.origin) ?? offer.origin}`,
+              detail: `${offer.username} · ${addressWords(pageSite(offer.origin) ?? offer.origin)}`,
             }
           : { title: "Your login wasn’t saved", detail: said.message },
       );
@@ -828,7 +829,7 @@ export function BrowserPage(props: {
     ],
   ];
 
-  const address = (
+  const addressCapsule = (
     <AddressCapsule
       acting={acting}
       arriving={arrival !== 0}
@@ -867,7 +868,7 @@ export function BrowserPage(props: {
   const bar = (
     <Toolbar edge={top ? "top" : "bottom"} testID="page-toolbar">
       <ToolbarLeave />
-      {address}
+      {addressCapsule}
       {tabsButton}
       {pair === null ? <ToolbarAsk /> : null}
       {dragButtonFits ? (
@@ -1463,8 +1464,8 @@ function PageDialog(props: {
       <View accessibilityViewIsModal style={styles.dialog}>
         <View style={styles.dialogFrom}>
           <Symbol name="globe" size={12} tint={color.muted} />
-          <AppText numberOfLines={1} role="caption" tone="muted">
-            {props.site === null ? "This page says" : `${props.site} says`}
+          <AppText noHyphens role="caption" tone="muted">
+            {props.site === null ? "This page says" : `${addressWords(props.site)} says`}
           </AppText>
         </View>
         <AppText role="secondary" style={styles.dialogMessage}>

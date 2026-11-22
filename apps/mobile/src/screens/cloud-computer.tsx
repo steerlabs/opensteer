@@ -18,6 +18,7 @@ import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js"
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { workHomeSections } from "./work-home.js";
+import { addressWords } from "../ui/address-words.js";
 
 /**
  * Opensteer Cloud Computer on the phone. Checkout and billing happen on the Opensteer
@@ -206,7 +207,7 @@ function personalSections(
                 kind: "status",
                 tone: "neutral",
                 label: cloudWords("cloud.checkoutWebAddress"),
-                detail: url,
+                detail: addressWords(url),
               },
               {
                 key: "copy",
@@ -327,7 +328,7 @@ function personalSections(
           key: "open",
           kind: "button",
           label: cloudWords("cloud.ready.open"),
-          detail: computer.host ?? address,
+          detail: addressWords(computer.host ?? address),
           disabled: !listed,
           onPress: () => {
             if (deploymentId) props.onOpen(deploymentId);
@@ -356,7 +357,7 @@ function personalSections(
         kind: "status",
         tone: computer.status.tone,
         label: computer.status.label,
-        ...(address === null ? {} : { detail: address }),
+        ...(address === null ? {} : { detail: addressWords(address) }),
       },
       ...(address === null
         ? []
@@ -380,7 +381,7 @@ function personalSections(
               key: "browser-address",
               kind: "text" as const,
               label: cloudWords("cloud.ip.address"),
-              detail: computer.browserAddress,
+              detail: addressWords(computer.browserAddress),
             },
           ]
         : []),

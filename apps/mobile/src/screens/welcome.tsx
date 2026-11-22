@@ -19,6 +19,7 @@ import {
   welcomePresentation,
   type WelcomeProps,
 } from "./welcome-model.js";
+import { AddressText } from "../ui/address-text.js";
 
 /**
  * The first run on Android: the same form as iOS's, drawn with this app's own
@@ -96,9 +97,12 @@ export function Welcome(props: WelcomeProps): ReactNode {
         {view.mode === "where" ? (
           <>
             {view.signedInAs === null ? null : (
-              <AppText role="secondary" style={styles.centred} tone="muted">
-                {view.signedInAs}
-              </AppText>
+              <AddressText
+                role="secondary"
+                style={styles.centred}
+                tone="muted"
+                value={view.signedInAs}
+              />
             )}
             <View style={styles.section}>
               <SectionLabel>{welcomeCopy.onMac}</SectionLabel>
@@ -124,9 +128,11 @@ export function Welcome(props: WelcomeProps): ReactNode {
                   <RowGroup>
                     {[
                       <View key="address" style={[styles.row, styles.rowText]}>
-                        <AppText role="body" style={styles.rowLabel}>
-                          {view.cloud.address}
-                        </AppText>
+                        <AddressText
+                          role="body"
+                          style={styles.rowLabel}
+                          value={view.cloud.address}
+                        />
                       </View>,
                       <WelcomeRow
                         key="copy"

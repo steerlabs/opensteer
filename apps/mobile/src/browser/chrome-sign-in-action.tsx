@@ -18,6 +18,7 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, View } fro
 import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ChromeChoice, ChromeChoices } from "./chrome-sign-in-parts.js";
+import { addressWords } from "../ui/address-words.js";
 
 type Result =
   | { readonly kind: "signed-in"; readonly message: string }
@@ -185,7 +186,7 @@ export function ChromeSignInAction(props: {
       show(
         {
           kind: "signed-in",
-          message: `Signed in to ${domain} with ${outcome.sourceName}.${saved}${
+          message: `Signed in to ${addressWords(domain)} with ${outcome.sourceName}.${saved}${
             reloaded ? " Reloading the page." : " Reload the page to finish signing in."
           }`,
         },
@@ -239,7 +240,7 @@ export function ChromeSignInAction(props: {
         {busy ? <ActivityIndicator color={color.ember} /> : null}
       </Pressable>
       <AppText role="caption" tone="muted">
-        {`Your agent will be able to use ${domain} as you.`}
+        {`Your agent will be able to use ${addressWords(domain)} as you.`}
       </AppText>
       {result === null ? null : result.kind === "signed-in" ? (
         <AppText role="caption" tone="soft">
@@ -256,7 +257,7 @@ export function ChromeSignInAction(props: {
         </View>
       ) : (
         <View style={styles.problem}>
-          <AppText role="secondaryMedium">{`Choose the Chrome to use for ${browserSiteLabel(result.site)}`}</AppText>
+          <AppText role="secondaryMedium">{`Choose the Chrome to use for ${addressWords(browserSiteLabel(result.site))}`}</AppText>
           <ChromeChoices>
             {result.candidates.map((candidate) => (
               <ChromeChoice

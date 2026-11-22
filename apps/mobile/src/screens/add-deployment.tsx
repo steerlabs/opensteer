@@ -11,6 +11,7 @@ import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js"
 import { ActionLine } from "../ui/action-line.js";
 import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { Symbol } from "../ui/symbol.js";
 import {
   accountFlowCanContinue,
@@ -20,26 +21,30 @@ import {
 } from "./account-door.js";
 import { deploymentInitial } from "./deployment-row.js";
 import { useSetupScanner } from "./setup-scanner.js";
+import { AddressText } from "../ui/address-text.js";
 
 export function AccountIdentityRow(props: {
   readonly email: string;
   readonly issuer: string;
 }): ReactNode {
+  // At an accessibility text size the mark takes the top line and the addresses the row's whole
+  // width under it: beside it, parts that fit a line whole broke inside themselves.
+  const stacked = useStackedLayout();
   return (
-    <View accessibilityLabel={`Opensteer account ${props.email}`} style={styles.accountRow}>
+    <View
+      accessibilityLabel={`Opensteer account ${props.email}`}
+      style={[styles.accountRow, stacked && styles.accountRowStacked]}
+    >
       <View style={styles.accountMark}>
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="title" tone="ember">
           {deploymentInitial(props.email)}
         </AppText>
       </View>
       <View style={styles.accountCopy}>
-        {/* Addresses read whole: they wrap, breaking anywhere an address must. */}
-        <AppText role="title">{props.email}</AppText>
-        <AppText role="caption" tone="muted">
-          {props.issuer}
-        </AppText>
+        {/* Addresses read whole: they wrap only at their own joints, and never take a hyphen. */}
+        <AddressText role="title" value={props.email} />
+        <AddressText role="caption" tone="muted" value={props.issuer} />
       </View>
-      <Symbol name="person.crop.circle" size={18} tint={color.mutedDim} />
     </View>
   );
 }
@@ -366,6 +371,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
     paddingVertical: space[10],
   },
+  accountRowStacked: { alignItems: "flex-start", flexDirection: "column" },
   accountAction: { alignItems: "flex-start", paddingTop: space[8] },
   content: { gap: space[16], paddingBottom: space[32], paddingTop: space[12] },
   disabled: { opacity: 0.46 },

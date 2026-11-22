@@ -19,6 +19,7 @@ import { appear, dim, exit } from "../ui/motion.js";
 import { LastPictureChip } from "../ui/last-picture-chip.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { AddressText } from "../ui/address-text.js";
 
 interface SurfaceProps {
   readonly active: boolean;
@@ -164,9 +165,7 @@ export function PictureCover(props: {
             {place.title}
           </AppText>
           {site && site !== place.title ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {site}
-            </AppText>
+            <AddressText role="caption" tone="muted" value={site} />
           ) : null}
         </>
       )}

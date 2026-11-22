@@ -14,8 +14,10 @@ import {
 /*
  * The account row in Add an Opensteer, laid out by React Native's own layout engine on the
  * smallest phone and beside iPhone Duo's vertical bar, at the smallest and largest text sizes.
- * An email address and the account service's address are read whole: they wrap, breaking
- * anywhere an address must, and are never cut short.
+ * An email address and the account service's address are read whole: drawn through
+ * `AddressText`, they wrap only at their own joints (after "@", at ".", after "//"), no part that
+ * fits the column breaks inside itself, and nothing is cut short. Where the phone breaks, and that
+ * it adds no hyphen, only a phone shows: the VM walk checks it.
  */
 
 vi.mock(
@@ -61,6 +63,7 @@ vi.mock("../ui/symbol.js", async () => {
 });
 
 const { AccountIdentityRow } = await import("./add-deployment.js");
+const { addressWords } = await import("../ui/address-words.js");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -104,6 +107,8 @@ describe("the Opensteer account row", () => {
         ).toEqual([]);
         for (const words of [email, issuer]) {
           const text = textElement(container, words);
+          // Drawn the one way: held together inside each part, breakable only between parts.
+          expect(text.textContent, `"${words}" is drawn raw`).toBe(addressWords(words));
           expect(frames.shown(text), `"${words}" is cut`).toBe(words);
           expect(
             frames.frame(text).x + frames.frame(text).width,
