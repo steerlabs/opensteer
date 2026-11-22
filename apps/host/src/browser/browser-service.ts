@@ -1438,8 +1438,11 @@ export class BrowserService {
           this.#onTabsChanged();
         },
       });
-      this.#brokers.set(sessionId, broker);
-      if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
+      // The end step's channel is only closed: no door can find it.
+      if (!ending) {
+        this.#brokers.set(sessionId, broker);
+        if (record.profileId) this.#sessionProfiles.set(sessionId, record.profileId);
+      }
       return broker;
     });
     if (!broker) return ending ? "unanswered" : [];
@@ -3849,7 +3852,7 @@ export class BrowserService {
           ? await this.#repository.getBrowserSessionForOwner(row.pageBinding.sessionId, ownerId)
           : null;
       const pool =
-        pooledSession && !isTerminal(pooledSession.state)
+        pooledSession && !this.#ended(pooledSession)
           ? this.#pool(pooledSession.runnerId)
           : undefined;
       const signal = pool
@@ -4118,7 +4121,7 @@ export class BrowserService {
         );
         if (agent && previous) await this.admitAgentBrowser(agent, "read-write", [previous]);
         const broker = this.#brokers.get(binding.sessionId);
-        if (previous && broker?.live && broker.pageOf(row.id)) {
+        if (previous && !this.#ended(previous) && broker?.live && broker.pageOf(row.id)) {
           this.#workspacePageGenerations.set(`${previous.id}:${row.id}`, row.generation);
           return previous;
         }
@@ -4224,10 +4227,12 @@ export class BrowserService {
       await this.#requireWorkspaceGeneration(agent.ownerId, row);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
-    const existing =
+    const found =
       this.#pools.size &&
       old &&
       (await this.#repository.getBrowserSessionForOwner(old.sessionId, agent.ownerId));
+    // An ended session (a pooled one a Stop left closing included) wakes nothing for this page.
+    const existing = found && !this.#ended(found) ? found : undefined;
     const pool = existing ? this.#pool(existing.runnerId) : undefined;
     if (pool && existing) {
       await this.admitAgentBrowser(agent, "read-write", [existing]);
@@ -6118,7 +6123,7 @@ export class BrowserService {
     const record = sessionId
       ? await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId)
       : null;
-    if (!record) return null;
+    if (!record || this.#ended(record)) return null;
     if (
       input.agentBindingId !== undefined &&
       !(await this.agentMayAccessSession(
@@ -6461,7 +6466,7 @@ export class BrowserService {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       const pool = this.#pool(persisted.runnerId);
-      if (pool && !isTerminal(persisted.state)) {
+      if (pool && !this.#ended(persisted)) {
         if (!peer.isOpen() || !(await options.signedIn()))
           throw new OpensteerError({ code: "forbidden", message: "Browser access ended." });
         pooledViewer = await this.#reservePool(
@@ -6474,7 +6479,7 @@ export class BrowserService {
           throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       const broker = this.#brokers.get(sessionId);
-      if (!broker || isTerminal(persisted.state)) {
+      if (!broker || this.#ended(persisted)) {
         throw new OpensteerError({
           code: "conflict",
           message: "The browser session is no longer attached to its Runtime.",
@@ -6713,10 +6718,13 @@ export class BrowserService {
     const initialUrl = input.initialUrl ? safeNavigationUrl(input.initialUrl) : undefined;
 
     const origin = input.origin ?? "person";
-    const existing =
+    const found =
       input.reuseExisting !== true || origin !== "person"
         ? null
         : await this.#repository.findActiveBrowserSessionForPerson(input.ownerId);
+    // A pooled session a Stop left closing is neither reused nor ended here: it stays closing
+    // until its runtime answers, and this start opens another.
+    const existing = found && !this.#ended(found) ? found : null;
     if (existing) {
       const pool = poolStart && this.#pool(existing.runnerId);
       if (pool && poolStart) {
@@ -6760,11 +6768,15 @@ export class BrowserService {
           return { session: await this.#personSession(existing, input.ownerId), wasExisting: true };
         };
       }
-      await this.#transitionBrowserSession({
-        from: ["starting", "ready", "closing"],
-        sessionId: existing.id,
-        state: "failed",
-      });
+      // A pooled one with no channel here may still be held by its guest: it is stopped, and ends
+      // with the runtime's answer. Any other is a row with no browser behind it.
+      if (this.#pool(existing.runnerId)) await this.#stopRecord(existing);
+      else
+        await this.#transitionBrowserSession({
+          from: ["starting", "ready", "closing"],
+          sessionId: existing.id,
+          state: "failed",
+        });
       if (poolStart?.pool) {
         poolStart.pool.reservation.release();
         delete poolStart.pool;

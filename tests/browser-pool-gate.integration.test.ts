@@ -1087,6 +1087,41 @@ it("never reads a pooled Stop closed while the guest still holds the page, whate
   }
 });
 
+it("neither reuses nor ends a pooled session a Stop left closing, at any door", async () => {
+  const j = await journey("closing-doors");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("doors"));
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // A person's start that would reuse their browser: the closing session is left to its
+    // receipt, neither reused nor failed.
+    const started = await home.service
+      .start({
+        ownerId: j.task.userId,
+        reuseExisting: true,
+        placement: { kind: "runner", runnerId: j.task.runnerId },
+        operationBudget: { signal: AbortSignal.timeout(2_000), expiresAt: Date.now() + 2_000 },
+      })
+      .then(
+        ({ session }) => session.id,
+        () => undefined,
+      );
+    expect(started).not.toBe(sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // A viewer is refused at once, and raises no demand for it.
+    await expect(j.viewer(home, sessionId).attaching).rejects.toThrow();
+    expect(home.coordinator.gate.demand).toBe(false);
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("keeps a pooled Stop with a viewer attached closing while the runtime is silent, and closed once it answers", async () => {
   const j = await journey("stop-viewer-silent");
   try {
