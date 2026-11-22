@@ -80,7 +80,8 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         .select(["id", "status"])
         .where("threadId", "=", threadId)
         .executeTakeFirst();
-    await expect.poll(findRun).toMatchObject({ status: "running" });
+    // A Run takes 0.6 to 2.3 s to start on a busy machine; the default poll gives up after one.
+    await expect.poll(findRun, { timeout: 15_000 }).toMatchObject({ status: "running" });
     const run = await findRun();
     const authority = { agentBindingId: `run:${run!.id}`, ownerId: owner.id };
 
