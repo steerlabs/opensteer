@@ -190,3 +190,17 @@ it("names why a CPU profile was refused, in the same words to the agent", async 
     cdpProfileRefusal(new Error("Profiler.stop returned Opensteer's preload or platform state.")),
   ).toBeNull();
 });
+
+it("never places a script in a context it was not reported in", () => {
+  const worlds = new CdpProductIsolation();
+  // A page context reported without a unique id, and a script with no context.
+  worlds.observe("Runtime.executionContextCreated", { context: { id: 1, name: "" } });
+  worlds.observe("Debugger.scriptParsed", { scriptId: "5", executionContextId: null });
+  worlds.observe("Debugger.scriptParsed", { scriptId: "6", executionContextId: "1" });
+  worlds.observe("Debugger.scriptParsed", { scriptId: "7", executionContextId: 1 });
+  for (const scriptId of ["5", "6"])
+    expect(() => worlds.assertCommand("Debugger.getScriptSource", { scriptId })).toThrow(
+      "Opensteer",
+    );
+  expect(() => worlds.assertCommand("Debugger.getScriptSource", { scriptId: "7" })).not.toThrow();
+});

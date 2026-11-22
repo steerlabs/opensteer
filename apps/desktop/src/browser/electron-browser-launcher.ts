@@ -2448,6 +2448,8 @@ class ElectronDebuggerHub {
    */
   #profileInventory: ProfileInventory | null = null;
   #profileInventoryOpening: Promise<unknown> | null = null;
+  /** Each agent channel's Profiler.start under way; its later Profiler commands follow it. */
+  readonly #profileStarts = new Map<ElectronCdpChannel, Promise<unknown>>();
   readonly #onProfileRefused: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
@@ -2513,6 +2515,11 @@ class ElectronDebuggerHub {
       if (sessionId) {
         const inspectProfile = this.#profileInspections.get(sessionId);
         if (inspectProfile) {
+          // It skips every pause; should one arrive anyway, the page never waits on it.
+          if (method === "Debugger.paused")
+            void this.#debugger
+              .sendCommand("Debugger.resume", {}, sessionId)
+              .catch(() => undefined);
           inspectProfile(method, asRecord(parameters));
           return;
         }
@@ -2528,7 +2535,11 @@ class ElectronDebuggerHub {
         return;
       }
       const record = asRecord(parameters);
-      if (method === "Runtime.executionContextsCleared") this.#profileContextGeneration++;
+      if (method === "Runtime.executionContextsCleared") {
+        this.#profileContextGeneration++;
+        // Its scripts belonged to documents that are gone; a stop reads what is alive then.
+        if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
+      }
       if (
         method === "Target.detachedFromTarget" &&
         typeof record.sessionId === "string" &&
@@ -2702,6 +2713,30 @@ class ElectronDebuggerHub {
     channel: ElectronCdpChannel,
     method: string,
     parameters?: Record<string, unknown>,
+    cleanup = false,
+  ): Promise<unknown> {
+    if (channel.role === "agent" && method.startsWith("Profiler.") && method !== "Profiler.start") {
+      // A command sent behind a Profiler.start reaches Chromium after it, as it was sent.
+      const starting = this.#profileStarts.get(channel);
+      if (starting)
+        return starting.then(
+          () => this.#send(channel, method, parameters, cleanup),
+          () => this.#send(channel, method, parameters, cleanup),
+        );
+    }
+    const sent = this.#route(channel, method, parameters, cleanup);
+    if (channel.role !== "agent" || method !== "Profiler.disable") return sent;
+    // Disabling the profiler ends its profile with no stop to classify.
+    return sent.finally(() => {
+      const live = this.#profileInventory;
+      if (live?.channel === channel) void this.#closeProfileInventory(live);
+    });
+  }
+
+  #route(
+    channel: ElectronCdpChannel,
+    method: string,
+    parameters?: Record<string, unknown>,
     _cleanup = false,
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
@@ -2715,15 +2750,12 @@ class ElectronDebuggerHub {
       this.#agentWorlds.assertCommand(method, parameters);
     const send = (method: string, parameters?: Record<string, unknown>) =>
       channel.role === "agent" && method === "Profiler.stop"
-        ? this.#stopAgentProfile(parameters)
+        ? this.#stopAgentProfile(channel, parameters)
         : channel.role === "agent" && method === "Profiler.start"
           ? this.#startAgentProfile(channel, parameters)
           : this.#command(method, parameters);
     if (channel.role === "agent" && method.startsWith("Target."))
       return this.#agentTargets(channel, method, parameters);
-    // Disabling the profiler ends a profile with no stop to classify.
-    if (method === "Profiler.disable" && this.#profileInventory?.channel === channel)
-      void this.#closeProfileInventory(this.#profileInventory);
     if (this.#closed || !this.#channels.has(channel))
       return Promise.reject(new Error("CDP channel is closed."));
     if (
@@ -2903,17 +2935,27 @@ class ElectronDebuggerHub {
     });
   }
 
-  async #startAgentProfile(
+  #startAgentProfile(
     channel: ElectronCdpChannel,
     parameters: CdpParameters | undefined,
   ): Promise<unknown> {
-    const opened = await this.#openProfileInventory(channel).catch(() => null);
-    try {
-      return await this.#command("Profiler.start", parameters);
-    } catch (error) {
-      if (opened) await this.#closeProfileInventory(opened);
-      throw error;
-    }
+    const start = (async () => {
+      const opened = await this.#openProfileInventory(channel).catch(() => null);
+      try {
+        // A channel that left while its inventory opened starts nothing.
+        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+        return await this.#command("Profiler.start", parameters);
+      } catch (error) {
+        if (opened) await this.#closeProfileInventory(opened);
+        throw error;
+      }
+    })();
+    this.#profileStarts.set(channel, start);
+    const settle = () => {
+      if (this.#profileStarts.get(channel) === start) this.#profileStarts.delete(channel);
+    };
+    void start.then(settle, settle);
+    return start;
   }
 
   /**
@@ -2943,13 +2985,26 @@ class ElectronDebuggerHub {
       this.#profileInspections.set(sessionId, (method, parameters) => {
         scripts.observe(method, parameters);
       });
-      this.#profileInventory = inventory;
       const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
       if (inspected.id !== isolate) throw new Error("The profile inventory reached another page.");
       await this.#dispatch("Runtime.enable", {}, sessionId);
       await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
       await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
       await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+      // Again once Debugger is on, which is when a pause could first reach it.
+      await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+      // Only a complete inventory, for a profile still wanted on the same documents, is used.
+      if (
+        this.#closed ||
+        !this.#channels.has(channel) ||
+        !channel.enabledDomains.has("Profiler") ||
+        renderer !== this.#rendererGeneration ||
+        context !== this.#profileContextGeneration
+      ) {
+        await this.#closeProfileInventory(inventory);
+        return null;
+      }
+      this.#profileInventory = inventory;
       return inventory;
     } catch (error) {
       if (inventory) await this.#closeProfileInventory(inventory);
@@ -2971,8 +3026,12 @@ class ElectronDebuggerHub {
     }
   }
 
-  async #stopAgentProfile(parameters: CdpParameters | undefined): Promise<unknown> {
-    const live = this.#profileInventory;
+  async #stopAgentProfile(
+    channel: ElectronCdpChannel,
+    parameters: CdpParameters | undefined,
+  ): Promise<unknown> {
+    // Only the channel that started a profile reads, or ends, its inventory.
+    const live = this.#profileInventory?.channel === channel ? this.#profileInventory : null;
     const renderer = this.#rendererGeneration;
     const context = this.#profileContextGeneration;
     const isolate = this.#dispatch("Runtime.getIsolateId").catch(() => undefined);
