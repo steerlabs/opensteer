@@ -121,6 +121,7 @@ const shell = vi.hoisted(() => ({
     dispatch: vi.fn(),
     rememberExecution: vi.fn(),
     rpc: {
+      "browser.sources.get": vi.fn(),
       "personal.remoteAccess.get": vi.fn(),
       "sessions.list": vi.fn(),
     },
@@ -144,7 +145,7 @@ const shell = vi.hoisted(() => ({
     voiceThreadId: null,
   },
 }));
-vi.mock("../app-shell.js", () => ({ useShell: () => shell }));
+vi.mock("../app-shell.js", () => ({ useOptionalShell: () => shell, useShell: () => shell }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
@@ -270,6 +271,7 @@ function radio(label: string): HTMLButtonElement {
 function desktopBridge(overrides: Record<string, unknown> = {}) {
   const access = {
     account: { available: true, status: "signed-in" },
+    deployments: [],
     personalAccountLink: { status: "linked" },
   };
   return {
@@ -929,5 +931,46 @@ describe("Remote access on start", () => {
     await settle();
     expect(bridge.linkPersonal).not.toHaveBeenCalled();
     expect(localStorage.getItem(wanted())).toBeNull();
+  });
+});
+
+describe("Connect your Chrome, on Your agent on this Mac", () => {
+  const chromeCalls = () => [
+    ...shell.hostClient.rpc["browser.sources.get"].mock.calls,
+    ...shell.hostClient.dispatch.mock.calls.filter(
+      ([command]) => (command as { type: string }).type === "browser.source.pair",
+    ),
+  ];
+
+  it("is one optional row that opens Add a device's Chrome panel only when pressed", async () => {
+    const { access, bridge } = desktopBridge();
+    onThisMac(bridge, access);
+    localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "permissions");
+    shell.hostClient.rpc["browser.sources.get"].mockResolvedValue({
+      data: { sources: [], sites: [] },
+      ok: true,
+    });
+    await mount();
+    expect(container.textContent).toContain("Your agent on this Mac");
+    expect(container.textContent).toContain("Connect your Chrome");
+    expect(container.textContent).toContain("Share tabs from the Chrome you already use.");
+    expect(document.querySelector('[data-testid="add-chrome"]')).toBeNull();
+    expect(chromeCalls()).toEqual([]);
+    await act(async () => button("Connect").click());
+    expect(document.querySelector('[role="dialog"] [data-testid="add-chrome"]')).not.toBeNull();
+    await act(async () => button("Done").click());
+    expect(document.querySelector('[data-testid="add-chrome"]')).toBeNull();
+  });
+
+  it("lets the step finish without Chrome, calling nothing for it", async () => {
+    const { access, bridge } = desktopBridge();
+    onThisMac(bridge, access);
+    localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "permissions");
+    shell.hostClient.dispatch.mockResolvedValue({});
+    await mount();
+    await act(async () => button("Continue").click());
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => undefined);
+    expect(container.textContent).not.toContain("Connect your Chrome");
+    expect(chromeCalls()).toEqual([]);
   });
 });

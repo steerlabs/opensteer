@@ -6,7 +6,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { AddDeviceDialog } from "./add-device-dialog.js";
 
 let shell: unknown;
-vi.mock("../app-shell.js", () => ({ useShell: () => shell }));
+vi.mock("../app-shell.js", () => ({ useOptionalShell: () => shell, useShell: () => shell }));
 let root: Root | undefined;
 let client: MockHostClient | undefined;
 afterEach(() => {
@@ -151,4 +151,8 @@ it("lists what can be added by the thing itself, with a pairing code under Advan
   expect(container.textContent).toContain(
     "Get the Opensteer app on the phone and sign in with the same Opensteer account.",
   );
+  await click("Back");
+  // Chrome opens the one panel the first run's "Connect your Chrome" opens too.
+  await click("Chrome");
+  expect(container.querySelector('[data-testid="add-chrome"]')).not.toBeNull();
 });

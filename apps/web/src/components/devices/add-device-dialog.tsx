@@ -1,6 +1,5 @@
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useId, useState } from "react";
-import { Link } from "react-router";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import {
   computerConnectionCommands,
@@ -18,6 +17,7 @@ import { Icon, type IconName } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
 import { AddIphoneDialog } from "./add-iphone-dialog.js";
+import { AddChrome } from "../chrome/add-chrome.js";
 import { cancelDeviceSetup } from "./device-access.js";
 import { IphoneSetupOnMac } from "./iphone-setup-needs.js";
 import { localEnrollmentModules } from "./this-device.js";
@@ -142,7 +142,7 @@ export function AddDeviceDialog({
       ) : choice === "phone" ? (
         <AddPhone homeName={homeName} />
       ) : choice === "chrome" ? (
-        <AddChrome onClose={onClose} />
+        <AddChrome />
       ) : choice === "pairing" ? (
         <PairingCode homeName={homeName} />
       ) : choice === "iphone-screen" ? (
@@ -260,21 +260,6 @@ function AddPhone({ homeName }: { readonly homeName: string }) {
           </div>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-/** Chrome shares its tabs through its own pairing, which lives with Chrome's settings. */
-function AddChrome({ onClose }: { readonly onClose: () => void }) {
-  return (
-    <div className="add-device__panel">
-      <p>
-        Share tabs from the Chrome you already use. Connect it in Chrome settings, then choose a tab
-        to share.
-      </p>
-      <Link className="btn btn--primary" onClick={onClose} to="/settings/chrome">
-        Open Chrome settings
-      </Link>
     </div>
   );
 }
