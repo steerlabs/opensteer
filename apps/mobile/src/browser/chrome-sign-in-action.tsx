@@ -18,10 +18,11 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, View } fro
 import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ChromeChoice, ChromeChoices } from "./chrome-sign-in-parts.js";
-import { addressWords } from "../ui/address-words.js";
+import { AddressSentence } from "../ui/address-text.js";
+import { plainSentence, sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 type Result =
-  | { readonly kind: "signed-in"; readonly message: string }
+  | { readonly kind: "signed-in"; readonly message: readonly SentencePart[] }
   | { readonly kind: "problem"; readonly fix: string | null; readonly title: string }
   | {
       readonly kind: "choose";
@@ -130,7 +131,7 @@ export function ChromeSignInAction(props: {
     if (next.kind !== "choose") {
       void AccessibilityInfo.announceForAccessibility(
         next.kind === "signed-in"
-          ? next.message
+          ? plainSentence(next.message)
           : next.fix === null
             ? `${next.title}.`
             : `${next.title}. ${next.fix}`,
@@ -186,9 +187,12 @@ export function ChromeSignInAction(props: {
       show(
         {
           kind: "signed-in",
-          message: `Signed in to ${addressWords(domain)} with ${outcome.sourceName}.${saved}${
-            reloaded ? " Reloading the page." : " Reload the page to finish signing in."
-          }`,
+          message: [
+            ...sentence`Signed in to ${domain} with `,
+            `${outcome.sourceName}.${saved}${
+              reloaded ? " Reloading the page." : " Reload the page to finish signing in."
+            }`,
+          ],
         },
         left,
       );
@@ -239,13 +243,13 @@ export function ChromeSignInAction(props: {
         </AppText>
         {busy ? <ActivityIndicator color={color.ember} /> : null}
       </Pressable>
-      <AppText role="caption" tone="muted">
-        {`Your agent will be able to use ${addressWords(domain)} as you.`}
-      </AppText>
+      <AddressSentence
+        parts={sentence`Your agent will be able to use ${domain} as you.`}
+        role="caption"
+        tone="muted"
+      />
       {result === null ? null : result.kind === "signed-in" ? (
-        <AppText role="caption" tone="soft">
-          {result.message}
-        </AppText>
+        <AddressSentence parts={result.message} role="caption" tone="soft" />
       ) : result.kind === "problem" ? (
         <View style={styles.problem}>
           <AppText role="secondaryMedium">{result.title}</AppText>
@@ -257,7 +261,10 @@ export function ChromeSignInAction(props: {
         </View>
       ) : (
         <View style={styles.problem}>
-          <AppText role="secondaryMedium">{`Choose the Chrome to use for ${addressWords(browserSiteLabel(result.site))}`}</AppText>
+          <AddressSentence
+            parts={sentence`Choose the Chrome to use for ${browserSiteLabel(result.site)}`}
+            role="secondaryMedium"
+          />
           <ChromeChoices>
             {result.candidates.map((candidate) => (
               <ChromeChoice

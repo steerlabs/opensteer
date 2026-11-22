@@ -16,7 +16,6 @@ import type {
   NativeSettingsRow,
   NativeSettingsSection,
 } from "./native-settings-page.types.js";
-import { addressWords } from "../ui/address-words.js";
 
 interface AlertButton {
   readonly text: string;
@@ -154,7 +153,8 @@ describe("Opensteer Cloud Computer on the phone", () => {
     );
     expect(row("website-checkout", "address")).toMatchObject({
       kind: "status",
-      detail: addressWords("https://app.opensteer.example/cloud-computer/checkout"),
+      detail: "https://app.opensteer.example/cloud-computer/checkout",
+      addressIn: "detail",
     });
     expect(section("website-checkout")?.footer?.text).toContain(
       "Set up your Cloud Computer on the Opensteer website",
@@ -231,11 +231,13 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("status", "status")).toMatchObject({
       label: "Running",
       tone: "good",
-      detail: addressWords(mockCloudComputerAddress),
+      detail: mockCloudComputerAddress,
+      addressIn: "detail",
     });
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
     expect(row("status", "browser-address")).toMatchObject({
-      detail: addressWords("203.0.113.24"),
+      detail: "203.0.113.24",
+      addressIn: "detail",
     });
     expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
     // The plan by its name, never its price.
@@ -244,7 +246,8 @@ describe("Opensteer Cloud Computer on the phone", () => {
       detail: "Renews Dec 20, 2026",
     });
     expect(row("website-billing", "address")).toMatchObject({
-      detail: addressWords("https://app.opensteer.example/cloud-computer/billing"),
+      detail: "https://app.opensteer.example/cloud-computer/billing",
+      addressIn: "detail",
     });
   });
 
@@ -347,7 +350,8 @@ describe("work Homes on the phone", () => {
     expect(section(workKey)?.title).toBe("Acme Robotics · Work Home");
     expect(row(workKey, "status")).toMatchObject({
       label: "Running",
-      detail: addressWords(mockWorkAddress),
+      detail: mockWorkAddress,
+      addressIn: "detail",
     });
     expect(section(workKey)?.footer?.text).toBe(
       "Managed by Acme Robotics: they pay for it and can suspend or delete it.",

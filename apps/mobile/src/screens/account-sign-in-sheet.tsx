@@ -20,7 +20,7 @@ import {
 } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { AddAccountFields, useAddAccountForm } from "./add-account-form.js";
-import { addressWords } from "../ui/address-words.js";
+import { sentence } from "../ui/sentence-parts.js";
 
 const noSources: readonly HarnessSourceDescriptor[] = [];
 const noSubscribe = () => () => undefined;
@@ -136,7 +136,7 @@ export function AccountSignInSheet(props: {
   const couldNotOpen =
     unopenedUrl === null ? null : (
       <Notice
-        detail={`Open ${addressWords(unopenedUrl)} in your browser.`}
+        detail={sentence`Open ${unopenedUrl} in your browser.`}
         title="Your browser didn’t open"
       />
     );

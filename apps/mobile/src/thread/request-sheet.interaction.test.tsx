@@ -1029,7 +1029,9 @@ describe("RequestSheetContent external requests", () => {
     await render(surface(signInRequest()), dispatch, { inspect });
     await settle();
 
-    expect(text()).toContain("Several Chrome profiles are signed in to github.com");
+    expect(text()).toContain(
+      `Several Chrome profiles are signed in to ${addressWords("github.com")}`,
+    );
     expect(text()).toContain("Sharing github.com is stopped");
     expect(button("Old laptop").disabled).toBe(true);
     expect(button("Allow").disabled).toBe(true);

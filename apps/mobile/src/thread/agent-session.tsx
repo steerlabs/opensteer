@@ -25,6 +25,7 @@ import { useGutter } from "../ui/screen.js";
 import { useScreenAction } from "../ui/client-feedback.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { useHostValue, useMobileClient } from "../ui/mobile-client-context.js";
+import { AddressSentence } from "../ui/address-text.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import {
@@ -73,14 +74,14 @@ export function AgentSessionPane(props: {
   useEffect(() => {
     onHeader?.({
       connectionLabel: source.short,
-      connectionWraps: true,
+      connectionKeepsEnd: source.endsInHost,
       title,
       icon: null,
       color: null,
       isVoice: false,
       task: null,
     });
-  }, [onHeader, title, source.short]);
+  }, [onHeader, title, source.short, source.endsInHost]);
   const transcript = useThreadTranscript(hostClient, threadId);
   const thread = useSessionThread(hostClient, threadId);
   const requests = useMemo(
@@ -105,9 +106,7 @@ export function AgentSessionPane(props: {
         scrollIndicatorInsets={{ right: insets.right, top }}
       >
         {/* Who works this task, its whole origin: the floating title names only its host. */}
-        <AppText noHyphens role="caption" tone="muted">
-          {source.whole}
-        </AppText>
+        <AddressSentence parts={source.whole} role="caption" tone="muted" />
         {place === null || view.stop === null ? null : (
           <PlaceLink
             label={workWords("work.openPlace", { place: place.title })}

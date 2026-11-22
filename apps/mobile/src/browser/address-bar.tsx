@@ -24,8 +24,7 @@ import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { ToolbarCapsule } from "./toolbar.js";
-import { AddressText } from "../ui/address-text.js";
-import { addressWords } from "../ui/address-words.js";
+import { HostLine } from "../ui/address-text.js";
 
 /** How far the address is dragged before letting go moves to the next tab. */
 const switchDistance = 56;
@@ -165,15 +164,13 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
                   {placeholder}
                 </AppText>
               ) : (
-                // A control of fixed height: one line, and what gives way is the host's start,
-                // keeping the name it ends in. The whole address is in the field it opens.
-                <AddressText
-                  ellipsizeMode="head"
+                // One line, as a browser's bar: the host plain, giving up its start and keeping
+                // the end that says whose it is. The whole address is in the field it opens.
+                <HostLine
+                  host={props.site}
                   maxFontSizeMultiplier={controlFontScaleLimit}
-                  numberOfLines={1}
                   role="secondaryMedium"
                   style={styles.siteText}
-                  value={props.site}
                 />
               )}
             </Animated.View>
@@ -356,9 +353,13 @@ export function AddressEditor(props: {
               <AppText numberOfLines={1} role="secondaryMedium">
                 {tab.title}
               </AppText>
-              <AppText noHyphens role="caption" tone="muted">
-                {tab.site === null ? "Switch to tab" : `Switch to tab · ${addressWords(tab.site)}`}
-              </AppText>
+              {tab.site === null ? (
+                <AppText numberOfLines={1} role="caption" tone="muted">
+                  Switch to tab
+                </AppText>
+              ) : (
+                <HostLine before="Switch to tab · " host={tab.site} role="caption" tone="muted" />
+              )}
             </View>
             <Symbol name="square.on.square" size={15} tint={color.muted} />
           </Pressable>

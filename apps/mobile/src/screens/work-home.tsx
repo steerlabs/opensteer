@@ -8,7 +8,7 @@ import { useCloudComputer } from "@opensteer/client/react";
 import { useMemo } from "react";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
-import { addressWords } from "../ui/address-words.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 /** The person's work Homes, from the one Cloud Computer read the app already makes. */
 export function useWorkHomes(): readonly WorkHomeCard[] {
@@ -55,7 +55,7 @@ export function workHomeSections(
             kind: "status",
             tone: card.status.tone,
             label: card.status.label,
-            ...(card.address ? { detail: addressWords(card.address) } : {}),
+            ...(card.address ? addressDetail(card.address) : {}),
             ...(card.steps ? { steps: card.steps } : {}),
           },
           ...(card.address && card.deploymentId
@@ -95,7 +95,7 @@ export function workHomeSections(
                   key: "browser-address",
                   kind: "text" as const,
                   label: cloudWords("cloud.ip.address"),
-                  detail: addressWords(card.browserAddress),
+                  ...addressDetail(card.browserAddress),
                 },
               ]
             : []),

@@ -16,8 +16,9 @@ import { ActionLine } from "../ui/action-line.js";
 import { AppText, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
-import { AddressText } from "../ui/address-text.js";
-import { addressWords } from "../ui/address-words.js";
+import { AddressSentence, AddressText } from "../ui/address-text.js";
+import { sentence } from "../ui/sentence-parts.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 /**
  * The personal-computer door.
@@ -128,8 +129,9 @@ export function AddPersonalScreen(): ReactNode {
           <RowGroup>
             {[
               <View key="address" style={styles.summary}>
-                <AddressText role="title" value={hostOf(origin)} />
-                <AddressText role="caption" tone="muted" value={origin} />
+                {/* Once selectable: Copy in the system's menu gives each exactly. */}
+                <CopyableAddressText role="title" value={hostOf(origin)} />
+                <CopyableAddressText role="caption" tone="muted" value={origin} />
               </View>,
             ]}
           </RowGroup>
@@ -155,9 +157,11 @@ export function AddPersonalScreen(): ReactNode {
             {[
               <View key="summary" style={styles.summary}>
                 <AddressText role="title" value={verified.discovery.canonicalOrigin} />
-                <AppText noHyphens role="caption" tone="muted">
-                  Reached at {addressWords(verified.endpoint.origin)}
-                </AppText>
+                <AddressSentence
+                  parts={sentence`Reached at ${verified.endpoint.origin}`}
+                  role="caption"
+                  tone="muted"
+                />
               </View>,
             ]}
           </RowGroup>

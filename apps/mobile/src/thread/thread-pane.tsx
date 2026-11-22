@@ -182,10 +182,10 @@ type TranscriptItem =
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
   /**
-   * The label names a source (a connected agent's host): it wraps rather than cut that host, so
-   * where the host does not fit beside the words, the line is not one line at that size.
+   * The label ends in a host (a connected agent's): one line that gives up its start, keeping the
+   * end that says whose it is, as a browser's address bar does. A host is never wrapped.
    */
-  readonly connectionWraps?: boolean;
+  readonly connectionKeepsEnd?: boolean;
   readonly title: string;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
@@ -201,7 +201,7 @@ export function sameThreadHeader(
   return (
     left !== null &&
     left.connectionLabel === right.connectionLabel &&
-    left.connectionWraps === right.connectionWraps &&
+    left.connectionKeepsEnd === right.connectionKeepsEnd &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&

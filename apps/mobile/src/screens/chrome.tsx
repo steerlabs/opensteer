@@ -30,8 +30,7 @@ import {
 } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { AddressText } from "../ui/address-text.js";
-import { addressWords } from "../ui/address-words.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 export type ChromeDestination = { readonly deploymentId: string };
 
@@ -409,9 +408,9 @@ function SiteRow(props: {
   const { grant, hostClient } = props;
   const domain = browserSiteLabel(grant.site);
   const removeSpec = {
-    label: `remove ${addressWords(domain)}`,
+    label: `remove ${domain}`,
     done: "removed",
-    happened: `${addressWords(domain)} was removed`,
+    happened: `${domain} was removed`,
   } as const;
   const removal = useScreenAction<void, void>(hostClient, `chrome-site-remove:${grant.site}`, {
     ...removeSpec,
@@ -434,7 +433,8 @@ function SiteRow(props: {
     <View style={styles.siteRow}>
       <Symbol name="globe" size={17} tint={color.textSoft} />
       <View style={styles.rowText}>
-        <AddressText role="body" value={domain} />
+        {/* Once selectable: Copy in the system's menu gives the site exactly. */}
+        <CopyableAddressText role="body" value={domain} />
         <AppText role="caption" tone="muted">
           {grant.lastSignedInAt === null
             ? "Not used yet"

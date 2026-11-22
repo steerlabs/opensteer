@@ -5,7 +5,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
-import { addressWords } from "../ui/address-words.js";
 
 /*
  * The phone's Plugins screens reach the background controls a person needs,
@@ -152,9 +151,10 @@ it("finishes a manual webhook setup with the secret and field the service gave",
       rows(page(sheet)).some(
         (candidate) =>
           "detail" in candidate &&
-          candidate.detail?.startsWith(
-            addressWords("https://hooks.opensteer.example/hooks/v1/plugins/"),
-          ),
+          candidate.detail?.startsWith("https://hooks.opensteer.example/hooks/v1/plugins/") ===
+            true &&
+          "addressIn" in candidate &&
+          candidate.addressIn === "detail",
       ),
   ).toBe(true);
   expect(row(page(sheet), (candidate) => candidate.label === "Done")).toMatchObject({

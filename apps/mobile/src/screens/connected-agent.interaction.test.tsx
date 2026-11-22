@@ -11,7 +11,6 @@ import type {
   NativeSettingsRow,
   NativeSettingsSection,
 } from "./native-settings-page.types.js";
-import { addressWords } from "../ui/address-words.js";
 
 interface AlertButton {
   readonly text: string;
@@ -174,8 +173,13 @@ describe("one connected agent on the phone", () => {
       await open(connection.id, client);
       expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
       // Its name is the title; the who rows add only where its access goes.
-      expect(section("who")?.rows.map(({ label }) => label)).toEqual([
-        `Holds the access: ChatGPT · ${addressWords("https://chatgpt.com")}`,
+      // What the origin is, then the origin, which the row draws as an address.
+      expect(section("who")?.rows).toEqual([
+        expect.objectContaining({
+          addressIn: "detail",
+          detail: "https://chatgpt.com",
+          label: "Holds the access: ChatGPT",
+        }),
       ]);
       expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
       expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");

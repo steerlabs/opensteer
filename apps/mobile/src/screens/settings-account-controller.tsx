@@ -27,6 +27,7 @@ import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-rem
 import { homeAccountLinkSections, useHomeAccountLink } from "./settings-home-account-link.js";
 import { useSettingsHost } from "./use-settings-host.js";
 import { usePhoneHome } from "../computers/home-kind.js";
+import { isAddress } from "../ui/address-words.js";
 
 /** Account: who you are, using this computer from anywhere, and where you're signed in. */
 export function AccountSettingsController(props: { readonly sessionId?: string } = {}): ReactNode {
@@ -292,6 +293,8 @@ function AccountSettingsContent(props: {
           kind: "text",
           label: signedIn ? accountModel.title : "Not signed in",
           detail: signedIn ? "Opensteer account" : "Sign in to reach your computers",
+          // The account's email, the same value the welcome draws: never hyphenated.
+          ...(signedIn && isAddress(accountModel.title) ? { addressIn: "label" as const } : {}),
           ...(accountModel.initial === null ? {} : { initial: accountModel.initial }),
         },
         ...(!signedIn && accountModel.action

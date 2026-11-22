@@ -8,6 +8,7 @@ import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
 } from "@opensteer/protocol/browser-sources";
+import { sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 export type DotTone = "green" | "amber" | "red" | "muted" | "ember";
 
@@ -73,7 +74,8 @@ export function signInStatus(input: {
 }): {
   readonly detail: string | null;
   readonly live: boolean;
-  readonly title: string;
+  /** Its words; one that names the site comes as parts, the site drawn as an address. */
+  readonly title: string | readonly SentencePart[];
   readonly tone: DotTone;
 } {
   const { availability, site } = input;
@@ -118,13 +120,13 @@ export function signInStatus(input: {
         ? {
             detail: "Allow signs your agent in now.",
             live: false,
-            title: `${single.name} is signed in to ${domain}`,
+            title: [`${single.name} is signed in to `, { address: domain }],
             tone: "green",
           }
         : {
             detail: "Choose which one to use.",
             live: false,
-            title: `Several Chrome profiles are signed in to ${domain}`,
+            title: sentence`Several Chrome profiles are signed in to ${domain}`,
             tone: "green",
           };
     }

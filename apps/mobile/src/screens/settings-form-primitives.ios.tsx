@@ -14,6 +14,7 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
 import { color, deploymentPaint } from "../theme.js";
+import { addressWords } from "../ui/address-words.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsFooter } from "./native-settings-page.types.js";
@@ -30,20 +31,46 @@ export function Lines(props: {
   readonly detail: string | null;
   readonly title: string;
   readonly detailColor?: string;
+  /**
+   * Which line is an email address, a host or a URL (`isAddress`): drawn as one (`address-text.tsx`),
+   * whole and wrapping only at its joints, and read aloud as it is.
+   */
+  readonly addressIn?: "title" | "detail" | undefined;
 }): ReactNode {
+  const words = (value: string, place: "title" | "detail") =>
+    props.addressIn === place
+      ? { modifiers: [accessibilityLabel(value)], text: addressWords(value) }
+      : { modifiers: [], text: value };
+  const title = words(props.title, "title");
+  const detail = props.detail === null ? null : words(props.detail, "detail");
   return (
     <VStack alignment="leading" spacing={2}>
-      <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
-        {props.title}
+      <Text
+        modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text), ...title.modifiers]}
+      >
+        {title.text}
       </Text>
       {/* Inside a Button, hierarchical secondary would take the button's tint. */}
-      {props.detail === null ? null : (
-        <Text modifiers={[foregroundStyle(props.detailColor ?? color.muted), footnote]}>
-          {props.detail}
+      {detail === null ? null : (
+        <Text
+          modifiers={[
+            foregroundStyle(props.detailColor ?? color.muted),
+            footnote,
+            ...detail.modifiers,
+          ]}
+        >
+          {detail.text}
         </Text>
       )}
     </VStack>
   );
+}
+
+/** A row's `addressIn` as `Lines` names its lines. */
+export function linesAddress(addressIn: "label" | "detail" | undefined): {
+  readonly addressIn?: "title" | "detail";
+} {
+  return addressIn === undefined ? {} : { addressIn: addressIn === "label" ? "title" : "detail" };
 }
 
 /** A row's glyph on a quiet tile, so the list is scanned by shape before it is read. */

@@ -44,6 +44,11 @@ export type NativeSettingsRow =
       readonly kind: "text";
       readonly label: string;
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** A person's round initial, leading an identity row. */
       readonly initial?: string;
     }
@@ -54,6 +59,11 @@ export type NativeSettingsRow =
       readonly label: string;
       /** Something to read or copy under the status, such as an address. */
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       readonly steps?: readonly NativeSettingsStep[];
     }
   | {
@@ -71,6 +81,11 @@ export type NativeSettingsRow =
       readonly kind: "button";
       readonly label: string;
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** The row opens a page about this thing rather than acting at once. */
       readonly opens?: boolean;
       /** The integration or plugin whose mark leads the row. */

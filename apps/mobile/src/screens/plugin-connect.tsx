@@ -22,7 +22,7 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { usePluginAction } from "./plugins.js";
 import { usePluginRead } from "./use-plugin-read.js";
-import { addressWords } from "../ui/address-words.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 type Params = StaticScreenProps<{
   readonly deploymentId: string;
@@ -426,7 +426,7 @@ function useSignInSections(input: {
           kind: "status",
           tone: "neutral",
           label: "Register this as the redirect URL",
-          detail: addressWords(form.redirectUri),
+          ...addressDetail(form.redirectUri),
         },
         ...(form.scopes.length
           ? [

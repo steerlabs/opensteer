@@ -33,7 +33,9 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { AddressSentence } from "./address-text.js";
 import { useCopy } from "./copy-mark.js";
+import type { SentencePart } from "./sentence-parts.js";
 
 /**
  * The pieces every screen is built from.
@@ -56,6 +58,8 @@ export function AppText(props: {
   readonly maxFontSizeMultiplier?: number;
   /** Never hyphenate on Android, whatever its default: set by `AddressText` (`address-text.tsx`). */
   readonly noHyphens?: boolean;
+  /** Part of the text around it: no style or tone of its own, inheriting the surrounding text's. */
+  readonly inline?: boolean;
   readonly numberOfLines?: number;
   readonly selectable?: boolean;
   readonly role?: TextRole;
@@ -72,7 +76,11 @@ export function AppText(props: {
       maxFontSizeMultiplier={props.maxFontSizeMultiplier}
       numberOfLines={props.numberOfLines}
       selectable={props.selectable}
-      style={[type[role], { color: textTone(props.tone ?? "default") }, props.style]}
+      style={
+        props.inline === true
+          ? props.style
+          : [type[role], { color: textTone(props.tone ?? "default") }, props.style]
+      }
     >
       {props.children}
     </Text>
@@ -499,7 +507,8 @@ function FieldInput(props: {
  */
 export function Notice(props: {
   readonly action?: { readonly label: string; readonly onPress: () => void };
-  readonly detail: string;
+  /** Its sentence; one that holds an address comes as parts (`sentence-parts.ts`). */
+  readonly detail: string | readonly SentencePart[];
   readonly title: string;
   readonly tone?: "danger" | "neutral";
 }): ReactNode {
@@ -509,9 +518,13 @@ export function Notice(props: {
       <AppText role="secondaryMedium" tone={danger ? "danger" : "default"}>
         {props.title}
       </AppText>
-      <AppText role="secondary" tone="soft">
-        {props.detail}
-      </AppText>
+      {typeof props.detail === "string" ? (
+        <AppText role="secondary" tone="soft">
+          {props.detail}
+        </AppText>
+      ) : (
+        <AddressSentence parts={props.detail} role="secondary" tone="soft" />
+      )}
       {props.action === undefined ? null : (
         <SecondaryButton label={props.action.label} onPress={props.action.onPress} />
       )}

@@ -332,7 +332,7 @@ interface Line {
  * What a line breaker may break between: a word and the space before it (`gap` 1), or a part of an
  * address and the zero-width break opportunity before it (`gap` 0, `address-words.ts`).
  */
-interface Piece {
+export interface Piece {
   readonly word: string;
   readonly gap: number;
 }
@@ -343,14 +343,19 @@ export function drawnText(text: string): string {
 }
 
 /** A text's pieces: its words, and inside an address its parts. */
-function pieces(text: string): Piece[] {
+/**
+ * A text's pieces, as a line breaker sees the characters drawn: a space breaks, unless a word
+ * joiner holds it to either side (then it is part of a word, as the phone's text engine keeps it);
+ * a zero-width space breaks and takes no room; a word joiner takes no room.
+ */
+export function pieces(text: string): Piece[] {
   return text
-    .replace(/\u2060/gu, "")
-    .split(/\s+/u)
+    .split(/(?<!\u2060)\s+(?!\u2060)/u)
     .filter(Boolean)
     .flatMap((word) =>
       word
         .split("\u200B")
+        .map((part) => part.replace(/\u2060/gu, ""))
         .filter(Boolean)
         .map((part, index) => ({ gap: index === 0 ? 1 : 0, word: part })),
     );

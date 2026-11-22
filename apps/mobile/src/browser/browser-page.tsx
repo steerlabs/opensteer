@@ -102,7 +102,8 @@ import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.j
 import { systemBrowserLabel } from "./system-browser.js";
 import { failureWords, refusal } from "../ui/client-feedback.js";
 import { tabActionSpecs } from "../tabs/tab-actions.js";
-import { addressWords } from "../ui/address-words.js";
+import { HostLine } from "../ui/address-text.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -359,7 +360,10 @@ export function BrowserPage(props: {
     const timer = setTimeout(() => setFillNotice(null), fillNoticeMs);
     return () => clearTimeout(timer);
   }, [fillNotice]);
-  const [saveNotice, setSaveNotice] = useState<{ title: string; detail: string } | null>(null);
+  const [saveNotice, setSaveNotice] = useState<{
+    title: string;
+    detail: string | readonly SentencePart[];
+  } | null>(null);
   useEffect(() => {
     if (saveNotice === null) return;
     const timer = setTimeout(() => setSaveNotice(null), fillNoticeMs);
@@ -381,7 +385,11 @@ export function BrowserPage(props: {
         said.ok && offer.kind === "save"
           ? {
               title: said.message,
-              detail: `${offer.username} · ${addressWords(pageSite(offer.origin) ?? offer.origin)}`,
+              detail: [
+                { address: offer.username },
+                " · ",
+                { address: pageSite(offer.origin) ?? offer.origin },
+              ],
             }
           : { title: "Your login wasn’t saved", detail: said.message },
       );
@@ -1464,9 +1472,13 @@ function PageDialog(props: {
       <View accessibilityViewIsModal style={styles.dialog}>
         <View style={styles.dialogFrom}>
           <Symbol name="globe" size={12} tint={color.muted} />
-          <AppText noHyphens role="caption" tone="muted">
-            {props.site === null ? "This page says" : `${addressWords(props.site)} says`}
-          </AppText>
+          {props.site === null ? (
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              This page says
+            </AppText>
+          ) : (
+            <HostLine after=" says" host={props.site} role="caption" tone="muted" />
+          )}
         </View>
         <AppText role="secondary" style={styles.dialogMessage}>
           {dialog.message}

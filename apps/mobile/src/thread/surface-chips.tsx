@@ -23,7 +23,7 @@ import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { AppMark } from "../computers/app-mark.js";
-import { addressWords } from "../ui/address-words.js";
+import { HostLine } from "../ui/address-text.js";
 
 /**
  * How transcript rows reach the pages and apps they name. Rows are memoized
@@ -337,9 +337,7 @@ function PlaceStop(props: {
         {page.title}
       </AppText>
       {site === null || site === page.title ? null : (
-        <AppText noHyphens role="caption" style={styles.site} tone="muted">
-          {`· ${addressWords(site)}`}
-        </AppText>
+        <HostLine before="· " host={site} role="caption" style={styles.site} tone="muted" />
       )}
       {acting ? <ActingDot grouped /> : null}
     </Pressable>
@@ -428,9 +426,7 @@ function SurfaceChip(props: {
         {props.title}
       </AppText>
       {site === null || site === props.title ? null : (
-        <AppText noHyphens role="caption" style={styles.site} tone="muted">
-          {`· ${addressWords(site)}`}
-        </AppText>
+        <HostLine before="· " host={site} role="caption" style={styles.site} tone="muted" />
       )}
     </Pressable>
   );

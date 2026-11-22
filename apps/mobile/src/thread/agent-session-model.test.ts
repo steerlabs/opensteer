@@ -1,8 +1,8 @@
-import { connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
+import { agentWho, connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { addressValue, addressWords } from "../ui/address-words.js";
+import { isAddress } from "../ui/address-words.js";
 import {
   needsYouOperation,
   operationRequestsOf,
@@ -228,21 +228,45 @@ describe("where a connected agent's task names who works it", () => {
     };
   };
 
-  it("names the host in the floating title, never cut and never the scheme in its place", () => {
+  it("names the host on the floating title's one line, plain, and the whole origin in the pane", () => {
     const lines = sourceLines(view("Claude"));
-    expect(addressValue(lines.short)).toBe("Connected agent · claude.ai");
-    // Drawn the one way: the host is held together and wraps only at its own joints.
-    expect(lines.short).toContain(addressWords("claude.ai"));
+    expect(lines).toEqual({
+      endsInHost: true,
+      short: "Connected agent · claude.ai",
+      whole: ["Connected agent · ", { address: "https://claude.ai" }],
+    });
   });
 
-  it("heads the pane with the whole origin", () => {
-    expect(addressValue(sourceLines(view("Claude")).whole)).toBe(
-      "Connected agent · https://claude.ai",
-    );
+  it("keeps a port that is not the default and a scheme that is not https", () => {
+    // An agent that only says who it is: the Home knows it by its redirect's origin.
+    const agent = agentWho({ clientName: "Dev agent", redirect: "http://192.168.1.20:3000/cb" });
+    expect(agent.detail).toBe("http://192.168.1.20:3000");
+    const lines = sourceLines({
+      agent: { initial: "D", name: "Dev agent", providerId: null, who: agent },
+      header: `Connected agent · ${agent.detail}`,
+    });
+    expect(lines.short).toBe("Connected agent · http://192.168.1.20:3000");
+  });
+
+  it("draws a pair's sentence as words, and names the platform on the title", () => {
+    const pair = view("Errand");
+    expect(isAddress(pair.agent.who.detail), pair.agent.who.detail).toBe(false);
+    const lines = sourceLines(pair);
+    // Words stay words: never an address part, never a joiner beside a space.
+    expect(lines.whole).toEqual([pair.header]);
+    expect(lines.short).not.toMatch(/[\u2060\u200B]/u);
+    const platform = pair.agent.who.origins.find(({ role }) => role === "platform")?.origin;
+    expect(platform).toBeDefined();
+    expect(lines.short).toBe(`Connected agent · ${new URL(platform!).host}`);
+    expect(lines.endsInHost).toBe(true);
   });
 
   it("says an app on this computer as it is", () => {
     const local = view("Claude Code");
-    expect(sourceLines(local)).toEqual({ short: local.header, whole: local.header });
+    expect(sourceLines(local)).toEqual({
+      endsInHost: false,
+      short: local.header,
+      whole: [local.header],
+    });
   });
 });

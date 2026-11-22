@@ -116,8 +116,9 @@ import { useThreadMutation } from "./thread-mutation-registry.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 import { useRequestResponse, type RequestResponder } from "./use-request-response.js";
 import { QuestionCard } from "./waiting-questions.js";
-import { AddressText } from "../ui/address-text.js";
-import { addressWords } from "../ui/address-words.js";
+import { AddressSentence, AddressText } from "../ui/address-text.js";
+import { plainSentence, sentence } from "../ui/sentence-parts.js";
+import { isAddress } from "../ui/address-words.js";
 
 /** A native answer in English: the same word for a refusal on every kind of Request. */
 const declineLabel = "Don’t Allow";
@@ -1145,27 +1146,34 @@ function BrowserSignInBody(props: {
   });
   const allow = (sourceId: BrowserSourceId): void =>
     void responder.respondSignIn({ decision: "allow", sourceId }, "browser-sign-in-allow");
+  const title = typeof status.title === "string" ? [status.title] : status.title;
   return (
     <View style={styles.section}>
-      <AppText role="secondary">
-        {`Your agent wants to use your ${addressWords(domain)} sign-in from ${selected?.name ?? "Chrome"}.`}
-      </AppText>
-      <AppText role="caption" tone="soft">
-        {`Your agent will be able to use ${addressWords(domain)} as you.`}
-      </AppText>
+      <AddressSentence
+        parts={[
+          ...sentence`Your agent wants to use your ${domain} sign-in from `,
+          `${selected?.name ?? "Chrome"}.`,
+        ]}
+        role="secondary"
+      />
+      <AddressSentence
+        parts={sentence`Your agent will be able to use ${domain} as you.`}
+        role="caption"
+        tone="soft"
+      />
       <View
         accessibilityLiveRegion="polite"
         accessible
         accessibilityLabel={
-          status.detail === null ? status.title : `${status.title}. ${status.detail}`
+          status.detail === null
+            ? plainSentence(title)
+            : `${plainSentence(title)}. ${status.detail}`
         }
         style={styles.signInStatus}
       >
         <View style={styles.signInStatusHead}>
           <StatusDot live={status.live} tone={status.tone} />
-          <AppText role="secondaryMedium" style={styles.shrink}>
-            {status.title}
-          </AppText>
+          <AddressSentence parts={title} role="secondaryMedium" style={styles.shrink} />
         </View>
         {status.detail === null ? null : (
           <AppText role="caption" tone="soft">
@@ -1288,6 +1296,7 @@ function PasswordSignInBody(props: {
               hint="Choose one"
               key={account.id}
               label={account.username}
+              {...(isAddress(account.username) ? { addressIn: "label" as const } : {})}
               mode="one"
               onPress={() => setChosenId(account.id)}
               selected={chosen?.id === account.id}
@@ -1720,6 +1729,8 @@ function RequestForm(props: {
  */
 function FormChoiceRow(props: {
   readonly accessibilityLabel?: string;
+  /** The label is an email address, a host or a URL (`isAddress`): drawn as one. */
+  readonly addressIn?: "label";
   readonly description: string | undefined;
   readonly disabled: boolean;
   readonly hint: string | undefined;
@@ -1747,7 +1758,11 @@ function FormChoiceRow(props: {
       ]}
     >
       <View style={styles.rowText}>
-        <AppText role="secondary">{props.label}</AppText>
+        {props.addressIn === "label" ? (
+          <AddressText role="secondary" value={props.label} />
+        ) : (
+          <AppText role="secondary">{props.label}</AppText>
+        )}
         {props.description === undefined || props.description === "" ? null : (
           <AppText role="caption" tone="muted">
             {props.description}

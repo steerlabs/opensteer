@@ -40,6 +40,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color } from "../theme.js";
+import { addressWords } from "../ui/address-words.js";
 import type { NativeSettingsStep, NativeSettingsTone } from "./native-settings-page.types.js";
 import type { SettingsActionModel } from "./settings-model.js";
 
@@ -245,7 +246,22 @@ export function UnknownToggleRow(props: {
 }
 
 /** A name and the line under it, optionally opening or doing something. */
+/**
+ * A line of a row as drawn: an email address, a host or a URL in the characters that keep it whole
+ * (`address-text.tsx`), read aloud as it is; anything else as it is.
+ */
+function drawnLine(
+  value: string,
+  address: boolean,
+): { readonly modifiers: ReturnType<typeof semantics>[]; readonly text: string } {
+  return address
+    ? { modifiers: [semantics({ contentDescription: value })], text: addressWords(value) }
+    : { modifiers: [], text: value };
+}
+
 export function LinkRow(props: {
+  /** Which line is an email address, a host or a URL (`isAddress`). */
+  readonly addressIn?: "title" | "detail" | undefined;
   readonly detail?: string | null | undefined;
   /** Amber for a thing that needs the person. */
   readonly detailTone?: "attention" | undefined;
@@ -258,6 +274,8 @@ export function LinkRow(props: {
   readonly trailing?: ReactNode;
 }): ReactNode {
   const enabled = props.onPress && props.disabled !== true;
+  const title = drawnLine(props.title, props.addressIn === "title");
+  const detail = props.detail ? drawnLine(props.detail, props.addressIn === "detail") : null;
   return (
     <ListItem colors={rowColors} modifiers={enabled ? [clickable(props.onPress!)] : []}>
       <ListItem.HeadlineContent>
@@ -269,14 +287,18 @@ export function LinkRow(props: {
                 ? color.red
                 : color.text
           }
+          modifiers={title.modifiers}
         >
-          {props.title}
+          {title.text}
         </Text>
       </ListItem.HeadlineContent>
-      {props.detail ? (
+      {detail ? (
         <ListItem.SupportingContent>
-          <Text color={props.detailTone === "attention" ? color.amber : color.muted}>
-            {props.detail}
+          <Text
+            color={props.detailTone === "attention" ? color.amber : color.muted}
+            modifiers={detail.modifiers}
+          >
+            {detail.text}
           </Text>
         </ListItem.SupportingContent>
       ) : null}
@@ -472,6 +494,7 @@ export function SelectRow(props: {
 
 /** A row with secondary actions behind Android's overflow button. */
 export function MenuRow(props: {
+  readonly addressIn?: "title" | "detail" | undefined;
   readonly actions: readonly {
     readonly label: string;
     readonly destructive?: boolean | undefined;
@@ -490,6 +513,7 @@ export function MenuRow(props: {
   const [open, setOpen] = useState(false);
   return (
     <LinkRow
+      addressIn={props.addressIn}
       detail={props.detail}
       destructive={props.destructive}
       disabled={props.disabled}
@@ -624,6 +648,8 @@ export function Avatar(props: { readonly initial: string }): ReactNode {
 
 /** A coloured dot, one short state, and while something is under way its steps. */
 export function StatusRow(props: {
+  /** The detail is an email address, a host or a URL (`isAddress`). */
+  readonly addressIn?: "label" | "detail" | undefined;
   readonly detail?: string | undefined;
   readonly label: string;
   readonly steps?: readonly NativeSettingsStep[] | undefined;
@@ -643,11 +669,20 @@ export function StatusRow(props: {
       {hasSupport ? (
         <ListItem.SupportingContent>
           <Column verticalArrangement={{ spacedBy: 8 }} modifiers={[padding(0, 4, 0, 0)]}>
-            {props.detail === undefined ? null : (
-              <Text color={color.textSoft} style={{ fontFamily: "monospace", fontSize: 13 }}>
-                {props.detail}
-              </Text>
-            )}
+            {props.detail === undefined
+              ? null
+              : (() => {
+                  const detail = drawnLine(props.detail, props.addressIn === "detail");
+                  return (
+                    <Text
+                      color={color.textSoft}
+                      modifiers={detail.modifiers}
+                      style={{ fontFamily: "monospace", fontSize: 13 }}
+                    >
+                      {detail.text}
+                    </Text>
+                  );
+                })()}
             {props.steps?.map((step) => (
               <Step key={step.label} step={step} />
             ))}

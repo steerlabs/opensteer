@@ -30,6 +30,25 @@ const state = vi.hoisted(() => ({
   },
 }));
 
+// The platform's own menu, as its options: one button each.
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
+vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
+vi.mock("../thread/composer-menu.js", () => ({
+  NativeMenu: (props: {
+    children: ReactNode;
+    options: readonly { id: string; label: string; onPress: () => void }[];
+  }) => (
+    <div>
+      {props.children}
+      {props.options.map((option) => (
+        <button key={option.id} onClick={option.onPress} type="button">
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => state.navigation,
   useRoute: () => ({ params: state.params }),
@@ -79,6 +98,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The screen's Connect, by its name: each address on it also offers Copy. */
+function connectButton(container: Element): HTMLButtonElement {
+  const found = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Connect",
+  );
+  if (!found) throw new Error("Missing Connect");
+  return found;
+}
+
 describe("pairing a computer from its code", () => {
   it("keeps a second pairing offer when the first pairing completes late", async () => {
     const verified = { discovery: { canonicalOrigin: origin, deploymentId }, endpoint: { origin } };
@@ -93,7 +121,7 @@ describe("pairing a computer from its code", () => {
     const root = createRoot(container);
     try {
       await act(async () => root.render(<AddPersonalScreen />));
-      await act(async () => container.querySelector("button")!.click());
+      await act(async () => connectButton(container).click());
       expect(state.add).toHaveBeenCalledTimes(1);
       const secondOrigin = "https://second.tailnet.ts.net";
       const secondCode = `${code}second`;
@@ -106,7 +134,7 @@ describe("pairing a computer from its code", () => {
       expect(state.reset).not.toHaveBeenCalled();
       expect(state.client.openDeployment).not.toHaveBeenCalled();
       expect(container.textContent).toContain(addressWords(secondOrigin));
-      await act(async () => container.querySelector("button")!.click());
+      await act(async () => connectButton(container).click());
       expect(state.add).toHaveBeenLastCalledWith(
         expect.objectContaining({ pairingCode: secondCode }),
       );

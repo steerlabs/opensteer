@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { ReactNode } from "react";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { testHostConnection } from "@opensteer/client/test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +12,24 @@ const state = vi.hoisted(() => ({
   announce: vi.fn(async (_message: string) => undefined),
 }));
 
+// The platform's own menu, as its options: one button each.
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
+vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
+vi.mock("../thread/composer-menu.js", () => ({
+  NativeMenu: (props: {
+    children: ReactNode;
+    options: readonly { id: string; label: string; onPress: () => void }[];
+  }) => (
+    <div>
+      {props.children}
+      {props.options.map((option) => (
+        <button key={option.id} onClick={option.onPress} type="button">
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
 vi.mock("@opensteer/client/react", async (load) => ({
   ...(await load<typeof import("@opensteer/client/react")>()),

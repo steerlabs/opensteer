@@ -18,7 +18,8 @@ import {
   type SessionTaskView,
 } from "@opensteer/client/host";
 import type { AgentOperationView } from "@opensteer/core";
-import { addressWords } from "../ui/address-words.js";
+import { isAddress } from "../ui/address-words.js";
+import { sentenceAround, type SentencePart } from "../ui/sentence-parts.js";
 
 type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
@@ -161,20 +162,31 @@ export function whoLines(
 }
 
 /**
- * "Connected agent · claude.ai" for the floating title, where there is one line and a host is what
- * says who is asking: the scheme gives way, never the host, which the line wraps rather than cut.
- * The whole origin, "Connected agent · https://claude.ai", heads the pane.
+ * Who works a connected agent's task, said twice. `short` is the floating title's one line:
+ * "Connected agent · claude.ai", the host kept with a port that is not the default and a scheme
+ * that is not https, drawn plain and giving up its start when it does not fit (`HostLine`).
+ * `whole` heads the pane: "Connected agent · https://claude.ai", the origin drawn as an address.
+ * `who.detail` is an origin only when `isAddress` says so: for a verified pair it is a sentence
+ * ("Errand asked for this. AgentPay will hold the access."), and words stay words.
  */
 export function sourceLines(view: Pick<SessionTaskView, "agent" | "header">): {
   readonly short: string;
-  readonly whole: string;
+  /** The title names a host, so it keeps that end when it does not fit. */
+  readonly endsInHost: boolean;
+  readonly whole: readonly SentencePart[];
 } {
   const who = view.agent.who;
-  if (who === null || who.local) return { short: view.header, whole: view.header };
+  const words = { endsInHost: false, short: view.header, whole: [view.header] };
+  if (who === null || who.local) return words;
+  const header = (origin: string) => workWords("work.header", { origin });
+  // A pair's detail is a sentence: the title names the platform that holds the access.
+  const origin = isAddress(who.detail)
+    ? who.detail
+    : (who.origins.find(({ role }) => role === "platform")?.origin ?? null);
+  const host = origin === null ? null : pageSiteLabel(origin, { origin: true });
   return {
-    short: workWords("work.header", {
-      origin: addressWords(pageSiteLabel(who.detail) ?? who.detail),
-    }),
-    whole: workWords("work.header", { origin: addressWords(who.detail) }),
+    endsInHost: host !== null,
+    short: host === null ? view.header : header(host),
+    whole: isAddress(who.detail) ? sentenceAround(header, who.detail) : [view.header],
   };
 }

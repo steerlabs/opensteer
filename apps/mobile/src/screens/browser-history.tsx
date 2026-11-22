@@ -17,7 +17,6 @@ import { useStackedLayout } from "../ui/stacked-layout.js";
 import { Symbol } from "../ui/symbol.js";
 import { BrowserHistoryMenu } from "./browser-history-menu.js";
 import { AddressText } from "../ui/address-text.js";
-import { addressWords } from "../ui/address-words.js";
 
 export type BrowserHistoryDestination = {
   readonly deploymentId: string;
@@ -256,7 +255,7 @@ function HistoryRow({
         />
       </View>
       <BrowserHistoryMenu
-        title={title === address ? title : `${title}, ${addressWords(address)}`}
+        title={title === address ? title : `${title}, ${address}`}
         disabled={disabled}
         onRemove={onRemove}
       />

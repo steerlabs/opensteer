@@ -1,7 +1,7 @@
 import type { BrowserTabSummary } from "@opensteer/client/host";
 import {
   browserPagePart,
-  browserSiteLabel,
+  pageSiteLabel,
   browserTabTitle,
   type BrowserSessionSummary,
 } from "@opensteer/client/host";
@@ -36,10 +36,14 @@ export function paramsTabId(params: unknown): TabId | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** The page's host as a person says it, or null for a page with no address worth naming. */
+/**
+ * The page's host as a person says it, or null for a page with no address worth naming. It keeps a
+ * port that is not the default and a scheme that is not https, as a browser's bar does, so two
+ * pages on one host are never named alike (`pageSiteLabel`).
+ */
 export function pageSite(url: string): string | null {
   if (!/^https?:\/\//iu.test(url)) return null;
-  return browserSiteLabel(url).replace(/^www\./iu, "") || null;
+  return pageSiteLabel(url, { origin: true });
 }
 
 /**

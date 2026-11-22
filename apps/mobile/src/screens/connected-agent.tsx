@@ -8,7 +8,6 @@ import {
   createDedicatedProfile,
   draftFromGrant,
   grantFromDraft,
-  agentWhoOriginLine,
   toggleDraftResource,
   sameGrant,
   type AgentGrantDraft,
@@ -37,7 +36,7 @@ import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import { addressWords } from "../ui/address-words.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly connectionId: string }>;
 
@@ -305,15 +304,15 @@ export function connectedAgentSections(props: {
                     ? workWords("who.verified")
                     : workWords("who.verifiedAs", { name: who.heading })
                   : who.heading,
-                ...(detail.row.identity.who.origins.length
-                  ? {}
-                  : { detail: addressWords(who.detail) }),
+                ...(detail.row.identity.who.origins.length ? {} : addressDetail(who.detail)),
               },
             ]),
         ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
           key: origin.role,
           kind: "text",
-          label: agentWhoOriginLine({ ...origin, origin: addressWords(origin.origin) }),
+          // What the origin is, then the origin under it, drawn as an address.
+          label: origin.name === null ? origin.roleLabel : `${origin.roleLabel}: ${origin.name}`,
+          ...addressDetail(origin.origin),
         })),
       ],
     },
