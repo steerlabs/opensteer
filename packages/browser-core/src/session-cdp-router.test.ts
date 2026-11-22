@@ -2322,6 +2322,18 @@ describe("SessionCdpRouter nested messages: one decoder, and the rules where the
           code: "forbidden",
           message: outside,
         });
+      // The same command nested in a well-formed message is refused where it is unpacked.
+      expect(
+        await f.send({
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: f.sessionId,
+            message: JSON.stringify({ id: 9, method: "Page.crash", params: {} }),
+          },
+          connection: true,
+        }),
+      ).toMatchObject({ code: "forbidden", message: outside });
+      expect(f.channel.commands.map(({ method }) => method)).not.toContain("Page.crash");
       // The page auto-attach the runtime receives is limited, and unpaused.
       await f.send({
         method: "Target.setAutoAttach",
