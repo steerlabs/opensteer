@@ -56,11 +56,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: { "machine.kind": 1 },
     reason: "Device presentation kind labels headless hardware, not a Deployment.",
   },
-  "apps/control-plane/src/database/store.ts": {
-    counts: { "shape.data.document.deploymentShape.kind": 1 },
-    reason:
-      "A team server a previous release listed is left out of the Account's places; the signed shape decides it.",
-  },
   "packages/browser-source-wire/src/frozen/personal-access-route.ts": {
     counts: {
       "authority.deploymentShape.kind": 1,
@@ -158,7 +153,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "packages/client/src/connections/deployment-catalog.ts": {
     counts: { "record.kind": 1, shape: 1 },
     reason:
-      "A catalog row a previous release saved for a team server is left out by its retired kind before the catalog parses.",
+      "A saved catalog row or an Account directory row for a team server a previous release kept is left out by its retired kind before either parses.",
   },
   "packages/client/src/integrations/computer-app-approval.ts": {
     counts: {
