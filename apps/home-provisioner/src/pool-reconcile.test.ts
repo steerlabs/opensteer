@@ -1841,6 +1841,7 @@ describe("PoolReconciler — slots", () => {
       target,
       {
         slotId: BrowserPoolSlotIdSchema.parse("bps_99999999-9999-4999-8999-999999999999"),
+        term: 1,
         eraseProfile: true,
       },
       signal,
