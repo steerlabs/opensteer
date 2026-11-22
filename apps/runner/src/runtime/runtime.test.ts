@@ -702,6 +702,55 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it.each([false, true])(
+    "hands a Run without personal context nothing of Agent home (personal context: %s)",
+    async (personalContext) => {
+      const driver = new FakeHarnessDriver();
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const plans: HarnessSandboxRunPlan[] = [];
+      const runtime = configuredRuntime({
+        environmentId,
+        harnessSandbox: {
+          plan: async (plan) => {
+            plans.push(plan);
+            return (launch) => launch;
+          },
+          planProgram: async () => (launch) => launch,
+        },
+        registry,
+      });
+      const base = executeCommand(environmentId);
+      const execute = { ...base, context: { ...base.context, personalContext } };
+      const agentHome = base.agentHome!.path;
+      const underHome = (value: string | undefined) =>
+        value !== undefined && (value === agentHome || value.startsWith(`${agentHome}/`));
+      try {
+        await reconcile(registry, execute);
+        await runtime.handleCommand(execute, { send: async () => undefined });
+        await waitUntil(() => driver.contexts.length === 1);
+        const context = driver.context!;
+        const handed = [
+          ...context.writableRoots,
+          context.workspacePath,
+          ...Object.values(context.commandEnvironment),
+          ...plans.flatMap((plan) => [...plan.writableRoots, plan.workspacePath]),
+        ];
+        if (personalContext) {
+          // The person's own Run works in Agent home, as before.
+          expect(context.workspacePath).toBe(agentHome);
+          expect(context.writableRoots).toContain(agentHome);
+        } else {
+          expect(handed.filter(underHome)).toEqual([]);
+          expect(context.writableRoots).toEqual([context.workspacePath]);
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
   it("gives its engine a Run-local proxy, never a Host token, and cuts it on interrupt", async () => {
     const seenAuthorization: (string | undefined)[] = [];
     const host = createServer((request, response) => {

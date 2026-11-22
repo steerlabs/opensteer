@@ -359,6 +359,16 @@ export async function createTriggerInTransaction(
   const now = new Date();
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
+  // A program runs as the person, in their Agent home, outside any engine's sandbox: a lineage
+  // without personal context (a chat anyone in the conversation can message) never defines one.
+  if (
+    !managed &&
+    ((input.actorConnectionId !== undefined &&
+      !(await lineagePersonalContext(transaction, input.actorConnectionId))) ||
+      (anchor.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, anchor.originConnectionId))))
+  )
+    throw noProgramWithoutPersonalContext();
   // An automation works for whoever defined it: the authenticated actor's connection, if any.
   // One the person makes on a task without their personal context (from a chat anyone may
   // speak in) works in that task's lineage, so what its program starts never gains it.
@@ -562,6 +572,13 @@ export class TriggerStore {
           message:
             "A connected agent cannot replace the program of an automation it did not create.",
         });
+      // Its program would run in the person's Agent home: never set from such a lineage.
+      if (
+        input.program !== undefined &&
+        trigger.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+      )
+        throw noProgramWithoutPersonalContext();
       if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
       if (systemProgram && !trigger.systemRole)
         throw conflict("Only system automations can regenerate programs");
@@ -2713,6 +2730,14 @@ async function triggerExecutionAuthorityAvailable(
   });
   return admission !== null;
 }
+/** The refusal of a program for a lineage without personal context. */
+function noProgramWithoutPersonalContext(): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    message: "A chat that anyone in the conversation can message can't have an automation.",
+  });
+}
+
 /** A claim's answer for a schedule whose chat is waiting: nothing created, nothing moved. */
 const held = Symbol("held");
 

@@ -2810,7 +2810,10 @@ export class RunnerRuntime {
             context.providerSessionId,
           );
       if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
-      const writableRoots = [...new Set([workspace.path, workingDirectory])];
+      // Without personal context the Run's own folder is all it has: nothing of Agent home (the
+      // person's memory, AGENTS.md, home skills) is readable or writable as a root, named in its
+      // environment, or part of its warm engine's identity.
+      const writableRoots = [workingDirectory];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       // An engine that failed or was recycled while it waited serves no Run.
@@ -2870,7 +2873,8 @@ export class RunnerRuntime {
         machineAccessPlan && isMachineAccessRoutes(machineAccessPlan)
           ? machineAccessPlan
           : undefined;
-      const { instructions = null, path: workspacePath } = workspace;
+      const { instructions = null } = workspace;
+      const workspacePath = workingDirectory;
       const warmKeyFor = (providerSessionReference: string | null, machineAccessLaunch: string) =>
         warmEngineKey({
           warmSelection: adapter.capabilities.warmSelection,
@@ -3036,7 +3040,7 @@ export class RunnerRuntime {
           (await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory: undefined })),
       );
       const runVariables = {
-        OPENSTEER_AGENT_WORKSPACE: workspace.path,
+        OPENSTEER_AGENT_WORKSPACE: workingDirectory,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       };

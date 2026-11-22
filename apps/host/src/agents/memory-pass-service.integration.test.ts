@@ -1435,9 +1435,11 @@ describeStore("managed memory passes", (it) => {
       task: [{ type: "text", text: "Work for #tools" }],
       title: "Worker for #tools",
     });
+    // An automation in the chat's task, as one made before such lineages were refused one: made
+    // on the person's task, then held in the chat's task and lineage, as its row would be.
     const automation = await new TriggerStore(f.database).create({
       actorThreadId: null,
-      anchorThreadId: fromStrangers.id,
+      anchorThreadId: own.id,
       createdBy: base.userId,
       idempotencyKey: "tools-strangers-automation",
       name: "Briefing for #tools",
@@ -1451,6 +1453,11 @@ describeStore("managed memory passes", (it) => {
         schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
       },
     });
+    await f.database
+      .updateTable("triggers")
+      .set({ anchorThreadId: fromStrangers.id, originConnectionId: anyone.id })
+      .where("id", "=", automation.trigger.id)
+      .execute();
     const hiddenTasks = [fromStrangers, under, legacy, strangersWorker.thread];
     // A person's automation on their own task, one of whose downstream Runs is in the chat's task.
     const ownAutomation = await new TriggerStore(f.database).create({
