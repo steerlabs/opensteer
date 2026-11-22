@@ -23,6 +23,11 @@ import Foundation
   /// A report of state that a newer report supersedes (where the selection is): it replaces the
   /// queued report nothing was queued after, so a drag queues one report, not one per frame.
   func report(_ job: @escaping () -> Void) { add(job, report: true) }
+  /// Whether a report queued now would replace the one queued last (nothing queued after it).
+  var coalesces: Bool {
+    let last = running ? insertion - 1 : jobs.count - 1
+    return last >= 0 && last < jobs.count && jobs[last].report
+  }
   private func add(_ job: @escaping () -> Void, report: Bool) {
     let last = running ? insertion - 1 : jobs.count - 1
     if report, jobs.indices.contains(last), jobs[last].report { jobs[last] = (job, true) }

@@ -276,14 +276,15 @@ import UIKit
     field.answerAll()
     XCTAssertEqual(field.view.text, "hello!")
   }
-  func testTypingAfterATapWhileAnEarlierKeystrokeWaitsLandsAtTheTap() {
+  // A caret move is the distance moved, from the person's caret: five back from after "a".
+  func testTypingAfterACaretMoveWhileAnEarlierKeystrokeWaitsLandsTheDistanceMoved() {
     let field = Field(settled: "hello")
     field.view.insertText("a")
     field.select(NSRange(location: 0, length: 0))
     field.answerOne()
     field.view.insertText("X")
     field.answerAll()
-    XCTAssertEqual(field.view.text, "Xhelloa")
+    XCTAssertEqual(field.view.text, "hXelloa")
   }
   func testADragOfSixtyCallbacksQueuesOneReport() {
     let field = Field(settled: "hello")
@@ -309,8 +310,9 @@ import UIKit
     XCTAssertEqual(field.view.text, "X")
   }
 
-  // T1: each edit's event reports the state right after that edit, never a caret chosen later.
-  func testEachEditReportsItsOwnCaretWhenATapCameAfterIt() {
+  // T1: each edit's event reports the state right after that edit, never a caret chosen later. The
+  // move is five back from the person's caret after "b".
+  func testEachEditReportsItsOwnCaretWhenAMoveCameAfterIt() {
     let field = Field(settled: "hello")
     let settled = field.packets.count
     field.view.insertText("a")
@@ -321,9 +323,9 @@ import UIKit
     let inputs = events.filter { $0["type"] as? String == "input" }.compactMap { $0["proxy"] as? [String: Any] }
     XCTAssertEqual(inputs.map { $0["selectionEnd"] as? Int }, [6, 7])
     let selections = events.filter { $0["type"] as? String == "selection" }.compactMap { $0["proxy"] as? [String: Any] }
-    XCTAssertEqual(selections.map { $0["selectionEnd"] as? Int }, [0])
+    XCTAssertEqual(selections.map { $0["selectionEnd"] as? Int }, [2])
     XCTAssertEqual(field.view.text, "helloab")
-    XCTAssertEqual(field.view.selectedRange, NSRange(location: 0, length: 0))
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 2, length: 0))
   }
 
   // T2: a deletion of more than one composed character deletes the text it named.
@@ -544,7 +546,8 @@ import UIKit
 
   // Found by the random sequences (second generator, seed 2195): the caret moved while a
   // Backspace inside a composition waited; the deletion was recorded at the moved caret instead
-  // of the marked text it deleted, and the next keystroke landed inside an emoji.
+  // of the marked text it deleted, and the next keystroke landed inside an emoji. The move is one
+  // character back from the person's caret, after the second emoji.
   func testACompositionDeletionIsRecordedWhereItsCharactersWentWhateverTheCaret() {
     let field = Field(settled: "👩‍💻")
     field.view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
@@ -555,13 +558,13 @@ import UIKit
     field.view.insertText("א")
     field.answerAll()
     let text = field.view.text ?? ""
-    XCTAssertEqual(text, "👩‍💻👩‍💻א")
+    XCTAssertEqual(text, "👩‍💻א👩‍💻")
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
 
   // CS2: an answer is applied as the edit it is. A paste's answer inserts the pasted text where it
   // went, so a keystroke and a caret move still waiting are carried over it, not over a cleared
-  // field.
+  // field. The move is two back from the person's caret, which ends after "Py".
   func testAPastesAnswerCarriesWhatStillWaits() {
     let field = Field(settled: "abc")
     field.view.insertText("y")
@@ -570,7 +573,7 @@ import UIKit
     field.answerAll()
     field.view.insertText("x")
     field.answerAll()
-    XCTAssertEqual(field.view.text, "axbcPy")
+    XCTAssertEqual(field.view.text, "abcxPy")
   }
   // CS2 and CT1: a caret move named in a mirror cleared before its turn is sent as the distance
   // the person moved it, never as a place in the new mirror.
@@ -582,7 +585,7 @@ import UIKit
     field.view.respond(["id": 0, "set": ["value": "", "selectionStart": 0, "selectionEnd": 0]])
     field.answerAll()
     let selection = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "selection" }
-    XCTAssertEqual(selection?["move"] as? Int, -1)
+    XCTAssertEqual(selection?["moves"] as? [Int], [-1])
   }
   // CS2: a replacement named in a mirror that no longer exists is dropped: it names nothing.
   func testAReplacementNamedInAClearedMirrorIsDropped() {
@@ -628,7 +631,8 @@ import UIKit
 
   // Found by the person oracle (third generator, seed 988): the person moved the caret after a
   // composition's commit was typed; when the composition was applied, UIKit's selection went into
-  // it, and a keystroke typed then was named there instead of at the caret the person chose.
+  // it, and a keystroke typed then was named there instead of at the caret the person chose: one
+  // back from after "b".
   func testAKeystrokeTypedWhileAnAppliedCompositionHidesThePersonsCaretGoesThere() {
     let field = Field(settled: "a")
     field.view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
@@ -639,13 +643,14 @@ import UIKit
     XCTAssertNotNil(field.view.markedTextRange)
     field.view.insertText("x")
     field.answerAll()
-    XCTAssertEqual(field.view.text, "xab")
+    XCTAssertEqual(field.view.text, "axb")
   }
 
   // Found by the random sequences (second generator, seeds 4021, 15915 and 16868): a tap during a
   // composition commits it (unmarkText) and moves the caret, both before the composition's turn.
   // The commit left the native caret at the end of the composition while the selection reported
-  // the caret the person chose, so the far caret went there and the next keystroke did not.
+  // the caret the person chose, so the far caret went there and the next keystroke did not. The
+  // move is one back from the person's caret after the committed 日本.
   func testACaretMovedWhileTheCompositionsCommitWaitsIsWhereTheNextKeystrokeGoes() {
     let field = Field(settled: "ab")
     field.view.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0))
@@ -654,14 +659,14 @@ import UIKit
     field.answerAll()
     let reported = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "selection" }
     let proxy = reported?["proxy"] as? [String: Any]
-    XCTAssertEqual(proxy?["selectionStart"] as? Int, 1)
-    XCTAssertEqual(proxy?["selectionEnd"] as? Int, 1)
-    XCTAssertEqual(field.view.selectedRange, NSRange(location: 1, length: 0))
+    XCTAssertEqual(proxy?["selectionStart"] as? Int, 3)
+    XCTAssertEqual(proxy?["selectionEnd"] as? Int, 3)
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 3, length: 0))
     field.view.insertText("x")
     field.answerAll()
-    XCTAssertEqual(field.view.text, "axb日本")
+    XCTAssertEqual(field.view.text, "ab日x本")
     let input = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "input" }
-    XCTAssertEqual((input?["proxy"] as? [String: Any])?["selectionStart"] as? Int, 2)
+    XCTAssertEqual((input?["proxy"] as? [String: Any])?["selectionStart"] as? Int, 4)
   }
 }
 #endif

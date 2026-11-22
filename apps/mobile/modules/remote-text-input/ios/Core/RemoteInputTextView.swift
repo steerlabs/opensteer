@@ -17,7 +17,13 @@ import UniformTypeIdentifiers
   private var lastSelection = NSRange(location: 0, length: 0)
   /// The caret's moves since the last report ran, in composed characters; nil once a range is
   /// chosen.
-  private var distance: Int? = 0
+  private var distance: [Int]? = []
+  /// Where the caret moves since the last report started.
+  private var from: RemoteInputEdits.Place?
+  /// The caret move whose turn has not come yet.
+  private var pendingMove: RemoteInputEdits.CaretMove?
+  /// Where the last applied edit or answer left the caret, before a later choice is put back.
+  private var turnCaret = NSRange(location: 0, length: 0)
   /// The selection the person chose after an edit that has since been applied inside a
   /// composition: UIKit's selection is in the composition until it ends, the person's is here,
   /// and what they type meanwhile is named here.
@@ -101,6 +107,8 @@ import UniformTypeIdentifiers
     guard let hit = super.hitTest(point, with: event) else { return nil }
     return hit.isDescendant(of: self) ? self : hit
   }
+  /// The pasteboard's items, as Paste reads them (a test gives its own).
+  var pasteboardItems: () -> [[String: Any]] = { UIPasteboard.general.items }
   /// Whether the pasteboard holds something Paste would send. Asking does not bring up the
   /// system's paste prompt; reading the items does.
   var pasteboardHasContent: () -> Bool = { UIPasteboard.general.hasStrings || UIPasteboard.general.hasImages }
@@ -140,19 +148,36 @@ import UniformTypeIdentifiers
   }
   /// A place in the text as UIKit names it now, while earlier edits may still wait their turn.
   private func place(_ range: NSRange) -> RemoteInputEdits.Place { edits.place(range.location, range.location + range.length) }
-  /// Where a place named earlier is now, after the edits applied since.
+  /// Where a place named earlier is now, after the edits applied since. A caret move is the
+  /// distance moved, from where the caret it started at is now, until its turn resolves it.
   private func range(_ place: RemoteInputEdits.Place) -> NSRange {
+    if let move = place.move {
+      if let resolved = move.resolved { return range(resolved) }
+      let text = self.text ?? ""
+      let at = move.distances.reduce(NSMaxRange(range(move.from))) { RemoteInputEdits.advance(text, from: $0, by: $1) }
+      return NSRange(location: at, length: 0)
+    }
     let current = edits.current(place, length: length)
     return NSRange(location: current.start, length: current.end - current.start)
+  }
+  /// The caret as it stands at an action's turn: where the last applied edit or answer left it,
+  /// when the person chose another after the action was named (a later choice is not this one's).
+  private func caretAtTurn(_ place: RemoteInputEdits.Place) -> NSRange {
+    edits.chosen(after: place) != nil ? turnCaret : selectedRange
   }
   /// Puts the selection where a waiting edit was typed and returns where the edit goes: the
   /// marked text, while there is some, is where UIKit puts it.
   private func select(_ place: RemoteInputEdits.Place) -> NSRange {
-    if let marked = markedRange { return marked }
+    // Inside a composition the caret is the composition's, at its end, whatever was chosen since:
+    // the edit's events report its own caret, and the person's choice is put back after it.
+    if let marked = markedRange {
+      let end = NSRange(location: NSMaxRange(marked), length: 0)
+      if selectedRange != end { selectedRange = end }
+      return marked
+    }
     // Typing and deleting backward are relative to the caret: named in an older mirror, they go
-    // where the caret is now.
-    if edits.stale(place) { return selectedRange }
-    let target = range(place)
+    // where the caret stands at their turn.
+    let target = edits.stale(place) ? caretAtTurn(place) : range(place)
     if selectedRange != target { selectedRange = target }
     return target
   }
@@ -176,22 +201,36 @@ import UniformTypeIdentifiers
       let value = state["value"] as? String, let start = state["selectionStart"] as? Int,
       let end = state["selectionEnd"] as? Int, start >= 0, end >= start, end <= value.utf16.count else { return }
     mutating = true
-    // The answer applied as the edit it is: a paste is the pasted text where it went, so the
-    // places still waiting are carried over it. An empty answer clears the mirror: a new
-    // generation, in which no place named before names anything.
+    defer {
+      selectedRange = NSRange(location: start, length: end - start)
+      ownSelection = selectedRange
+      turnCaret = selectedRange
+      heldChoice = nil
+      mutating = false
+    }
     let old = (text ?? "") as NSString, new = value as NSString
+    // An answer that says which edit it is is applied as exactly that edit.
+    if let exact = instruction["edit"] as? [String: Any], let from = exact["start"] as? Int,
+      let to = exact["end"] as? Int, let inserted = exact["text"] as? String, from >= 0, to >= from, to <= old.length,
+      old.replacingCharacters(in: NSRange(location: from, length: to - from), with: inserted) == value {
+      let target = NSRange(location: from, length: to - from)
+      edit(target) { textStorage.replaceCharacters(in: target, with: inserted) }
+      return
+    }
+    // The answer applied as the edit it is: a paste is the pasted text where it went, so the
+    // places still waiting are carried over it. Its text went in ending at its caret, so the
+    // common prefix stops there and a repeated character is not taken for the inserted one. An
+    // empty answer clears the mirror: a new generation, in which no place named before names
+    // anything.
+    let cap = max(0, start - max(0, new.length - old.length))
     var prefix = 0
-    while prefix < old.length && prefix < new.length && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+    while prefix < cap && prefix < old.length && prefix < new.length && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
     var suffix = 0
     while suffix < old.length - prefix && suffix < new.length - prefix && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
     let target = NSRange(location: prefix, length: old.length - prefix - suffix)
     let inserted = new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix))
     edit(target) { textStorage.replaceCharacters(in: target, with: inserted) }
     if value.isEmpty { edits.clear() }
-    selectedRange = NSRange(location: start, length: end - start)
-    ownSelection = selectedRange
-    heldChoice = nil
-    mutating = false
   }
   /// The selection UIKit or the person chose after `typed` was named, carried: applying an edit
   /// named earlier moves the native selection, and this puts it back where they last put it.
@@ -214,6 +253,16 @@ import UniformTypeIdentifiers
     guard let heldChoice, !edits.stale(heldChoice) else { return selectedRange }
     return range(heldChoice)
   }
+  /// Where what the person types now is named: at a caret move still waiting its turn, or at the
+  /// person's selection. A move held while a composition hides it, or still waiting its turn, is
+  /// resolved at its turn: what is typed now is named at it.
+  private func namedHere() -> RemoteInputEdits.Place {
+    let move = heldChoice.flatMap { edits.stale($0) ? nil : $0 }.map { $0.move } ?? pendingMove
+    guard let move else { return place(personSelection) }
+    var named = place(selectedRange)
+    named.move = move
+    return named
+  }
   /// Nothing is applied across a reset. A place named in an older mirror is never applied to a
   /// newer one: a positional place (a range replaced, a mark deleted) is dropped; typing and
   /// deleting backward go where the caret is now, unless a new context fenced them out.
@@ -232,6 +281,7 @@ import UniformTypeIdentifiers
         // The state right after this edit: its events report its own caret. The selection the
         // person chose later is put back after, for UIKit's next call, and reported in its turn.
         let composing = self.markedTextRange != nil
+        self.turnCaret = self.selectedRange
         let proxy = self.snapshot()
         let markedText = self.marked()
         self.keepChosen(after: typed)
@@ -246,11 +296,17 @@ import UniformTypeIdentifiers
   }
   public override func insertText(_ text: String) {
     if mutating { super.insertText(text); return }
-    let typed = place(personSelection)
+    let typed = namedHere()
     change(self.markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text, typed: typed) {
       if self.dropped(typed, positional: false) { return }
       self.edit(self.select(typed)) { super.insertText(text) }
     }
+  }
+  /// The composed character just before `caret` (up to it), or nothing at the start.
+  private func before(_ caret: Int) -> NSRange {
+    guard caret > 0 else { return NSRange(location: 0, length: 0) }
+    let start = ((text ?? "") as NSString).rangeOfComposedCharacterSequence(at: caret - 1).location
+    return NSRange(location: start, length: caret - start)
   }
   /// Replaces `target` with `text`, recording it for the edits still waiting.
   private func replaceRange(_ target: NSRange, with text: String) {
@@ -268,12 +324,14 @@ import UniformTypeIdentifiers
     let typed = edits.place(offset(from: beginningOfDocument, to: range.start), offset(from: beginningOfDocument, to: range.end))
     change("insertReplacementText", data: text, typed: typed) {
       if self.dropped(typed, positional: true) { return }
+      // A replacement elsewhere: its events report the caret as it stands at its turn.
+      if self.markedTextRange == nil { self.selectedRange = self.caretAtTurn(typed) }
       self.replaceTyped(typed, with: text)
     }
   }
   public override func deleteBackward() {
     if mutating { super.deleteBackward(); return }
-    let typed = place(personSelection)
+    let typed = namedHere()
     change("deleteContentBackward", data: nil, typed: typed) {
       if self.dropped(typed, positional: false) { return }
       _ = self.select(typed)
@@ -288,7 +346,7 @@ import UniformTypeIdentifiers
   }
   public override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
     if mutating { super.setMarkedText(markedText, selectedRange: selectedRange); return }
-    let typed = place(personSelection)
+    let typed = namedHere()
     change("insertCompositionText", data: markedText, typed: typed) {
       if self.dropped(typed, positional: false) { return }
       self.edit(self.select(typed)) { super.setMarkedText(markedText, selectedRange: selectedRange) }
@@ -300,10 +358,12 @@ import UniformTypeIdentifiers
     // once the composition ends, the caret goes back where the person put it.
     let named = place(selectedRange)
     gate.enqueue {
-      guard self.markedTextRange != nil else { return }
+      guard let marked = self.markedRange else { return }
       let data = self.marked()
       self.mutating = true
       super.unmarkText()
+      // Its event reports the composition's own caret, at its end; a later choice is put back after.
+      self.selectedRange = NSRange(location: NSMaxRange(marked), length: 0)
       // Its event reports its own caret; the caret the person chose is reported in its turn.
       let proxy = self.snapshot()
       self.keepChosen(after: named)
@@ -321,11 +381,14 @@ import UniformTypeIdentifiers
     let selection = personSelection
     if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: uikit, in: text ?? "") {
       // A Backspace: the character before the caret, wherever the caret is by its turn.
-      let caret = place(selection)
+      let caret = namedHere()
       change("deleteContentBackward", data: replacement, typed: caret) {
         if self.dropped(caret, positional: false) { return }
-        let at = self.edits.stale(caret) ? self.place(self.selectedRange) : caret
-        self.replaceRange(self.edits.backspace(at, in: self.text ?? ""), with: "")
+        let at = self.edits.stale(caret) ? self.place(self.caretAtTurn(caret)) : caret
+        // Its events report its own caret: the deletion's, where the caret was by its turn.
+        let caretNow = self.range(at).location
+        if self.markedTextRange == nil { self.selectedRange = NSRange(location: caretNow, length: 0) }
+        self.replaceRange(self.before(caretNow), with: "")
       }
       return false
     }
@@ -334,18 +397,22 @@ import UniformTypeIdentifiers
     // place in the text.
     let relative = named == selection
     let again = replacement.isEmpty && RemoteInputEdits.deletesSelection(named: named, selection: selection)
-    let typed = place(named)
+    let typed = relative && named.length == 0 ? namedHere() : place(named)
     change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement, typed: typed) {
       if self.dropped(typed, positional: !relative) { return }
       if self.edits.stale(typed) {
-        let current = self.selectedRange
-        let target = !replacement.isEmpty || current.length > 0 || current.location == 0
-          ? current
-          : ((self.text ?? "") as NSString).rangeOfComposedCharacterSequence(at: current.location - 1)
+        let current = self.caretAtTurn(typed)
+        let target = !replacement.isEmpty || current.length > 0 ? current : self.before(current.location)
+        // Its events report its own caret, at the place it went.
+        if self.markedTextRange == nil { self.selectedRange = NSRange(location: NSMaxRange(target), length: 0) }
         self.replaceRange(target, with: replacement)
         return
       }
-      self.replaceTyped(typed, with: replacement, selectionAgain: again)
+      let target = again ? self.edits.deletion(typed, in: self.text ?? "") : self.range(typed)
+      // Typing over the selection: its events report its own caret, after what it typed; a range
+      // named elsewhere, the caret as it stands at its turn.
+      if self.markedTextRange == nil { self.selectedRange = relative ? target : self.caretAtTurn(typed) }
+      self.replaceRange(target, with: replacement)
     }
     return false
   }
@@ -358,27 +425,54 @@ import UniformTypeIdentifiers
     if mutating || selectedRange == ownSelection { return }
     ownSelection = nil
     heldChoice = nil
-    // A move is where UIKit put the caret in the text it had: the distance the person moved it
-    // there. While that mirror lives the place is carried; after a reset it is sent as the
-    // distance (summed over the moves one report stands for), never dropped. A range selected in
+    // A caret move is the distance the person moved the caret, from the caret it started at
+    // (each move one report stands for, in order). It is resolved at its turn, when everything
+    // typed before it has been applied; what is typed after it is named there. After a reset it
+    // is sent as the distances, never dropped. A range is the place UIKit named; one selected in
     // text that is gone selects nothing.
-    if let sum = distance, previous.length == 0, selectedRange.length == 0 {
+    let caret = previous.length == 0 && selectedRange.length == 0
+    // A move that gets a report of its own starts its own distance.
+    if !gate.coalesces {
+      distance = []
+      from = nil
+    }
+    // From the person's caret: an earlier move still waiting its turn is where they were.
+    if caret, distance != nil, from == nil {
+      var start = place(previous)
+      start.move = pendingMove
+      from = start
+    }
+    if let sum = distance, caret {
       let text = self.text ?? ""
       let span = NSRange(location: min(previous.location, selectedRange.location), length: abs(selectedRange.location - previous.location))
       let count = RemoteInputEdits.composedCount(in: text, range: span)
-      distance = sum + (selectedRange.location < previous.location ? -count : count)
+      distance = sum + [selectedRange.location < previous.location ? -count : count]
     } else { distance = nil }
-    let moved = place(selectedRange)
-    let moveDistance = distance
+    var moved = place(selectedRange)
+    let move = distance.flatMap { distances in from.map { RemoteInputEdits.CaretMove(from: $0, distances: distances) } }
+    pendingMove = move
+    moved.move = move
     edits.choose(moved)
     gate.report {
-      self.distance = 0
-      if self.edits.stale(moved) {
-        guard let moveDistance else { return }
-        self.gate.event(["type": "selection", "proxy": self.snapshot(), "move": moveDistance])
+      self.distance = []
+      self.from = nil
+      if self.pendingMove === move { self.pendingMove = nil }
+      if let move, self.edits.stale(move.from) {
+        move.resolved = self.place(self.selectedRange)
+        self.gate.event(["type": "selection", "proxy": self.snapshot(), "moves": move.distances])
         return
       }
-      self.gate.event(["type": "selection", "proxy": self.snapshot(selection: self.range(moved))])
+      if move == nil, self.edits.stale(moved) { return }
+      let at = self.range(moved)
+      if let move {
+        move.resolved = self.place(at)
+        // The native caret is the person's from here on, unless they have moved it since.
+        if self.edits.chosen(after: moved) == nil, self.selectedRange != at {
+          self.ownSelection = at
+          self.selectedRange = at
+        }
+      }
+      self.gate.event(["type": "selection", "proxy": self.snapshot(selection: at)])
     }
   }
   public func textViewDidEndEditing(_ textView: UITextView) {
@@ -387,24 +481,24 @@ import UniformTypeIdentifiers
   }
   public override func copy(_ sender: Any?) { gate.notify(["type": "copy"]) }
   public override func cut(_ sender: Any?) { gate.notify(["type": "cut"]) }
+  /// Pastes what the pasteboard held when the person pressed Paste: it is read now, not at the
+  /// paste's turn, when it may hold what they copied after.
   public override func paste(_ sender: Any?) {
-    gate.enqueue {
-      var items: [[String: Any]] = []
-      var bytes = 0
-      func append(_ type: String, _ data: Data) {
-        bytes += data.count
-        if bytes <= 16 * 1024 * 1024 && items.count < 16 { items.append(["type": type, "data": data.base64EncodedString()]) }
-      }
-      for item in UIPasteboard.general.items {
-        for (key, mime) in [(UTType.utf8PlainText.identifier, "text/plain"), (UTType.html.identifier, "text/html"), (UTType.png.identifier, "image/png"), (UTType.jpeg.identifier, "image/jpeg")] {
-          if let data = item[key] as? Data { append(mime, data) }
-          else if let value = item[key] as? String, let data = value.data(using: .utf8) { append(mime, data) }
-          else if let image = item[key] as? UIImage, let data = mime == "image/jpeg" ? image.jpegData(compressionQuality: 1) : image.pngData() { append(mime, data) }
-        }
-      }
-      if bytes > 16 * 1024 * 1024 { self.gate.notify(["type": "paste", "items": []]); return }
-      self.gate.notify(["type": "paste", "items": items])
+    var items: [[String: Any]] = []
+    var bytes = 0
+    func append(_ type: String, _ data: Data) {
+      bytes += data.count
+      if bytes <= 16 * 1024 * 1024 && items.count < 16 { items.append(["type": type, "data": data.base64EncodedString()]) }
     }
+    for item in pasteboardItems() {
+      for (key, mime) in [(UTType.utf8PlainText.identifier, "text/plain"), (UTType.html.identifier, "text/html"), (UTType.png.identifier, "image/png"), (UTType.jpeg.identifier, "image/jpeg")] {
+        if let data = item[key] as? Data { append(mime, data) }
+        else if let value = item[key] as? String, let data = value.data(using: .utf8) { append(mime, data) }
+        else if let image = item[key] as? UIImage, let data = mime == "image/jpeg" ? image.jpegData(compressionQuality: 1) : image.pngData() { append(mime, data) }
+      }
+    }
+    let pasted = bytes > 16 * 1024 * 1024 ? [] : items
+    gate.notify(["type": "paste", "items": pasted])
   }
   public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     if action == #selector(copy(_:)) || action == #selector(cut(_:)) { return isEditable && !isSecureTextEntry }

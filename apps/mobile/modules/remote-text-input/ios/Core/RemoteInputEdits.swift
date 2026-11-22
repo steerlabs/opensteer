@@ -21,6 +21,19 @@ import Foundation
 struct RemoteInputEdits {
   /// A place named in the text as it stood after `revision` edits, in UTF-16 offsets; `order`
   /// counts the places named, so a later one can tell it was named after an earlier one.
+  /// A caret move: the distance the person moved the caret, from the caret it started at, each
+  /// move a report stands for in order. It is resolved once, at its turn (when everything typed
+  /// before it has been applied), into a place in the text as it then stands; until then it
+  /// resolves provisionally the same way.
+  final class CaretMove {
+    let from: Place
+    var distances: [Int]
+    var resolved: Place?
+    init(from: Place, distances: [Int]) {
+      self.from = from
+      self.distances = distances
+    }
+  }
   struct Place: Equatable {
     let revision: Int
     let order: Int
@@ -28,6 +41,12 @@ struct RemoteInputEdits {
     let end: Int
     /// The mirror it was named in (`generation`).
     var generation = 0
+    /// A caret move: where it resolves (the view's moves), not this place's offsets.
+    var move: CaretMove?
+    static func == (a: Place, b: Place) -> Bool {
+      a.revision == b.revision && a.order == b.order && a.start == b.start && a.end == b.end
+        && a.generation == b.generation && a.move === b.move
+    }
   }
   private struct Edit {
     let start: Int
@@ -124,6 +143,17 @@ struct RemoteInputEdits {
     var count = 0
     string.enumerateSubstrings(in: range, options: [.byComposedCharacterSequences, .substringNotRequired]) { _, _, _, _ in count += 1 }
     return count
+  }
+  /// The offset `distance` composed characters from `from` in `text`, held inside it: a move that
+  /// would pass either end stops there.
+  static func advance(_ text: String, from: Int, by distance: Int) -> Int {
+    let string = text as NSString
+    var boundaries = [0]
+    string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: [.byComposedCharacterSequences, .substringNotRequired]) { _, range, _, _ in
+      boundaries.append(NSMaxRange(range))
+    }
+    let index = boundaries.firstIndex { $0 >= from } ?? boundaries.count - 1
+    return boundaries[min(max(0, index + distance), boundaries.count - 1)]
   }
   /// What a Backspace pressed at `caret` deletes: the composed character before where the caret
   /// now stands, or nothing at the start of the text.
