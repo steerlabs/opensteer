@@ -188,3 +188,75 @@ describe("a host where there is one line, at the largest text size on the smalle
     ]);
   });
 });
+
+// The re-check of 5d197dfbc..e7080ea31: the widths it measured were kept by slot, so on the render
+// after its host changed it planned the new host by the old one's widths, and drew evil-google.com
+// on one line, overflowing, until it was measured again.
+describe("a host where there is one line, when what it draws changes", () => {
+  it("draws nothing by the widths of what it drew before", async () => {
+    layoutWindow.fontScale = 1;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const frame = (host: string) => (
+      <View style={{ height: smallest.window.height, width: smallest.window.width }}>
+        <View style={{ flexDirection: "row", width: 120 }}>
+          <HostLine host={host} role="caption" />
+        </View>
+      </View>
+    );
+    await act(async () => root.render(frame("github.com")));
+    await layout(container, smallest.window);
+    // The render right after the change, before anything has been measured again: the same
+    // slots as before (its registrable domain alone), with other words in them.
+    await act(async () => root.render(frame("evil-google.com")));
+    const drawnNow = [...container.querySelectorAll('[data-rn="Text"]')]
+      .filter(
+        (text) =>
+          text.closest('[data-testid="host-line-measure"], [data-testid="host-line-room"]') ===
+          null,
+      )
+      .map((text) => drawn(text.textContent ?? ""));
+    expect(drawnNow.some((words) => words.includes("evil-google"))).toBe(false);
+    // Once measured, it is drawn by its own widths: whole, on lines of its own.
+    const frames = await layout(container, smallest.window);
+    const shown = [...container.querySelectorAll('[data-rn="Text"]')]
+      .filter(
+        (text) =>
+          text.closest('[data-testid="host-line-measure"], [data-testid="host-line-room"]') ===
+          null,
+      )
+      .map((text) => ({ cut: frames.cut(text), words: drawn(text.textContent ?? "") }));
+    expect(shown).toEqual([{ cut: false, words: "evil-google.com" }]);
+  });
+
+  // React Native lays a view out again only when its frame changes: a new host of the same width
+  // as the old one still reaches the screen, measured as its own.
+  it("draws a new host of the same width as the old one", async () => {
+    layoutWindow.fontScale = 1;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const frame = (host: string) => (
+      <View style={{ height: smallest.window.height, width: smallest.window.width }}>
+        <View style={{ flexDirection: "row", width: 200 }}>
+          <HostLine host={host} role="caption" />
+        </View>
+      </View>
+    );
+    await act(async () => root.render(frame("github.com")));
+    await layout(container, smallest.window);
+    await act(async () => root.render(frame("gitlab.com")));
+    const frames = await layout(container, smallest.window);
+    const shown = [...container.querySelectorAll('[data-rn="Text"]')]
+      .filter(
+        (text) =>
+          text.closest('[data-testid="host-line-measure"], [data-testid="host-line-room"]') ===
+          null,
+      )
+      .map((text) => ({ cut: frames.cut(text), words: drawn(text.textContent ?? "") }));
+    expect(shown).toEqual([{ cut: false, words: "gitlab.com" }]);
+  });
+});

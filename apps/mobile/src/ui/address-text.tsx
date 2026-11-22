@@ -1,5 +1,11 @@
 import { useMemo, useState, type ComponentProps, type ReactNode } from "react";
-import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import {
+  StyleSheet,
+  useWindowDimensions,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { addressWords, isAddress } from "./address-words.js";
 import { hostLineParts, planHostLine } from "./host-line-parts.js";
 import { AppText } from "./primitives.js";
@@ -90,18 +96,33 @@ export function AddressSentence(
  * Its pieces are measured unseen and unheard, and the line it may fill by an unseen copy of
  * itself whole, so it takes the room a plain line of its words would and nothing more.
  */
-export function HostLine(
-  props: Omit<
-    AppTextProps,
-    "children" | "selectable" | "numberOfLines" | "ellipsizeMode" | "style"
-  > & {
-    readonly host: string;
-    readonly before?: string;
-    readonly after?: string;
-    /** Where the line stands among its neighbours. */
-    readonly style?: StyleProp<ViewStyle>;
-  },
-): ReactNode {
+type HostLineProps = Omit<
+  AppTextProps,
+  "children" | "selectable" | "numberOfLines" | "ellipsizeMode" | "style"
+> & {
+  readonly host: string;
+  readonly before?: string;
+  readonly after?: string;
+  /** Where the line stands among its neighbours. */
+  readonly style?: StyleProp<ViewStyle>;
+};
+
+export function HostLine(props: HostLineProps): ReactNode {
+  // What it measured holds for these words at this text size and style only: other ones are a
+  // line of their own, measured afresh as it mounts, never planned by widths that were not theirs.
+  const { fontScale } = useWindowDimensions();
+  const drawing = [
+    props.before ?? "",
+    props.host,
+    props.after ?? "",
+    fontScale,
+    props.role ?? "",
+    props.maxFontSizeMultiplier ?? "",
+  ].join("\u0000");
+  return <MeasuredHostLine key={drawing} {...props} />;
+}
+
+function MeasuredHostLine(props: HostLineProps): ReactNode {
   const { accessibilityLabel, after = "", before = "", host, style, ...text } = props;
   const parts = useMemo(() => hostLineParts(host), [host]);
   const pieces = useMemo(

@@ -32,7 +32,9 @@ export function PageDialog(props: {
         <View style={styles.dialogFrom}>
           <Symbol name="globe" size={12} tint={color.muted} />
           {props.site === null ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
+            // A page with no web origin (about:blank, data:, file:) is named by no site: these
+            // words, never cut, and nothing that looks like a site's name.
+            <AppText role="caption" style={styles.dialogSite} tone="muted">
               This page says
             </AppText>
           ) : (

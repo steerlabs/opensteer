@@ -88,3 +88,35 @@ describe("a page's dialog, naming the site that asks", () => {
         ).toEqual([]);
       });
 });
+
+// The re-check of 5d197dfbc..e7080ea31: a page with no web origin (about:blank, data:, file:) is
+// named by no site, only "This page says", which was one line and cut at the largest size.
+describe("a page's dialog where the page has no web origin", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`says "This page says" whole on ${phone.name} at text size ${fontScale}`, async () => {
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        await act(async () =>
+          root.render(
+            <PageDialog
+              channelReady
+              dialog={{ id: "dialog-1", message: "Leave this page?", type: "confirm" } as never}
+              onAnswer={() => undefined}
+              onPrompt={() => undefined}
+              promptText=""
+              site={null}
+            />,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        const says = [...container.querySelectorAll('[data-rn="Text"]')].find(
+          (text) => text.textContent === "This page says",
+        )!;
+        expect(frames.cut(says)).toBe(false);
+        expect(frames.shown(says)).toBe("This page says");
+      });
+});
