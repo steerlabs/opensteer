@@ -4231,6 +4231,153 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     }
   });
 
+  // The read of 564ca7424..5d197dfbc, finding 9: two casts in different settings on one tab, the
+  // person's (the follow view's own) and an agent's PNG in a session of its own, across a
+  // confirm(). The page's own session still gets the dialog and answers it, and both casts go
+  // on afterwards, each in its own format.
+  await section("two-casts-across-dialog", async () => {
+    const from = messages.length;
+    const panel = { height: 700, width: 1_000 };
+    const created = asRecord(
+      await agent("Target.createTarget", { url: `${origin}/follow?two-casts` }),
+    );
+    const targetId = String(created.targetId);
+    const tab = ledger.surfaceIdForTarget(targetId);
+    if (!tab) throw new Error("The agent's tab is not one of the session's pages.");
+    const session = String(
+      asRecord(await agent("Target.attachToTarget", { flatten: true, targetId })).sessionId,
+    );
+    const evaluate = async (expression: string) =>
+      asEvaluationValue(
+        await agent("Runtime.evaluate", { expression, returnByValue: true }, session),
+      );
+    await waitForAsync(async () => (await evaluate("document.readyState")) === "complete");
+    await evaluate(`(() => {
+      const button = document.createElement("button");
+      button.textContent = "Delete listing";
+      button.style.cssText = "position:fixed;left:0;top:0;width:200px;height:200px";
+      window.answers = [];
+      button.addEventListener("click", () => window.answers.push(confirm("Delete this listing?")));
+      document.body.append(button);
+    })()`);
+    const shownSince = performance.now();
+    await controller.handle({ surfaceId: tab, type: "surface.activate" });
+    await controller.handle({ ...panel, surfaceId: tab, type: "viewport.follow" });
+    const personBefore = await pictureWithin(panel, shownSince, tab);
+
+    const agentFrames: { at: number; format: string; width: number; height: number }[] = [];
+    let scanned = messages.length;
+    const collect = () => {
+      for (; scanned < messages.length; scanned += 1) {
+        const message = messages[scanned]!;
+        if (
+          message.type !== "cdp.event" ||
+          message.event.method !== "Page.screencastFrame" ||
+          message.event.sessionId !== session
+        )
+          continue;
+        agentFrames.push({
+          at: messageTimes[scanned]!,
+          ...encodedImage(String(message.event.parameters.data)),
+        });
+        void agent(
+          "Page.screencastFrameAck",
+          { sessionId: message.event.parameters.sessionId },
+          session,
+        ).catch(() => undefined);
+      }
+      return agentFrames;
+    };
+    const agentFrameAfter = async (since: number) => {
+      await waitFor(() => collect().some((frame) => frame.at >= since), 5_000).catch(
+        () => undefined,
+      );
+      return collect().find((frame) => frame.at >= since) ?? null;
+    };
+    const ask = { format: "png", maxHeight: 240, maxWidth: 320 };
+    const agentSince = performance.now();
+    await agent("Page.startScreencast", ask, session);
+    const agentBefore = await agentFrameAfter(agentSince);
+
+    // The page's own session hears the dialog and answers it, with the agent's cast running.
+    await agent("Page.enable", {}, session);
+    const dialogFrom = messages.length;
+    const values = { button: "left", clickCount: 1, x: 50, y: 50 };
+    await agent("Input.dispatchMouseEvent", { ...values, type: "mousePressed" }, session);
+    const released = agent(
+      "Input.dispatchMouseEvent",
+      { ...values, type: "mouseReleased" },
+      session,
+    ).catch(() => undefined);
+    await waitFor(
+      () =>
+        messages
+          .slice(dialogFrom)
+          .some(
+            (message) =>
+              message.type === "cdp.event" &&
+              message.event.sessionId === session &&
+              message.event.method === "Page.javascriptDialogOpening",
+          ),
+      5_000,
+    ).catch(() => undefined);
+    const opened = messages
+      .slice(dialogFrom)
+      .some(
+        (message) =>
+          message.type === "cdp.event" &&
+          message.event.sessionId === session &&
+          message.event.method === "Page.javascriptDialogOpening",
+      );
+    const answered = await settles(agent("Page.handleJavaScriptDialog", { accept: true }, session));
+    await released;
+    const answers = asEvaluationValue(
+      await agent(
+        "Runtime.evaluate",
+        { expression: "window.answers", returnByValue: true },
+        session,
+      ),
+    );
+    await agent("Page.disable", {}, session);
+
+    // Both go on, each in its own format: the page changes, and each is pictured again.
+    const afterSince = performance.now();
+    await evaluate("document.body.style.background = 'rgb(20, 160, 60)'");
+    const personAfter = await pictureWithin(panel, afterSince, tab);
+    const agentAfter = await agentFrameAfter(afterSince);
+    await agent("Page.stopScreencast", {}, session);
+    await controller.handle({ surfaceId, type: "surface.activate" });
+    await agent("Target.closeTarget", { targetId });
+    const outcome = {
+      agentAsked: ask,
+      personBefore: pictureSummary(personBefore, shownSince),
+      agentBefore,
+      dialogOpenedOnThePagesSession: opened,
+      dialogAnswered: answered,
+      answers,
+      personAfter: pictureSummary(personAfter, afterSince),
+      agentAfter,
+      agentFormats: [...new Set(agentFrames.map((frame) => frame.format))],
+      errors: errorsFrom(from),
+    };
+    ensure(
+      personBefore !== null &&
+        agentBefore?.format === "png" &&
+        opened &&
+        answered &&
+        JSON.stringify(answers) === "[true]" &&
+        personAfter !== null &&
+        agentAfter !== null &&
+        agentAfter.format === "png" &&
+        agentAfter.width <= ask.maxWidth &&
+        agentAfter.height <= ask.maxHeight &&
+        agentFrames.every((frame) => frame.format === "png") &&
+        outcome.errors.length === 0,
+      outcome,
+    );
+    return outcome;
+  });
+
   await section("inline-popup-dialogs", async () => {
     await controller.handle({ type: "surface.activate", surfaceId });
     const size = { width: 930, height: 670 };
