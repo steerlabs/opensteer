@@ -120,11 +120,13 @@ export function DeploymentGate(props: {
     return (
       <Screen>
         <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">This deployment is gone</AppText>
+          {/* In a person's words, and back to the list by its own title. */}
+          <AppText role="displaySmall">This Home is no longer here</AppText>
           <AppText role="secondary" tone="muted">
-            It is no longer in this phone&apos;s list. Add it again from Deployments.
+            It isn’t in this phone’s list of computers any more. You can add it again from
+            Computers.
           </AppText>
-          <SecondaryButton label="Choose a deployment" onPress={resetToDeployments} />
+          <SecondaryButton label="Computers" onPress={resetToDeployments} />
         </View>
       </Screen>
     );
