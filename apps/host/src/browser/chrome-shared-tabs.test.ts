@@ -457,3 +457,52 @@ it("rejects a stale reviewed Chrome mode at ticket issue, attach, and command di
     source.close();
   }
 });
+
+it("answers a connection on a shared tab the one sentence for a command outside the list, before the tab's own check", async () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  const outside = [
+    "Page.close",
+    "Page.startScreencast",
+    "Page.setViewport",
+    "Page.setDeviceMetricsOverride",
+    "Emulation.setVisibleSize",
+    "Emulation.setPageScaleFactor",
+    "Emulation.resetPageScaleFactor",
+  ];
+  for (const connection of [true, false]) {
+    const tab = shared();
+    const peer = chromePeer((frame) => backend.read(frame));
+    const backend = new ChromeTabBackend(peer.write, () => {});
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("first-share", tab.targetId, async () => false, "/");
+    backend.update(tab);
+    const client = router.openStandardClient("first-share", {
+      wholeContext: false,
+      ...(connection ? { connection: true } : {}),
+    });
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: tab.targetId, flatten: true },
+    })) as { sessionId: string };
+    const refusal = (method: string, parameters = {}) =>
+      client.send({ method, parameters, sessionId }).then(
+        () => "sent",
+        (error: unknown) => (error as Error).message,
+      );
+    for (const method of outside)
+      expect(await refusal(method), `${method} ${connection}`).toBe(
+        connection ? sentence(method) : `${method} is unavailable on a shared Chrome tab.`,
+      );
+    // A listed command the tab cannot take keeps the tab's own sentence, for both.
+    expect(
+      await refusal("Emulation.setDeviceMetricsOverride", {
+        width: 1,
+        height: 1,
+        deviceScaleFactor: 1,
+        mobile: false,
+      }),
+    ).toBe("Emulation.setDeviceMetricsOverride is unavailable on a shared Chrome tab.");
+    await router.close();
+  }
+});

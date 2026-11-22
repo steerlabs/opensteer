@@ -2530,3 +2530,82 @@ describe("Opensteer's own methods for a connection", () => {
     ).toMatch(/^Opensteer\.stageFile is not available to a connected agent\./u);
   });
 });
+
+describe("SessionCdpRouter: a connection's list comes before every other check", () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  async function client(connection: boolean) {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    // A backend's own scope check, as the Mac's and shared Chrome's word theirs.
+    Object.assign(backend, {
+      assertScope: (method: string) => {
+        if (method.startsWith("SystemInfo.") || method === "Browser.getBrowserCommandLine")
+          throw new Error(
+            `${method} describes the Opensteer process, outside browser page ownership.`,
+          );
+        if (["Page.close", "DOM.setFileInputFiles"].includes(method))
+          throw new SessionCdpRouterError(
+            "forbidden",
+            `${method} is unavailable on a shared Chrome tab.`,
+          );
+      },
+    });
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const standard = router.openStandardClient("a", {
+      wholeContext: false,
+      ...(connection
+        ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const { sessionId } = (await standard.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const send = (method: string, parameters: CdpParameters = {}, scope?: string) =>
+      standard.send({ method, parameters, ...(scope ? { sessionId: scope } : {}) }).then(
+        () => "sent",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    return { router, send, sessionId, standard };
+  }
+
+  it("answers the one sentence for a command outside the list, whichever check would have refused it", async () => {
+    const f = await client(true);
+    for (const [method, page] of [
+      ["SystemInfo.getProcessInfo", false],
+      ["Browser.getBrowserCommandLine", false],
+      ["Page.close", true],
+      ["Target.attachToBrowserTarget", true],
+    ] as const)
+      expect(await f.send(method, {}, page ? f.sessionId : undefined), method).toBe(
+        sentence(method),
+      );
+    // A listed command still meets the backend's own check, and the alias root's rule.
+    expect(await f.send("DOM.setFileInputFiles", { files: [] }, f.sessionId)).toBe(
+      "DOM.setFileInputFiles is unavailable on a shared Chrome tab.",
+    );
+    const { sessionId: alias } = (await f.standard.send({
+      method: "Target.attachToBrowserTarget",
+    })) as { sessionId: string };
+    expect(await f.send("Target.attachToBrowserTarget", {}, alias)).toBe(
+      "Open a browser CDP session from the connection root.",
+    );
+    await f.router.close();
+  });
+
+  it("leaves the person's own agent the backend's and the router's own sentences", async () => {
+    const f = await client(false);
+    expect(await f.send("SystemInfo.getProcessInfo")).toBe(
+      "SystemInfo.getProcessInfo describes the Opensteer process, outside browser page ownership.",
+    );
+    expect(await f.send("Page.close", {}, f.sessionId)).toBe(
+      "Page.close is unavailable on a shared Chrome tab.",
+    );
+    expect(await f.send("Target.attachToBrowserTarget", {}, f.sessionId)).toBe(
+      "Open a browser CDP session from the connection root.",
+    );
+    await f.router.close();
+  });
+});

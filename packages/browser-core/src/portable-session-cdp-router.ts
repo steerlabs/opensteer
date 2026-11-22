@@ -834,16 +834,7 @@ export class SessionCdpRouter {
             ? connectionMethodRefusal(command.method)
             : "Saved login and card fills use browser_use on the personal hosting Mac. Open the approved tab there and call page.cdp.",
         );
-      // A shared tab is one tab: a connection reads only that page's own cookies, never the
-      // profile's.
-      const pageCookieRead =
-        this.#backend.allowsProfileCookieReads &&
-        command.sessionId !== undefined &&
-        (state.connection
-          ? command.method === "Network.getCookies" && command.parameters?.urls === undefined
-          : ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"].includes(
-              command.method,
-            ));
+      const pageCookieRead = this.#pageCookieRead(state, command);
       if (contextScopedCdpMethods.has(command.method) && !pageCookieRead) {
         if (!state.standard.wholeContext)
           throw new SessionCdpRouterError(
@@ -1548,8 +1539,40 @@ export class SessionCdpRouter {
       // itself; a standard client holds them in its own admission below.
       (connection && !state.standard
         ? connectionCdpRefusal(command.method, command.parameters, command.sessionId !== undefined)
+        : undefined) ??
+      // For a connection the list comes first, before the backend's own scope check and every
+      // later refusal, so that no other sentence (one a backend adds later included) answers a
+      // command outside it. A listed command still meets those checks.
+      (connection && state.standard && this.#outsideStandardLists(state, command)
+        ? connectionMethodRefusal(command.method)
         : undefined);
     if (refusal) throw new SessionCdpRouterError("forbidden", refusal);
+  }
+
+  /** Whether a standard client's command is outside its lists, as its admission below reads them. */
+  #outsideStandardLists(state: ConnectionState, command: CdpCommand): boolean {
+    const pageCookieRead = this.#pageCookieRead(state, command);
+    if (contextScopedCdpMethods.has(command.method) && !pageCookieRead)
+      return state.standard?.wholeContext !== true;
+    return command.sessionId
+      ? !pageCookieRead && !standardCdpPageMethods.has(command.method)
+      : !standardRootTargets.has(command.method) && command.method !== "Browser.getVersion";
+  }
+
+  /**
+   * A page cookie read a cookie-reading backend admits: a shared tab is one tab, so a connection
+   * reads only that page's own cookies, never the profile's.
+   */
+  #pageCookieRead(state: ConnectionState, command: CdpCommand): boolean {
+    return (
+      this.#backend.allowsProfileCookieReads === true &&
+      command.sessionId !== undefined &&
+      (state.connection
+        ? command.method === "Network.getCookies" && command.parameters?.urls === undefined
+        : ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"].includes(
+            command.method,
+          ))
+    );
   }
 
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {

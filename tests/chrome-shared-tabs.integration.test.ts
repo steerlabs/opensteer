@@ -801,6 +801,20 @@ async function proveChromeShares(
       expect(
         decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(JSON.stringify(sameSentence))![1]!),
       ).toContain(outsideSentence);
+      // So does a command the tab's own check would refuse: the list answers first.
+      const closeSentence = outsideSentence.replace("Storage.clearDataForOrigin", "Page.close");
+      await expect(send.send("Page.close", {})).rejects.toThrow(closeSentence);
+      const closeRefusal = (await browserTools.browser_use({
+        caller: agent.caller,
+        operationKey: "shared-close-sentence",
+        input: {
+          ...input,
+          code: `try { await (await openPage(${JSON.stringify(firstId)})).cdp("Page.close", {}); return "outcome:performed:end"; } catch (error) { return "outcome:" + encodeURIComponent(String(error && error.message)) + ":end"; }`,
+        },
+      })) as { content: unknown };
+      expect(
+        decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(JSON.stringify(closeRefusal))![1]!),
+      ).toContain(closeSentence);
       const attempts = async () => {
         const row = await fixture.database
           .selectFrom("agentConnections")
