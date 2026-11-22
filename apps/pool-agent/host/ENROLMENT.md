@@ -41,13 +41,17 @@ The bootstrap token and the host's private keys are never written to stdout, std
    - `/var/lib/opensteer-pool/images/vmlinux` (`0444`)
    - `/var/lib/opensteer-pool/images/egress/dist/egress-main.js` (`0644`)
    - `/var/lib/opensteer-pool/images/manifest.json` (`0444`)
-   Then runs `setup-host.sh boot` to stage `vmlinux`, `rootfs.ext4`, and `manifest.json` onto the
-   encrypted Local SSD array (`/srv/opensteer-pool/images`), apply persisted `nftables` rules, and
-   re-verify the profile disk mount.
+     Then runs `setup-host.sh boot` to stage `vmlinux`, `rootfs.ext4`, and `manifest.json` onto the
+     encrypted Local SSD array (`/srv/opensteer-pool/images`), apply persisted `nftables` rules, and
+     re-verify the profile disk mount.
 6. **Prepare `driver.credentialsRoot` (`/etc/opensteer-pool/credentials`, `0700` on the instance's
    own disk)** and render `/etc/opensteer-pool/agent.json` (`0600`, `driver.requireEgressUpstream:
-   true`, `driver.egress.accountOrigin`, `driver.guestMode: "runtime"`, `relayUid` of
-   `opensteer-pool-relay`).
+true`, `driver.egress.accountOrigin`, `driver.guestMode: "runtime"`, `relayUid` of
+   `opensteer-pool-relay`). Setting `driver.requireEgressUpstream: true` (making this a pulling
+   host) is also what allows a slot deletion to settle: on a pulling host the agent answers
+   `credentialsErased: true` whenever the slot's derived credential paths are seen gone (including
+   for an unknown slot or repeated delete), whereas a non-pulling host leaves `credentialsErased`
+   out for an unknown slot and would hang deletion.
 7. **Enrol public keys with Account** via `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/boot-complete`
    carrying `{ generation, bootstrapToken, hostKey, relayKey }`. Only after HTTP `200` with
    `{"completed":true}`:
@@ -62,15 +66,15 @@ only `everEnrolled` (from `browser_pool_hosts.ever_enrolled`) so an automaticall
 never-enrolled host can recover whether its first boot failed before or after formatting, while a
 disk that could hold a person's profile is never formatted.
 
-| `everEnrolled` | `blkid -o export -p` & `wipefs -n --noheadings` | Mountable? | Decision |
-| --- | --- | --- | --- |
-| `false` | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty) | n/a | **`format-and-mount`** (`mkfs.ext4 -q -m 1 -L opensteer-profiles`, no `-f`/`-F`) |
-| `false` | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true` | **`mount-only`** (never format) |
-| `true` | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true` | **`mount-only`** (never format) |
-| `false` or `true` | `TYPE=ext4`, `LABEL=opensteer-profiles` | `false` | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `true` | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty) | n/a | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `false` or `true` | Any other filesystem, label, partition table, or multi-signature disk | n/a | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified) |
-| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero | n/a | **`refuse:probe-error`** (fail loudly; nothing modified) |
+| `everEnrolled`    | `blkid -o export -p` & `wipefs -n --noheadings`                               | Mountable? | Decision                                                                             |
+| ----------------- | ----------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------ |
+| `false`           | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)                 | n/a        | **`format-and-mount`** (`mkfs.ext4 -q -m 1 -L opensteer-profiles`, no `-f`/`-F`)     |
+| `false`           | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
+| `true`            | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
+| `false` or `true` | `TYPE=ext4`, `LABEL=opensteer-profiles`                                       | `false`    | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start) |
+| `true`            | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)                 | n/a        | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start) |
+| `false` or `true` | Any other filesystem, label, partition table, or multi-signature disk         | n/a        | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified)                  |
+| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero                        | n/a        | **`refuse:probe-error`** (fail loudly; nothing modified)                             |
 
 ## Reboot and anti-fallback protection
 

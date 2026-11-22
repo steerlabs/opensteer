@@ -239,12 +239,7 @@ describe("control-plane-protocol browser pool contracts", () => {
       new URL("../../../apps/pool-agent/src/slot-egress-fetch.ts", import.meta.url),
     );
     const { slotEgressBytes } = (await import(agentSlotEgressModulePath)) as {
-      slotEgressBytes: (
-        hostId: string,
-        slotId: string,
-        issuedAt: string,
-        nonce: string,
-      ) => Buffer;
+      slotEgressBytes: (hostId: string, slotId: string, issuedAt: string, nonce: string) => Buffer;
     };
 
     const cases = [

@@ -256,10 +256,7 @@ class FakePoolAgent {
         );
       }
       const existing = this.slots.get(req.slotId);
-      if (
-        existing &&
-        (existing.term !== req.term || !FakePoolAgent.#sameKeys(existing, req))
-      ) {
+      if (existing && (existing.term !== req.term || !FakePoolAgent.#sameKeys(existing, req))) {
         return this.#signed(
           hostPrivateKey!,
           reqBytes,
@@ -1143,11 +1140,7 @@ describe("PoolReconciler — hosts", () => {
     expect(h.hostReports.at(-1)?.phase).toBe("deleting");
     expect(h.compute.instances.size).toBe(1);
     expect(h.compute.disks.size).toBe(1);
-    expect(
-      h.compute.requests
-        .slice(reqStart)
-        .filter((r) => r.method === "DELETE"),
-    ).toEqual([]);
+    expect(h.compute.requests.slice(reqStart).filter((r) => r.method === "DELETE")).toEqual([]);
     expect(h.onError).toHaveBeenCalled();
 
     // Once agent list becomes reachable and confirms zero slots, deletion proceeds cleanly.

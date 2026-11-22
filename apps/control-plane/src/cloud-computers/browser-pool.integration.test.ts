@@ -1607,10 +1607,32 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  it("rejects invalid egress endpoints on add (port 0, whitespace-only values, over-long address) and guarantees slot-egress answers pass CloudComputerEgressSchema", async () => {
+  it("rejects invalid egress endpoints on add and rotate, preserves explicit :443, and flags legacy invalid rows in egress-list without mutating them", async () => {
     const h = await buildHarness("2");
     try {
       const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: "https://egress.example.test",
+          username: "user",
+          password: "secret-password",
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/explicit port/iu),
+      });
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: "https://egress.example.test:8443/",
+          username: "user",
+          password: "secret-password",
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/path or trailing slash/iu),
+      });
 
       await expect(
         h.cloudStore.addEgressEndpoint({
@@ -1618,7 +1640,10 @@ integration("Browser pool Account service", () => {
           username: "user",
           password: "secret-password",
         }),
-      ).rejects.toMatchObject({ code: "bad_request" });
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/port/iu),
+      });
 
       await expect(
         h.cloudStore.addEgressEndpoint({
@@ -1631,21 +1656,39 @@ integration("Browser pool Account service", () => {
       await expect(
         h.cloudStore.addEgressEndpoint({
           url: "https://egress.example.test:8443",
-          username: "user",
-          password: "   	  ",
+          username: "bad:user",
+          password: "secret-password",
         }),
-      ).rejects.toMatchObject({ code: "bad_request" });
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/':'/u),
+      });
 
       await expect(
         h.cloudStore.addEgressEndpoint({
-          url: `https://${"a".repeat(2050)}.example.test:8443`,
+          url: "https://egress.example.test:8443",
+          username: "user",
+          password: "secret\npassword",
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/control characters/iu),
+      });
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: `https://${"a".repeat(1020)}.example.test:8443`,
           username: "user",
           password: "secret-password",
         }),
-      ).rejects.toMatchObject({ code: "bad_request" });
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/1024/u),
+      });
 
-      await h.cloudStore.addEgressEndpoint({
-        url: "https://egress-valid.example.test:8443/",
+      // Valid endpoint with explicit :443 preserves :443 verbatim (never stripped by URL.origin).
+      const validId = await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-valid.example.test:443",
         username: "valid-user",
         password: "valid-password",
         publicAddress: "198.51.100.19",
@@ -1663,9 +1706,70 @@ integration("Browser pool Account service", () => {
       expect(res.statusCode).toBe(200);
       const parsed = CloudComputerEgressResponseSchema.parse(JSON.parse(res.body));
       expect(CloudComputerEgressSchema.parse(parsed.egress)).toEqual({
-        url: "https://egress-valid.example.test:8443",
+        url: "https://egress-valid.example.test:443",
         username: "valid-user",
         password: "valid-password",
+      });
+
+      // egress-rotate refuses invalid credentials with clear reasons.
+      await expect(
+        h.cloudStore.rotateEgressEndpoint(validId, {
+          username: "bad:user",
+          password: "new-password",
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/':'/u),
+      });
+      await expect(
+        h.cloudStore.rotateEgressEndpoint(validId, {
+          username: "good-user",
+          password: "bad\tpassword",
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+        message: expect.stringMatching(/control characters/iu),
+      });
+
+      // Pre-existing invalid row already in the DB is reported by egress-list with invalidReason and left untouched.
+      const legacyId = randomUUID();
+      await database
+        .insertInto("cloudComputerEgressEndpoints")
+        .values({
+          id: legacyId,
+          url: "https://legacy-no-port.example.test",
+          username: "legacy-user",
+          publicAddress: null,
+          computerId: null,
+          sealedPassword: cipher.seal(`egress:${legacyId}`, 1, "legacy-password"),
+          needsRotation: false,
+          retired: false,
+        })
+        .execute();
+
+      const listed = (await runCloudComputerOperator(h.cloudStore, ["egress-list"])) as Array<{
+        id: string;
+        url: string;
+        invalidReason?: string;
+      }>;
+      const validEntry = listed.find((entry) => entry.id === validId);
+      expect(validEntry?.invalidReason).toBeUndefined();
+      const legacyEntry = listed.find((entry) => entry.id === legacyId);
+      expect(legacyEntry).toMatchObject({
+        id: legacyId,
+        url: "https://legacy-no-port.example.test",
+        invalidReason: expect.stringMatching(/explicit port/iu),
+      });
+      // Confirm egress-list did not alter the legacy row.
+      const untouched = await database
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select(["url", "retired", "needsRotation"])
+        .where("id", "=", legacyId)
+        .executeTakeFirstOrThrow();
+      expect(untouched).toEqual({
+        url: "https://legacy-no-port.example.test",
+        retired: false,
+        needsRotation: false,
       });
     } finally {
       await h.app.close();

@@ -774,10 +774,7 @@ export class PoolReconciler {
       if (slot.phase === "failed") {
         // X2: Retry failed slots no more often than every 10 minutes (unless reset by replacement or operator).
         const failedAtMs = slot.failedAt ? Date.parse(slot.failedAt) : Number.NaN;
-        if (
-          !Number.isFinite(failedAtMs) ||
-          this.#now() - failedAtMs < failedSlotRetryDelayMs
-        ) {
+        if (!Number.isFinite(failedAtMs) || this.#now() - failedAtMs < failedSlotRetryDelayMs) {
           return undefined;
         }
       }

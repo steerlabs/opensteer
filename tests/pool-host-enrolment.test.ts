@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  validateEgressCredential,
+  validateEgressUpstreamUrl,
+} from "../apps/control-plane/src/cloud-computers/egress-validation.js";
 import { readAgentConfig, refuseUnsupportedMode } from "../apps/pool-agent/src/config.js";
+import {
+  browserEgressCredentialWritable,
+  parseBrowserEgressUpstreamUrl,
+} from "../packages/browser-runtime-core/src/browser-egress-upstream.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const enrollScript = join(repoRoot, "apps/pool-agent/host/enroll-host.sh");
@@ -56,7 +64,8 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       "TYPE=ext4",
       "USAGE=filesystem",
     ].join("\n");
-    const validWipefs = "0x438      ext4     11111111-2222-3333-4444-555555555555 opensteer-profiles";
+    const validWipefs =
+      "0x438      ext4     11111111-2222-3333-4444-555555555555 opensteer-profiles";
 
     it("formats and mounts a blank disk only when everEnrolled=false", () => {
       const res = runEnroll([
@@ -369,7 +378,10 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       const dir = makeTempDir();
       const invalidCases: Array<{ name: string; spec: Record<string, unknown> }> = [
         { name: "missing everEnrolled", spec: baseBootSpec({ everEnrolled: undefined }) },
-        { name: "http accountOrigin", spec: baseBootSpec({ accountOrigin: "http://account.example.test" }) },
+        {
+          name: "http accountOrigin",
+          spec: baseBootSpec({ accountOrigin: "http://account.example.test" }),
+        },
         {
           name: "accountOrigin with path",
           spec: baseBootSpec({ accountOrigin: "https://account.example.test/v1" }),
@@ -403,6 +415,90 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
           "987",
         ]);
         expect(res.status, `expected failure for ${testCase.name}`).not.toBe(0);
+      }
+    });
+  });
+
+  describe("Account egress validation parity with packages/browser-runtime-core/src/browser-egress-upstream.ts", () => {
+    it("matches parseBrowserEgressUpstreamUrl on every valid and invalid URL case", () => {
+      const urlCases: Array<{ url: string; expectedValid: boolean }> = [
+        { url: "https://proxy.example.test:8443", expectedValid: true },
+        { url: "https://proxy.example.test:443", expectedValid: true },
+        { url: "https://203.0.113.10:3128", expectedValid: true },
+        { url: "https://[2001:db8::1]:8443", expectedValid: true },
+        { url: "  https://proxy.example.test:8443  ", expectedValid: true },
+        {
+          url: `https://${"a".repeat(60)}.${"b".repeat(60)}.example.test:8443`,
+          expectedValid: true,
+        },
+        { url: `https://${"a".repeat(1000)}.example.test:8443`, expectedValid: false },
+        { url: "", expectedValid: false },
+        { url: "   ", expectedValid: false },
+        { url: "https://proxy.example.test", expectedValid: false },
+        { url: "https://proxy.example.test:0", expectedValid: false },
+        { url: "https://proxy.example.test:65536", expectedValid: false },
+        { url: "https://proxy.example.test:8443/", expectedValid: false },
+        { url: "https://proxy.example.test:8443/path", expectedValid: false },
+        { url: "https://proxy.example.test:8443?foo=bar", expectedValid: false },
+        { url: "https://proxy.example.test:8443#frag", expectedValid: false },
+        { url: "https://user:pass@proxy.example.test:8443", expectedValid: false },
+        { url: "http://proxy.example.test:8443", expectedValid: false },
+        { url: "socks5://proxy.example.test:1080", expectedValid: false },
+        { url: "https://proxy.example.test:abc", expectedValid: false },
+        { url: `https://${"a".repeat(1020)}.example.test:8443`, expectedValid: false },
+      ];
+
+      for (const { url, expectedValid } of urlCases) {
+        const accountRes = validateEgressUpstreamUrl(url);
+        const runtimeRes = parseBrowserEgressUpstreamUrl(url);
+        expect(accountRes.ok, `account validation mismatch for ${JSON.stringify(url)}`).toBe(
+          expectedValid,
+        );
+        expect(Boolean(runtimeRes), `runtime validation mismatch for ${JSON.stringify(url)}`).toBe(
+          expectedValid,
+        );
+        if (accountRes.ok) {
+          expect(parseBrowserEgressUpstreamUrl(accountRes.value)).toBeDefined();
+        }
+      }
+    });
+
+    it("matches browserEgressCredentialWritable on every valid and invalid username and password case", () => {
+      const credentialCases: Array<{
+        kind: "username" | "password";
+        value: string;
+        expectedValid: boolean;
+      }> = [
+        { kind: "username", value: "egress-user", expectedValid: true },
+        { kind: "username", value: "u".repeat(1024), expectedValid: true },
+        { kind: "password", value: "p@ss:word! #1", expectedValid: true },
+        { kind: "password", value: "p".repeat(1024), expectedValid: true },
+        { kind: "username", value: "", expectedValid: false },
+        { kind: "username", value: "   ", expectedValid: false },
+        { kind: "username", value: "user:name", expectedValid: false },
+        { kind: "username", value: "u".repeat(1025), expectedValid: false },
+        { kind: "username", value: "user\nname", expectedValid: false },
+        { kind: "username", value: "user\tname", expectedValid: false },
+        { kind: "username", value: "user\x7fname", expectedValid: false },
+        { kind: "password", value: "", expectedValid: false },
+        { kind: "password", value: "   ", expectedValid: false },
+        { kind: "password", value: "p".repeat(1025), expectedValid: false },
+        { kind: "password", value: "pass\rword", expectedValid: false },
+        { kind: "password", value: "pass\nword", expectedValid: false },
+        { kind: "password", value: "pass\x00word", expectedValid: false },
+        { kind: "password", value: "pass\x7fword", expectedValid: false },
+      ];
+
+      for (const { kind, value, expectedValid } of credentialCases) {
+        const accountRes = validateEgressCredential(value, kind);
+        const runtimeRes = browserEgressCredentialWritable(value, kind);
+        expect(
+          accountRes.ok,
+          `account ${kind} validation mismatch for ${JSON.stringify(value)}`,
+        ).toBe(expectedValid);
+        expect(runtimeRes, `runtime ${kind} validation mismatch for ${JSON.stringify(value)}`).toBe(
+          expectedValid,
+        );
       }
     });
   });

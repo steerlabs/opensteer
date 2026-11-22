@@ -1096,9 +1096,7 @@ export class BrowserPoolStore {
       const nextSlotErasedAt =
         deletingSlot && report.slotErased ? (row.slotErasedAt ?? now) : row.slotErasedAt;
       const nextProfileErasedAt =
-        deletingSlot && report.profileErased
-          ? (row.profileErasedAt ?? now)
-          : row.profileErasedAt;
+        deletingSlot && report.profileErased ? (row.profileErasedAt ?? now) : row.profileErasedAt;
       const nextCredentialsErasedAt =
         deletingSlot && report.credentialsErased
           ? (row.credentialsErasedAt ?? now)
