@@ -569,6 +569,32 @@ it("keeps a channel lost again while its attach is being finished as a new loss,
   }
 });
 
+it("waits out the reconnect step's backoff when the channel it brought back drops again at once", async () => {
+  const f = await poolFixture("lost-spin", { adoptionWindowMs: 60_000 });
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 60_000, retryMs: 300 });
+    await home.recover();
+    await f.openSession(home);
+    const attempts: number[] = [];
+    f.onReattached(async (sessions) => {
+      attempts.push(Date.now());
+      const id = sessions[0]!;
+      // Every fresh channel closes as soon as it is up: lost again, during the step.
+      await f.sinks.get(id)?.close(false, false, true);
+      f.sinks.delete(id);
+      home.channelLost(id);
+    });
+    await f.loseChannel();
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(attempts.length).toBeGreaterThanOrEqual(4), { timeout: 15_000 });
+    // Each new attempt waits its backoff: never dialled in a loop.
+    for (let index = 1; index < 4; index++)
+      expect(attempts[index]! - attempts[index - 1]!).toBeGreaterThanOrEqual(250);
+  } finally {
+    await f.close();
+  }
+});
+
 it("stops a guest the controller reports for a removed device that never had a slot row", async () => {
   const f = await poolFixture("removed-no-slot");
   try {

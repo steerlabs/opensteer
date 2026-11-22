@@ -1337,8 +1337,11 @@ export class BrowserService {
     const adopting = { active: true };
     // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
     // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
-    // The lane is awaited, never abandoned: once the attempt has ended nothing in it is sent.
-    const broker = await this.#serialize(async () => {
+    // The wait to enter the lane ends with the attempt; once entered, the lane is awaited, never
+    // abandoned, and once the attempt has ended nothing in it is sent.
+    let entered = false;
+    const lane = this.#serialize(async () => {
+      entered = true;
       if (signal?.aborted || !(await stillReady()) || this.#closed) return undefined;
       // Person use is keyed by the session's persistent lineage, which survives the old broker.
       const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
@@ -1446,6 +1449,7 @@ export class BrowserService {
       }
       return broker;
     });
+    const broker = await enteredOrAborted(lane, () => entered, signal);
     if (!broker) return ending ? "unanswered" : [];
     if (ending) {
       try {
@@ -1500,17 +1504,20 @@ export class BrowserService {
         }
         // The person closed this tab while parked: its page closes now, nothing is lost.
         if (this.#workspaceTabs)
-          await broker.requestCdp({
-            type: "cdp.command",
-            requestId: randomUUID(),
-            command: {
-              method: browserHostMethods.closeTab,
-              parameters: {
-                surfaceId: document.surfaceId,
-                inventoryRevision: broker.inventoryRevision,
+          await broker.requestCdp(
+            {
+              type: "cdp.command",
+              requestId: randomUUID(),
+              command: {
+                method: browserHostMethods.closeTab,
+                parameters: {
+                  surfaceId: document.surfaceId,
+                  inventoryRevision: broker.inventoryRevision,
+                },
               },
             },
-          });
+            signal,
+          );
       }
       return losses.length
         ? [{ sessionId, reason: "document-changed", surfaces: losses, endSession: false }]
@@ -11120,6 +11127,36 @@ function runtimeSaysGone(error: unknown): boolean {
   const relayed = (error as { readonly runtimeError?: { readonly code?: unknown } } | null)
     ?.runtimeError;
   return relayed?.code === "not_found" || runtimeRefusalCode(error) === "not_found";
+}
+
+/**
+ * The lane's result; or, if `signal` fires before the lane's work has begun, undefined at once.
+ * Work already begun is awaited to its end. Work that begins after the signal fired sees it and
+ * returns undefined itself, so nothing is left registered.
+ */
+async function enteredOrAborted<T>(
+  lane: Promise<T | undefined>,
+  entered: () => boolean,
+  signal: AbortSignal | undefined,
+): Promise<T | undefined> {
+  if (!signal) return lane;
+  if (signal.aborted && !entered()) return undefined;
+  return new Promise<T | undefined>((resolve, reject) => {
+    const abort = () => {
+      if (!entered()) resolve(undefined);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    lane.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** How long a restart's quiesce waits for the old runtime's brokers to finish detaching. */

@@ -33,6 +33,8 @@ import {
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { withDatabaseOperationSignal } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createAgentReviewer } from "./agent-reviewer.js";
@@ -608,6 +610,103 @@ describeStore("an external agent's direct work through sessions", (it) => {
     await call;
     gate.set({ hold: null });
     expect(gate.held).toBe(0);
+  });
+
+  it("ends a restart's settlement of a holder whose row stays locked with the step's deadline", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-settle-locked");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-settle-locked", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
+        },
+      }),
+    });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    void call.catch(() => undefined);
+    await vi.waitFor(
+      async () =>
+        expect(
+          Number(
+            (
+              await sql<{ count: string }>`
+                select count(*)::text as count from pg_stat_activity
+                where datname = current_database() and wait_event_type = 'Lock'
+              `.execute(database)
+            ).rows[0]?.count ?? 0,
+          ),
+        ).toBeGreaterThan(0),
+      { timeout: 10_000 },
+    );
+    gate.set({ hold: "restart" });
+    // The row stays locked: the settlement waits on it only until its step's deadline.
+    const started = Date.now();
+    const settled = withDatabaseOperationSignal(
+      AbortSignal.timeout(1_000),
+      Date.now() + 1_000,
+      () => gate.settleHolders(),
+    );
+    const outcome = await withTimeout(settled, 10_000, {
+      timeoutError: () => new Error("The settlement still waits on the locked row."),
+    }).then(
+      () => "settled",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(outcome).not.toBe("The settlement still waits on the locked row.");
+    expect(outcome).not.toBe("settled");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // And nothing of it is left behind: no statement of the settlement still waits on the row
+    // after its step ended (only the hand-off's own write does).
+    await vi.waitFor(async () =>
+      expect(
+        (
+          await sql<{ query: string }>`
+            select query from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and query like 'update "agent_operations" set "state" = $1, "outcome"%'
+          `.execute(database)
+        ).rows,
+      ).toEqual([]),
+    );
+    unlock.resolve();
+    await holder;
+    gate.set({ hold: null });
   });
 
   it("records a fake background model's allow decision before executing an Auto effect", async ({

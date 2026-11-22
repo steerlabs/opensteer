@@ -201,6 +201,8 @@ export class BrowserPoolCoordinator {
   #running: Promise<void> | undefined;
   /** The step running now, and the signal everything it awaits takes: its deadline or a removal. */
   #step: { readonly name: string; readonly preempt: AbortController } | undefined;
+  /** The selection of the next step, while it reads: a removal ends it. */
+  #selecting: AbortController | undefined;
   #signal: AbortSignal | undefined;
   /** Live state is given up for (R3): a step the next turn may choose, never run from a catch. */
   #discardWanted: string | undefined;
@@ -331,7 +333,9 @@ export class BrowserPoolCoordinator {
     // previous attach is being finished replaces that entry, so the attach cannot delete it.
     this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
     this.#publish(this.#slot);
-    this.#kick();
+    // The reconnect step reads every loss again after its backoff: a channel lost while it runs
+    // does not end that backoff, or a channel that keeps dropping would be dialled in a loop.
+    if (this.#step?.name !== "reconnect") this.#kick();
   }
 
   /**
@@ -346,6 +350,8 @@ export class BrowserPoolCoordinator {
     // A removal goes first: the step under way stops awaiting, and the next turn is the release.
     if (this.#step && this.#step.name !== "release")
       this.#step.preempt.abort(new BrowserPoolAdmissionClosed("This device was removed."));
+    // A selection under way stops too: the next one chooses the release.
+    this.#selecting?.abort(new BrowserPoolAdmissionClosed("This device was removed."));
     this.#start();
     this.#kick();
     return this.#released.noted.promise;
@@ -401,7 +407,18 @@ export class BrowserPoolCoordinator {
       const changed = this.#changed.signal;
       let step: Step | undefined;
       try {
-        step = await this.#next();
+        // Choosing the next step reads the database too: it has a bound, and a removal ends it.
+        const selecting = new AbortController();
+        this.#selecting = selecting;
+        try {
+          step = await withDatabaseOperationSignal(
+            AbortSignal.any([selecting.signal, AbortSignal.timeout(selectionMs)]),
+            Date.now() + selectionMs,
+            () => this.#next(),
+          );
+        } finally {
+          this.#selecting = undefined;
+        }
         if (!step) {
           failures = 0;
           await abortableWait(changed);
@@ -419,16 +436,21 @@ export class BrowserPoolCoordinator {
         //                          sequence fences it, and the next turn reads the runtime's state
         //   runtime state read     the signal and callTimeoutMs
         //   profile identity       the signal (BrowserLocalProfiles.identity)
-        //   service (Stop) lane    each item in it is bounded (an attach registers and returns; a
-        //                          Stop's close waits at most five seconds); entered work checks
-        //                          the signal first and sends nothing once it has fired
+        //   selection of the step  its own bound (30 s) and a removal's abort, as a step's
+        //   service (Stop) lane    the wait to enter it ends with the signal; work entered checks
+        //                          the signal first, sends nothing once it has fired, and is
+        //                          awaited to its end (an attach registers and returns)
         //   document lookup        database statements, as above
+        //   a page's close         the signal (a tab the person closed while parked)
         //   broker ready           the signal and connectTimeoutMs
         //   broker frame drain     the frames already received: after its socket ends none arrive
-        //   quiesce                the signal (each broker's detach goes on; its socket is ended)
+        //   quiesce                the signal and 15 s (each broker's detach goes on; its socket
+        //                          is ended at once)
         //   gate idle              the signal and quiesceMs
-        //   holders' settlements   database statements, as above
-        //   backoff                the turn's own change signal and five seconds at most
+        //   holders' settlements   database statements, as above (agent-session-store passes
+        //                          the options for each of them)
+        //   backoff                the turn's own change signal and five seconds at most (a start
+        //                          or wake the controller refused: 5 s doubling to five minutes)
         const deadlineMs = step.deadlineMs ?? defaultStepMs;
         const preempt = new AbortController();
         const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
@@ -1563,6 +1585,8 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+/** How long choosing the next step may read before it is tried again. */
+const selectionMs = 30_000;
 const refusedRetryMs = 5_000;
 const refusedRetryMaxMs = 5 * 60_000;
 

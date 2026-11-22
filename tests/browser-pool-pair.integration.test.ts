@@ -38,6 +38,8 @@ import {
   testSessionFilesRoot,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { readBrowserPoolSlot } from "../packages/database/src/browser-pool-store.js";
+import { databaseOperation } from "../packages/database/src/operation-budget.js";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import {
   createBrowserSession,
   getBrowserSessionForOwner,
@@ -566,4 +568,44 @@ it("keeps a stopped session closing through a removal until the guest is known s
   await home.released();
   expect((await p.status()).phase).toBe("stopped");
   expect(await state()).toBe("closed");
+});
+
+// ---- P9: the choice of the next step has a bound, and a removal ends it ------------------------
+
+it("lets a removal end a choice of the next step stuck on its read", async () => {
+  const p = await pair("stuck-selection");
+  let stall = false;
+  let stalled = false;
+  const home = p.home(undefined, {
+    extra: {
+      testHooks: {
+        // A read that waits as a statement would on a lock: only its operation's signal ends it.
+        readSlot: (async (...args: Parameters<typeof readBrowserPoolSlot>) => {
+          if (!stall) return readBrowserPoolSlot(...args);
+          stall = false;
+          stalled = true;
+          const operation = databaseOperation();
+          return new Promise((_, reject) =>
+            operation?.signal.addEventListener("abort", () => reject(operation.signal.reason), {
+              once: true,
+            }),
+          );
+        }) as typeof readBrowserPoolSlot,
+      },
+    },
+  });
+  await home.recover();
+  stall = true;
+  // Something wanted makes the loop choose again; its read of the slot is stuck.
+  void home.tryPark().catch(() => undefined);
+  await vi.waitFor(() => expect(stalled).toBe(true));
+  await withTimeout(
+    (async () => {
+      await home.releaseDevice();
+      await home.released();
+    })(),
+    10_000,
+    { timeoutError: () => new Error("The removal waits behind a stuck choice of the next step.") },
+  );
+  expect((await p.status()).phase).toBe("stopped");
 });
