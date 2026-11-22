@@ -241,6 +241,8 @@ export const connectedAgentsCopy = {
   "messaging.me.replaces": "Linking another account replaces {identity} as you.",
   "messaging.computer.none":
     "No online Mac of yours has Messages turned on yet. Turn it on from that Mac’s Devices page first.",
+  "messaging.me.whenFixed":
+    "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
   "messaging.me.whenResumed": "Once this account is resumed, sending the code links your account.",
   "messaging.chats.title": "Chats",
   "messaging.chats.empty": "No chat on this account yet.",

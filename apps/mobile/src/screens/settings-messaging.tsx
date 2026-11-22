@@ -383,6 +383,9 @@ function Messaging({
               ...(view?.canResume
                 ? [text("whenResumed", agentWords("messaging.me.whenResumed"))]
                 : []),
+              ...(connection?.status === "needs-attention"
+                ? [text("whenFixed", agentWords("messaging.me.whenFixed"))]
+                : []),
             ]
           : []),
         button(

@@ -378,6 +378,24 @@ describe("Messaging", () => {
     }
   });
 
+  it("says a code shown on an account that needs attention links it only once it is fixed", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("On-call"));
+      const links = [...page.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Link another account" || b.textContent === "Link my account",
+      );
+      await act(async () => links[2]!.click());
+      await vi.waitFor(() => expect(page.textContent).toContain("Send MOCKCODE to On-call"));
+      expect(page.textContent).toContain(
+        "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("selects only the Messaging account named by the child route", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));

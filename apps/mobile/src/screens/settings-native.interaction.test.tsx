@@ -562,6 +562,28 @@ it.each(["ios", "android"])(
 );
 
 it.each(["ios", "android"])(
+  "says a code on an account that needs attention links it only once it is fixed, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats");
+    await vi.waitFor(() =>
+      expect(rows().filter((r) => r.label === "Link my account")).toHaveLength(1),
+    );
+    await press("Link my account");
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to On-call"))).toBe(true),
+    );
+    expect(
+      rows().some(
+        (r) =>
+          r.label ===
+          "Until this account is fixed, the code can’t link your account: fix its setup first, then send it.",
+      ),
+    ).toBe(true);
+  },
+);
+
+it.each(["ios", "android"])(
   "fences a retained Messaging action after the session stops on %s",
   async (os) => {
     state.os = os;

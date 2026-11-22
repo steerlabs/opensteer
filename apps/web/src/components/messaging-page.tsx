@@ -607,6 +607,7 @@ export function ChannelOverview({
                   onChatAdded={onChatAdded}
                   onLinkMe={() => onLinkMe(account.id)}
                   paused={view.canResume}
+                  needsAttention={connection.status === "needs-attention"}
                   pending={pending}
                   providerLabel={providerLabel}
                 />
@@ -657,6 +658,7 @@ export function AccountChats({
   onChatAdded,
   onLinkMe,
   paused,
+  needsAttention,
   pending,
   providerLabel,
 }: {
@@ -673,6 +675,8 @@ export function AccountChats({
   readonly onLinkMe: () => void;
   /** Its account is paused: a code sent now links it only once the account is resumed. */
   readonly paused: boolean;
+  /** Its account needs attention: a code links it only once it is fixed. */
+  readonly needsAttention: boolean;
   readonly pending: boolean;
   readonly providerLabel: string;
 }) {
@@ -702,6 +706,7 @@ export function AccountChats({
                 }),
               })}
               {paused ? ` ${agentWords("messaging.me.whenResumed")}` : null}
+              {needsAttention ? ` ${agentWords("messaging.me.whenFixed")}` : null}
             </span>
           ) : null}
           {me ? (
