@@ -257,7 +257,8 @@ async function checkPageCdp(owned: Page, signal: AbortSignal): Promise<void> {
         cdp.send("Network.enable"),
         ...fills.map(([method, parameters]) => {
           const fill: Promise<unknown> = Reflect.apply(cdp.send, cdp, [method, parameters]);
-          return expect(fill).rejects.toThrow("Saved login and card fills use browser_use");
+          // A connection's refused command answers the one method sentence, naming no Home.
+          return expect(fill).rejects.toThrow(`${method} is not available to a connected agent.`);
         }),
       ]);
       await cdp.detach();
