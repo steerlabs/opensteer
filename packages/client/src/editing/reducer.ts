@@ -309,7 +309,18 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
   const commit = (transaction: Composition, text: string) => {
     if (!transaction.contextId) return;
     if (!text) {
-      if (transaction.sent)
+      if (!transaction.sent) return;
+      // A composition sent with the text around it restated (it began over a selection away
+      // from the far caret) keeps that text when it is cancelled, as the native field does.
+      const restated =
+        transaction.base.value.slice(transaction.start, transaction.rawStart) +
+        transaction.base.value.slice(transaction.rawEnd, transaction.end);
+      if (restated)
+        emit({
+          kind: "edit",
+          edit: { contextId: transaction.contextId, text: restated, before: "", after: "" },
+        });
+      else
         emit({
           kind: "compose",
           composition: {
@@ -514,8 +525,16 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       let proxy = event.proxy,
         remoteCaret = proxy.selectionEnd;
       if (!transaction.detached) {
-        if (!event.data) commit(transaction, "");
-        else {
+        if (!event.data) {
+          commit(transaction, "");
+          // A cancelled composition's restated text went back in its place: the far caret is
+          // after it, and moves to the native caret.
+          const restated =
+            transaction.base.value.slice(transaction.start, transaction.rawStart) +
+            transaction.base.value.slice(transaction.rawEnd, transaction.end);
+          if (transaction.sent && restated && proxy.selectionStart === proxy.selectionEnd)
+            move(transaction.start + restated.length, proxy.selectionEnd, proxy.value);
+        } else {
           const final = composingValue(transaction, event.proxy, event.data);
           commit(final, final.text);
           const value =

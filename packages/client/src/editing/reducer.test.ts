@@ -110,6 +110,45 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "command", command: "moveBackward" },
     ]);
   });
+  // Found by the mobile random sequences (second generator, seed 9944): a composition started
+  // over a selection carries the text between the selection and the far caret, restated; when it
+  // is cancelled that text stays, as it does in the native field.
+  it("keeps the restated text when a composition over a selection is cancelled", () => {
+    const marked = (value: string, start: number, end: number) => ({
+      ...proxy(value, end),
+      markedRange: { start, end },
+    });
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "abx" },
+        input("abx"),
+        { type: "selection", proxy: proxy("abx", 0, 2) },
+        { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+        { type: "compositionstart", proxy: proxy("abx", 0, 2) },
+        { type: "compositionupdate", data: "に", proxy: marked("にx", 0, 1) },
+        {
+          type: "input",
+          inputType: "insertCompositionText",
+          composing: true,
+          proxy: marked("にx", 0, 1),
+        },
+        { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+        { type: "compositionend", data: "", proxy: proxy("x", 0) },
+        {
+          type: "input",
+          inputType: "insertCompositionText",
+          composing: false,
+          proxy: proxy("x", 0),
+        },
+      ],
+      "ios",
+    );
+    // The restated "x" back in the composition's place, then the far caret to the native one.
+    expect(result.operations.slice(-2)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
+      { kind: "command", command: "moveBackward" },
+    ]);
+  });
   // The suppression's purpose: on a target without range edits a Backspace is sent as a command
   // and the mirror reset, and a deletion the adapter could not prevent still arrives as input.
   // That input is the deletion already sent, never a second edit.
