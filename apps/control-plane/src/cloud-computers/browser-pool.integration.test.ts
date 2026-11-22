@@ -707,8 +707,17 @@ integration("Browser pool Account service", () => {
       const { boot } = await h.bootAndClaimComputer(computer, accountId);
       expect(boot.browserPool).toBeUndefined();
 
-      expect(await h.getDesiredHosts()).toEqual([]);
-      expect(await h.getDesiredSlots()).toEqual([]);
+      // A non-pooled provisioner probes ?probe=true&limit=1; zero pool SQL statements run.
+      const probeRes = await h.app.inject({
+        method: "GET",
+        url: `${browserPoolHostsDesiredPath}?probe=true&limit=1`,
+        headers: h.leaseHeaders,
+      });
+      expect(probeRes.statusCode).toBe(200);
+      expect(BrowserPoolHostDesiredResponseSchema.parse(JSON.parse(probeRes.body))).toEqual({
+        hosts: [],
+        poolEnabled: false,
+      });
 
       await h.cloudStore.mutate(computer.id, "delete", accountId);
 
@@ -716,6 +725,10 @@ integration("Browser pool Account service", () => {
         /browser_pool|browser-pool/iu.test(statement),
       );
       expect(poolStatements).toEqual([]);
+
+      // Even if a pool-configured provisioner polls desired hosts/slots directly, it receives [].
+      expect(await h.getDesiredHosts()).toEqual([]);
+      expect(await h.getDesiredSlots()).toEqual([]);
     } finally {
       await h.app.close();
       await loggedDb.destroy();
@@ -865,7 +878,30 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  it("preserves declared lock order in #reconcileCapacity when syncing externally deleted Cloud Computers (T7)", async () => {
+  it("serializes concurrent 0-host scale-up calls via the advisory lock so only one host is created (X7)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+
+      const results = await Promise.all([
+        h.getDesiredHosts(),
+        h.getDesiredHosts(),
+        h.getDesiredHosts(),
+        h.getDesiredHosts(),
+      ]);
+      const hostRows = await database.selectFrom("browserPoolHosts").select(["id"]).execute();
+      expect(hostRows).toHaveLength(1);
+      for (const hosts of results) {
+        expect(hosts).toHaveLength(1);
+        expect(hosts[0]!.id).toBe(hostRows[0]!.id);
+      }
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("preserves declared lock order in #reconcileCapacity when syncing externally deleted Cloud Computers under OPENSTEER_LOCK_ORDER_MODE=enforce (T7)", async () => {
     const h = await buildHarness("2");
     try {
       const { computer, slot } = await h.setupPooledHomeAndHost();
@@ -1220,11 +1256,23 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  it("refuses slot-egress for a deleting Cloud Computer with the uniform refusal", async () => {
+  it("refuses slot-egress for a deleting Cloud Computer independently of slot state with the uniform refusal (X7)", async () => {
     const h = await buildHarness("2");
     try {
-      const { accountId, computer, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
-      await h.cloudStore.mutate(computer.id, "delete", accountId);
+      const { computer, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      // Mark the Cloud Computer deletion_requested_at directly while keeping the slot state='active'
+      // so computer.deletionRequestedAt is tested independently of slot.state === 'deleting'.
+      await database
+        .updateTable("cloudComputers")
+        .set({ deletionRequestedAt: now })
+        .where("id", "=", computer.id)
+        .execute();
+      const slotRow = await database
+        .selectFrom("browserPoolSlots")
+        .select(["state"])
+        .where("slotId", "=", slot.slotId)
+        .executeTakeFirstOrThrow();
+      expect(slotRow.state).toBe("active");
 
       const res = await h.app.inject({
         method: "POST",
@@ -1405,6 +1453,48 @@ integration("Browser pool Account service", () => {
       });
       expect(flood.statusCode).toBe(429);
       expect(flood.headers["retry-after"]).toBe("60");
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("does not allow unauthenticated slot-egress requests to exhaust a verified slot's 30/min rate limit (X5)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      const attackerKey = keyPairSpkiBase64();
+
+      // 35 forged/unsigned attempts naming the real (hostId, slotId) are refused 401
+      // and must NEVER consume the verified per-slot 30/min bucket.
+      for (let i = 0; i < 35; i++) {
+        const forged = await h.app.inject({
+          method: "POST",
+          url: browserPoolHostSlotEgressPath(hostId),
+          payload: signSlotEgress(
+            hostId,
+            slot.slotId,
+            now.toISOString(),
+            attackerKey.privateKey,
+            Buffer.alloc(16, i + 1).toString("base64url"),
+          ),
+        });
+        expect(forged.statusCode).toBe(401);
+        expect(JSON.parse(forged.body)).toEqual(uniformEgressRefusal);
+      }
+
+      // Immediately after the 35 forged attempts, the real host still succeeds (200).
+      const real = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 200).toString("base64url"),
+        ),
+      });
+      expect(real.statusCode).toBe(200);
     } finally {
       await h.app.close();
     }
@@ -2354,6 +2444,234 @@ integration("Browser pool Account service", () => {
         warning?: string;
       };
       expect(cleanHostsView.warning).toBeUndefined();
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- X2 failed slot recovery, X4 pooling turned off, X5 probe & active-slot erasure ---
+
+  it("resets failed active slots via pool-slot-retry and pool-host-replace while keeping lastError until ready (X2)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, slot } = await h.setupPooledHomeAndHost();
+
+      const failRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: slot.term,
+          phase: "failed",
+          controlKey: null,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: "This host's profile disk is full.",
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(failRes.body)).recorded).toBe(true);
+
+      const failedDesired = (await h.getDesiredSlots())[0]!;
+      expect(failedDesired.phase).toBe("failed");
+      expect(failedDesired.failedAt).toBe(now.toISOString());
+
+      // Operator pool-slot-retry immediately resets phase -> preparing, clears failedAt, keeps lastError visible.
+      const retryOut = await runCloudComputerOperator(h.cloudStore, [
+        "pool-slot-retry",
+        slot.slotId,
+      ]);
+      expect(retryOut).toMatchObject({ slotId: slot.slotId, phase: "preparing" });
+
+      const afterRetryRow = await database
+        .selectFrom("browserPoolSlots")
+        .select(["phase", "lastError", "revision"])
+        .where("slotId", "=", slot.slotId)
+        .executeTakeFirstOrThrow();
+      expect(afterRetryRow.phase).toBe("preparing");
+      expect(afterRetryRow.lastError).toBe("This host's profile disk is full.");
+      const afterRetryDesired = (await h.getDesiredSlots())[0]!;
+      expect(afterRetryDesired.phase).toBe("preparing");
+      expect(afterRetryDesired.failedAt).toBeUndefined();
+
+      // Fail it again, then replace the host: replacement also resets failed active slots to preparing, keeping lastError.
+      await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: afterRetryRow.revision,
+          term: slot.term,
+          phase: "failed",
+          controlKey: null,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: "The pool host rejected the slot administration request.",
+        },
+      });
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+
+      const afterReplaceRow = await database
+        .selectFrom("browserPoolSlots")
+        .select(["phase", "lastError"])
+        .where("slotId", "=", slot.slotId)
+        .executeTakeFirstOrThrow();
+      expect(afterReplaceRow.phase).toBe("preparing");
+      expect(afterReplaceRow.lastError).toBe(
+        "The pool host rejected the slot administration request.",
+      );
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps reconciling and tombstoning existing pooled computers after pooling is turned off while new computers stay local (X4)", async () => {
+    const hOn = await buildHarness("2");
+    let computerId: CloudComputerId;
+    let hostId: BrowserPoolHostId;
+    let slotId: BrowserPoolSlotId;
+    try {
+      const setup = await hOn.setupPooledHomeAndHost();
+      computerId = setup.computer.id;
+      hostId = setup.hostId;
+      slotId = setup.slot.slotId;
+      await hOn.cloudStore.mutate(computerId, "delete", setup.accountId);
+    } finally {
+      await hOn.app.close();
+    }
+
+    // Restart control-plane with pooling UNSET: new computers stay local, existing pool rows still reconcile and settle!
+    const hOff = await buildHarness(undefined);
+    try {
+      await hOff.acquireLease(false);
+      const { accountId: newAccountId, computer: newComputer } = await hOff.provisionComputer(2);
+      const { boot: newBoot } = await hOff.bootAndClaimComputer(newComputer, newAccountId);
+      expect(newBoot.browserPool).toBeUndefined();
+
+      const hosts = await hOff.getDesiredHosts();
+      expect(hosts.map((entry) => entry.id)).toEqual([hostId]);
+      const slots = await hOff.getDesiredSlots();
+      expect(slots).toHaveLength(1);
+      expect(slots[0]!.slotId).toBe(slotId);
+      expect(slots[0]!.state).toBe("deleting");
+
+      const compRow = await database
+        .selectFrom("cloudComputers")
+        .select(["generation", "revision"])
+        .where("id", "=", computerId)
+        .executeTakeFirstOrThrow();
+      await hOff.app.inject({
+        method: "POST",
+        url: cloudComputerStatusPath(computerId),
+        headers: hOff.leaseHeaders,
+        payload: {
+          id: computerId,
+          generation: compRow.generation,
+          revision: compRow.revision,
+          phase: "deleted",
+          providerServerId: null,
+          ipv4: null,
+          ipv6: null,
+          observedIdentity: null,
+          lastError: null,
+        },
+      });
+      const slotDel = await hOff.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slotId),
+        headers: hOff.leaseHeaders,
+        payload: {
+          slotId,
+          hostGeneration: 1,
+          revision: slots[0]!.revision,
+          term: slots[0]!.term,
+          phase: "deleted",
+          controlKey: null,
+          slotErased: true,
+          profileErased: true,
+          credentialsErased: true,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(slotDel.body)).recorded).toBe(true);
+
+      const settled = await database
+        .selectFrom("cloudComputers")
+        .select(["browserSlotErasedAt", "tombstonedAt", "phase"])
+        .where("id", "=", computerId)
+        .executeTakeFirstOrThrow();
+      expect(settled.browserSlotErasedAt).not.toBeNull();
+      expect(settled.tombstonedAt).not.toBeNull();
+      expect(settled.phase).toBe("deleted");
+    } finally {
+      await hOff.app.close();
+    }
+  });
+
+  it("answers ?probe=true on desired hosts without creating pool hosts or minting bootstrap tokens (X5)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+
+      const probeRes = await h.app.inject({
+        method: "GET",
+        url: `${browserPoolHostsDesiredPath}?probe=true&limit=1`,
+        headers: h.leaseHeaders,
+      });
+      expect(probeRes.statusCode).toBe(200);
+      expect(BrowserPoolHostDesiredResponseSchema.parse(JSON.parse(probeRes.body))).toEqual({
+        hosts: [],
+        poolEnabled: true,
+      });
+
+      const hostRows = await database.selectFrom("browserPoolHosts").select(["id"]).execute();
+      expect(hostRows).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("ignores slotErased, profileErased, and credentialsErased flags reported while a slot is active (X5)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { slot } = await h.setupPooledHomeAndHost();
+
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: slot.term,
+          phase: "ready",
+          controlKey: keyPairSpkiBase64().spki,
+          slotErased: true,
+          profileErased: true,
+          credentialsErased: true,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(res.body)).recorded).toBe(true);
+
+      const row = await database
+        .selectFrom("browserPoolSlots")
+        .select(["slotErasedAt", "profileErasedAt", "credentialsErasedAt"])
+        .where("slotId", "=", slot.slotId)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({
+        slotErasedAt: null,
+        profileErasedAt: null,
+        credentialsErasedAt: null,
+      });
     } finally {
       await h.app.close();
     }

@@ -307,5 +307,10 @@ the durable profile disk fits every assigned slot with at least 10% ext4 filesys
 - **Durable profile disks are never swept:** The orphan sweep deletes abandoned pool VMs after the
   grace period, but never deletes durable profile disks. Untracked pool-labelled disks are logged
   (`home-provisioner.pool.untracked-profile-disk`) and left for an operator. A profile disk is
-  deleted only through `pool-host-delete <host-id>` once zero slots remain in Account and on the
-  host.
+  deleted only through `pool-host-delete <host-id>` once zero slots remain in Account and either
+  the running host's agent `list` confirms zero slots or the instance is observed off or absent
+  (an unreachable running host waits).
+- **Failed slot recovery:** A slot refused with a definite agent error (such as a full profile
+  disk) is retried automatically no more often than every 10 minutes, reset immediately when its
+  host is replaced, or retried at once with `pool-slot-retry <slot-id>`. Its `lastError` remains
+  visible in operator views until it succeeds.

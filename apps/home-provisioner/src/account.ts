@@ -250,6 +250,7 @@ export function accountClient(
       },
       async isPoolEnabled(signal) {
         const url = new URL(browserPoolHostsDesiredPath, origin);
+        url.searchParams.set("probe", "true");
         url.searchParams.set("limit", "1");
         const page = await request(
           "Account",
@@ -259,7 +260,7 @@ export function accountClient(
           json(BrowserPoolHostDesiredResponseSchema),
           { headers: await headers(signal) },
         );
-        return page.poolEnabled === true || page.hosts.length > 0;
+        return page.poolEnabled === true;
       },
       async desiredSlots(signal) {
         const slots: BrowserPoolSlotDesired[] = [];

@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import {
   accountClient,
   accountRefused,
@@ -185,6 +187,28 @@ function logFailure(error: unknown) {
   console.error(JSON.stringify(provisionerFailure(error)));
 }
 
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
-  void main();
+/** X5: Structured fatal logging and non-zero exit for the provisioner entry point. */
+export async function runMainWithFatalHandling(
+  run: () => Promise<void>,
+  onFatal: (error: unknown) => void = logFailure,
+): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    onFatal(error);
+    process.exitCode = 1;
+  }
+}
+
+export function isMainModule(argv1: string | undefined, metaUrl: string): boolean {
+  if (!argv1) return false;
+  try {
+    return pathToFileURL(resolve(argv1)).href === metaUrl;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
+  void runMainWithFatalHandling(main);
 }

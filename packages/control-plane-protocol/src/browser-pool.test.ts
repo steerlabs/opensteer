@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BrowserPoolHostBootCompleteRequestSchema,
@@ -231,6 +232,47 @@ describe("control-plane-protocol browser pool contracts", () => {
       signature: sigBase64,
     });
     expect(parsed.v).toBe(1);
+  });
+
+  it("matches the pool agent's slotEgressBytes byte-for-byte across multiple inputs", async () => {
+    const agentSlotEgressModulePath = fileURLToPath(
+      new URL("../../../apps/pool-agent/src/slot-egress-fetch.ts", import.meta.url),
+    );
+    const { slotEgressBytes } = (await import(agentSlotEgressModulePath)) as {
+      slotEgressBytes: (
+        hostId: string,
+        slotId: string,
+        issuedAt: string,
+        nonce: string,
+      ) => Buffer;
+    };
+
+    const cases = [
+      {
+        hostId: "ph_11111111-1111-4111-8111-111111111111",
+        slotId: "bps_22222222-2222-4222-8222-222222222222",
+        issuedAt: "2026-11-22T00:00:00.000Z",
+        nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+      {
+        hostId: "ph_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        slotId: "bps_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        issuedAt: "2027-01-01T23:59:59.999Z",
+        nonce: "z-_0123456789AbCdEfGhI",
+      },
+      {
+        hostId: "ph_00000000-0000-4000-8000-000000000000",
+        slotId: "bps_ffffffff-ffff-4fff-8fff-ffffffffffff",
+        issuedAt: "2026-06-15T12:34:56.789Z",
+        nonce: "_____________________-",
+      },
+    ];
+
+    for (const c of cases) {
+      const protocolBytes = Buffer.from(browserPoolHostSlotEgressSigningBytes(c));
+      const agentBytes = slotEgressBytes(c.hostId, c.slotId, c.issuedAt, c.nonce);
+      expect(protocolBytes.equals(agentBytes)).toBe(true);
+    }
   });
 
   it("validates W4+S5 signed Home key registration and target response invariants", () => {

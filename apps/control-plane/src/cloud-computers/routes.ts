@@ -59,6 +59,7 @@ import type { ControlPlaneAuthenticator } from "../auth/auth.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
 import { decodeStripeEvent, verifyStripeSignature } from "./stripe.js";
 
@@ -221,8 +222,10 @@ export function registerCloudComputerRoutes(
   app.get(browserPoolHostsDesiredPath, async (request, reply) => {
     privateResponse(reply);
     await requireLease(request);
-    const { after, limit } = BrowserPoolHostDesiredPageSchema.parse(request.query);
-    return BrowserPoolHostDesiredResponseSchema.parse(await store.desiredPoolHosts(after, limit));
+    const { after, limit, probe } = BrowserPoolHostDesiredPageSchema.parse(request.query);
+    return BrowserPoolHostDesiredResponseSchema.parse(
+      await store.desiredPoolHosts(after, limit, probe ?? false),
+    );
   });
 
   app.post(`${poolHostPath}/check`, async (request, reply) => {
@@ -284,26 +287,43 @@ export function registerCloudComputerRoutes(
     });
   }
 
-  // S4 + T9: Pool host slot-egress pull (rate-limited per host and slot; uniform refusal).
-  // Cold-start pulls run on every browser start/wake, so allow 30/min per (host, slot) while stopping floods.
-  const poolHostEgressLimit = new BootRateLimit(browserPoolHostSlotEgressRateLimitPerMinute);
+  // S4 + T9 + X5: Two-stage pool host slot-egress rate limiting.
+  // Pre-signature: limit per hostId (and per IP) without reading slotId from the unauthenticated body,
+  // so an unauthenticated flood of random slotIds cannot fill the map or throttle real wakes.
+  // Post-signature: limit per verified (hostId, slotId) at 30/min to permit cold-start bursts while stopping floods.
+  const poolHostEgressPreAuthIpLimit = new BootRateLimit(
+    browserPoolHostSlotEgressPreAuthIpLimitPerMinute,
+  );
+  const poolHostEgressPreAuthHostLimit = new BootRateLimit(
+    browserPoolHostSlotEgressPreAuthHostLimitPerMinute,
+  );
+  const poolHostEgressSlotLimit = new BootRateLimit(browserPoolHostSlotEgressRateLimitPerMinute);
   app.post(`${poolHostPath}/slot-egress`, { bodyLimit: 4096 }, async (request, reply) => {
     privateResponse(reply);
     const rawHostId = String((request.params as { id?: unknown })?.id ?? "");
-    const rawBody = request.body as { slotId?: unknown } | undefined;
-    const rawSlotId = typeof rawBody?.slotId === "string" ? rawBody.slotId : "";
-    const limitKey = rawSlotId ? `${rawHostId}:${rawSlotId}` : rawHostId;
-    if (!poolHostEgressLimit.allow(limitKey, request.ip)) {
-      return reply
+    const rateLimited = () =>
+      reply
         .code(429)
         .header("retry-after", "60")
         .send({
           error: { code: "rate_limited", message: "Too many pool host egress requests" },
         });
+    if (
+      !poolHostEgressPreAuthIpLimit.allow("ip", request.ip) ||
+      !poolHostEgressPreAuthHostLimit.allow(rawHostId, request.ip)
+    ) {
+      return rateLimited();
     }
-    return CloudComputerEgressResponseSchema.parse(
-      await store.egressForPoolHost(rawHostId, request.body),
-    );
+    try {
+      return CloudComputerEgressResponseSchema.parse(
+        await store.egressForPoolHost(rawHostId, request.body, (verifiedHostId, verifiedSlotId) =>
+          poolHostEgressSlotLimit.allow(`${verifiedHostId}:${verifiedSlotId}`, request.ip),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof PoolSlotEgressRateLimitedError) return rateLimited();
+      throw error;
+    }
   });
 
   app.get(browserPoolSlotsDesiredPath, async (request, reply) => {
@@ -447,6 +467,8 @@ function privateResponse(reply: FastifyReply) {
   void reply.header("cache-control", "no-store");
 }
 
+export const browserPoolHostSlotEgressPreAuthHostLimitPerMinute = 600;
+export const browserPoolHostSlotEgressPreAuthIpLimitPerMinute = 1200;
 export const browserPoolHostSlotEgressRateLimitPerMinute = 30;
 
 class BootRateLimit {

@@ -31,7 +31,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PoolAccountApi } from "./account.js";
 import { ComputeFake, zonePath } from "./google-compute.test-support.js";
 import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
-import { runProvisionerTick } from "./main.js";
+import { isMainModule, runMainWithFatalHandling, runProvisionerTick } from "./main.js";
 import { httpPoolAgentClient } from "./pool-agent-client.js";
 import { PoolReconciler } from "./pool-reconcile.js";
 
@@ -101,10 +101,13 @@ class FakePoolAgent {
       slotId: string;
       term: number;
       homeKey: string;
+      relayKey?: string;
+      ticketKey?: { readonly keyId: string; readonly spki: string };
       controlKey: string;
       profileMib: number;
     }
   >();
+  readonly tombstones = new Map<string, number>();
   readonly profiles = new Map<string, number>();
   readonly calls: string[] = [];
   nextReply:
@@ -117,20 +120,45 @@ class FakePoolAgent {
   readonly provisionerPublicKey: KeyObject;
   readonly onOp?: ((op: string) => void) | undefined;
   profileFilesystemMib = 450_000;
+  requireEgressUpstream = true;
 
   constructor(options: {
     hostId: string;
     hostPrivateKey: KeyObject;
     provisionerPublicKey: KeyObject;
     onOp?: (op: string) => void;
+    requireEgressUpstream?: boolean;
   }) {
     this.hostKeysById.set(options.hostId, options.hostPrivateKey);
     this.provisionerPublicKey = options.provisionerPublicKey;
     this.onOp = options.onOp;
+    if (options.requireEgressUpstream !== undefined) {
+      this.requireEgressUpstream = options.requireEgressUpstream;
+    }
   }
 
   setHostKey(id: string, key: KeyObject) {
     this.hostKeysById.set(id, key);
+  }
+
+  static #sameKeys(
+    existing: {
+      homeKey: string;
+      relayKey?: string;
+      ticketKey?: { readonly keyId: string; readonly spki: string };
+    },
+    incoming: {
+      homeKey: string;
+      relayKey?: string;
+      ticketKey?: { readonly keyId: string; readonly spki: string };
+    },
+  ): boolean {
+    return (
+      existing.homeKey === incoming.homeKey &&
+      existing.relayKey === incoming.relayKey &&
+      existing.ticketKey?.keyId === incoming.ticketKey?.keyId &&
+      existing.ticketKey?.spki === incoming.ticketKey?.spki
+    );
   }
 
   readonly fetch: typeof fetch = async (_input, init) => {
@@ -189,7 +217,7 @@ class FakePoolAgent {
           409,
         );
       }
-      if (req.guest.egress !== undefined) {
+      if (this.requireEgressUpstream && req.guest.egress !== undefined) {
         return this.#signed(
           hostPrivateKey!,
           reqBytes,
@@ -214,8 +242,24 @@ class FakePoolAgent {
           409,
         );
       }
+      const tombstonedTerm = this.tombstones.get(req.slotId);
+      if (tombstonedTerm !== undefined && req.term <= tombstonedTerm) {
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          {
+            op: "refused",
+            code: "conflict",
+            message: "The slot was deleted at this term or a later one.",
+          },
+          409,
+        );
+      }
       const existing = this.slots.get(req.slotId);
-      if (existing && (existing.term !== req.term || existing.homeKey !== req.homeKey)) {
+      if (
+        existing &&
+        (existing.term !== req.term || !FakePoolAgent.#sameKeys(existing, req))
+      ) {
         return this.#signed(
           hostPrivateKey!,
           reqBytes,
@@ -243,6 +287,8 @@ class FakePoolAgent {
         slotId: req.slotId,
         term: req.term,
         homeKey: req.homeKey,
+        ...(req.relayKey ? { relayKey: req.relayKey } : {}),
+        ...(req.ticketKey ? { ticketKey: req.ticketKey } : {}),
         controlKey: ed25519Pair().spki,
         profileMib: sizeMib,
       };
@@ -259,7 +305,7 @@ class FakePoolAgent {
           404,
         );
       }
-      if (req.term === existing.term && req.homeKey === existing.homeKey) {
+      if (req.term === existing.term && FakePoolAgent.#sameKeys(existing, req)) {
         reply = { op: "replace-key", slot: toSummary(existing) };
       } else if (req.term <= existing.term) {
         return this.#signed(
@@ -271,6 +317,8 @@ class FakePoolAgent {
       } else {
         existing.term = req.term;
         existing.homeKey = req.homeKey;
+        existing.relayKey = req.relayKey;
+        existing.ticketKey = req.ticketKey;
         reply = { op: "replace-key", slot: toSummary(existing) };
       }
     } else {
@@ -294,17 +342,25 @@ class FakePoolAgent {
           slotId: req.slotId,
           erased: false,
           ...(req.eraseProfile ? { profileErased: true as const } : {}),
-          credentialsErased: true as const,
+          ...(this.requireEgressUpstream || existing ? { credentialsErased: true as const } : {}),
         };
       } else if (fault?.mode === "partial-erase-no-profile") {
+        const deletedTerm = existing?.term ?? req.term ?? 0;
+        if (deletedTerm > (this.tombstones.get(req.slotId) ?? 0)) {
+          this.tombstones.set(req.slotId, deletedTerm);
+        }
         this.slots.delete(req.slotId);
         reply = {
           op: "delete",
           slotId: req.slotId,
           erased: true,
-          credentialsErased: true as const,
+          ...(this.requireEgressUpstream || existing ? { credentialsErased: true as const } : {}),
         };
       } else if (fault?.mode === "partial-erase-no-credentials") {
+        const deletedTerm = existing?.term ?? req.term ?? 0;
+        if (deletedTerm > (this.tombstones.get(req.slotId) ?? 0)) {
+          this.tombstones.set(req.slotId, deletedTerm);
+        }
         this.slots.delete(req.slotId);
         if (req.eraseProfile) this.profiles.delete(req.slotId);
         reply = {
@@ -314,17 +370,22 @@ class FakePoolAgent {
           ...(req.eraseProfile ? { profileErased: true as const } : {}),
         };
       } else {
+        const deletedTerm = existing?.term ?? req.term ?? 0;
+        if (deletedTerm > (this.tombstones.get(req.slotId) ?? 0)) {
+          this.tombstones.set(req.slotId, deletedTerm);
+        }
         this.slots.delete(req.slotId);
         if (req.eraseProfile) this.profiles.delete(req.slotId);
         // Matches c351478fb pulling-host deleteSlotWithEvidence: reports credentialsErased:true
         // whenever the derived credential paths are seen gone (including slots with none,
-        // repeated deletes, and unknown slots on a pulling host).
+        // repeated deletes, and unknown slots on a pulling host; on a non-pulling host an
+        // unknown slot omits credentialsErased).
         reply = {
           op: "delete",
           slotId: req.slotId,
           erased: true,
           ...(req.eraseProfile ? { profileErased: true as const } : {}),
-          credentialsErased: true as const,
+          ...(this.requireEgressUpstream || existing ? { credentialsErased: true as const } : {}),
         };
       }
     }
@@ -631,6 +692,7 @@ function createHarness(options: { concurrency?: number } = {}) {
       slots.set(report.slotId, {
         ...row,
         phase: report.phase,
+        failedAt: report.phase === "failed" ? new Date(nowMs).toISOString() : undefined,
         ...(report.phase === "ready"
           ? { appliedTerm: report.term, appliedHostGeneration: report.hostGeneration }
           : {}),
@@ -728,7 +790,7 @@ function createHarness(options: { concurrency?: number } = {}) {
 }
 
 describe("PoolReconciler — hosts", () => {
-  it("creates the durable profile disk once before creating the pool host instance with firstAttach=true", async () => {
+  it("creates the durable profile disk once before creating the pool host instance with everEnrolled=false (X1)", async () => {
     const h = createHarness();
     h.hosts.set(hostId, h.defaultHost());
 
@@ -747,7 +809,7 @@ describe("PoolReconciler — hosts", () => {
     const vm = [...h.compute.instances.values()][0]!;
     expect(vm.disks?.some((d) => d.autoDelete === false && d.mode === "READ_WRITE")).toBe(true);
     const userData = vm.metadata.items.find((item) => item.key === "user-data")?.value ?? "";
-    expect(userData).toContain('\\"firstAttach\\":true');
+    expect(userData).toContain('\\"everEnrolled\\":false');
 
     await h.reconciler.pass(h.signal);
     expect(
@@ -839,7 +901,7 @@ describe("PoolReconciler — hosts", () => {
     expect(h.hostReports.at(-1)?.phase).toBe("ready");
   });
 
-  it("keeps the durable profile disk across an instance replacement, deletes the old VM first so the disk is never attached to two instances, and sets firstAttach=false", async () => {
+  it("keeps the durable profile disk across an instance replacement, deletes the old VM first so the disk is never attached to two instances, and sets everEnrolled=true (X1)", async () => {
     const h = createHarness();
     const { host } = await h.bringHostReady();
     const gen1VmName = [...h.compute.instances.keys()][0]!;
@@ -866,7 +928,7 @@ describe("PoolReconciler — hosts", () => {
     expect(h.compute.instances.size).toBe(1);
     expect(h.compute.instances.has(gen1VmName)).toBe(true);
 
-    // Complete old VM deletion: now gen 2 VM is created with firstAttach:false and same disk.
+    // Complete old VM deletion: now gen 2 VM is created with everEnrolled:true and same disk.
     h.compute.holdMatch = undefined;
     for (const [opPath, entry] of h.compute.operations) {
       if (entry.operation.operationType === "delete" && entry.operation.status !== "DONE") {
@@ -897,7 +959,7 @@ describe("PoolReconciler — hosts", () => {
     const gen2Vm = [...h.compute.instances.values()][0]!;
     const gen2UserData =
       gen2Vm.metadata.items.find((item) => item.key === "user-data")?.value ?? "";
-    expect(gen2UserData).toContain('\\"firstAttach\\":false');
+    expect(gen2UserData).toContain('\\"everEnrolled\\":true');
 
     h.agent.setHostKey(hostId, hostKeys2.privateKey);
     const gen2 = h.hosts.get(hostId)!;
@@ -923,8 +985,12 @@ describe("PoolReconciler — hosts", () => {
     await h.reconciler.pass(h.signal);
     expect(h.hosts.get(hostId)).toMatchObject({ generation: 2, autoReplaceCount: 1 });
 
-    // Generation 2 boots VM, never enrols, hits readiness deadline -> auto-replaced to generation 3.
+    // Generation 2 boots VM (still everEnrolled:false per X1), never enrols, hits readiness deadline -> auto-replaced to generation 3.
     await h.reconciler.pass(h.signal);
+    const gen2Vm = [...h.compute.instances.values()][0]!;
+    const gen2UserData =
+      gen2Vm.metadata.items.find((item) => item.key === "user-data")?.value ?? "";
+    expect(gen2UserData).toContain('\\"everEnrolled\\":false');
     h.advance(600_000);
     await h.reconciler.pass(h.signal);
     expect(h.hosts.get(hostId)).toMatchObject({ generation: 3, autoReplaceCount: 2 });
@@ -1051,7 +1117,7 @@ describe("PoolReconciler — hosts", () => {
     expect(h.compute.disks.size).toBe(0);
   });
 
-  it("deletes a pool host cleanly when the VM is off or agent list is unreachable and Account has zero slots", async () => {
+  it("deletes a pool host cleanly when the VM is off and Account has zero slots", async () => {
     const h = createHarness();
     const { host } = await h.bringHostReady();
     const vm = [...h.compute.instances.values()][0]!;
@@ -1059,6 +1125,32 @@ describe("PoolReconciler — hosts", () => {
     h.agent.nextReply = { op: "list", mode: "lost-before-apply" };
 
     h.hosts.set(hostId, { ...host, state: "deleted", revision: host.revision + 1 });
+    await h.reconciler.pass(h.signal);
+    expect(h.hostReports.at(-1)?.phase).toBe("deleted");
+    expect(h.compute.instances.size).toBe(0);
+    expect(h.compute.disks.size).toBe(0);
+  });
+
+  it("waits instead of deleting a running enrolled pool host when agent list is unreachable (X3)", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    const reqStart = h.compute.requests.length;
+
+    h.hosts.set(hostId, { ...host, state: "deleted", revision: host.revision + 1 });
+    h.agent.nextReply = { op: "list", mode: "lost-before-apply" };
+
+    await h.reconciler.pass(h.signal);
+    expect(h.hostReports.at(-1)?.phase).toBe("deleting");
+    expect(h.compute.instances.size).toBe(1);
+    expect(h.compute.disks.size).toBe(1);
+    expect(
+      h.compute.requests
+        .slice(reqStart)
+        .filter((r) => r.method === "DELETE"),
+    ).toEqual([]);
+    expect(h.onError).toHaveBeenCalled();
+
+    // Once agent list becomes reachable and confirms zero slots, deletion proceeds cleanly.
     await h.reconciler.pass(h.signal);
     expect(h.hostReports.at(-1)?.phase).toBe("deleted");
     expect(h.compute.instances.size).toBe(0);
@@ -1377,10 +1469,24 @@ describe("PoolReconciler — slots", () => {
       lastError: "This host's profile disk is full.",
     });
 
-    // Subsequent passes must NOT retry `create` forever once failed.
+    // Subsequent passes must NOT retry `create` before the 10-minute X2 backoff elapses...
     await h.reconciler.pass(h.signal);
+    h.advance(9 * 60_000 + 59_000);
     await h.reconciler.pass(h.signal);
     expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(1);
+
+    // ...and after 10 minutes (X2), a failed active slot retries automatically and recovers once space frees up!
+    h.advance(1_000);
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(2);
+    expect(h.agent.slots.has(slotId)).toBe(true);
+    expect(h.slotReports.at(-1)).toMatchObject({
+      slotId,
+      hostGeneration: 1,
+      term: 1,
+      phase: "ready",
+      lastError: null,
+    });
   });
 
   it("keeps a signed unavailable refusal unknown and recovers via list", async () => {
@@ -1656,5 +1762,114 @@ describe("PoolReconciler — slots", () => {
     await expect(client.list(target, signal)).rejects.toSatisfy(
       (err: unknown) => err instanceof BrowserPoolAgentUnavailable && err.refusal === undefined,
     );
+  });
+
+  it("enforces tombstones, 3-key replace-key equality, and configurable requireEgressUpstream in FakePoolAgent (X6)", async () => {
+    const provisioner = ed25519Pair();
+    const host = ed25519Pair();
+    const fake = new FakePoolAgent({
+      hostId,
+      hostPrivateKey: host.privateKey,
+      provisionerPublicKey: provisioner.publicKey,
+    });
+    const client = httpPoolAgentClient({
+      provisionerKey: provisioner.privateKey,
+      fetch: fake.fetch,
+    });
+    const target = { hostId, internalIp: "10.40.0.10", adminPort: 7311, hostKeySpki: host.spki };
+    const signal = new AbortController().signal;
+
+    const homeKey = ed25519Pair().spki;
+    const relayKey1 = ed25519Pair().spki;
+    const relayKey2 = ed25519Pair().spki;
+    const ticketKey1 = { keyId: "tk-1", spki: ed25519Pair().spki };
+    const ticketKey2 = { keyId: "tk-2", spki: ed25519Pair().spki };
+
+    await client.create(
+      target,
+      {
+        slotId,
+        term: 2,
+        keys: { homeKey, relayKey: relayKey1, ticketKey: ticketKey1 },
+        guest: { vcpus: 2, memoryMib: 2048, profileMib: 2048 },
+      },
+      signal,
+    );
+
+    // Same term with identical all 3 keys is idempotent...
+    await expect(
+      client.replaceKey(
+        target,
+        { slotId, term: 2, keys: { homeKey, relayKey: relayKey1, ticketKey: ticketKey1 } },
+        signal,
+      ),
+    ).resolves.toMatchObject({ term: 2 });
+
+    // ...but same term with a changed relayKey or ticketKey is refused with signed conflict!
+    await expect(
+      client.replaceKey(
+        target,
+        { slotId, term: 2, keys: { homeKey, relayKey: relayKey2, ticketKey: ticketKey1 } },
+        signal,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) => err instanceof BrowserPoolAgentUnavailable && err.refusal === "conflict",
+    );
+    await expect(
+      client.replaceKey(
+        target,
+        { slotId, term: 2, keys: { homeKey, relayKey: relayKey1, ticketKey: ticketKey2 } },
+        signal,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) => err instanceof BrowserPoolAgentUnavailable && err.refusal === "conflict",
+    );
+
+    // Delete tombstones term 2; recreating at <= 2 is refused with signed conflict, term 3 succeeds.
+    await client.delete(target, { slotId, term: 2, eraseProfile: true }, signal);
+    await expect(
+      client.create(
+        target,
+        {
+          slotId,
+          term: 2,
+          keys: { homeKey, relayKey: relayKey1, ticketKey: ticketKey1 },
+          guest: { vcpus: 2, memoryMib: 2048, profileMib: 2048 },
+        },
+        signal,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) => err instanceof BrowserPoolAgentUnavailable && err.refusal === "conflict",
+    );
+
+    // Non-pulling host omits credentialsErased when deleting an unknown slot.
+    fake.requireEgressUpstream = false;
+    const unknownDelete = await client.delete(
+      target,
+      { slotId: "bps_99999999-9999-4999-8999-999999999999", eraseProfile: true },
+      signal,
+    );
+    expect(unknownDelete.erased).toBe(true);
+    expect(unknownDelete.credentialsErased).toBe(false);
+  });
+
+  it("logs structured fatal errors, sets exitCode=1, and resolves main module paths portably (X5)", async () => {
+    const previousExitCode = process.exitCode;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runMainWithFatalHandling(async () => {
+        throw new Error("boom");
+      });
+      expect(process.exitCode).toBe(1);
+      expect(errorSpy).toHaveBeenCalledOnce();
+      const parsed = JSON.parse(String(errorSpy.mock.calls[0]![0])) as Record<string, unknown>;
+      expect(parsed).toEqual({ event: "home-provisioner.pass.failed" });
+    } finally {
+      errorSpy.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+
+    expect(isMainModule(undefined, import.meta.url)).toBe(false);
+    expect(isMainModule("/tmp/definitely-not-this-file.ts", import.meta.url)).toBe(false);
   });
 });

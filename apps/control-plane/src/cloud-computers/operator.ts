@@ -20,7 +20,7 @@ export const cloudComputerOperatorUsage = `Usage: cloud-computer-operator-main.j
   backup-list | backup-add <json-file> | backup-rotate <id> <json-file> | backup-remove <id>
   pool-host-list | pool-host-show <host-id> | pool-host-drain <host-id>
   pool-host-replace <host-id> | pool-host-delete <host-id>
-  pool-slot-list | pool-slot-show <slot-id>
+  pool-slot-list | pool-slot-show <slot-id> | pool-slot-retry <slot-id>
   lease-show | lease-release <holder>
   checkout-list | billing-reconcile | claim-retry <computer-id>
 
@@ -90,6 +90,8 @@ export async function runCloudComputerOperator(
     result = await store.operatorDeletePoolHost(BrowserPoolHostIdSchema.parse(subject));
   } else if (action === "pool-slot-show" && subject && args.length === 0) {
     result = await store.operatorShowPoolSlot(BrowserPoolSlotIdSchema.parse(subject));
+  } else if (action === "pool-slot-retry" && subject && args.length === 0) {
+    result = await store.operatorRetryPoolSlot(BrowserPoolSlotIdSchema.parse(subject));
   } else {
     if (!subject) throw new ControlPlaneError("bad_request", cloudComputerOperatorUsage);
     const id = CloudComputerIdSchema.parse(subject);

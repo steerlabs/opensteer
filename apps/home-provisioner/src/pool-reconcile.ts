@@ -34,6 +34,7 @@ type HostFailure = NonNullable<BrowserPoolHostReport["lastError"]>;
 class Superseded extends Error {}
 
 const maxAutoReplacements = 2;
+export const failedSlotRetryDelayMs = 10 * 60_000;
 
 export interface PoolReconcilerOptions {
   readonly account: PoolAccountApi;
@@ -423,8 +424,11 @@ export class PoolReconciler {
               signal,
             );
             if (liveSlots.length > 0) return report("deleting");
-          } catch {
-            // Host unreachable during deletion; Account already confirmed zero live slots.
+          } catch (error) {
+            // X3: A running host that does not answer list is unknown; wait rather than delete its disk.
+            signal.throwIfAborted();
+            this.#options.onError?.(error);
+            return report("deleting");
           }
         }
         let vmsGone = true;
@@ -498,8 +502,7 @@ export class PoolReconciler {
       }
       if (!current && host.bootstrapToken) {
         await act((job, check) => ensureFirewalls(job, check));
-        // T6: Format durable profile disk ONLY on first attach (generation 1, never previously attached).
-        const firstAttach = generation === 1 && !host.previousProviderServerRef;
+        // X1: Disk self-identifies by label; Account supplies only whether this host has ever enrolled.
         const userData = renderPoolHostUserData(
           {
             hostId: id,
@@ -512,7 +515,7 @@ export class PoolReconciler {
             homeCidr: pool.homeCidr,
             provisionerCidr: pool.provisionerCidr,
             profileDiskDevice: poolProfileDiskDevicePath,
-            firstAttach,
+            everEnrolled: host.everEnrolled,
             agentPort: host.agentPort,
             adminPort: pool.adminPort,
             relayPort: host.relayPort,
@@ -768,7 +771,16 @@ export class PoolReconciler {
       }
 
       if (!slot.keys) return undefined;
-      if (slot.phase === "failed") return undefined;
+      if (slot.phase === "failed") {
+        // X2: Retry failed slots no more often than every 10 minutes (unless reset by replacement or operator).
+        const failedAtMs = slot.failedAt ? Date.parse(slot.failedAt) : Number.NaN;
+        if (
+          !Number.isFinite(failedAtMs) ||
+          this.#now() - failedAtMs < failedSlotRetryDelayMs
+        ) {
+          return undefined;
+        }
+      }
       if (pending.size > 0) return undefined;
 
       if (observed) {

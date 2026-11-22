@@ -54,6 +54,10 @@ type PoolSlot = Selectable<BrowserPoolSlotTable>;
 
 const bootstrapLifetimeMs = 20 * 60_000;
 export const maxUnenrolledHostAutoReplacements = 2;
+
+export class PoolSlotEgressRateLimitedError extends Error {
+  override readonly name = "PoolSlotEgressRateLimitedError";
+}
 const emptyDigest = "0".repeat(64);
 const clearBootToken = {
   bootstrapDigest: null,
@@ -209,9 +213,27 @@ export class BrowserPoolStore {
    * (`cloud_computers -> browser_pool_slots`), then reconciles capacity and placement in declared
    * lock order (`advisory:browser-pool-capacity -> browser_pool_hosts -> browser_pool_slots`).
    */
+  async #hasLivePoolRows(): Promise<boolean> {
+    const [host, slot] = await Promise.all([
+      this.#db
+        .selectFrom("browserPoolHosts")
+        .select("id")
+        .where("tombstonedAt", "is", null)
+        .limit(1)
+        .executeTakeFirst(),
+      this.#db
+        .selectFrom("browserPoolSlots")
+        .select("slotId")
+        .where("tombstonedAt", "is", null)
+        .limit(1)
+        .executeTakeFirst(),
+    ]);
+    return host !== undefined || slot !== undefined;
+  }
+
   async #reconcileCapacity(): Promise<void> {
     const pool = this.#config.browserPool;
-    if (!pool) return;
+    if (!pool && !(await this.#hasLivePoolRows())) return;
 
     // 1. Separate transaction so slot locks are never held before host locks (T7).
     await this.#db.transaction().execute(async (tx) => {
@@ -272,7 +294,7 @@ export class BrowserPoolStore {
         (slot) => slot.state === "active" && (!slot.hostId || activeHostIds.has(slot.hostId)),
       ).length;
 
-      while (activeCapacity < neededOnActive) {
+      while (pool && activeCapacity < neededOnActive) {
         const id = BrowserPoolHostIdSchema.parse(`ph_${randomUUID()}`);
         const profileDiskName = `osp-disk-${id.slice("ph_".length)}`;
         await tx
@@ -360,9 +382,11 @@ export class BrowserPoolStore {
   async desiredHosts(
     after?: BrowserPoolHostId,
     limit = 100,
+    probe = false,
   ): Promise<BrowserPoolHostDesiredResponse> {
     const pool = this.#config.browserPool;
-    if (!pool) return { hosts: [] };
+    if (probe) return { hosts: [], poolEnabled: Boolean(pool) };
+    if (!pool && !(await this.#hasLivePoolRows())) return { hosts: [], poolEnabled: false };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolHosts")
@@ -412,8 +436,8 @@ export class BrowserPoolStore {
           profileDiskName: row.profileDiskName,
           profileDiskSizeGb: row.profileDiskSizeGb,
           ...(row.profileDiskRef ? { profileDiskRef: row.profileDiskRef } : {}),
-          agentPort: pool.agentPort,
-          relayPort: pool.relayPort,
+          agentPort: pool?.agentPort ?? defaultBrowserPoolAgentPort,
+          relayPort: pool?.relayPort ?? defaultBrowserPoolRelayPort,
           release: row.release,
           ...(row.providerServerRef ? { providerServerRef: row.providerServerRef } : {}),
           ...(row.previousProviderServerRef
@@ -435,7 +459,7 @@ export class BrowserPoolStore {
       }),
     );
     return {
-      poolEnabled: true,
+      poolEnabled: Boolean(pool),
       hosts,
       ...(rows.length > limit ? { next: page.at(-1)!.id } : {}),
     };
@@ -710,7 +734,11 @@ export class BrowserPoolStore {
    * enrolled host key. Note: assigns a free egress endpoint as an intentional S4 side effect when
    * the Cloud Computer does not yet hold one. Every failure returns one uniform refusal.
    */
-  async egressForPoolHost(hostIdParam: string, rawBody: unknown) {
+  async egressForPoolHost(
+    hostIdParam: string,
+    rawBody: unknown,
+    checkVerifiedSlotRateLimit?: (hostId: BrowserPoolHostId, slotId: BrowserPoolSlotId) => boolean,
+  ) {
     const refuse = () =>
       new ControlPlaneError("unauthorized", "Browser pool slot egress request was refused");
 
@@ -754,6 +782,9 @@ export class BrowserPoolStore {
       !verify(null, browserPoolHostSlotEgressSigningBytes(body), publicKey, signature)
     ) {
       throw refuse();
+    }
+    if (checkVerifiedSlotRateLimit && !checkVerifiedSlotRateLimit(host.id, body.slotId)) {
+      throw new PoolSlotEgressRateLimitedError("Too many pool host egress requests");
     }
 
     return this.#db.transaction().execute(async (tx) => {
@@ -811,7 +842,7 @@ export class BrowserPoolStore {
     after?: BrowserPoolSlotId,
     limit = 100,
   ): Promise<BrowserPoolSlotDesiredResponse> {
-    if (!this.#config.browserPool) return { slots: [] };
+    if (!this.#config.browserPool && !(await this.#hasLivePoolRows())) return { slots: [] };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolSlots as slot")
@@ -837,6 +868,7 @@ export class BrowserPoolStore {
         "slot.slotErasedAt",
         "slot.profileErasedAt",
         "slot.credentialsErasedAt",
+        "slot.updatedAt",
         "slot.pendingAgentWrites",
         "host.generation as hostGeneration",
         "host.internalIp as hostInternalIp",
@@ -892,6 +924,7 @@ export class BrowserPoolStore {
         slotErased: row.slotErasedAt !== null,
         profileErased: row.profileErasedAt !== null,
         credentialsErased: row.credentialsErasedAt !== null,
+        ...(row.phase === "failed" ? { failedAt: row.updatedAt.toISOString() } : {}),
         ...(row.pendingAgentWrites.length
           ? { pendingAgentWrites: [...row.pendingAgentWrites] }
           : {}),
@@ -1058,13 +1091,18 @@ export class BrowserPoolStore {
       }
 
       const now = this.#now();
-      const nextSlotErasedAt = report.slotErased ? (row.slotErasedAt ?? now) : row.slotErasedAt;
-      const nextProfileErasedAt = report.profileErased
-        ? (row.profileErasedAt ?? now)
-        : row.profileErasedAt;
-      const nextCredentialsErasedAt = report.credentialsErased
-        ? (row.credentialsErasedAt ?? now)
-        : row.credentialsErasedAt;
+      // X5: Erasure evidence is accepted only while the slot is deleting.
+      const deletingSlot = row.state === "deleting";
+      const nextSlotErasedAt =
+        deletingSlot && report.slotErased ? (row.slotErasedAt ?? now) : row.slotErasedAt;
+      const nextProfileErasedAt =
+        deletingSlot && report.profileErased
+          ? (row.profileErasedAt ?? now)
+          : row.profileErasedAt;
+      const nextCredentialsErasedAt =
+        deletingSlot && report.credentialsErased
+          ? (row.credentialsErasedAt ?? now)
+          : row.credentialsErasedAt;
       const allErased =
         nextSlotErasedAt !== null &&
         nextProfileErasedAt !== null &&
@@ -1434,6 +1472,15 @@ export class BrowserPoolStore {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      // X2: A replaced host places previously failed active slots again; keep lastError visible until ready.
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("hostId", "=", id)
+        .where("state", "=", "active")
+        .where("phase", "=", "failed")
+        .where("tombstonedAt", "is", null)
+        .set({ phase: "preparing", updatedAt: now })
+        .execute();
       return poolHostOperatorView(updated);
     });
   }
@@ -1500,6 +1547,33 @@ export class BrowserPoolStore {
       ...poolSlotOperatorView(row),
       ...(warning ? { warning } : {}),
     };
+  }
+
+  /** X2: Operator retries a failed active slot immediately while keeping lastError visible until ready. */
+  async operatorRetrySlot(slotId: BrowserPoolSlotId) {
+    return this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("browserPoolSlots")
+        .selectAll()
+        .where("slotId", "=", slotId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row) throw new ControlPlaneError("not_found", "Browser pool slot was not found");
+      if (row.tombstonedAt !== null || row.state !== "active" || row.phase !== "failed") {
+        throw new ControlPlaneError(
+          "conflict",
+          "Only an active failed browser pool slot can be retried",
+        );
+      }
+      const now = this.#now();
+      const updated = await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slotId)
+        .set({ phase: "preparing", updatedAt: now })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return poolSlotOperatorView(updated);
+    });
   }
 }
 

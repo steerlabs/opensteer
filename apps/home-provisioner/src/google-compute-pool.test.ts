@@ -199,7 +199,7 @@ describe("Google Compute pool host provider", () => {
         homeCidr: "10.40.0.0/20",
         provisionerCidr: "10.50.0.0/24",
         profileDiskDevice: "/dev/disk/by-id/google-opensteer-profiles",
-        firstAttach: false,
+        everEnrolled: true,
         agentPort: 7310,
         adminPort: 7311,
         relayPort: 7312,
@@ -209,7 +209,7 @@ describe("Google Compute pool host provider", () => {
     expect(userData.startsWith("#cloud-config\n")).toBe(true);
     expect(userData).toContain("opensteer-bootstrap-ready");
     expect(userData).toContain("/dev/disk/by-id/google-opensteer-profiles");
-    expect(userData).toContain('\\"firstAttach\\":false');
+    expect(userData).toContain('\\"everEnrolled\\":true');
     expect(userData).toContain(provisionerKeySpki);
 
     const baseEnv = {

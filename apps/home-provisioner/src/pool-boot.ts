@@ -29,7 +29,7 @@ const PoolHostBootSpecSchema = z.object({
   homeCidr: ipv4Cidr,
   provisionerCidr: ipv4Cidr,
   profileDiskDevice: z.string().regex(/^\/dev\/[A-Za-z0-9._/-]{1,128}$/u),
-  firstAttach: z.boolean().default(false),
+  everEnrolled: z.boolean().default(true),
   agentPort: z.number().int().min(1).max(65_535).default(defaultBrowserPoolAgentPort),
   adminPort: z.number().int().min(1).max(65_535).default(defaultBrowserPoolAdminPort),
   relayPort: z.number().int().min(1).max(65_535).default(defaultBrowserPoolRelayPort),

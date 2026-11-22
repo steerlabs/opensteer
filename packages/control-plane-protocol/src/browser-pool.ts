@@ -113,6 +113,7 @@ export type BrowserPoolHostDesired = z.infer<typeof BrowserPoolHostDesiredSchema
 export const BrowserPoolHostDesiredPageSchema = z.object({
   after: BrowserPoolHostIdSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  probe: z.coerce.boolean().optional(),
 });
 
 export const BrowserPoolHostDesiredResponseSchema = z.strictObject({
@@ -334,6 +335,7 @@ export const BrowserPoolSlotDesiredSchema = z.strictObject({
   slotErased: z.boolean(),
   profileErased: z.boolean(),
   credentialsErased: z.boolean(),
+  failedAt: z.iso.datetime({ offset: true }).optional(),
   pendingAgentWrites: z.array(BrowserPoolSlotAgentWriteSchema).max(4).optional(),
 });
 export type BrowserPoolSlotDesired = z.infer<typeof BrowserPoolSlotDesiredSchema>;

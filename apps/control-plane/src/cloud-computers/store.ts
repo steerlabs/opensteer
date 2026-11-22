@@ -2973,8 +2973,8 @@ export class CloudComputerStore {
       .execute();
   }
 
-  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number) {
-    return this.#pool.desiredHosts(after, limit);
+  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number, probe?: boolean) {
+    return this.#pool.desiredHosts(after, limit, probe);
   }
 
   checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck) {
@@ -2997,8 +2997,12 @@ export class CloudComputerStore {
     return this.#pool.bootCompletePoolHost(id, input);
   }
 
-  egressForPoolHost(hostId: string, body: unknown) {
-    return this.#pool.egressForPoolHost(hostId, body);
+  egressForPoolHost(
+    hostId: string,
+    body: unknown,
+    checkVerifiedSlotRateLimit?: (hostId: BrowserPoolHostId, slotId: BrowserPoolSlotId) => boolean,
+  ) {
+    return this.#pool.egressForPoolHost(hostId, body, checkVerifiedSlotRateLimit);
   }
 
   desiredPoolSlots(after?: BrowserPoolSlotId, limit?: number) {
@@ -3054,6 +3058,10 @@ export class CloudComputerStore {
 
   operatorShowPoolSlot(slotId: BrowserPoolSlotId) {
     return this.#pool.operatorShowSlot(slotId);
+  }
+
+  operatorRetryPoolSlot(slotId: BrowserPoolSlotId) {
+    return this.#pool.operatorRetrySlot(slotId);
   }
 }
 
