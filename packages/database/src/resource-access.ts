@@ -23,6 +23,12 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import type {
+  CommandFace,
+  CommandRow,
+  CommandScope,
+  EffectClass,
+} from "@opensteer/protocol/command-table";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { connectionState, liveConnection } from "./connection-liveness.js";
@@ -685,6 +691,102 @@ function executionAccessCeiling(execution: Pick<ExecutionAuthority, "mode" | "su
   if (execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:"))
     return "read-write";
   return integrationAccessCeilingForRun(execution.mode);
+}
+
+export type CommandAnswer = "now" | "ask" | "not_found";
+/** Why an agent is asked rather than let through; nothing here is shown to a connection. */
+export type CommandAskReason =
+  "widens-other" | "grant" | "approval" | "secret" | "identity" | "mode" | "session" | "step";
+
+/** A caller as the command rule reads it. The person never reaches the rule. */
+export interface CommandRuleCaller {
+  /** Null for your own agents: a Run or program with no connection in its lineage. */
+  readonly connection: { readonly grant: "everything" | "selected" } | null;
+  /** The lineage's mode, with the organization's ceiling already applied to a connection. */
+  readonly mode: ThreadAccessMode;
+  /**
+   * The governed resource is within the caller's reach: for a `task` row, its own task work (in
+   * its lineage, at a mode no higher than its own); for a connection, a resource its grant names
+   * or its own connection. Your own agents reach every other kind of resource.
+   */
+  readonly reach: boolean;
+}
+
+export interface CommandRuleAnswer {
+  readonly answer: CommandAnswer;
+  readonly reason?: CommandAskReason;
+}
+
+const answerOrder: readonly CommandAnswer[] = ["now", "ask", "not_found"];
+function stricter(left: CommandRuleAnswer, right: CommandRuleAnswer): CommandRuleAnswer {
+  return answerOrder.indexOf(right.answer) > answerOrder.indexOf(left.answer) ? right : left;
+}
+
+/**
+ * The one rule for commands, as data: the face's class and the row's scope against who calls.
+ * `face` undefined means only the stored state can tell which face this is; the caller is held to
+ * the strictest one until the store decides. It reads nothing; `admitCommand` gathers the facts.
+ */
+export function commandRule(
+  row: CommandRow,
+  face: number | undefined,
+  caller: CommandRuleCaller,
+): CommandRuleAnswer {
+  if (face === undefined)
+    return row.faces
+      .map((_, index) => commandRule(row, index, caller))
+      .reduce((left, right) => stricter(left, right));
+  const shape = row.faces[face];
+  if (!shape) return { answer: "not_found" };
+  const classes = shape.also ? [shape.class, shape.also] : [shape.class];
+  return classes
+    .map((effect) => classRule(effect, row.scope, shape, caller))
+    .reduce((left, right) => stricter(left, right));
+}
+
+function classRule(
+  effect: EffectClass,
+  scope: CommandScope,
+  face: CommandFace,
+  caller: CommandRuleCaller,
+): CommandRuleAnswer {
+  const notFound = { answer: "not_found" } as const;
+  // The person's own screen and device state: never an agent's, not even to ask about.
+  if (effect === "person-view") return notFound;
+  const connection = caller.connection;
+  if (connection) {
+    // Another connection is another principal's, `everything` included.
+    if (scope === "other-connection") return notFound;
+    // Outside the grant reads exactly like something that does not exist.
+    if (!caller.reach && scope !== "new" && scope !== "home") return notFound;
+    if (connection.grant === "selected" && (scope === "home" || effect === "identity"))
+      return notFound;
+  }
+  switch (effect) {
+    case "approve":
+      return { answer: "ask", reason: "approval" };
+    case "widen-other":
+      return { answer: "ask", reason: "widens-other" };
+    case "secret":
+      return { answer: "ask", reason: "secret" };
+    case "identity":
+      return { answer: "ask", reason: "identity" };
+    default:
+  }
+  if (face.personSession) return { answer: "ask", reason: "session" };
+  if (effect === "read") return { answer: "now" };
+  const selected = connection?.grant === "selected";
+  // Destroying, or making something new, inside a selected grant asks: it changes what is granted.
+  if (selected && (effect === "destroy" || (effect === "widen-self" && scope === "new")))
+    return { answer: "ask", reason: "grant" };
+  if (caller.mode === "full-access") return { answer: "now" };
+  // Below Full access the person is asked for every effect outside the caller's own task work.
+  const ownTaskWork =
+    scope === "task" &&
+    caller.reach &&
+    !face.fullAccess &&
+    (effect === "preference" || effect === "narrow" || effect === "widen-self");
+  return ownTaskWork ? { answer: "now" } : { answer: "ask", reason: "mode" };
 }
 
 export async function assertLineageCompatibleReuse(

@@ -36,7 +36,8 @@
     "./personal-sync": "./src/personal-sync.ts",
     "./resources": "./src/resources.ts",
     "./transcript": "./src/transcript.ts",
-    "./test-support/personal-wire": "./src/personal-wire.test-support.ts"
+    "./test-support/personal-wire": "./src/personal-wire.test-support.ts",
+    "./command-table": "./src/command-table.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

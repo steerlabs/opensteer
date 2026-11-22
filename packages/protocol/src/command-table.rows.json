@@ -1,0 +1,2794 @@
+{
+  "source": "briefs/agent-control-table rows.json (overhaul 82c279dc7) with rows.messaging.json applied (generate.py --messaging): 136 rows. The expected answer per type, face and caller; command-table.ts is checked against it.",
+  "callers": {
+    "a": "your own agent, Full access",
+    "b": "your own agent below Full access",
+    "c": "a connection with everything, Full access ceiling",
+    "d": "a connection with a selected grant covering the resource"
+  },
+  "rows": [
+    {
+      "type": "thread.create",
+      "family": "tasks",
+      "governs": "new task; parent = caller's task (lineage) ← `input`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:74`"
+    },
+    {
+      "type": "thread.rename",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "agent path `tsvc:470` (`write`)"
+    },
+    {
+      "type": "thread.icon.set",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`commands.setThreadIcon` takes no authority (`server.ts:1893`)"
+    },
+    {
+      "type": "thread.sendMessage",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`connection` with selected grant: own lineage only"
+    },
+    {
+      "type": "thread.inputQueue.resume",
+      "family": "tasks",
+      "governs": "task queue ← `threadId` (+ who paused it, stored)",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "step C splits by who paused (brief C7)"
+    },
+    {
+      "type": "thread.input.steer",
+      "family": "tasks",
+      "governs": "waiting input ← `threadId`,`messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "thread.input.cancel",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "thread.input.move",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "thread.input.lease.take",
+      "family": "tasks",
+      "governs": "the person's editor lease ← `messageId` + session",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "a lease belongs to one signed-in editor (`server.ts:1836-1846`)"
+    },
+    {
+      "type": "thread.input.lease.renew",
+      "family": "tasks",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "thread.input.lease.release",
+      "family": "tasks",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "thread.input.edit",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "refused today: \"Only the owner can edit waiting inputs.\" (`tsvc:344-347`); needs a lease-less edit"
+    },
+    {
+      "type": "thread.visit",
+      "family": "tasks",
+      "governs": "the person's read marker ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "an agent marking a task read would hide it from the person"
+    },
+    {
+      "type": "thread.done.set",
+      "family": "tasks",
+      "governs": "task ← `threadId`; `done:true` narrow / `done:false` widen-self",
+      "faces": [
+        {
+          "when": "done: true",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "done: false",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "thread.execution.update",
+      "family": "tasks",
+      "governs": "task's engine account, model ← `threadId`,`harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:263`"
+    },
+    {
+      "type": "thread.access.update",
+      "family": "tasks",
+      "governs": "task's mode ← `threadId`,`accessMode` vs stored; lower narrow / higher approve",
+      "faces": [
+        {
+          "when": "accessMode lower than stored",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "accessMode higher than stored",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:1906` owner-only"
+    },
+    {
+      "type": "run.interrupt",
+      "family": "tasks",
+      "governs": "Run ← `threadId`,`runId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:507`"
+    },
+    {
+      "type": "node.stop",
+      "family": "tasks",
+      "governs": "subagent ← `threadId`,`nodeId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`h/product.ts:908` passes `authority`"
+    },
+    {
+      "type": "assignment.cancel",
+      "family": "tasks",
+      "governs": "delegation ← `assignmentId` → worker task",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`h/product.ts:927` passes `admission`"
+    },
+    {
+      "type": "request.respond",
+      "family": "tasks",
+      "governs": "Request ← `requestId` (its kind, origin task); answer to `harness.input` widen-self / allow a permission kind approve / decline narrow",
+      "faces": [
+        {
+          "when": "answers a harness.input Request",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "A"
+        },
+        {
+          "when": "allows a permission Request (points at that Request)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "declines",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "B"
+        }
+      ],
+      "step": "A",
+      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B"
+    },
+    {
+      "type": "agent.session.stop",
+      "family": "tasks",
+      "governs": "a connected agent's direct session ← `threadId`,`agentSessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "(c)(d): its own session only; another connection's → nf"
+    },
+    {
+      "type": "attachment.upload.create",
+      "family": "tasks",
+      "governs": "an upload slot for the person's client ← name, size",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "bytes arrive on the session-bound binary route; agents pass files by path"
+    },
+    {
+      "type": "attachment.upload.discard",
+      "family": "tasks",
+      "governs": "same ← `attachmentId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "execution.preferences.remember",
+      "family": "settings",
+      "governs": "new-task defaults ← `selection`,`accessMode` (mode above the caller's own is approve)",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:369`"
+    },
+    {
+      "type": "viewer.timeZone.update",
+      "family": "settings",
+      "governs": "the person's time zone",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "echoes only, stores nothing (`admin-svc:366-367`)"
+    },
+    {
+      "type": "viewer.quietTasks.update",
+      "family": "settings",
+      "governs": "quiet-task days",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:342`"
+    },
+    {
+      "type": "viewer.name.update",
+      "family": "settings",
+      "governs": "the owner's display name",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "refused today (`admin-svc:135-137`)"
+    },
+    {
+      "type": "settings.idleCompaction.set",
+      "family": "settings",
+      "governs": "Claude idle compaction policy",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "refused today (`admin-svc:130-134`) and its store write takes no identity (`admin-svc:334-340`)"
+    },
+    {
+      "type": "notification.preview.register",
+      "family": "settings",
+      "governs": "this client's notification key ← `installationId`,`keyId` + session",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "device key of the person's own client"
+    },
+    {
+      "type": "harness.create",
+      "family": "engines",
+      "governs": "engine account ← `environmentId`, source",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2085`; sign-in that follows is its own secret command"
+    },
+    {
+      "type": "harness.update",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2146`"
+    },
+    {
+      "type": "harness.delete",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "ambient CLI: only its Mac's owner (`server.ts:1001-1014`) — stays ask"
+    },
+    {
+      "type": "harness.model.configure",
+      "family": "engines",
+      "governs": "model limits ← `harnessInstanceId`,`nativeModelId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:413`"
+    },
+    {
+      "type": "harness.rename",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "harness.enabled.set",
+      "family": "engines",
+      "governs": "engine account; `false` narrow / `true` widen-self",
+      "faces": [
+        {
+          "when": "enabled: false",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "enabled: true",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "harness.default.set",
+      "family": "engines",
+      "governs": "default account per engine",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "harness.authentication.begin",
+      "family": "engines",
+      "governs": "engine sign-in ← `harnessInstanceId`,`methodId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "collected on the person's screen"
+    },
+    {
+      "type": "harness.authentication.submit",
+      "family": "engines",
+      "governs": "the typed sign-in value",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "harness.authentication.cancel",
+      "family": "engines",
+      "governs": "a pending sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "harness.authentication.browse",
+      "family": "engines",
+      "governs": "sign-in opened as a tab",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "redirect"
+    },
+    {
+      "type": "harness.authentication.logout",
+      "family": "engines",
+      "governs": "engine sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "ambient CLI rule stays (`server.ts:2313`)"
+    },
+    {
+      "type": "machine.access.update",
+      "family": "devices",
+      "governs": "device switches ← `deviceId`|`runnerId`, `policy` vs stored; all down/equal narrow / any up approve",
+      "faces": [
+        {
+          "when": "no switch goes up against the stored policy",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "any switch goes up",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2339`; store already computes `changed` (`packages/database/src/machine-store.ts:396-400`)"
+    },
+    {
+      "type": "machine.rename",
+      "family": "devices",
+      "governs": "device ← `machineId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:545`"
+    },
+    {
+      "type": "machine.revoke",
+      "family": "devices",
+      "governs": "device ← `machineId` (deletes its profiles)",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:532`"
+    },
+    {
+      "type": "machine.access.session.stop",
+      "family": "devices",
+      "governs": "a device shell session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:577`"
+    },
+    {
+      "type": "machine.session.bind",
+      "family": "devices",
+      "governs": "binds this client's session to its device ← signed `proof`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "device-bound proof (`server.ts:2329`)"
+    },
+    {
+      "type": "iphone.screen.attach",
+      "family": "devices",
+      "governs": "an iPhone screen driver ← `machineId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "needs the owner's signed-in session (`admin-svc:558-562`); ask until that is understood"
+    },
+    {
+      "type": "iphone.screen.detach",
+      "family": "devices",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "same refusal today; detach should not need the session"
+    },
+    {
+      "type": "computer.view.close",
+      "family": "devices",
+      "governs": "the person's live view",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "computer.view.renew",
+      "family": "devices",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "runner.enrollment.createLocal",
+      "family": "devices",
+      "governs": "a new device; returns a one-use token",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "token is never returned to an agent"
+    },
+    {
+      "type": "runner.enrollment.createPhone",
+      "family": "devices",
+      "governs": "a new phone; returns token and pairing",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "runner.enrollment.retire",
+      "family": "devices",
+      "governs": "a pending enrollment ← `enrollmentId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2495`"
+    },
+    {
+      "type": "integration.computer.setup.request",
+      "family": "device-apps",
+      "governs": "an app approval to set up ← `input.runnerId`, app",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `app_access_request` is this ask (`h/devices.ts:180`)"
+    },
+    {
+      "type": "integration.computer.setup.respond",
+      "family": "device-apps",
+      "governs": "a setup Request ← `setupRequestId`; allow approve (+secrets) / decline narrow",
+      "faces": [
+        {
+          "when": "decision: allow (points at that Request; may carry secrets)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision: decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "allow face points at the same Request; re-authenticates the session (`dev-routes:274-283`)"
+    },
+    {
+      "type": "integration.computer.setup.set",
+      "family": "device-apps",
+      "governs": "an approval's settings ← `input.connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "integration.computer.setup.cancel",
+      "family": "device-apps",
+      "governs": "a pending setup ← `requestId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "integration.computer.policy.set",
+      "family": "device-apps",
+      "governs": "a device's computer-use approval policy (`appApproval:\"ask\"` only)",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "integration.computer.app.block",
+      "family": "device-apps",
+      "governs": "a Mac app approval ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "store takes an identity already"
+    },
+    {
+      "type": "integration.grant.create",
+      "family": "device-apps",
+      "governs": "which installation may use a device-data account ← `input.connectionId`,`installationId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `app_access_request {dataApp}`"
+    },
+    {
+      "type": "integration.grant.revoke",
+      "family": "device-apps",
+      "governs": "same ← `grantId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:42` takes an identity; only the tool whitelist (`h/administration.ts:43-53`) blocks it",
+      "stepFor": {
+        "d": "B"
+      }
+    },
+    {
+      "type": "integration.disconnect",
+      "family": "device-apps",
+      "governs": "a device-app connection ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:50`",
+      "stepFor": {
+        "d": "B"
+      }
+    },
+    {
+      "type": "plugin.remove",
+      "family": "device-apps",
+      "governs": "a local server ← `pluginId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:39`"
+    },
+    {
+      "type": "integration.server.secrets.set",
+      "family": "device-apps",
+      "governs": "a local server's secrets ← `serverId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "settings.plugin.enabled.set",
+      "family": "device-apps",
+      "governs": "a plugin target ← `target`; `false` narrow / `true` approve",
+      "faces": [
+        {
+          "when": "enabled: false",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "enabled: true",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "store takes an identity; handler does not pass it (`server.ts:1746`)"
+    },
+    {
+      "type": "personal.remoteAccess.request",
+      "family": "home",
+      "governs": "Remote access ← `intent`; on widen-other / off narrow",
+      "faces": [
+        {
+          "when": "intent: on",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
+        },
+        {
+          "when": "intent: off",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "session-bound service (`server.ts:2393`)"
+    },
+    {
+      "type": "personal.remoteAccess.pairing.create",
+      "family": "home",
+      "governs": "a pairing code for another client",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "code never returned to an agent"
+    },
+    {
+      "type": "personal.accountLink.approve",
+      "family": "home",
+      "governs": "the Home's link to the Opensteer account",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "personal.accountLink.complete",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "personal.accountLink.resume",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "personal.accountLink.unlink",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "session.revoke",
+      "family": "home",
+      "governs": "another signed-in client ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2452`"
+    },
+    {
+      "type": "connection.authorize",
+      "family": "connections",
+      "governs": "a pending consent ← its request id",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the ask points at the consent screen itself"
+    },
+    {
+      "type": "connection.update",
+      "family": "connections",
+      "governs": "a connection, a chat included ← `connectionId`; grant ⊆ and mode ≤ narrow / otherwise widen-other",
+      "faces": [
+        {
+          "when": "grant ⊆ stored and mode ≤ stored (store's `narrowed`)",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "anything else",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "B",
+      "note": "on the branch a chat's grant and mode are edited here (`channel-handlers.ts:64-65` comment); (c)(d): own connection only — a chat is another principal, not_found"
+    },
+    {
+      "type": "connection.revoke",
+      "family": "connections",
+      "governs": "a connection, a chat included ← `connectionId` (a chat's Disconnect)",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "(c)(d): own connection only; a chat is another principal, not_found"
+    },
+    {
+      "type": "connection.remove",
+      "family": "connections",
+      "governs": "a revoked or expired entry in the list, a chat included",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "connection.uncertain.acknowledge",
+      "family": "connections",
+      "governs": "\"Check its last action\"",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's acknowledgement of evidence; an agent must not clear it"
+    },
+    {
+      "type": "plugins.install",
+      "family": "plugins",
+      "governs": "a plugin ← `source`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`pauth:390`; (d): a new plugin is outside the grant, ask for more"
+    },
+    {
+      "type": "plugins.version.activate",
+      "family": "plugins",
+      "governs": "a plugin version ← `pluginId`,`versionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\")"
+    },
+    {
+      "type": "plugins.remove",
+      "family": "plugins",
+      "governs": "a plugin ← `pluginId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "plugins.access.set",
+      "family": "plugins",
+      "governs": "agents' access to a plugin ← `pluginId`,`access`; lower narrow / higher approve",
+      "faces": [
+        {
+          "when": "access lower than stored",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "access higher than stored",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugins.account.create",
+      "family": "plugins",
+      "governs": "an API-key account ← `pluginId`, fields",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `plugin_account_request`"
+    },
+    {
+      "type": "plugins.account.remove",
+      "family": "plugins",
+      "governs": "a plugin account",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugins.account.link",
+      "family": "plugins",
+      "governs": "link an account to a plugin",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `plugin_account_request`"
+    },
+    {
+      "type": "plugins.account.unlink",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugins.schedule.configure",
+      "family": "plugins",
+      "governs": "a plugin schedule ← `pluginId`,`scheduleId`; enable widen-self / disable narrow",
+      "faces": [
+        {
+          "when": "enables a schedule",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "disables a schedule",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d)",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      }
+    },
+    {
+      "type": "plugins.schedule.answer",
+      "family": "plugins",
+      "governs": "a scheduled approval",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the ask points at the approval itself"
+    },
+    {
+      "type": "plugins.workflow.start",
+      "family": "plugins",
+      "governs": "a plugin workflow run",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "(d): read-write grant; lineage B (`pauth:331`)",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      }
+    },
+    {
+      "type": "plugins.workflow.stop",
+      "family": "plugins",
+      "governs": "same ← `runId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "lineage B",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      }
+    },
+    {
+      "type": "plugins.webhook.remove",
+      "family": "plugins",
+      "governs": "a webhook",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "lineage B",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      }
+    },
+    {
+      "type": "plugins.webhook.removal.confirm",
+      "family": "plugins",
+      "governs": "confirms manual cleanup at the provider",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugins.webhook.setup.complete",
+      "family": "plugins",
+      "governs": "confirms manual setup at the provider",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugin.authorization.prepare",
+      "family": "plugins",
+      "governs": "plugin OAuth sign-in ← connection, method",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "redirect on the person's device"
+    },
+    {
+      "type": "plugin.authorization.begin",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "plugin.authorization.return",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "plugin.authorization.cancel",
+      "family": "plugins",
+      "governs": "a pending sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "plugin.oauthApp.save",
+      "family": "plugins",
+      "governs": "a custom OAuth client",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "plugin.oauthApp.remove",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "channel.connection.create",
+      "family": "chats",
+      "governs": "a chat bridge (bot credentials)",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "channel.connection.credentials.replace",
+      "family": "chats",
+      "governs": "bridge credentials ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "channel.connection.computer.create",
+      "family": "chats",
+      "governs": "iMessage on a Mac ← `runnerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "channel.connection.status.set",
+      "family": "chats",
+      "governs": "a chat account ← `connectionId`; its chats wait while it is paused; `paused`/`revoked` narrow / `connected` widen-other",
+      "faces": [
+        {
+          "when": "status: paused or revoked",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          },
+          "step": "A"
+        },
+        {
+          "when": "status: connected",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "A",
+      "note": "branch `channel-handlers.ts:84-86`; agent path `administration-service.ts:314` still passes the identity; no tool builds it on the branch; chat states `packages/database/src/connection-liveness.ts:15-16,92-93`"
+    },
+    {
+      "type": "channel.chat.create",
+      "family": "chats",
+      "governs": "a new chat connection (an AgentConnection) on a chat account ← `accountId`, `conversation` (null = its direct messages), `senders` (fixed for life), `accessMode`, `grant`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "branch `host-api.ts:1026-1044`, `channel-handlers.ts:66-77`; \"anyone\" senders only for a named channel, holding tasks and plugins only"
+    },
+    {
+      "type": "channel.me.link",
+      "family": "chats",
+      "governs": "the person's own identity on a chat account ← `accountId`; returns a code the person sends from that account",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "branch `host-api.ts:1046-1054`, `channel-handlers.ts:80-83`; the code is never returned to an agent"
+    },
+    {
+      "type": "browser.session.start",
+      "family": "browser",
+      "governs": "a page in a profile ← `input.profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path"
+    },
+    {
+      "type": "browser.session.close",
+      "family": "browser",
+      "governs": "a browser session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "browser.profile.create",
+      "family": "browser",
+      "governs": "a new profile ← `input.name`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "browser.profile.rename",
+      "family": "browser",
+      "governs": "a profile ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:613`",
+      "stepFor": {
+        "d": "B"
+      }
+    },
+    {
+      "type": "browser.profile.delete",
+      "family": "browser",
+      "governs": "a profile and its sign-ins ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "browser.history.remove",
+      "family": "browser",
+      "governs": "one history entry ← `profileId`,`url`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "",
+      "stepFor": {
+        "d": "B"
+      }
+    },
+    {
+      "type": "browser.history.clear",
+      "family": "browser",
+      "governs": "a profile's history ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "browser.site.remove",
+      "family": "browser",
+      "governs": "a site's copied Chrome sign-in ← `site` (every profile)",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "Home-wide, not a grant-nameable resource"
+    },
+    {
+      "type": "browser.source.pair",
+      "family": "browser",
+      "governs": "pairing the tab-sharing extension",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "browser.source.rename",
+      "family": "browser",
+      "governs": "a paired Chrome ← `sourceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "browser.source.revoke",
+      "family": "browser",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "browser.session.sign-in",
+      "family": "browser",
+      "governs": "copy a site's Chrome sign-in into a session ← `sessionId`,`sourceId`,`url`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `chrome_cookies_request`"
+    },
+    {
+      "type": "browser.sign-in.respond",
+      "family": "browser",
+      "governs": "a sign-in Request ← `requestId`; allow approve / decline narrow",
+      "faces": [
+        {
+          "when": "decision: allow (points at that Request)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision: decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "B"
+        }
+      ],
+      "step": "B",
+      "note": "allow face points at the same Request"
+    },
+    {
+      "type": "browser.password-sign-in.respond",
+      "family": "browser",
+      "governs": "decline a saved-password sign-in ← `requestId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "needs `context.session` (`bsr:150-154`)"
+    },
+    {
+      "type": "browser.pool.restart",
+      "family": "browser",
+      "governs": "a Cloud Computer's pooled browser ← `runnerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": ""
+    },
+    {
+      "type": "browser.pool.notice.seen",
+      "family": "browser",
+      "governs": "a notice shown to the person",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": ""
+    },
+    {
+      "type": "tab.open",
+      "family": "tabs-apps",
+      "governs": "the shared tab list ← `target`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`TabActor` (`apps/host/src/tabs/ports.ts:45-49`)"
+    },
+    {
+      "type": "tab.close",
+      "family": "tabs-apps",
+      "governs": "tabs ← `tabIds`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "tab.reopen",
+      "family": "tabs-apps",
+      "governs": "a closed tab ← `tabId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "takes `TabActor` but its agent admission is unverified (`tab-service.ts:792-800`)"
+    },
+    {
+      "type": "tab.activate",
+      "family": "tabs-apps",
+      "governs": "the person's selection",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the agent equivalent is `show_to_person`"
+    },
+    {
+      "type": "tab.organize",
+      "family": "tabs-apps",
+      "governs": "tab order and groups",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "tab.group.update",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "tab.group.delete",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`deleteGroup(ownerId, …)` (`tab-service.ts:913`)"
+    },
+    {
+      "type": "app.rename",
+      "family": "tabs-apps",
+      "governs": "a published app ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`rename(ownerId, …)` (`app-service.ts:401`)"
+    },
+    {
+      "type": "app.start",
+      "family": "tabs-apps",
+      "governs": "an app server ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`AppActor` (`app-service.ts:51-53`)"
+    },
+    {
+      "type": "app.stop",
+      "family": "tabs-apps",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "app.delete",
+      "family": "tabs-apps",
+      "governs": "an app ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    },
+    {
+      "type": "trigger.create",
+      "family": "automations",
+      "governs": "an automation anchored to a task ← `input`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`TriggerService.manage` (`trigger-service.ts:272`)"
+    },
+    {
+      "type": "trigger.update",
+      "family": "automations",
+      "governs": "an automation ← `triggerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "another lineage's program stays nf/refused (`h/triggers.ts:58-61`)"
+    },
+    {
+      "type": "trigger.status.set",
+      "family": "automations",
+      "governs": "an automation ← `triggerId`,`status`; pause/archive narrow / resume widen-self",
+      "faces": [
+        {
+          "when": "status: paused",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "status: archived (full access today)",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "status: active",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "(b): archive needs full access today (`t/triggers.ts:86`)"
+    },
+    {
+      "type": "trigger.run",
+      "family": "automations",
+      "governs": "run now ← `triggerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "full access today"
+    },
+    {
+      "type": "trigger.cancel",
+      "family": "automations",
+      "governs": "pending occurrences ← `triggerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": ""
+    }
+  ]
+}
