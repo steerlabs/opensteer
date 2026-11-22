@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { Edits, type Place, type Span } from "./remote-input-port.js";
+import { describe, expect, it, vi } from "vitest";
+import { characters, Edits, type Place, type Span } from "./remote-input-port.js";
 
 /*
  * The arithmetic cases RemoteInputEditsCasesTests.swift runs against RemoteInputEdits.swift, run
@@ -87,4 +87,19 @@ describe("RemoteInputEdits' shared cases, in the port", () => {
         else throw new Error(`Unknown step ${JSON.stringify(step)}`);
       }
     });
+});
+
+// DW3: the journey fixture's far side runs the port under Hermes, which has no Intl.Segmenter: its
+// characters are then the reducer's segmenter's, and the same.
+describe("the port's characters without Intl.Segmenter", () => {
+  it("segments as Intl.Segmenter does", () => {
+    const text = "e\u0301👩‍💻🇯🇵a日本\r\n한\u1100\u1161x";
+    const intl = characters(text);
+    vi.stubGlobal("Intl", { ...Intl, Segmenter: undefined });
+    try {
+      expect(characters(text)).toEqual(intl);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

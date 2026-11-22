@@ -1,4 +1,5 @@
 import type { EditingOperation, EditingProxyInstruction } from "@opensteer/client/editing";
+import { splitGraphemes } from "unicode-segmenter/grapheme";
 
 /*
  * A TypeScript port of ios/Core/RemoteInputEdits.swift (Edits), RemoteInputGate.swift and
@@ -42,8 +43,21 @@ export interface CaretMove {
   resolved: Place | null;
 }
 
-/** The composed characters (grapheme clusters) of `text`, as UTF-16 spans. */
+/**
+ * The composed characters (grapheme clusters) of `text`, as UTF-16 spans. Hermes (the journey
+ * fixture's far side, tests/native/journey.tsx) has no Intl.Segmenter: there it is the reducer's
+ * own segmenter.
+ */
 export function characters(text: string): Span[] {
+  if (typeof Intl.Segmenter !== "function") {
+    const spans: Span[] = [];
+    let start = 0;
+    for (const segment of splitGraphemes(text)) {
+      spans.push({ start, end: start + segment.length });
+      start += segment.length;
+    }
+    return spans;
+  }
   return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(
     ({ index, segment }) => ({ start: index, end: index + segment.length }),
   );
@@ -805,10 +819,12 @@ export class FarField {
   /** Compositions another context closed, as each closed them: the record of who composed what. */
   closed: { contextId: string | null; producer: string | undefined; text: string }[] = [];
   private rotations = 0;
+  /** The context a refusal rotates to; several fields on one page give each a distinct one. */
+  nextContextId = () =>
+    `00000000-0000-4000-8000-${String(100000000000 + ++this.rotations).slice(-12)}`;
   private refuse(operation: EditingOperation) {
     this.refused.push(operation);
-    this.rotations += 1;
-    this.contextId = `00000000-0000-4000-8000-${String(100000000000 + this.rotations).slice(-12)}`;
+    this.contextId = this.nextContextId();
     this.onRotate?.(this.contextId);
   }
   private replace(start: number, end: number, text: string) {
