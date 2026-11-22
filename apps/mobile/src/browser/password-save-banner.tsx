@@ -12,7 +12,7 @@ import { appear, exit } from "../ui/motion.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AddressSentence } from "../ui/address-text.js";
-import { sentenceWith } from "../ui/sentence-addresses.js";
+import { sentenceOf } from "../ui/sentence-addresses.js";
 
 /**
  * Asks, above the page's foot, whether to keep the login just typed on this
@@ -38,10 +38,7 @@ export function PasswordSaveBanner(props: {
         </View>
         <View style={styles.copy}>
           {/* Saving a password for a site is a decision: the site is drawn whole, in the question. */}
-          <AddressSentence
-            parts={sentenceWith(prompt.title, prompt.addresses)}
-            role="secondaryMedium"
-          />
+          <AddressSentence parts={sentenceOf(prompt.titleParts)} role="secondaryMedium" />
           {prompt.username ? (
             // Usually an email address: whole, wrapping only at its joints (`address-text.tsx`).
             <AddressSentence parts={[{ address: prompt.username }]} role="caption" tone="soft" />

@@ -357,10 +357,11 @@ describe("agent sign-in steps in the transcript", () => {
   it("never reads copied Chrome cookies as more than copied", () => {
     expect(
       chromeCookiesStep({ status: "copied", site, sourceName: "Work", profileName: null }),
-    ).toEqual({
-      addresses: ["example.com"],
+    ).toMatchObject({
       hint: "From Work",
+      hintParts: ["From ", { name: "Work" }],
       label: "Copied your Chrome sign-in for example.com",
+      labelParts: ["Copied your Chrome sign-in for ", { address: "example.com" }],
       succeeded: true,
     });
     expect(

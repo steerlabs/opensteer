@@ -8,7 +8,7 @@ import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
 } from "@opensteer/protocol/browser-sources";
-import { sentenceWith } from "../ui/sentence-addresses.js";
+import { sentenceOf } from "../ui/sentence-addresses.js";
 import { sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 export type DotTone = "green" | "amber" | "red" | "muted" | "ember";
@@ -63,9 +63,17 @@ export function signInSummaryLine(
   }
 }
 
-/** A problem's title as words and the site it names, drawn as an address. */
+/** A problem's title as it was made: the site it names an address. */
 function copyTitle(copy: ReturnType<typeof browserSignInProblemCopy>): readonly SentencePart[] {
-  return sentenceWith(copy.title, copy.addresses);
+  return sentenceOf(copy.titleParts);
+}
+
+/** A problem's fix as it was made, then words of the card's own after it. */
+function fixThen(
+  copy: ReturnType<typeof browserSignInProblemCopy>,
+  words: string,
+): readonly SentencePart[] {
+  return copy.fixParts === null ? [words] : [...sentenceOf(copy.fixParts), ` ${words}`];
 }
 
 export function signInCopy(
@@ -100,7 +108,7 @@ export function signInStatus(input: {
     const name = input.allowed.status === "problem" ? input.allowed.sourceName : null;
     const offline = signInCopy("chrome-offline", site, name);
     return {
-      detail: sentenceWith(`${offline.fix} This finishes by itself.`, offline.addresses),
+      detail: fixThen(offline, "This finishes by itself."),
       live: true,
       title: `Allowed. Waiting for ${name ?? "Chrome"}`,
       tone: "amber",
@@ -120,7 +128,7 @@ export function signInStatus(input: {
     case "no-chrome": {
       const copy = signInCopy("no-chrome", site, null);
       return {
-        detail: copy.fix === null ? null : sentenceWith(copy.fix, copy.addresses),
+        detail: copy.fixParts === null ? null : sentenceOf(copy.fixParts),
         live: false,
         title: copyTitle(copy),
         tone: "muted",
@@ -132,10 +140,7 @@ export function signInStatus(input: {
       if (first?.online !== true) {
         const copy = signInCopy("chrome-offline", site, single?.name ?? null);
         return {
-          detail: sentenceWith(
-            `${copy.fix ?? ""} Allow now; this finishes by itself when it opens.`.trim(),
-            copy.addresses,
-          ),
+          detail: fixThen(copy, "Allow now; this finishes by itself when it opens."),
           live: false,
           title: copyTitle(copy),
           tone: "amber",
@@ -158,7 +163,7 @@ export function signInStatus(input: {
     case "problem": {
       const copy = signInCopy(availability.problem, site, availability.sourceName);
       return {
-        detail: sentenceWith(`${copy.fix ?? ""} This updates by itself.`.trim(), copy.addresses),
+        detail: fixThen(copy, "This updates by itself."),
         live: false,
         title: copyTitle(copy),
         tone: availability.problem === "chrome-offline" ? "amber" : "red",

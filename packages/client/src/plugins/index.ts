@@ -435,8 +435,10 @@ export function pluginAuthorText(author: PluginAuthor) {
  * than the plugin's name, which is often the service's: it is not the
  * service's code.
  *
- * Each line names the addresses its words hold (`addresses`, in order, as written there), so a
- * client draws them as addresses inside the sentence and reads the sentence plainly.
+ * The sites a credential may reach are never in a line's words: a plugin controls its own name
+ * and its provider's, and a name holding a host beside the real destination would read as one.
+ * They are a list (`sites`), each an address a client draws on its own, under Opensteer's words,
+ * which name no plugin: an https site as its host, any other with its scheme, a warning.
  */
 export function pluginConsentLines(input: {
   readonly consent: PluginConsentView;
@@ -444,47 +446,44 @@ export function pluginConsentLines(input: {
   readonly pluginName: string;
   /** Null where only the requirement is known, as on a Request card. */
   readonly providerName: string | null;
-}): readonly {
-  readonly key: string;
-  readonly text: string;
-  readonly addresses: readonly string[];
-}[] {
+}): readonly PluginConsentLine[] {
   const { consent } = input;
-  const sites = consent.sites.map((site) => site.replace(/^https?:\/\//u, ""));
+  const sites = consent.sites.map((site) =>
+    /^https:\/\//iu.test(site) ? site.replace(/^https:\/\//iu, "") : site,
+  );
   const credential = input.providerName
     ? `your ${input.providerName} credential`
     : "the credential";
-  const Credential = `${credential[0]!.toUpperCase()}${credential.slice(1)}`;
   const sealed = consent.credential === "sealed";
   return [
     {
-      addresses: sites,
       key: "sites",
+      sites,
       // Plugin code that receives the credential itself can send it anywhere,
       // whatever sites it declares; only a sealed credential is confined to them.
       text: sealed
         ? sites.length
-          ? `${Credential} can only be sent to ${listText(sites)}.`
-          : `This plugin doesn't say which sites ${credential} may go to.`
+          ? "The credential can only be sent to these sites:"
+          : "This plugin doesn't say which sites the credential may go to."
         : sites.length
-          ? `This plugin says it uses ${credential} with ${listText(sites)}, but its code can send it elsewhere.`
-          : `This plugin doesn't say which sites it sends ${credential} to.`,
+          ? "This plugin says it uses the credential with these sites, but its code can send it elsewhere:"
+          : "This plugin doesn't say which sites it sends the credential to.",
     },
     {
-      addresses: [],
       key: "credential",
+      sites: [],
       text: sealed
         ? `This plugin's code never sees ${credential}. It gets an account reference that only works for ${sites.length ? "those sites" : "the sites it declares"}.`
         : `This plugin's code receives ${credential} itself and could send it to any site.`,
     },
     {
-      addresses: [],
       key: "trust",
+      sites: [],
       text: "Linking trusts this plugin's code with this account. Its setup runs with the account before any tool asks for approval.",
     },
     {
-      addresses: [],
       key: "author",
+      sites: [],
       text:
         input.author === "catalog"
           ? `The ${input.pluginName} plugin comes from the plugin catalog.`
@@ -492,9 +491,13 @@ export function pluginConsentLines(input: {
     },
   ];
 }
-function listText(items: readonly string[]) {
-  if (items.length <= 2) return items.join(" and ");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
+/** One line of a plugin's consent: words, and the sites it is about, drawn apart from them. */
+export interface PluginConsentLine {
+  readonly key: string;
+  readonly text: string;
+  /** Each an address of its own, after the words; empty for a line about no site. */
+  readonly sites: readonly string[];
 }
 
 /* ---- API-key account form ---- */

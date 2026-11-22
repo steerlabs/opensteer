@@ -137,7 +137,16 @@ function ConnectBody({
                         : "code"
                 }
               />
-              <span>{line.text}</span>
+              <span>
+                {line.text}
+                {/* Each site the credential may reach, apart from the plugin's names. */}
+                {line.sites.map((site) => (
+                  <span className="plugin-consent__site" key={site}>
+                    {" "}
+                    {site}
+                  </span>
+                ))}
+              </span>
             </li>
           ))}
         </ul>

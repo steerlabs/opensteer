@@ -1,6 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
-import { AddressSentence } from "../ui/address-text.js";
-import { sentenceWith } from "../ui/sentence-addresses.js";
+import { AddressText } from "../ui/address-text.js";
 import {
   pluginAuthorText,
   pluginConsentLines,
@@ -67,13 +66,15 @@ export function PluginRequestBody(props: {
           pluginName: view.plugin.name,
           providerName: null,
         }).map((line) => (
-          // A decision: the sites it names are drawn whole, as addresses, in the sentence.
-          <AddressSentence
-            key={line.key}
-            parts={sentenceWith(line.text, line.addresses)}
-            role="secondary"
-            tone={line.key === "trust" ? "default" : "soft"}
-          />
+          <View key={line.key} style={styles.consentLine}>
+            <AppText role="secondary" tone={line.key === "trust" ? "default" : "soft"}>
+              {line.text}
+            </AppText>
+            {/* A decision: each site whole, as an address, apart from the plugin's names. */}
+            {line.sites.map((site) => (
+              <AddressText key={site} role="secondary" value={site} />
+            ))}
+          </View>
         ))}
         {status}
         <AnswerRow>
@@ -266,5 +267,6 @@ const styles = StyleSheet.create({
     paddingVertical: space[12],
   },
   monoText: { color: color.textSoft, fontFamily: monoFontFamily },
+  consentLine: { gap: space[2] },
   section: { gap: space[10] },
 });

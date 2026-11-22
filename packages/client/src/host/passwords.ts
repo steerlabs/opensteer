@@ -17,6 +17,7 @@ import {
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type { PasswordsBrokerAccount } from "@opensteer/protocol/passwords-broker";
 import { browserSignInProblemCopy, browserSiteLabel } from "./browser-sign-in.js";
+import { address, named, said, type Said, type SaidPart } from "./said.js";
 
 /** Shared copy for requester consent from any signed-in device. */
 
@@ -253,43 +254,58 @@ export function readChromeCookiesResult(text: string): ChromeCookiesResult | nul
 }
 
 export interface SignInStep {
-  /** The addresses its label and hint hold, so a client draws each as one in its sentence. */
-  readonly addresses: readonly string[];
   readonly hint: string;
+  /** The hint as it was made (`said.ts`): an account or a site in it is an address. */
+  readonly hintParts: readonly SaidPart[];
   readonly label: string;
+  /** The label as it was made: the site in it is an address. */
+  readonly labelParts: readonly SaidPart[];
   /** Whether the step did what it asked; null while it is still on its way. */
   readonly succeeded: boolean | null;
 }
 
-const notAllowed: SignInStep = { addresses: [], hint: "", label: "Not allowed", succeeded: false };
+/** A step from its words as they were made. */
+function signInStep(label: Said, hint: Said, succeeded: boolean | null): SignInStep {
+  return {
+    hint: hint.text,
+    hintParts: hint.parts,
+    label: label.text,
+    labelParts: label.parts,
+    succeeded,
+  };
+}
+
+/** Words made elsewhere that hold no address: words, as they are. */
+function wordsOnly(text: string): Said {
+  return { parts: text === "" ? [] : [text], text };
+}
+
+const notAllowed: SignInStep = signInStep(said`Not allowed`, wordsOnly(""), false);
 
 /** What one `saved_login_request` call came to, in the words its Request card uses. */
 export function savedLoginStep(result: SavedLoginResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {
     case "ready":
-      return {
-        addresses: [domain, result.account],
-        hint: `As ${result.account}`,
-        label: `Ready to sign in to ${domain}`,
-        succeeded: true,
-      };
+      return signInStep(
+        said`Ready to sign in to ${address(domain)}`,
+        said`As ${address(result.account)}`,
+        true,
+      );
     case "pending":
-      return {
-        addresses: [domain],
-        hint: "Waiting for you",
-        label: `Asked to use your saved login for ${domain}`,
-        succeeded: null,
-      };
+      return signInStep(
+        said`Asked to use your saved login for ${address(domain)}`,
+        said`Waiting for you`,
+        null,
+      );
     case "declined":
       return notAllowed;
     case "unavailable":
-      return {
-        addresses: [domain],
-        hint: savedLoginUnavailableMessage(result.reason, result.site),
-        label: `Couldn’t use a saved login for ${domain}`,
-        succeeded: false,
-      };
+      return signInStep(
+        said`Couldn’t use a saved login for ${address(domain)}`,
+        savedLoginUnavailableMessage(result.reason, result.site),
+        false,
+      );
   }
 }
 
@@ -298,87 +314,96 @@ export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
   const domain = browserSiteLabel(result.site);
   switch (result.status) {
     case "copied":
-      return {
-        addresses: [domain],
-        hint:
-          result.profileName === null
-            ? `From ${result.sourceName}`
-            : `From ${result.sourceName} · saved to ${result.profileName}`,
-        label: `Copied your Chrome sign-in for ${domain}`,
-        succeeded: true,
-      };
+      return signInStep(
+        said`Copied your Chrome sign-in for ${address(domain)}`,
+        result.profileName === null
+          ? said`From ${named(result.sourceName)}`
+          : said`From ${named(result.sourceName)} · saved to ${named(result.profileName)}`,
+        true,
+      );
     case "pending":
-      return {
-        addresses: [domain],
-        hint: "Waiting for you",
-        label: `Asked to copy your Chrome sign-in for ${domain}`,
-        succeeded: null,
-      };
+      return signInStep(
+        said`Asked to copy your Chrome sign-in for ${address(domain)}`,
+        said`Waiting for you`,
+        null,
+      );
     case "declined":
       return notAllowed;
     case "unavailable":
-      return {
-        addresses: [domain],
-        hint: chromeCookiesUnavailableMessage(result.reason, result.site),
-        label: `Couldn’t copy your Chrome sign-in for ${domain}`,
-        succeeded: false,
-      };
+      return signInStep(
+        said`Couldn’t copy your Chrome sign-in for ${address(domain)}`,
+        chromeCookiesUnavailableMessage(result.reason, result.site),
+        false,
+      );
   }
 }
 
-function savedLoginUnavailableMessage(reason: SavedLoginUnavailableReason, site: string): string {
+/** A sign-in problem's title as it was made. */
+function problemTitle(reason: Parameters<typeof browserSignInProblemCopy>[0], site: string): Said {
+  const copy = browserSignInProblemCopy(reason, { context: "request", site, sourceName: null });
+  return { parts: copy.titleParts, text: copy.title };
+}
+
+function savedLoginUnavailableMessage(reason: SavedLoginUnavailableReason, site: string): Said {
   switch (reason) {
     case "no-saved-login":
-      return `No saved login for ${browserSiteLabel(site)}`;
+      return said`No saved login for ${address(browserSiteLabel(site))}`;
     case "needs-approval":
-      return "A task or automation can’t ask you to allow a sign-in";
+      return said`A task or automation can’t ask you to allow a sign-in`;
     case "rate-limited":
-      return "Too many sign-in attempts for now";
+      return said`Too many sign-in attempts for now`;
+    // These name no site: a computer at most, which is words.
     case "passwords-off":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "passwords-off" },
-        { site },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "passwords-off" },
+          { site },
+        ),
       );
     case "passwords-not-set-up":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "not-set-up" },
-        { site, computerName: "your Passwords Mac" },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "not-set-up" },
+          { site, computerName: "your Passwords Mac" },
+        ),
       );
     case "passwords-not-responding":
-      return passwordSignInResponseMessage(
-        { outcome: "unavailable", reason: "not-responding" },
-        { site },
+      return wordsOnly(
+        passwordSignInResponseMessage(
+          { outcome: "unavailable", reason: "not-responding" },
+          { site },
+        ),
       );
     case "expired":
-      return passwordSignInResponseMessage({ outcome: "expired" }, { site });
+      return wordsOnly(passwordSignInResponseMessage({ outcome: "expired" }, { site }));
     case "interrupted":
     case "stopped":
-      return passwordSignInResponseMessage({ outcome: "interrupted" }, { site });
+      return wordsOnly(passwordSignInResponseMessage({ outcome: "interrupted" }, { site }));
     case "busy":
-      return "Another agent is waiting for you to allow this site. Try again later";
+      return said`Another agent is waiting for you to allow this site. Try again later`;
     case "main-browser-required":
-      return "Saved logins fill only in the browser on the computer that runs Opensteer";
+      return said`Saved logins fill only in the browser on the computer that runs Opensteer`;
     case "unsupported":
     case "session-closed":
     case "runtime-outdated":
     case "not-allowed":
-      return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
+      return problemTitle(reason, site);
   }
 }
 
 function chromeCookiesUnavailableMessage(
   reason: ChromeCookiesUnavailableReason,
   site: string,
-): string {
+): Said {
   switch (reason) {
     case "chrome-signed-out":
-      return `Chrome isn’t signed in to ${browserSiteLabel(site)}`;
+      return said`Chrome isn’t signed in to ${address(browserSiteLabel(site))}`;
     case "needs-approval":
-      return "A task or automation can’t ask you to allow a sign-in";
+      return said`A task or automation can’t ask you to allow a sign-in`;
     case "rate-limited":
-      return "Too many sign-in attempts for now";
+      return said`Too many sign-in attempts for now`;
     default:
-      return browserSignInProblemCopy(reason, { context: "request", site, sourceName: null }).title;
+      return problemTitle(reason, site);
   }
 }
 

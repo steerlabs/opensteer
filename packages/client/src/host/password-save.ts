@@ -1,3 +1,4 @@
+import { address, said, type SaidPart } from "./said.js";
 import type { PersonSaveOffer } from "@opensteer/protocol";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import type { BrowserPasswordSaveState } from "./browser-editing.js";
@@ -15,9 +16,9 @@ export const passwordSavePasswordLabel = "Password";
 export const passwordSaveMask = "••••••••";
 
 export interface PasswordSavePrompt {
-  /** The addresses its title holds: the site, drawn as an address inside the question. */
-  readonly addresses: readonly string[];
   readonly title: string;
+  /** The title as it was made (`said.ts`): the site in it is an address. */
+  readonly titleParts: readonly SaidPart[];
   readonly detail: string;
   /** The account being saved; absent for setup. */
   readonly username: string | null;
@@ -27,16 +28,17 @@ export interface PasswordSavePrompt {
 export function passwordSavePrompt(offer: PersonSaveOffer): PasswordSavePrompt {
   if (offer.kind === "setup")
     return {
-      addresses: [],
       title: "Save logins you type?",
+      titleParts: ["Save logins you type?"],
       detail:
         "Set up Opensteer Passwords to keep logins on this Mac, fill them from any device and let agents sign in for you. This one isn’t kept.",
       username: null,
       action: passwordSaveSetUpAction,
     };
+  const title = said`Save password for ${address(browserSiteLabel(offer.origin))}?`;
   return {
-    addresses: [browserSiteLabel(offer.origin)],
-    title: `Save password for ${browserSiteLabel(offer.origin)}?`,
+    title: title.text,
+    titleParts: title.parts,
     detail:
       "Kept in Opensteer Passwords on your Mac. Fill it later from any device, and let agents use it when you allow them.",
     username: offer.username,

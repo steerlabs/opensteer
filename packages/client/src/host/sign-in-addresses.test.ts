@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { browserSignInProblemCopy, browserSiteLabel } from "./browser-sign-in.js";
 import { passwordSavePrompt } from "./password-save.js";
 import { chromeCookiesStep, savedLoginStep } from "./passwords.js";
+import { saidWords, type SaidPart } from "./said.js";
 
 /*
  * Signing in to a site and saving a password for it are where a person decides something about
- * the site: the words that name it say which addresses they hold, so a client draws each as an
- * address inside its sentence (F14; rule 4 of `tests/mobile-address-text.test.ts`).
+ * the site (F14). Their words are made with the site as an address slot (`said.ts`, F17): a
+ * client draws it as an address in its sentence, and a name someone chose (a Chrome profile's) is
+ * a name, never taken for an address however it reads.
  */
 
 const site = "https://accounts.studio-mac-mini.fixture.invalid";
@@ -28,22 +30,30 @@ const problems = [
   "too-large",
 ] as const;
 
-/** Each word that holds the site's domain says so, and says nothing it does not hold. */
-function expectSaid(words: readonly (string | null)[], addresses: readonly string[]) {
-  const holds = words.some((word) => word?.includes(domain) === true);
-  expect(addresses, words.join(" / ")).toEqual(holds ? [domain] : []);
+/** The parts read as the words, and the site is in them only as an address. */
+function expectMade(text: string | null, parts: readonly SaidPart[] | null) {
+  if (text === null) return expect(parts).toBeNull();
+  expect(parts!.map(saidWords).join("")).toBe(text);
+  expect(parts!.filter((part) => typeof part === "string" && part.includes(domain))).toEqual([]);
+  expect(parts!.some((part) => typeof part === "object" && "address" in part)).toBe(
+    text.includes(domain),
+  );
 }
 
 describe("the words of signing in to a site and saving its password", () => {
   for (const problem of problems)
     for (const context of ["browser", "request", "page"] as const)
-      for (const sourceName of [null, "Work"])
-        it(`say the site they name, for ${problem} in a ${context} (${sourceName ?? "no name"})`, () => {
+      for (const sourceName of [null, "evil.example"])
+        it(`make the site an address, for ${problem} in a ${context} (${sourceName ?? "no name"})`, () => {
           const copy = browserSignInProblemCopy(problem as never, { context, site, sourceName });
-          expectSaid([copy.title, copy.fix], copy.addresses);
+          expectMade(copy.title, copy.titleParts);
+          expectMade(copy.fix, copy.fixParts);
+          // A Chrome profile named like a host is a name.
+          for (const part of [...copy.titleParts, ...(copy.fixParts ?? [])])
+            if (typeof part === "object" && "address" in part) expect(part.address).toBe(domain);
         });
 
-  it("say it in each step of a sign-in", () => {
+  it("make it an address in each step of a sign-in, and the account too", () => {
     for (const step of [
       savedLoginStep({ account: "person@fixture.invalid", site, status: "ready" } as never),
       savedLoginStep({ site, status: "pending" } as never),
@@ -51,22 +61,22 @@ describe("the words of signing in to a site and saving its password", () => {
       chromeCookiesStep({ profileName: null, site, sourceName: "Work", status: "copied" } as never),
       chromeCookiesStep({ reason: "chrome-signed-out", site, status: "unavailable" } as never),
     ]) {
-      for (const address of step.addresses) expect(`${step.label} ${step.hint}`).toContain(address);
-      expect(step.addresses).toContain(domain);
+      expectMade(step.label, step.labelParts);
+      expect(step.hintParts.map(saidWords).join("")).toBe(step.hint);
     }
     expect(
       savedLoginStep({ account: "person@fixture.invalid", site, status: "ready" } as never)
-        .addresses,
-    ).toEqual([domain, "person@fixture.invalid"]);
+        .hintParts,
+    ).toEqual(["As ", { address: "person@fixture.invalid" }]);
   });
 
-  it("say it in the offer to save a password", () => {
+  it("make it an address in the offer to save a password", () => {
     const prompt = passwordSavePrompt({
       kind: "save",
       origin: site,
       username: "person@fixture.invalid",
     } as never);
+    expectMade(prompt.title, prompt.titleParts);
     expect(prompt.title).toContain(domain);
-    expect(prompt.addresses).toEqual([domain]);
   });
 });

@@ -22,14 +22,16 @@ import { describe, expect, it } from "vitest";
  *    labels from its left. Where a person decides something about a site (a page's dialog, a
  *    consent, a sign-in), the whole origin is drawn (`AddressText`, `AddressSentence`).
  *    `hostLineFiles` names each file that may use it, and why it is not a decision.
- * 4. A sentence assembled elsewhere from data carries the addresses it holds. The sentences the
+ * 4. A sentence assembled elsewhere from data is made of parts where it is said. The sentences the
  *    phone draws are often built in `packages/client` and reach it as `text`, a name that says
- *    nothing: build 9's walk saw the GitHub plugin's consent ("… can only be sent to
- *    api.github.com and uploads.github.com.") hyphenated inside its hosts. So in
- *    `packages/client`, an object whose drawn words (`text`, `title`, `label`, …) join an address
- *    into a sentence must say which (`addresses`), as `pluginConsentLines` does, so a client draws
- *    them as addresses (`sentenceWith`). `knownJoinedSentences` lists those found when the rule
- *    came, each still drawn raw, to be made parts; any other is a failure.
+ *    nothing: build 9's walk saw the GitHub plugin's consent hyphenated inside its hosts. So in
+ *    `packages/client`, drawn words (`text`, `title`, `label`, …) that join an address are made
+ *    with `said` (`said.ts`), the address a slot known as one; a plain template joining one is a
+ *    failure. `knownJoinedSentences` lists those still drawn raw, each with why it may be.
+ * 5. No address is found by searching words. A sentence's parts are what they were made as; a
+ *    search of finished words for an address (an `indexOf`, a split, a pattern) can take a name
+ *    that holds a host for the address, as the re-check after build 9 showed. In the app and in
+ *    `packages/client`, nothing searches for an address in words.
  *
  * What it reads is names: a value built elsewhere under a name that says nothing is not seen.
  */
@@ -467,10 +469,9 @@ export function joinedSentencesIn(file: string, source: string): Finding[] {
       const properties = (node["properties"] as Node[]).filter(
         (property) => property.type === "ObjectProperty",
       );
-      const says = properties.some((property) => nameOf(property["key"] as Node) === "addresses");
       for (const property of properties) {
         const key = nameOf(property["key"] as Node) ?? "";
-        if (says || !drawnWords.has(key) || !joinsAddress(property["value"] as Node)) continue;
+        if (!drawnWords.has(key) || !joinsAddress(property["value"] as Node)) continue;
         const line = (property["value"] as Node).loc?.start.line ?? 0;
         findings.push({ file, line, snippet: `${key}: ${(lines[line - 1] ?? "").trim()}` });
       }
@@ -493,6 +494,50 @@ export const knownJoinedSentences: Readonly<Record<string, string>> = {
   "packages/client/src/host/agent-activity-model.ts: label":
     "a transcript's activity line naming the site an agent worked on: a record, not a decision",
 };
+/** Searches of text, by what they search with. */
+const searches = new Set(["indexOf", "lastIndexOf", "search", "split", "match", "matchAll"]);
+/** Searches that read as text only on a value named as words. */
+const wordSearches = new Set(["includes", "replace", "replaceAll", "startsWith", "endsWith"]);
+const wordsName = /(?:^|[a-z])(?:text|words|sentence|label|title|detail|message|line)s?$/iu;
+
+/** Rule 5: a search of words for an address. */
+export function addressSearchesIn(file: string, source: string): Finding[] {
+  const lines = source.split("\n");
+  const findings: Finding[] = [];
+  const report = (node: Node) => {
+    const line = node.loc?.start.line ?? 0;
+    findings.push({ file, line, snippet: (lines[line - 1] ?? "").trim() });
+  };
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!isNode(node)) return;
+    if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
+      const callee = node["callee"] as Node;
+      const [first] = node["arguments"] as Node[];
+      if (
+        (callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression") &&
+        first !== undefined &&
+        holdsAddress(first)
+      ) {
+        const method = nameOf(callee["property"] as Node) ?? "";
+        const target = nameOf(callee["object"] as Node) ?? "";
+        if (searches.has(method) || (wordSearches.has(method) && wordsName.test(target)))
+          report(node);
+      }
+    }
+    if (
+      node.type === "NewExpression" &&
+      nameOf(node["callee"] as Node) === "RegExp" &&
+      (node["arguments"] as Node[]).some(holdsAddress)
+    )
+      report(node);
+    for (const [key, value] of Object.entries(node))
+      if (key !== "loc" && typeof value === "object") visit(value);
+  };
+  visit(parseSource(source, file).program);
+  return findings;
+}
+
 function appFiles(directory: string): string[] {
   return readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter(
@@ -627,13 +672,37 @@ describe("a sentence assembled elsewhere from data says which addresses it holds
     expect(Object.keys(knownJoinedSentences).filter((kind) => !kinds.has(kind))).toEqual([]);
   });
 
-  it("sees the consent build 9 walked, and not one that says its addresses", () => {
+  it("sees the consent build 9 walked, and not a sentence made with its address as a slot", () => {
     const model = `
       export const lines = (sites) => [
         { key: "sites", text: sealed ? \`Your credential can only be sent to \${listText(sites)}.\` : "None." },
-        { addresses: sites, key: "said", text: \`Sent to \${listText(sites)}.\` },
+        { addresses: sites, key: "listed", text: \`Sent to \${listText(sites)}.\` },
+        { key: "said", title: said\`Sharing \${address(domain)} is stopped\` },
         { key: "plain", text: \`Linking trusts \${pluginName}.\` },
       ];`;
-    expect(joinedSentencesIn("plugins.ts", model).map(({ line }) => line)).toEqual([3]);
+    // Saying which addresses a joined sentence holds is not enough: it is made of parts or raw.
+    expect(joinedSentencesIn("plugins.ts", model).map(({ line }) => line)).toEqual([3, 4]);
+  });
+});
+
+describe("no address is found by searching words", () => {
+  it("is never searched for in the app or in packages/client", () => {
+    const found = ["apps/mobile/src", "packages/client/src"].flatMap((directory) =>
+      appFiles(path.join(repositoryRoot, directory)).flatMap((file) =>
+        addressSearchesIn(path.relative(repositoryRoot, file), readFileSync(file, "utf8")),
+      ),
+    );
+    expect(found.map(({ file, line, snippet }) => `${file}:${line}: ${snippet}`)).toEqual([]);
+  });
+
+  it("sees the search the re-check found, and a pattern made from an address", () => {
+    const source = `
+      export function sentenceWith(text, addresses) {
+        for (const address of addresses) { const at = rest.indexOf(address); }
+        return new RegExp(host).test(text) || line.text.includes(site);
+      }`;
+    expect(addressSearchesIn("sentence-addresses.ts", source).map(({ line }) => line)).toEqual([
+      3, 4, 4,
+    ]);
   });
 });

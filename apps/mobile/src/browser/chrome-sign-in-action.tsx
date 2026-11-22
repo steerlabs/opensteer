@@ -8,6 +8,7 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
+import type { SaidPart } from "@opensteer/client/host";
 import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
@@ -19,17 +20,18 @@ import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ChromeChoice, ChromeChoices } from "./chrome-sign-in-parts.js";
 import { AddressSentence } from "../ui/address-text.js";
-import { sentenceWith } from "../ui/sentence-addresses.js";
+import { sentenceOf } from "../ui/sentence-addresses.js";
 import { plainSentence, sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 type Result =
   | { readonly kind: "signed-in"; readonly message: readonly SentencePart[] }
   | {
       readonly kind: "problem";
-      /** The addresses its words hold, drawn as addresses in them. */
-      readonly addresses: readonly string[];
       readonly fix: string | null;
+      /** The words as they were made (`said`): the site in them an address. */
+      readonly fixParts: readonly SaidPart[] | null;
       readonly title: string;
+      readonly titleParts: readonly SaidPart[];
     }
   | {
       readonly kind: "choose";
@@ -173,10 +175,11 @@ export function ChromeSignInAction(props: {
         clientIssue(error, { operation: "action", label: "sign in" })?.code !== "rejected";
       show(
         {
-          addresses: [],
           fix: "Try again.",
+          fixParts: ["Try again."],
           kind: "problem",
           title: unconfirmed ? "Couldn’t confirm the sign-in" : "Sign-in didn’t finish",
+          titleParts: [unconfirmed ? "Couldn’t confirm the sign-in" : "Sign-in didn’t finish"],
         },
         left,
       );
@@ -261,13 +264,10 @@ export function ChromeSignInAction(props: {
       ) : result.kind === "problem" ? (
         <View style={styles.problem}>
           {/* Signing in to a site is a decision: the site is drawn whole, in its sentence. */}
-          <AddressSentence
-            parts={sentenceWith(result.title, result.addresses)}
-            role="secondaryMedium"
-          />
+          <AddressSentence parts={sentenceOf(result.titleParts)} role="secondaryMedium" />
           {result.fix === null ? null : (
             <AddressSentence
-              parts={sentenceWith(result.fix, result.addresses)}
+              parts={sentenceOf(result.fixParts ?? [result.fix])}
               role="caption"
               tone="soft"
             />

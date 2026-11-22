@@ -621,11 +621,12 @@ describe("words a person reads", () => {
         author: "agent",
         pluginName: "Resend",
         providerName: "Resend",
-      }).map(({ text }) => text);
-    expect(lines("value").join(" ")).not.toMatch(/only|sealed|Resend's code/u);
-    expect(lines("value")).toEqual(
+      });
+    const text = (credential: "sealed" | "value") => lines(credential).map(({ text }) => text);
+    expect(text("value").join(" ")).not.toMatch(/only|sealed|Resend's code/u);
+    expect(text("value")).toEqual(
       expect.arrayContaining([
-        "This plugin says it uses your Resend credential with api.resend.com, but its code can send it elsewhere.",
+        "This plugin says it uses the credential with these sites, but its code can send it elsewhere:",
         "This plugin's code receives your Resend credential itself and could send it to any site.",
       ]),
     );
@@ -639,39 +640,44 @@ describe("words a person reads", () => {
     expect(unnamed.find((line) => line.key === "credential")?.text).toContain(
       "receives the credential itself",
     );
-    expect(lines("sealed")[0]).toBe("Your Resend credential can only be sent to api.resend.com.");
-    expect(lines("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);
+    expect(text("sealed")[0]).toBe("The credential can only be sent to these sites:");
+    expect(lines("sealed")[0]!.sites).toEqual(["api.resend.com"]);
+    expect(text("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);
   });
 
-  // Build 9's walk: on the GitHub plugin's consent at the largest size the phone drew
-  // "api.github.-" / "com and" / "upload-" / "s.github.com.": the hosts were words in a sentence
-  // from the plugin's data. Each line names the addresses its words hold, so a client draws them
-  // as addresses, in the sentence, and reads the sentence plainly.
-  it("names the addresses each consent line holds, in order, as they are written there", () => {
-    const lines = pluginConsentLines({
+  // The re-check of 5d197dfbc..e7080ea31: a plugin controls its own name and its provider's,
+  // so a name holding a host sat in the same sentence as the real destination, and a search of
+  // that sentence could take the name's host for it. The sites a credential may reach are a list,
+  // each an address of its own, under Opensteer's words; no plugin name is in those words.
+  it("lists the sites a credential may reach apart from every name the plugin gives", () => {
+    const lines = (providerName: string, sites: string[]) =>
+      pluginConsentLines({
+        consent: { credential: "sealed", digest: "a".repeat(64), sites },
+        author: "agent",
+        pluginName: "api.github.com helper",
+        providerName,
+      });
+    const [line] = lines("GitHub for evil.example", ["https://api.github.com"]);
+    expect(line!.key).toBe("sites");
+    expect(line!.sites).toEqual(["api.github.com"]);
+    expect(line!.text).not.toMatch(/github|evil/u);
+    // Every other line holds no site.
+    for (const other of lines("GitHub", ["https://api.github.com"]).slice(1))
+      expect(other.sites).toEqual([]);
+  });
+
+  it("keeps the scheme of a site that is not https", () => {
+    const [line] = pluginConsentLines({
       consent: {
-        credential: "sealed",
+        credential: "value",
         digest: "a".repeat(64),
-        sites: ["https://api.github.com", "https://uploads.github.com"],
+        sites: ["http://evil.example", "https://api.example.com"],
       },
-      author: "catalog",
-      pluginName: "GitHub",
-      providerName: "GitHub",
+      author: "agent",
+      pluginName: "Example",
+      providerName: "Example",
     });
-    for (const line of lines) {
-      let rest = line.text;
-      for (const address of line.addresses) {
-        expect(rest, `${line.key}: ${address}`).toContain(address);
-        rest = rest.slice(rest.indexOf(address) + address.length);
-      }
-    }
-    expect(lines.find((line) => line.key === "sites")?.addresses).toEqual([
-      "api.github.com",
-      "uploads.github.com",
-    ]);
-    expect(lines.filter((line) => line.key !== "sites").flatMap((line) => line.addresses)).toEqual(
-      [],
-    );
+    expect(line!.sites).toEqual(["http://evil.example", "api.example.com"]);
   });
 
   it("says what to do when the sandbox can't run here from the Host's code, keeping its reason", () => {

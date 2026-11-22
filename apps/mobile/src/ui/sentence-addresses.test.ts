@@ -1,23 +1,18 @@
+import { address, named, said } from "@opensteer/client/host";
 import { describe, expect, it } from "vitest";
-import { sentenceWith } from "./sentence-addresses.js";
+import { sentenceOf } from "./sentence-addresses.js";
 import { plainSentence } from "./sentence-parts.js";
 
-describe("a sentence made from data, with the addresses it holds", () => {
-  it("draws each address as one, in its place, and reads exactly as written", () => {
-    const text =
-      "Your GitHub credential can only be sent to api.github.com and uploads.github.com.";
-    const parts = sentenceWith(text, ["api.github.com", "uploads.github.com"]);
+describe("a sentence made where it was said", () => {
+  it("draws each address as one, and a name as words however it reads", () => {
+    const made = said`Sharing ${address("github.com")} is stopped in ${named("evil.example")}`;
+    const parts = sentenceOf(made.parts);
     expect(parts).toEqual([
-      "Your GitHub credential can only be sent to ",
-      { address: "api.github.com" },
-      " and ",
-      { address: "uploads.github.com" },
-      ".",
+      "Sharing ",
+      { address: "github.com" },
+      " is stopped in ",
+      "evil.example",
     ]);
-    expect(plainSentence(parts)).toBe(text);
-  });
-
-  it("leaves an address the words do not hold as words", () => {
-    expect(sentenceWith("No sites.", ["api.github.com"])).toEqual(["No sites."]);
+    expect(plainSentence(parts)).toBe(made.text);
   });
 });

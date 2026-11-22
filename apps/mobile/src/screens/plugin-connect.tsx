@@ -1,4 +1,3 @@
-import { sentenceWith } from "../ui/sentence-addresses.js";
 import {
   createPluginAccountAttempt,
   forgetPluginOAuthApp,
@@ -126,15 +125,17 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
         author: review.plugin.author,
         pluginName: review.plugin.name,
         providerName: provider,
-      }).map((line) => ({
-        key: line.key,
-        kind: "text" as const,
-        label: line.text,
-        // A decision: the sites it names are drawn whole, as addresses, in the sentence.
-        ...(line.addresses.length > 0
-          ? { labelParts: sentenceWith(line.text, line.addresses) }
-          : {}),
-      })),
+      }).flatMap((line) => [
+        { key: line.key, kind: "text" as const, label: line.text },
+        // A decision: each site the credential may reach is a row of its own, drawn whole as an
+        // address, apart from every name the plugin gives.
+        ...line.sites.map((site) => ({
+          addressIn: "label" as const,
+          key: `${line.key}:${site}`,
+          kind: "text" as const,
+          label: site,
+        })),
+      ]),
       ...(action.footer ? { footer: action.footer } : {}),
     },
   ];

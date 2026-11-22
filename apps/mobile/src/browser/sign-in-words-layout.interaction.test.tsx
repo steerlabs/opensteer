@@ -44,7 +44,7 @@ vi.mock("../ui/pane.js", () => ({ useContentInsets: () => ({ left: 0, right: 0 }
 const { PasswordSaveBanner } = await import("./password-save-banner.js");
 const { AddressSentence } = await import("../ui/address-text.js");
 const { AppText } = await import("../ui/primitives.js");
-const { sentenceWith } = await import("../ui/sentence-addresses.js");
+const { sentenceOf } = await import("../ui/sentence-addresses.js");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -118,12 +118,9 @@ describe("the words of a sign-in and a saved password, at 3.571 on the smallest 
     it(`draw the site whole in a sign-in's "${copy.title}"`, async () => {
       const texts = await laidOut(
         <View style={{ paddingHorizontal: 16 + 14 }}>
-          <AddressSentence
-            parts={sentenceWith(copy.title, copy.addresses)}
-            role="secondaryMedium"
-          />
+          <AddressSentence parts={sentenceOf(copy.titleParts)} role="secondaryMedium" />
           {copy.fix === null ? null : (
-            <AddressSentence parts={sentenceWith(copy.fix, copy.addresses)} role="caption" />
+            <AddressSentence parts={sentenceOf(copy.fixParts ?? [])} role="caption" />
           )}
         </View>,
       );
