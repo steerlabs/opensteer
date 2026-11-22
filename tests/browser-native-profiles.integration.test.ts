@@ -453,6 +453,8 @@ it("advertises exact prepared storage through the reachable Personal browser com
     wireVersion: 2,
     standardCdp: 1,
     standardCdpLineage: 1,
+    // The runtime holds a connected agent's command lists itself where it unpacks a command.
+    connectionCommands: 1,
     wholeContextCdp: 1,
     standardCdpLeaseRecovery: 1,
     standardCdpAttemptRecovery: 1,

@@ -349,6 +349,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       computer: { name: stream.identity.name, runnerId: placement.runnerId },
       wholeContextCdp: browser.wholeContextCdp === 1 && browser.standardCdpLeaseRecovery === 1,
       standardCdpLineage: browser.standardCdpLineage === 1,
+      connectionCommands: browser.connectionCommands === 1,
       ...(browser.standardCdpLeaseRecovery === 1
         ? {
             standardCdpRecovery: {

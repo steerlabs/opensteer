@@ -1899,3 +1899,713 @@ function asContext(event: import("./session-cdp-router.js").CdpEvent) {
     ? (event.parameters.context as { id: number })
     : null;
 }
+
+describe("SessionCdpRouter clipboard and browser permissions", () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+  const cmdV = {
+    type: "rawKeyDown",
+    modifiers: 4,
+    key: "v",
+    code: "KeyV",
+    windowsVirtualKeyCode: 86,
+  };
+  const refused = [
+    ["Cmd+V stated", { ...cmdV, commands: ["paste"] }],
+    ["Cmd+V inferred", { ...cmdV, nativeVirtualKeyCode: 9 }],
+    [
+      "pasteAndMatchStyle",
+      { type: "keyDown", key: "v", code: "KeyV", commands: ["pasteAndMatchStyle"] },
+    ],
+    ["Cmd+C inferred", { type: "rawKeyDown", modifiers: 4, key: "c", code: "KeyC" }],
+    ["Cmd+X inferred", { type: "rawKeyDown", modifiers: 4, key: "x", code: "KeyX" }],
+    ["Ctrl+V, Blink's own binding", { type: "keyDown", modifiers: 2, key: "v", code: "KeyV" }],
+    ["Ctrl+Shift+V", { type: "keyDown", modifiers: 10, key: "V", code: "KeyV" }],
+    ["Shift+Insert", { type: "rawKeyDown", modifiers: 8, key: "Insert", code: "Insert" }],
+    ["Ctrl+Insert", { type: "rawKeyDown", modifiers: 2, windowsVirtualKeyCode: 45 }],
+    ["Shift+Delete", { type: "rawKeyDown", modifiers: 8, key: "Delete", code: "Delete" }],
+    [
+      "a paste key code behind another key",
+      { type: "rawKeyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 86 },
+    ],
+    ["a Cocoa selector", { type: "keyDown", key: "c", commands: ["Copy:"] }],
+  ] as const;
+  /** Grants of a clipboard permission: nobody sends them. */
+  const clipboardGrants = [
+    ["Browser.grantPermissions", { permissions: ["geolocation", "clipboardReadWrite"] }],
+    ["Browser.grantPermissions", { permissions: ["clipboardSanitizedWrite"] }],
+    ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "granted" }],
+    ["Browser.setPermission", { permission: { name: "clipboard-write" }, setting: "prompt" }],
+  ] as const;
+  /** Every other permission change: a person's own agent keeps them, a connection does not. */
+  const otherPermissions = [
+    ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+    ["Browser.setPermission", { permission: { name: "geolocation" }, setting: "granted" }],
+    ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "denied" }],
+    ["Browser.resetPermissions", {}],
+  ] as const;
+
+  async function attached(connection: boolean, kind: "standard" | "script") {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    let send: (command: CdpCommand) => Promise<unknown>;
+    if (kind === "standard") {
+      const client = router.openStandardClient("a", {
+        wholeContext: true,
+        ...(connection
+          ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+          : {}),
+      });
+      send = (command) => client.send(command);
+    } else {
+      const budget = { maxBytes: 64 * 1024, maxDepth: 16, maxEntries: 1024 };
+      router.openScriptAttachment(
+        "a",
+        "script",
+        "seed",
+        budget,
+        () => undefined,
+        connection ? { connection } : {},
+      );
+      send = (command) => router.send("a", { ...command, scriptAttachmentId: "script" });
+    }
+    const { sessionId } = (await send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const key = (parameters: CdpParameters) =>
+      send({ method: "Input.dispatchKeyEvent", parameters, sessionId });
+    return { backend, router, channel, send, key, sessionId };
+  }
+
+  for (const kind of ["standard", "script"] as const)
+    it(`refuses a ${kind} connection's copy, cut and paste before anything reaches the page`, async () => {
+      const f = await attached(true, kind);
+      for (const [name, parameters] of refused) {
+        const error = await f.key(parameters).catch((caught: unknown) => caught);
+        expect(error, name).toBeInstanceOf(SessionCdpRouterError);
+        expect(error, name).toMatchObject({ code: "forbidden", message: sentence });
+      }
+      // A nested message is read as the same command.
+      await expect(
+        f.send({
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: f.sessionId,
+            message: JSON.stringify({
+              id: 1,
+              method: "Input.dispatchKeyEvent",
+              params: { ...cmdV, commands: ["paste"] },
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({ message: sentence });
+      for (const [method, parameters] of [...clipboardGrants, ...otherPermissions]) {
+        for (const scope of [{}, { sessionId: f.sessionId }])
+          await expect(f.send({ method, parameters, ...scope }), method).rejects.toMatchObject({
+            code: "forbidden",
+            message: permissionSentence,
+          });
+        await expect(
+          f.send({
+            method: "Target.sendMessageToTarget",
+            parameters: {
+              sessionId: f.sessionId,
+              message: JSON.stringify({ id: 2, method, params: parameters }),
+            },
+          }),
+          `nested ${method}`,
+        ).rejects.toMatchObject({ message: permissionSentence });
+      }
+      expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([]);
+      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toEqual([]);
+
+      // A chord that maps to no clipboard command, and text, are untouched.
+      await f.key({ type: "rawKeyDown", modifiers: 4, key: "a", code: "KeyA" });
+      await f.key({ type: "keyDown", key: "v", code: "KeyV", text: "v" });
+      await f.key({ type: "keyUp", modifiers: 4, key: "v", code: "KeyV" });
+      await f.send({
+        method: "Input.insertText",
+        parameters: { text: "typed" },
+        sessionId: f.sessionId,
+      });
+      expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: {
+            type: "rawKeyDown",
+            modifiers: 4,
+            key: "a",
+            code: "KeyA",
+            commands: ["selectAll"],
+          },
+        },
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: { type: "keyDown", key: "v", code: "KeyV", text: "v" },
+        },
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: { type: "keyUp", modifiers: 4, key: "v", code: "KeyV" },
+        },
+        { method: "Input.insertText", parameters: { text: "typed" } },
+      ]);
+      await f.router.close();
+    });
+
+  for (const kind of ["standard", "script"] as const)
+    it(`forwards the person's own agent's ${kind} copy, cut, paste and permissions, but no clipboard grant`, async () => {
+      const f = await attached(false, kind);
+      for (const [, parameters] of refused) await f.key(parameters);
+      for (const [method, parameters] of clipboardGrants)
+        for (const scope of [{}, { sessionId: f.sessionId }])
+          await expect(f.send({ method, parameters, ...scope }), method).rejects.toMatchObject({
+            code: "forbidden",
+            message: clipboardGrantSentence,
+          });
+      for (const [method, parameters] of otherPermissions) await f.send({ method, parameters });
+      const { nativeVirtualKeyCode: _native, ...inferredPaste } = refused[1][1];
+      expect(f.channel.commands.map(({ parameters }) => parameters)).toEqual([
+        refused[0][1],
+        { ...inferredPaste, commands: ["paste"] },
+        refused[2][1],
+        { ...refused[3][1], commands: ["copy"] },
+        { ...refused[4][1], commands: ["cut"] },
+        ...refused.slice(5).map(([, parameters]) => parameters),
+      ]);
+      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toEqual(
+        otherPermissions.map(([method]) => expect.objectContaining({ method })),
+      );
+      expect(
+        f.backend.commands
+          .filter(({ method }) => method.startsWith("Browser."))
+          .map(({ parameters }) => parameters),
+      ).toEqual(otherPermissions.map(([, parameters]) => expect.objectContaining(parameters)));
+      await f.router.close();
+    });
+});
+
+describe("SessionCdpRouter under a connection: the standard lists, one tab's cookies, history and children", () => {
+  async function standard(connection: boolean, cookieReads = false, wholeContext = false) {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    Object.assign(backend, { allowsProfileCookieReads: cookieReads });
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext,
+      ...(connection
+        ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const page = (method: string, parameters: CdpParameters = {}) =>
+      client.send({ method, parameters, sessionId }).catch((error: unknown) => error);
+    return { router, channel, page, sessionId, client };
+  }
+  const outside = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+
+  it("names the refused method and the page domains to a connection, and keeps the person's own wording", async () => {
+    const connected = await standard(true);
+    await expect(
+      connected.page("Storage.clearDataForOrigin", {
+        origin: "https://a.test",
+        storageTypes: "all",
+      }),
+    ).resolves.toMatchObject({
+      code: "forbidden",
+      message: outside("Storage.clearDataForOrigin"),
+    });
+    const own = await standard(false);
+    await expect(own.page("Storage.clearDataForOrigin", {})).resolves.toMatchObject({
+      message: "Storage.clearDataForOrigin cannot be scoped to this CDP attachment.",
+    });
+    await connected.router.close();
+    await own.router.close();
+  });
+
+  it("gives a connection on a shared tab only that page's own cookies; a person's own agent as before", async () => {
+    const connected = await standard(true, true);
+    for (const [method, parameters] of [
+      ["Network.getAllCookies", {}],
+      ["Storage.getCookies", {}],
+      ["Network.getCookies", { urls: ["https://other.test/"] }],
+    ] as const)
+      await expect(connected.page(method, parameters), method).resolves.toMatchObject({
+        code: "forbidden",
+      });
+    await expect(connected.page("Network.getCookies")).resolves.toEqual({
+      method: "Network.getCookies",
+    });
+    expect(connected.channel.commands.map(({ method }) => method)).toEqual(["Network.getCookies"]);
+    const own = await standard(false, true);
+    for (const method of ["Network.getAllCookies", "Network.getCookies"])
+      await expect(own.page(method, {}), method).resolves.toEqual({ method });
+    await connected.router.close();
+    await own.router.close();
+  });
+
+  it("keeps a granted profile's cookies through the whole-context branch only", async () => {
+    const whole = await standard(true, false, true);
+    for (const scope of [{}, { sessionId: whole.sessionId }])
+      await expect(whole.client.send({ method: "Storage.getCookies", ...scope })).resolves.toEqual({
+        ok: true,
+      });
+    for (const method of ["Network.getAllCookies", "Network.getCookies"])
+      await expect(whole.page(method), method).resolves.toMatchObject({ code: "forbidden" });
+    const confined = await standard(true);
+    await expect(confined.page("Storage.getCookies")).resolves.toMatchObject({
+      code: "forbidden",
+      message: outside("Storage.getCookies"),
+    });
+    await whole.router.close();
+    await confined.router.close();
+  });
+
+  it("traverses history only to an entry whose address passes the navigation rule", async () => {
+    const f = await standard(false);
+    f.channel.results.set("Page.getNavigationHistory", {
+      currentIndex: 1,
+      entries: [
+        { id: 1, url: "file:///etc/hosts" },
+        { id: 2, url: "https://example.test/" },
+        { id: 3, url: "javascript:alert(1)" },
+      ],
+    });
+    for (const entryId of [1, 3])
+      await expect(f.page("Page.navigateToHistoryEntry", { entryId })).resolves.toMatchObject({
+        code: "forbidden",
+        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      });
+    await expect(f.page("Page.navigateToHistoryEntry", { entryId: 9 })).resolves.toMatchObject({
+      code: "not_found",
+    });
+    await f.page("Page.navigateToHistoryEntry", { entryId: 2 });
+    expect(
+      f.channel.commands.filter(({ method }) => method === "Page.navigateToHistoryEntry"),
+    ).toEqual([{ method: "Page.navigateToHistoryEntry", parameters: { entryId: 2 } }]);
+    await f.router.close();
+  });
+
+  it("limits a connection's page auto-attach to iframes and workers, unpaused; the person's own as before", async () => {
+    const connected = await standard(true);
+    for (const parameters of [
+      { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: "iframe", exclude: true }, {}],
+      },
+      { autoAttach: true, waitForDebuggerOnStart: false, filter: [{ type: "service_worker" }] },
+    ])
+      await connected.page("Target.setAutoAttach", parameters);
+    expect(
+      connected.channel.commands
+        .filter(({ method }) => method === "Target.setAutoAttach")
+        .map(({ parameters }) => parameters),
+    ).toEqual([
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+      },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "worker" }, { exclude: true }],
+      },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ exclude: true }],
+      },
+    ]);
+    const own = await standard(false);
+    await own.page("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+    expect(
+      own.channel.commands.find(({ method }) => method === "Target.setAutoAttach")?.parameters,
+    ).toEqual({ autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
+    await connected.router.close();
+    await own.router.close();
+  });
+});
+
+describe("SessionCdpRouter nested messages: one decoder, and the rules where they are unpacked", () => {
+  const malformed = {
+    array: ['{"id":1,"method":"Page.crash","params":{}}'],
+    object: { id: 1, method: "Page.crash", params: {} },
+    unparsable: '{"id":1,"method":',
+    "non-string method": '{"id":1,"method":["Page.crash"]}',
+    "array params": '{"id":1,"method":"Page.crash","params":[]}',
+  } as const;
+
+  /** A script attachment (browser_use) or the session root (a Run's relay), attached to a page. */
+  async function relay(kind: "script" | "root") {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    if (kind === "script")
+      router.openScriptAttachment(
+        "a",
+        "script",
+        "seed",
+        { maxBytes: 64 * 1024, maxDepth: 16, maxEntries: 1024 },
+        () => undefined,
+      );
+    const send = (command: CdpCommand) =>
+      router
+        .send("a", { ...command, ...(kind === "script" ? { scriptAttachmentId: "script" } : {}) })
+        .catch((error: unknown) => error);
+    const { sessionId } = (await send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    // A child of the page, so that a page-level nested message has somewhere to go.
+    backend.channels.get("seed")!.results.set("Target.attachToTarget", { sessionId: "child-1" });
+    return { router, backend, send, sessionId, channel: backend.channels.get("seed")! };
+  }
+
+  for (const kind of ["script", "root"] as const)
+    it(`refuses a nested message that is not a JSON string of one command, for everyone (${kind})`, async () => {
+      const f = await relay(kind);
+      for (const connection of [true, false])
+        for (const [shape, message] of Object.entries(malformed)) {
+          const refused = await f.send({
+            method: "Target.sendMessageToTarget",
+            parameters: { sessionId: f.sessionId, message },
+            ...(connection ? { connection: true } : {}),
+          });
+          expect(refused, `${shape} ${connection}`).toMatchObject({
+            message: "Invalid nested CDP message.",
+          });
+        }
+      expect(f.channel.commands.map(({ method }) => method)).not.toContain("Page.crash");
+      await f.router.close();
+    });
+
+  for (const kind of ["script", "root"] as const)
+    it(`holds the standard lists itself for a command marked as a connection's (${kind})`, async () => {
+      const f = await relay(kind);
+      const outside = expect.stringMatching(
+        /^(Tracing\.start|Storage\.clearDataForOrigin|Page\.crash) is not available to a connected agent\./u,
+      );
+      for (const command of [
+        { method: "Tracing.start", parameters: {} },
+        { method: "Storage.clearDataForOrigin", parameters: {}, sessionId: f.sessionId },
+        { method: "Page.crash", parameters: {}, sessionId: f.sessionId },
+      ])
+        expect(await f.send({ ...command, connection: true }), command.method).toMatchObject({
+          code: "forbidden",
+          message: outside,
+        });
+      // The same command nested in a well-formed message is refused where it is unpacked.
+      expect(
+        await f.send({
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: f.sessionId,
+            message: JSON.stringify({ id: 9, method: "Page.crash", params: {} }),
+          },
+          connection: true,
+        }),
+      ).toMatchObject({ code: "forbidden", message: outside });
+      expect(f.channel.commands.map(({ method }) => method)).not.toContain("Page.crash");
+      // The page auto-attach the runtime receives is limited, and unpaused.
+      await f.send({
+        method: "Target.setAutoAttach",
+        parameters: { autoAttach: true, waitForDebuggerOnStart: true },
+        sessionId: f.sessionId,
+        connection: true,
+      });
+      expect(
+        f.channel.commands.find(({ method }) => method === "Target.setAutoAttach")?.parameters,
+      ).toEqual({
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+      });
+      // The person's own agent: the same commands go out as before.
+      await f.send({ method: "Page.crash", parameters: {}, sessionId: f.sessionId });
+      expect(f.channel.commands.map(({ method }) => method)).toContain("Page.crash");
+      await f.router.close();
+    });
+});
+
+describe("SessionCdpRouter under a connection: cookies in events, one sentence, workers, history", () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  async function standard(options: {
+    connection: boolean;
+    cookieReads?: boolean;
+    wholeContext?: boolean;
+  }) {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    Object.assign(backend, { allowsProfileCookieReads: options.cookieReads === true });
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: options.wholeContext === true,
+      ...(options.connection
+        ? { connection: true, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const send = (method: string, parameters: CdpParameters = {}, page = true) =>
+      client
+        .send({ method, parameters, ...(page ? { sessionId } : {}) })
+        .catch((error: unknown) => error);
+    return { router, backend, client, channel, events, send, sessionId };
+  }
+
+  it("gives a connection on a shared tab no cookie in any Network or Fetch event; a person's own agent as before", async () => {
+    const cookie = "sentinel-elsewhere";
+    const raise = (channel: FakeChannel) => {
+      channel.emit("Network.requestWillBeSentExtraInfo", {
+        requestId: "1",
+        associatedCookies: [{ cookie: { name: "s", value: cookie } }],
+        headers: { Cookie: `s=${cookie}` },
+      });
+      channel.emit("Network.responseReceivedExtraInfo", {
+        requestId: "1",
+        headers: { "set-cookie": `t=${cookie}` },
+        headersText: `Set-Cookie: t=${cookie}`,
+      });
+      channel.emit("Network.requestWillBeSent", {
+        requestId: "1",
+        request: {
+          url: "https://elsewhere.test/",
+          headers: { Cookie: `s=${cookie}`, Accept: "*/*" },
+        },
+      });
+      channel.emit("Network.responseReceived", {
+        requestId: "1",
+        response: {
+          headers: { "Set-Cookie": `t=${cookie}`, "Content-Type": "text/html" },
+          requestHeadersText: `Cookie: s=${cookie}`,
+        },
+      });
+      channel.emit("Fetch.requestPaused", {
+        requestId: "f",
+        request: { url: "https://elsewhere.test/", headers: { cookie: `s=${cookie}` } },
+        responseHeaders: [
+          { name: "set-cookie", value: `t=${cookie}` },
+          { name: "content-type", value: "text/html" },
+        ],
+      });
+    };
+    const shared = await standard({ connection: true, cookieReads: true });
+    raise(shared.channel);
+    const delivered = shared.events.filter(({ method }) => /^(Network|Fetch)\./u.test(method));
+    expect(delivered.map(({ method }) => method)).toEqual([
+      "Network.requestWillBeSent",
+      "Network.responseReceived",
+      "Fetch.requestPaused",
+    ]);
+    expect(JSON.stringify(delivered)).not.toContain(cookie);
+    expect(JSON.stringify(delivered)).toContain("text/html");
+    const own = await standard({ connection: false, cookieReads: true });
+    raise(own.channel);
+    expect(own.events.filter(({ method }) => /^(Network|Fetch)\./u.test(method))).toHaveLength(5);
+    await shared.router.close();
+    await own.router.close();
+  });
+
+  it("answers a connection the same method sentence whichever check refuses it", async () => {
+    const f = await standard({ connection: true, cookieReads: true });
+    for (const [method, page] of [
+      ["Browser.crash", false],
+      ["Opensteer.fillLogin", true],
+      ["Storage.getCookies", true],
+      ["Storage.clearDataForOrigin", true],
+      ["Tracing.start", false],
+    ] as const)
+      expect(await f.send(method, {}, page), method).toMatchObject({
+        code: "forbidden",
+        message: sentence(method),
+      });
+    await f.router.close();
+  });
+
+  it("refuses a shared or service worker announced to a whole-context connection", async () => {
+    const f = await standard({ connection: true, wholeContext: true });
+    await f.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false });
+    for (const type of ["service_worker", "shared_worker"])
+      f.channel.emit("Target.attachedToTarget", {
+        sessionId: `physical-${type}`,
+        targetInfo: { targetId: `worker-${type}`, type, url: "https://a.test/sw.js" },
+        waitingForDebugger: false,
+      });
+    expect(
+      f.events
+        .filter(({ method }) => method === "Target.attachedToTarget")
+        .map(({ parameters }) => (parameters.targetInfo as { type: string }).type),
+    ).not.toEqual(expect.arrayContaining(["service_worker"]));
+    expect(
+      f.events.some(
+        ({ method, parameters }) =>
+          method === "Target.attachedToTarget" &&
+          ["service_worker", "shared_worker"].includes(
+            (parameters.targetInfo as { type: string }).type,
+          ),
+      ),
+    ).toBe(false);
+    await f.router.close();
+  });
+
+  it("re-checks the session and its target after reading the history, before the traversal", async () => {
+    const f = await standard({ connection: false });
+    const send = f.channel.send.bind(f.channel);
+    vi.spyOn(f.channel, "send").mockImplementation(async (method, parameters) => {
+      if (method === "Page.getNavigationHistory") {
+        // The caller's connection ends while the read is in flight.
+        f.client.close();
+        return { currentIndex: 0, entries: [{ id: 1, url: "https://example.test/" }] };
+      }
+      return send(method, parameters);
+    });
+    expect(await f.send("Page.navigateToHistoryEntry", { entryId: 1 })).toBeInstanceOf(Error);
+    expect(f.channel.commands.map(({ method }) => method)).not.toContain(
+      "Page.navigateToHistoryEntry",
+    );
+    await f.router.close();
+  });
+});
+
+describe("Opensteer's own methods for a connection", () => {
+  it("admits the listed ones at the top level only, and no other", async () => {
+    const { connectionCdpRefusal } = await import("./cdp-command-refusals.js");
+    for (const method of [
+      "Opensteer.listTabs",
+      "Opensteer.resumeTab",
+      "Opensteer.stageFile",
+      "Opensteer.fillLogin",
+      "Opensteer.fillCard",
+    ])
+      expect(connectionCdpRefusal(method, {}, true), method).toBeUndefined();
+    expect(connectionCdpRefusal("Opensteer.testDiagnostics", {}, true)).toMatch(
+      /^Opensteer\.testDiagnostics is not available to a connected agent\./u,
+    );
+    expect(
+      connectionCdpRefusal(
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({ id: 1, method: "Opensteer.stageFile", params: {} }),
+        },
+        true,
+      ),
+    ).toMatch(/^Opensteer\.stageFile is not available to a connected agent\./u);
+  });
+});
+
+describe("SessionCdpRouter: a connection's list comes before every other check", () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  async function client(connection: boolean) {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    // A backend's own scope check, as the Mac's and shared Chrome's word theirs.
+    Object.assign(backend, {
+      assertScope: (method: string) => {
+        if (method.startsWith("SystemInfo.") || method === "Browser.getBrowserCommandLine")
+          throw new Error(
+            `${method} describes the Opensteer process, outside browser page ownership.`,
+          );
+        if (["Page.close", "DOM.setFileInputFiles"].includes(method))
+          throw new SessionCdpRouterError(
+            "forbidden",
+            `${method} is unavailable on a shared Chrome tab.`,
+          );
+      },
+    });
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const standard = router.openStandardClient("a", {
+      wholeContext: false,
+      ...(connection
+        ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const { sessionId } = (await standard.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const send = (method: string, parameters: CdpParameters = {}, scope?: string) =>
+      standard.send({ method, parameters, ...(scope ? { sessionId: scope } : {}) }).then(
+        () => "sent",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    return { router, send, sessionId, standard };
+  }
+
+  it("answers the one sentence for a command outside the list, whichever check would have refused it", async () => {
+    const f = await client(true);
+    for (const [method, page] of [
+      ["SystemInfo.getProcessInfo", false],
+      ["Browser.getBrowserCommandLine", false],
+      ["Page.close", true],
+      ["Target.attachToBrowserTarget", true],
+    ] as const)
+      expect(await f.send(method, {}, page ? f.sessionId : undefined), method).toBe(
+        sentence(method),
+      );
+    // A listed command still meets the backend's own check, and the alias root's rule.
+    expect(await f.send("DOM.setFileInputFiles", { files: [] }, f.sessionId)).toBe(
+      "DOM.setFileInputFiles is unavailable on a shared Chrome tab.",
+    );
+    const { sessionId: alias } = (await f.standard.send({
+      method: "Target.attachToBrowserTarget",
+    })) as { sessionId: string };
+    expect(await f.send("Target.attachToBrowserTarget", {}, alias)).toBe(
+      "Open a browser CDP session from the connection root.",
+    );
+    await f.router.close();
+  });
+
+  it("leaves the person's own agent the backend's and the router's own sentences", async () => {
+    const f = await client(false);
+    expect(await f.send("SystemInfo.getProcessInfo")).toBe(
+      "SystemInfo.getProcessInfo describes the Opensteer process, outside browser page ownership.",
+    );
+    expect(await f.send("Page.close", {}, f.sessionId)).toBe(
+      "Page.close is unavailable on a shared Chrome tab.",
+    );
+    expect(await f.send("Target.attachToBrowserTarget", {}, f.sessionId)).toBe(
+      "Open a browser CDP session from the connection root.",
+    );
+    await f.router.close();
+  });
+});

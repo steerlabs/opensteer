@@ -3195,7 +3195,7 @@ for (const attempt of [
     await attempt();
     refusals.push("sent");
   } catch (error) {
-    refusals.push(/Pasting is not available to agents/.test(String(error)) ? "refused" : String(error));
+    refusals.push(String(error));
   }
 }
 await page.keyboard.type("ok");

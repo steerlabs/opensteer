@@ -1255,6 +1255,8 @@ export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
     standardCdpLineage: z.literal(1).optional().catch(undefined),
+    /** The runtime enforces a connected agent's CDP itself when a command says it is one's. */
+    connectionCommands: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
     standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
     standardCdpAttemptRecovery: z.literal(1).optional().catch(undefined),

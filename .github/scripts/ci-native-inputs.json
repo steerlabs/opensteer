@@ -309,6 +309,7 @@
     "apps/host/src/computer-apps/computer-app-availability.ts",
     "apps/host/src/computer-apps/computer-app-frame-send.ts",
     "apps/host/src/computer-apps/computer-app-hub.ts",
+    "apps/host/src/computer-use/computer-clipboard.ts",
     "apps/host/src/computer-use/computer-repl/computer-repl-service.ts",
     "apps/host/src/computer-use/computer-repl/messages.ts",
     "apps/host/src/computer-use/computer-repl/native-tab-binding.ts",

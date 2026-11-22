@@ -1,3 +1,7 @@
+import {
+  computerActionsUseClipboard,
+  computerClipboardRefusal,
+} from "../computer-use/computer-clipboard.js";
 import { computerMachineProblem } from "./computer-use-discovery.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import {
@@ -1313,6 +1317,13 @@ export class DeviceService {
     }
     const rawArgs = { ...args };
     delete rawArgs.emit;
+    // Refused before the action is sent: the Mac's clipboard is in no grant.
+    if (
+      row === "act" &&
+      (caller.session || caller.connectionWork) &&
+      computerActionsUseClipboard(rawArgs)
+    )
+      throw refused("forbidden", computerClipboardRefusal);
     const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
     if (operation === "bind" && mac) {
       ComputerUseBindParamsSchema.parse(rawArgs);

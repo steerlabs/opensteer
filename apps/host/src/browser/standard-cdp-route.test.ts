@@ -451,3 +451,127 @@ it("caps live websocket attachments per binding and bounds a peer that ignores c
   expect((await closed)[0]).toBe(1000);
   await expect(f.connect()).resolves.toBeInstanceOf(WebSocket);
 });
+
+it("limits a connection's page auto-attach for a runtime of any version, and refuses a nested one", async () => {
+  const f = await fixture();
+  const socket = await f.connect();
+  const replies: Record<string, unknown>[] = [];
+  socket.on("message", (data) => replies.push(JSON.parse(String(data)) as Record<string, unknown>));
+  socket.send(
+    JSON.stringify({
+      id: 7,
+      method: "Target.sendMessageToTarget",
+      params: {
+        sessionId: "child",
+        message: JSON.stringify({
+          id: 1,
+          method: "Target.setAutoAttach",
+          params: { autoAttach: true, waitForDebuggerOnStart: true },
+        }),
+      },
+      sessionId: "page",
+    }),
+  );
+  socket.send(
+    JSON.stringify({
+      id: 8,
+      method: "Target.setAutoAttach",
+      params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+      sessionId: "page",
+    }),
+  );
+  expect(JSON.parse(String(await f.received.promise))).toEqual({
+    id: 8,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+    },
+    sessionId: "page",
+  });
+  expect(f.send).toHaveBeenCalledOnce();
+  await vi.waitFor(() =>
+    expect(replies).toContainEqual({
+      id: 7,
+      sessionId: "page",
+      error: {
+        code: -32000,
+        message:
+          "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget.",
+      },
+    }),
+  );
+});
+
+it("refuses a nested message that is not a JSON string of one command, for a connection and the person's own agent", async () => {
+  const shapes = [
+    ['{"id":1,"method":"Page.crash","params":{}}'],
+    { id: 1, method: "Page.crash", params: {} },
+    '{"id":1,"method":',
+    '{"id":1,"method":["Page.crash"]}',
+  ];
+  for (const agentConnectionId of ["external", null]) {
+    const f = await fixture();
+    const socket = await f.connect(
+      f.tickets.issue({ ...claims, facts: { ...claims.facts, agentConnectionId } }),
+    );
+    const replies: Record<string, unknown>[] = [];
+    socket.on("message", (data) =>
+      replies.push(JSON.parse(String(data)) as Record<string, unknown>),
+    );
+    for (const [index, message] of shapes.entries())
+      socket.send(
+        JSON.stringify({
+          id: index + 1,
+          method: "Target.sendMessageToTarget",
+          params: { sessionId: "child", message },
+          sessionId: "page",
+        }),
+      );
+    await vi.waitFor(() => expect(replies).toHaveLength(shapes.length));
+    expect(replies).toEqual(
+      shapes.map((_, index) => ({
+        id: index + 1,
+        sessionId: "page",
+        error: { code: -32000, message: "Invalid nested CDP message." },
+      })),
+    );
+    expect(f.send, String(agentConnectionId)).not.toHaveBeenCalled();
+  }
+});
+
+it("treats a connection's auto-attach on an alias of the browser root as the root's", async () => {
+  const f = await fixture();
+  const socket = await f.connect();
+  socket.send(JSON.stringify({ id: 1, method: "Target.attachToBrowserTarget" }));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  f.emit(Buffer.from(JSON.stringify({ id: 1, result: { sessionId: "alias-1" } })));
+  const root = {
+    id: 2,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+    sessionId: "alias-1",
+  };
+  socket.send(JSON.stringify(root));
+  const page = {
+    id: 3,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+    sessionId: "page",
+  };
+  socket.send(JSON.stringify(page));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(3));
+  const sent = f.send.mock.calls.map(([frame]) => JSON.parse(String(frame)) as unknown);
+  expect(sent[1]).toEqual(root);
+  expect(sent[2]).toEqual({
+    ...page,
+    params: {
+      autoAttach: true,
+      flatten: true,
+      waitForDebuggerOnStart: false,
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+    },
+  });
+});
