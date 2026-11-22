@@ -60,7 +60,9 @@ export function slackFailureKind(
   posts = false,
 ): ChannelDeliveryError["kind"] {
   if (status === 429 || rateLimitedSlackErrorCodes.has(code)) return "retryable";
-  if (status >= 500 || troubledSlackErrorCodes.has(code)) return posts ? "unknown" : "retryable";
+  // A timeout (408) is trouble on the way, like a 5xx: the message may have been posted.
+  if (status === 408 || status >= 500 || troubledSlackErrorCodes.has(code))
+    return posts ? "unknown" : "retryable";
   if (deadSlackErrorCodes.has(code)) return "dead";
   // An unrecognised `ok: false` is a refusal, not a lost answer: Slack replied.
   return status >= 200 && status < 500 ? "dead" : "unknown";
@@ -110,6 +112,11 @@ export async function callSlackApi<Schema extends z.ZodType>(
       cause: error,
     });
   }
+  // A rate limit is known from its status alone: Slack's proxy may answer it with no JSON.
+  if (response.status === 429)
+    throw new ChannelDeliveryError(`Slack rejected ${call.method} (ratelimited)`, "retryable", {
+      retryAfterSeconds: slackRetryAfterSeconds(response.headers.get("retry-after")),
+    });
   let payload: unknown;
   try {
     payload = await response.json();

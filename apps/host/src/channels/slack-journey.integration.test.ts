@@ -933,7 +933,8 @@ class FakeSlack {
     const fault = this.#fault;
     this.#fault = "none";
     if (fault === "rate-limited")
-      return json({ error: "ratelimited", ok: false }, { "retry-after": "2" }, 429);
+      // As Slack's proxy can answer it: no JSON, only the status and the delay.
+      return new Response("", { headers: { "retry-after": "2" }, status: 429 });
     if (fault === "server-error") return json({ error: "internal_error", ok: false }, {}, 500);
     if (fault === "lost")
       // Slack took it, and this process never heard the answer.

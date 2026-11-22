@@ -37,6 +37,13 @@ describe("sendSlackDelivery", () => {
     await expect(
       send(respond([], () => ok({}, { error: "ratelimited", ok: false }))),
     ).rejects.toMatchObject({ kind: "retryable" });
+    // Slack's proxy can answer a rate limit with no JSON at all: it is still a rate limit.
+    for (const body of ["", "Too Many Requests"])
+      await expect(
+        send(
+          respond([], () => new Response(body, { headers: { "retry-after": "5" }, status: 429 })),
+        ),
+      ).rejects.toMatchObject({ kind: "retryable", retryAfterSeconds: 5 });
   });
 
   it("leaves Slack's own trouble unknown, since the message may already be posted", async () => {
@@ -48,6 +55,8 @@ describe("sendSlackDelivery", () => {
       () => ok({}, { error: "request_timeout", ok: false }),
       () => ok({}, { error: "service_unavailable", ok: false }),
       () => new Response("<html>gateway</html>", { status: 504 }),
+      () => slack(408, { ok: false }),
+      () => new Response("", { status: 408 }),
     ];
     for (const answer of answers)
       await expect(send(respond([], answer))).rejects.toMatchObject({ kind: "unknown" });
