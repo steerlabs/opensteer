@@ -283,6 +283,8 @@ async function main(): Promise<void> {
     let bootFinished: Promise<number> | undefined;
     let cloned = false;
     let ssh: string[] | undefined;
+    /** The guest has a fixture keychain in place, which cleanup restores. */
+    let fixtureKeychain = false;
     let succeeded = false;
     let exportCode: number | undefined;
     let failure: unknown;
@@ -884,6 +886,8 @@ git -C "$root/src" checkout --detach FETCH_HEAD
 tar -xf "$share/payload/payload.tar" -C "$root" --no-same-owner
 test "$(git -C "$root/src" rev-parse HEAD)" = "$1"
 test -z "$(git -C "$root/src" status --porcelain --untracked-files=no)"
+# The marker the fixture keychain step requires: this clone is the guest of the job for VM "$2".
+printf '%s' "$2" >"$root/guest-job"
 if [ -d "$share/vitest-cache" ]; then
   mkdir -p "$HOME/.cache/opensteer"
   cp -R "$share/vitest-cache" "$HOME/.cache/opensteer/vitest"
@@ -895,7 +899,7 @@ stat -f '%Su %u' /dev/console
 `;
         // The toolchain check reads only Xcode and the simulator, so it overlaps staging.
         const setup = await Promise.allSettled([
-          run([...ssh!, `/bin/bash -s -- ${shellQuote(actual)}`], {
+          run([...ssh!, `/bin/bash -s -- ${shellQuote(actual)} ${shellQuote(vm)}`], {
             name: "staging",
             timeout: 600,
             stdin: guest,
@@ -915,6 +919,17 @@ stat -f '%Su %u' /dev/console
         for (const result of setup) if (result.status === "rejected") throw result.reason;
         const remote =
           'set -e; export PATH="$HOME/opensteer-tools:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8; cd "$HOME/opensteer-job/src/apps/desktop"; export OPENSTEER_PERSONAL_E2E_RESOURCES="$HOME/opensteer-job/resources" OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR="$HOME/opensteer-job/artifacts/native" OPENSTEER_QUIT_E2E_ARTIFACT_DIR="$HOME/opensteer-job/artifacts/quit"; ';
+        // A keychain of the job's own, unlocked, as the default: journeys that keep a secret
+        // (Electron's protected storage) can't use the guest's locked login keychain over SSH.
+        fixtureKeychain = true;
+        await run([...ssh!, `/bin/bash -s -- begin ${shellQuote(vm)}`], {
+          name: "fixture-keychain",
+          timeout: 60,
+          stdin: readFileSync(
+            path.join(import.meta.dirname, "test-vm/fixture-keychain.sh"),
+            "utf8",
+          ),
+        });
         facts.suiteStartedAt = Date.now() / 1000;
         const result = await run(
           [...ssh!, `/bin/bash -c ${shellQuote(remote + shellJoin(args))}`],
@@ -931,6 +946,23 @@ stat -f '%Su %u' /dev/console
       facts.error = error instanceof Error ? error.message : String(error);
     } finally {
       cleaning = true;
+      if (ssh && fixtureKeychain) {
+        // Whatever happened: the previous default keychain and search list go back.
+        try {
+          const restored = await run([...ssh, `/bin/bash -s -- end ${shellQuote(vm)}`], {
+            name: "fixture-keychain-restore",
+            timeout: 60,
+            check: false,
+            stdin: readFileSync(
+              path.join(import.meta.dirname, "test-vm/fixture-keychain.sh"),
+              "utf8",
+            ),
+          });
+          if (restored.code !== 0) facts.fixtureKeychainRestoreError = `exited ${restored.code}`;
+        } catch (error) {
+          facts.fixtureKeychainRestoreError = String(error);
+        }
+      }
       if (ssh && !goldenMode) {
         try {
           exportCode = (
