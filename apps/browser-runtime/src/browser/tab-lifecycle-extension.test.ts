@@ -29,6 +29,12 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
         onReplaced: { addListener: (listener: never) => replaced.push(listener) },
         query: async () => tabs.map((tab) => ({ ...tab })),
         get: async (tabId: number) => ({ ...tabs.find((tab) => tab.id === tabId)! }),
+        // A discard gives the tab a new id, as Chromium does.
+        discard: async (tabId: number) => {
+          const tab = tabs.find((candidate) => candidate.id === tabId)!;
+          Object.assign(tab, { id: tabId + 1, discarded: true, status: "unloaded" });
+          return { ...tab };
+        },
         update: async (tabId: number, change: { autoDiscardable?: boolean }) => {
           const tab = tabs.find((candidate) => candidate.id === tabId)!;
           Object.assign(tab, change);
@@ -63,6 +69,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
       rows: Array<{ tabId: number; identity: string | null; discarded: boolean }>;
     }>;
     nameTab(tabId: number, name: string): Promise<boolean>;
+    discardAndName(tabId: number, name: string): Promise<{ ok: boolean; newTabId: number | null }>;
     unnameTab(tabId: number): Promise<boolean>;
   };
   const open = (tab: FakeTab) => {
@@ -106,6 +113,15 @@ describe("tab lifecycle helper", () => {
     ]);
     expect(await api.unnameTab(10)).toBe(true);
     expect((await api.inventory()).rows.map((row) => row.identity)).toEqual([null, null]);
+  });
+
+  it("discards a tab, then names the tab Chromium returns, in one call (L2)", async () => {
+    const tabs = [tab(30)];
+    const { api } = startWorker(tabs);
+    expect(await api.discardAndName(30, "opensteer-sleep:c")).toEqual({ ok: true, newTabId: 31 });
+    expect((await api.inventory()).rows).toMatchObject([
+      { tabId: 31, discarded: true, identity: "opensteer-sleep:c" },
+    ]);
   });
 
   it("marks every tab, at start, as it is created and as it is replaced, as not discardable by Chromium itself (L3)", async () => {

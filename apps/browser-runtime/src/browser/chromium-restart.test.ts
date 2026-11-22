@@ -114,10 +114,6 @@ it.each(["clean exit", "SIGKILL"] as const)(
     expect(targets.targetInfos.filter((target) => target.url.includes("/article"))).toEqual([]);
     expect(server.hits("/article")).toBe(loads);
     expect((await sessionsOf(directory)).filter((name) => name.startsWith("Session_"))).toEqual([]);
-    const prefs = JSON.parse(
-      await readFile(path.join(directory, "Default", "Preferences"), "utf8"),
-    );
-    expect(prefs.session.restore_on_startup).not.toBe(1);
 
     // The Home's tab comes back as a fresh page at its address, without the last run's state.
     const ledger2 = new SurfaceLedger(second.context);

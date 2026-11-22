@@ -19,7 +19,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { assertImportedCookies } from "./native-profile-storage.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
-import type { ChromiumTabEntry } from "./tab-lifecycle-extension.js";
+import { ChromiumTabLifecycleBridge, type ChromiumTabEntry } from "./tab-lifecycle-extension.js";
 import {
   createChromiumChildEnvironment,
   PlaywrightChromiumLauncher,
@@ -1000,6 +1000,7 @@ describe("native Chromium profiles", () => {
           "--disable-component-update",
           "--disable-background-networking",
           "--no-startup-window",
+          "--restore-last-session",
           "--headless=new",
           "--proxy-server=http://127.0.0.1:8123",
           "--proxy-bypass-list=<-loopback>",
@@ -1007,13 +1008,11 @@ describe("native Chromium profiles", () => {
           "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ]),
       );
-      // L1: a launch never loads Chromium's last session.
-      expect(options.args).not.toContain("--restore-last-session");
       expect(options.args).not.toEqual(expect.arrayContaining(["--password-store=basic"]));
       expect(options.args).not.toEqual(expect.arrayContaining(["--use-mock-keychain"]));
       expect(options.args).not.toContain("--no-sandbox");
       expect(JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"))).toEqual(
-        { session: { restore_on_startup: 5 } },
+        { session: { restore_on_startup: 1 } },
       );
       expect(context.newPage).toHaveBeenCalledOnce();
       expect(launched).not.toHaveProperty("profile");
@@ -1739,6 +1738,15 @@ async function nativeCloseFixture(
     on: vi.fn(),
     close: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
+  // The helper's one sleep call, made of the two it is built from (mocked separately here).
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "discardAndName").mockImplementation(
+    async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
+      const asleep = await this.discardByTabId(tabId);
+      if (asleep === null) return null;
+      await this.nameTab(asleep, title);
+      return asleep;
+    },
+  );
   vi.spyOn(chromium, "launchPersistentContext").mockResolvedValue(
     context as unknown as BrowserContext,
   );

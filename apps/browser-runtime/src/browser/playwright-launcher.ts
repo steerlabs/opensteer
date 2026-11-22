@@ -643,9 +643,11 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         "--disable-component-extensions-with-background-pages",
         "--disable-component-update",
         "--disable-background-networking",
-        // Chromium never loads a last session (L1): its session files are deleted before launch,
-        // and no window opens by itself. A restarted Home's tabs open fresh at their addresses.
+        // Chromium never loads a last session (L1): its session records are deleted before launch
+        // and no window opens by itself, so a restarted Home's tabs open fresh at their addresses.
+        // "Continue where you left off" stays on only so Chromium keeps session cookies (sign-ins).
         "--no-startup-window",
+        "--restore-last-session",
         "--no-first-run",
         "--no-default-browser-check",
         `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
@@ -1629,17 +1631,17 @@ class PlaywrightContextHandle implements BrowserContext {
         if (row.active) await this.activatePrivateAnchor();
         await this.freezeBeforeDiscard(page);
         await detachBounded();
-        const discardedId = await lifecycle.discardByTabId(row.tabId).catch(() => null);
-        if (discardedId !== null) record.tabId = discardedId;
-        const after = await this.read(deadline);
-        const tab =
-          discardedId === null ? undefined : after?.find((entry) => entry.tabId === discardedId);
-        record.targetId = tab ? tab.targetId : record.targetId;
-        if (tab?.discarded && !this.closed) {
-          record.named = await lifecycle.nameTab(tab.tabId, record.title).catch(() => true);
-          const check = await this.read(deadline);
-          const named = check ? findNamed(check, record.title) : null;
-          if (named?.kind === "one" && named.row.tabId === tab.tabId && named.row.discarded) return;
+        // L2 in one helper call: discard first, then name the tab Chromium returns. Asked, it may
+        // be named even when the answer is lost, so the name must be gone too for a removal.
+        record.named = true;
+        const asleepId = await lifecycle.discardAndName(row.tabId, record.title).catch(() => null);
+        if (asleepId !== null) record.tabId = asleepId;
+        const check = await this.read(deadline);
+        const named = check ? findNamed(check, record.title) : null;
+        if (named?.kind === "one" && named.row.discarded && !this.closed) {
+          record.tabId = named.row.tabId;
+          record.targetId = named.row.targetId;
+          return;
         }
         // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
         // page still open proves the tab was not discarded, so closing it closes the tab.

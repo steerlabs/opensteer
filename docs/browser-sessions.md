@@ -73,7 +73,8 @@ start), each tab reopens at its address. What was typed into a page and not sent
 position and its back history are not kept across that restart; sign-ins are kept, since they live
 in the profile. On a Cloud Computer the browser pool keeps the exact state through idle time, so a
 restart is the rare case there. Chromium never loads its last session: the launcher deletes its
-session records before launch, and Chromium starts on a new tab page.
+session records before launch, so nothing of the last run comes back, while Chromium still keeps
+its session cookies.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
 Guest sessions promise only a descriptor and URL reload.

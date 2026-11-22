@@ -162,6 +162,15 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
       state.tabs = state.tabs.filter((t) => t.tabId !== tabId);
       return state.tabs.length < before;
     });
+  // The helper's one sleep call, made of the two it is built from (mocked separately here).
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "discardAndName").mockImplementation(
+    async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
+      const asleep = await this.discardByTabId(tabId);
+      if (asleep === null) return null;
+      await this.nameTab(asleep, title);
+      return asleep;
+    },
+  );
   const activate = vi.spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId");
   const launcher = new PlaywrightChromiumLauncher({
     executablePath: process.execPath,

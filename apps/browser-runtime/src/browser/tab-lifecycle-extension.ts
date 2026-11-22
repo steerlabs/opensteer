@@ -88,6 +88,15 @@ globalThis.__opensteer = {
     await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
     return true;
   },
+  // Sleep in one call (L2): Chromium discards the tab first, then the tab Chromium returns is
+  // named, so a reply lost after the discard still leaves the tab findable by its name.
+  async discardAndName(tabId, name) {
+    const updated = await chrome.tabs.discard(tabId);
+    if (!updated?.discarded || typeof updated.id !== "number") return { ok: false, newTabId: null };
+    const groupId = await chrome.tabs.group({ tabIds: [updated.id] });
+    await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
+    return { ok: true, newTabId: updated.id };
+  },
   async unnameTab(tabId) {
     await chrome.tabs.ungroup(tabId);
     return true;
@@ -434,6 +443,25 @@ export class ChromiumTabLifecycleBridge {
       "change",
     );
     return raw === true;
+  }
+
+  /** Discards a tab, then names the tab Chromium returns; its id afterwards, or null. */
+  async discardAndName(tabId: number, name: string): Promise<number | null> {
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          ([id, title]) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { discardAndName(tabId: number, name: string): Promise<unknown> };
+              }
+            ).__opensteer.discardAndName(id, title),
+          [tabId, name] as const,
+        ),
+      "change",
+    );
+    const parsed = discardResultSchema.parse(raw);
+    return parsed.ok ? parsed.newTabId : null;
   }
 
   /** Takes a woken tab out of its group: a tab has a name only while it sleeps. */
