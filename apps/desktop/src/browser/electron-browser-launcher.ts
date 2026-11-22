@@ -2465,19 +2465,16 @@ class ElectronDebuggerHub {
   readonly #pending = new Set<(error: Error) => void>();
   #rendererGeneration = 0;
   #crashed = false;
-  /** Each channel screencasting, with the parameters it asked for, in the order they started. */
   readonly #renderingOwners = new Map<ElectronCdpChannel, number>();
-  readonly #screencastOwners = new Map<ElectronCdpChannel, Record<string, unknown> | undefined>();
-  /** The cast's latest frame, for an owner that joins it: a still page sends no other. */
-  #lastScreencastFrame: Record<string, unknown> | null = null;
-  /** Whether Chromium is casting for the owners: only a start sends it, and an end clears it. */
-  #castRunning = false;
   /**
-   * Frames Chromium sent in this cast and has had no ack for. A frame's ack names the cast, not
-   * the frame, and Chromium sends no more while two wait: every one it sent is acked once, and a
-   * frame the hub replayed to a joiner, never.
+   * The page's screencasts, one for each set of settings someone asked for: an owner gets frames
+   * in the format and size it asked for, always, and owners who asked for the same share one.
    */
-  #framesAwaitingAck = 0;
+  readonly #casts = new Set<Screencast>();
+  /** Each screencasting channel's cast. */
+  readonly #castOf = new Map<ElectronCdpChannel, Screencast>();
+  /** The casts Chromium runs in a private session of their own on this page, by that session. */
+  readonly #castSessions = new Map<string, Screencast>();
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2523,6 +2520,12 @@ class ElectronDebuggerHub {
     });
     this.#debugger.on("message", (_event, method, parameters, sessionId) => {
       if (sessionId) {
+        const cast = this.#castSessions.get(sessionId);
+        if (cast) {
+          // A private session runs only its cast: its frames are for that cast's owners alone.
+          if (method === "Page.screencastFrame") this.#castFrame(cast, asRecord(parameters));
+          return;
+        }
         const inspectProfile = this.#profileInspections.get(sessionId);
         if (inspectProfile) {
           // It skips every pause; should one arrive anyway, the page never waits on it.
@@ -2561,13 +2564,11 @@ class ElectronDebuggerHub {
       if (method.startsWith("Runtime.executionContext"))
         for (const channel of this.#channels) channel.observeContextEvent(method, record);
       if (method === "Page.screencastFrame") {
-        this.#lastScreencastFrame = record;
-        this.#framesAwaitingAck += 1;
+        const cast = this.#pageSessionCast();
+        if (cast) this.#castFrame(cast, record);
+        return;
       }
-      const recipients =
-        method === "Page.screencastFrame"
-          ? [...this.#screencastOwners.keys()]
-          : this.#domainOwners.get(method.split(".", 1)[0] ?? "");
+      const recipients = this.#domainOwners.get(method.split(".", 1)[0] ?? "");
       for (const channel of recipients ?? []) {
         if (channel.role === "agent" && !pageEvent) {
           if (method === "Debugger.paused")
@@ -2578,15 +2579,15 @@ class ElectronDebuggerHub {
       }
     });
     this.#debugger.on("detach", (_event, reason) => {
-      // The session that ran the cast is gone, and its cast with it.
-      this.#castEnded();
+      // The sessions that ran the casts are gone, and the casts with them.
+      this.#castsEnded(true);
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
       this.#forgetContexts();
       this.#events.emit("detach", reason);
     });
     webContents.on("render-process-gone", (_event, details) => {
       this.#crashed = true;
-      this.#castEnded();
+      this.#castsEnded(false);
       this.#interrupt(
         new Error(
           `Electron browser page crashed (${details.reason}); reload the page to continue.`,
@@ -2603,7 +2604,7 @@ class ElectronDebuggerHub {
     // it draws nothing, takes no clicks and gives a screencast no frame.
     webContents.on("did-navigate", () => {
       // The latest frame was the last document's: no one is handed it now.
-      this.#lastScreencastFrame = null;
+      for (const cast of this.#casts) cast.lastFrame = null;
       this.#crashed = false;
       this.#inputReady = null;
       this.#updateThrottling();
@@ -2718,7 +2719,7 @@ class ElectronDebuggerHub {
   ): Promise<unknown> {
     // A new size makes the latest frame the wrong shape for anyone who joins after it.
     if (method.startsWith("Emulation.set") || method === "Emulation.clearDeviceMetricsOverride")
-      this.#lastScreencastFrame = null;
+      for (const cast of this.#casts) cast.lastFrame = null;
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
@@ -2852,60 +2853,24 @@ class ElectronDebuggerHub {
       });
     }
     if (method === "Page.startScreencast") {
-      return this.#serializeOwnership(async () => {
-        const generation = this.#rendererGeneration;
-        const casting = this.#screencastOwners.size > 0;
-        const running = this.#deciding()?.[1];
-        const restarted = this.#screencastOwners.has(channel);
-        const previous = this.#screencastOwners.get(channel);
-        this.#screencastOwners.delete(channel);
-        this.#screencastOwners.set(channel, parameters);
-        this.#updateThrottling();
-        const deciding = this.#deciding()?.[1];
-        // One cast serves everyone who wants this page's picture: an owner that asks for what is
-        // already being cast joins it, with no stop and no new start, and has its latest frame
-        // (one that asks again has reset what it shows, and gets it too).
-        if (casting && this.#castRunning && sameCast(running, deciding)) {
-          const frame = this.#lastScreencastFrame;
-          if (frame !== null) channel.emit("Page.screencastFrame", frame);
-          return {};
-        }
-        try {
-          this.#assertCurrent(generation);
-          // A new start replaces the running cast's settings: no stop between, so no one
-          // watching sees the page go stale or blank while it changes.
-          await send(method, deciding);
-          this.#castRunning = true;
-          this.#lastScreencastFrame = null;
-          this.#framesAwaitingAck = 0;
-          return {};
-        } catch (error) {
-          this.#screencastOwners.delete(channel);
-          // A released channel's cast is not restored for anyone to inherit.
-          if (restarted && this.#channels.has(channel))
-            this.#screencastOwners.set(channel, previous);
-          this.#updateThrottling();
-          throw error;
-        }
-      });
+      return this.#serializeOwnership(() => this.#startCast(channel, parameters, send));
     }
     if (method === "Page.stopScreencast") {
       return this.#serializeOwnership(async () => {
-        if (!this.#screencastOwners.delete(channel)) return {};
-        this.#updateThrottling();
-        if (this.#screencastOwners.size === 0) {
-          this.#castEnded();
-          await send(method, parameters);
-        }
+        const cast = this.#castOf.get(channel);
+        if (!cast) return {};
+        this.#leaveCast(channel);
+        if (cast.owners.size === 0) await this.#endCast(cast, this.#rendererGeneration, parameters);
         return {};
       });
     }
     if (method === "Page.screencastFrameAck") {
-      // The deciding owner paces the cast: one ack for each frame Chromium sent, and none for
-      // a frame the hub replayed.
-      if (this.#deciding()?.[0] !== channel || this.#framesAwaitingAck === 0)
-        return Promise.resolve({});
-      this.#framesAwaitingAck -= 1;
+      // One ack for each frame Chromium sent in the owner's cast, from whichever of its owners
+      // acks first, so a slow one holds no one up; none for a frame the hub replayed.
+      const cast = this.#castOf.get(channel);
+      if (!cast || cast.awaitingAck === 0) return Promise.resolve({});
+      cast.awaitingAck -= 1;
+      if (cast.session?.id !== undefined) return this.#command(method, parameters, cast.session.id);
     }
     if (method === "Target.setAutoAttach" || method === "Target.sendMessageToTarget") {
       // Out-of-process frames' sessions are the platform's, as the agent
@@ -3180,8 +3145,11 @@ class ElectronDebuggerHub {
     const generation = this.#rendererGeneration;
     const current = () => generation === this.#rendererGeneration;
     await this.#serializeOwnership(async () => {
-      if (this.#screencastOwners.delete(channel) && this.#screencastOwners.size === 0 && current())
-        await this.#command("Page.stopScreencast").catch(() => undefined);
+      const cast = this.#castOf.get(channel);
+      if (cast) {
+        this.#leaveCast(channel);
+        if (cast.owners.size === 0) await this.#endCast(cast, generation).catch(() => undefined);
+      }
       for (const domain of channel.enabledDomains) {
         const owners = this.#domainOwners.get(domain);
         owners?.delete(channel);
@@ -3241,8 +3209,10 @@ class ElectronDebuggerHub {
     if (this.#teardown) return this.#teardown;
     this.#interrupt(error);
     this.#domainOwners.clear();
-    this.#screencastOwners.clear();
-    this.#castEnded();
+    // The detach ends every cast, its private sessions with it.
+    this.#castOf.clear();
+    this.#casts.clear();
+    this.#castSessions.clear();
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
@@ -3353,24 +3323,184 @@ class ElectronDebuggerHub {
     }
   }
 
-  /** Chromium casts no more: the next start is sent, and no old frame is handed to anyone. */
-  #castEnded(): void {
-    this.#castRunning = false;
-    this.#lastScreencastFrame = null;
-    this.#framesAwaitingAck = 0;
+  /**
+   * A channel's start: it joins the cast of the settings it asked for, or that cast starts. An
+   * owner alone in its cast hands that cast's session to the new one, and the start replaces its
+   * settings with no stop between, so no one watching sees the page go stale or blank while it
+   * changes. A start that fails leaves the channel in the cast it had.
+   */
+  async #startCast(
+    channel: ElectronCdpChannel,
+    parameters: Record<string, unknown> | undefined,
+    send: (method: string, parameters?: Record<string, unknown>) => Promise<unknown>,
+  ): Promise<unknown> {
+    const generation = this.#rendererGeneration;
+    const previous = this.#castOf.get(channel);
+    const same = [...this.#casts].find((cast) => sameCast(cast.settings, parameters));
+    const left = previous !== same ? previous : undefined;
+    // One cast serves everyone who asked for the same picture: an owner joins it, with no stop
+    // and no new start, and has its latest frame (one that asks again has reset what it shows,
+    // and gets it too).
+    if (same?.running) {
+      if (left) this.#leaveCast(channel);
+      this.#joinCast(channel, same);
+      if (left?.owners.size === 0) await this.#endCast(left, generation);
+      if (same.lastFrame !== null) channel.emit("Page.screencastFrame", same.lastFrame);
+      return {};
+    }
+    const cast: Screencast = same ?? {
+      awaitingAck: 0,
+      lastFrame: null,
+      owners: new Set(),
+      running: false,
+      session: null,
+      settings: parameters,
+    };
+    const handOver = left !== undefined && left.owners.size === 1 && cast.session === null;
+    if (left) this.#leaveCast(channel);
+    if (handOver && left) this.#moveSession(left, cast);
+    this.#casts.add(cast);
+    this.#joinCast(channel, cast);
+    try {
+      this.#assertCurrent(generation);
+      const session = await this.#castSession(cast, generation);
+      cast.lastFrame = null;
+      cast.awaitingAck = 0;
+      await (session === undefined
+        ? send("Page.startScreencast", parameters)
+        : this.#command("Page.startScreencast", parameters, session));
+      cast.running = true;
+      if (left && !handOver && left.owners.size === 0) await this.#endCast(left, generation);
+      return {};
+    } catch (error) {
+      this.#leaveCast(channel);
+      if (handOver && left) {
+        this.#moveSession(cast, left);
+        this.#casts.add(left);
+      }
+      if (cast.owners.size === 0) this.#forgetCast(cast);
+      if (left && this.#casts.has(left)) {
+        // A released channel's cast is not restored for anyone to inherit.
+        if (this.#channels.has(channel)) this.#joinCast(channel, left);
+        else if (left.owners.size === 0)
+          await this.#endCast(left, generation).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
-  /** The screencasting channel whose parameters Chromium's cast uses, with them. */
-  #deciding(): readonly [ElectronCdpChannel, Record<string, unknown> | undefined] | undefined {
-    const owners = [...this.#screencastOwners];
-    return owners.findLast(([owner]) => owner.role === "platform") ?? owners.at(-1);
+  #joinCast(channel: ElectronCdpChannel, cast: Screencast): void {
+    cast.owners.add(channel);
+    this.#castOf.set(channel, cast);
+    this.#updateThrottling();
+  }
+
+  #leaveCast(channel: ElectronCdpChannel): void {
+    this.#castOf.get(channel)?.owners.delete(channel);
+    this.#castOf.delete(channel);
+    this.#updateThrottling();
+  }
+
+  /** `to` takes over the session `from` is cast in; `from` leaves the page's casts. */
+  #moveSession(from: Screencast, to: Screencast): void {
+    to.session = from.session;
+    from.session = null;
+    if (to.session?.id !== undefined) this.#castSessions.set(to.session.id, to);
+    this.#casts.delete(from);
+  }
+
+  /** The cast Chromium runs in the page's own session, if one does. */
+  #pageSessionCast(): Screencast | undefined {
+    for (const cast of this.#casts)
+      if (cast.session !== null && cast.session.id === undefined) return cast;
+    return undefined;
+  }
+
+  /**
+   * Where Chromium runs `cast`: the page's own session, unless another cast runs there, and then
+   * a private session on the page of its own (Chromium runs one cast a session).
+   */
+  async #castSession(cast: Screencast, generation: number): Promise<string | undefined> {
+    if (cast.session !== null) return cast.session.id;
+    if (!this.#pageSessionCast()) {
+      cast.session = { id: undefined };
+      return undefined;
+    }
+    const info = asRecord(await this.#command("Target.getTargetInfo"));
+    const targetId = asRecord(info.targetInfo).targetId;
+    if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
+    const { sessionId } = asRecord(
+      await this.#command("Target.attachToTarget", { targetId, flatten: true }),
+    );
+    if (typeof sessionId !== "string") throw new Error("Page debugger did not return a session");
+    if (generation !== this.#rendererGeneration || !this.#casts.has(cast)) {
+      void this.#command("Target.detachFromTarget", { sessionId }).catch(() => undefined);
+      throw new Error("Electron CDP renderer changed before command dispatch.");
+    }
+    cast.session = { id: sessionId };
+    this.#castSessions.set(sessionId, cast);
+    return sessionId;
+  }
+
+  /** A frame Chromium sent in `cast`: its owners, and only they, have it; it waits for one ack. */
+  #castFrame(cast: Screencast, frame: Record<string, unknown>): void {
+    cast.lastFrame = frame;
+    cast.awaitingAck += 1;
+    for (const channel of cast.owners) channel.emit("Page.screencastFrame", frame);
+  }
+
+  /**
+   * No one is left in `cast`: Chromium stops it, while the generation it was asked in lasts (a
+   * renderer change or the debugger's detach has ended it already). A private session ends with
+   * its cast.
+   */
+  async #endCast(
+    cast: Screencast,
+    generation: number,
+    parameters?: Record<string, unknown>,
+  ): Promise<void> {
+    const session = cast.session;
+    this.#forgetCast(cast, false);
+    if (session === null || generation !== this.#rendererGeneration) return;
+    await (session.id === undefined
+      ? this.#command("Page.stopScreencast", parameters)
+      : this.#command("Target.detachFromTarget", { sessionId: session.id }));
+  }
+
+  /** `cast` is no longer the page's; a private session it was given is let go. */
+  #forgetCast(cast: Screencast, detach = true): void {
+    this.#casts.delete(cast);
+    const id = cast.session?.id;
+    if (id !== undefined) {
+      this.#castSessions.delete(id);
+      if (detach)
+        void this.#command("Target.detachFromTarget", { sessionId: id }).catch(() => undefined);
+    }
+    cast.session = null;
+    cast.running = false;
+    cast.lastFrame = null;
+    cast.awaitingAck = 0;
+  }
+
+  /**
+   * Chromium casts no more: the next start is sent, and no old frame is handed to anyone. A
+   * detach ends the private sessions too; a crash leaves them.
+   */
+  #castsEnded(detached: boolean): void {
+    for (const cast of this.#casts) {
+      cast.running = false;
+      cast.lastFrame = null;
+      cast.awaitingAck = 0;
+      if (detached && cast.session?.id !== undefined) cast.session = null;
+    }
+    if (detached) this.#castSessions.clear();
   }
 
   #updateThrottling(): void {
     if (this.#closed || this.#webContents.isDestroyed()) return;
     const demanded =
       [...this.#channels].some((channel) => channel.role === "agent") ||
-      this.#screencastOwners.size > 0 ||
+      this.#castOf.size > 0 ||
       this.#renderingOwners.size > 0;
     this.#setRenderingDemand(demanded);
   }
@@ -3773,6 +3903,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/** One of a page's screencasts: settings, the owners who asked for them, and how it runs. */
+interface Screencast {
+  readonly settings: Record<string, unknown> | undefined;
+  readonly owners: Set<ElectronCdpChannel>;
+  /** Where Chromium runs it: the page's own session (`id` undefined), a private one, or none yet. */
+  session: { readonly id: string | undefined } | null;
+  running: boolean;
+  /** Its latest frame, for an owner that joins it: a still page sends no other. */
+  lastFrame: Record<string, unknown> | null;
+  /**
+   * Frames Chromium sent in it and has had no ack for. A frame's ack names the cast, not the
+   * frame, and Chromium sends no more while two wait: every one it sent is acked once, and a
+   * frame the hub replayed to a joiner, never.
+   */
+  awaitingAck: number;
 }
 
 /** Whether two casts' settings are the same: the cast already running serves the other. */

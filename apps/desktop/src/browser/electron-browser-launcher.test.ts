@@ -1687,7 +1687,7 @@ describe("Electron debugger teardown", () => {
     watch(late, frames.late);
     await late.send("Page.startScreencast", cast);
     expect(frames.late).toEqual([frame]);
-    // Chromium hears one ack a frame: the page's own, once, whoever else acks it.
+    // Chromium hears one ack a frame, from whichever owner acks it first.
     await picture.send("Page.screencastFrameAck", { sessionId: 1 });
     await stream.send("Page.screencastFrameAck", { sessionId: 1 });
     await late.send("Page.screencastFrameAck", { sessionId: 1 });
@@ -1695,16 +1695,26 @@ describe("Electron debugger teardown", () => {
     expect(hub.sent("Page.screencastFrameAck")).toEqual([
       ["Page.screencastFrameAck", { sessionId: 1 }],
     ]);
-    // A new size is a new start, with no stop between while anyone is watching.
+    // A new size for one is a cast of its own, in a session of its own: the two still watching
+    // the first keep the size they asked for, and see no stop.
     await stream.send("Page.startScreencast", { ...cast, maxWidth: 1_200 });
-    expect(hub.sent("Page.startScreencast")).toHaveLength(2);
+    expect(hub.sent("Page.startScreencast")).toEqual([
+      ["Page.startScreencast", cast],
+      ["Page.startScreencast", { ...cast, maxWidth: 1_200 }, "agent-native-session"],
+    ]);
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
-    // The last one to go stops it.
+    hub.deliver("Page.screencastFrame", { ...frame, data: "800" });
+    expect(frames.stream).toEqual([frame, frame]);
+    // The last of each cast to go ends it.
     await late.send("Page.stopScreencast");
-    await picture.send("Page.stopScreencast");
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
-    await stream.send("Page.stopScreencast");
+    await picture.send("Page.stopScreencast");
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    await stream.send("Page.stopScreencast");
+    expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
+      "Target.detachFromTarget",
+      { sessionId: "agent-native-session" },
+    ]);
     await hub.browser.close();
   });
 
@@ -1777,6 +1787,123 @@ describe("Electron debugger teardown", () => {
     });
     await agent.send("Page.startScreencast", cast);
     expect(seen.map((frame) => (frame as { data: string }).data)).toEqual(["old", "new", "new"]);
+    await hub.browser.close();
+  });
+
+  // Run 20261122T204015Z-32e9d77d: an agent asked for PNG at 320x240 beside the person's view and
+  // was handed the person's JPEG at 1400x900, while the person watched and after they turned away.
+  it("gives each owner frames in the format and size it asked for, and a cast only to owners who asked the same", async () => {
+    const hub = await hubPage("25");
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let sessions = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) =>
+        method === "Target.attachToTarget"
+          ? Promise.resolve({ sessionId: `cast-${++sessions}` })
+          : answer(method, parameters, session),
+    );
+    const person = await hub.page.cdp();
+    const agent = await hub.page.agentCdp();
+    const frames = { agent: [] as string[], person: [] as string[] };
+    person.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        frames.person.push((parameters as { data: string }).data);
+    });
+    agent.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame")
+        frames.agent.push((parameters as { data: string }).data);
+    });
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const ask = { format: "png", maxHeight: 240, maxWidth: 320 };
+    const jpeg = () =>
+      hub.deliver("Page.screencastFrame", { data: "jpeg 1400x900", metadata: {}, sessionId: 1 });
+    const png = () =>
+      hub.deliver(
+        "Page.screencastFrame",
+        { data: "png 320x240", metadata: {}, sessionId: 2 },
+        "cast-1",
+      );
+    await person.send("Page.startScreencast", view);
+    await agent.send("Page.startScreencast", ask);
+    // Chromium runs one cast a session: the agent's is a second one, in a session of its own.
+    expect(hub.sent("Page.startScreencast")).toEqual([
+      ["Page.startScreencast", view],
+      ["Page.startScreencast", ask, "cast-1"],
+    ]);
+    jpeg();
+    png();
+    expect(frames).toEqual({ agent: ["png 320x240"], person: ["jpeg 1400x900"] });
+    // Each cast's frame is acked once, in the session that cast runs in.
+    await agent.send("Page.screencastFrameAck", { sessionId: 2 });
+    await person.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toEqual([
+      ["Page.screencastFrameAck", { sessionId: 2 }, "cast-1"],
+      ["Page.screencastFrameAck", { sessionId: 1 }],
+    ]);
+    // The person turns away: their cast stops and the agent's goes on. The agent asking again
+    // for its own settings joins its own cast, and is handed its latest frame.
+    await person.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    png();
+    await agent.send("Page.startScreencast", ask);
+    expect(hub.sent("Page.startScreencast")).toHaveLength(2);
+    expect(frames.agent).toEqual(["png 320x240", "png 320x240", "png 320x240"]);
+    // The person comes back: their cast starts again, and each still sees only its own.
+    await person.send("Page.startScreencast", view);
+    expect(hub.sent("Page.startScreencast").at(-1)).toEqual(["Page.startScreencast", view]);
+    jpeg();
+    png();
+    expect(frames.person).toEqual(["jpeg 1400x900", "jpeg 1400x900"]);
+    expect(new Set(frames.agent)).toEqual(new Set(["png 320x240"]));
+    // The agent stops: its session ends with its cast, and the person's picture goes on.
+    await agent.send("Page.stopScreencast");
+    expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
+      "Target.detachFromTarget",
+      { sessionId: "cast-1" },
+    ]);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    const agentFrames = frames.agent.length;
+    jpeg();
+    expect(frames.person).toHaveLength(3);
+    expect(frames.agent).toHaveLength(agentFrames);
+    await hub.browser.close();
+  });
+
+  // Run 20261122T204015Z-32e9d77d: a tab whose dialog had held it was not pictured again once the
+  // dialog closed. Its cast went on with the same sessionId, and every ack after the first was
+  // dropped as if that frame had been acked already.
+  it("keeps a tab's picture coming after its dialog closes, each frame acked once", async () => {
+    const hub = await hubPage("26");
+    const person = await hub.page.cdp();
+    let seen = 0;
+    person.onEvent((method) => {
+      if (method === "Page.screencastFrame") seen += 1;
+    });
+    await person.send("Page.startScreencast", { format: "jpeg", maxHeight: 700, maxWidth: 1_000 });
+    const frame = async (index: number) => {
+      hub.deliver("Page.screencastFrame", { data: `${index}`, metadata: {}, sessionId: 1 });
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+    };
+    await frame(1);
+    await frame(2);
+    // The dialog holds the page, and Chromium sends nothing until it closes.
+    hub.deliver("Page.javascriptDialogOpening", {
+      defaultPrompt: "",
+      frameId: "target-1",
+      hasBrowserHandler: false,
+      message: "Delete this listing?",
+      type: "confirm",
+      url: "https://example.test/follow",
+    });
+    hub.deliver("Page.javascriptDialogClosed", {
+      frameId: "target-1",
+      result: false,
+      userInput: "",
+    });
+    for (let index = 3; index <= 8; index += 1) await frame(index);
+    expect(seen).toBe(8);
+    // Chromium sends no third frame while two wait for an ack: each one is acked.
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(8);
     await hub.browser.close();
   });
 
