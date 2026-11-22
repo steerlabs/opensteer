@@ -36,6 +36,11 @@ export class BrowserPoolGate {
   #demanded = false;
   #waiting = 0;
   #active = 0;
+  /** Of the active reservations, the ones taken with demand: a command in flight. */
+  #commands = 0;
+  /** The park preparing is a repair: a send with no demand waits instead of vetoing it. */
+  #repairing = false;
+  readonly #commandsIdle: (() => void)[] = [];
   #changed = new AbortController();
   #ended = new AbortController();
   readonly #idle: (() => void)[] = [];
@@ -94,6 +99,20 @@ export class BrowserPoolGate {
   }
 
   /**
+   * Commands in flight: reservations taken with demand (`reserve`), each ended by its own bound.
+   * A send with no consumer (a viewer's frames, a person's input through the broker) is not one.
+   */
+  get commands(): number {
+    return this.#commands;
+  }
+
+  /** Resolves once no command is in flight. */
+  commandsIdle(): Promise<void> {
+    if (this.#commands === 0) return Promise.resolve();
+    return new Promise((resolve) => this.#commandsIdle.push(resolve));
+  }
+
+  /**
    * Whether bytes may not leave for the guest now: a restart or a removal holds admission, or the
    * reservation the write was admitted under has ended. Checked synchronously at the write
    * itself, after its last await; a check at a caller does not count.
@@ -112,11 +131,17 @@ export class BrowserPoolGate {
     return this.#away !== null;
   }
 
-  /** The park step's window before D: a send now vetoes it. False: it cannot begin. */
-  beginPark(): boolean {
-    if (!this.admits || this.#active) return false;
+  /**
+   * The park step's window before D: a send now vetoes it. False: it cannot begin. `repair`: a
+   * park that brings a broken guest back (its egress proxy is down): only a command in flight, or
+   * one that arrives before D, keeps it from beginning or vetoes it; a send with no demand waits
+   * for the wake, as it does after D. Sends already admitted finish at the retire's quiesce.
+   */
+  beginPark(repair = false): boolean {
+    if (!this.admits || (repair ? this.#commands : this.#active)) return false;
     this.#demanded = false;
     this.#preparing = true;
+    this.#repairing = repair;
     this.#notify();
     return true;
   }
@@ -134,6 +159,7 @@ export class BrowserPoolGate {
   committed(): boolean {
     if (!this.#preparing) return false;
     this.#preparing = false;
+    this.#repairing = false;
     this.#away = "parking";
     // A send, a restart or a removal that came first vetoes it.
     const vetoed = this.demandedSince() || this.#hold !== null;
@@ -145,6 +171,7 @@ export class BrowserPoolGate {
   endPark(): void {
     if (!this.#preparing) return;
     this.#preparing = false;
+    this.#repairing = false;
     this.#notify();
   }
 
@@ -155,8 +182,8 @@ export class BrowserPoolGate {
 
   /** Taken when a send without a consumer is queued. Before D it vetoes the park. */
   backgroundNow(): BrowserPoolReservation | undefined {
-    if (this.admits) return this.#take();
-    if (this.#preparing) this.#demanded = true;
+    if (this.admits) return this.#take(false);
+    if (this.#preparing && !this.#repairing) this.#demanded = true;
     return undefined;
   }
 
@@ -199,8 +226,8 @@ export class BrowserPoolGate {
           throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
-        if (this.admits) return this.#take();
-        if (this.#preparing) this.#demanded = true;
+        if (this.admits) return this.#take(demand);
+        if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
         // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
         // during a step for the turn after it, so asking again at every change of the gate
         // (the loop's own publications included) would only end its backoff each time.
@@ -215,8 +242,9 @@ export class BrowserPoolGate {
     }
   }
 
-  #take(): BrowserPoolReservation {
+  #take(command: boolean): BrowserPoolReservation {
     this.#active++;
+    if (command) this.#commands++;
     let released = false;
     let settler: (() => Promise<void>) | undefined;
     return {
@@ -231,6 +259,8 @@ export class BrowserPoolGate {
         if (released) return;
         released = true;
         if (settler) this.#settlers.delete(settler);
+        if (command && --this.#commands === 0)
+          for (const idle of this.#commandsIdle.splice(0)) idle();
         if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
       },
     };

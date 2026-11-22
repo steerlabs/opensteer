@@ -248,8 +248,19 @@ export class BrowserPoolCoordinator {
   #proxyDown = false;
   /** When the host's status was last read. */
   #statusReadAt = 0;
-  /** The guest (its instance) the Home parked once to bring its proxy back. */
-  #proxyParkedFor: string | undefined;
+  /**
+   * The one repair of a guest whose egress proxy is down: a park and a wake (only those, or a
+   * fresh start, bring a proxy back). `wanted`: the status said down and no command is in flight
+   * yet, or one is (the repair waits for it); `waking`: the repair parked, its wake follows;
+   * `spent`: it was made for this instance and is not made again until the instance changes (a
+   * new start or a replaced host) or a park that is not a repair wakes it.
+   */
+  #proxyRepair:
+    { readonly instance: string; readonly state: "wanted" | "waking" | "spent" } | undefined;
+  /** The park under way is the proxy's repair. */
+  #parkIsRepair = false;
+  /** The loop is to be asked again once the commands in flight end. */
+  #awaitingCommands = false;
   /**
    * The end of an over target's sessions: a step of its own, repeated until it has succeeded
    * (P18). `settle`: holders still sending are settled with their outcomes first (a swap).
@@ -690,11 +701,25 @@ export class BrowserPoolCoordinator {
       if (this.#parkWanted) this.#settlePark("vetoed");
       return { name: "end", run: (signal) => this.#endStep(slot, ending, signal) };
     }
-    if (slot.phase === "parked" && this.gate.demand)
+    if (this.#proxyRepair?.state === "waking" && slot.phase === "running")
+      this.#proxyRepair = { instance: this.#proxyRepair.instance, state: "spent" };
+    if (slot.phase === "parked" && (this.gate.demand || this.#proxyRepair?.state === "waking"))
       return { name: "wake", run: () => this.#wakeStep(), discards: true };
     if (this.#parkWanted && slot.phase === "running")
       return { name: "park", run: () => this.#parkStep() };
     if (this.#parkWanted) this.#settlePark("vetoed");
+    // The proxy's one repair. A command in flight holds the guest: the repair waits for it to end
+    // by its own bound and never pauses under it. A viewer does not hold it (its sends wait).
+    if (this.#proxyRepair?.state === "wanted" && slot.phase === "running" && this.gate.admits) {
+      if (!this.gate.commands) return { name: "park", run: () => this.#parkStep(true) };
+      if (!this.#awaitingCommands) {
+        this.#awaitingCommands = true;
+        void this.gate.commandsIdle().then(() => {
+          this.#awaitingCommands = false;
+          this.#kick();
+        });
+      }
+    }
     // A running guest's host is asked how it is now and then: its egress proxy can go down under
     // it, which only its status says (the browser then cannot reach the internet).
     if (
@@ -740,6 +765,15 @@ export class BrowserPoolCoordinator {
   }
 
   #settlePark(outcome: "parked" | "vetoed"): void {
+    if (outcome === "parked") {
+      // The repair's park is followed by its wake; any other park ends what a repair knew: the
+      // wake after it is a fresh chance for the proxy, and for one more repair if it is down.
+      if (this.#parkIsRepair && this.#proxyRepair?.state === "wanted")
+        this.#proxyRepair = { instance: this.#proxyRepair.instance, state: "waking" };
+      else if (!this.#parkIsRepair) this.#proxyRepair = undefined;
+    }
+    // A vetoed repair (a command came first) stays wanted, for after that command.
+    this.#parkIsRepair = false;
     const wanted = this.#parkWanted;
     this.#parkWanted = undefined;
     this.#parkSettling = false;
@@ -1145,9 +1179,10 @@ export class BrowserPoolCoordinator {
     this.#recovering.resolve();
   }
 
-  async #parkStep(): Promise<void> {
+  async #parkStep(repair = false): Promise<void> {
+    this.#parkIsRepair = repair;
     try {
-      const outcome = await this.#park();
+      const outcome = await this.#park(repair);
       // The caller sees the gate as the step left it.
       this.#publish(this.#slot);
       this.#settlePark(outcome);
@@ -1210,21 +1245,13 @@ export class BrowserPoolCoordinator {
       // Clients learn at once that browsing is paused, or back.
       void this.#announce(this.#changed.signal);
     }
-    // Only a pause and a resume (or a fresh start) bring the proxy back: the Home parks this
-    // guest once for it, when nothing holds it (a park is vetoed otherwise, and asked again at
-    // the next read). After that wake the browser is shown paused for as long as it lasts.
+    // Only a pause and a resume (or a fresh start) bring the proxy back: the loop makes that
+    // repair once per instance. After it the browser is shown paused for as long as it lasts.
     const instance = `${status.instance}`;
-    if (down && this.#proxyParkedFor !== instance && !this.#parkWanted && this.gate.admits) {
-      this.#proxyParkedFor = instance;
-      void this.tryPark().then(
-        (outcome) => {
-          if (outcome === "vetoed") this.#proxyParkedFor = undefined;
-        },
-        () => {
-          this.#proxyParkedFor = undefined;
-        },
-      );
-    }
+    if (down && this.#proxyRepair?.instance !== instance)
+      this.#proxyRepair = { instance, state: "wanted" };
+    // Back by itself before the repair began: nothing to repair.
+    if (!down && this.#proxyRepair?.state === "wanted") this.#proxyRepair = undefined;
     return status;
   }
 
@@ -1357,9 +1384,9 @@ export class BrowserPoolCoordinator {
   // ---- Park -------------------------------------------------------------------------------
 
   /** D, then the retire. Before D a send vetoes; a lost commit reply is read back first. */
-  async #park(): Promise<"parked" | "vetoed"> {
+  async #park(repair = false): Promise<"parked" | "vetoed"> {
     const slot = this.#slot;
-    if (!slot || slot.phase !== "running" || !this.gate.beginPark()) return "vetoed";
+    if (!slot || slot.phase !== "running" || !this.gate.beginPark(repair)) return "vetoed";
     const intentId = randomUUID();
     let intent: BrowserPoolSlot | undefined;
     try {
@@ -1389,7 +1416,18 @@ export class BrowserPoolCoordinator {
     await this.#journal.settleOpen(this.#signal);
     let state = await this.#state();
     let abort = vetoedDuringCommit;
-    if (!vetoedDuringCommit) {
+    // A repair began with sends of no demand still admitted (a viewer's): every new one waits
+    // now, and those finish before any retire, or the repair is abandoned. Never a pause under a
+    // send.
+    if (!abort && this.#parkIsRepair)
+      abort = !(await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
+        ...(this.#signal ? { signal: this.#signal } : {}),
+        timeoutError: () => new Error("A send still holds the browser."),
+      }).then(
+        () => true,
+        () => false,
+      ));
+    if (!abort) {
       const retired = await this.#retire(intent);
       state = retired.state;
       // Rule D: a retire whose reply was lost is aborted, even if the runtime retired.
