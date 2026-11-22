@@ -1324,6 +1324,7 @@ function PasswordSignInBody(props: {
       {card?.stage === "approval" && accounts.length === 0 ? (
         <AppText role="secondary">{passwordSignInNoAccount(props.payload.site)}</AppText>
       ) : null}
+      {/* Gone has no time left on it: it says so, never beside a time it expires in. */}
       {card?.stage === "gone" ? (
         <AppText role="secondary">This sign-in is no longer running.</AppText>
       ) : null}
@@ -1332,9 +1333,11 @@ function PasswordSignInBody(props: {
           {passwordSignInAllowRemembers(chosen.username)}
         </AppText>
       ) : null}
-      <AppText role="caption" tone="muted">
-        {passwordSignInExpiry(props.payload.expiresAt, now)}
-      </AppText>
+      {card?.stage === "gone" ? null : (
+        <AppText role="caption" tone="muted">
+          {passwordSignInExpiry(props.payload.expiresAt, now)}
+        </AppText>
+      )}
       <ResponseStatus failure={session.failure ?? cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill
@@ -1423,10 +1426,11 @@ function CardUseBody(props: {
       ) : null}
       {card?.stage === "gone" ? (
         <AppText role="secondary">This card use is no longer running.</AppText>
-      ) : null}
-      <AppText role="caption" tone="muted">
-        {passwordSignInExpiry(props.payload.expiresAt, props.now)}
-      </AppText>
+      ) : (
+        <AppText role="caption" tone="muted">
+          {passwordSignInExpiry(props.payload.expiresAt, props.now)}
+        </AppText>
+      )}
       <ResponseStatus failure={session.failure ?? props.cardLine} reason={props.reason} />
       <AnswerRow>
         <AnswerPill

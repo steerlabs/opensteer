@@ -148,7 +148,10 @@ export function CardUseRequestBody({
         </p>
       )}
       <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>
-      <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>
+      {/* Gone has no time left on it: never "no longer running" beside "Expires in". */}
+      {stage === "gone" ? null : (
+        <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>
+      )}
       {chooser.readError ? (
         <p role="alert">
           {chooser.readError}{" "}
