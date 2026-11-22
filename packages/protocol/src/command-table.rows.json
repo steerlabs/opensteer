@@ -2761,17 +2761,17 @@
       "faces": [
         {
           "when": null,
-          "class": "narrow",
+          "class": "destroy",
           "answers": {
             "a": "now",
             "b": "ask",
             "c": "now",
-            "d": "now"
+            "d": "ask"
           }
         }
       ],
       "step": "A",
-      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); destroy, as decided: it cannot be put back, so a connection removes it only at Full access and a selected grant asks",
       "stepFor": {
         "d": "B"
       },
@@ -2810,7 +2810,7 @@
       "faces": [
         {
           "when": null,
-          "class": "narrow",
+          "class": "destroy",
           "answers": {
             "a": "now",
             "b": "ask",
@@ -2820,7 +2820,7 @@
         }
       ],
       "step": "A",
-      "note": "Home-wide, not a grant-nameable resource; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "note": "Home-wide, not a grant-nameable resource; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); destroy, as decided: it cannot be put back, so a connection removes it only at Full access and a selected grant asks",
       "effect": {
         "where": "outside",
         "why": "browser-source-registration.ts:113: the paired Chrome's copies"

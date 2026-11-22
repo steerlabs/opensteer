@@ -220,6 +220,52 @@ describe("the command rule, generated from the table", () => {
     }
   });
 
+  it("lets a connection remove something for good only at Full access (the lead's C2 line)", () => {
+    for (const type of [
+      "browser.profile.delete",
+      "browser.history.clear",
+      "browser.history.remove",
+      "browser.site.remove",
+      "machine.revoke",
+    ]) {
+      const at = (grant: "everything" | "selected", mode: ThreadAccessMode) =>
+        answer(type, 0, {
+          connection: { grant },
+          mode,
+          reach: true,
+          ownWork: true,
+          ownLineage: true,
+        });
+      expect(at("everything", "full-access"), type).toBe("now");
+      for (const mode of belowFullAccess)
+        expect(at("everything", mode), `${type} ${mode}`).toBe("ask");
+      for (const mode of ThreadAccessModeSchema.options)
+        expect(at("selected", mode), `${type} selected ${mode}`).not.toBe("now");
+    }
+  });
+
+  it("lets a connection change and run an automation in its own lineage as the rule says (X11 pin)", () => {
+    const own = (mode: ThreadAccessMode) => ({
+      connection: { grant: "everything" as const },
+      mode,
+      reach: true,
+      ownWork: true,
+      ownLineage: true,
+    });
+    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    for (const command of [
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
+      { type: "trigger.update", triggerId: "trg_1", input: { program } },
+      { type: "trigger.run", triggerId: "trg_1" },
+    ]) {
+      const at = (mode: ThreadAccessMode) =>
+        commandRule(row(command.type), commandFace(command as never), own(mode)).answer;
+      expect(at("full-access"), command.type).toBe("now");
+      // Below Full access these need Full access today (D1), so they ask.
+      for (const mode of belowFullAccess) expect(at(mode), `${command.type} ${mode}`).toBe("ask");
+    }
+  });
+
   it("asks your own agent below Full access about a task above its mode", () => {
     // In reach (the person's own task) but not its own work: a higher mode than it holds.
     for (const [type, table] of Object.entries(commandTable)) {

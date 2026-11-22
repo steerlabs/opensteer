@@ -241,6 +241,23 @@ describe("the command table", () => {
     expect(missing).toEqual([]);
   });
 
+  it("sets no endpoint when it sets a model's limits (brief 10a holds for it by its shape)", () => {
+    const configure = (settings: unknown) =>
+      hostApi["commands.dispatch"].payload.safeParse({
+        type: "harness.model.configure",
+        idempotencyKey: "k",
+        environmentId: "env_00000000-0000-4000-8000-000000000001",
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000000001",
+        nativeModelId: "gpt-5.6-sol",
+        settings,
+      }).success;
+    expect(configure({ contextWindow: 100_000 })).toBe(true);
+    expect(configure({ contextWindow: 100_000, baseUrl: "https://elsewhere.example" })).toBe(false);
+    expect(configure({ contextWindow: 100_000, endpoint: "https://elsewhere.example" })).toBe(
+      false,
+    );
+  });
+
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
     const verdicts = (expected as unknown as { inputs: Record<string, string> }).inputs;
     const paths = decidingInputPaths();

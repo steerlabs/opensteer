@@ -1150,7 +1150,8 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     stepFor: { selected: "B" },
-    faces: one("narrow"),
+    // Removing for good, as the lead decided: a removed history entry cannot be put back.
+    faces: one("destroy"),
     governs: (c) => resource("browser-profile", c.profileId),
   },
   "browser.history.clear": {
@@ -1164,7 +1165,8 @@ export const commandTable: CommandTable = {
     family: "browser",
     scope: "home",
     step: "A",
-    faces: one("narrow"),
+    // Removing for good, as the lead decided: a removed site signs the person out and cannot be put back.
+    faces: one("destroy"),
     governs: home("chrome-sign-ins"),
   },
   "browser.source.pair": {
