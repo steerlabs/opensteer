@@ -1264,7 +1264,41 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
     signal: AbortSignal,
     check?: Check,
   ) {
-    return this.updateBootstrap(id, enrolled, signal, check);
+    // Z1: Pool host metadata scrub removes `user-data` (the secret carrier) and leaves
+    // `opensteer-bootstrap-ready` intact (non-secret) so a re-run of `opensteer-pool-download.service`
+    // after a failure between `boot-complete` and `systemctl enable` (or before token removal) can
+    // still pass the metadata gate and finish cleanly.
+    const vm = await this.#readRef(id, signal, true);
+    if (!vm) return false;
+    if (!vm.metadata) return true;
+    const items = vm.metadata.items;
+    const hasUserData = items.some(({ key }) => key === "user-data");
+    const hasReady = items.some(({ key }) => key === googleBootstrapReadyKey);
+    if (!enrolled && (!hasUserData || hasReady)) return true;
+    if (enrolled && !hasUserData) return true;
+    try {
+      await this.#write(`${this.#zone}/instances/${vm.name}/setMetadata`, "zone", signal, {
+        method: "POST",
+        check,
+        observedVersion: `${id}/${vm.metadata.fingerprint}`,
+        body: {
+          fingerprint: vm.metadata.fingerprint,
+          items: enrolled
+            ? items.filter(({ key }) => key !== "user-data")
+            : [...items, { key: googleBootstrapReadyKey, value: "1" }],
+        },
+      });
+    } catch (error) {
+      if (hasStatus(error, 412)) return false;
+      throw error;
+    } finally {
+      await this.#refreshAfterWrite(vm.name, signal);
+    }
+    if (enrolled) {
+      const updated = await this.#readRef(id, signal);
+      return updated !== undefined && poolHostBootstrapMetadata(updated) === "absent";
+    }
+    return true;
   }
 
   async canRecoverPoolHostWrite(write: BrowserPoolHostProviderWrite, signal: AbortSignal) {
@@ -1619,6 +1653,14 @@ function verifyNamedPoolHostInstance(vm: Instance, id: BrowserPoolHostId, genera
   return vm;
 }
 
+function poolHostBootstrapMetadata(vm: Instance): NonNullable<VmServer["bootstrapMetadata"]> {
+  const hasUserData = vm.metadata?.items.some(({ key }) => key === "user-data") ?? false;
+  if (!hasUserData) return "absent";
+  return vm.metadata?.items.some(({ key }) => key === googleBootstrapReadyKey)
+    ? "enabled"
+    : "pending";
+}
+
 function googlePoolHostVm(vm: Instance, generation?: number): PoolHostVm {
   if (!generation) throw refused("conflict", "The Google VM has no browser pool host generation");
   const nic = vm.networkInterfaces[0];
@@ -1628,6 +1670,6 @@ function googlePoolHostVm(vm: Instance, generation?: number): PoolHostVm {
     status:
       vm.status === "RUNNING" ? "running" : vm.status === "TERMINATED" ? "off" : "transitioning",
     internalIpv4: nic?.networkIP ?? null,
-    bootstrapMetadata: bootstrapMetadata(vm),
+    bootstrapMetadata: poolHostBootstrapMetadata(vm),
   };
 }
