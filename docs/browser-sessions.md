@@ -48,33 +48,36 @@ Blink page state and detaching CDP), so it wakes with its history, scroll, stand
 `tabGroups` and `debugger` permissions only, hidden from tab lists, session CDP and connected
 agents) names a tab only while it sleeps: after Chromium discarded it (a discarded tab runs no
 script, so nothing it opens can share its name), it puts the tab in its own tab group whose title
-is that sleep's name. A wake finds the one tab carrying the name, activates it, takes its page only
-if the name is still on that one tab, and removes the name. Opensteer reads Chromium's tabs only
+is that sleep's name, in the same call as the discard. A wake finds the one tab carrying the name,
+activates it, takes its page only if the name is still on that one tab and it is that page's, and
+then removes the name. A wake that cannot finish removes the tab before the tab is opened again by
+its address; one whose open was abandoned leaves the tab asleep. Opensteer reads Chromium's tabs only
 from a read that agrees with itself; otherwise the answer is "not known", never "absent". The
 helper marks each tab it sees as not discardable by Chromium itself, so Opensteer is the one that
 discards. A tab that cannot be put to sleep under its name is closed and wakes by address; one whose
-end is not proven stays guarded until it is. Closing a sleeping tab or ending its session removes it
+end is not proven stays guarded until it is, and a discarded tab without a name, which only a sleep
+that failed can leave, is removed with it. Closing a sleeping tab or ending its session removes it
 from Chromium on evidence: when the session's end returns, the tab is out of every session's reach,
 and a removal that is not confirmed is retried in the background a bounded number of times and then
-reported as not removed, still guarded. A page reaches a session only as the runtime's own new
-page, a page opened by one already handed off, or the tab a wake took by its name; any other page
-is closed. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
+reported as not removed, still guarded. A page whose tab carries no sleep name is an ordinary
+page, handed to sessions as any page is, also when the page that opened it has already closed. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
 sleeper reacts to container working set (`memory.current - inactive_file` against `memory.max`, or
 bare-Linux `MemTotal - MemAvailable` against `MemTotal`) — sleeping eligible tabs above 70% and
 stopping below 60%, evaluated on its timer and again before each new page is created: over the
-threshold an open waits, within a bound, while some tab can sleep for it or while the last sleeps'
-memory is still being released — while keeping renderer `Pss` for reporting only and falling back
-to its page estimate when memory state cannot be read. A Home with many tabs on a small machine
-therefore no longer has its browser killed for memory: tabs nobody is using sleep, and wake with
-their state while the browser keeps running.
+threshold an open waits, within a bound of about two seconds, while some tab can sleep for it or
+while the last sleeps' memory is still being released, and reads the memory again before it goes —
+while keeping renderer `Pss` for reporting only and falling back to its page estimate when memory
+state cannot be read. Sleeping makes it unlikely that a Home with many tabs on a small machine runs
+out of memory; it does not make it impossible. When every tab is in use, nothing can sleep, and a
+new tab still opens.
 
 When the browser itself restarts on a Linux Home or a Cloud Computer (a Home update, a crash, a cold
 start), each tab reopens at its address. What was typed into a page and not sent, its scroll
 position and its back history are not kept across that restart; sign-ins are kept, since they live
 in the profile. On a Cloud Computer the browser pool keeps the exact state through idle time, so a
-restart is the rare case there. Chromium never loads its last session: the launcher deletes its
-session records before launch, so nothing of the last run comes back, while Chromium still keeps
-its session cookies.
+restart is the rare case there. Before each launch the launcher deletes the last session's records
+in the profile directory Opensteer owns, so Chromium has no tabs to bring back while it still keeps
+the profile's session cookies; a launch that finds a page anyway refuses to start.
 Passwords, `contenteditable` drafts, in-progress uploads, playing media position and arbitrary script
 memory are never promised; POST results and playing media stay awake during tab sleep. Phones and
 Guest sessions promise only a descriptor and URL reload.
