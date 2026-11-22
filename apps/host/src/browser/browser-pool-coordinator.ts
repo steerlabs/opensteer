@@ -142,6 +142,8 @@ export interface BrowserPoolCoordinatorOptions {
    * the wait.
    */
   readonly refusedRetryMs?: number;
+  /** The longest wait before a refusal is asked again (5 minutes). */
+  readonly refusedRetryMaxMs?: number;
   /** How long a lost Runner channel may take to come back before its sessions end. */
   readonly channelDeadlineMs?: number;
   /** How long a restart waits for every holder to let go before it settles them itself. */
@@ -604,7 +606,10 @@ export class BrowserPoolCoordinator {
           if (announce) await this.#announce(changed);
           const first = this.#options.refusedRetryMs ?? refusedRetryMs;
           await delay(
-            Math.min(first * 2 ** Math.min(refusals++, 16), refusedRetryMaxMs),
+            Math.min(
+              first * 2 ** Math.min(refusals++, 16),
+              this.#options.refusedRetryMaxMs ?? refusedRetryMaxMs,
+            ),
             undefined,
             {
               signal: changed,

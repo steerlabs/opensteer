@@ -340,6 +340,9 @@ async function world(key: string) {
       // Unknown is asked again later each time; capped short here so that a schedule's rest,
       // which starts as the host answers again, is reached within the settle bound.
       unansweredRetryMaxMs: 2_000,
+      // A refusal is asked again later each time too, capped as short.
+      refusedRetryMs: 100,
+      refusedRetryMaxMs: 2_000,
       // A running guest's status is read this often (its egress proxy can go down under it).
       statusEveryMs: 200,
       onError: () => errors.push(Date.now()),
@@ -468,17 +471,20 @@ async function world(key: string) {
      * The account places a different target, on another host: the old coordinator retires,
      * the old target is forgotten, and the new one is adopted. The old host answers as it did.
      */
-    swap: async () => {
-      // Evidence could still come about its Stops: its host had signed that the guest is gone,
-      // or it answered with its guest running.
-      current.retired = {
-        reachable:
-          current.goneSigned || (current.answers === "signed" && current.guest.state === "running"),
-      };
+    /** `closesWork`: whether page closes take (none is failing call after call). */
+    swap: async (closesWork: () => boolean) => {
+      const old = current;
+      const reachable = () =>
+        old.goneSigned ||
+        (old.answers === "signed" && old.guest.state === "running" && closesWork());
+      const before = reachable();
       const next = await newTarget();
       all.push(next);
       await home.service.retirePool(task.runnerId, "browser-replaced");
       await retireBrowserPoolTarget(database, task.runnerId);
+      // Evidence about its Stops could come only if, all through its retirement, its host had
+      // signed the guest gone, or answered with its guest running and its pages able to close.
+      old.retired = { reachable: before && reachable() };
       current = next;
       home = { service: home.service, coordinator: newCoordinator(next) };
       await home.service.adoptPool(task.runnerId, home.coordinator);
@@ -691,6 +697,8 @@ async function schedule(
     );
   };
   let failingCloses: ReturnType<typeof vi.spyOn> | undefined;
+  /** No page close is made to fail call after call (a single failure is retried by the runtime). */
+  const closesWork = () => failingCloses === undefined;
   const run = async (action: Action, index: number) => {
     const home = w.home();
     switch (action) {
@@ -787,7 +795,7 @@ async function schedule(
       case "host-stops-guest":
         return w.hostStops();
       case "swap":
-        return bounded("swap", () => w.swap(), true);
+        return bounded("swap", () => w.swap(closesWork), true);
       case "fence":
         if (!w.current().over) await w.fence().catch(() => undefined);
         return;
@@ -837,9 +845,10 @@ async function schedule(
   w.answer("signed");
   w.proxyHeals();
   failingCloses?.mockRestore();
+  failingCloses = undefined;
   vi.restoreAllMocks();
   log.push("rest");
-  if (!released && w.current().over) await bounded("swap", () => w.swap(), true);
+  if (!released && w.current().over) await bounded("swap", () => w.swap(closesWork), true);
   if (stuck) return violations;
   // An open that never answered within its bound may still have made a session: it is tracked.
   for (const { id } of await w.rows()) track(id, false);
