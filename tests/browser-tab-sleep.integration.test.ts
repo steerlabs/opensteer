@@ -426,7 +426,7 @@ integration("Linux tab sleep through Home BrowserService", () => {
         contextHandle: {
           removals: Map<string, unknown>;
           unremovable: Set<string>;
-          sleepingByToken: Map<string, unknown>;
+          sleeping: Map<string, unknown>;
         };
       }
     ).contextHandle;
@@ -434,9 +434,9 @@ integration("Linux tab sleep through Home BrowserService", () => {
       writes.some((line) => line.includes('"browser-runtime.tab-removal-unconfirmed"'));
     await vi.waitFor(
       () =>
-        expect(
-          unconfirmed() || (guards.removals.size === 0 && guards.sleepingByToken.size === 0),
-        ).toBe(true),
+        expect(unconfirmed() || (guards.removals.size === 0 && guards.sleeping.size === 0)).toBe(
+          true,
+        ),
       { timeout: 40_000, interval: 100 },
     );
     if (unconfirmed()) expect(guards.unremovable.size).toBe(1);
