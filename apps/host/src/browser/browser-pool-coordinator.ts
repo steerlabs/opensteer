@@ -42,6 +42,7 @@ import {
   type BrowserPoolPhysicalStatus,
 } from "./browser-pool-controller.js";
 import { BrowserPoolGate } from "./browser-pool-gate.js";
+import { BrowserPoolAgentSlotDeleted } from "./browser-pool-agent-client.js";
 
 /** The runtime's signed control channel; in-process for the loopback target. */
 /**
@@ -206,6 +207,11 @@ export class BrowserPoolCoordinator {
   #signal: AbortSignal | undefined;
   /** Live state is given up for (R3): a step the next turn may choose, never run from a catch. */
   #discardWanted: string | undefined;
+  /**
+   * The target answered, signed, that this Home's guest is gone (`slot-deleted`, `fenced`): its
+   * sessions are ended, nothing more is sent to it, and the loop waits for a new target.
+   */
+  #over: string | undefined;
   /** The controller's reason for the last start or wake it refused; cleared once one applies. */
   #refused: { readonly reason: string; readonly since: Date } | undefined;
 
@@ -370,6 +376,8 @@ export class BrowserPoolCoordinator {
   restart(input: { readonly key?: string } = {}): Promise<void> {
     if (this.#released)
       return Promise.reject(new BrowserPoolAdmissionClosed("This device was removed."));
+    if (this.#over)
+      return Promise.reject(new BrowserPoolAdmissionClosed("This browser is not ready."));
     this.#restartWanted ??= { keys: new Set(), done: Promise.withResolvers() };
     // Past the bound a key joins the same outcome without being recorded.
     if (input.key && this.#restartWanted.keys.size < restartKeysKept)
@@ -470,6 +478,11 @@ export class BrowserPoolCoordinator {
         this.#publish(this.#slot);
       } catch (error) {
         this.#options.onError?.(error);
+        const over = targetOver(error);
+        if (over && !this.#released) {
+          await this.#endOver(over).catch((failure: unknown) => this.#options.onError?.(failure));
+          continue;
+        }
         if (error instanceof BrowserPoolNotStarted) {
           // Not started, and nothing of the guest lost: asked again later, never a reason to
           // give live state up, and spaced so the host is not asked in a loop.
@@ -508,6 +521,11 @@ export class BrowserPoolCoordinator {
     this.#publish(slot);
     if (this.#released || slot?.phase === "releasing")
       return { name: "release", run: () => this.#releaseStep(slot) };
+    // Nothing more is sent to a target that is over; a new target is a new coordinator.
+    if (this.#over) {
+      if (this.#parkWanted) this.#settlePark("vetoed");
+      return undefined;
+    }
     // A restart accepted before a Home crash is finished by this Home, once.
     const pending = slot ? pendingRestart(slot) : [];
     if (!this.#restartWanted && pending.length)
@@ -572,9 +590,11 @@ export class BrowserPoolCoordinator {
       hold:
         this.#released || slot?.phase === "releasing"
           ? "released"
-          : this.#restartWanted
-            ? "restart"
-            : null,
+          : this.#over
+            ? "over"
+            : this.#restartWanted
+              ? "restart"
+              : null,
     });
     // A park that failed after D ends where the browser settled.
     if (this.#parkSettling && slot?.phase === "parked") this.#settlePark("parked");
@@ -642,6 +662,50 @@ export class BrowserPoolCoordinator {
     for (const sessionId of back)
       if (this.#lost.get(sessionId) === answering.get(sessionId)) this.#lost.delete(sessionId);
     if (back.length < within.length) throw new Error("A session is not back yet.");
+  }
+
+  /**
+   * The target is over: this Home's guest is gone, by the target's own signed word. Every
+   * session of the runtime ends with its note; waiting callers are refused at once (the gate's
+   * hold); a restart asked is refused; the loop sends nothing more and waits for a new target.
+   */
+  async #endOver(reason: string): Promise<void> {
+    this.#over = reason;
+    this.#refused = { reason, since: new Date() };
+    this.#display = { phase: "failed", since: new Date() };
+    // The gate holds first: a caller is refused from now on.
+    this.#publish(this.#slot);
+    this.#settlePark("vetoed");
+    this.#recovered = true;
+    this.#recovering.resolve();
+    try {
+      await this.#endOverSessions(reason);
+    } finally {
+      // A restart asked is answered once the sessions have their end.
+      this.#restartWanted?.done.reject(
+        new BrowserPoolAdmissionClosed("This browser is not ready."),
+      );
+      this.#restartWanted = undefined;
+      await announceBrowserPool(this.#options.database).catch(() => undefined);
+    }
+  }
+
+  async #endOverSessions(reason: string): Promise<void> {
+    const slot = await this.#read();
+    if (slot) {
+      const sessions = await listBrowserPoolRuntimeSessions(
+        this.#options.database,
+        slot.runnerId,
+        slot.runtimeId,
+      );
+      if (sessions.length)
+        await advanceBrowserPoolSlot(
+          this.#options.database,
+          slot,
+          { phase: slot.phase },
+          await this.#lossesOf(slot, sessions, reason),
+        );
+    }
   }
 
   /**
@@ -725,13 +789,20 @@ export class BrowserPoolCoordinator {
     // Home sent has its answer: each open one is sent again by its own id first (P1). A Start
     // still on its way after the slot is deleted is the agent's to refuse, by the slot and its
     // term (tests/browser-pool-pair.integration.test.ts).
-    await this.#journal.settleStarts(this.#signal);
-    const status = await this.#status();
-    if (status.phase !== "stopped") {
-      const stopped = await this.#call(slot, "stop", status, true);
-      if (!stopped.applied && stopped.status.phase !== "stopped")
-        throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
-    }
+    // A target that answered, signed, that the guest is gone (the slot deleted, or another
+    // term) is that evidence: nothing more is asked of it.
+    if (!this.#over)
+      try {
+        await this.#journal.settleStarts(this.#signal);
+        const status = await this.#status();
+        if (status.phase !== "stopped") {
+          const stopped = await this.#call(slot, "stop", status, true);
+          if (!stopped.applied && stopped.status.phase !== "stopped")
+            throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
+        }
+      } catch (error) {
+        if (!targetOver(error)) throw error;
+      }
     await finishBrowserPoolRelease(this.#options.database, this.#options.runnerId);
     this.#slot = undefined;
     this.#ended = true;
@@ -908,7 +979,7 @@ export class BrowserPoolCoordinator {
     restartKeys?: ReadonlySet<string>,
   ): Promise<BrowserPoolControllerResult> {
     this.#signal?.throwIfAborted();
-    return this.#journal.call(
+    const result = await this.#journal.call(
       {
         slotId: this.#options.slotId,
         term: this.#options.term,
@@ -923,6 +994,9 @@ export class BrowserPoolCoordinator {
       this.#signal,
       restartKeys?.size ? [...restartKeys] : undefined,
     );
+    // Stored and signed: the call's term is not the slot's. This target is over for this Home.
+    if (!result.applied && result.reason === "fenced") throw new BrowserPoolTargetFenced();
+    return result;
   }
 
   /** A runtime control the controller signed. A lost reply is read back from the runtime. */
@@ -951,6 +1025,7 @@ export class BrowserPoolCoordinator {
       this.#signal,
     );
     const issued = signed.control;
+    if (!signed.applied && signed.reason === "fenced") throw new BrowserPoolTargetFenced();
     if (
       !signed.applied ||
       !signed.signature ||
@@ -1589,6 +1664,21 @@ const discardAfterAttempts = 6;
 const selectionMs = 30_000;
 const refusedRetryMs = 5_000;
 const refusedRetryMaxMs = 5 * 60_000;
+
+/**
+ * The target's own signed word that this Home's guest is gone: the host key's answer that the
+ * slot was deleted, or a stored answer that the call's term is not the slot's (`fenced`).
+ * Unsigned refusals are not this: they stay "unknown, ask again".
+ */
+function targetOver(error: unknown): string | undefined {
+  if (error instanceof BrowserPoolAgentSlotDeleted) return "slot-deleted";
+  if (error instanceof BrowserPoolNotStarted && error.reason === "fenced") return "fenced";
+  if (error instanceof BrowserPoolTargetFenced) return "fenced";
+  return undefined;
+}
+
+/** A call the controller refused, signed and stored, because its term is not the slot's. */
+class BrowserPoolTargetFenced extends Error {}
 
 /** The controller answered, signed and stored, that it did not start or wake the guest. */
 class BrowserPoolNotStarted extends Error {

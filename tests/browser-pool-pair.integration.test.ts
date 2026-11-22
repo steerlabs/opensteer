@@ -204,6 +204,8 @@ async function mountedAgentController(slotId: string) {
     url: agent.url,
     homeKey: home.privateKey,
     agentKey: publicKey,
+    // The host key alone signs the answer that the slot was deleted.
+    hostKey: agent.hostPublicKey,
   });
   const visible = new Set(["start", "pause", "resume", "stop"]);
   return {
@@ -608,4 +610,60 @@ it("lets a removal end a choice of the next step stuck on its read", async () =>
     { timeoutError: () => new Error("The removal waits behind a stuck choice of the next step.") },
   );
   expect((await p.status()).phase).toBe("stopped");
+});
+
+// ---- P10: a signed answer that the target is over is final ------------------------------------
+
+it("finishes a removal whose slot the host already deleted, on the host's signed word", async () => {
+  const mounted = await mountedAgentController("slot-over-release");
+  const p = await pair("over-release", mounted);
+  const home = p.home();
+  await home.recover();
+  await mounted.agent.agent.deleteSlot("slot-over-release");
+  await withTimeout(
+    (async () => {
+      await home.releaseDevice();
+      await home.released();
+    })(),
+    10_000,
+    { timeoutError: () => new Error("The removal is still asking a deleted slot.") },
+  );
+  expect(await p.slot()).toBeUndefined();
+});
+
+it("ends the sessions of a browser whose slot the host deleted, sends nothing more, and refuses callers at once", async () => {
+  const mounted = await mountedAgentController("slot-over-running");
+  const p = await pair("over-running", mounted);
+  const home = p.home();
+  await home.recover();
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await createBrowserSession(p.fixture.database, {
+    id: sessionId,
+    ownerId: p.task.userId,
+    opener: { kind: "person", userId: p.task.userId },
+    origin: "person",
+    placementKey: "pool-test",
+    profileId: null,
+    runnerId: p.task.runnerId,
+    runtimeId: "pool-runtime",
+  });
+  await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
+  await mounted.agent.agent.deleteSlot("slot-over-running");
+  // The person's restart reaches the host, which says, signed, that the slot is gone.
+  await expect(
+    withTimeout(home.restart({ key: "over" }), 10_000, {
+      timeoutError: () => new Error("The restart is still asking a deleted slot."),
+    }),
+  ).rejects.toThrow("not ready");
+  expect(
+    (await getBrowserSessionForOwner(p.fixture.database, sessionId, p.task.userId))?.state,
+  ).toBe("failed");
+  // A caller is refused at once rather than at its deadline, and nothing more reaches the host.
+  const asked = Date.now();
+  await expect(home.gate.reserve(AbortSignal.timeout(15_000))).rejects.toThrow("not ready");
+  expect(Date.now() - asked).toBeLessThan(2_000);
+  expect(home.report()).toMatchObject({ refused: "slot-deleted" });
+  const calls = p.answered.length;
+  await home.restart().catch(() => undefined);
+  expect(p.answered.length).toBe(calls);
 });

@@ -5,7 +5,11 @@ import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 export type BrowserPoolAway = "parking" | "parked" | "waking" | "reconnecting";
 
 /** What holds admission closed whatever the browser is doing. */
-export type BrowserPoolHold = "restart" | "released";
+/**
+ * `restart`: until the fresh guest is installed. `released`: for good (the device was removed).
+ * `over`: the target answered, signed, that this Home's guest is gone; until a new target.
+ */
+export type BrowserPoolHold = "restart" | "released" | "over";
 
 export interface BrowserPoolReservation {
   release(): void;
@@ -64,9 +68,17 @@ export class BrowserPoolGate {
   }
 
   /** One word for clients and logs; the facts themselves decide admission. */
-  get phase(): "recovering" | "open" | "preparing" | BrowserPoolAway | "restarting" | "released" {
+  get phase():
+    | "recovering"
+    | "open"
+    | "preparing"
+    | BrowserPoolAway
+    | "restarting"
+    | "released"
+    | "unavailable" {
     if (this.#hold === "released") return "released";
     if (this.#hold === "restart") return "restarting";
+    if (this.#hold === "over") return "unavailable";
     if (!this.#recovered) return "recovering";
     if (this.#preparing) return "preparing";
     return this.#away ?? "open";
@@ -182,6 +194,9 @@ export class BrowserPoolGate {
                 "The pooled browser did not wake in time. Nothing was sent.",
                 signal.reason,
               );
+        // A target that is over has no browser to wait for: refused at once, not at a deadline.
+        if (this.#hold === "over")
+          throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
         if (this.admits) return this.#take();
