@@ -810,6 +810,56 @@ integration.sequential("automation failure notices", () => {
     expect(raw.outcome).toBe("unknown");
     expect(raw.status).toBe("failed");
   });
+
+  it("keeps status and outcome in lockstep across failCommand and cancelPendingOccurrences (Z3)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, detail, start, store, triggers } = storeFixture;
+    const fixture = await createFixture("z3-single-writer");
+    const created = await createCronTrigger(fixture, "z3-writer");
+
+    // 1. startExecution -> failCommand must surface as "failed", never stale "running".
+    const first = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const startedFirst = await start(fixture, first, "boot-z3");
+    await store.failCommand(startedFirst.commandId, "program refused before send");
+    const afterFail = await detail(created.trigger.id, fixture.userId);
+    expect(afterFail.occurrences[0]?.status).toBe("failed");
+    const listAfterFail = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    expect(
+      listAfterFail.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
+    ).toBe("failed");
+
+    // 2. startExecution -> retryCommand(provenNotStarted) -> cancelPendingOccurrences must surface as "canceled".
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const startedSecond = await start(fixture, second, "boot-z3");
+    await store.retryCommand(startedSecond.commandId, "runner busy", { provenNotStarted: true });
+    const canceled = await triggers.cancelPendingOccurrences(fixture.userId, {
+      actorThreadId: null,
+      occurrenceId: second.id,
+      triggerId: created.trigger.id,
+    });
+    expect(canceled.canceledOccurrenceIds).toEqual([second.id]);
+    const afterCancel = await detail(created.trigger.id, fixture.userId);
+    expect(afterCancel.occurrences.find((o) => o.id === second.id)?.status).toBe("canceled");
+    const listAfterCancel = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    expect(
+      listAfterCancel.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
+    ).toBe("canceled");
+  });
   it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("watch");
