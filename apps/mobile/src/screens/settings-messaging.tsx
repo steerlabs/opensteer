@@ -73,7 +73,6 @@ function Messaging({
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [runnerId, setRunner] = useState("");
-  const [handles, setHandles] = useState("");
   const [shared, setShared] = useState(false);
   const change = useScreenAction(host, "channel-change", {
     label: "save the change",
@@ -215,7 +214,10 @@ function Messaging({
       const computer = provider.transportKinds.includes("computer");
       if (computer) {
         rows.push(
-          input("handles", "Your iMessage addresses, separated by commas", handles, setHandles),
+          text(
+            "how",
+            "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
+          ),
         );
         rows.push(
           ...host

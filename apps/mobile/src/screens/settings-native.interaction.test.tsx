@@ -215,7 +215,13 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
     connectionId,
   });
   await press("iMessage");
-  await input("Your iMessage addresses, separated by commas", "owner@example.com");
+  // Nothing is asked that the Home would throw away: who "me" is comes after, by a code.
+  expect(rows().some((candidate) => candidate.kind === "input")).toBe(false);
+  expect(
+    row(
+      "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
+    ).kind,
+  ).toBe("text");
   await press("Connect");
   expect(commands.at(-1)).toMatchObject({ type: "channel.connection.computer.create" });
   await press("Cancel");
