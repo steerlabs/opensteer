@@ -858,9 +858,12 @@ async function schedule(
         await checkClosed();
         expect((await w.closingRows()).open).toEqual([]);
         const slot = await w.slot();
-        if (released) expect(slot).toBeUndefined();
-        else expect(["running", "parked"]).toContain(slot?.phase);
-        expect(await w.unsettledCalls()).toBe(0);
+        // A release of a fenced target waits for a word its host will never sign for this
+        // Home (unknown): its slot stays releasing, its calls unsettled.
+        const fenced = w.current().over && !w.current().goneSigned;
+        if (released && !fenced) expect(slot).toBeUndefined();
+        if (!released) expect(["running", "parked"]).toContain(slot?.phase);
+        if (!(released && fenced)) expect(await w.unsettledCalls()).toBe(0);
       },
       { timeout: settleBoundMs, interval: 100 },
     )
@@ -1297,6 +1300,60 @@ const named: readonly {
       "fence",
       "proxy-down",
       "drop-channel&3",
+    ],
+  },
+  {
+    // The long run (seeds 20000 on): proxy down was shown again while the slot was preparing: the park's own status read set it.
+    name: "a proxy down as the guest is parked (seed 20099)",
+    seed: 20099,
+    steps: [
+      "stop",
+      "proxy-heals&3",
+      "stop",
+      "host-stops-guest",
+      "restart-home",
+      "open&3",
+      "wake",
+      "open&2",
+      "heal-page-close",
+      "stop",
+      "open&2",
+      "park",
+      "stop&2",
+      "stop&2",
+      "stop",
+      "host-unsigned",
+      "wake",
+      "restart-runtime",
+      "proxy-down",
+      "wake",
+    ],
+  },
+  {
+    // The long run (seeds 20000 on): a failed start was counted for a fresh start given up as the slot moved under it (another Home's write), not for the browser failing to come up.
+    name: "a fresh start a closed Home gave up, around Home restarts (seed 20196)",
+    seed: 20196,
+    steps: [
+      "open",
+      "proxy-down",
+      "open",
+      "restart-runtime&3",
+      "host-back&1",
+      "restart-home",
+      "park-stop",
+      "stop",
+      "wake",
+      "browser-ends",
+      "wake",
+      "proxy-heals",
+      "open",
+      "proxy-heals",
+      "host-back&1",
+      "fail-page-close",
+      "proxy-heals",
+      "restart-home",
+      "drop-channel&2",
+      "fail-page-close",
     ],
   },
 ];

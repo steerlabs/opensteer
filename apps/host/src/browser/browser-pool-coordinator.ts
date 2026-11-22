@@ -1258,7 +1258,10 @@ export class BrowserPoolCoordinator {
       this.#signal,
     );
     this.#statusReadAt = Date.now();
-    const down = status.phase === "running" && status.proxy === "down";
+    // A fact of a running instance (W4): a status read while the slot is on its way out of
+    // running (a park's own reads) does not make it shown again.
+    const down =
+      status.phase === "running" && status.proxy === "down" && this.#slot?.phase === "running";
     if (down !== this.#proxyDown) {
       this.#proxyDown = down;
       // Clients learn at once that browsing is paused, or back.
@@ -1753,7 +1756,14 @@ export class BrowserPoolCoordinator {
       this.#display = { phase: "failed", since: new Date() };
       // A start the host refused, or one into a target that is over (the slot deleted, or the
       // term superseded), is no failed start: the browser did not fail to come up.
-      if (!(error instanceof BrowserPoolNotStarted) && !targetOver(error))
+      // Nor is a start this Home gave up because it closed, or because the slot moved under it
+      // (another step's write): neither is the browser failing to come up.
+      if (
+        !(error instanceof BrowserPoolNotStarted) &&
+        !targetOver(error) &&
+        !(error instanceof BrowserPoolAdmissionClosed) &&
+        !this.#closed
+      )
         await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
           () => undefined,
         );
