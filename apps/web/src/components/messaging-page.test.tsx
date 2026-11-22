@@ -103,7 +103,7 @@ describe("Messaging", () => {
       // Its chats, each a connected agent with the line the list shows.
       await vi.waitFor(() => expect(text.length).toBeGreaterThan(0));
       await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
-      expect(page.textContent).toContain("Paused · its replies are held until it’s back");
+      expect(page.textContent).toContain("#team on Slack, through Workshop · Tasks · Supervised");
       const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Slack · #team");
       expect(link?.getAttribute("href")).toBe(
         "/settings/external-agents/mcn_00000000-0000-4000-8000-0000000000c2",

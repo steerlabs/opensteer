@@ -259,7 +259,7 @@ it.each(["ios", "android"])(
     await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
     const chat = row("Slack · #team");
     expect(chat.kind === "button" && chat.detail).toBe(
-      "Paused · its replies are held until it’s back",
+      "#team on Slack, through Workshop · Tasks · Supervised",
     );
     if (chat.kind !== "button") throw new Error("Not a button");
     await act(async () => chat.onPress());

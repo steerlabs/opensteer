@@ -342,8 +342,10 @@ function mockChats(now: Date): readonly AgentConnection[] {
       channelConnectionId: slackChannel,
       conversation: { id: "C-TEAM", name: "#team" },
       senders: "anyone",
-      state: "paused",
-      bridge: { pausedBy: "you", pauseDetail: null, pausedMessages: "lost" },
+      // The Home sends who is you on the account, whoever may speak in the chat.
+      me: tim,
+      // Its account, Workshop, is connected: so is the chat.
+      state: "active",
     }),
     chat({
       n: 3,
@@ -365,7 +367,8 @@ function mockChats(now: Date): readonly AgentConnection[] {
       accountName: "On-call",
       channelConnectionId: pagerChannel,
       senders: "owner",
-      me: tim,
+      // Nobody is linked as you on On-call yet, as its Messaging account says.
+      me: null,
       state: "paused",
       bridge: {
         pausedBy: "needs-attention",
@@ -486,7 +489,9 @@ export function mockConnectedAgents(
     }),
   ];
   if (scene === "expired") return { connections };
-  if (scene === "chats") return { connections: mockChats(now), channels: mockChannels(now) };
+  // Chats are listed beside an ordinary connected agent, as on a real Home.
+  if (scene === "chats")
+    return { connections: [connections[1]!, ...mockChats(now)], channels: mockChannels(now) };
   if (scene === "chats-empty") return { connections: [], channels: mockChannels(now) };
   const chrome = (computerName: string, n: number, paired = true) => ({
     sourceId: BrowserSourceIdSchema.parse(`bsr_00000000-0000-4000-8000-00000000000${n}`),

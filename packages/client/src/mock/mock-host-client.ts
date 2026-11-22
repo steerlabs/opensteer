@@ -3496,7 +3496,9 @@ async function executeMockCommand(
       return unsupportedMockRpc();
     case "channel.chat.create":
       try {
-        return rpcSuccess({ connection: client.createChat(command), type: command.type });
+        const connection = client.createChat(command);
+        for (const listener of client.connectionsListeners) listener();
+        return rpcSuccess({ connection, type: command.type });
       } catch (error) {
         return mockRefusal(error);
       }
@@ -3514,6 +3516,8 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "channel.connection.status.set":
       await client.setChannelConnectionStatus(command.connectionId, command.status);
+      // Its chats paused, resumed or ended with it.
+      for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type });
     case "node.stop":
       await client.stopNode(command.threadId, command.nodeId);
@@ -10952,6 +10956,25 @@ class MockHostState {
       account.provider;
     const me = this.channels?.me?.find(({ accountId }) => accountId === account.id) ?? null;
     const now = this.now().toISOString();
+    // As on the Home: a chat on an account that is not connected starts paused, saying why and
+    // what becomes of what is sent to it meanwhile.
+    const connection = this.channels?.connections.find(({ id }) => id === account.connectionId);
+    const live = (connection?.status ?? account.status) === "connected";
+    const paused = live
+      ? {}
+      : {
+          pausedBy:
+            (connection?.status ?? account.status) === "paused"
+              ? ("you" as const)
+              : ("needs-attention" as const),
+          pauseDetail:
+            (connection?.status ?? account.status) === "paused"
+              ? null
+              : (connection?.statusDetail ?? null),
+          pausedMessages:
+            channelProviderCatalog.find((entry) => entry.provider === account.provider)
+              ?.pausedMessages ?? ("lost" as const),
+        };
     const chat: import("@opensteer/protocol").AgentConnection = {
       id: `mcn_${crypto.randomUUID()}`,
       userId: this.snapshot.user!.id,
@@ -10962,7 +10985,7 @@ class MockHostState {
       grantRevision: 1,
       consentVersion: 2,
       client: { fingerprint: null, redirectOrigin: null },
-      state: account.status === "connected" ? "active" : "paused",
+      state: live ? "active" : "paused",
       lastActionUncertain: false,
       revokedAt: null,
       createdAt: now,
@@ -10983,6 +11006,7 @@ class MockHostState {
         me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
         unknownReplies: 0,
         tasks: [],
+        ...paused,
       },
     };
     this.connections = [...this.connections, chat];
@@ -11068,10 +11092,40 @@ class MockHostState {
     _credentials: Readonly<Record<string, string>>,
   ): Promise<void> {}
 
+  /** What checking an account finds: ready when connected, otherwise what it reports. */
   async checkChannelConnection(
-    _connectionId: string,
+    connectionId: string,
   ): Promise<import("@opensteer/channel-core").ChannelConnectionInspection> {
-    throw new Error("The mock Host does not persist channel connections.");
+    const connection = this.channels?.connections.find(({ id }) => id === connectionId);
+    const account = this.channels?.accounts.find((row) => row.connectionId === connectionId);
+    if (!connection || !account) throw new Error("Messaging account not found.");
+    if (connection.status === "needs-attention")
+      return {
+        capabilities: [...connection.capabilities],
+        identity: null,
+        issues: [
+          {
+            code: "needs-attention",
+            kind: connection.statusReason ?? "credentials",
+            message: connection.statusDetail ?? "It needs attention.",
+            missing: [],
+          },
+        ],
+        ready: false,
+      };
+    return {
+      capabilities: [...connection.capabilities],
+      identity: {
+        accountDisplayName: account.displayName,
+        connectionDisplayName: connection.displayName,
+        externalAccountId: account.externalAccountId,
+        externalIdentityId: connection.externalIdentityId,
+        handle: account.handle,
+        metadata: {},
+      },
+      issues: [],
+      ready: true,
+    };
   }
 
   /** Pausing or resuming an account pauses or resumes every chat that speaks through it. */

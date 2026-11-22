@@ -3,7 +3,7 @@
 import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { agentWords, HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -433,6 +433,21 @@ describe("one connected agent on the phone", () => {
   });
 });
 
+/** Pauses Workshop, as a person does on Messaging: its chats pause with it. */
+async function pauseWorkshop(client: MockHostClient) {
+  const dashboard = await client.rpc["channels.get"]({});
+  if (!dashboard.ok) throw new Error("No messaging accounts");
+  const workshop = dashboard.data.connections.find(
+    ({ displayName }) => displayName === "Workshop",
+  )!;
+  await client.dispatch({
+    type: "channel.connection.status.set",
+    connectionId: workshop.id,
+    status: "paused",
+    idempotencyKey: mutationIdempotencyKey("channel-status"),
+  });
+}
+
 describe("a chat on the phone", () => {
   const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
   const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
@@ -498,7 +513,10 @@ describe("a chat on the phone", () => {
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
     async (n, sentence) => {
-      await open(chat(n), chats());
+      const client = chats();
+      // #team speaks through Workshop: paused only once Workshop is.
+      if (n === 2) await pauseWorkshop(client);
+      await open(chat(n), client);
       expect(status()).toMatchObject({ label: "Paused", tone: "attention" });
       expect(section("status")?.footer?.text).toContain(sentence);
       expect(section("end")?.rows[0]?.label).toMatch(/^Disconnect /u);

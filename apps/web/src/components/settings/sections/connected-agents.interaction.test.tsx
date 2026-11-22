@@ -3,7 +3,7 @@ import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { agentWords, HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -393,6 +393,21 @@ describe("one connected agent", () => {
   });
 });
 
+/** Pauses Workshop, as a person does on Messaging: its chats pause with it. */
+async function pauseWorkshop(client: MockHostClient) {
+  const dashboard = await client.rpc["channels.get"]({});
+  if (!dashboard.ok) throw new Error("No messaging accounts");
+  const workshop = dashboard.data.connections.find(
+    ({ displayName }) => displayName === "Workshop",
+  )!;
+  await client.dispatch({
+    type: "channel.connection.status.set",
+    connectionId: workshop.id,
+    status: "paused",
+    idempotencyKey: mutationIdempotencyKey("channel-status"),
+  });
+}
+
 describe("a chat, as a connected agent", () => {
   const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
   const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
@@ -401,9 +416,11 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const page = await mount(host);
     await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
+    // Beside an ordinary connected agent; #team speaks through Workshop, which is connected.
     expect(rows(page, "Connected")).toEqual([
+      ["Claude", "Everything · Full access"],
       ["Slack", "Direct messages to Workshop on Slack · Tasks · Supervised"],
-      ["Slack · #team", "Paused · its replies are held until it’s back"],
+      ["Slack · #team", "#team on Slack, through Workshop · Tasks · Supervised"],
       ["iMessage", "Paused · its replies are held until it’s back"],
       ["Slack · On-call", "Paused · its replies are held until it’s back"],
     ]);
@@ -457,6 +474,8 @@ describe("a chat, as a connected agent", () => {
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
     async (n, sentence) => {
       host = chats();
+      // #team speaks through Workshop: paused only once Workshop is.
+      if (n === 2) await pauseWorkshop(host);
       const page = await mount(host, `${base}/${chat(n)}`);
       await vi.waitFor(() => expect(status(page)).toContain("Paused"));
       expect(status(page)).toContain(sentence);
