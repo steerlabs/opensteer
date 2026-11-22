@@ -1,9 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { createServer } from "node:net";
 import path from "node:path";
 import { sql } from "kysely";
+import { freePort } from "../../packages/shared/src/loopbackPort.test-support.js";
 import { loadControlPlaneConfig } from "../../apps/control-plane/src/config.js";
 import { createControlPlaneDatabase } from "../../apps/control-plane/src/database/database.js";
 import { startControlPlane } from "../../apps/control-plane/src/server/runtime.js";
@@ -153,19 +153,4 @@ function run(file: string, args: readonly string[]): void {
   if (result.status !== 0) {
     throw new Error(`${path.basename(file)} failed: ${result.stderr || result.stdout}`);
   }
-}
-
-export async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() =>
-        typeof address === "object" && address
-          ? resolve(address.port)
-          : reject(new Error("No port")),
-      );
-    });
-  });
 }
