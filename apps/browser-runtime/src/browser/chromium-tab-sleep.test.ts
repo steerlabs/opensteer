@@ -2165,9 +2165,10 @@ it("tells the client of a noopener tab's opener nothing of that tab's wake, and 
 }, 90_000);
 
 it("sleeps a tab asked to sleep right after launch by discard, with its state, when the helper answers late (R1)", async () => {
-  // The helper's first answer comes 2.5 s after launch (a slow first worker start).
+  // The helper's first answer is held until the test lets it through (a slow first worker start).
   const { ChromiumTabLifecycleBridge: Bridge } = await import("./tab-lifecycle-extension.js");
   const inventory = Bridge.prototype.inventory;
+  const firstAnswer = Promise.withResolvers<void>();
   let first = true;
   vi.spyOn(Bridge.prototype, "inventory").mockImplementation(async function (
     this: ChromiumTabLifecycleBridge,
@@ -2175,7 +2176,7 @@ it("sleeps a tab asked to sleep right after launch by discard, with its state, w
   ) {
     if (first) {
       first = false;
-      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      await firstAnswer.promise;
     }
     return inventory.apply(this, args);
   });
@@ -2201,8 +2202,11 @@ it("sleeps a tab asked to sleep right after launch by discard, with its state, w
   await cdp.send("Input.insertText", { text: "typed early" });
   await evalValue(cdp, "document.activeElement.blur()");
   await evalValue(cdp, "window.scrollTo(0, 1750)");
-  // Asked to sleep at once, as the sleeper asks again after a refusal: it sleeps only with the
-  // helper's answer, by discard.
+  // Asked to sleep while the helper has not answered: refused (it waits, it is not closed).
+  expect(await ledger.sleep(tab.id, () => null)).toBe(false);
+  // The helper answers; asked again, as the sleeper asks again after a refusal, it sleeps by
+  // discard.
+  firstAnswer.resolve();
   await vi.waitFor(async () => expect(await ledger.sleep(tab.id, () => null)).toBe(true), {
     timeout: 15_000,
     interval: 250,
