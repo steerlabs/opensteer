@@ -753,4 +753,19 @@ describe("a chat, as a connected agent", () => {
     await vi.waitFor(() => expect(tasksOnly.textContent).toContain("Disconnect iMessage"));
     expect(tasksOnly.textContent).not.toContain(agentWords("consent.plugins.title"));
   });
+
+  it("warns about Tasks only where Tasks is the person's choice, never on a chat", async () => {
+    host = chats();
+    const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
+    const team = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(team.textContent).toContain("Disconnect Slack · #team"));
+    expect(team.textContent).toContain("Only what you pick below.");
+    expect(team.textContent).not.toContain(warning);
+    act(() => root?.unmount());
+    host.dispose();
+    host = seeded();
+    const trips = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
+    await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect Trip planner"));
+    expect(trips.textContent).toContain(warning);
+  });
 });

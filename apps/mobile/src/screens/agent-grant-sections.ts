@@ -201,7 +201,8 @@ export function agentGrantSections(
           onChange: context.onTasks,
         },
       ],
-      ...(draft.tasks
+      // The warning belongs to choosing Tasks: a chat holds it always, so it is not said there.
+      ...(draft.tasks && chat === undefined
         ? {
             footer: {
               text: agentWords("consent.tasks.warning", { home: context.home }),

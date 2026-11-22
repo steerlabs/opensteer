@@ -710,4 +710,14 @@ describe("a chat on the phone", () => {
     await open(chat(3), client);
     expect(texts()).not.toContain(agentWords("consent.plugins.title"));
   });
+
+  it("warns about Tasks only where Tasks is the person's choice, never on a chat", async () => {
+    const warning = agentWords("consent.tasks.warning", { home: "" }).slice(0, 30);
+    const footers = () => (state.page?.sections ?? []).map((s) => s.footer?.text ?? "");
+    await open(chat(2), chats());
+    expect(footers().some((text) => text.startsWith(warning))).toBe(false);
+    act(() => root?.unmount());
+    await open("mcn_00000000-0000-4000-8000-000000000003");
+    expect(footers().some((text) => text.startsWith(warning))).toBe(true);
+  });
 });

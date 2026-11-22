@@ -289,7 +289,8 @@ export function AgentGrantEditor({
               </span>
             </div>
           </div>
-          {draft.tasks ? (
+          {/* The warning belongs to choosing Tasks: a chat holds it always, so it is not said. */}
+          {draft.tasks && chat === undefined ? (
             <p className="settings-footnote agent-grant__warning" role="note">
               {agentWords("consent.tasks.warning", { home })}
             </p>
