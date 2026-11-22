@@ -6,6 +6,7 @@
  * memory, a wake from disk and a start after `replace-key`. Written before the setting was
  * host-wide; at create it failed (a proxy without credentials was defined without it).
  */
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,8 @@ const units = new Map<
 >();
 const defined: string[][] = [];
 const stopped: string[] = [];
+/** Round I's follow-up: what a test sees at a stop, and a crash there if it throws. */
+let onStop: ((names: readonly string[]) => void) | undefined;
 
 vi.mock("./exec.js", () => ({
   run: async (command: string, args: readonly string[]) => {
@@ -34,6 +37,7 @@ vi.mock("./exec.js", () => ({
     }
     if (command === "systemctl" && args[0] === "stop") {
       stopped.push(...args.slice(1));
+      onStop?.(args.slice(1));
       for (const name of args.slice(1)) if (name.endsWith(".socket")) units.delete(index(name));
       return "";
     }
@@ -65,6 +69,9 @@ vi.mock("./network.js", async (original) => ({
 
 const { FirecrackerDriver } = await import("./driver.js");
 const { sleepEgress } = await import("./egress.js");
+const { credentialFiles } = await import("../slot-credentials.js");
+const credentialsRootOf = (driver: { pulledEgressFiles(slotId: string): readonly string[] }) =>
+  join(driver.pulledEgressFiles("x")[0]!, "..");
 
 const required = "--setenv=OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true";
 const upstreamOf = (args: readonly string[]) =>
@@ -110,6 +117,7 @@ beforeEach(() => {
   units.clear();
   defined.length = 0;
   stopped.length = 0;
+  onStop = undefined;
 });
 
 afterEach(() => {
@@ -211,5 +219,52 @@ describe("a pulling host's slot proxies always require an upstream", () => {
       true,
     );
     expect(stopped).toContain("opensteer-pool-egress-0.service");
+  });
+
+  // Round I's re-verification: the order carries the guarantee. The proxy is stopped after the
+  // URL file is removed and the username and password are in place, and before the URL is
+  // renamed into place; a crash anywhere leaves the set absent (written and stopped again at
+  // the next start) or complete with the stop done.
+  it("stops the proxy before the URL is in place, and a crash at the stop heals at the next start", async () => {
+    const { driver } = await host();
+    await driver.writePulledEgress("bps-a", credentials);
+    await driver.prepareSlot("bps-a", undefined);
+    const files = credentialFiles(credentialsRootOf(driver), "bps-a");
+    const rotated = { ...credentials, password: "rotated" };
+    let seen: { url: boolean; password: string | null } | undefined;
+    onStop = (names) => {
+      if (!names.includes("opensteer-pool-egress-0.service")) return;
+      seen = {
+        url: existsSync(files.url),
+        password: existsSync(files.password) ? readFileSync(files.password, "utf8") : null,
+      };
+      // The agent dies here.
+      onStop = undefined;
+      throw new Error("the agent died");
+    };
+    await expect(driver.writePulledEgress("bps-a", rotated)).rejects.toThrow("the agent died");
+    expect(seen).toEqual({ url: false, password: "rotated" });
+    // The next start: the same answer, the set is absent, so it is written and stopped again.
+    stopped.length = 0;
+    expect(await driver.writePulledEgress("bps-a", rotated)).toBe(true);
+    expect(stopped).toContain("opensteer-pool-egress-0.service");
+    expect(existsSync(files.url)).toBe(true);
+  });
+
+  it("stops a running proxy when a pulling slot's credentials are removed", async () => {
+    const { driver } = await host();
+    await driver.writePulledEgress("bps-a", credentials);
+    await driver.prepareSlot("bps-a", undefined);
+    const files = credentialFiles(credentialsRootOf(driver), "bps-a");
+    let gone: boolean | undefined;
+    onStop = (names) => {
+      if (names.includes("opensteer-pool-egress-0.service")) gone = !existsSync(files.password);
+    };
+    stopped.length = 0;
+    await driver.removePulledEgress("bps-a");
+    expect(stopped).toContain("opensteer-pool-egress-0.service");
+    // Removed first: a restart between the two could not load what was revoked.
+    expect(gone).toBe(true);
+    expect(existsSync(files.url) || existsSync(files.username)).toBe(false);
   });
 });

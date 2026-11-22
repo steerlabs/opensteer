@@ -18,7 +18,12 @@ import {
   type SlotEgress,
 } from "./driver.js";
 import type { HostCapacity } from "./capacity.js";
-import { credentialFiles, readPulledEgress, writePulledEgress } from "./slot-credentials.js";
+import {
+  credentialFiles,
+  readPulledEgress,
+  removePulledEgressFiles,
+  writePulledEgress,
+} from "./slot-credentials.js";
 import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
 type Operation =
@@ -97,6 +102,14 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   async proxyRequiresUpstream(slotId: string): Promise<boolean> {
     return !this.unrequiredProxies.has(slotId);
+  }
+
+  /** Round I: the slots whose proxy service a removal of their credentials stopped. */
+  readonly proxyStops: string[] = [];
+
+  async removePulledEgress(slotId: string): Promise<void> {
+    await removePulledEgressFiles(this.credentialsRoot, slotId);
+    this.proxyStops.push(slotId);
   }
 
   pulledEgressFiles(slotId: string): readonly string[] {
