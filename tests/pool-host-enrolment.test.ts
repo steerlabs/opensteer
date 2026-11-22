@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,11 +19,17 @@ import {
   validateEgressCredential,
   validateEgressUpstreamUrl,
 } from "../apps/control-plane/src/cloud-computers/egress-validation.js";
+import { ComputeFake } from "../apps/home-provisioner/src/google-compute.test-support.js";
 import {
   poolProfileDiskDevicePath,
   renderPoolHostUserData,
 } from "../apps/home-provisioner/src/pool-boot.js";
 import { readAgentConfig, refuseUnsupportedMode } from "../apps/pool-agent/src/config.js";
+import {
+  egressRuleset,
+  hostRuleset,
+  resolverFile,
+} from "../apps/pool-agent/src/firecracker/network.js";
 import {
   browserEgressCredentialWritable,
   parseBrowserEgressUpstreamUrl,
@@ -40,12 +47,15 @@ function runScript(
   scriptPath: string,
   args: string[],
   envOverrides: Record<string, string> = {},
+  input?: string,
 ): { status: number; stdout: string; stderr: string } {
   try {
     const stdout = execFileSync("bash", [scriptPath, ...args], {
       encoding: "utf8",
       env: { ...process.env, ...envOverrides },
-      stdio: ["ignore", "pipe", "pipe"],
+      ...(input !== undefined
+        ? { input, stdio: ["pipe", "pipe", "pipe"] as const }
+        : { stdio: ["ignore", "pipe", "pipe"] as const }),
     });
     return { status: 0, stdout: stdout.trim(), stderr: "" };
   } catch (error) {
@@ -87,12 +97,69 @@ interface FakeHostHarnessOptions {
   readonly mountRc?: number;
   readonly systemctlRc?: number;
   readonly blockDevices?: readonly string[];
+  readonly blockDeviceAppearsOnCheck?: number;
   readonly readlinkMap?: Record<string, string>;
   readonly bootSource?: string;
   readonly pknameMap?: Record<string, string>;
   readonly tokenFile?: string;
   readonly alreadyMountedSource?: string;
   readonly setupInstallStub?: boolean;
+  readonly realInstallHostEnv?: boolean;
+  readonly curlBundleFile?: string;
+  readonly metadataReadyFile?: string;
+  readonly bootEndpointFailsAfterComplete?: boolean;
+}
+
+const DEVICE_WRITING_COMMANDS = [
+  "dd",
+  "sgdisk",
+  "sfdisk",
+  "parted",
+  "e2fsck",
+  "fsck",
+  "fsck.ext4",
+  "fsck.xfs",
+  "tune2fs",
+  "e2label",
+  "blkdiscard",
+  "fstrim",
+  "mkfs",
+  "mkfs.xfs",
+  "mkfs.vfat",
+  "mke2fs",
+  "mkswap",
+  "truncate",
+  "losetup",
+  "mdadm",
+  "cryptsetup",
+] as const;
+
+const READ_ONLY_PROBE_COMMANDS = new Set([
+  "id",
+  "stat",
+  "readlink",
+  "udevadm",
+  "findmnt",
+  "lsblk",
+  "install",
+  "mountpoint",
+  "blkid",
+  "uname",
+]);
+
+function expectOnlyReadOnlyCalls(
+  calls: readonly FakeCall[],
+  context: string,
+  extraAllowed: readonly string[] = [],
+) {
+  const allowed = new Set([...READ_ONLY_PROBE_COMMANDS, ...extraAllowed]);
+  const disallowed = calls.filter((call) => {
+    if (call.cmd === "wipefs") {
+      return !call.args.includes("-n") || call.args.includes("-a");
+    }
+    return !allowed.has(call.cmd);
+  });
+  expect(disallowed, `non-read-only commands executed on ${context}`).toEqual([]);
 }
 
 function writeExecutable(dir: string, name: string, content: string): string {
@@ -144,285 +211,10 @@ describe("pool host enrolment and setup scripts (Y1-Y7, X1)", () => {
     }
 
     const callsFile = join(root, "calls.jsonl");
-    const stateJsonFile = join(root, "fake-state.json");
     const mountedFile = join(root, "mounted-source");
     if (opts.alreadyMountedSource) {
       writeFileSync(mountedFile, opts.alreadyMountedSource, "utf8");
     }
-    writeFileSync(
-      stateJsonFile,
-      JSON.stringify({
-        blkidRc: opts.blkidRc ?? 2,
-        blkidOut: opts.blkidOut ?? "",
-        secondBlkidRc: opts.secondBlkidRc ?? opts.blkidRc ?? 2,
-        secondBlkidOut: opts.secondBlkidOut ?? opts.blkidOut ?? "",
-        blkidCalls: 0,
-        wipefsRc: opts.wipefsRc ?? 0,
-        wipefsOut: opts.wipefsOut ?? "",
-        secondWipefsRc: opts.secondWipefsRc ?? opts.wipefsRc ?? 0,
-        secondWipefsOut: opts.secondWipefsOut ?? opts.wipefsOut ?? "",
-        wipefsProbeCalls: 0,
-        mkfsRc: opts.mkfsRc ?? 0,
-        mountRc: opts.mountRc ?? 0,
-        systemctlRc: opts.systemctlRc ?? 0,
-        blockDevices: opts.blockDevices ?? [
-          poolProfileDiskDevicePath,
-          "/dev/sdb",
-          "/dev/nvme0n1",
-          "/dev/sda",
-          "/dev/sda1",
-        ],
-        readlinkMap: opts.readlinkMap ?? {
-          [poolProfileDiskDevicePath]: "/dev/sdb",
-          "/dev/sdb": "/dev/sdb",
-          "/dev/nvme0n1": "/dev/nvme0n1",
-          "/dev/sda": "/dev/sda",
-          "/dev/sda1": "/dev/sda1",
-        },
-        bootSource: opts.bootSource ?? "/dev/sda1",
-        pknameMap: opts.pknameMap ?? {
-          "/dev/sda1": "sda",
-          "/dev/nvme0n1p1": "nvme0n1",
-        },
-        tokenFile: opts.tokenFile ?? "",
-        profilesRoot: join(stateDir, "profiles"),
-      }),
-      "utf8",
-    );
-
-    const recorderPy = join(root, "fake-cmd.py");
-    writeFileSync(
-      recorderPy,
-      `#!/usr/bin/env python3
-import hashlib, json, os, subprocess, sys
-
-cmd = sys.argv[1]
-args = sys.argv[2:]
-state_path = ${JSON.stringify(stateJsonFile)}
-calls_path = ${JSON.stringify(callsFile)}
-mounted_path = ${JSON.stringify(mountedFile)}
-
-with open(state_path, "r", encoding="utf-8") as fh:
-    state = json.load(fh)
-
-entry = {"cmd": cmd, "args": args}
-if cmd == "mkfs.ext4":
-    data = sys.stdin.read()
-    entry["stdin"] = data
-if cmd == "systemctl" and state.get("tokenFile"):
-    entry["tokenExistsAtCall"] = os.path.exists(state["tokenFile"])
-
-with open(calls_path, "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(entry) + "\\n")
-
-if cmd == "id":
-    if args == ["-u"]:
-        print("0")
-        sys.exit(0)
-    if args == ["-u", "opensteer-pool-relay"]:
-        print("987")
-        sys.exit(0)
-    print("0")
-    sys.exit(0)
-
-if cmd == "stat":
-    # Support -c %u, -c %a, -L -c %F
-    follow = "-L" in args
-    fmt = None
-    target = args[-1]
-    for i, a in enumerate(args):
-        if a == "-c" and i + 1 < len(args):
-            fmt = args[i + 1]
-    if fmt == "%F":
-        if target in state["blockDevices"]:
-            print("block special file")
-            sys.exit(0)
-        if os.path.exists(target):
-            print("regular file" if os.path.isfile(target) else "directory")
-            sys.exit(0)
-        sys.exit(1)
-    if fmt == "%u":
-        print("0")
-        sys.exit(0)
-    if fmt == "%a":
-        st = os.stat(target) if follow else os.lstat(target)
-        print(oct(st.st_mode & 0o777)[2:])
-        sys.exit(0)
-    sys.exit(1)
-
-if cmd == "readlink":
-    target = args[-1]
-    if target in state["readlinkMap"]:
-        print(state["readlinkMap"][target])
-        sys.exit(0)
-    print(os.path.realpath(target))
-    sys.exit(0)
-
-if cmd == "udevadm":
-    sys.exit(0)
-
-if cmd == "blkid":
-    state["blkidCalls"] += 1
-    with open(state_path, "w", encoding="utf-8") as fh:
-        json.dump(state, fh)
-    if state["blkidCalls"] == 1:
-        out, rc = state["blkidOut"], state["blkidRc"]
-    else:
-        out, rc = state["secondBlkidOut"], state["secondBlkidRc"]
-    if out:
-        sys.stdout.write(out if out.endswith("\\n") else out + "\\n")
-    sys.exit(rc)
-
-if cmd == "wipefs":
-    if "-n" in args:
-        state["wipefsProbeCalls"] += 1
-        with open(state_path, "w", encoding="utf-8") as fh:
-            json.dump(state, fh)
-        if state["wipefsProbeCalls"] == 1:
-            out, rc = state["wipefsOut"], state["wipefsRc"]
-        else:
-            out, rc = state["secondWipefsOut"], state["secondWipefsRc"]
-        if out:
-            sys.stdout.write(out if out.endswith("\\n") else out + "\\n")
-        sys.exit(rc)
-    sys.exit(0)
-
-if cmd == "mkfs.ext4":
-    rc = state["mkfsRc"]
-    if rc == 0:
-        # Update label so post-format probes/mounts see formatted ext4 if invoked.
-        label = ""
-        for i, a in enumerate(args):
-            if a == "-L" and i + 1 < len(args):
-                label = args[i + 1]
-        state["secondBlkidRc"] = 0
-        state["secondBlkidOut"] = f"DEVNAME={args[-1]}\\nLABEL={label}\\nTYPE=ext4\\nUSAGE=filesystem"
-        with open(state_path, "w", encoding="utf-8") as fh:
-            json.dump(state, fh)
-    sys.exit(rc)
-
-if cmd == "mountpoint":
-    target = args[-1]
-    if target == state["profilesRoot"] and os.path.exists(mounted_path):
-        sys.exit(0)
-    sys.exit(1)
-
-if cmd == "mount":
-    if state["mountRc"] != 0:
-        sys.exit(state["mountRc"])
-    src = args[-2]
-    target = args[-1]
-    if target == state["profilesRoot"]:
-        with open(mounted_path, "w", encoding="utf-8") as fh:
-            fh.write(src)
-    sys.exit(0)
-
-if cmd == "findmnt":
-    target = args[-1]
-    col = ""
-    for i, a in enumerate(args):
-        if a == "-o" and i + 1 < len(args):
-            col = args[i + 1]
-    if target == "/":
-        if col == "SOURCE":
-            print(state["bootSource"])
-            sys.exit(0)
-    if target == state["profilesRoot"] and os.path.exists(mounted_path):
-        src = open(mounted_path, "r", encoding="utf-8").read().strip()
-        if col == "SOURCE":
-            print(src)
-            sys.exit(0)
-        if col == "OPTIONS":
-            print("rw,nosuid,nodev,noatime")
-            sys.exit(0)
-    sys.exit(1)
-
-if cmd == "lsblk":
-    dev = args[-1]
-    pk = state["pknameMap"].get(dev, "")
-    if pk:
-        print(pk)
-    sys.exit(0)
-
-if cmd == "systemctl":
-    sys.exit(state["systemctlRc"])
-
-if cmd == "chown":
-    sys.exit(0)
-
-if cmd == "install":
-    # Support install -d [-m mode] [-o owner] [-g group] dir... without requiring root.
-    if "-d" in args:
-        mode = None
-        dirs = []
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "-d":
-                i += 1
-            elif a in ("-m", "-o", "-g"):
-                if a == "-m" and i + 1 < len(args):
-                    mode = int(args[i + 1], 8)
-                i += 2
-            else:
-                dirs.append(a)
-                i += 1
-        for d in dirs:
-            os.makedirs(d, exist_ok=True)
-            if mode is not None:
-                os.chmod(d, mode)
-        sys.exit(0)
-    sys.exit(0)
-
-if cmd == "sha256sum":
-    if "-c" in args:
-        text = sys.stdin.read().strip()
-        for line in text.splitlines():
-            expected, path = line.split(None, 1)
-            h = hashlib.sha256(open(path.strip(), "rb").read()).hexdigest()
-            if h != expected:
-                sys.exit(1)
-        sys.exit(0)
-    for path in args:
-        h = hashlib.sha256(open(path, "rb").read()).hexdigest()
-        print(f"{h}  {path}")
-    sys.exit(0)
-
-if cmd == "curl":
-    # Mock Account /boot-complete and /boot responses.
-    out_file = None
-    url = args[-1]
-    write_code = "-w" in args
-    for i, a in enumerate(args):
-        if a == "-o" and i + 1 < len(args):
-            out_file = args[i + 1]
-    if "/boot-complete" in url:
-        if out_file:
-            with open(out_file, "w", encoding="utf-8") as fh:
-                json.dump({"completed": True}, fh)
-        if write_code:
-            sys.stdout.write("200")
-        sys.exit(0)
-    if out_file:
-        with open(out_file, "wb") as fh:
-            fh.write(b"fake-artifact-content")
-    if write_code:
-        sys.stdout.write("200")
-    sys.exit(0)
-
-if cmd == "uname":
-    print("x86_64" if "-m" in args else "Linux")
-    sys.exit(0)
-
-if cmd in ("mdadm", "cryptsetup", "mkfs.xfs", "uuidgen", "nft", "sysctl", "swapoff", "modprobe"):
-    if cmd == "uuidgen":
-        print("11111111-2222-4333-8444-555555555555")
-    sys.exit(0)
-
-sys.exit(0)
-`,
-      { mode: 0o755 },
-    );
 
     // Fast bash stubs for high-frequency commands (avoids 70x python3 startups per enrolment while still recording every call).
     const logCallBash = `printf '{"cmd":"%s","args":[' "$CMD" >> ${JSON.stringify(callsFile)}; first=1; for a in "$@"; do a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}; [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}; printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}; done; printf ']}\\n' >> ${JSON.stringify(callsFile)}`;
@@ -484,20 +276,61 @@ fi
 exit 0
 `,
     );
-    for (const noop of [
-      "mdadm",
-      "cryptsetup",
-      "mkfs.xfs",
-      "nft",
-      "sysctl",
-      "swapoff",
-      "modprobe",
-    ]) {
+    // Z4(b): Every command that can write a device has a recording stand-in that exits non-zero.
+    for (const writer of DEVICE_WRITING_COMMANDS) {
+      writeExecutable(
+        binDir,
+        writer,
+        `#!/usr/bin/env bash
+CMD=${writer}; ${logCallBash}
+exit 1
+`,
+      );
+    }
+    for (const noop of ["nft", "sysctl", "swapoff", "modprobe"]) {
       writeExecutable(
         binDir,
         noop,
         `#!/usr/bin/env bash
 CMD=${noop}; ${logCallBash}
+exit 0
+`,
+      );
+    }
+    if (opts.realInstallHostEnv) {
+      for (const pkgCmd of ["apt-get", "getent", "useradd"]) {
+        writeExecutable(
+          binDir,
+          pkgCmd,
+          `#!/usr/bin/env bash
+CMD=${pkgCmd}; ${logCallBash}
+exit 0
+`,
+        );
+      }
+      // Provide pre-staged dummy binaries and matching sha256sum so real `setup-host.sh install`
+      // runs all the way through install_packages -> install_binaries -> host_key -> save_host_env
+      // -> install_units -> mount_profile_disk -> saved_state_array without needing internet.
+      mkdirSync(join(optDir, "bin"), { recursive: true });
+      mkdirSync(join(optDir, "download"), { recursive: true });
+      mkdirSync(join(optDir, "node/bin"), { recursive: true });
+      writeFileSync(join(optDir, "download/firecracker.tgz"), "fake-fc");
+      writeFileSync(join(optDir, "download/node.tar.xz"), "fake-node");
+      writeExecutable(join(optDir, "node/bin"), "node", `#!/usr/bin/env bash\necho v24.15.0\n`);
+      writeExecutable(
+        binDir,
+        "tar",
+        `#!/usr/bin/env bash
+CMD=tar; ${logCallBash}
+dest=""
+while (( $# > 0 )); do
+  if [[ $1 == -C ]]; then dest="$2"; shift 2; else shift; fi
+done
+if [[ -n $dest ]]; then
+  mkdir -p "$dest/release-v1.15.0-x86_64"
+  printf 'fc' > "$dest/release-v1.15.0-x86_64/firecracker-v1.15.0-x86_64"
+  printf 'jl' > "$dest/release-v1.15.0-x86_64/jailer-v1.15.0-x86_64"
+fi
 exit 0
 `,
       );
@@ -551,12 +384,16 @@ case "$target" in
 ${readlinkCases}
 esac
 if [[ -e "$target" ]]; then
-  (cd "$(dirname "$target")" && printf '%s/%s\\n' "$(pwd -P)" "$(basename "$target")")
+  dir="\${target%/*}"; base="\${target##*/}"
+  [[ $dir == "$target" ]] && dir="."
+  (cd "$dir" && printf '%s/%s\\n' "$(pwd -P)" "$base")
 else
   printf '%s\\n' "$target"
 fi
 `,
     );
+    const statChecksFile = join(root, "stat-checks");
+    const appearsOnCheck = opts.blockDeviceAppearsOnCheck ?? 0;
     writeExecutable(
       binDir,
       "stat",
@@ -567,6 +404,12 @@ while (( $# > 0 )); do
   if [[ $1 == -c ]]; then fmt="$2"; shift 2; else shift; fi
 done
 if [[ $fmt == "%F" ]]; then
+  if (( ${appearsOnCheck} > 0 )) && [[ $target == ${JSON.stringify(poolProfileDiskDevicePath)} ]]; then
+    n=$(cat ${JSON.stringify(statChecksFile)} 2>/dev/null || echo 0)
+    n=$(( n + 1 ))
+    echo "$n" > ${JSON.stringify(statChecksFile)}
+    if (( n < ${appearsOnCheck} )); then exit 1; fi
+  fi
   for d in ${blockDevicesSet}; do
     if [[ $target == "$d" ]]; then echo "block special file"; exit 0; fi
   done
@@ -610,7 +453,10 @@ col=""; target="\${!#}"
 while (( $# > 0 )); do
   if [[ $1 == -o ]]; then col="$2"; shift 2; else shift; fi
 done
-if [[ $target == "/" && $col == SOURCE ]]; then echo ${JSON.stringify(bootSrc)}; exit 0; fi
+if [[ $target == "/" && $col == SOURCE ]]; then
+  if [[ -n ${JSON.stringify(bootSrc)} ]]; then echo ${JSON.stringify(bootSrc)}; exit 0; fi
+  exit 1
+fi
 if [[ $target == ${JSON.stringify(profilesRootPath)} && -f ${JSON.stringify(mountedFile)} ]]; then
   if [[ $col == SOURCE ]]; then cat ${JSON.stringify(mountedFile)}; exit 0; fi
   if [[ $col == OPTIONS ]]; then echo "rw,nosuid,nodev,noatime"; exit 0; fi
@@ -618,20 +464,30 @@ fi
 exit 1
 `,
     );
+    const bootCompleteFlag = join(root, "boot-complete-seen");
+    const fakeArtifactSha = createHash("sha256")
+      .update("fake-artifact-content", "utf8")
+      .digest("hex");
     writeExecutable(
       binDir,
       "sha256sum",
       `#!/usr/bin/env bash
 CMD=sha256sum; ${logCallBash}
 if [[ " $* " == *" -c "* ]]; then
+  if [[ ${opts.realInstallHostEnv ? "1" : "0"} == "1" ]]; then
+    exit 0
+  fi
   while read -r expected path; do
     [[ -z $expected ]] && continue
-    actual=$(/usr/bin/shasum -a 256 "$path" | awk '{print $1}')
+    read -r actual _ < <(openssl dgst -sha256 -r "$path")
     [[ $actual == "$expected" ]] || exit 1
   done
   exit 0
 fi
-/usr/bin/shasum -a 256 "$@"
+for p in "$@"; do
+  read -r h _ < <(openssl dgst -sha256 -r "$p")
+  printf '%s  %s\\n' "$h" "$p"
+done
 `,
     );
     writeExecutable(
@@ -642,13 +498,39 @@ CMD=curl; ${logCallBash}
 out_file=""; write_code=0; url="\${!#}"
 while (( $# > 0 )); do
   case "$1" in
-    -o) out_file="$2"; shift 2 ;;
+    -o|--output) out_file="$2"; shift 2 ;;
     -w) write_code=1; shift 2 ;;
     *) shift ;;
   esac
 done
+if [[ $url == *"/computeMetadata/v1/instance/attributes/opensteer-bootstrap-ready"* ]]; then
+  if [[ -n ${JSON.stringify(opts.metadataReadyFile ?? "")} && -f ${JSON.stringify(opts.metadataReadyFile ?? "")} ]]; then
+    cat ${JSON.stringify(opts.metadataReadyFile ?? "")}
+    exit 0
+  fi
+  exit 22
+fi
+if [[ $url == *"/pool-host-bundle.tar.gz"* && -n ${JSON.stringify(opts.curlBundleFile ?? "")} ]]; then
+  cp ${JSON.stringify(opts.curlBundleFile ?? "")} "$out_file"
+  (( write_code )) && printf '200'
+  exit 0
+fi
 if [[ $url == *"/boot-complete"* ]]; then
+  touch ${JSON.stringify(bootCompleteFlag)}
   [[ -n $out_file ]] && printf '{"completed":true}' > "$out_file"
+  (( write_code )) && printf '200'
+  exit 0
+fi
+if [[ $url == *"/boot" ]]; then
+  if [[ ${opts.bootEndpointFailsAfterComplete ? "1" : "0"} == "1" && -f ${JSON.stringify(bootCompleteFlag)} ]]; then
+    [[ -n $out_file ]] && printf '{"error":"already enrolled"}' > "$out_file"
+    (( write_code )) && printf '401'
+    exit 0
+  fi
+  host_id=$(printf '%s' "$url" | sed -E 's|.*/hosts/([^/]+)/boot$|\\1|')
+  [[ -n $out_file ]] && cat > "$out_file" <<JSON
+{"hostId":"$host_id","generation":1,"profileDiskName":"osp-disk-test","release":{"version":"1.0.0","installerUrl":"https://releases.example.test/pool-host-bundle.tar.gz","installerSha256":"${"a".repeat(64)}","artifacts":{"agentUrl":"https://releases.example.test/agent.mjs","agentSha256":"${fakeArtifactSha}","relayUrl":"https://releases.example.test/relay.mjs","relaySha256":"${fakeArtifactSha}","rootfsUrl":"https://releases.example.test/rootfs.ext4","rootfsSha256":"${fakeArtifactSha}","kernelUrl":"https://releases.example.test/vmlinux","kernelSha256":"${fakeArtifactSha}","egressUrl":"https://releases.example.test/egress.js","egressSha256":"${fakeArtifactSha}"}}}
+JSON
   (( write_code )) && printf '200'
   exit 0
 fi
@@ -658,14 +540,139 @@ exit 0
 `,
     );
 
-    const commands = ["blkid", "wipefs", "mkfs.ext4", "mount", "systemctl"];
-    for (const cmd of commands) {
-      writeExecutable(
-        binDir,
-        cmd,
-        `#!/usr/bin/env bash\nexec python3 "${recorderPy}" "${cmd}" "$@"\n`,
-      );
-    }
+    const blkidCallsFile = join(root, "blkid-calls");
+    const blkidOut1File = join(root, "blkid-out-1");
+    const blkidOut2File = join(root, "blkid-out-2");
+    const blkidRc1File = join(root, "blkid-rc-1");
+    const blkidRc2File = join(root, "blkid-rc-2");
+    const wipefsCallsFile = join(root, "wipefs-calls");
+    const wipefsOut1File = join(root, "wipefs-out-1");
+    const wipefsOut2File = join(root, "wipefs-out-2");
+    const wipefsRc1File = join(root, "wipefs-rc-1");
+    const wipefsRc2File = join(root, "wipefs-rc-2");
+    const systemctlRcFile = join(root, "systemctl-rc");
+    writeFileSync(blkidCallsFile, "0", "utf8");
+    writeFileSync(blkidOut1File, opts.blkidOut ?? "", "utf8");
+    writeFileSync(blkidOut2File, opts.secondBlkidOut ?? opts.blkidOut ?? "", "utf8");
+    writeFileSync(blkidRc1File, String(opts.blkidRc ?? 2), "utf8");
+    writeFileSync(blkidRc2File, String(opts.secondBlkidRc ?? opts.blkidRc ?? 2), "utf8");
+    writeFileSync(wipefsCallsFile, "0", "utf8");
+    writeFileSync(wipefsOut1File, opts.wipefsOut ?? "", "utf8");
+    writeFileSync(wipefsOut2File, opts.secondWipefsOut ?? opts.wipefsOut ?? "", "utf8");
+    writeFileSync(wipefsRc1File, String(opts.wipefsRc ?? 0), "utf8");
+    writeFileSync(wipefsRc2File, String(opts.secondWipefsRc ?? opts.wipefsRc ?? 0), "utf8");
+    writeFileSync(systemctlRcFile, String(opts.systemctlRc ?? 0), "utf8");
+
+    writeExecutable(
+      binDir,
+      "blkid",
+      `#!/usr/bin/env bash
+CMD=blkid; ${logCallBash}
+n=$(< ${JSON.stringify(blkidCallsFile)})
+n=$(( n + 1 ))
+printf '%s' "$n" > ${JSON.stringify(blkidCallsFile)}
+if (( n == 1 )); then
+  out_f=${JSON.stringify(blkidOut1File)}; rc_f=${JSON.stringify(blkidRc1File)}
+else
+  out_f=${JSON.stringify(blkidOut2File)}; rc_f=${JSON.stringify(blkidRc2File)}
+fi
+if [[ -s $out_f ]]; then
+  printf '%s\\n' "$(< "$out_f")"
+fi
+exit "$(< "$rc_f")"
+`,
+    );
+    writeExecutable(
+      binDir,
+      "wipefs",
+      `#!/usr/bin/env bash
+CMD=wipefs; ${logCallBash}
+if [[ " $* " == *" -n "* ]]; then
+  n=$(< ${JSON.stringify(wipefsCallsFile)})
+  n=$(( n + 1 ))
+  printf '%s' "$n" > ${JSON.stringify(wipefsCallsFile)}
+  if (( n == 1 )); then
+    out_f=${JSON.stringify(wipefsOut1File)}; rc_f=${JSON.stringify(wipefsRc1File)}
+  else
+    out_f=${JSON.stringify(wipefsOut2File)}; rc_f=${JSON.stringify(wipefsRc2File)}
+  fi
+  if [[ -s $out_f ]]; then
+    printf '%s\\n' "$(< "$out_f")"
+  fi
+  exit "$(< "$rc_f")"
+fi
+exit 0
+`,
+    );
+    writeExecutable(
+      binDir,
+      "mount",
+      `#!/usr/bin/env bash
+CMD=mount; ${logCallBash}
+if (( ${opts.mountRc ?? 0} != 0 )); then exit ${opts.mountRc ?? 0}; fi
+args=("$@")
+src="\${args[\${#args[@]}-2]:-}"
+target="\${args[\${#args[@]}-1]:-}"
+if [[ $target == ${JSON.stringify(profilesRootPath)} ]]; then
+  printf '%s' "$src" > ${JSON.stringify(mountedFile)}
+fi
+exit 0
+`,
+    );
+    const tokenFileCheck = opts.tokenFile ?? "";
+    writeExecutable(
+      binDir,
+      "systemctl",
+      `#!/usr/bin/env bash
+tok_exists="false"
+if [[ -n ${JSON.stringify(tokenFileCheck)} && -e ${JSON.stringify(tokenFileCheck)} ]]; then tok_exists="true"; fi
+printf '{"cmd":"systemctl","args":[' >> ${JSON.stringify(callsFile)}
+first=1
+for a in "$@"; do
+  a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}
+  [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}
+  printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}
+done
+if [[ -n ${JSON.stringify(tokenFileCheck)} ]]; then
+  printf '],"tokenExistsAtCall":%s}\\n' "$tok_exists" >> ${JSON.stringify(callsFile)}
+else
+  printf ']}\\n' >> ${JSON.stringify(callsFile)}
+fi
+exit "$(cat ${JSON.stringify(systemctlRcFile)})"
+`,
+    );
+    writeExecutable(
+      binDir,
+      "mkfs.ext4",
+      `#!/usr/bin/env bash
+IFS= read -r -d '' stdin_data || true
+stdin_esc=\${stdin_data//\\\\/\\\\\\\\}
+stdin_esc=\${stdin_esc//\\"/\\\\\\"}
+stdin_esc=\${stdin_esc//$'\\n'/\\\\n}
+stdin_esc=\${stdin_esc//$'\\r'/\\\\r}
+printf '{"cmd":"mkfs.ext4","args":[' >> ${JSON.stringify(callsFile)}
+first=1
+for a in "$@"; do
+  a=\${a//\\\\/\\\\\\\\}; a=\${a//\\"/\\\\\\"}
+  [[ $first == 1 ]] && first=0 || printf ',' >> ${JSON.stringify(callsFile)}
+  printf '"%s"' "$a" >> ${JSON.stringify(callsFile)}
+done
+printf '],"stdin":"%s"}\\n' "$stdin_esc" >> ${JSON.stringify(callsFile)}
+rc=${opts.mkfsRc ?? 0}
+if (( rc == 0 )); then
+  label=""
+  prev=""
+  for a in "$@"; do
+    if [[ $prev == -L ]]; then label="$a"; fi
+    prev="$a"
+  done
+  dev="\${!#}"
+  printf 'DEVNAME=%s\\nLABEL=%s\\nTYPE=ext4\\nUSAGE=filesystem\\n' "$dev" "$label" > ${JSON.stringify(blkidOut2File)}
+  printf '0' > ${JSON.stringify(blkidRc2File)}
+fi
+exit "$rc"
+`,
+    );
 
     // Copy enroll-host.sh (and optionally real or stub setup-host.sh) into bundleDir.
     const bundledEnroll = join(bundleDir, "enroll-host.sh");
@@ -707,8 +714,8 @@ EOF
   boot)
     exec bash "${setupScript}" verify-profiles-mount
     ;;
-  verify-profiles-mount)
-    exec bash "${setupScript}" verify-profiles-mount
+  verify-profiles-mount|wait-profile-disk|parent-whole-disk)
+    exec bash "${setupScript}" "$@"
     ;;
   *)
     exit 0
@@ -718,6 +725,28 @@ esac
       );
     } else {
       writeFileSync(bundledSetup, readFileSync(setupScript, "utf8"), { mode: 0o755 });
+    }
+
+    const extraEnv: Record<string, string> = {};
+    if (opts.realInstallHostEnv) {
+      const hostFakeDir = join(root, "fake-sys");
+      const systemdDir = join(root, "systemd");
+      const vulnsDir = join(hostFakeDir, "vulns");
+      mkdirSync(hostFakeDir, { recursive: true });
+      mkdirSync(systemdDir, { recursive: true });
+      mkdirSync(vulnsDir, { recursive: true });
+      const kvmDev = join(hostFakeDir, "kvm");
+      const cgroupCtrl = join(hostFakeDir, "cgroup.controllers");
+      const smtActive = join(hostFakeDir, "smt-active");
+      writeFileSync(kvmDev, "");
+      writeFileSync(cgroupCtrl, "cpu memory pids\n");
+      writeFileSync(smtActive, "0\n");
+      extraEnv.OSP_SYSTEMD_DIR = systemdDir;
+      extraEnv.OSP_KVM_DEV = kvmDev;
+      extraEnv.OSP_CGROUP_CONTROLLERS = cgroupCtrl;
+      extraEnv.OSP_SMT_ACTIVE = smtActive;
+      extraEnv.OSP_CPU_VULNS_DIR = vulnsDir;
+      extraEnv.OSP_PROFILE_DISK_WAIT_SECONDS = "1";
     }
 
     const env: Record<string, string> = {
@@ -730,6 +759,7 @@ esac
       OSP_RELAY_ETC_DIR: relayEtcDir,
       OSP_CLOUD_INIT_DIR: cloudInitDir,
       OSP_TMP_BASE: tmpBase,
+      ...extraEnv,
     };
 
     const readCalls = (): FakeCall[] => {
@@ -981,10 +1011,14 @@ esac
     it("Y1: refuses when host.env is missing or OSP_PROFILE_DISK is empty on a provisioned host", () => {
       const h = createFakeHostEnv();
 
-      // Missing host.env must refuse on verify-profiles-mount AND boot.
+      // Missing host.env must refuse on BOTH verify-profiles-mount AND boot (T6 / Z5).
       const verifyMissing = runScript(setupScript, ["verify-profiles-mount"], h.env);
       expect(verifyMissing.status).not.toBe(0);
       expect(verifyMissing.stderr).toMatch(/host\.env/iu);
+
+      const bootMissing = runScript(setupScript, ["boot"], h.env);
+      expect(bootMissing.status).not.toBe(0);
+      expect(bootMissing.stderr).toMatch(/host\.env/iu);
 
       // Present host.env with empty OSP_PROFILE_DISK on a provisioned host must also refuse.
       writeFileSync(
@@ -1038,6 +1072,7 @@ esac
       writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
       writeFileSync(ciUserDataI, "#cloud-config\nsecret-token", { mode: 0o600 });
 
+      // Z4(a): Run enrolment with non-empty stdin ("y\ny\n") so removing </dev/null from mkfs.ext4 fails this test.
       const res = runScript(
         h.bundledEnroll,
         [
@@ -1051,6 +1086,7 @@ esac
           join(h.etcDir, "credentials"),
         ],
         h.env,
+        "y\ny\n",
       );
       expect(res.status, res.stderr).toBe(0);
 
@@ -1109,6 +1145,7 @@ esac
       const ciUserData = join(h.cloudInitDir, "user-data.txt");
       writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
 
+      // Z4(a): Run enrolment with non-empty stdin ("y\ny\n") so removing </dev/null from mkfs.ext4 fails this test.
       const res = runScript(
         h.bundledEnroll,
         [
@@ -1122,6 +1159,7 @@ esac
           join(h.etcDir, "credentials"),
         ],
         h.env,
+        "y\ny\n",
       );
       expect(res.status).not.toBe(0);
       expect(
@@ -1203,24 +1241,58 @@ esac
           h.env,
         );
         expect(res.status, `expected refusal for ${name}`).not.toBe(0);
+        const calls = h.readCalls();
         expect(
-          h.readCalls().some((c) => c.cmd === "blkid"),
+          calls.some((c) => c.cmd === "blkid"),
           `blkid probe must have run for ${name}`,
         ).toBe(true);
-
-        const destructive = h
-          .readCalls()
-          .filter(
-            (c) =>
-              c.cmd === "mkfs.ext4" ||
-              c.cmd === "mdadm" ||
-              c.cmd === "cryptsetup" ||
-              c.cmd === "mkfs.xfs" ||
-              (c.cmd === "wipefs" && c.args.includes("-a")),
-          );
-        expect(destructive, `destructive calls made on refusal path ${name}`).toEqual([]);
+        // Z4(b): Assert on the COMPLETE call record — every command must be in the read-only allowlist.
+        expectOnlyReadOnlyCalls(calls, `refusal path (${name})`);
       },
     );
+
+    it("Z4(b): refusal path through the REAL setup-host.sh install makes ZERO device-writing calls on the complete call record", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      const labelA = hostProfileDiskLabel(hostA);
+      const labelB = hostProfileDiskLabel("ph_22222222-2222-4222-8222-222222222222");
+      // Real setup-host.sh install with a disk carrying another host's label refuses in mount_profile_disk
+      // before saved_state_array ever runs.
+      const h = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelB}\nTYPE=ext4\nUSAGE=filesystem`,
+        wipefsRc: 0,
+        wipefsOut: `google-opensteer-profiles 0x438 ext4 1111 ${labelB}`,
+        realInstallHostEnv: true,
+        setupInstallStub: false,
+      });
+      const res = runScript(setupScript, ["install"], {
+        ...h.env,
+        OSP_HOME_CIDR: "10.40.0.0/20",
+        OSP_PROVISIONER_CIDR: "10.50.0.0/24",
+        OSP_AGENT_PORT: "7310",
+        OSP_ADMIN_PORT: "7311",
+        OSP_RELAY_PORT: "7312",
+        OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+        OSP_PROFILE_DISK_LABEL: labelA,
+        OSP_REQUIRE_PROFILE_DISK: "1",
+        OSP_PROFILES_ROOT: join(h.stateDir, "profiles"),
+        OSP_SKIP_DEFAULT_KERNEL: "1",
+        OSP_LOCAL_SSDS: "/dev/nvme0n1",
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toMatch(new RegExp(labelA, "u"));
+      const calls = h.readCalls();
+      expect(calls.some((c) => c.cmd === "apt-get")).toBe(true);
+      expect(calls.some((c) => c.cmd === "blkid")).toBe(true);
+      expectOnlyReadOnlyCalls(calls, "real setup-host.sh install refusal", [
+        "apt-get",
+        "getent",
+        "useradd",
+        "sha256sum",
+        "tar",
+        "systemctl",
+      ]);
+    });
 
     it("Y3: refuses any profileDiskDevice other than the fixed by-id path, and refuses scratch SSD array when any member resolves to the profile or boot disk", () => {
       // 1. enroll-host.sh rejects a local SSD named as profileDiskDevice.
@@ -1268,17 +1340,7 @@ esac
       });
       expect(resProfileOverlap.status).not.toBe(0);
       expect(resProfileOverlap.stderr).toMatch(/profile disk|boot disk/iu);
-      expect(
-        hProfileOverlap
-          .readCalls()
-          .filter(
-            (c) =>
-              (c.cmd === "wipefs" && c.args.includes("-a")) ||
-              c.cmd === "mdadm" ||
-              c.cmd === "cryptsetup" ||
-              c.cmd === "mkfs.xfs",
-          ),
-      ).toEqual([]);
+      expectOnlyReadOnlyCalls(hProfileOverlap.readCalls(), "Y3 profile disk overlap");
 
       // 3. setup-host.sh saved-state-array refuses when OSP_LOCAL_SSDS includes the boot disk's whole device (/dev/sda while / is /dev/sda1).
       const hBootOverlap = createFakeHostEnv({
@@ -1306,17 +1368,664 @@ esac
       });
       expect(resBootOverlap.status).not.toBe(0);
       expect(resBootOverlap.stderr).toMatch(/boot disk/iu);
+      expectOnlyReadOnlyCalls(hBootOverlap.readCalls(), "Y3 boot disk overlap");
+    });
+
+    it("Z10: enroll-host.sh fails closed when findmnt / fails or parent_whole_disk matches boot disk, and guard_scratch_members refuses missing configured profile disk", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      // 1. findmnt / prints nothing -> enroll-host.sh MUST refuse (never skip boot-disk check).
+      const specDir1 = makeTempDir();
+      const specPath1 = join(specDir1, "boot.json");
+      const tokenPath1 = join(specDir1, "token");
+      writeFileSync(
+        specPath1,
+        JSON.stringify(makeBootSpec({ hostId: hostA, everEnrolled: false }, true)),
+        { mode: 0o600 },
+      );
+      writeFileSync(tokenPath1, "t".repeat(43), { mode: 0o600 });
+      const hNoFindmnt = createFakeHostEnv({
+        bootSource: "",
+        blkidRc: 2,
+        blkidOut: "",
+        wipefsRc: 0,
+        wipefsOut: "",
+        setupInstallStub: true,
+      });
+      const resNoFindmnt = runScript(
+        hNoFindmnt.bundledEnroll,
+        [
+          "--boot-spec",
+          specPath1,
+          "--bootstrap-token-file",
+          tokenPath1,
+          "--profiles-root",
+          join(hNoFindmnt.stateDir, "profiles"),
+          "--credentials-root",
+          join(hNoFindmnt.etcDir, "credentials"),
+        ],
+        hNoFindmnt.env,
+      );
+      expect(resNoFindmnt.status).not.toBe(0);
+      expect(resNoFindmnt.stderr).toMatch(/root\/boot disk|findmnt/iu);
+      expectOnlyReadOnlyCalls(hNoFindmnt.readCalls(), "Z10 empty findmnt /");
+
+      // 2. lsblk returns nothing while / is /dev/nvme0n1p1 and profile disk resolves to /dev/nvme0n1 -> parent_whole_disk refuses!
+      const hNvmeParent = createFakeHostEnv({
+        blockDevices: [poolProfileDiskDevicePath, "/dev/nvme0n1", "/dev/nvme0n1p1"],
+        readlinkMap: {
+          [poolProfileDiskDevicePath]: "/dev/nvme0n1",
+          "/dev/nvme0n1": "/dev/nvme0n1",
+          "/dev/nvme0n1p1": "/dev/nvme0n1p1",
+        },
+        bootSource: "/dev/nvme0n1p1",
+        pknameMap: {},
+        blkidRc: 2,
+        blkidOut: "",
+        wipefsRc: 0,
+        wipefsOut: "",
+        setupInstallStub: true,
+      });
+      const resNvmeParent = runScript(
+        hNvmeParent.bundledEnroll,
+        [
+          "--boot-spec",
+          specPath1,
+          "--bootstrap-token-file",
+          tokenPath1,
+          "--profiles-root",
+          join(hNvmeParent.stateDir, "profiles"),
+          "--credentials-root",
+          join(hNvmeParent.etcDir, "credentials"),
+        ],
+        hNvmeParent.env,
+      );
+      expect(resNvmeParent.status).not.toBe(0);
+      expect(resNvmeParent.stderr).toMatch(/boot disk/iu);
+      expectOnlyReadOnlyCalls(hNvmeParent.readCalls(), "Z10 nvme parent_whole_disk match");
+
+      // 3. Standalone setup-host.sh saved-state-array refuses when profile disk is configured/required and not a block device.
+      const hMissingProfile = createFakeHostEnv({
+        blockDevices: ["/dev/nvme0n1", "/dev/sda", "/dev/sda1"],
+        readlinkMap: {
+          "/dev/nvme0n1": "/dev/nvme0n1",
+          "/dev/sda": "/dev/sda",
+          "/dev/sda1": "/dev/sda1",
+        },
+        bootSource: "/dev/sda1",
+      });
+      const resMissingProfile = runScript(setupScript, ["saved-state-array"], {
+        ...hMissingProfile.env,
+        OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+        OSP_REQUIRE_PROFILE_DISK: "1",
+        OSP_LOCAL_SSDS: "/dev/nvme0n1",
+      });
+      expect(resMissingProfile.status).not.toBe(0);
+      expect(resMissingProfile.stderr).toMatch(/profile disk.*block device/iu);
+      expectOnlyReadOnlyCalls(
+        hMissingProfile.readCalls(),
+        "Z10 standalone saved-state-array missing profile disk",
+      );
+    });
+
+    it("Z7: setup-host.sh boot waits a bounded time for the durable profile disk via the shared wait function", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      const labelA = hostProfileDiskLabel(hostA);
+      const h = createFakeHostEnv({
+        blockDeviceAppearsOnCheck: 2,
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+      });
+      const res = runScript(setupScript, ["wait-profile-disk", poolProfileDiskDevicePath], {
+        ...h.env,
+        OSP_PROFILE_DISK_WAIT_SECONDS: "5",
+      });
+      expect(res.status, res.stderr).toBe(0);
+      expect(h.readCalls().some((c) => c.cmd === "udevadm")).toBe(true);
+    });
+
+    it("Z4(c) + Z11: rendered download script rejects wrong SHA-256 before tar AND refuses any symlink inside the extracted bundle before running enroll-host.sh", () => {
+      const extractDownloadScript = (userData: string): string => {
+        const parsed = JSON.parse(userData.replace(/^#cloud-config\n/u, "")) as {
+          write_files: Array<{ path: string; content: string }>;
+        };
+        const file = parsed.write_files.find((f) => f.path === "/root/opensteer-pool-download.sh");
+        expect(file).toBeDefined();
+        return file!.content;
+      };
+
+      // Build a real .tar.gz bundle whose enroll-host.sh writes a marker file if executed.
+      const workDir = makeTempDir();
+      const stageDir = join(workDir, "stage");
+      const markerPath = join(workDir, "enroll-ran");
+      mkdirSync(stageDir, { recursive: true });
+      writeFileSync(
+        join(stageDir, "enroll-host.sh"),
+        `#!/usr/bin/env bash\necho ran > ${JSON.stringify(markerPath)}\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(stageDir, "setup-host.sh"), "#!/usr/bin/env bash\nexit 0\n", {
+        mode: 0o755,
+      });
+      const goodBundle = join(workDir, "good-bundle.tar.gz");
+      execFileSync("tar", ["-czf", goodBundle, "-C", stageDir, "enroll-host.sh", "setup-host.sh"]);
+
+      // Z4(c): Wrong SHA-256 -> neither tar nor enroll-host.sh may run!
+      const wrongHashUserData = renderPoolHostUserData(
+        {
+          hostId: BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111"),
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: "b".repeat(64),
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        false,
+      );
+      const hWrongHash = createFakeHostEnv({ curlBundleFile: goodBundle });
+      const tarLog = join(workDir, "tar-ran");
+      writeExecutable(
+        hWrongHash.binDir,
+        "tar",
+        `#!/usr/bin/env bash\necho tar >> ${JSON.stringify(tarLog)}\nexec /usr/bin/tar "$@"\n`,
+      );
+      const wrongScriptPath = join(workDir, "download-wrong-hash.sh");
+      const rawWrongScript = extractDownloadScript(wrongHashUserData)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/bundle-dir.`)
+        .replaceAll("--one-file-system ", "");
+      writeFileSync(wrongScriptPath, rawWrongScript, { mode: 0o700 });
+      const wrongRes = runScript(wrongScriptPath, [], hWrongHash.env);
+      expect(wrongRes.status).not.toBe(0);
+      expect(existsSync(tarLog), "tar must NOT run when bundle SHA-256 mismatches").toBe(false);
+      expect(existsSync(markerPath), "enroll-host.sh must NOT run on SHA-256 mismatch").toBe(false);
+
+      // Z11: Bundle with matching SHA-256 that contains a symbolic link -> refused BEFORE enroll-host.sh runs!
+      symlinkSync("/etc/passwd", join(stageDir, "evil-link"));
+      const symlinkBundle = join(workDir, "symlink-bundle.tar.gz");
+      execFileSync("tar", [
+        "-czf",
+        symlinkBundle,
+        "-C",
+        stageDir,
+        "enroll-host.sh",
+        "setup-host.sh",
+        "evil-link",
+      ]);
+      const symlinkBundleSha = createHash("sha256")
+        .update(readFileSync(symlinkBundle))
+        .digest("hex");
+      const symlinkUserData = renderPoolHostUserData(
+        {
+          hostId: BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111"),
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: symlinkBundleSha,
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        false,
+      );
+      const hSymlink = createFakeHostEnv({ curlBundleFile: symlinkBundle });
+      const symlinkScriptPath = join(workDir, "download-symlink.sh");
+      const rawSymlinkScript = extractDownloadScript(symlinkUserData)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/sym-bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/sym-bundle-dir.`)
+        .replaceAll("--one-file-system ", "");
+      writeFileSync(symlinkScriptPath, rawSymlinkScript, { mode: 0o700 });
+      const symlinkRes = runScript(symlinkScriptPath, [], hSymlink.env);
+      expect(symlinkRes.status).not.toBe(0);
       expect(
-        hBootOverlap
+        existsSync(markerPath),
+        "enroll-host.sh must NOT run when bundle contains a symlink",
+      ).toBe(false);
+    });
+
+    it("Z1 (step 1): failure between boot-complete and systemctl enable keeps bootstrap token and caches release-artifacts.json", async () => {
+      const hostId = BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111");
+      const workDir = makeTempDir();
+      const stageDir = join(workDir, "bundle-src");
+      mkdirSync(stageDir, { recursive: true });
+      writeFileSync(join(stageDir, "enroll-host.sh"), readFileSync(enrollScript, "utf8"), {
+        mode: 0o755,
+      });
+
+      const h = createFakeHostEnv({
+        blkidRc: 2,
+        blkidOut: "",
+        wipefsRc: 0,
+        wipefsOut: "",
+        systemctlRc: 1,
+        setupInstallStub: true,
+        bootEndpointFailsAfterComplete: true,
+        metadataReadyFile: join(workDir, "ready-key"),
+        curlBundleFile: join(workDir, "release.tar.gz"),
+      });
+      writeFileSync(join(stageDir, "setup-host.sh"), readFileSync(h.bundledSetup, "utf8"), {
+        mode: 0o755,
+      });
+      const bundlePath = join(workDir, "release.tar.gz");
+      execFileSync("tar", ["-czf", bundlePath, "-C", stageDir, "enroll-host.sh", "setup-host.sh"]);
+      const bundleSha = createHash("sha256").update(readFileSync(bundlePath)).digest("hex");
+
+      const specPath = join(workDir, "opensteer-pool-boot.json");
+      const tokenPath = join(workDir, "opensteer-pool-bootstrap-token");
+      const ciUserData = join(h.cloudInitDir, "user-data.txt");
+      writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
+
+      const userData = renderPoolHostUserData(
+        {
+          hostId,
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: bundleSha,
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        true,
+      );
+      const parsedCloudConfig = JSON.parse(userData.replace(/^#cloud-config\n/u, "")) as {
+        write_files: Array<{ path: string; content: string }>;
+      };
+      const bootJson = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-boot.json",
+      )!.content;
+      const bootToken = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-bootstrap-token",
+      )!.content;
+      const downloadScriptContent = parsedCloudConfig.write_files
+        .find((f) => f.path === "/root/opensteer-pool-download.sh")!
+        .content.replaceAll("/root/opensteer-pool-boot.json", specPath)
+        .replaceAll("/root/opensteer-pool-bootstrap-token", tokenPath)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/dl-bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/dl-dir.`)
+        .replaceAll("--one-file-system ", "")
+        .replace(
+          `--setup-script "$bundle_dir/setup-host.sh"`,
+          `--setup-script "$bundle_dir/setup-host.sh" --profiles-root ${JSON.stringify(join(h.stateDir, "profiles"))} --credentials-root ${JSON.stringify(join(h.etcDir, "credentials"))}`,
+        );
+      writeFileSync(specPath, bootJson, { mode: 0o600 });
+      writeFileSync(tokenPath, bootToken, { mode: 0o600 });
+      const downloadScriptPath = join(workDir, "download.sh");
+      writeFileSync(downloadScriptPath, downloadScriptContent, { mode: 0o700 });
+
+      const compute = new ComputeFake();
+      const provider = compute.adapter();
+      const signal = new AbortController().signal;
+      await provider.ensurePoolProfileDisk(
+        {
+          hostId,
+          diskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          sizeGb: 500,
+          diskType: "pd-ssd",
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      const vm = await provider.createPoolHost(
+        {
+          id: hostId,
+          generation: 1,
+          machineType: "n2-standard-8",
+          image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+          bootDiskSizeGb: 40,
+          profileDiskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          localSsdCount: 1,
+          userData,
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      expect(await provider.updatePoolHostBootstrap(vm.id, false, signal)).toBe(true);
+      const readyItem = [...compute.instances.values()][0]!.metadata.items.find(
+        (i) => i.key === "opensteer-bootstrap-ready",
+      );
+      expect(readyItem?.value).toBe("1");
+      writeFileSync(join(workDir, "ready-key"), readyItem!.value, "utf8");
+
+      // Run 1: boot-complete succeeds, then systemctl enable --now fails -> token kept, artifacts cached.
+      const run1 = runScript(downloadScriptPath, [], h.env);
+      expect(run1.status).not.toBe(0);
+      expect(existsSync(tokenPath)).toBe(true);
+      expect(existsSync(ciUserData)).toBe(true);
+      expect(existsSync(join(h.etcDir, "release-artifacts.json"))).toBe(true);
+      expect(
+        h
           .readCalls()
-          .filter(
-            (c) =>
-              (c.cmd === "wipefs" && c.args.includes("-a")) ||
-              c.cmd === "mdadm" ||
-              c.cmd === "cryptsetup" ||
-              c.cmd === "mkfs.xfs",
-          ),
-      ).toEqual([]);
+          .some((c) => c.cmd === "curl" && c.args.some((a) => a.includes("/boot-complete"))),
+      ).toBe(true);
+    });
+
+    it("Z1 (step 2): after reconciler metadata scrub removes user-data and leaves opensteer-bootstrap-ready, rendered download script passes gate, skips /boot, starts services, and removes token + cloud-init", async () => {
+      const hostId = BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111");
+      const workDir = makeTempDir();
+      const stageDir = join(workDir, "bundle-src");
+      mkdirSync(stageDir, { recursive: true });
+      writeFileSync(join(stageDir, "enroll-host.sh"), readFileSync(enrollScript, "utf8"), {
+        mode: 0o755,
+      });
+
+      const h = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${hostProfileDiskLabel(hostId)}\nTYPE=ext4\nUSAGE=filesystem`,
+        wipefsRc: 0,
+        wipefsOut: "0x438 ext4",
+        systemctlRc: 0,
+        setupInstallStub: true,
+        alreadyMountedSource: "/dev/sdb",
+        bootEndpointFailsAfterComplete: true,
+        metadataReadyFile: join(workDir, "ready-key"),
+        curlBundleFile: join(workDir, "release.tar.gz"),
+      });
+      writeFileSync(join(stageDir, "setup-host.sh"), readFileSync(h.bundledSetup, "utf8"), {
+        mode: 0o755,
+      });
+      const bundlePath = join(workDir, "release.tar.gz");
+      execFileSync("tar", ["-czf", bundlePath, "-C", stageDir, "enroll-host.sh", "setup-host.sh"]);
+      const bundleSha = createHash("sha256").update(readFileSync(bundlePath)).digest("hex");
+
+      // Exact state left by step 1 (boot-complete succeeded, release-artifacts.json cached, token kept):
+      const fakeArtifactSha = createHash("sha256")
+        .update("fake-artifact-content", "utf8")
+        .digest("hex");
+      writeFileSync(
+        join(h.etcDir, "release-artifacts.json"),
+        JSON.stringify({
+          hostId,
+          generation: 1,
+          releaseVersion: "1.0.0",
+          artifacts: {
+            agentUrl: "https://releases.example.test/agent.mjs",
+            agentSha256: fakeArtifactSha,
+            relayUrl: "https://releases.example.test/relay.mjs",
+            relaySha256: fakeArtifactSha,
+            rootfsUrl: "https://releases.example.test/rootfs.ext4",
+            rootfsSha256: fakeArtifactSha,
+            kernelUrl: "https://releases.example.test/vmlinux",
+            kernelSha256: fakeArtifactSha,
+            egressUrl: "https://releases.example.test/egress.js",
+            egressSha256: fakeArtifactSha,
+          },
+        }),
+        { mode: 0o600 },
+      );
+      writeFileSync(join(h.root, "boot-complete-seen"), "1", "utf8");
+
+      const specPath = join(workDir, "opensteer-pool-boot.json");
+      const tokenPath = join(workDir, "opensteer-pool-bootstrap-token");
+      const ciUserData = join(h.cloudInitDir, "user-data.txt");
+      writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
+
+      const userData = renderPoolHostUserData(
+        {
+          hostId,
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: bundleSha,
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        true,
+      );
+      const parsedCloudConfig = JSON.parse(userData.replace(/^#cloud-config\n/u, "")) as {
+        write_files: Array<{ path: string; content: string }>;
+      };
+      const bootJson = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-boot.json",
+      )!.content;
+      const bootToken = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-bootstrap-token",
+      )!.content;
+      const downloadScriptContent = parsedCloudConfig.write_files
+        .find((f) => f.path === "/root/opensteer-pool-download.sh")!
+        .content.replaceAll("/root/opensteer-pool-boot.json", specPath)
+        .replaceAll("/root/opensteer-pool-bootstrap-token", tokenPath)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/dl-bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/dl-dir.`)
+        .replaceAll("--one-file-system ", "")
+        .replace(
+          `--setup-script "$bundle_dir/setup-host.sh"`,
+          `--setup-script "$bundle_dir/setup-host.sh" --profiles-root ${JSON.stringify(join(h.stateDir, "profiles"))} --credentials-root ${JSON.stringify(join(h.etcDir, "credentials"))}`,
+        );
+      writeFileSync(specPath, bootJson, { mode: 0o600 });
+      writeFileSync(tokenPath, bootToken, { mode: 0o600 });
+      const downloadScriptPath = join(workDir, "download.sh");
+      writeFileSync(downloadScriptPath, downloadScriptContent, { mode: 0o700 });
+
+      // Wire real ComputeFake + GoogleCompute.updatePoolHostBootstrap to run the scrub and drive the metadata gate file!
+      const compute = new ComputeFake();
+      const provider = compute.adapter();
+      const signal = new AbortController().signal;
+      await provider.ensurePoolProfileDisk(
+        {
+          hostId,
+          diskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          sizeGb: 500,
+          diskType: "pd-ssd",
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      const vm = await provider.createPoolHost(
+        {
+          id: hostId,
+          generation: 1,
+          machineType: "n2-standard-8",
+          image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+          bootDiskSizeGb: 40,
+          profileDiskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          localSsdCount: 1,
+          userData,
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      expect(await provider.updatePoolHostBootstrap(vm.id, false, signal)).toBe(true);
+      // Reconciler sees enrolled=true and runs real updatePoolHostBootstrap(vm.id, true) scrub!
+      expect(await provider.updatePoolHostBootstrap(vm.id, true, signal)).toBe(true);
+      const instanceAfterScrub = [...compute.instances.values()][0]!;
+      expect(instanceAfterScrub.metadata.items.some((i) => i.key === "user-data")).toBe(false);
+      const readyItem = instanceAfterScrub.metadata.items.find(
+        (i) => i.key === "opensteer-bootstrap-ready",
+      );
+      expect(readyItem?.value).toBe("1");
+      writeFileSync(join(workDir, "ready-key"), readyItem!.value, "utf8");
+
+      // Re-run rendered download script -> MUST pass gate, reuse cached artifacts (0 /boot calls),
+      // replay /boot-complete, enable+start services, and remove token + cloud-init!
+      const run2 = runScript(downloadScriptPath, [], h.env);
+      expect(run2.status, run2.stderr).toBe(0);
+      expect(
+        h.readCalls().filter((c) => c.cmd === "curl" && c.args.some((a) => a.endsWith("/boot"))),
+      ).toHaveLength(0);
+      expect(
+        h
+          .readCalls()
+          .some((c) => c.cmd === "curl" && c.args.some((a) => a.includes("/boot-complete"))),
+      ).toBe(true);
+      expect(h.readCalls().some((c) => c.cmd === "systemctl" && c.args.includes("enable"))).toBe(
+        true,
+      );
+      expect(existsSync(tokenPath)).toBe(false);
+      expect(existsSync(ciUserData)).toBe(false);
+    });
+
+    it("Z1 (later window): crash after services start and before token removal + reconciler scrub still lets rendered download script pass gate and remove token + cloud-init", async () => {
+      const hostId = BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111");
+      const workDir = makeTempDir();
+      const stageDir = join(workDir, "bundle-src");
+      mkdirSync(stageDir, { recursive: true });
+      writeFileSync(join(stageDir, "enroll-host.sh"), readFileSync(enrollScript, "utf8"), {
+        mode: 0o755,
+      });
+
+      const h = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${hostProfileDiskLabel(hostId)}\nTYPE=ext4\nUSAGE=filesystem`,
+        wipefsRc: 0,
+        wipefsOut: "0x438 ext4",
+        systemctlRc: 0,
+        setupInstallStub: true,
+        alreadyMountedSource: "/dev/sdb",
+        bootEndpointFailsAfterComplete: true,
+        metadataReadyFile: join(workDir, "ready-key"),
+        curlBundleFile: join(workDir, "release.tar.gz"),
+      });
+      writeFileSync(join(stageDir, "setup-host.sh"), readFileSync(h.bundledSetup, "utf8"), {
+        mode: 0o755,
+      });
+      const bundlePath = join(workDir, "release.tar.gz");
+      execFileSync("tar", ["-czf", bundlePath, "-C", stageDir, "enroll-host.sh", "setup-host.sh"]);
+      const bundleSha = createHash("sha256").update(readFileSync(bundlePath)).digest("hex");
+
+      // Simulate post-services-start state: cached artifacts + boot-complete already observed,
+      // but token + cloud-init still exist on disk when the reconciler scrubs user-data.
+      const fakeArtifactSha = createHash("sha256")
+        .update("fake-artifact-content", "utf8")
+        .digest("hex");
+      writeFileSync(
+        join(h.etcDir, "release-artifacts.json"),
+        JSON.stringify({
+          hostId,
+          generation: 1,
+          releaseVersion: "1.0.0",
+          artifacts: {
+            agentUrl: "https://releases.example.test/agent.mjs",
+            agentSha256: fakeArtifactSha,
+            relayUrl: "https://releases.example.test/relay.mjs",
+            relaySha256: fakeArtifactSha,
+            rootfsUrl: "https://releases.example.test/rootfs.ext4",
+            rootfsSha256: fakeArtifactSha,
+            kernelUrl: "https://releases.example.test/vmlinux",
+            kernelSha256: fakeArtifactSha,
+            egressUrl: "https://releases.example.test/egress.js",
+            egressSha256: fakeArtifactSha,
+          },
+        }),
+        { mode: 0o600 },
+      );
+      writeFileSync(join(h.root, "boot-complete-seen"), "1", "utf8");
+
+      const specPath = join(workDir, "opensteer-pool-boot.json");
+      const tokenPath = join(workDir, "opensteer-pool-bootstrap-token");
+      const ciUserData = join(h.cloudInitDir, "user-data.txt");
+      writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
+
+      const userData = renderPoolHostUserData(
+        {
+          hostId,
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: bundleSha,
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        true,
+      );
+      const parsedCloudConfig = JSON.parse(userData.replace(/^#cloud-config\n/u, "")) as {
+        write_files: Array<{ path: string; content: string }>;
+      };
+      const bootJson = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-boot.json",
+      )!.content;
+      const bootToken = parsedCloudConfig.write_files.find(
+        (f) => f.path === "/root/opensteer-pool-bootstrap-token",
+      )!.content;
+      const downloadScriptContent = parsedCloudConfig.write_files
+        .find((f) => f.path === "/root/opensteer-pool-download.sh")!
+        .content.replaceAll("/root/opensteer-pool-boot.json", specPath)
+        .replaceAll("/root/opensteer-pool-bootstrap-token", tokenPath)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/dl-bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/dl-dir.`)
+        .replaceAll("--one-file-system ", "")
+        .replace(
+          `--setup-script "$bundle_dir/setup-host.sh"`,
+          `--setup-script "$bundle_dir/setup-host.sh" --profiles-root ${JSON.stringify(join(h.stateDir, "profiles"))} --credentials-root ${JSON.stringify(join(h.etcDir, "credentials"))}`,
+        );
+      writeFileSync(specPath, bootJson, { mode: 0o600 });
+      writeFileSync(tokenPath, bootToken, { mode: 0o600 });
+      const downloadScriptPath = join(workDir, "download.sh");
+      writeFileSync(downloadScriptPath, downloadScriptContent, { mode: 0o700 });
+
+      const compute = new ComputeFake();
+      const provider = compute.adapter();
+      const signal = new AbortController().signal;
+      await provider.ensurePoolProfileDisk(
+        {
+          hostId,
+          diskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          sizeGb: 500,
+          diskType: "pd-ssd",
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      const vm = await provider.createPoolHost(
+        {
+          id: hostId,
+          generation: 1,
+          machineType: "n2-standard-8",
+          image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+          bootDiskSizeGb: 40,
+          profileDiskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+          localSsdCount: 1,
+          userData,
+          requestId: randomUUID(),
+        },
+        signal,
+      );
+      expect(await provider.updatePoolHostBootstrap(vm.id, false, signal)).toBe(true);
+      expect(await provider.updatePoolHostBootstrap(vm.id, true, signal)).toBe(true);
+      const instanceAfterScrub = [...compute.instances.values()][0]!;
+      const readyItem = instanceAfterScrub.metadata.items.find(
+        (i) => i.key === "opensteer-bootstrap-ready",
+      );
+      expect(readyItem?.value).toBe("1");
+      writeFileSync(join(workDir, "ready-key"), readyItem!.value, "utf8");
+
+      const rerun = runScript(downloadScriptPath, [], h.env);
+      expect(rerun.status, rerun.stderr).toBe(0);
+      expect(existsSync(tokenPath)).toBe(false);
+      expect(existsSync(ciUserData)).toBe(false);
     });
 
     it("Y7: rejects control characters / newlines in boot-spec fields, refuses setup-host.sh outside the verified bundle, and pool-boot.ts extracts the hash-verified bundle", () => {
@@ -1423,6 +2132,20 @@ esac
       expect(loaded.driver.credentialsRoot).toBe("/etc/opensteer-pool/credentials");
       expect(loaded.driver.guestMode).toBe("runtime");
       expect(loaded.driver.network.relayUid).toBe(987);
+      // Z9: No privateResolvers (never open 169.254.169.254:53 to a slot proxy); rendered nftables
+      // rules must drop every port of 169.254.169.254 (via @blocked4 169.254.0.0/16).
+      expect(loaded.driver.network.privateResolvers).toEqual([]);
+      expect(resolverFile(loaded.driver.network)).not.toContain("169.254.169.254");
+      const slotNft = egressRuleset(loaded.driver.network, ["10.40.0.21"]);
+      const hostNft = hostRuleset(loaded.driver.network, ["10.40.0.21"]);
+      for (const rules of [slotNft, hostNft]) {
+        expect(rules).not.toContain("169.254.169.254");
+        expect(rules).toContain("169.254.0.0/16");
+        expect(rules.indexOf("ip daddr @blocked4 counter drop")).toBeGreaterThan(-1);
+        expect(rules.indexOf("ip daddr @blocked4 counter drop")).toBeLessThan(
+          rules.indexOf("meta l4proto tcp accept"),
+        );
+      }
 
       chmodSync(outPath, 0o644);
       await expect(readAgentConfig(outPath)).rejects.toThrow(/readable by other users/u);

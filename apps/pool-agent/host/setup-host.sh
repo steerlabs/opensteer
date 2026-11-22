@@ -29,6 +29,11 @@ readonly ARRAY=${OSP_ARRAY_DIR:-/srv/opensteer-pool}              # encrypted Lo
 readonly RUN=${OSP_RUN_DIR:-/run/opensteer-pool}
 readonly ETC=${OSP_ETC_DIR:-/etc/opensteer-pool}
 readonly RELAY_ETC=${OSP_RELAY_ETC_DIR:-/etc/opensteer-pool-relay}
+readonly SYSTEMD_DIR=${OSP_SYSTEMD_DIR:-/etc/systemd/system}
+readonly KVM_DEV=${OSP_KVM_DEV:-/dev/kvm}
+readonly CGROUP_CONTROLLERS=${OSP_CGROUP_CONTROLLERS:-/sys/fs/cgroup/cgroup.controllers}
+readonly SMT_ACTIVE=${OSP_SMT_ACTIVE:-/sys/devices/system/cpu/smt/active}
+readonly CPU_VULNS_DIR=${OSP_CPU_VULNS_DIR:-/sys/devices/system/cpu/vulnerabilities}
 readonly MAPPER=osp-saved
 readonly HOST_ENV="$ETC/host.env"
 readonly AGENT_CONFIG="$ETC/agent.json"
@@ -41,6 +46,21 @@ is_block_device() {
     local target=$1
     [[ -b $target ]] && return 0
     [[ $(stat -L -c '%F' "$target" 2>/dev/null || true) == "block special file" ]]
+}
+
+# Z7: Single shared bounded wait for the durable profile disk, used by both enrolment and boot.
+wait_for_profile_disk() {
+    local dev=$1
+    local max_wait=${OSP_PROFILE_DISK_WAIT_SECONDS:-30}
+    [[ $max_wait =~ ^[0-9]+$ ]] || max_wait=30
+    local waited=0
+    while ! is_block_device "$dev" && (( waited < max_wait )); do
+        udevadm settle --timeout=2 2>/dev/null || true
+        is_block_device "$dev" && break
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${waited}s; inspect attached disks and do NOT format"
 }
 
 load_host_env() {
@@ -157,12 +177,12 @@ save_host_env() {
 require_host() {
     [[ $(id -u) == 0 ]] || die "run as root"
     [[ $(uname -m) == x86_64 ]] || die "x86_64 only"
-    [[ -c /dev/kvm ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
-    [[ -f /sys/fs/cgroup/cgroup.controllers ]] || die "the unified cgroup v2 hierarchy is required"
+    [[ -c $KVM_DEV || ( $KVM_DEV != /dev/kvm && -e $KVM_DEV ) ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
+    [[ -f $CGROUP_CONTROLLERS ]] || die "the unified cgroup v2 hierarchy is required"
     # One thread per core: no SMT sibling is shared between two people's guests. A host whose
     # thread status cannot be read fails unless it is declared one-thread-per-core.
-    if [[ -r /sys/devices/system/cpu/smt/active ]]; then
-        [[ $(cat /sys/devices/system/cpu/smt/active) == 0 ]] || die "SMT is active: create the host with one thread per core"
+    if [[ -r $SMT_ACTIVE ]]; then
+        [[ $(cat "$SMT_ACTIVE") == 0 ]] || die "SMT is active: create the host with one thread per core"
     elif [[ ${OSP_ONE_THREAD_PER_CORE:-} != declared ]]; then
         die "SMT status is unreadable: set OSP_ONE_THREAD_PER_CORE=declared on a one-thread-per-core host"
     fi
@@ -176,7 +196,7 @@ readonly NAMED_VULNERABILITIES="spectre_v1 spectre_v2 spec_store_bypass meltdown
 vulnerable_cpu() {
     local name state
     for name in $NAMED_VULNERABILITIES; do
-        state=$(cat "/sys/devices/system/cpu/vulnerabilities/$name" 2>/dev/null || echo "Unknown")
+        state=$(cat "$CPU_VULNS_DIR/$name" 2>/dev/null || echo "Unknown")
         [[ $state == Vulnerable* ]] && return 0
     done
     return 1
@@ -209,14 +229,14 @@ install_binaries() {
     # Root-owned and not writable by anyone else: the jailer trusts its exec file.
     install -o root -g root -m 0755 "$release/firecracker-$FC_VERSION-x86_64" "$OPT/bin/firecracker"
     install -o root -g root -m 0755 "$release/jailer-$FC_VERSION-x86_64" "$OPT/bin/jailer"
-    rm -rf --one-file-system "$unpack"
+    rm -rf "$unpack"
     fetch "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz" \
         "$OPT/download/node.tar.xz" "$NODE_SHA256"
     if [[ ! -x $OPT/node/bin/node ]] || [[ $("$OPT/node/bin/node" --version) != "$NODE_VERSION" ]]; then
-        rm -rf --one-file-system "$OPT/node.new"
+        rm -rf "$OPT/node.new"
         install -d -m 0755 "$OPT/node.new"
         tar -xJf "$OPT/download/node.tar.xz" -C "$OPT/node.new" --strip-components=1 --no-same-owner
-        rm -rf --one-file-system "$OPT/node"
+        rm -rf "$OPT/node"
         mv "$OPT/node.new" "$OPT/node"
     fi
     install -d -m 0755 "$STATE/images"
@@ -278,11 +298,12 @@ verify_profile_mount() {
 
 mount_profile_disk() {
     local allow_unconfigured=${1:-0}
-    # Boot-time mount ONLY (X1/Y1/Y7): NEVER formats. Verifies the durable disk carries this host's
-    # per-host ext4 label (`osp-<12hex>`) before mounting so a foreign, wrong-host, or wiped disk
-    # fails loudly and opensteer-pool-agent.service never starts against the boot disk.
+    # Boot-time mount ONLY (X1/Y1/Y7/Z7): NEVER formats. Waits a bounded time for the durable
+    # profile disk via the shared helper, verifies this host's per-host ext4 label (`osp-<12hex>`)
+    # before mounting so a foreign, wrong-host, or wiped disk fails loudly and
+    # opensteer-pool-agent.service never starts against the boot disk.
     require_profile_disk_configured "$allow_unconfigured" || return 0
-    is_block_device "$OSP_PROFILE_DISK" || die "durable profile disk $OSP_PROFILE_DISK is missing at boot; inspect attached disks and do NOT format"
+    wait_for_profile_disk "$OSP_PROFILE_DISK"
     local resolved
     resolved=$(readlink -f "$OSP_PROFILE_DISK")
     install -d -m 0711 "$OSP_PROFILES_ROOT"
@@ -309,7 +330,8 @@ install_units() {
     install -d -m 0711 "$STATE"
     install -d -m 0711 "$OSP_PROFILES_ROOT"
     install -m 0755 "$0" "$OPT/setup-host.sh"
-    cat > /etc/systemd/system/opensteer-pool-host.service <<EOF
+    install -d -m 0755 "$SYSTEMD_DIR"
+    cat > "$SYSTEMD_DIR/opensteer-pool-host.service" <<EOF
 [Unit]
 Description=Opensteer pool host: durable profiles mount, encrypted saved-state array and kernel settings
 DefaultDependencies=no
@@ -324,7 +346,7 @@ ExecStart=$OPT/setup-host.sh boot
 [Install]
 WantedBy=multi-user.target
 EOF
-    cat > /etc/systemd/system/opensteer-pool-agent.service <<EOF
+    cat > "$SYSTEMD_DIR/opensteer-pool-agent.service" <<EOF
 [Unit]
 Description=Opensteer pool agent
 Requires=opensteer-pool-host.service
@@ -368,10 +390,10 @@ EOF
     # its own (128 MiB, one core) on top. Round E, E4: the slice as a whole gets a quarter of the
     # host's cores, at least one (1 of the 4 on a run host): however many proxies are busy at
     # once, the guests, the agent and the relay keep the other three quarters.
-    local cores; cores=$(nproc)
+    local cores; cores=$(nproc 2>/dev/null || echo 4)
     local egress_cpu=$(( cores * 25 ))
     (( egress_cpu < 100 )) && egress_cpu=100
-    cat > /etc/systemd/system/opensteer-pool-egress.slice <<EOF
+    cat > "$SYSTEMD_DIR/opensteer-pool-egress.slice" <<EOF
 [Unit]
 Description=Opensteer pool slot proxies
 
@@ -391,7 +413,7 @@ EOF
   "authSocket": "/run/opensteer-pool-relay/relay.sock" }
 EOF
     chmod 0644 "$RELAY_ETC/relay.json"
-    cat > /etc/systemd/system/opensteer-pool-relay.service <<EOF
+    cat > "$SYSTEMD_DIR/opensteer-pool-relay.service" <<EOF
 [Unit]
 Description=Opensteer pool relay
 After=opensteer-pool-agent.service
@@ -529,7 +551,13 @@ guard_scratch_members() {
     [[ -n $boot_src ]] || die "could not determine root/boot disk via findmnt; refusing to wipe scratch SSDs"
     add_protected "$boot_src" "boot disk"
 
-    if [[ -n $OSP_PROFILE_DISK ]]; then
+    # Z10: Fail closed when a profile disk is configured or required and its path is not a block device
+    # (closes the standalone `saved-state-array` gap where a missing by-id symlink would otherwise
+    # resolve to its own path and fail to protect an unmounted durable profile disk).
+    if [[ -n $OSP_PROFILE_DISK || ${OSP_REQUIRE_PROFILE_DISK:-0} == 1 ]]; then
+        if [[ -z $OSP_PROFILE_DISK ]] || ! is_block_device "$OSP_PROFILE_DISK"; then
+            die "REFUSED: configured durable profile disk '${OSP_PROFILE_DISK:-unset}' is not present as a block device; refusing to wipe or build saved-state array"
+        fi
         add_protected "$OSP_PROFILE_DISK" "durable profile disk"
     fi
     if is_block_device "$FIXED_PROFILE_DISK_DEVICE"; then
@@ -684,6 +712,13 @@ case "$CMD" in
     verify-profiles-mount)
         verify_profile_mount
         ;;
+    wait-profile-disk)
+        wait_for_profile_disk "${2:-$FIXED_PROFILE_DISK_DEVICE}"
+        ;;
+    parent-whole-disk)
+        [[ -n ${2:-} ]] || die "usage: $0 parent-whole-disk <device>"
+        parent_whole_disk "$2"
+        ;;
     saved-state-array)
         saved_state_array
         ;;
@@ -691,7 +726,7 @@ case "$CMD" in
         check
         ;;
     *)
-        echo "usage: $0 install|boot|verify-profiles-mount|saved-state-array|check" >&2
+        echo "usage: $0 install|boot|verify-profiles-mount|wait-profile-disk|parent-whole-disk|saved-state-array|check" >&2
         exit 2
         ;;
 esac

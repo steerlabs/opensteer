@@ -5,11 +5,12 @@ and single-use bootstrap token written by `apps/home-provisioner/src/pool-boot.t
 idempotent: re-running after a crash or reboot repeats only unfinished work and never reformats an
 existing profile disk.
 
-## Verified release bundle (Y7)
+## Verified release bundle (Y7 / Z11)
 
 `pool-boot.ts` downloads one SHA-256-verified `.tar.gz` release bundle (`installerUrl` +
-`installerSha256`) containing both `enroll-host.sh` and `setup-host.sh`, verifies neither is a
-symlink, and invokes:
+`installerSha256`), verifies its SHA-256 digest before invoking `tar`, refuses any symbolic link
+inside the extracted bundle directory (`find "$bundle_dir" -type l`), confirms `enroll-host.sh`
+and `setup-host.sh` are regular files, and invokes:
 
 ```sh
 bash "$bundle_dir/enroll-host.sh" \
@@ -33,10 +34,14 @@ argv.
    newlines and tabs) and values pass from Python to Bash NUL-delimited.
 2. **Prepare and mount the durable profile disk** at `/var/lib/opensteer-pool/profiles`
    (`driver.profilesRoot`) using the decision rule below. The device path is fixed to
-   `/dev/disk/by-id/google-opensteer-profiles`, resolved once, verified not to be the boot disk,
-   and formatted with this host's 16-byte ext4 label `osp-<first 12 hex of SHA-256(hostId)>` only
-   after an immediate pre-`mkfs` re-probe of `blkid -p` and `wipefs -n` with `</dev/null` (never
-   `-f`/`-F`, never piping `y`).
+   `/dev/disk/by-id/google-opensteer-profiles`, waited for up to 30 seconds via the shared helper in
+   `setup-host.sh`, resolved once, and checked fail-closed against the boot/root disk (and its
+   parent whole disk). Because `mkfs.ext4` does not prompt before overwriting an existing filesystem
+   when not on a terminal, the format guard is repeating both `blkid -o export -p` and
+   `wipefs -n --noheadings` immediately before `mkfs.ext4` on a host with `everEnrolled=false`
+   (together with `mke2fs`'s exclusive open on a busy device); `mkfs.ext4 -q -m 1 -L osp-<12hex>`
+   still runs with `</dev/null` and without `-f`/`-F` so any prompt it does issue fails rather than
+   blocking.
 3. **Resolve release artifacts** (`agent`, `relay`, `rootfs`, `kernel`, `egress` URLs and SHA-256
    digests) from `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/boot` (cached root-only at
    `/etc/opensteer-pool/release-artifacts.json` for idempotent retry after a partial run, or read
@@ -74,8 +79,16 @@ argv.
    - enables and starts `opensteer-pool-agent.service` and `opensteer-pool-relay.service`;
    - **after services are up**, removes `--bootstrap-token-file` and cloud-init's user-data copies
      (`/var/lib/cloud/instance/user-data.txt`, `user-data.txt.i`, `cloud-config.txt`). If a crash
-     or `systemctl` failure happens before removal, the token stays on disk and the next run
-     replays `/boot-complete` idempotently with the same keys and finishes starting services (Y5).
+     or `systemctl` failure happens before removal, the token stays on disk; because the
+     reconciler's post-enrolment metadata scrub removes `user-data` while leaving the non-secret
+     `opensteer-bootstrap-ready` gate key, the next run of `opensteer-pool-download.service`
+     reaches `enroll-host.sh`, reuses cached artifacts, replays `/boot-complete` idempotently with
+     the same keys, finishes starting services, and removes the token (Y5 / Z1).
+   - **Note on cloud-init `obj.pkl` (Z12):** `/var/lib/cloud/instance/obj.pkl` is intentionally left
+     untouched so cloud-init does not lose its instance cache and treat the next reboot as a first
+     boot. That copy does not expose a live secret: the bootstrap token is single-use, cleared on
+     `/boot-complete`, and its only remaining replay path requires the already-enrolled host and
+     relay public keys and changes nothing.
 
 The enrolment sequence is strictly ordered: per-host label decided and written (or verified) →
 mounted by that label → `agent.json` written with `driver.profilesMount: { "label": "osp-<12hex>" }`
@@ -116,13 +129,18 @@ disk that could hold a person's profile is never formatted.
   `driver.profilesMount: { "label": "osp-<12hex>" }` into `agent.json` with the same per-host
   label. The agent independently verifies that `driver.profilesRoot` is a mount point on a
   different device than its parent, matches `/dev/disk/by-label/<label>`, and is writable:
-  - at startup, a failed check makes the agent exit with `"The profile disk is not mounted (...)"`
-    so systemd retries until the disk is mounted;
-  - before every `create` and `delete`, a failed check returns a definite signed `conflict`
-    `"The profile disk is not mounted: ..."` and makes or erases nothing (a `delete` never answers
-    `profileErased`, and `home-provisioner` treats it as "not done, host is not ready");
+  - at startup, a failed check makes the agent exit with `"The profile disk is not mounted (...)"`;
+  - before every `create` and `delete` (and again immediately before erasing a profile), a failed
+    check returns a definite signed `profile-disk-missing` refusal and never creates or erases a
+    profile (a `delete` never answers `profileErased`, and `home-provisioner` treats
+    `profile-disk-missing` as "not done, host is not ready");
   - before every `start` and wake from disk, the Home receives a stored signed `applied: false`
     with reason `profile-disk-missing`.
+- **Late-attaching or disappearing disk (Z7):** `opensteer-pool-host.service` waits up to 30
+  seconds at boot for `/dev/disk/by-id/google-opensteer-profiles` (using the same bounded wait as
+  enrolment). If the disk attaches later than that, or disappears while the agent is running, the
+  host fails closed and requires an operator to verify/mount the disk and restart both units
+  (`systemctl restart opensteer-pool-host opensteer-pool-agent`).
 
 ## Operator recovery
 

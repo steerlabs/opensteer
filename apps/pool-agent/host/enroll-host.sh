@@ -388,7 +388,7 @@ def render_agent_config(spec: dict, relay_uid: int, profiles_root: str, credenti
             "requireEgressUpstream": True,
             "network": {
                 "resolvers": ["8.8.8.8", "1.1.1.1"],
-                "privateResolvers": ["169.254.169.254"],
+                "privateResolvers": [],
                 "hostUpstreams": [],
                 "relayUid": relay_uid,
             },
@@ -597,34 +597,25 @@ fetch_artifact() {
 }
 
 prepare_profile_disk() {
-    local dev=$1 ever_enrolled=$2 profiles_root=$3 generation=$4 expected_label=$5
+    local dev=$1 ever_enrolled=$2 profiles_root=$3 generation=$4 expected_label=$5 setup_script=$6
     [[ $dev == "$FIXED_PROFILE_DISK_DEVICE" ]] ||
         die "REFUSED: profile disk device must be $FIXED_PROFILE_DISK_DEVICE (got $dev)"
     [[ $expected_label =~ ^osp-[0-9a-f]{12}$ ]] ||
         die "REFUSED: invalid expected profile disk label '$expected_label'"
 
-    local waited=0
-    while ! is_block_device "$dev" && (( waited < 30 )); do
-        udevadm settle --timeout=2 2>/dev/null || true
-        is_block_device "$dev" && break
-        sleep 1
-        waited=$(( waited + 1 ))
-    done
-    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${waited}s; check Compute disk attachment before retrying"
+    # Z7: Wait a bounded time via the one shared helper in setup-host.sh.
+    bash "$setup_script" wait-profile-disk "$dev"
 
-    # Y3: Resolve the fixed by-id device path ONCE and verify it is not the boot/root disk.
-    local resolved_dev boot_src boot_real boot_pkname boot_parent=""
+    # Y3 + Z10: Resolve the fixed by-id device path ONCE and fail closed if the boot/root disk
+    # cannot be determined or if the resolved device matches the boot disk or its parent whole disk.
+    local resolved_dev boot_src boot_real boot_parent=""
     resolved_dev=$(readlink -f "$dev")
     boot_src=$(findmnt -n -o SOURCE --target / 2>/dev/null || true)
-    if [[ -n $boot_src ]]; then
-        boot_real=$(readlink -f "$boot_src" 2>/dev/null || printf '%s' "$boot_src")
-        boot_pkname=$(lsblk -ndo PKNAME "$boot_real" 2>/dev/null | head -n1 || true)
-        if [[ -n $boot_pkname ]]; then
-            boot_parent=$(readlink -f "/dev/$boot_pkname" 2>/dev/null || printf '/dev/%s' "$boot_pkname")
-        fi
-        if [[ $resolved_dev == "$boot_real" ]] || [[ -n $boot_parent && $resolved_dev == "$boot_parent" ]]; then
-            die "REFUSED: durable profile disk $dev ($resolved_dev) resolves to the boot disk ($boot_real); refusing to format or mount"
-        fi
+    [[ -n $boot_src ]] || die "REFUSED: could not determine root/boot disk via findmnt; refusing to format or mount $dev"
+    boot_real=$(readlink -f "$boot_src" 2>/dev/null || printf '%s' "$boot_src")
+    boot_parent=$(bash "$setup_script" parent-whole-disk "$boot_real" || true)
+    if [[ $resolved_dev == "$boot_real" ]] || [[ -n $boot_parent && $resolved_dev == "$boot_parent" ]]; then
+        die "REFUSED: durable profile disk $dev ($resolved_dev) resolves to the boot disk ($boot_real); refusing to format or mount"
     fi
 
     install -d -m 0711 "$profiles_root"
@@ -658,8 +649,11 @@ prepare_profile_disk() {
 
     case "$decision" in
         format-and-mount)
-            # Y2: Re-probe both blkid and wipefs immediately before mkfs.ext4 and pass </dev/null
-            # (never -f/-F, never piping 'y'), so any unexpected signature or mkfs prompt aborts.
+            # Y2 + Z3: mkfs.ext4 does not prompt before overwriting an existing filesystem when
+            # stdin/stdout is not a terminal; the guard is repeating both probes (blkid -p and
+            # wipefs -n) immediately before mkfs on a host with everEnrolled=false (plus mke2fs's
+            # exclusive open on a busy device). </dev/null is still passed (never -f/-F, never
+            # piping 'y') so any prompt mke2fs does issue fails rather than blocking.
             local reprobe_blkid_out="" reprobe_blkid_rc=0 reprobe_wipefs_out="" reprobe_wipefs_rc=0
             reprobe_blkid_out=$(blkid -o export -p "$resolved_dev" 2>/dev/null) || reprobe_blkid_rc=$?
             reprobe_wipefs_out=$(wipefs -n --noheadings "$resolved_dev" 2>/dev/null) || reprobe_wipefs_rc=$?
@@ -776,8 +770,8 @@ run_enrolment() {
     chmod 0700 "$tmpdir"
     trap 'rm -rf "${tmpdir:-}"' EXIT
 
-    # 2. Durable profile disk (X1/Y2/Y3/Y7) — checked BEFORE modifying host services or formatting anything.
-    prepare_profile_disk "$profile_disk" "$ever_enrolled" "$profiles_root" "$generation" "$expected_label"
+    # 2. Durable profile disk (X1/Y2/Y3/Y7/Z7/Z10) — checked BEFORE modifying host services or formatting anything.
+    prepare_profile_disk "$profile_disk" "$ever_enrolled" "$profiles_root" "$generation" "$expected_label" "$setup_script"
 
     # 3. Resolve release artifact URLs and SHA-256s (inline in spec, cached from earlier retry, or Account /boot).
     local artifacts_json=""
