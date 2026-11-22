@@ -789,6 +789,21 @@ export class AgentSessionService {
       await pool.recheckTarget();
       signal.throwIfAborted();
       reservation = await pool.reserve(signal);
+      // Between here and the execution's own settler (registered once its send counters exist),
+      // a restart that can wait no longer records this holder too: refused while nothing is
+      // handed off, and refused as unsent once it is, since no command can have left before the
+      // execution began. Both writes apply only to the row in the state they name.
+      reservation.onForcedEnd?.(async () => {
+        const current = await readAgentOperation(this.#store.database, row.id);
+        if (current?.state === "handed-off")
+          await refuseUnsentHandedOffAgentOperation(
+            this.#store.database,
+            row.id,
+            "This browser restarted before anything was sent.",
+            "changed",
+          );
+        else await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+      });
       // A restart or a removal asks every holder to stop: the work ends and records its outcome.
       const held = reservation.ended
         ? AbortSignal.any([

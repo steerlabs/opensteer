@@ -1422,6 +1422,8 @@ export class BrowserService {
       now: () => (adopting?.active ? pass : pool.gate.backgroundNow()),
       wait: (signal) => (adopting?.active ? Promise.resolve(pass) : pool.gate.background(signal)),
       retiring: () => pool.gate.retiringOrAdopting,
+      // An adoption's pass has no end of its own; a restart's or a removal's hold still refuses.
+      refusesWrite: (reservation) => pool.gate.refusesWrite(reservation),
     };
   }
 
@@ -4903,8 +4905,8 @@ export class BrowserService {
     pool?: StandardCdpPoolReservation,
   ) {
     const id = randomUUID();
-    const heldEnds = (phase: string | undefined) => {
-      if (phase === "restarting" || phase === "released" || pool?.ended?.aborted)
+    const heldEnds = (gate: BrowserPoolGate | undefined) => {
+      if (gate ? gate.refusesWrite(pool) : pool?.ended?.aborted)
         throw new BrowserCdpConnectionEnded(
           "This browser is restarting. Request a new attachment.",
         );
@@ -4970,7 +4972,7 @@ export class BrowserService {
           "This browser authority changed. Request a new attachment.",
         );
       // A restart or a removal holds admission: no ticket is redeemed and no frame passes.
-      if (pool) heldEnds(pooled?.gate.phase);
+      if (pool) heldEnds(pooled?.gate);
       checked.throwIfAborted();
       return admitted;
     };
@@ -5123,6 +5125,8 @@ export class BrowserService {
           operationExpiresAt,
         });
         if (lease || attemptRecovery) target.standardCdpRecovery?.assertCurrent();
+        // The attach leaves for the guest here: the pool's admission is checked at the dispatch.
+        if (pool) heldEnds(this.#pool(record.runnerId!)?.gate);
         handedOff = true;
         return {
           opening: target.standardRuntime
@@ -5223,7 +5227,7 @@ export class BrowserService {
                   );
               }
               // After the frame's last asynchronous step, immediately before it is written.
-              if (pool) heldEnds(this.#pool(record.runnerId!)?.gate.phase);
+              if (pool) heldEnds(this.#pool(record.runnerId!)?.gate);
               return { work: transport.send(frame) };
             });
             if (next.work) return next.work;
@@ -7743,6 +7747,8 @@ interface PoolBrokerAdmission {
   now(): BrowserPoolReservation | undefined;
   wait(signal: AbortSignal): Promise<BrowserPoolReservation>;
   retiring(): boolean;
+  /** At the write: whether these bytes may not leave for the guest now (`refusesWrite`). */
+  refusesWrite(reservation: BrowserPoolReservation | undefined): boolean;
 }
 
 interface HostedBrowserBrokerOptions {
@@ -10258,6 +10264,11 @@ export class HostedBrowserBroker {
             }
           }
           const frame = JSON.stringify(runtimeMessage);
+          // The pool's admission is checked here, where the bytes leave, after the last await.
+          if (admission?.refusesWrite(poolHold)) {
+            reject(new BrowserPoolAdmissionClosed("This browser is restarting or was removed."));
+            return;
+          }
           onSubmit?.();
           this.#socket.send(frame, { binary: false }, (error) =>
             error ? reject(error) : resolve(),

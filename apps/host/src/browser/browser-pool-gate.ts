@@ -81,6 +81,15 @@ export class BrowserPoolGate {
     return this.#active;
   }
 
+  /**
+   * Whether bytes may not leave for the guest now: a restart or a removal holds admission, or the
+   * reservation the write was admitted under has ended. Checked synchronously at the write
+   * itself, after its last await; a check at a caller does not count.
+   */
+  refusesWrite(reservation?: BrowserPoolReservation): boolean {
+    return this.#hold !== null || reservation?.ended?.aborted === true;
+  }
+
   /** Someone waits for the browser with demand: a parked browser should wake. */
   get demand(): boolean {
     return this.#waiting > 0;
@@ -150,9 +159,14 @@ export class BrowserPoolGate {
     return new Promise((resolve) => this.#idle.push(resolve));
   }
 
-  /** Every holder still here records its outcome; resolves once each one has. */
+  /**
+   * Every holder still here records its outcome; resolves once each one has. A settlement that
+   * failed rejects, so the restart keeps its hold and goes no further toward a Stop.
+   */
   async settleHolders(): Promise<void> {
-    await Promise.allSettled([...this.#settlers].map((settle) => settle()));
+    const results = await Promise.allSettled([...this.#settlers].map((settle) => settle()));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw (failed as PromiseRejectedResult).reason;
   }
 
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {

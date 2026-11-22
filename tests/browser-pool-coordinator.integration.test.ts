@@ -707,6 +707,34 @@ describe("with a runtime that cannot always be asked, as a remote one behind a r
   });
 });
 
+it("keeps a restart's hold, and stops nothing, while a holder's outcome could not be written", async () => {
+  const f = await poolFixture("restart-settle-fails");
+  try {
+    const home = f.home(undefined, f.controller, { quiesceMs: 200 });
+    await home.recover();
+    const order: string[] = [];
+    const held = await home.gate.reserve(AbortSignal.timeout(10_000));
+    let attempts = 0;
+    held.onForcedEnd?.(async () => {
+      attempts++;
+      if (attempts === 1) {
+        order.push(`write failed with ${f.controller.effects.join(",")}`);
+        throw new Error("The outcome write failed.");
+      }
+      order.push(`written with ${f.controller.effects.join(",")}`);
+    });
+    await withTimeout(home.restart({ key: "settle-fails" }), 20_000, {
+      timeoutError: () => new Error("The restart never went on after the write."),
+    });
+    // The first write failed: the hold stayed and no Stop came until the outcome was written.
+    expect(order).toEqual(["write failed with start", "written with start"]);
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    held.release();
+  } finally {
+    await f.close();
+  }
+});
+
 it("starts again after an install that never reached the runtime, and installs the next one", async () => {
   const f = await poolFixture("install-lost");
   try {
