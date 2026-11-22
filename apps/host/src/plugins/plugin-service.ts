@@ -217,6 +217,10 @@ export class PluginService {
   state(): PluginServiceState {
     return { ...this.#state };
   }
+  /** Resolves once any exited engine process group has finished being cleaned up. */
+  waitForCleanup(): Promise<void> {
+    return this.#cleaning;
+  }
   #set(state: PluginServiceState) {
     this.#state = state;
     this.#options.onState?.(this.state());

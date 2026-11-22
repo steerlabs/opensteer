@@ -6,10 +6,24 @@ import type { PluginService, PluginServiceState } from "./plugin-service.js";
 const defaultAttemptTimeoutMs = 10_000;
 const defaultInitialRetryMs = 500;
 const defaultMaxRetryMs = 5_000;
+const defaultWarnIntervalMs = 60_000;
 const personalAutomaticControl = { caller: "personal", mode: "automatic" } as const;
 
+export interface MissingStopConditions {
+  readonly engine: string;
+  readonly executions: string;
+  readonly workflows: string;
+}
+
+type AttemptOutcome =
+  | { readonly proved: true }
+  | { readonly proved: false; readonly missing: MissingStopConditions };
+
+export type PluginStopServicePort = Pick<PluginService, "state" | "agentWork"> &
+  Partial<Pick<PluginService, "waitForCleanup">>;
+
 export interface PluginStopCoordinatorOptions {
-  readonly pluginService: () => Pick<PluginService, "state" | "agentWork"> | undefined;
+  readonly pluginService: () => PluginStopServicePort | undefined;
   readonly pluginExecutions: () => Pick<PluginExecutions, "stopAgentWork"> | undefined;
   readonly hasUnfinishedWorkflows: () => Promise<boolean>;
   readonly isCurrent: (identity: RunnerIdentity) => boolean;
@@ -17,6 +31,8 @@ export interface PluginStopCoordinatorOptions {
   readonly attemptTimeoutMs?: number;
   readonly initialRetryMs?: number;
   readonly maxRetryMs?: number;
+  readonly warnIntervalMs?: number;
+  readonly now?: () => number;
 }
 
 function engineNotRunning(status: PluginServiceState["status"]): boolean {
@@ -27,21 +43,39 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (reason: unknown) => ({ status: "rejected" as const, reason }),
+  );
+}
+
+function settledBool(result: PromiseSettledResult<boolean>, expected: boolean): string {
+  if (result.status === "rejected") return errorMessage(result.reason);
+  return result.value === expected ? "ok" : "not-ok";
+}
+
+function settledVoid(result: PromiseSettledResult<void>): string {
+  return result.status === "fulfilled" ? "ok" : errorMessage(result.reason);
+}
+
 /**
  * Tracks whether plugin agent work is proven stopped for the hosting computer's
  * current Stop mode.
  *
- * When the plugin engine is idle/stopped and PostgreSQL has no unfinished
- * workflows, Stop is proven without cold-starting workerd (a later engine start
- * reads `agentWorkStopped()` during `init`). When the engine is starting or
- * running, or workflows are still unfinished, attempts retry with backoff while
- * that Stop and Runner connection remain current.
+ * When the plugin engine is not running, its exited process tree cleanup has
+ * completed, and PostgreSQL has no unfinished workflows, Stop is proven without
+ * cold-starting workerd (a later engine start reads `agentWorkStopped()` during
+ * `init`). Otherwise attempts retry with backoff while that Stop and Runner
+ * connection remain current.
  */
 export class PluginStopCoordinator {
   readonly #options: PluginStopCoordinatorOptions;
   readonly #attemptTimeoutMs: number;
   readonly #initialRetryMs: number;
   readonly #maxRetryMs: number;
+  readonly #warnIntervalMs: number;
+  readonly #now: () => number;
   #hostingRunner: RunnerId | undefined;
   #lastMode: string | null = null;
   #proof: string | undefined;
@@ -49,6 +83,7 @@ export class PluginStopCoordinator {
   #tail: Promise<void> = Promise.resolve();
   #retryTimer: NodeJS.Timeout | undefined;
   #attemptAbort: AbortController | undefined;
+  #lastWarn: { readonly key: string; readonly at: number } | undefined;
   #closed = false;
 
   constructor(options: PluginStopCoordinatorOptions) {
@@ -56,6 +91,8 @@ export class PluginStopCoordinator {
     this.#attemptTimeoutMs = options.attemptTimeoutMs ?? defaultAttemptTimeoutMs;
     this.#initialRetryMs = options.initialRetryMs ?? defaultInitialRetryMs;
     this.#maxRetryMs = options.maxRetryMs ?? defaultMaxRetryMs;
+    this.#warnIntervalMs = options.warnIntervalMs ?? defaultWarnIntervalMs;
+    this.#now = options.now ?? (() => Date.now());
   }
 
   get hostingRunner(): RunnerId | undefined {
@@ -85,6 +122,7 @@ export class PluginStopCoordinator {
 
   #cancelPending(): void {
     this.#generation += 1;
+    this.#lastWarn = undefined;
     if (this.#retryTimer) {
       clearTimeout(this.#retryTimer);
       this.#retryTimer = undefined;
@@ -97,17 +135,16 @@ export class PluginStopCoordinator {
     return !this.#closed && generation === this.#generation && this.#options.isCurrent(identity);
   }
 
-  #retryDelayMs(attempt: number): number {
-    return Math.min(this.#maxRetryMs, this.#initialRetryMs * 2 ** Math.max(0, attempt - 1));
-  }
-
   #scheduleRetry(
     identity: RunnerIdentity,
     mode: string | null,
     generation: number,
     attempt: number,
   ): number {
-    const retryInMs = this.#retryDelayMs(attempt);
+    const retryInMs = Math.min(
+      this.#maxRetryMs,
+      this.#initialRetryMs * 2 ** Math.max(0, attempt - 1),
+    );
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = undefined;
       if (!this.#stillActive(identity, generation)) return;
@@ -128,16 +165,12 @@ export class PluginStopCoordinator {
       .catch((error: unknown) => {
         if (!this.#stillActive(identity, generation)) return;
         const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
-        this.#options.log.warn(
-          {
-            attempt,
-            err: error,
-            mode,
-            retryInMs,
-            runnerId: identity.runnerId,
-          },
-          "Plugin Stop proof attempt failed; retrying",
-        );
+        const msg = errorMessage(error);
+        this.#warnIfDue(identity, mode, attempt, retryInMs, "unknown", {
+          engine: msg,
+          executions: msg,
+          workflows: msg,
+        });
       });
   }
 
@@ -152,152 +185,115 @@ export class PluginStopCoordinator {
     const executions = this.#options.pluginExecutions();
     if (!service || !executions) return;
 
-    const statusBefore = service.state().status;
-    if (mode === null) {
-      if (engineNotRunning(statusBefore)) return;
-      const attemptAbort = new AbortController();
-      this.#attemptAbort = attemptAbort;
-      try {
-        const signal = AbortSignal.any([
-          attemptAbort.signal,
-          AbortSignal.timeout(this.#attemptTimeoutMs),
-        ]);
-        const resumed = await service.agentWork(
-          { stopped: false },
-          personalAutomaticControl,
-          signal,
-        );
-        if (resumed) return;
-        if (!this.#stillActive(identity, generation)) return;
-        const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
-        this.#options.log.warn(
-          {
-            attempt,
-            engineStatus: service.state().status,
-            retryInMs,
-            runnerId: identity.runnerId,
-          },
-          "Plugin Resume did not complete; retrying",
-        );
-      } catch (error: unknown) {
-        if (!this.#stillActive(identity, generation)) return;
-        const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
-        this.#options.log.warn(
-          {
-            attempt,
-            engineStatus: service.state().status,
-            err: error,
-            retryInMs,
-            runnerId: identity.runnerId,
-          },
-          "Plugin Resume failed; retrying",
-        );
-      } finally {
-        if (this.#attemptAbort === attemptAbort) this.#attemptAbort = undefined;
-      }
+    const outcome = await this.#attempt(service, executions, mode);
+    if (!this.#stillActive(identity, generation)) return;
+    if (outcome.proved) {
+      if (mode !== null) this.#proof = mode;
+      this.#lastWarn = undefined;
       return;
     }
+    const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
+    this.#warnIfDue(identity, mode, attempt, retryInMs, service.state().status, outcome.missing);
+  }
 
-    // Stop mode: fast path when the engine is not running and no workflows are unfinished.
-    if (engineNotRunning(statusBefore)) {
-      const [execResult, workflowsResult] = await Promise.allSettled([
+  async #attempt(
+    service: PluginStopServicePort,
+    executions: Pick<PluginExecutions, "stopAgentWork">,
+    mode: string | null,
+  ): Promise<AttemptOutcome> {
+    const stateBefore = service.state();
+    if (mode === null) {
+      if (engineNotRunning(stateBefore.status)) return { proved: true };
+      const engine = settledBool(await settle(this.#callAgentWork(service, false)), true);
+      return engine === "ok"
+        ? { proved: true }
+        : { proved: false, missing: { engine, executions: "ok", workflows: "ok" } };
+    }
+
+    if (engineNotRunning(stateBefore.status)) {
+      const [cleanupResult, execResult, workflowsResult] = await Promise.allSettled([
+        service.waitForCleanup?.() ?? Promise.resolve(),
         executions.stopAgentWork(),
         this.#options.hasUnfinishedWorkflows(),
       ]);
-      if (!this.#stillActive(identity, generation)) return;
-      const statusAfter = service.state().status;
-      const executionsOk = execResult.status === "fulfilled" && execResult.value === true;
-      const executionsError =
-        execResult.status === "rejected" ? errorMessage(execResult.reason) : undefined;
-      const workflowsDone =
-        workflowsResult.status === "fulfilled" && workflowsResult.value === false;
-      const workflowsError =
-        workflowsResult.status === "rejected" ? errorMessage(workflowsResult.reason) : undefined;
-      const unfinishedWorkflows =
-        workflowsResult.status === "fulfilled" ? workflowsResult.value : undefined;
-
-      if (executionsOk && workflowsDone && engineNotRunning(statusAfter)) {
-        this.#proof = mode;
-        return;
-      }
-      // If the engine was not started and only executions/DB failed, retry without
-      // cold-starting workerd. If the engine started concurrently or unfinished
-      // workflows exist in PostgreSQL, fall through to stop the engine explicitly.
-      if (engineNotRunning(statusAfter) && unfinishedWorkflows !== true) {
-        const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
-        this.#options.log.warn(
-          {
-            attempt,
-            engineStatus: statusAfter,
-            executionsError,
-            executionsOk,
-            retryInMs,
-            runnerId: identity.runnerId,
-            unfinishedWorkflows,
-            workflowsError,
-          },
-          "Plugin Stop proof incomplete while engine idle; retrying",
-        );
-        return;
-      }
+      const stateAfter = service.state();
+      const sameIdle =
+        engineNotRunning(stateAfter.status) && stateAfter.generation === stateBefore.generation;
+      const missing: MissingStopConditions = {
+        engine: settledVoid(cleanupResult),
+        executions: settledBool(execResult, true),
+        workflows: settledBool(workflowsResult, false),
+      };
+      if (
+        sameIdle &&
+        missing.engine === "ok" &&
+        missing.executions === "ok" &&
+        missing.workflows === "ok"
+      )
+        return { proved: true };
+      // If the engine stayed idle and no unfinished workflows appeared, retry
+      // without cold-starting workerd. Otherwise fall through to stop it explicitly.
+      if (sameIdle && missing.workflows !== "not-ok") return { proved: false, missing };
     }
 
-    // Engine is starting/running/restarting or workflows are unfinished: tell the
-    // engine to stop agent work, stop in-flight executions, and recheck workflows.
+    const [engineResult, execResult] = await Promise.allSettled([
+      this.#callAgentWork(service, true),
+      executions.stopAgentWork(),
+    ]);
+    const workflowsResult = await settle(this.#options.hasUnfinishedWorkflows());
+    const missing: MissingStopConditions = {
+      engine: settledBool(engineResult, true),
+      executions: settledBool(execResult, true),
+      workflows: settledBool(workflowsResult, false),
+    };
+    return missing.engine === "ok" && missing.executions === "ok" && missing.workflows === "ok"
+      ? { proved: true }
+      : { proved: false, missing };
+  }
+
+  async #callAgentWork(service: PluginStopServicePort, stopped: boolean): Promise<boolean> {
     const attemptAbort = new AbortController();
     this.#attemptAbort = attemptAbort;
-    let backgroundResult: PromiseSettledResult<boolean>;
-    let execResult: PromiseSettledResult<boolean>;
     try {
       const signal = AbortSignal.any([
         attemptAbort.signal,
         AbortSignal.timeout(this.#attemptTimeoutMs),
       ]);
-      [backgroundResult, execResult] = await Promise.allSettled([
-        service.agentWork({ stopped: true }, personalAutomaticControl, signal),
-        executions.stopAgentWork(),
-      ]);
+      return await service.agentWork({ stopped }, personalAutomaticControl, signal);
     } finally {
       if (this.#attemptAbort === attemptAbort) this.#attemptAbort = undefined;
     }
-    if (!this.#stillActive(identity, generation)) return;
+  }
 
-    const backgroundOk = backgroundResult.status === "fulfilled" && backgroundResult.value === true;
-    const backgroundError =
-      backgroundResult.status === "rejected" ? errorMessage(backgroundResult.reason) : undefined;
-    const executionsOk = execResult.status === "fulfilled" && execResult.value === true;
-    const executionsError =
-      execResult.status === "rejected" ? errorMessage(execResult.reason) : undefined;
-
-    let unfinishedWorkflows: boolean | undefined;
-    let workflowsError: string | undefined;
-    try {
-      unfinishedWorkflows = await this.#options.hasUnfinishedWorkflows();
-    } catch (error: unknown) {
-      workflowsError = errorMessage(error);
-    }
-    if (!this.#stillActive(identity, generation)) return;
-
-    if (backgroundOk && executionsOk && unfinishedWorkflows === false) {
-      this.#proof = mode;
+  #warnIfDue(
+    identity: RunnerIdentity,
+    mode: string | null,
+    attempt: number,
+    retryInMs: number,
+    engineStatus: string,
+    missing: MissingStopConditions,
+  ): void {
+    const key = `${missing.engine}\0${missing.executions}\0${missing.workflows}`;
+    const now = this.#now();
+    if (
+      this.#lastWarn &&
+      this.#lastWarn.key === key &&
+      now - this.#lastWarn.at < this.#warnIntervalMs
+    )
       return;
-    }
-
-    const retryInMs = this.#scheduleRetry(identity, mode, generation, attempt);
+    this.#lastWarn = { key, at: now };
     this.#options.log.warn(
       {
         attempt,
-        backgroundError,
-        backgroundOk,
-        engineStatus: service.state().status,
-        executionsError,
-        executionsOk,
+        engineStatus,
+        missing,
+        mode,
         retryInMs,
         runnerId: identity.runnerId,
-        unfinishedWorkflows,
-        workflowsError,
       },
-      "Plugin Stop proof incomplete; retrying",
+      mode === null
+        ? "Plugin Resume incomplete; retrying"
+        : "Plugin Stop proof incomplete; retrying",
     );
   }
 }
