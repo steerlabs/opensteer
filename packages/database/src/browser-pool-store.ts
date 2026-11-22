@@ -291,7 +291,61 @@ export async function advanceBrowserPoolSlot(
         .returningAll()
         .executeTakeFirstOrThrow(databaseOperationOptions());
       await recordBrowserPoolLosses(tx, slot, losses);
+      // Parked, the guest is paused and its next adoption leaves out every session not ready: a
+      // Stop that landed while the park was under way has the same evidence as one on a parked
+      // guest. Under the slot's lock, so no Stop falls between this and its own write.
+      if (next.phase === "parked" && current.phase !== "parked") {
+        const stopped = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", slot.runnerId)
+          .where("runtimeId", "=", slot.runtimeId)
+          .where("state", "=", "closing")
+          .orderBy("id")
+          .execute(databaseOperationOptions());
+        for (const { id } of stopped)
+          await transitionBrowserSession(tx, { from: ["closing"], sessionId: id, state: "closed" });
+      }
       return advanced;
+    },
+    undefined,
+    "non-retrying",
+  );
+}
+
+/**
+ * A browser Stop of a pooled session with no channel here, under the slot's lock: on a parked
+ * guest it is closed (the next adoption leaves it out), otherwise it is closing until its
+ * runtime answers. Returns the state written, or undefined for a row already ended.
+ */
+export async function stopBrowserPoolSession(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly sessionId: BrowserSessionId; readonly runnerId: RunnerId },
+): Promise<"closing" | "closed" | undefined> {
+  return commitPersonalMutation(
+    database,
+    async (tx) => {
+      // Lock order: the slot first, then the session.
+      const slot = await tx
+        .selectFrom("browserPoolSlots")
+        .select("phase")
+        .where("runnerId", "=", input.runnerId)
+        .forShare()
+        .executeTakeFirst(databaseOperationOptions());
+      const state = slot?.phase === "parked" ? ("closed" as const) : ("closing" as const);
+      const row = await tx
+        .selectFrom("browserSessions")
+        .select("state")
+        .where("id", "=", input.sessionId)
+        .executeTakeFirst(databaseOperationOptions());
+      if (!row || row.state === "closed" || row.state === "failed") return undefined;
+      if (row.state === state) return state;
+      await transitionBrowserSession(tx, {
+        from: ["starting", "ready", "closing"],
+        sessionId: input.sessionId,
+        state,
+      });
+      return state;
     },
     undefined,
     "non-retrying",

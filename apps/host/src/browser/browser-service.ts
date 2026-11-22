@@ -192,6 +192,7 @@ import {
   listBrowserPoolReportedNotices,
   listBrowserPoolReadySessions,
   listBrowserPoolClosingSessions,
+  stopBrowserPoolSession,
   seeBrowserPoolDocumentLoss,
   readBrowserPoolSessionLineage,
   type BrowserPoolSessionLoss,
@@ -7700,6 +7701,17 @@ export class BrowserService {
       return;
     }
     if (isTerminal(record.state)) return;
+    if (pool && record.runtimeId === pool.runtimeId && this.#repository instanceof OpensteerStore) {
+      // Under the slot's lock: closed on a parked guest, closing on any other until the runtime
+      // answers (nothing is admitted for it from now).
+      const written = await stopBrowserPoolSession(this.#repository.database, {
+        sessionId: record.id,
+        runnerId: pool.runnerId,
+      });
+      this.#onSessionsChanged([record.id]);
+      if (written === "closing") pool.stopped();
+      return;
+    }
     if (pool && record.runtimeId === pool.runtimeId && pool.stopWaitsForRuntime()) {
       // An awake guest may still hold this session with no channel here: the row is closing
       // (nothing is admitted for it from now) until the runtime answers that it is gone.

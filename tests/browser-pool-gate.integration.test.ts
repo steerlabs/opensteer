@@ -1122,6 +1122,57 @@ it("neither reuses nor ends a pooled session a Stop left closing, at any door", 
   }
 });
 
+it("hands a stopped session whose guest died under a running slot to recovery, and spends no attachment meanwhile", async () => {
+  const j = await journey("closing-dead-guest");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("dead"));
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // Nothing is reconnecting any more: from here only the end step could spend an attachment.
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
+    const attachments = (await j.slot())!.attachmentGeneration;
+    // The guest dies while the slot reads running.
+    j.controller.observe({ phase: "stopped", savedState: null, instance: null, epoch: null });
+    // Recovery replaces the guest, and its end is the stopped session's evidence.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(j.controller.effects).toEqual(["start", "start"]);
+    // No attachment was spent while the runtime could not be reached.
+    expect((await j.slot())!.attachmentGeneration).toBe(attachments);
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("closes a session stopped while a park is under way once the park commits", async () => {
+  const j = await journey("closing-during-park");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("park-stop"));
+    // The park has retired the runtime and waits at its pause: the Stop lands in between.
+    const pausing = Promise.withResolvers<void>();
+    const pause = Promise.withResolvers<void>();
+    j.controller.hold("pause", async () => {
+      pausing.resolve();
+      await pause.promise;
+    });
+    const parking = home.coordinator.tryPark();
+    await pausing.promise;
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    pause.resolve();
+    expect(await parking).toBe("parked");
+    // Parked, the guest is paused and its next adoption leaves the session out: closed.
+    expect((await j.row(sessionId))?.state).toBe("closed");
+    expect(j.controller.effects).toEqual(["start", "pause"]);
+  } finally {
+    await j.close();
+  }
+});
+
 it("keeps a pooled Stop with a viewer attached closing while the runtime is silent, and closed once it answers", async () => {
   const j = await journey("stop-viewer-silent");
   try {
