@@ -1258,10 +1258,10 @@ export class BrowserPoolCoordinator {
       this.#signal,
     );
     this.#statusReadAt = Date.now();
-    // A fact of a running instance (W4): a status read while the slot is on its way out of
-    // running (a park's own reads) does not make it shown again.
-    const down =
-      status.phase === "running" && status.proxy === "down" && this.#slot?.phase === "running";
+    // A fact of a running instance (W4): only a read of a running guest while the slot runs
+    // says anything of it; a park's own reads, on its way out of running, leave it as it is.
+    if (status.phase !== "running" || this.#slot?.phase !== "running") return status;
+    const down = status.proxy === "down";
     if (down !== this.#proxyDown) {
       this.#proxyDown = down;
       // Clients learn at once that browsing is paused, or back.
