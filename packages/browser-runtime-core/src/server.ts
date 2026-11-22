@@ -258,7 +258,13 @@ export class BrowserRuntimeServer {
       reply(200, { state });
     } catch (error) {
       const failure = toBrowserRuntimeError(error);
-      reply(409, { code: failure.code, message: failure.message, state: this.runtime.poolState() });
+      reply(409, {
+        code: failure.code,
+        message: failure.message,
+        // Optional: why a control was refused, as the Home acts on it (an end not confirmed).
+        ...(failure.reason ? { reason: failure.reason } : {}),
+        state: this.runtime.poolState(),
+      });
     }
   }
 

@@ -129,13 +129,10 @@ export interface BrowserRuntimeHealth {
   state: BrowserRuntimeState;
 }
 
-interface PoolEnding {
-  readonly session: ActiveSession;
-  state: "ending" | "failed";
-}
-
 /** How many ended session ids a pooled runtime keeps refusing; ids are never reused. */
 const poolEndedLimit = 10_000;
+/** How long an end waits for a session's last pages to be confirmed closed. */
+const poolEndConfirmMs = 2_000;
 
 interface ActiveSession {
   claims: BrowserAttachTicketClaims;
@@ -295,11 +292,6 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
-  /**
-   * Pooled only (P15): a session whose teardown has begun, kept until its pages are gone; one
-   * whose teardown failed is torn down again when the Home asks.
-   */
-  private readonly poolEndings = new Map<string, PoolEnding>();
   /** Pooled only: sessions the Home asked to end. None of them is ever attached again. */
   private readonly poolEnded = new Set<string>();
   /** Pooled only: attaches still opening, by session; the Home's end request waits for them. */
@@ -473,10 +465,11 @@ export class BrowserRuntime implements NativePresentationSource {
 
   /**
    * The Home's request to end one pooled session (P15), under a single-use ticket it signed for
-   * that session and this fence. The session is torn down in its own lane, as its window's end
-   * does: nothing is revived, no hold is extended, and the pages it owns are closed. The answer
-   * says `ended` only once that is done, or when no such session is held or being torn down
-   * here; never while a teardown is under way or after one failed.
+   * that session and this fence. A session it holds is torn down in its own lane, as its
+   * window's end does: nothing is revived, no hold is extended. The answer is read from what the
+   * page ledger holds of the session then, not from any bookkeeping (V3): `ended` only when it
+   * holds no page and no page creation of it; a page whose close cannot be confirmed is
+   * `unknown`; one still closing elsewhere, a creation, or an attach still opening is `not-yet`.
    */
   async endPoolSession(ticket: string): Promise<BrowserPoolEndAnswer> {
     const pool = this.pool;
@@ -495,34 +488,33 @@ export class BrowserRuntime implements NativePresentationSource {
       outcome,
       state: pool.state(),
     });
-    const settled = (): BrowserPoolEndAnswer => {
-      const ending = this.poolEndings.get(sessionId);
-      if (ending) return answer(ending.state === "failed" ? "unknown" : "not-yet");
-      if (this.sessions.has(sessionId) || this.poolOpening.has(sessionId)) return answer("not-yet");
-      return answer("ended");
-    };
     // Only a runtime that serves traffic under this fence says a session is ended.
     if (!pool.acceptsTraffic) return answer("not-yet");
     const held = this.sessions.get(sessionId);
-    const ending = this.poolEndings.get(sessionId);
-    // A teardown under way is not waited for here: its lane is busy with it.
-    if (!held && ending?.state !== "failed") return settled();
-    const key = (held ?? ending!.session).host.identity.key;
-    return this.lanes.run(key, async () => {
-      pool.checkFence(claims.pool);
-      if (!pool.acceptsTraffic) return answer("not-yet");
-      const session = this.sessions.get(sessionId);
-      const failed = this.poolEndings.get(sessionId);
-      if (session?.host.identity.key === key) {
+    let tore = false;
+    if (held)
+      await this.lanes.run(held.host.identity.key, async () => {
+        const session = this.sessions.get(sessionId);
+        if (!session || !pool.acceptsTraffic) return;
+        pool.checkFence(claims.pool);
         endPresentations(session);
+        tore = true;
         await this.endActiveSession(session, true).catch(() => undefined);
-      } else if (!session && failed?.state === "failed") {
-        await withTimeout(this.poolTeardown(failed, true), sessionTeardownMs, {
-          timeoutError: () => new Error("Browser session teardown did not finish."),
-        }).catch(() => undefined);
-      }
-      return settled();
-    });
+      });
+    pool.checkFence(claims.pool);
+    if (!pool.acceptsTraffic || this.sessions.has(sessionId) || this.poolOpening.has(sessionId))
+      return answer("not-yet");
+    let holds = this.pages.holdingsOf(sessionId);
+    // Closing in another hand (a teardown or rollback under way): not yet.
+    if (!tore && holds.closing) return answer("not-yet");
+    if (holds.pages || holds.creations) {
+      // Whatever is left of it is closed now, and confirmed.
+      await this.pages.endOtherPages(sessionId, new Set(), poolEndConfirmMs, "session-ended");
+      holds = this.pages.holdingsOf(sessionId);
+    }
+    if (holds.creations) return answer("not-yet");
+    if (holds.pages) return answer("unknown");
+    return answer("ended");
   }
 
   private requirePoolTraffic(claims?: BrowserAttachTicketClaims, adoptionAttach = false): void {
@@ -737,14 +729,27 @@ export class BrowserRuntime implements NativePresentationSource {
         continue;
       }
       // Ending one lost session is that session's alone: a failure cannot touch the adopted.
-      const ended = session
-        ? await this.endPooledSession(session).then(
-            () => true,
-            () => false,
-          )
-        : true;
-      lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
+      if (session) await this.endPooledSession(session).catch(() => undefined);
+      lost.push({ sessionId, reason });
     }
+    // Nothing of a session the Home ended survives into a guest that serves (V2): every page
+    // the ledger still holds of one is asked to close again, and confirmed; if one is not, the
+    // adoption fails and the runtime does not serve. The Home's recovery replaces the guest.
+    const unconfirmed: BrowserSessionId[] = [];
+    for (const { sessionId } of lost) {
+      let holds = this.pages.holdingsOf(sessionId);
+      if (holds.pages || holds.creations) {
+        await this.pages.endOtherPages(sessionId, new Set(), poolEndConfirmMs, "session-ended");
+        holds = this.pages.holdingsOf(sessionId);
+      }
+      if (holds.pages || holds.creations) unconfirmed.push(sessionId);
+    }
+    if (unconfirmed.length)
+      throw new BrowserRuntimeError(
+        "conflict",
+        "A stopped browser session's pages did not close; this browser cannot serve.",
+        { reason: "end-unconfirmed" },
+      );
     // A page that did not thaw is that page's loss; its session and the others are kept.
     const pagesLost = (await this.thawPoolPages()).flatMap(({ surfaceId, sessionId }) =>
       sessionId && adopted.includes(sessionId)
@@ -1064,6 +1069,8 @@ export class BrowserRuntime implements NativePresentationSource {
         this.shuttingDown ||
         !active ||
         active.poolDetached ||
+        // The Home asked to end it: no channel of any kind is admitted to it again.
+        this.poolEnded.has(claims.sessionId) ||
         !active.host.acceptingSessions ||
         active.host.identity.key !== hostKey ||
         active.claims.subject !== claims.subject ||
@@ -2026,11 +2033,6 @@ export class BrowserRuntime implements NativePresentationSource {
     const sessionId = active.sessionId;
     clearTimeout(active.reattachUntil);
     clearTimeout(active.channelLostUntil);
-    // Pooled: from here until its pages are gone, the Home's end request finds the teardown.
-    const ending: PoolEnding | undefined = this.pool
-      ? { session: active, state: "ending" }
-      : undefined;
-    if (ending) this.poolEndings.set(sessionId, ending);
     this.sleeper.remove(sessionId);
     this.sessions.delete(sessionId);
     const host = active.host;
@@ -2041,8 +2043,9 @@ export class BrowserRuntime implements NativePresentationSource {
       await settleCleanup([
         () =>
           withTimeout(
-            ending
-              ? this.poolTeardown(ending)
+            // Pooled: its pages are closed, and confirmed, before it says closed.
+            this.pool
+              ? settleCleanup(closeSession(active, "session-ended", true, true))
               : settleCleanup(closeSession(active, "session-ended", confirmPages)),
             sessionTeardownMs,
             {
@@ -2060,32 +2063,6 @@ export class BrowserRuntime implements NativePresentationSource {
     }
   }
 
-  /**
-   * A pooled session's teardown: its pages are closed, and confirmed closed, before it says
-   * `closed`. The ending is forgotten only once that is done; one that fails stays, for the
-   * Home's next end request (`again`: that request, which closes what the first left).
-   */
-  private poolTeardown(ending: PoolEnding, again = false): Promise<void> {
-    const session = ending.session;
-    ending.state = "ending";
-    const steps = again
-      ? [
-          () => session.host.router.unregisterSession(session.sessionId, true),
-          () => session.ledger.closeOwnedPages("session-ended", true),
-          () => session.ledger.close(),
-        ]
-      : closeSession(session, "session-ended", true, true);
-    return settleCleanup(steps).then(
-      () => {
-        if (this.poolEndings.get(session.sessionId) === ending)
-          this.poolEndings.delete(session.sessionId);
-      },
-      (error: unknown) => {
-        ending.state = "failed";
-        throw error;
-      },
-    );
-  }
   private closeHost(key: BrowserPartitionKey, generation: number): Promise<void> {
     return this.lanes.run(key, async () => {
       const host = this.hosts.get(key);

@@ -561,7 +561,15 @@ it("answers unknown after a teardown that failed, never ended, and ends the sess
     await f.open();
     const closing = holdClose(f.page);
     const first = endRequest(f, "end-1");
-    await vi.advanceTimersByTimeAsync(6_000);
+    // Its teardown's bound, then the ledger's own wait for the page: past both, still held.
+    let answered = false;
+    void first.finally(() => {
+      answered = true;
+    });
+    let waited = 0;
+    for (; waited < 60 && !answered; waited++) await vi.advanceTimersByTimeAsync(1_000);
+    // Its teardown's bound (5 s) and the ledger's own wait for the page (2 s), and no more.
+    expect(waited).toBeLessThanOrEqual(12);
     expect((await first).outcome).toBe("unknown");
     expect(f.page.isClosed()).toBe(false);
     closing.release();
@@ -587,9 +595,11 @@ it("never says ended for a session whose channel's teardown failed, and ends it 
     await vi.advanceTimersByTimeAsync(6_000);
     await closed;
     expect(f.page.isClosed()).toBe(false);
+    // Its page's close is still being asked of the engine: not yet (V3: from what the ledger
+    // holds, a close under way is not-yet; it was unknown from the old teardown bookkeeping).
     const first = endRequest(f, "end-1");
-    await vi.advanceTimersByTimeAsync(6_000);
-    expect((await first).outcome).toBe("unknown");
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await first).outcome).toBe("not-yet");
     closing.release();
     await vi.waitFor(() => expect(f.page.isClosed()).toBe(true));
     const again = endRequest(f, "end-2");
