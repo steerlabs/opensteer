@@ -88,6 +88,10 @@ const removedNames = [
   "opensteer_automation_create",
   "tab_open",
   "tab_close",
+  // Messaging is a connection now: these tools are gone for good.
+  "opensteer_messaging_bridge_list",
+  "opensteer_messaging_bridge_update",
+  "opensteer_messaging_bridge_remove",
 ];
 function unavailableMentions(
   visible: string,
