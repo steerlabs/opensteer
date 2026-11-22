@@ -339,7 +339,7 @@ describe("the iMessage adapter", () => {
 
     it("stops a send the helper cannot confirm, but retries definite refusals", async () => {
       const cases = [
-        ["delivery-unconfirmed", "dead"],
+        ["delivery-unconfirmed", "unknown"],
         ["outcome-unknown", "unknown"],
         ["busy", "retryable"],
         ["failed", "retryable"],
