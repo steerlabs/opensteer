@@ -96,5 +96,103 @@
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
+  },
+  "harness.enabled.set (disable)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "harness.enabled.set (enable)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "harness.default.set": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "harness.model.configure": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "execution.preferences.remember (raise)": {
+    "own-full": "refused:access_denied",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "execution.preferences.remember (selection)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "defaults (read)": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "machine.access.session.stop": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "machine.revoke": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "browser.profile.rename": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "browser.history.remove": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "browser.history.clear": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "browser.site.remove": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "browser.profile.delete": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
   }
 }

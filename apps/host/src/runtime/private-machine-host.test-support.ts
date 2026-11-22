@@ -418,6 +418,8 @@ export async function connectCallerMachine(
      */
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
+    /** Its OpenAI source offers model settings, so a model's limits can be set. */
+    readonly modelSettings?: boolean;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
   } & (
@@ -474,6 +476,7 @@ export async function connectCallerMachine(
                 quota: "windows",
                 sourceId: "openai",
                 stateKinds: ["ambient", "isolated"],
+                ...(input.modelSettings ? { modelSettings: true } : {}),
               },
             ],
           },

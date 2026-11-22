@@ -46,6 +46,9 @@ const shapeOf = (agent: AgentCaller) => ({
   mode: agent.accessMode,
 });
 
+/** The grant as the Home has it now: in these doors, the one the caller signed in with. */
+const signedIn = async (agent: AgentCaller) => shapeOf(agent).connection?.grant ?? null;
+
 function spyRegistry() {
   const calls: CommandType[] = [];
   const registry = Object.fromEntries(
@@ -184,7 +187,7 @@ describe("dispatchCommand", () => {
           const admitted = await admit(agent, command);
           const held = commandHeld(commandTable[type] as CommandRow, shapeOf(agent));
           const answer = held ? admitted.answer : "not_found";
-          const outcome = dispatchCommand(agent, command, { registry, admit });
+          const outcome = dispatchCommand(agent, command, { registry, admit, scope: signedIn });
           if (held && !parses(type))
             await expect(outcome, type).rejects.toMatchObject({ code: "bad_request" });
           else if (answer === "not_found")
@@ -215,7 +218,7 @@ describe("dispatchCommand", () => {
       for (const type of types)
         if ((commandTable[type] as CommandRow).faces.every((f) => f.class === "person-view"))
           await expect(
-            dispatchCommand(agent, sample(type), { registry, admit: byRule }),
+            dispatchCommand(agent, sample(type), { registry, admit: byRule, scope: signedIn }),
             type,
           ).rejects.toThrow("That item is unavailable.");
     });
@@ -231,6 +234,7 @@ describe("dispatchCommand", () => {
           dispatchCommand(run("full-access"), withPath(sample(type), path, "typed-by-the-agent"), {
             registry,
             admit: admitted,
+            scope: signedIn,
           }),
           `${type}.${path}`,
         ).rejects.toMatchObject({ code: "bad_request" });
@@ -244,7 +248,7 @@ describe("dispatchCommand", () => {
           idempotencyKey: "k",
           input: { issuer: "https://issuer.example", clientId: "client" },
         } as HostApiCommand,
-        { registry, admit: admitted },
+        { registry, admit: admitted, scope: signedIn },
       ),
     ).resolves.toMatchObject({ status: "ask" });
     expect(calls).toEqual([]);
@@ -256,6 +260,7 @@ describe("dispatchCommand", () => {
     const proposed: string[] = [];
     const door = {
       registry,
+      scope: signedIn,
       admit: async () => ({
         answer: "ask" as const,
         face: 0,
@@ -313,8 +318,13 @@ describe("dispatchCommand", () => {
         const malformed = dispatchCommand(agent, { type } as unknown as HostApiCommand, {
           registry,
           admit,
+          scope: signedIn,
         }).catch(said);
-        const wellFormed = dispatchCommand(agent, sample(type), { registry, admit }).catch(said);
+        const wellFormed = dispatchCommand(agent, sample(type), {
+          registry,
+          admit,
+          scope: signedIn,
+        }).catch(said);
         const [left, right] = await Promise.all([malformed, wellFormed]);
         expect(left, `${name} ${type}`).toBe(right);
         expect(JSON.parse(left as string)).toMatchObject({
@@ -328,6 +338,7 @@ describe("dispatchCommand", () => {
       dispatchCommand(run("full-access"), { type: "thread.rename" } as unknown as HostApiCommand, {
         registry,
         admit,
+        scope: signedIn,
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
   });
@@ -341,7 +352,7 @@ describe("dispatchCommand", () => {
       dispatchCommand(
         connection("full-access", selected),
         { type: "no.such.command", idempotencyKey: "k" } as unknown as HostApiCommand,
-        { registry, admit: outside },
+        { registry, admit: outside, scope: signedIn },
       ),
     ).rejects.toMatchObject(fixed);
     // Outside the grant with a secret in it: the same not found, not "leave it out".
@@ -353,10 +364,24 @@ describe("dispatchCommand", () => {
           dispatchCommand(
             connection("full-access", selected),
             withPath(sample(type), path, validSecret(type, path)),
-            { registry, admit: outside },
+            { registry, admit: outside, scope: signedIn },
           ),
           `${type}.${path}`,
         ).rejects.toMatchObject(fixed);
+    expect(calls).toEqual([]);
+  });
+
+  it("decides whether a caller holds a type from its grant as the Home has it now (X15)", async () => {
+    const { registry, calls } = spyRegistry();
+    // Signed in with everything; since then narrowed to selected, opened to anyone, or ended.
+    const agent = connection("full-access", everything);
+    // Not even valid: a type it no longer holds must not say what is wrong with its input.
+    const bad = { type: "harness.rename", idempotencyKey: "k" } as unknown as HostApiCommand;
+    for (const now of ["selected", "gone"] as const)
+      await expect(
+        dispatchCommand(agent, bad, { registry, admit: admitNothing, scope: async () => now }),
+        now,
+      ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
     expect(calls).toEqual([]);
   });
 
@@ -390,7 +415,11 @@ describe("dispatchCommand", () => {
       void forged;
     }
     const dispatchAsAgent = () =>
-      dispatchCommand(agent, command, { registry: spyRegistry().registry, admit: admitNothing });
+      dispatchCommand(agent, command, {
+        registry: spyRegistry().registry,
+        admit: admitNothing,
+        scope: signedIn,
+      });
     // An agent's dispatch never hands back a handler's raw output: what it may read, or what waits.
     expectTypeOf<ReturnType<typeof dispatchAsAgent>>().toEqualTypeOf<
       Promise<AgentCommandOutcome>

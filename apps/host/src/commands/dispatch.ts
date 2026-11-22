@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   admitCommand,
   commandAdmission,
+  commandCallerScope,
   commandHeld,
   commandNotFoundMessage,
   commandSubject,
@@ -60,6 +61,11 @@ export interface CommandDoor {
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
   readonly admit: (caller: AgentCaller, command: HostApiCommand) => Promise<CommandAdmission>;
+  /**
+   * The grant the caller's lineage holds as the Home has it now, never as it was at sign-in:
+   * `gone` once its connection works for no one. Null for your own agents.
+   */
+  readonly scope: (caller: AgentCaller) => Promise<"everything" | "selected" | "gone" | null>;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
     caller: AgentCaller,
@@ -67,6 +73,17 @@ export interface AgentCommandDoor extends CommandDoor {
     ask: CommandAsk,
     face: number | undefined,
   ) => Promise<CommandProposed>;
+}
+
+/** The scope of the caller's connection from its own row; your own agents read nothing. */
+export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentCommandDoor["scope"] {
+  return (caller) =>
+    commandCallerScope(
+      database,
+      caller.kind === "connection"
+        ? caller.connectionId
+        : (caller.agentConnection?.agentConnectionId ?? null),
+    );
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
@@ -121,7 +138,11 @@ export async function dispatchCommand(
   if (!Object.hasOwn(commandTable, command.type)) throw notFound();
   const row = commandRow(command.type) as CommandRow;
   // A type this caller does not hold reads as nothing at all, before its input is looked at.
-  if (!commandHeld(row, { connection: agentConnectionGrant(actor), mode: actor.accessMode }))
+  const scope = await door.scope(actor);
+  if (
+    scope === "gone" ||
+    !commandHeld(row, { connection: scope ? { grant: scope } : null, mode: actor.accessMode })
+  )
     throw notFound();
   // A type it holds is read with its schema; what is wrong with it may be said. A value only the
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
@@ -160,17 +181,6 @@ export async function dispatchCommand(
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
   return proposed.status === "declined" ? proposed : { ...proposed, reason: ask.reason };
-}
-
-/** The grant the caller's lineage works under as the rule reads it; null for your own agents. */
-function agentConnectionGrant(
-  caller: AgentCaller,
-): { readonly grant: "everything" | "selected" } | null {
-  const grant = caller.kind === "connection" ? caller.grant : caller.agentConnection?.grant;
-  if (!grant) return null;
-  // Work from a chat anyone may speak in reaches no more than a selected grant would.
-  const personal = caller.agentConnection?.bridgeSenders !== "anyone";
-  return { grant: personal ? grant.scope : "selected" };
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */

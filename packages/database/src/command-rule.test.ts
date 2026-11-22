@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ThreadAccessModeSchema, type ThreadAccessMode } from "@opensteer/core";
 import {
+  commandFace,
   commandFaceStep,
   commandTable,
   type CommandRow,
@@ -122,6 +123,72 @@ describe("the command rule, generated from the table", () => {
     }
   });
 
+  it("never shows a connected agent a chat account or a chat: they are other connections (X13)", () => {
+    for (const [type, table] of Object.entries(commandTable)) {
+      if (table.family !== "chats") continue;
+      table.faces.forEach((_, index) => {
+        for (const grant of ["everything", "selected"] as const)
+          expect(
+            answer(type, index, {
+              connection: { grant },
+              mode: "full-access",
+              reach: true,
+              ownWork: true,
+            }),
+            `${type} face ${index} (${grant})`,
+          ).toBe("not_found");
+      });
+    }
+  });
+
+  it("asks a connection before an effect that goes on outside its own lineage (X11)", () => {
+    const outside = (grant: "everything" | "selected") => ({
+      connection: { grant },
+      mode: "full-access" as const,
+      reach: true,
+      ownWork: true,
+      ownLineage: false,
+    });
+    const at = (command: Record<string, unknown>, caller: CommandRuleCaller) =>
+      commandRule(row(command.type as string), commandFace(command as never), caller);
+    const program = { language: "javascript", source: "export default async () => 1" };
+    for (const grant of ["everything", "selected"] as const) {
+      // What another lineage's automation will run, or a run of it now, is recorded as that
+      // lineage's: Disconnect would not reach it.
+      for (const command of [
+        { type: "trigger.update", triggerId: "trg_1", input: { program } },
+        {
+          type: "trigger.update",
+          triggerId: "trg_1",
+          input: {
+            source: {
+              kind: "schedule",
+              schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+            },
+          },
+        },
+        { type: "trigger.run", triggerId: "trg_1" },
+      ])
+        expect(at(command, outside(grant)), `${command.type} ${grant}`).toEqual({
+          answer: "ask",
+          reason: "lineage",
+        });
+      // Renaming, pausing, archiving and cancelling leave nothing running in anyone's name.
+      for (const command of [
+        { type: "trigger.update", triggerId: "trg_1", input: { name: "Renamed" } },
+        { type: "trigger.status.set", triggerId: "trg_1", status: "paused" },
+        { type: "trigger.status.set", triggerId: "trg_1", status: "archived" },
+        { type: "trigger.cancel", triggerId: "trg_1" },
+      ])
+        expect(at(command, outside(grant)).answer, `${command.type} ${grant}`).toBe("now");
+      // In its own lineage, as approved.
+      expect(
+        at({ type: "trigger.run", triggerId: "trg_1" }, { ...outside(grant), ownLineage: true })
+          .answer,
+      ).toBe("now");
+    }
+  });
+
   it("asks your own agent below Full access about a task above its mode", () => {
     // In reach (the person's own task) but not its own work: a higher mode than it holds.
     for (const [type, table] of Object.entries(commandTable)) {
@@ -164,6 +231,6 @@ describe("the command rule, generated from the table", () => {
       d: nowInStepA("d"),
       // b is 19, not the data file's first 21: creating (D1) or changing (D0a) an automation
       // needs Full access, as today's tools say.
-    }).toEqual({ a: 51, b: 19, c: 47, d: 22 });
+    }).toEqual({ a: 51, b: 19, c: 46, d: 22 });
   });
 });

@@ -974,6 +974,66 @@ describeStore("one admission for Home commands", (it) => {
     ).toEqual([]);
   });
 
+  it("asks a connection before it runs, or changes what runs in, an automation not its own (X11)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const connection = await connect({ scope: "everything" });
+    const make = async (originConnectionId: string | null) => {
+      const created = await storeFixture.triggers.create({
+        actorThreadId: null,
+        anchorThreadId: f.threadId,
+        createdBy: f.userId,
+        idempotencyKey: randomUUID(),
+        name: "Daily",
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => null",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      });
+      await database
+        .updateTable("triggers")
+        .set({ originConnectionId })
+        .where("id", "=", created.trigger.id)
+        .execute();
+      return created.trigger.id;
+    };
+    const admit = async (command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`connection:${connection.id}`),
+          command: { idempotencyKey: randomUUID(), ...command } as Command,
+        })
+      ).answer;
+    const program = {
+      toolContractVersion: 5,
+      language: "javascript",
+      source: "export default async () => 1",
+    };
+    const commands = (triggerId: string) => ({
+      run: { type: "trigger.run", triggerId },
+      program: { type: "trigger.update", triggerId, input: { program } },
+      rename: { type: "trigger.update", triggerId, input: { name: "Renamed" } },
+      pause: { type: "trigger.status.set", triggerId, status: "paused" },
+    });
+    // The person's daily automation: what it starts is the person's, outside this Disconnect.
+    const persons = commands(await make(null));
+    expect(await admit(persons.run)).toBe("ask");
+    expect(await admit(persons.program)).toBe("ask");
+    expect(await admit(persons.rename)).toBe("now");
+    expect(await admit(persons.pause)).toBe("now");
+    // Its own automation: what it starts is in its own Disconnect set.
+    const own = commands(await make(connection.id));
+    for (const command of Object.values(own))
+      expect(await admit(command), command.type).toBe("now");
+  });
+
   it("settles what a command answers in the effect's own transaction, or not at all", async ({
     storeFixture,
   }) => {

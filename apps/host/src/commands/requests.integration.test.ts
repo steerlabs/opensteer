@@ -21,7 +21,12 @@ import { expect } from "vitest";
 import { commandContinuation } from "../agents/continuation-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
-import { agentCommandAdmission, dispatchCommand, type AgentCommandDoor } from "./dispatch.js";
+import {
+  agentCommandAdmission,
+  agentCommandScope,
+  dispatchCommand,
+  type AgentCommandDoor,
+} from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 import { CommandRequestService } from "./requests.js";
 
@@ -91,6 +96,7 @@ describeStore("command Requests at the Home", (it) => {
     const door = (_caller: AgentCaller, reason?: string): AgentCommandDoor => ({
       registry,
       admit: agentCommandAdmission(database),
+      scope: agentCommandScope(database),
       propose: (_agent, command, ask, face) =>
         service.propose({
           ownerUserId: f.userId,

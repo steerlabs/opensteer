@@ -4,8 +4,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
+import type { ShellSessionId } from "@opensteer/protocol";
 import { AgentConnectionStore, admitCommand, commandSubject } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
+import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
 import { commandFaceStep, commandRow, type CommandRow } from "@opensteer/protocol/command-table";
 import { sql } from "kysely";
 import { expect, it } from "vitest";
@@ -14,9 +16,12 @@ import {
   credentialHash,
 } from "../mcp/connections/connection-authenticator.js";
 import { mcpResourcePath } from "../mcp/connections/connection-oauth.js";
+import { connectTargetMachine } from "../runtime/machine-access-protocol.test-support.js";
 import {
+  configurePersonalRemoteAccess,
   connectCallerMachine,
   dispatchCallerRun,
+  enrollmentToken,
   startPrivateMachineHost,
   type CallerRun,
 } from "../runtime/private-machine-host.test-support.js";
@@ -69,6 +74,31 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.create / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  // Recorded before A5 removes the administration tools (lead, item 1).
+  "harness.enabled.set (disable) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "harness.enabled.set (enable) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "harness.default.set / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "harness.model.configure / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "execution.preferences.remember (selection) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "machine.access.session.stop / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "machine.revoke / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "browser.profile.rename / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "browser.history.remove / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "browser.history.clear / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "browser.site.remove / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "browser.profile.delete / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
 };
 
 /** The door's answer as the tool would have it: now runs, ask puts it to the person. */
@@ -90,6 +120,7 @@ it("records what today's tools let each caller do, and the door answers the same
     const machine = await connectCallerMachine(host, {
       name: "Parity computer",
       token: host.hostingRunnerEnrollmentToken,
+      modelSettings: true,
     });
     close.unshift(() => machine.close());
     const owner = host.ownerId;
@@ -203,12 +234,107 @@ it("records what today's tools let each caller do, and the door answers the same
       "selected-not": lineage,
     };
 
+    /** The person's own command, as the apps send it. */
+    const asPerson = (command: Record<string, unknown>) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        { idempotencyKey: randomUUID(), ...command } as never,
+        { headers: host.ownerHeaders },
+      );
+    const callerNames = Object.keys(callers) as Caller[];
+    const each = async <T>(make: (caller: Caller) => Promise<T>) => {
+      const made = {} as Record<Caller, T>;
+      for (const caller of callerNames) made[caller] = await make(caller);
+      return made;
+    };
+    // What removing acts on is one thing per caller: a computer, a session on it and a profile.
+    // Other computers connect only with remote access on.
+    await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
+      mode: "private",
+      routeOrigin: "https://personal.tool-parity.test",
+    });
+    const targets = await each(async (caller) => {
+      const name = `Parity target ${caller}`;
+      const target = await connectTargetMachine(host, {
+        name,
+        token: await enrollmentToken(host, {
+          allowedModules: ["shell"],
+          idempotencyKey: `parity-target-${caller}`,
+          name,
+        }),
+      });
+      close.unshift(() => target.close());
+      const sessionId = `shs_${randomUUID()}` as ShellSessionId;
+      await host.store.reserveShellSession({
+        callerMachineName: "Parity computer",
+        callerRunnerId: machine.runnerId,
+        policyRevision: 1,
+        requestedBy: owner,
+        runId: full.runId,
+        runnerId: target.runnerId,
+        sessionId,
+        startedAt: new Date(),
+        threadId: full.threadId,
+        threadTitle: "parity-full",
+      });
+      return {
+        deviceId: await host.store.requireSelfDeviceId(target.runnerId),
+        sessionId,
+      };
+    });
+    const profiles = await each(async (caller) =>
+      host.store.createBrowserProfile({
+        name: `Parity profile ${caller}`,
+        ownerId: owner,
+        homeRunnerId: machine.runnerId,
+        idempotencyKey: `parity-profile-${caller}`,
+      }),
+    );
+    const harness = {
+      environmentId: machine.environmentId,
+      harnessInstanceId: machine.harnessInstanceId,
+    };
+    // An engine that runs nothing: one in use is not turned off or reconfigured, by anyone.
+    const spareInstance = await host.store.createHarnessInstance({
+      config: {},
+      driverKind: "codex" as never,
+      environmentId: machine.environmentId,
+      name: "Spare account",
+      sourceId: "openai",
+      stateKind: "isolated",
+    });
+    const spare = { environmentId: machine.environmentId, harnessInstanceId: spareInstance.id };
+    // Its catalog lists the model whose limits are set, as a refreshed one would.
+    const ready = testReadyHarnessCatalog(spareInstance.id);
+    await host.store.recordHarnessCatalogs({
+      environmentId: machine.environmentId,
+      catalogs: [
+        {
+          ...ready,
+          driverKind: "codex" as never,
+          models: ready.models.map((model) => ({ ...model, modelId: "gpt-5.6-sol" as never })),
+        },
+      ],
+      expectedRevisions: new Map([[spareInstance.id, spareInstance.runtimeRevision]]),
+    });
+    const modelChoice = {
+      modelId: "gpt-5.6-sol",
+      options: { effort: "low" },
+      providerId: "openai",
+    };
+
     /** One command an agent can send today, the tool that sends it, and the command it is. */
     interface Scenario {
       readonly name: string;
       readonly tool: string;
       readonly args: (caller: Caller) => Promise<Record<string, unknown>> | Record<string, unknown>;
-      readonly command: (caller: Caller) => Record<string, unknown>;
+      /** None for a read: the tool's answer is recorded for opensteer_state to be held to. */
+      readonly command?: (caller: Caller) => Record<string, unknown>;
+      /** The person puts things back before each caller, so each acts on the same state. */
+      readonly before?: () => Promise<unknown>;
+      readonly after?: () => Promise<unknown>;
     }
     const scenarios: Scenario[] = [
       {
@@ -387,35 +513,164 @@ it("records what today's tools let each caller do, and the door answers the same
       control("trigger.cancel", "cancel_pending", "trigger.cancel"),
     );
 
+    // Everything the administration tools A5 removes can do, while they still exist.
+    const lowered = () =>
+      asPerson({ type: "execution.preferences.remember", accessMode: "approval-required" });
+    const enabled = (on: boolean) => () =>
+      asPerson({ type: "harness.enabled.set", ...spare, enabled: on });
+    scenarios.push(
+      // Before the switch scenarios: turning an engine off and on again re-reads what it offers.
+      {
+        name: "harness.model.configure",
+        tool: "opensteer_ai_account_update",
+        args: () => ({
+          aiAccountId: spare.harnessInstanceId,
+          action: "set_model_limits",
+          modelLimits: { modelId: "gpt-5.6-sol", limits: { contextWindow: 100_000 } },
+        }),
+        command: () => ({
+          type: "harness.model.configure",
+          ...spare,
+          nativeModelId: "gpt-5.6-sol",
+          settings: { contextWindow: 100_000 },
+        }),
+      },
+      {
+        name: "harness.enabled.set (disable)",
+        tool: "opensteer_ai_account_update",
+        before: enabled(true),
+        after: enabled(true),
+        args: () => ({ aiAccountId: spare.harnessInstanceId, action: "disable" }),
+        command: () => ({ type: "harness.enabled.set", ...spare, enabled: false }),
+      },
+      {
+        name: "harness.enabled.set (enable)",
+        tool: "opensteer_ai_account_update",
+        before: enabled(false),
+        after: enabled(true),
+        args: () => ({ aiAccountId: spare.harnessInstanceId, action: "enable" }),
+        command: () => ({ type: "harness.enabled.set", ...spare, enabled: true }),
+      },
+      {
+        name: "harness.default.set",
+        tool: "opensteer_ai_account_update",
+        args: () => ({ aiAccountId: machine.harnessInstanceId, action: "set_default" }),
+        command: () => ({ type: "harness.default.set", ...harness }),
+      },
+      {
+        name: "execution.preferences.remember (raise)",
+        tool: "opensteer_defaults_update",
+        before: lowered,
+        after: lowered,
+        args: () => ({ accessMode: "full-access" }),
+        command: () => ({ type: "execution.preferences.remember", accessMode: "full-access" }),
+      },
+      {
+        name: "execution.preferences.remember (selection)",
+        tool: "opensteer_defaults_update",
+        before: lowered,
+        args: () => ({
+          selection: { aiAccountId: machine.harnessInstanceId, model: modelChoice },
+        }),
+        command: () => ({
+          type: "execution.preferences.remember",
+          selection: { ...harness, modelSelection: modelChoice },
+        }),
+      },
+      { name: "defaults (read)", tool: "opensteer_defaults_read", args: () => ({}) },
+      {
+        name: "machine.access.session.stop",
+        tool: "computer_remove",
+        args: (c) => ({ target: "session", sessionId: targets[c].sessionId }),
+        command: (c) => ({ type: "machine.access.session.stop", sessionId: targets[c].sessionId }),
+      },
+      {
+        name: "machine.revoke",
+        tool: "computer_remove",
+        args: (c) => ({ target: "computer", computerId: targets[c].deviceId }),
+        command: (c) => ({ type: "machine.revoke", machineId: targets[c].deviceId }),
+      },
+      {
+        name: "browser.profile.rename",
+        tool: "browser_profile_update",
+        args: (c) => ({ profileId: profiles[c].id, name: "Renamed profile" }),
+        command: (c) => ({
+          type: "browser.profile.rename",
+          profileId: profiles[c].id,
+          name: "Renamed profile",
+        }),
+      },
+      {
+        name: "browser.history.remove",
+        tool: "browser_profile_remove",
+        args: (c) => ({
+          target: "history_url",
+          profileId: profiles[c].id,
+          url: "https://parity.example/",
+        }),
+        command: (c) => ({
+          type: "browser.history.remove",
+          profileId: profiles[c].id,
+          url: "https://parity.example/",
+        }),
+      },
+      {
+        name: "browser.history.clear",
+        tool: "browser_profile_remove",
+        args: (c) => ({ target: "history", profileId: profiles[c].id }),
+        command: (c) => ({ type: "browser.history.clear", profileId: profiles[c].id }),
+      },
+      {
+        name: "browser.site.remove",
+        tool: "browser_profile_remove",
+        args: () => ({ target: "site", site: "https://parity.example" }),
+        command: () => ({ type: "browser.site.remove", site: "https://parity.example" }),
+      },
+      {
+        name: "browser.profile.delete",
+        tool: "browser_profile_remove",
+        args: (c) => ({ target: "profile", profileId: profiles[c].id }),
+        command: (c) => ({ type: "browser.profile.delete", profileId: profiles[c].id }),
+      },
+    );
+
+    /** What the door answers this caller for this command, as the tool's outcome reads. */
+    const doorAnswer = async (
+      caller: Caller,
+      command: { readonly type: string; readonly idempotencyKey: string },
+    ): Promise<Door> => {
+      const admission = await admitCommand(host.store.database, {
+        ownerUserId: owner,
+        subject: commandSubject(callers[caller].key),
+        command: command as never,
+      });
+      const row = commandRow(command.type as never) as unknown as CommandRow;
+      const connection = caller !== "own-full" && caller !== "own-supervised";
+      return admission.answer === "now" &&
+        admission.face !== undefined &&
+        commandFaceStep(row, admission.face, {
+          connection,
+          selected: caller.startsWith("selected"),
+        }) === "A"
+        ? "now"
+        : admission.answer === "now"
+          ? "ask"
+          : admission.answer;
+    };
     const recorded: Record<string, Record<Caller, Outcome>> = {};
     const differences: string[] = [];
     for (const scenario of scenarios) {
       recorded[scenario.name] = {} as Record<Caller, Outcome>;
-      for (const caller of Object.keys(callers) as Caller[]) {
+      for (const caller of callerNames) {
+        await scenario.before?.();
         // The thing it acts on first, then what the door answers, so the tool's effect cannot change it.
         const args = await scenario.args(caller);
-        const command = { idempotencyKey: randomUUID(), ...scenario.command(caller) } as {
-          readonly type: string;
-          readonly idempotencyKey: string;
-        };
-        const admission = await admitCommand(host.store.database, {
-          ownerUserId: owner,
-          subject: commandSubject(callers[caller].key),
-          command: command as never,
-        });
-        const row = commandRow(command.type as never) as unknown as CommandRow;
-        const connection = caller !== "own-full" && caller !== "own-supervised";
-        const door: Door =
-          admission.answer === "now" &&
-          admission.face !== undefined &&
-          commandFaceStep(row, admission.face, {
-            connection,
-            selected: caller.startsWith("selected"),
-          }) === "A"
-            ? "now"
-            : admission.answer === "now"
-              ? "ask"
-              : admission.answer;
+        const door = scenario.command
+          ? await doorAnswer(caller, {
+              idempotencyKey: randomUUID(),
+              ...scenario.command(caller),
+            } as { readonly type: string; readonly idempotencyKey: string })
+          : undefined;
         // A server offering this caller no tools at all has no tools/call: the tool is not there.
         const result = await callers[caller].client
           .callTool({ name: scenario.tool, arguments: args })
@@ -446,9 +701,10 @@ it("records what today's tools let each caller do, and the door answers the same
         if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1" && result.isError)
           console.error("PARITY", scenario.name, caller, JSON.stringify(result).slice(0, 600));
         const label = `${scenario.name} / ${caller}: tool ${tool}, door ${door}`;
-        if (!corresponds(tool, door) && !decided[`${scenario.name} / ${caller}`])
+        if (door && !corresponds(tool, door) && !decided[`${scenario.name} / ${caller}`])
           differences.push(label);
       }
+      await scenario.after?.();
     }
     if (process.env.OPENSTEER_RECORD_TOOL_PARITY === "1" || !existsSync(fixturePath))
       writeFileSync(fixturePath, `${JSON.stringify(recorded, null, 1)}\n`);

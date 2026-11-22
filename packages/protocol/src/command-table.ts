@@ -60,10 +60,11 @@ export type EffectClass = (typeof effectClasses)[number];
  * - `nameable`: something a selected grant can name (a browser profile, a paired Chrome, a device
  *   app approval, a plugin, a local server, a device-data account).
  * - `new`: a new nameable thing; outside any selected grant until the person grants it.
- * - `home`: Home-wide (engines, defaults, devices as such, chats, Remote access); a selected grant
- *   never names it.
+ * - `home`: Home-wide (engines, defaults, devices as such, Remote access); a selected grant never
+ *   names it.
  * - `connection`: a connection; a connected agent reaches only its own.
- * - `other-connection`: always another principal's connection (a consent, a settled entry).
+ * - `other-connection`: always another principal's connection (a consent, a settled entry, a chat
+ *   account and its chats): never a connected agent's, `everything` included.
  */
 export type CommandScope = "task" | "nameable" | "new" | "home" | "connection" | "other-connection";
 
@@ -83,6 +84,11 @@ export interface CommandFace {
   readonly fullAccess?: true;
   /** Its handler needs the person's signed-in session today: every agent asks. */
   readonly personSession?: true;
+  /**
+   * What it starts goes on after the command returns, in the governed thing's lineage. A
+   * connection acting on another lineage's thing asks: its Stop and Disconnect would not reach it.
+   */
+  readonly lineage?: true;
 }
 
 export type CommandResourceKind =
@@ -1002,7 +1008,7 @@ export const commandTable: CommandTable = {
   // Chats
   "channel.connection.create": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "none",
     faces: one("widen-other", { also: "secret" }),
     governs: () => resource("chat-account"),
@@ -1010,7 +1016,7 @@ export const commandTable: CommandTable = {
   },
   "channel.connection.credentials.replace": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "none",
     faces: one("secret"),
     governs: (c) => resource("chat-account", c.connectionId),
@@ -1018,14 +1024,14 @@ export const commandTable: CommandTable = {
   },
   "channel.connection.computer.create": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "none",
     faces: one("widen-other"),
     governs: () => resource("chat-account"),
   },
   "channel.connection.status.set": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "A",
     // Paused or revoked narrows; connected lets the chat's senders reach the Home again.
     faces: two({ class: "narrow", step: "A" }, { class: "widen-other", step: "none" }),
@@ -1034,14 +1040,14 @@ export const commandTable: CommandTable = {
   },
   "channel.chat.create": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "none",
     faces: one("widen-other"),
     governs: (c) => resource("chat-account", c.accountId),
   },
   "channel.me.link": {
     family: "chats",
-    scope: "home",
+    scope: "other-connection",
     step: "none",
     faces: one("identity"),
     governs: (c) => resource("chat-account", c.accountId),
@@ -1266,8 +1272,13 @@ export const commandTable: CommandTable = {
     family: "automations",
     scope: "task",
     step: "A",
-    // Today's tool refuses any change below Full access, a name included (D0a recording).
-    faces: one("widen-self", { fullAccess: true }),
+    // Today's tool refuses any change below Full access, a name included (D0a recording). What it
+    // will run (its program or its source) goes on in the automation's lineage (X11).
+    faces: [
+      { class: "widen-self", fullAccess: true },
+      { class: "widen-self", fullAccess: true, lineage: true },
+    ],
+    face: (c) => (c.input.program !== undefined || c.input.source !== undefined ? 1 : 0),
     governs: (c) => resource("automation", c.triggerId),
   },
   "trigger.status.set": {
@@ -1283,7 +1294,8 @@ export const commandTable: CommandTable = {
     family: "automations",
     scope: "task",
     step: "A",
-    faces: one("widen-self", { fullAccess: true }),
+    // The occurrence is recorded as the automation's lineage's (`trigger-store.ts:1879`).
+    faces: one("widen-self", { fullAccess: true, lineage: true }),
     governs: (c) => resource("automation", c.triggerId),
   },
   "trigger.cancel": {

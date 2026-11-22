@@ -13,6 +13,7 @@ import { expect, vi } from "vitest";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import {
   agentCommandAdmission,
+  agentCommandScope,
   dispatchCommand,
   isCommandAuthority,
   type CommandAuthority,
@@ -102,7 +103,11 @@ describeStore("the door with the Home's own admission", (it) => {
       caller(`connection:${selected.id}`, "connection"),
     ];
     const { registry, calls } = spyRegistry();
-    const door = { registry, admit: agentCommandAdmission(database) };
+    const door = {
+      registry,
+      admit: agentCommandAdmission(database),
+      scope: agentCommandScope(database),
+    };
     // Each caller's commands at once: the Home's pool runs them side by side.
     for (const agent of callers)
       await Promise.all(
@@ -170,6 +175,7 @@ describeStore("the door with the Home's own admission", (it) => {
     const door = {
       registry,
       admit: agentCommandAdmission(database),
+      scope: agentCommandScope(database),
       propose: async () => {
         opened.push("opened");
         return { status: "pending" as const, requestId: "req_new" as never, existing: false };
@@ -217,6 +223,7 @@ describeStore("the door with the Home's own admission", (it) => {
     const door = {
       registry: { ...registry, "machine.rename": any } as unknown as CommandRegistry,
       admit: agentCommandAdmission(database),
+      scope: agentCommandScope(database),
     };
     const run = {
       kind: "run",

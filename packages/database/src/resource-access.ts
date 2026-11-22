@@ -729,7 +729,15 @@ function executionAccessCeiling(execution: Pick<ExecutionAuthority, "mode" | "su
 export type CommandAnswer = "now" | "ask" | "not_found";
 /** Why an agent is asked rather than let through; nothing here is shown to a connection. */
 export type CommandAskReason =
-  "widens-other" | "grant" | "approval" | "secret" | "identity" | "mode" | "session" | "step";
+  | "widens-other"
+  | "grant"
+  | "approval"
+  | "secret"
+  | "identity"
+  | "mode"
+  | "session"
+  | "step"
+  | "lineage";
 
 /** A caller as the command rule reads it. The person never reaches the rule. */
 export interface CommandRuleCaller {
@@ -745,6 +753,11 @@ export interface CommandRuleCaller {
   readonly reach: boolean;
   /** For a task row: the task's mode is no higher than the caller's, so it is its own work. */
   readonly ownWork: boolean;
+  /**
+   * For a connection: the governed thing is in its own lineage, so what it starts there is in its
+   * Disconnect set. Undefined where the governed thing has no lineage of its own.
+   */
+  readonly ownLineage?: boolean;
 }
 
 export interface CommandRuleAnswer {
@@ -812,6 +825,9 @@ function classRule(
     default:
   }
   if (face.personSession) return { answer: "ask", reason: "session" };
+  // What goes on after the command, recorded as another lineage's, is out of this one's reach.
+  if (connection && face.lineage && caller.ownLineage === false)
+    return { answer: "ask", reason: "lineage" };
   if (effect === "read") return { answer: "now" };
   const selected = connection?.grant === "selected";
   // Destroying, or making something new, inside a selected grant asks: it changes what is granted.
@@ -914,6 +930,7 @@ export async function admitCommand(
     mode: execution.mode,
     reach: reach.reach,
     ownWork: reach.ownWork,
+    ...(reach.ownLineage === undefined ? {} : { ownLineage: reach.ownLineage }),
   };
   const steps = { connection: connection !== null, selected: scope === "selected" };
   const decide = (at: number | undefined): CommandAdmission => {
@@ -939,9 +956,40 @@ export async function admitCommand(
 function effectiveGrantScope(
   execution: Pick<ExecutionAuthority, "agentConnection">,
 ): "everything" | "selected" | null {
-  const connection = execution.agentConnection;
+  return commandGrantScope(execution.agentConnection ?? null);
+}
+
+/**
+ * The grant a lineage's connection holds as the command rule reads it; null for your own agents.
+ * The one place it is decided: a chat anyone may speak in reaches no more than a selected grant.
+ */
+export function commandGrantScope(
+  connection: Pick<AgentConnectionAuthority, "grant" | "bridgeSenders"> | null,
+): "everything" | "selected" | null {
   if (!connection) return null;
   return lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected";
+}
+
+/**
+ * The scope of a lineage's connection as its own row has it now, for whether a caller holds a
+ * command type at all: `gone` once it works for no one. Your own agents read nothing.
+ */
+export async function commandCallerScope(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<"everything" | "selected" | "gone" | null> {
+  if (connectionId === null) return null;
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(["grant", "bridgeSenders"])
+    .where("id", "=", connectionId)
+    .where(liveConnection(database))
+    .executeTakeFirst();
+  if (!row) return "gone";
+  const grant = AgentGrantSchema.safeParse(row.grant);
+  return grant.success
+    ? commandGrantScope({ grant: grant.data, bridgeSenders: row.bridgeSenders })
+    : "gone";
 }
 
 export const commandNotFoundMessage = "That item is unavailable.";
@@ -983,6 +1031,8 @@ function commandFaceFor(
 interface CommandReach {
   readonly reach: boolean;
   readonly ownWork: boolean;
+  /** For a connection: the governed thing's lineage is its own; undefined where it has none. */
+  readonly ownLineage?: boolean;
   /** The face the stored state shows, where the Home read it while finding the thing. */
   readonly face?: number;
 }
@@ -1020,18 +1070,25 @@ async function commandReach(
       .where("id", "=", threadId as ThreadId)
       .executeTakeFirst();
     if (!thread || thread.createdBy !== owner) return outOfReach;
+    const lineage = origin === undefined ? thread.originConnectionId : origin;
     // A connection's own task (its direct session's) is its own, with or without Tasks.
     if (connection && threadId !== ownTask) {
       if (!agentGrantAllowsTasks(connection.grant)) return outOfReach;
-      const lineage = origin === undefined ? thread.originConnectionId : origin;
       if (!sendEligible({ ...connection, grant: scopedGrant(connection.grant, scope) }, lineage))
         return outOfReach;
     }
-    return { reach: true, ownWork: own(thread.accessMode) };
+    return {
+      reach: true,
+      ownWork: own(thread.accessMode),
+      ...(connection ? { ownLineage: lineage === connection.agentConnectionId } : {}),
+    };
   };
   const both = (left: CommandReach, right: CommandReach): CommandReach => ({
     reach: left.reach && right.reach,
     ownWork: left.ownWork && right.ownWork,
+    ...(left.ownLineage === undefined && right.ownLineage === undefined
+      ? {}
+      : { ownLineage: left.ownLineage !== false && right.ownLineage !== false }),
   });
   const granted = (target: AgentGrantTarget | null) =>
     !selected || (target !== null && authorizeTarget(execution, target) !== null);
