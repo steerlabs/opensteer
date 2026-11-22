@@ -484,6 +484,46 @@ export const DesktopOpenExternalUrlInputSchema = z.strictObject({
 export type DesktopOpenExternalUrlInput = z.infer<typeof DesktopOpenExternalUrlInputSchema>;
 export const DesktopOpenExternalUrlResultSchema = z.strictObject({ opened: z.literal(true) });
 export type DesktopOpenExternalUrlResult = z.infer<typeof DesktopOpenExternalUrlResultSchema>;
+/**
+ * What an access operation answers, in place of throwing, when it refuses on purpose with words
+ * written for a person: a Home gone by the time its turn came, a turn that never came. Any
+ * other failure still throws, and a person never reads its text.
+ */
+export const DesktopAccessRefusedSchema = z.strictObject({
+  refused: z.string().trim().min(1).max(500),
+});
+
+const desktopRefusalKind = "opensteer.desktop-refusal";
+
+/**
+ * Such a refusal as the Mac app's window receives it. A plain frozen object, because the context
+ * bridge keeps an Error's message and drops every field of its own.
+ */
+export interface DesktopRefusal {
+  readonly kind: typeof desktopRefusalKind;
+  readonly message: string;
+  readonly words: string;
+}
+
+export function desktopRefusal(words: string): DesktopRefusal {
+  return Object.freeze({ kind: desktopRefusalKind, message: words, words });
+}
+
+/** The sentence a refusal carries for a person, or null for anything else that was thrown. */
+export function desktopRefusalWords(reason: unknown): string | null {
+  if (typeof reason !== "object" || reason === null) return null;
+  const { kind, words } = reason as { readonly kind?: unknown; readonly words?: unknown };
+  if (kind !== desktopRefusalKind || typeof words !== "string") return null;
+  const parsed = DesktopAccessRefusedSchema.shape.refused.safeParse(words);
+  return parsed.success ? parsed.data : null;
+}
+
+/** The preload's reading of an access operation's answer: nothing, or the refusal it throws. */
+export function settleDesktopAccessAnswer(answer: unknown): void {
+  const refused = DesktopAccessRefusedSchema.safeParse(answer);
+  if (refused.success) throw desktopRefusal(refused.data.refused);
+}
+
 /** A page opened in Google Chrome itself, or why it couldn't be: Chrome isn't installed. */
 export const DesktopOpenInChromeResultSchema = z.discriminatedUnion("opened", [
   z.strictObject({ opened: z.literal(true) }),

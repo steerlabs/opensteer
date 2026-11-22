@@ -559,10 +559,12 @@ export class DeploymentAccessService {
   async removeFromAccount(deploymentId: string): Promise<void> {
     this.#assertActive();
     this.#assertRemovable(deploymentId);
+    const name = this.#nameOf(deploymentId);
     await this.#simpleOperation(
       { kind: "remove-from-account", target: deploymentId },
       async () => {
         // What it waited behind may have signed out or dropped the row.
+        if (!this.#listed(deploymentId)) throw new DeploymentAccessRefusal(homeGoneSentence(name));
         this.#assertRemovable(deploymentId);
         await this.#ports.directory.removeFromAccount(deploymentId);
         return this.#refreshDirectory("required", "manual");
@@ -699,9 +701,27 @@ export class DeploymentAccessService {
    */
   async #select(deploymentId: string): Promise<void> {
     this.#assertSelectable(deploymentId);
+    const name = this.#nameOf(deploymentId);
     await this.#exclusive(
       { kind: "open-deployment", target: `select ${deploymentId}` },
-      (operationId) => this.#selectTurn(operationId, deploymentId),
+      (operationId) => this.#selectTurn(operationId, deploymentId, name),
+    );
+  }
+
+  /** The Home's own name while this Mac still lists it, as a person last saw it. */
+  #nameOf(deploymentId: string): string | null {
+    return (
+      this.#catalog.deployments.find(({ id }) => id === deploymentId)?.name ??
+      this.#unavailable.find((entry) => entry.deploymentId === deploymentId)?.name ??
+      null
+    );
+  }
+
+  /** Whether this Mac still lists the Home at all, open or not. */
+  #listed(deploymentId: string): boolean {
+    return (
+      this.#catalog.deployments.some(({ id }) => id === deploymentId) ||
+      this.#unavailable.some((entry) => entry.deploymentId === deploymentId)
     );
   }
 
@@ -717,11 +737,12 @@ export class DeploymentAccessService {
   }
 
   /** Closing the current Home and opening this one is one turn, so nothing runs in between. */
-  async #selectTurn(operationId: number, deploymentId: string): Promise<void> {
+  async #selectTurn(operationId: number, deploymentId: string, name: string | null): Promise<void> {
     const selecting = { deploymentId };
     try {
       try {
         // What it waited behind may have removed the Home or changed what can open.
+        if (!this.#listed(deploymentId)) throw new DeploymentAccessRefusal(homeGoneSentence(name));
         this.#assertSelectable(deploymentId);
         this.#pendingAttachmentDeploymentId = null;
         this.#selecting = selecting;
@@ -885,7 +906,7 @@ export class DeploymentAccessService {
   /** Until the slot next frees, or the bound passes: then a plain sentence, not a collision. */
   async #nextEnd(deadline: number): Promise<void> {
     const left = deadline - this.#now();
-    if (left <= 0) throw new Error(busyElsewhereSentence);
+    if (left <= 0) throw new DeploymentAccessRefusal(busyElsewhereSentence);
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       this.#ended.promise,
@@ -894,7 +915,8 @@ export class DeploymentAccessService {
       }),
     ]);
     clearTimeout(timer);
-    if (this.#operation && this.#now() >= deadline) throw new Error(busyElsewhereSentence);
+    if (this.#operation && this.#now() >= deadline)
+      throw new DeploymentAccessRefusal(busyElsewhereSentence);
   }
 
   /**
@@ -1378,6 +1400,27 @@ export class DeploymentAccessService {
 
 /** How long a foreground request waits for the one running before it is refused. */
 const foregroundTurnWaitMilliseconds = 2 * 60_000;
+
+/**
+ * A refusal this service makes on purpose, in words written for a person. The bridge answers
+ * it as `{ refused }` and the window shows the sentence as it is; anything else that throws
+ * here is a fault, and a person never reads its text.
+ */
+export class DeploymentAccessRefusal extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.name = "DeploymentAccessRefusal";
+    this.words = words;
+  }
+}
+
+/** Said of a Home the ask named that was gone by the time its turn came. */
+export function homeGoneSentence(name: string | null): string {
+  return name
+    ? `${name} is no longer in your Opensteers.`
+    : "That Opensteer is no longer in your list.";
+}
 const busyElsewhereSentence =
   "Opensteer is still finishing another change on this Mac. Try again in a moment.";
 

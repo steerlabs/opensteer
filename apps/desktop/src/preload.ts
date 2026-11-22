@@ -156,6 +156,7 @@ import {
   DesktopOpenExternalUrlInputSchema,
   DesktopOpenExternalUrlResultSchema,
   DesktopOpenInChromeResultSchema,
+  settleDesktopAccessAnswer,
   DesktopPickFolderResultSchema,
   DesktopOpenHostWebSocketInputSchema,
   DesktopOpenHostWebSocketResultSchema,
@@ -199,6 +200,11 @@ async function invoke<T>(channel: string, input?: unknown): Promise<T> {
     bridgeToken,
     ...(input === undefined ? {} : { input }),
   }) as Promise<T>;
+}
+
+/** An access operation: nothing on success, its sentence thrown on a refusal made on purpose. */
+async function invokeAccess(channel: string, input?: unknown): Promise<void> {
+  settleDesktopAccessAnswer(await invoke(channel, input));
 }
 
 async function invokePasswords<T = unknown>(channel: string, input?: unknown): Promise<T> {
@@ -751,8 +757,8 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   closeComputerUsePermissionsPanel: () =>
     invoke<void>(desktopBridgeChannels.closeComputerUsePermissionsPanel),
   addDirect: (input: DesktopAddDirectRouteInput) =>
-    invoke<void>(desktopBridgeChannels.addDirect, DesktopAddDirectRouteInputSchema.parse(input)),
-  cancel: () => invoke<void>(desktopBridgeChannels.cancel),
+    invokeAccess(desktopBridgeChannels.addDirect, DesktopAddDirectRouteInputSchema.parse(input)),
+  cancel: () => invokeAccess(desktopBridgeChannels.cancel),
   checkFullDiskAccess: async () =>
     DesktopFullDiskAccessStatusSchema.parse(
       await invoke<DesktopFullDiskAccessStatus>(desktopBridgeChannels.checkFullDiskAccess),
@@ -787,12 +793,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       ),
     ),
   connectPrivate: (input: DesktopConnectPrivateDeploymentInput) =>
-    invoke<void>(
+    invokeAccess(
       desktopBridgeChannels.connectPrivate,
       DesktopConnectPrivateDeploymentInputSchema.parse(input),
     ),
   createPersonalDeployment: (input?: DesktopCreatePersonalDeploymentInput) =>
-    invoke<void>(desktopBridgeChannels.createPersonalDeployment, input ?? {}),
+    invokeAccess(desktopBridgeChannels.createPersonalDeployment, input ?? {}),
   getDeploymentAccessSnapshot: async () =>
     DeploymentAccessSnapshotSchema.parse(
       await invoke<DeploymentAccessSnapshot>(desktopBridgeChannels.getDeploymentAccessSnapshot),
@@ -928,29 +934,29 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     DesktopPickFolderResultSchema.parse(
       await invoke<DesktopPickFolderResult>(desktopBridgeChannels.pickFolder),
     ),
-  reauthorize: () => invoke<void>(desktopBridgeChannels.reauthorize),
-  checkDeployments: () => invoke<void>(desktopBridgeChannels.checkDeployments),
-  refreshDirectory: () => invoke<void>(desktopBridgeChannels.refreshDirectory),
+  reauthorize: () => invokeAccess(desktopBridgeChannels.reauthorize),
+  checkDeployments: () => invokeAccess(desktopBridgeChannels.checkDeployments),
+  refreshDirectory: () => invokeAccess(desktopBridgeChannels.refreshDirectory),
   removeFromAccount: (input: DesktopRemoveAccountDeploymentInput) =>
-    invoke<void>(
+    invokeAccess(
       desktopBridgeChannels.removeFromAccount,
       DesktopRemoveAccountDeploymentInputSchema.parse(input),
     ),
-  linkPersonal: () => invoke<void>(desktopBridgeChannels.linkPersonal),
-  retry: () => invoke<void>(desktopBridgeChannels.retry),
+  linkPersonal: () => invokeAccess(desktopBridgeChannels.linkPersonal),
+  retry: () => invokeAccess(desktopBridgeChannels.retry),
   requestFullDiskAccess: async () =>
     DesktopRequestFullDiskAccessResultSchema.parse(
       await invoke<DesktopRequestFullDiskAccessResult>(desktopBridgeChannels.requestFullDiskAccess),
     ),
   select: (input: DesktopSelectDeploymentInput) =>
-    invoke<void>(desktopBridgeChannels.select, DesktopSelectDeploymentInputSchema.parse(input)),
+    invokeAccess(desktopBridgeChannels.select, DesktopSelectDeploymentInputSchema.parse(input)),
   sendHostWebSocket: (input: DesktopHostWebSocketCommand) =>
     invoke<void>(
       desktopBridgeChannels.sendHostWebSocket,
       DesktopHostWebSocketCommandSchema.parse(input),
     ),
-  signIn: () => invoke<void>(desktopBridgeChannels.signIn),
-  signOut: () => invoke<void>(desktopBridgeChannels.signOut),
+  signIn: () => invokeAccess(desktopBridgeChannels.signIn),
+  signOut: () => invokeAccess(desktopBridgeChannels.signOut),
   bindDeviceSession: (input: DesktopLocalExecutionInput) =>
     invoke<DesktopDeviceSessionBinding>(desktopBridgeChannels.bindDeviceSession, input),
   retryDeviceConnection: (input: DesktopLocalExecutionInput) =>
@@ -968,7 +974,7 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   setUpDevice: (input: DesktopStartLocalRunnerInput) =>
     invoke<DesktopLocalExecutionStatus>(desktopBridgeChannels.setUpDevice, input),
-  unlinkPersonal: () => invoke<void>(desktopBridgeChannels.unlinkPersonal),
+  unlinkPersonal: () => invokeAccess(desktopBridgeChannels.unlinkPersonal),
 });
 
 contextBridge.exposeInMainWorld("opensteerDesktop", bridge);

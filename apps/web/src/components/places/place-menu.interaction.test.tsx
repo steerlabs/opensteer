@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
+  desktopRefusal,
   DeploymentAccessSnapshotSchema,
   type DeploymentAccessDeployment,
   type OpensteerDesktopBridge,
@@ -239,4 +240,40 @@ it("asks which Opensteer to open over the same list the sidebar calls Your Opens
     [...menuList!.querySelectorAll(".place-row__name")].map((name) => name.textContent),
   ).toEqual(chooserRows);
   expect(chooserRows).toEqual(["Lab server", "Studio server"]);
+});
+
+describe("what opening a Home from the chooser says when it can't", () => {
+  async function openFirst(failure: unknown) {
+    const fixture = await mount({ statusInfo: { reason: null, status: "ready" } }, false, {
+      chooser: true,
+      second: true,
+    });
+    fixture.select.mockImplementationOnce(async () => Promise.reject(failure));
+    await click("ul.place-list .place-row");
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => undefined);
+    expect(fixture.select).toHaveBeenCalledTimes(1);
+    return document.querySelector('[role="alert"]')?.textContent ?? null;
+  }
+
+  it("names the Home that was removed while the open waited its turn", async () => {
+    expect(await openFirst(desktopRefusal("Lab server is no longer in your Opensteers."))).toBe(
+      "Lab server is no longer in your Opensteers.",
+    );
+  });
+
+  it("says the Mac is still finishing another change when the turn never came", async () => {
+    expect(
+      await openFirst(
+        desktopRefusal(
+          "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+        ),
+      ),
+    ).toBe("Opensteer is still finishing another change on this Mac. Try again in a moment.");
+  });
+
+  it("never shows a fault's own text", async () => {
+    const said = await openFirst(new Error("catalog row 42 failed its integrity check"));
+    expect(said).toBe("Couldn't confirm this change.");
+    expect(document.body.textContent).not.toContain("catalog row 42");
+  });
 });

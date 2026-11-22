@@ -9,6 +9,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { HostSessionObservation } from "@opensteer/client/auth";
 import {
+  DeploymentAccessRefusal,
   DeploymentAccessService,
   classifyPortFailure,
   type CatalogProjection,
@@ -1824,12 +1825,18 @@ describe("DeploymentAccessService", () => {
       vi.useFakeTimers();
       try {
         const linking = service.linkPersonal();
-        const refused = expect(linking).rejects.toThrow(
-          "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+        const refused = expect(linking).rejects.toEqual(
+          new DeploymentAccessRefusal(
+            "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+          ),
         );
         fixture.clock.now += 2 * 60_000;
         await vi.advanceTimersByTimeAsync(2 * 60_000);
         await refused;
+        // Refused on purpose, with the words a person reads, not as a fault.
+        expect(await linking.catch((error: unknown) => error)).toBeInstanceOf(
+          DeploymentAccessRefusal,
+        );
         expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
@@ -1997,9 +2004,31 @@ describe("DeploymentAccessService", () => {
         fixture.replaceCatalog({ deployments: [], selectedDeploymentId: null });
         removal!.resolve(undefined);
         await removing;
-        await expect(opening).rejects.toThrow("not available now: select");
+        const refused = await opening.catch((error: unknown) => error);
+        expect(refused).toBeInstanceOf(DeploymentAccessRefusal);
+        expect((refused as DeploymentAccessRefusal).words).toBe(
+          "A is no longer in your Opensteers.",
+        );
         expect(fixture.select).not.toHaveBeenCalled();
         expect(service.snapshot().deployments).toEqual([]);
+        service.dispose();
+      }
+      // The open finishes first and its Home leaves the list: the removal that waited is told so.
+      {
+        const { fixture, service } = await listing([a], true);
+        const remove = vi.mocked(fixture.ports.directory.removeFromAccount);
+        remove.mockClear();
+        const [open] = held(fixture.select, 1);
+        const opening = service.select(a.id);
+        const removing = service.removeFromAccount(a.id);
+        await settle();
+        fixture.replaceCatalog({ deployments: [], selectedDeploymentId: null });
+        open!.resolve({ deployments: [], revision: 9, selectedDeploymentId: null });
+        await opening.catch(() => undefined);
+        await expect(removing).rejects.toEqual(
+          new DeploymentAccessRefusal("A is no longer in your Opensteers."),
+        );
+        expect(remove).not.toHaveBeenCalled();
         service.dispose();
       }
       // Open first, then the removal waits its turn.

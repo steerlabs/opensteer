@@ -13,7 +13,11 @@ import {
   type usePersonalRemoteAccess,
 } from "@opensteer/client/react";
 import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
-import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import {
+  desktopRefusalWords,
+  type DeploymentAccessSnapshot,
+  type OpensteerDesktopBridge,
+} from "@opensteer/protocol/desktop";
 import { useShell } from "../components/app-shell.js";
 import { deploymentNameFrom } from "../components/deployment-name.js";
 import { linkAccountThroughPortal } from "../components/settings/link-personal-account.js";
@@ -51,7 +55,7 @@ export function desktopRemoteAccessPort(
   return {
     signIn: (signal) => signInThroughBrowser(bridge, signal),
     link: async ({ activating }) => {
-      const outcome = await link.link();
+      const outcome = await saidAsRefused(() => link.link());
       refuseUnfinished(outcome);
       // Finishing a saved link that still isn't added: say so now, as what it is, rather than
       // waiting out the settle time for a change that isn't coming.
@@ -61,10 +65,21 @@ export function desktopRemoteAccessPort(
         );
     },
     repair: async () => {
-      const outcome = await link.repair();
+      const outcome = await saidAsRefused(() => link.repair());
       if (!outcome.succeeded) throw new RemoteAccessPortError(outcome.message);
     },
   };
+}
+
+/** The Mac app's own refusal, in its words; any other failure is left to the step's sentence. */
+async function saidAsRefused<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const words = desktopRefusalWords(error);
+    if (words !== null) throw new RemoteAccessPortError(words);
+    throw error;
+  }
 }
 
 /**

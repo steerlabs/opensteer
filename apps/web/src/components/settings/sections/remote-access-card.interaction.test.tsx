@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { desktopRefusal } from "@opensteer/protocol/desktop";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RemoteAccessCard } from "./remote-access-card.js";
 
@@ -356,3 +357,37 @@ it.each(["fails", "succeeds"])(
     expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);
   },
 );
+
+/** Turning Remote access on from here, where this Mac's Home isn't in the account yet. */
+async function turnOnWhileLinkFails(failure: unknown) {
+  const bridge = desktopBridge({ linkPersonal: vi.fn(async () => Promise.reject(failure)) });
+  (shell.deploymentAccess as { personalAccountLink: { status: string } }).personalAccountLink = {
+    status: "unlinked",
+  };
+  await mount();
+  const turnOn = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent?.trim() === "Turn on",
+  );
+  if (!turnOn) throw new Error(`No Turn on in ${container.textContent ?? ""}`);
+  await act(async () => turnOn.click());
+  for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
+  expect(bridge.linkPersonal).toHaveBeenCalled();
+}
+
+it("says the Mac's own sentence when its turn to add this Mac never came", async () => {
+  await turnOnWhileLinkFails(
+    desktopRefusal(
+      "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+    ),
+  );
+  expect(container.textContent).toContain(
+    "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+  );
+  expect(container.textContent).not.toContain("Couldn’t add");
+});
+
+it("never shows a fault's own text when adding this Mac fails", async () => {
+  await turnOnWhileLinkFails(new Error("journal row 7 failed its integrity check"));
+  expect(container.textContent).toContain("Couldn’t add Studio Mac to your account. Try again.");
+  expect(container.textContent).not.toContain("journal row 7");
+});
