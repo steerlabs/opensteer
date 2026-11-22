@@ -198,6 +198,8 @@ interface Laid {
   readonly children: Laid[];
   /** For text: the lines its words needed, and the lines it may show. */
   text?: { needed: number; shown: number; chars: number };
+  /** For text: its words and the width of a character, to judge the width it was finally given. */
+  wording?: { readonly words: readonly string[]; readonly charWidth: number };
 }
 
 const alignOf: Record<string, Align> = {
@@ -370,6 +372,7 @@ function textMeasure(laid: Laid, style: Style) {
       ? props["numberOfLines"]
       : Infinity;
   const charWidth = size * advance;
+  if (laid.host.kind === "Text") laid.wording = { charWidth, words };
   return (width: number, mode: MeasureMode) => {
     const unbounded = mode === MeasureMode.Undefined || !Number.isFinite(width);
     const lines = wrap(words, charWidth, unbounded ? Infinity : width);
@@ -434,6 +437,13 @@ export interface Frames {
   readonly visible: (element: Element) => Rect | null;
   /** Whether a text had to be cut to its lines. */
   readonly cut: (element: Element) => boolean;
+  /**
+   * The words of a text broken inside themselves, each wider than the line the text was given,
+   * with the width the word needs.
+   */
+  readonly broken: (
+    element: Element,
+  ) => readonly { readonly word: string; readonly width: number }[];
   /** The characters of a text a person sees: all of them, or those before its ellipsis. */
   readonly shown: (element: Element) => string;
   /** Every text drawn, with its words. */
@@ -474,6 +484,7 @@ function once(container: Element, window: { width: number; height: number }) {
   const absolute = new Map<Element, Rect>();
   const clip = new Map<Element, Rect | null>();
   const texts = new Map<Element, Laid>();
+  const broken = new Map<Element, readonly { readonly word: string; readonly width: number }[]>();
   const local = new Map<Element, Rect>();
   const content = new Map<Element, { width: number; height: number }>();
   const walk = (laid: Laid, x: number, y: number, clipped: Rect | null): void => {
@@ -483,6 +494,18 @@ function once(container: Element, window: { width: number; height: number }) {
     local.set(laid.element, { height: box.height, width: box.width, x: box.left, y: box.top });
     clip.set(laid.element, clipped === null ? frame : intersection(frame, clipped));
     if (laid.text) texts.set(laid.element, laid);
+    if (laid.wording) {
+      // A word wider than the line its text was given is broken inside itself, as a line breaker
+      // must break it: the width that counts is the one the text finally has.
+      const perLine = Math.max(1, Math.floor((box.width + 0.01) / laid.wording.charWidth));
+      const { charWidth, words } = laid.wording;
+      broken.set(
+        laid.element,
+        words
+          .filter((word) => word.length > perLine)
+          .map((word) => ({ width: word.length * charWidth, word })),
+      );
+    }
     const inner =
       laid.host.kind === "ScrollView" ? (clipped ? intersection(frame, clipped) : frame) : clipped;
     if (laid.host.kind === "ScrollView") {
@@ -521,6 +544,7 @@ function once(container: Element, window: { width: number; height: number }) {
       const laid = texts.get(element);
       return laid?.text !== undefined && laid.text.needed > laid.text.shown;
     },
+    broken: (element) => broken.get(element) ?? [],
     shown: (element) => {
       const words = (element.textContent ?? "").split(/\s+/u).filter(Boolean).join(" ");
       const laid = texts.get(element);
@@ -541,6 +565,47 @@ function once(container: Element, window: { width: number; height: number }) {
     },
   };
   return { frames, notify };
+}
+
+/**
+ * Every text on a screen a person can't read as written:
+ * - a word broken inside itself that would have fitted the screen's reading column (`column`,
+ *   `readingColumn`), so it broke only because its own column was squeezed. A word wider than the whole column breaks on any layout, as iOS breaks it.
+ *   An address (an email, a URL, a domain) may break anywhere;
+ * - a text cut to its lines with an ellipsis. `preview` names texts whose cut is a design.
+ */
+export function textFaults(
+  frames: Frames,
+  options: { readonly column: number; readonly preview?: (words: string) => boolean },
+): string[] {
+  const faults: string[] = [];
+  for (const { element, words } of frames.texts()) {
+    const text = words.trim();
+    if (text === "") continue;
+    for (const { word, width } of frames.broken(element)) {
+      if (width > options.column + 0.5 || isAddress(word)) continue;
+      faults.push(`"${word}" breaks inside in "${text}"`);
+    }
+    if (frames.cut(element) && !options.preview?.(text))
+      faults.push(`"${text}" is cut to "${frames.shown(element)}…"`);
+  }
+  return faults;
+}
+
+/**
+ * The reading column of a phone: the widest a screen's text gets inside a card, the window less
+ * its insets, the screen's gutters (16 a side) and a card's own padding (12 a side). A word wider
+ * than this breaks on any layout.
+ */
+export function readingColumn(phone: {
+  readonly window: { readonly width: number };
+  readonly insets: { readonly left: number; readonly right: number };
+}): number {
+  return phone.window.width - phone.insets.left - phone.insets.right - 32 - 24;
+}
+
+function isAddress(word: string): boolean {
+  return /@|:\/\/|[a-z0-9]\.[a-z]{2,}/iu.test(word);
 }
 
 export function intersection(a: Rect, b: Rect): Rect {

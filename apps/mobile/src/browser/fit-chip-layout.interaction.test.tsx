@@ -3,7 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { layoutPhones, layoutTextSizes } from "../../test-support/layout-phones.js";
-import { inside, layout, layoutWindow, textElement } from "../../test-support/yoga-frames.js";
+import {
+  inside,
+  layout,
+  layoutWindow,
+  textElement,
+  readingColumn,
+  textFaults,
+} from "../../test-support/yoga-frames.js";
 
 /*
  * "Fit to screen" over a page, laid out by React Native's own layout engine. At the largest
@@ -68,6 +75,10 @@ describe("Fit to screen", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const words = textElement(container, "Fit to screen");
         const chip = container.querySelector('[aria-label="Fit to screen"]')!;
         expect(frames.cut(words), "the words are cut").toBe(false);

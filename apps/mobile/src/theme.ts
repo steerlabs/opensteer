@@ -325,6 +325,13 @@ export const displayFontScaleLimit = 2;
 export const statusFontScaleLimit = 3;
 
 /**
+ * The text size from which a row stacks: its marks and controls on a line of their own, its
+ * words the full width under them. Beside a mark and two controls, a column at an accessibility
+ * text size is narrower than one long word, which would then break inside itself.
+ */
+export const stackedFontScale = 2;
+
+/**
  * The same limit for the navigation bar, which is tighter still.
  *
  * The system's own bar does not grow its title at all, and its left and right

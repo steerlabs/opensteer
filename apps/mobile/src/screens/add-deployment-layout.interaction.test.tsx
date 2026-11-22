@@ -3,7 +3,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { layoutPhones, layoutTextSizes } from "../../test-support/layout-phones.js";
-import { layout, layoutWindow, textElement } from "../../test-support/yoga-frames.js";
+import {
+  layout,
+  layoutWindow,
+  textElement,
+  readingColumn,
+  textFaults,
+} from "../../test-support/yoga-frames.js";
 
 /*
  * The account row in Add an Opensteer, laid out by React Native's own layout engine on the
@@ -92,6 +98,10 @@ describe("the Opensteer account row", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         for (const words of [email, issuer]) {
           const text = textElement(container, words);
           expect(frames.shown(text), `"${words}" is cut`).toBe(words);

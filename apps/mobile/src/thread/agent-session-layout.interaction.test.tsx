@@ -12,6 +12,8 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  readingColumn,
+  textFaults,
   type Frames,
   type Rect,
 } from "../../test-support/yoga-frames.js";
@@ -117,7 +119,21 @@ vi.mock("../markdown/markdown.js", async () => {
   };
 });
 vi.mock("./asker-byline.js", () => ({ AskerByline: () => null, useRequestAsker: () => null }));
-vi.mock("./request-card.js", () => ({ arrivalGuardMs: 450, WaitingMenu: () => null }));
+// The waiting count beside a question's heading, as it draws: "1 of 14" and its chevron.
+vi.mock("./request-card.js", async () => {
+  const { Text, View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
+  return {
+    arrivalGuardMs: 450,
+    WaitingMenu: () => (
+      <View style={{ alignItems: "center", flexDirection: "row", gap: 2 }}>
+        <Text maxFontSizeMultiplier={1.6} style={{ fontSize: 13, lineHeight: 18 }}>
+          1 of 14
+        </Text>
+        <View style={{ height: 9, width: 9 }} />
+      </View>
+    ),
+  };
+});
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
@@ -196,6 +212,10 @@ async function draw(phone: (typeof phones)[number], fontScale: number) {
   const frames = await layout(container, phone.window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: readingColumn(phone) }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 

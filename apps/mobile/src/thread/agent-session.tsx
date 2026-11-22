@@ -11,6 +11,7 @@ import {
   type OperationRequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { useThreadAgentPlace, useThreadTranscript } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -198,25 +199,45 @@ const tones: Readonly<Record<OperationRow["outcome"]["tone"], string>> = {
 
 /** One operation: what it did, who allowed it, and how it ended, stated plainly. */
 export function OperationRowView({ row }: { readonly row: OperationRow }): ReactNode {
+  const stacked = useStackedLayout();
+  const glyph = <Symbol name={glyphs[row.glyph]} size={15} tint={color.textSoft} />;
+  const words = (
+    <View style={stacked ? undefined : styles.grow}>
+      <AppText role="secondary">{row.action}</AppText>
+      <AppText role="caption" tone="muted">
+        {row.allowedBy === null ? row.outcome.label : `${row.allowedBy} · ${row.outcome.label}`}
+      </AppText>
+      {row.detail === null ? null : (
+        <AppText role="caption" tone="muted">
+          {row.detail}
+        </AppText>
+      )}
+    </View>
+  );
+  const chip = (
+    <View style={[styles.chip, { borderColor: tones[row.outcome.tone] }]}>
+      <AppText role="caption" style={{ color: tones[row.outcome.tone] }}>
+        {row.outcome.label}
+      </AppText>
+    </View>
+  );
+  // At an accessibility text size the mark and the outcome take the top line and the words the
+  // full width under them: beside both, every word of a sentence broke inside itself.
+  if (stacked)
+    return (
+      <View style={styles.operationStacked} testID={`operation:${row.id}`}>
+        <View style={styles.operationTop}>
+          {glyph}
+          {chip}
+        </View>
+        {words}
+      </View>
+    );
   return (
     <View style={styles.operation} testID={`operation:${row.id}`}>
-      <Symbol name={glyphs[row.glyph]} size={15} tint={color.textSoft} />
-      <View style={styles.grow}>
-        <AppText role="secondary">{row.action}</AppText>
-        <AppText role="caption" tone="muted">
-          {row.allowedBy === null ? row.outcome.label : `${row.allowedBy} · ${row.outcome.label}`}
-        </AppText>
-        {row.detail === null ? null : (
-          <AppText role="caption" tone="muted">
-            {row.detail}
-          </AppText>
-        )}
-      </View>
-      <View style={[styles.chip, { borderColor: tones[row.outcome.tone] }]}>
-        <AppText role="caption" style={{ color: tones[row.outcome.tone] }}>
-          {row.outcome.label}
-        </AppText>
-      </View>
+      {glyph}
+      {words}
+      {chip}
     </View>
   );
 }
@@ -418,6 +439,12 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   link: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   operation: { alignItems: "flex-start", flexDirection: "row", gap: space[8] },
+  operationStacked: { gap: space[4] },
+  operationTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   pane: { flex: 1 },
   place: {
     alignItems: "center",

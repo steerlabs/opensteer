@@ -9,6 +9,8 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  readingColumn,
+  textFaults,
   type Frames,
 } from "../../test-support/yoga-frames.js";
 
@@ -190,6 +192,10 @@ describe("the Tasks screen's heading and its composer", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const heading = textElement(container, "What should your agent do?");
         const dock = container.querySelector('[data-testid="composer-dock-stack"]');
         if (!dock) throw new Error("No composer");
@@ -248,6 +254,10 @@ describe("the Tasks screen's empty state", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const dock = container.querySelector('[data-testid="composer-dock-stack"]');
         if (!dock) throw new Error("No composer");
         const paragraph = textElement(container, "Your agent works on this computer.");
@@ -262,6 +272,14 @@ describe("the Tasks screen's empty state", () => {
           readableAboveDock(frames, last, dock),
           "the last way to begin can't be brought out from behind the composer",
         ).toBe(true);
+        // And every other text the page holds: scrolled to its end, none stays under the composer.
+        const content = paragraph.closest('[data-rn="ScrollContent"]');
+        const under = frames
+          .texts()
+          .filter(({ element }) => content?.contains(element) && !dock.contains(element))
+          .filter(({ element }) => !readableAboveDock(frames, element, dock))
+          .map(({ words }) => words);
+        expect(under, "text stays under the composer when scrolled to its end").toEqual([]);
       });
 });
 
@@ -296,6 +314,10 @@ describe("a message that couldn't start a task", () => {
           await act(async () => (send as HTMLElement).click());
           const frames = await layout(container, phone.window);
           expect(frames.settled, "the layout never comes to rest").toBe(true);
+          expect(
+            textFaults(frames, { column: readingColumn(phone) }),
+            "a text a person reads is broken or cut",
+          ).toEqual([]);
           const dock = container.querySelector('[data-testid="composer-dock-stack"]');
           if (!dock) throw new Error("No composer");
           const line = [...container.querySelectorAll('[data-rn="Text"]')].find((text) =>

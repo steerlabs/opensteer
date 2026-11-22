@@ -4,7 +4,13 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { layoutPhones, layoutTextSizes } from "../../test-support/layout-phones.js";
-import { layout, layoutWindow, textElement } from "../../test-support/yoga-frames.js";
+import {
+  layout,
+  layoutWindow,
+  textElement,
+  readingColumn,
+  textFaults,
+} from "../../test-support/yoga-frames.js";
 
 /*
  * Two Homes in the list of Homes, laid out by React Native's own layout engine. At the largest
@@ -55,7 +61,12 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("./welcome.js", () => ({ Welcome: () => null }));
 vi.mock("./setup-scanner.js", () => ({ useSetupScanner: () => null }));
 vi.mock("./add-deployment.js", () => ({ AccountIdentityRow: () => null }));
-vi.mock("./deployment-menu.js", () => ({ DeploymentMenu: () => null }));
+// The row's "…" menu is a touch-sized control beside the words: drawn as one, so the words get
+// the width they have on a phone.
+vi.mock("./deployment-menu.js", async () => {
+  const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
+  return { DeploymentMenu: () => <View style={{ height: 44, width: 44 }} /> };
+});
 vi.mock("./work-home.js", () => ({
   useCloudComputerIds: () => new Set(),
   useWorkBadges: () => new Map(),
@@ -131,6 +142,10 @@ describe("Homes in the list", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const [first, second] = homes.map((home) => {
           const name = [...container.querySelectorAll('[data-rn="Text"]')].find(
             (text) => text.textContent === home.name,
@@ -179,6 +194,10 @@ describe("a Home's status in the list", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const texts = [...container.querySelectorAll('[data-rn="Text"]')];
         const status = texts.find((text) => text.textContent === "Connected");
         const dot = texts.find((text) => text.textContent === "·");
@@ -237,6 +256,10 @@ describe("what a Home's row says", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         for (const words of [
           remoteAccessOff,
           "Home: Mac mini in the studio",
@@ -298,6 +321,10 @@ describe("a failure line above the Homes list", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const text = textElement(container, sentence);
         expect(frames.shown(text), "the failure is cut").toBe(sentence);
         expect(

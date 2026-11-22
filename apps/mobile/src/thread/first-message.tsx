@@ -1,4 +1,5 @@
 import { clientScopeKey, type ClientScope } from "@opensteer/client/connections";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
@@ -845,6 +846,9 @@ export function FirstMessageExamples(props: {
   readonly examples: readonly FirstMessageExample[];
   readonly onPick: (text: string) => void;
 }): ReactNode {
+  // At an accessibility text size the mark stands above the words, which take the full width:
+  // beside it, "changing" broke inside itself.
+  const stacked = useStackedLayout();
   return (
     <View style={styles.examples}>
       {props.examples.map((example) => (
@@ -853,10 +857,14 @@ export function FirstMessageExamples(props: {
           accessibilityRole="button"
           key={example.label}
           onPress={() => props.onPick(example.text)}
-          style={({ pressed }) => [styles.example, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.example,
+            stacked && styles.exampleStacked,
+            pressed && styles.pressed,
+          ]}
         >
           <Symbol name="sparkles" size={16} tint={color.ember} />
-          <AppText role="secondary" style={styles.grow}>
+          <AppText role="secondary" style={stacked ? undefined : styles.grow}>
             {example.label}
           </AppText>
         </Pressable>
@@ -877,6 +885,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[14],
     paddingVertical: space[12],
   },
+  exampleStacked: { alignItems: "flex-start", flexDirection: "column", gap: space[6] },
   examples: { gap: space[10] },
   grow: { flex: 1 },
   leading: { flexDirection: "row" },

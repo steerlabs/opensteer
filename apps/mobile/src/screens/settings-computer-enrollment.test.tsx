@@ -3,15 +3,21 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
-const state = vi.hoisted(() => ({ page: null as NativeSettingsPageProps | null }));
-vi.mock("react-native", () => ({ Text: "span", View: "div" }));
-vi.mock("./native-settings-page.js", () => ({
-  NativeSettingsPage: (props: NativeSettingsPageProps) => {
-    state.page = props;
-    return null;
-  },
+vi.mock(
+  "react-native",
+  async () => (await import("../../test-support/yoga-frames.js")).layoutReactNative,
+);
+vi.mock(
+  "react-native-reanimated",
+  async () => (await import("../../test-support/yoga-frames.js")).layoutReanimated,
+);
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
+vi.mock("expo-haptics", () => ({
+  NotificationFeedbackType: { Error: "error", Success: "success", Warning: "warning" },
+  notificationAsync: async () => undefined,
+  selectionAsync: async () => undefined,
 }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 const { SettingsComputerEnrollment } = await import("./settings-computer-enrollment.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("issues only after a tap and discards the enrollment command on dismissal", async () => {
@@ -37,9 +43,11 @@ it("issues only after a tap and discards the enrollment command on dismissal", a
   try {
     await act(async () => root.render(<SettingsComputerEnrollment host={host} />));
     expect(dispatch).not.toHaveBeenCalled();
-    const create = state.page!.sections[0]!.rows.find((row) => row.kind === "button")!;
-    if (create.kind !== "button") throw new Error("Missing create action");
-    await act(async () => create.onPress());
+    const create = [...container.querySelectorAll("[data-pressable]")].find(
+      (element) => element.textContent === "Create connection command",
+    ) as HTMLElement | undefined;
+    if (!create) throw new Error(`Missing create action: ${container.textContent}`);
+    await act(async () => create.click());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "runner.enrollment.createLocal",

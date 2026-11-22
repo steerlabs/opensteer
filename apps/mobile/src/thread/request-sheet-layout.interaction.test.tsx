@@ -21,6 +21,8 @@ import {
   overlaps,
   reachable,
   textElement,
+  readingColumn,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 import { createThreadMutationGate } from "./thread-mutation-gate.js";
 
@@ -219,6 +221,10 @@ async function draw(phone: LayoutPhone, fontScale: number, request: Request, rea
   const frames = await layout(container, phone.window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: readingColumn(phone) }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 
