@@ -131,11 +131,14 @@ async function main() {
       pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
     });
     try {
+      // The store hands its callback the staging directory only; the signal is the caller's own,
+      // as the runtime closes over its own (`runtime.ts`).
+      const provisioning = new AbortController();
       const directory = await store.provision(
         binding,
         false,
-        (parent, signal) => launcher.localProfiles.createFiles(parent, binding, signal),
-        new AbortController().signal,
+        (parent) => launcher.localProfiles.createFiles(parent, binding, provisioning.signal),
+        provisioning.signal,
       );
       const sessionId = createBrowserSessionId();
       const request = {

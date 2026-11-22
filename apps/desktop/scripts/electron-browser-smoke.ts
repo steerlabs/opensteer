@@ -240,10 +240,11 @@ async function run(): Promise<void> {
   }
   await hostNetwork.clearDeploymentSession(cookieDeployment);
   progress("host-session-cookie-passed");
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002");
   const request: BrowserLaunchRequest = {
     initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
     partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000001",
-    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000002"),
+    sessionId,
     storage: { kind: "guest" },
   };
   const launcher = new ElectronBrowserLauncher({
@@ -266,15 +267,15 @@ async function run(): Promise<void> {
   // the ledger registers, a tab the person opens included, is claimed for it.
   const cdpRouter = new SessionCdpRouter(first.cdp);
   const sessionFiles = new SessionFiles(
-    path.join(await mkdtemp(path.join(tmpdir(), "opensteer-smoke-files-")), request.sessionId),
+    path.join(await mkdtemp(path.join(tmpdir(), "opensteer-smoke-files-")), sessionId),
   );
   let ledger = new SurfaceLedger(first.context, {
-    claimTarget: (targetId) => cdpRouter.claimTarget(request.sessionId, targetId),
+    claimTarget: (targetId) => cdpRouter.claimTarget(sessionId, targetId),
     initialViewport: request.initialViewport,
   });
   const firstLedger = ledger;
   cdpRouter.registerSession(
-    request.sessionId,
+    sessionId,
     await firstPage.targetId(),
     (targetId) => firstLedger.resolveTarget(targetId),
     sessionFiles.root,
@@ -507,8 +508,8 @@ async function run(): Promise<void> {
   );
   const debuggee = await first.cdp.attach(await firstPage.targetId());
   let pausedAt: unknown = null;
-  debuggee.on("Debugger.paused", (parameters) => {
-    pausedAt = parameters;
+  debuggee.onEvent((method, parameters) => {
+    if (method === "Debugger.paused") pausedAt = parameters;
   });
   await debuggee.send("Debugger.enable");
   await debuggee.send("Debugger.setBreakpointByUrl", { url: "smoke-break.js", lineNumber: 1 });
@@ -546,14 +547,7 @@ async function run(): Promise<void> {
     files: sessionFiles,
     replaceSiteCookies: (site, cookies, deadline) =>
       first.replaceSiteCookies(site, cookies, deadline),
-    signIns: new HostSignIns({
-      state: { run: (work) => work() },
-      writeCookies: () => Promise.resolve(),
-      deliveryTimeoutMs: 1_000,
-      executor: undefined,
-      fresh: true,
-      runtimeId: "electron-smoke",
-    }),
+    signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
     ledger,
     sink: {
       sendFrame: async (frame) => {
@@ -1700,14 +1694,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     ledger,
     replaceSiteCookies: (site, cookies, deadline) =>
       browser.replaceSiteCookies(site, cookies, deadline),
-    signIns: new HostSignIns({
-      state: { run: (work) => work() },
-      writeCookies: () => Promise.resolve(),
-      deliveryTimeoutMs: 1_000,
-      executor: undefined,
-      fresh: true,
-      runtimeId: "electron-smoke",
-    }),
+    signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
     sink: {
       sendFrame: async (frame) => {
         frames.push({ ...frame, at: performance.now() });
