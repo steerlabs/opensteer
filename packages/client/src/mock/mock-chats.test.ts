@@ -97,4 +97,26 @@ describe("the chats preview", () => {
       client.dispose();
     }
   });
+
+  it("reads a resumed account as Connecting once, as the Home does, then Connected", async () => {
+    const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    try {
+      const status = async (name: string) => {
+        const read = await client.rpc["channels.get"]({});
+        if (!read.ok) throw new Error("No messaging accounts");
+        return read.data.connections.find(({ displayName }) => displayName === name)!;
+      };
+      const messages = await status("Messages on Studio Mac");
+      await client.dispatch({
+        type: "channel.connection.status.set",
+        connectionId: messages.id,
+        status: "connected",
+        idempotencyKey: mutationIdempotencyKey("channel-status"),
+      });
+      expect((await status("Messages on Studio Mac")).status).toBe("pending");
+      expect((await status("Messages on Studio Mac")).status).toBe("connected");
+    } finally {
+      client.dispose();
+    }
+  });
 });

@@ -10931,14 +10931,21 @@ class MockHostState {
   }
 
   async loadChannels() {
-    return (
-      this.channels ?? {
-        accounts: [],
-        connections: [],
-        deliveriesNeedingAttention: 0,
-        providers: [...channelProviderCatalog],
-      }
-    );
+    const read = this.channels ?? {
+      accounts: [],
+      connections: [],
+      deliveriesNeedingAttention: 0,
+      providers: [...channelProviderCatalog],
+    };
+    // A resumed account reads Connecting once; by the next read its transport is connected.
+    if (this.channels?.connections.some(({ status }) => status === "pending"))
+      this.channels = {
+        ...this.channels,
+        connections: this.channels.connections.map((connection) =>
+          connection.status === "pending" ? { ...connection, status: "connected" } : connection,
+        ),
+      };
+    return read;
   }
 
   /** A chat added on a mock account: a connection with a grant, live at once. */
@@ -11144,7 +11151,8 @@ class MockHostState {
         connection.id === connectionId
           ? {
               ...connection,
-              status: status === "connected" ? "connected" : status,
+              // As on the Home: a resumed account connects again, and says so first.
+              status: status === "connected" ? "pending" : status,
               statusDetail: null,
             }
           : connection,
