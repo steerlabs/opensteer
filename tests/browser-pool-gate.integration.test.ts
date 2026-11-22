@@ -1381,7 +1381,7 @@ it("closes a session stopped while a park is under way once the park commits", a
   const j = await journey("closing-during-park");
   try {
     const home = await j.startHome();
-    const { sessionId } = await home.service.openTab(j.task.userId, j.command("park-stop"));
+    const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command("park-stop"));
     // The park has retired the runtime and waits at its pause: the Stop lands in between.
     const pausing = Promise.withResolvers<void>();
     const pause = Promise.withResolvers<void>();
@@ -1398,6 +1398,10 @@ it("closes a session stopped while a park is under way once the park commits", a
     // Parked, the guest is paused and its next adoption leaves the session out: closed.
     expect((await j.row(sessionId))?.state).toBe("closed");
     expect(j.controller.effects).toEqual(["start", "pause"]);
+    // The next wake leaves it out; the person stopped it, so its tab is not one the browser lost.
+    (await home.coordinator.gate.reserve(AbortSignal.timeout(20_000))).release();
+    expect(j.controller.effects).toEqual(["start", "pause", "resume"]);
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
   } finally {
     await j.close();
   }
@@ -1520,9 +1524,8 @@ it("stops a parked session while its viewer waits and never reattaches it", asyn
     );
     expect(j.issued.length).toBe(attachesBefore);
     expect(page.page.isClosed()).toBe(true);
-    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
-      { sessionId },
-    ]);
+    // The person stopped it: its tab is not one the browser lost (P20).
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
   } finally {
     await j.close();
   }

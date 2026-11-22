@@ -1075,3 +1075,34 @@ it("ends several lost sessions with attachments in one write, in lock order", as
   );
   expect(await ended()).toEqual({ states: ["closed", "closed"], attachments: 0 });
 });
+
+// ---- P20: clients are told of a placement change only when a person can see it ---------------
+
+it("tells clients of a placement change only when something a person sees changed", async () => {
+  const p = await pair("placement-visible");
+  const home = p.home();
+  await home.recover();
+  home.close();
+  const revision = async () =>
+    Number(
+      (
+        (
+          await p.fixture.database
+            .selectFrom("clientSyncState")
+            .select("resourceRevisions")
+            .executeTakeFirstOrThrow()
+        ).resourceRevisions as Record<string, string | number | undefined>
+      )["browser-placement"] ?? 0,
+    );
+  let slot = (await p.slot())!;
+  const before = await revision();
+  // A new attachment, as a reattach takes: nothing a person sees.
+  slot = await advanceBrowserPoolSlot(p.fixture.database, slot, {
+    phase: slot.phase,
+    attachmentGeneration: slot.attachmentGeneration + 1,
+  });
+  expect(await revision()).toBe(before);
+  // Parked: the phase a person sees.
+  await advanceBrowserPoolSlot(p.fixture.database, slot, { phase: "parked" });
+  expect(await revision()).toBeGreaterThan(before);
+});

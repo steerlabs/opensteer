@@ -13,6 +13,7 @@ import {
   withDatabaseOperationSignal,
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
+  listBrowserPoolReadySessions,
   listBrowserPoolRuntimeSessions,
   listAppliedBrowserPoolStarts,
   markBrowserPoolStartInstalled,
@@ -1485,11 +1486,22 @@ export class BrowserPoolCoordinator {
     if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
       throw new Error("The browser adoption has no outcome yet.");
     const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
+    // A session the person stopped was left out on purpose: it ends, and its tabs are not ones
+    // the browser lost, so they have no note (P20).
+    const ready = new Set(
+      outcome.lost.length
+        ? await listBrowserPoolReadySessions(
+            this.#options.database,
+            this.#options.runnerId,
+            this.#options.runtimeId,
+          )
+        : [],
+    );
     const losses: BrowserPoolSessionLoss[] = [
       ...outcome.lost.map(({ sessionId, reason }) => ({
         sessionId,
         reason: reason ?? "not-adopted",
-        surfaces: surfacesOf(retained, sessionId),
+        surfaces: ready.has(sessionId) ? surfacesOf(retained, sessionId) : [],
       })),
       ...tabLosses.filter(({ sessionId }) => !lostIds.has(sessionId)),
       // A page that did not thaw is that page's loss with its note; its session is kept.

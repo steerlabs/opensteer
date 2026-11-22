@@ -248,8 +248,6 @@ export async function advanceBrowserPoolSlot(
   return commitPersonalMutation(
     database,
     async (tx, mutation) => {
-      // Clients read a pooled browser's phase with its placement.
-      mutation.bumpResource("browser-placement");
       const current = await tx
         .selectFrom("browserPoolSlots")
         .selectAll()
@@ -291,7 +289,16 @@ export async function advanceBrowserPoolSlot(
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      await recordBrowserPoolLosses(tx, slot, losses);
+      const noted = await recordBrowserPoolLosses(tx, slot, losses);
+      // Clients read a pooled browser's phase with its placement: they are told only when
+      // something a person sees changed (P20). Sessions ended tell them on their own.
+      if (
+        noted ||
+        advanced.phase !== current.phase ||
+        advanced.failedStarts !== current.failedStarts ||
+        JSON.stringify(advanced.lastStart) !== JSON.stringify(current.lastStart)
+      )
+        mutation.bumpResource("browser-placement");
       // Parked, the guest is paused and its next adoption leaves out every session not ready: a
       // Stop that landed while the park was under way has the same evidence as one on a parked
       // guest. Under the slot's lock, so no Stop falls between this and its own write.
@@ -355,14 +362,18 @@ export async function stopBrowserPoolSession(
   );
 }
 
-/** Notes per tab, and the end of each lost session, inside the caller's transaction. */
+/**
+ * Notes per tab, and the end of each lost session, inside the caller's transaction; whether a
+ * note was written.
+ */
 async function recordBrowserPoolLosses(
   tx: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   losses: readonly BrowserPoolSessionLoss[],
   /** False when the guest's end is not known yet (a removal's start): closing rows stay. */
   guestEnded = true,
-): Promise<void> {
+): Promise<boolean> {
+  let noted = false;
   if (losses.length) {
     const ownerId = await readBrowserPoolOwner(tx);
     const sessions = await tx
@@ -390,12 +401,14 @@ async function recordBrowserPoolLosses(
           }))
         : [];
     });
-    if (notes.length)
+    if (notes.length) {
       await tx
         .insertInto("browserPoolDocumentLosses")
         .values(notes)
         .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
         .execute(databaseOperationOptions());
+      noted = true;
+    }
     // A ready row with no browser behind it is a defect: the lost session ends here.
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
@@ -413,6 +426,7 @@ async function recordBrowserPoolLosses(
         })),
     );
   }
+  return noted;
 }
 
 /**
