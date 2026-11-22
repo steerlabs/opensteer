@@ -156,9 +156,11 @@ function activityMetadata(
     .leftJoin("requests as request", "request.id", "item.requestId")
     .select(["item.id", "item.position"])
     .select(
-      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)`.as(
-        "messageBytes",
-      ),
+      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)
+        + case when item.kind='request' and request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)')
+          then coalesce(case when octet_length(request.presentation::text)<=2097152 then octet_length(request.presentation::text) end,0)
+            + coalesce(case when octet_length(request.response::text)<=2097152 then octet_length(request.response::text) end,0)
+          else 0 end`.as("messageBytes"),
     )
     .where("item.threadId", "=", input.threadId)
     .where(sql<boolean>`item.visible`);
