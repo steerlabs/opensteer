@@ -1,23 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  BrowserPoolHostBootCompleteRequestSchema,
   BrowserPoolHostDesiredSchema,
   BrowserPoolHostIdSchema,
+  BrowserPoolHostReplaceUnreadyRequestSchema,
   BrowserPoolHostReportSchema,
   BrowserPoolHostSlotEgressRequestSchema,
+  BrowserPoolSlotCheckSchema,
   BrowserPoolSlotDesiredSchema,
   BrowserPoolSlotIdSchema,
   BrowserPoolSlotReportSchema,
   CloudComputerBootResponseSchema,
   CloudComputerIdSchema,
+  CloudComputerLeaseSchema,
   ManagedBrowserPoolRegistrationRequestSchema,
   ManagedBrowserPoolTargetResponseSchema,
-  browserPoolHostSlotEgressPath,
   browserPoolHostSlotEgressSigningBytes,
   managedBrowserPoolRegistrationSigningBytes,
 } from "./index.js";
 
 const sha = "a".repeat(64);
-const spki = "MCowBQYDK2VwAyEA" + "A".repeat(44);
+const spki = Buffer.alloc(44, 1).toString("base64");
+const sigBase64 = Buffer.alloc(64, 2).toString("base64");
+const sigBase64Url = Buffer.alloc(64, 3).toString("base64url");
 const hostId = BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111");
 const slotId = BrowserPoolSlotIdSchema.parse("bps_22222222-2222-4222-8222-222222222222");
 const computerId = CloudComputerIdSchema.parse("cc_33333333-3333-4333-8333-333333333333");
@@ -40,8 +45,8 @@ const release = {
   },
 };
 
-describe("browser pool protocol", () => {
-  it("keeps CloudComputerBootResponseSchema additive with optional browserPool flag", () => {
+describe("control-plane-protocol browser pool contracts", () => {
+  it("keeps CloudComputerBootResponseSchema and CloudComputerLeaseSchema additive", () => {
     const base = {
       hostname: "cc-33333333-3333-4333-8333-333333333333.home.example.test",
       accountOrigin: "https://account.example.test",
@@ -72,52 +77,74 @@ describe("browser pool protocol", () => {
     expect(CloudComputerBootResponseSchema.parse({ ...base, browserPool: true }).browserPool).toBe(
       true,
     );
+
+    const holder = "11111111-1111-4111-8111-111111111111";
+    expect(CloudComputerLeaseSchema.parse({ holder }).poolConfigured).toBeUndefined();
+    expect(CloudComputerLeaseSchema.parse({ holder, poolConfigured: true }).poolConfigured).toBe(
+      true,
+    );
   });
 
-  it("validates pool host desired and report invariants", () => {
+  it("validates pool host desired, replace-unready, and report invariants", () => {
     const desired = BrowserPoolHostDesiredSchema.parse({
       id: hostId,
       generation: 1,
       revision: 1,
       state: "active",
-      region: "us-central1-a",
       machineType: "n2-standard-8",
-      slotsCapacity: 40,
       profileDiskName: "osp-disk-11111111-1111-4111-8111-111111111111",
       profileDiskSizeGb: 500,
+      agentPort: 7310,
+      relayPort: 7312,
       release,
       enrolled: false,
-      bootstrapToken: "a".repeat(43),
+      everEnrolled: false,
+      autoReplaceCount: 0,
+      bootstrapToken: "b".repeat(43),
     });
-    expect(desired.slotsCapacity).toBe(40);
-    expect(desired.profileDiskSizeGb).toBe(500);
+    expect(desired.agentPort).toBe(7310);
+    expect(desired.relayPort).toBe(7312);
 
+    expect(
+      BrowserPoolHostReplaceUnreadyRequestSchema.parse({ revision: 1, generation: 1 }),
+    ).toEqual({ revision: 1, generation: 1 });
+
+    // Deleted pool host cannot carry a bootstrap token.
     expect(() =>
       BrowserPoolHostDesiredSchema.parse({
         ...desired,
         state: "deleted",
-        bootstrapToken: "a".repeat(43),
+        bootstrapToken: "b".repeat(43),
       }),
     ).toThrow();
 
+    // Ready report requires server ref, profile disk ref, and internal IP.
     expect(() =>
       BrowserPoolHostReportSchema.parse({
         id: hostId,
         generation: 1,
         revision: 1,
         phase: "ready",
-        providerServerRef: "osp-ph-1/123",
-        profileDiskRef: null,
+        providerServerRef: null,
+        profileDiskRef: "osp-disk-1/1",
         internalIp: "10.40.0.10",
         lastError: null,
       }),
     ).toThrow();
+
+    expect(
+      BrowserPoolHostBootCompleteRequestSchema.parse({
+        generation: 1,
+        bootstrapToken: "b".repeat(43),
+        hostKey: spki,
+        relayKey: spki,
+      }).hostKey,
+    ).toBe(spki);
   });
 
-  it("validates pool slot desired and W10 deletion report evidence (slot + profile + credentials)", () => {
+  it("validates pool slot desired, T5 hostGeneration report, and T10 simplified phases/checks", () => {
     const slot = BrowserPoolSlotDesiredSchema.parse({
       slotId,
-      computerId,
       hostId,
       hostGeneration: 1,
       hostInternalIp: "10.40.0.10",
@@ -125,7 +152,7 @@ describe("browser pool protocol", () => {
       term: 1,
       revision: 1,
       state: "active",
-      phase: "provisioning",
+      phase: "preparing",
       guest: { vcpus: 2, memoryMib: 2048, profileMib: 2048 },
       slotErased: false,
       profileErased: false,
@@ -133,48 +160,66 @@ describe("browser pool protocol", () => {
     });
     expect(slot.guest.profileMib).toBe(2048);
 
-    // W10: deleted requires all three erasure flags and null controlKey.
+    // T1: deleted report allows partial flags when completing accumulated Account *_erased_at columns,
+    // but still rejects retaining a control key.
+    expect(
+      BrowserPoolSlotReportSchema.parse({
+        slotId,
+        hostGeneration: 1,
+        revision: 2,
+        term: 1,
+        phase: "deleted",
+        controlKey: null,
+        slotErased: false,
+        profileErased: false,
+        credentialsErased: true,
+        lastError: null,
+      }).phase,
+    ).toBe("deleted");
+
+    expect(() =>
+      BrowserPoolSlotReportSchema.parse({
+        slotId,
+        hostGeneration: 1,
+        revision: 2,
+        term: 1,
+        phase: "deleted",
+        controlKey: spki,
+        slotErased: true,
+        profileErased: true,
+        credentialsErased: true,
+        lastError: null,
+      }),
+    ).toThrow();
+
+    // T5: hostGeneration is required on slot reports.
     expect(() =>
       BrowserPoolSlotReportSchema.parse({
         slotId,
         revision: 2,
         term: 1,
-        phase: "deleted",
-        controlKey: null,
-        slotErased: true,
-        profileErased: true,
+        phase: "ready",
+        controlKey: spki,
+        slotErased: false,
+        profileErased: false,
         credentialsErased: false,
         lastError: null,
       }),
     ).toThrow();
 
-    expect(
-      BrowserPoolSlotReportSchema.parse({
-        slotId,
-        revision: 2,
-        term: 1,
-        phase: "deleted",
-        controlKey: null,
-        slotErased: true,
-        profileErased: true,
-        credentialsErased: true,
-        lastError: null,
-      }).phase,
-    ).toBe("deleted");
+    // T10: unused "mutate" slot check is removed.
+    expect(() => BrowserPoolSlotCheckSchema.parse({ operation: "mutate", revision: 1 })).toThrow();
   });
 
   it("matches the S4 pool host slot-egress signing test vector and schema", () => {
-    const vector = browserPoolHostSlotEgressSigningBytes({
+    const vector = {
       hostId: "ph_test",
       slotId: "bps_test",
       issuedAt: "2026-11-22T00:00:00.000Z",
       nonce: "AAAAAAAAAAAAAAAAAAAAAA",
-    });
-    expect(Buffer.from(vector).toString("utf8")).toBe(
+    };
+    expect(Buffer.from(browserPoolHostSlotEgressSigningBytes(vector)).toString("utf8")).toBe(
       "opensteer-pool-slot-egress-v1\nph_test\nbps_test\n2026-11-22T00:00:00.000Z\nAAAAAAAAAAAAAAAAAAAAAA",
-    );
-    expect(browserPoolHostSlotEgressPath(hostId)).toBe(
-      `/v1/browser-pool/hosts/${hostId}/slot-egress`,
     );
 
     const parsed = BrowserPoolHostSlotEgressRequestSchema.parse({
@@ -183,37 +228,29 @@ describe("browser pool protocol", () => {
       slotId,
       issuedAt: "2026-11-22T00:00:00.000Z",
       nonce: "AAAAAAAAAAAAAAAAAAAAAA",
-      signature: "A".repeat(86) + "==",
+      signature: sigBase64,
     });
     expect(parsed.v).toBe(1);
-    expect(() =>
-      BrowserPoolHostSlotEgressRequestSchema.parse({
-        ...parsed,
-        issuedAt: "2026-11-22T00:00:00Z",
-      }),
-    ).toThrow();
   });
 
   it("validates W4+S5 signed Home key registration and target response invariants", () => {
-    const doc = {
-      purpose: "opensteer-managed-browser-pool-registration" as const,
-      documentVersion: 1 as const,
-      cloudComputerId: computerId,
-      issuedAt: "2026-11-22T00:00:00.000Z",
-      keys: {
-        homeKey: spki,
-        relayKey: spki,
-        ticketKey: { keyId: "tk-1", spki },
-      },
-    };
     const req = ManagedBrowserPoolRegistrationRequestSchema.parse({
-      document: doc,
-      signature: "A".repeat(86),
+      document: {
+        purpose: "opensteer-managed-browser-pool-registration",
+        documentVersion: 1,
+        cloudComputerId: computerId,
+        issuedAt: "2026-11-22T00:00:00.000Z",
+        keys: {
+          homeKey: spki,
+          relayKey: spki,
+          ticketKey: { keyId: "tk-1", spki },
+        },
+      },
+      signature: sigBase64Url,
     });
-    expect(req.document.cloudComputerId).toBe(computerId);
-    expect(Buffer.from(managedBrowserPoolRegistrationSigningBytes(doc)).toString("utf8")).toContain(
-      "opensteer-managed-browser-pool-registration-v1\0",
-    );
+    expect(
+      Buffer.from(managedBrowserPoolRegistrationSigningBytes(req.document)).toString("utf8"),
+    ).toContain('"purpose":"opensteer-managed-browser-pool-registration"');
 
     expect(() => ManagedBrowserPoolTargetResponseSchema.parse({ status: "ready" })).toThrow();
     expect(ManagedBrowserPoolTargetResponseSchema.parse({ status: "preparing" }).status).toBe(

@@ -3,17 +3,20 @@ import {
   BrowserPoolHostBootCompleteResponseSchema,
   BrowserPoolHostBootResponseSchema,
   BrowserPoolHostDesiredResponseSchema,
+  BrowserPoolHostReplaceUnreadyResponseSchema,
   BrowserPoolSlotBumpTermResponseSchema,
   BrowserPoolSlotDesiredResponseSchema,
   CloudComputerBootResponseSchema,
   CloudComputerCheckResponseSchema,
   CloudComputerEgressResponseSchema,
+  CloudComputerEgressSchema,
   CloudComputerIdentitySchema,
   CloudComputerReportResponseSchema,
   ControlPlaneAccountIdSchema,
   ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostBootCompletePath,
   browserPoolHostBootPath,
+  browserPoolHostReplaceUnreadyPath,
   browserPoolHostSlotEgressPath,
   browserPoolHostSlotEgressSigningBytes,
   browserPoolHostStatusPath,
@@ -34,6 +37,7 @@ import {
   type BrowserPoolHostId,
   type BrowserPoolSlotId,
   type CloudComputerDesired,
+  type CloudComputerId,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -41,12 +45,15 @@ import {
   hostDiscoverySigningBytes,
   hostKeyFingerprint,
 } from "@opensteer/deployment-authority";
-import { sql } from "kysely";
+import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
+import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHostCredential, hashCredential } from "../auth/credentials.js";
+import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
+import { createHostCredential, hashCredential } from "../auth/credentials.js";
 import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
+import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { ControlPlaneStore } from "../database/store.js";
 import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
@@ -56,7 +63,6 @@ import { runCloudComputerOperator } from "./operator.js";
 import { resetManagedCloudTables } from "./reset.test-support.js";
 import { CloudComputerStore } from "./store.js";
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
-import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 
 const url = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 // Requires PostgreSQL via OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL; skip outside integration runs.
@@ -76,6 +82,13 @@ const services = [
   "channel-runtime",
   "gateway",
 ];
+
+const uniformEgressRefusal = {
+  error: {
+    code: "unauthorized",
+    message: "Browser pool slot egress request was refused",
+  },
+};
 
 const poolRelease = {
   version: "1.0.0",
@@ -135,6 +148,14 @@ function keyPairSpkiBase64() {
   };
 }
 
+function makeHomeKeys(ticketKeyId = "tk-1") {
+  return {
+    homeKey: keyPairSpkiBase64().spki,
+    relayKey: keyPairSpkiBase64().spki,
+    ticketKey: { keyId: ticketKeyId, spki: keyPairSpkiBase64().spki },
+  };
+}
+
 function makeDiscoveryEnvelope(
   origin: string,
   deploymentId: string,
@@ -155,8 +176,47 @@ function makeDiscoveryEnvelope(
   };
 }
 
+function signSlotEgress(
+  hostId: BrowserPoolHostId,
+  slotId: BrowserPoolSlotId,
+  issuedAt: string,
+  privateKey: KeyObject,
+  nonce = Buffer.alloc(16, 1).toString("base64url"),
+) {
+  const payload = { v: 1 as const, hostId, slotId, issuedAt, nonce };
+  return {
+    ...payload,
+    signature: sign(null, browserPoolHostSlotEgressSigningBytes(payload), privateKey).toString(
+      "base64",
+    ),
+  };
+}
+
+function signRegistration(
+  cloudComputerId: CloudComputerId,
+  issuedAt: string,
+  keys: ReturnType<typeof makeHomeKeys>,
+  privateKey: KeyObject,
+) {
+  const document = {
+    purpose: "opensteer-managed-browser-pool-registration" as const,
+    documentVersion: 1 as const,
+    cloudComputerId,
+    issuedAt,
+    keys,
+  };
+  return {
+    document,
+    signature: sign(
+      null,
+      managedBrowserPoolRegistrationSigningBytes(document),
+      privateKey,
+    ).toString("base64url"),
+  };
+}
+
 integration("Browser pool Account service", () => {
-  const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 4 });
+  const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 6 });
   const subscriptions = new Map<string, StripeSubscription>();
   const stripe: StripeBilling = {
     checkout: vi.fn(async () => ({
@@ -201,9 +261,12 @@ integration("Browser pool Account service", () => {
     await database.deleteFrom("users").execute();
   });
 
-  async function buildHarness(slotsPerHost?: string) {
+  async function buildHarness(
+    slotsPerHost?: string,
+    db: Kysely<ControlPlaneDatabaseSchema> = database,
+  ) {
     const config = loadCloudComputerConfig(makeEnv(slotsPerHost))!;
-    const cloudStore = new CloudComputerStore(database, {
+    const cloudStore = new CloudComputerStore(db, {
       config,
       accountOrigin: publicOrigin,
       cipher,
@@ -212,11 +275,11 @@ integration("Browser pool Account service", () => {
       backupKeyVault: testBackupVault(),
       purgeBackupStep: async () => true,
     });
-    const auth = createControlPlaneAuth(database, {
+    const auth = createControlPlaneAuth(db, {
       authSecret,
       publicOrigin,
     });
-    const controlStore = new ControlPlaneStore(database, publicOrigin, {
+    const controlStore = new ControlPlaneStore(db, publicOrigin, {
       adoptionCompletionGrantIssuer: { issueGrant: vi.fn() } as never,
       adoptionOperationCipher: cipher as never,
       adoptionProofVerifier: { verify: vi.fn() } as never,
@@ -225,9 +288,9 @@ integration("Browser pool Account service", () => {
     const app = await createControlPlaneServer(
       {
         auth,
-        authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
+        authenticator: new ControlPlaneAuthenticator(auth, db, publicOrigin),
         connectLifecycle: new ConnectLifecycleService(
-          database,
+          db,
           { provision: vi.fn(), rotate: vi.fn(), revoke: vi.fn() } as never,
           { managedConnectDomain: "connect.example.test" },
         ),
@@ -253,12 +316,12 @@ integration("Browser pool Account service", () => {
       authorization: "Bearer provisioner-ok",
       [cloudComputerLeaseHeader]: leaseHolder,
     };
-    const acquireLease = async () => {
+    const acquireLease = async (poolConfigured = slotsPerHost !== undefined) => {
       const response = await app.inject({
         method: "POST",
         url: cloudComputerLeasePath,
         headers: { authorization: "Bearer provisioner-ok" },
-        payload: { holder: leaseHolder },
+        payload: { holder: leaseHolder, poolConfigured },
       });
       expect(response.statusCode).toBe(200);
     };
@@ -266,7 +329,7 @@ integration("Browser pool Account service", () => {
     const seenComputerIds = new Set<string>();
     const provisionComputer = async (n: number) => {
       const accountId = ControlPlaneAccountIdSchema.parse(`acct_${randomUUID()}`);
-      await database
+      await db
         .insertInto("users")
         .values({
           id: accountId,
@@ -309,7 +372,7 @@ integration("Browser pool Account service", () => {
         metadata: { account_id: accountId, request_id: requestId },
       });
       await cloudStore.checkOffer();
-      await database
+      await db
         .insertInto("cloudComputerCheckouts")
         .values({
           accountId,
@@ -358,7 +421,6 @@ integration("Browser pool Account service", () => {
       computer: CloudComputerDesired,
       accountId: ControlPlaneAccountId,
     ) => {
-      // Provisioner reports server so boot window opens.
       await app.inject({
         method: "POST",
         url: cloudComputerStatusPath(computer.id),
@@ -402,7 +464,6 @@ integration("Browser pool Account service", () => {
       });
       expect(completeRes.statusCode).toBe(200);
 
-      // Simulate claim pinning the deployment, authorityEnvelope (Home's Ed25519 key), and hostCredential.
       const hostCredential = createHostCredential();
       const envelope = makeDiscoveryEnvelope(
         `https://${computer.hostname}`,
@@ -410,7 +471,7 @@ integration("Browser pool Account service", () => {
         hostKey.privateKey,
         hostKey.spkiBase64Url,
       );
-      await database
+      await db
         .insertInto("deployments")
         .values({
           id: deploymentId as never,
@@ -433,7 +494,7 @@ integration("Browser pool Account service", () => {
           updatedAt: now,
         })
         .execute();
-      await database
+      await db
         .insertInto("deploymentCredentials")
         .values({
           deploymentId: deploymentId as never,
@@ -442,7 +503,7 @@ integration("Browser pool Account service", () => {
           rotatedAt: now,
         })
         .execute();
-      await database
+      await db
         .updateTable("cloudComputers")
         .set({ phase: "ready", bootstrapReceiptAt: now })
         .where("id", "=", computer.id)
@@ -451,18 +512,35 @@ integration("Browser pool Account service", () => {
       return { boot, hostKey, hostCredential, deploymentId };
     };
 
-    const enrolAndReadyHost = async (hostId: BrowserPoolHostId, ip: string) => {
-      const hostsRes = await app.inject({
-        method: "GET",
-        url: browserPoolHostsDesiredPath,
-        headers: leaseHeaders,
-      });
-      const host = BrowserPoolHostDesiredResponseSchema.parse(JSON.parse(hostsRes.body)).hosts.find(
-        (h) => h.id === hostId,
-      )!;
-      expect(host.bootstrapToken).toBeDefined();
+    const getDesiredHosts = async () =>
+      BrowserPoolHostDesiredResponseSchema.parse(
+        JSON.parse(
+          (
+            await app.inject({
+              method: "GET",
+              url: browserPoolHostsDesiredPath,
+              headers: leaseHeaders,
+            })
+          ).body,
+        ),
+      ).hosts;
 
-      // Report server + disk created so bootstrap expiry opens.
+    const getDesiredSlots = async () =>
+      BrowserPoolSlotDesiredResponseSchema.parse(
+        JSON.parse(
+          (
+            await app.inject({
+              method: "GET",
+              url: browserPoolSlotsDesiredPath,
+              headers: leaseHeaders,
+            })
+          ).body,
+        ),
+      ).slots;
+
+    const openHostBootWindow = async (hostId: BrowserPoolHostId, ip: string) => {
+      const host = (await getDesiredHosts()).find((h) => h.id === hostId)!;
+      expect(host.bootstrapToken).toBeDefined();
       const provRes = await app.inject({
         method: "POST",
         url: browserPoolHostStatusPath(host.id),
@@ -479,8 +557,11 @@ integration("Browser pool Account service", () => {
         },
       });
       expect(provRes.statusCode).toBe(200);
+      return host;
+    };
 
-      // Host fetches boot release + enrols once with its generated keys (W3).
+    const enrolAndReadyHost = async (hostId: BrowserPoolHostId, ip: string) => {
+      const host = await openHostBootWindow(hostId, ip);
       const bootRes = await app.inject({
         method: "POST",
         url: browserPoolHostBootPath(host.id),
@@ -508,19 +589,9 @@ integration("Browser pool Account service", () => {
         completed: true,
       });
 
-      // Re-fetch revision after boot-complete bumped it, then report ready.
-      const afterEnrol = BrowserPoolHostDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await app.inject({
-              method: "GET",
-              url: browserPoolHostsDesiredPath,
-              headers: leaseHeaders,
-            })
-          ).body,
-        ),
-      ).hosts.find((h) => h.id === host.id)!;
+      const afterEnrol = (await getDesiredHosts()).find((h) => h.id === host.id)!;
       expect(afterEnrol.enrolled).toBe(true);
+      expect(afterEnrol.everEnrolled).toBe(true);
       expect(afterEnrol.bootstrapToken).toBeUndefined();
 
       const readyRes = await app.inject({
@@ -542,7 +613,41 @@ integration("Browser pool Account service", () => {
       expect(CloudComputerReportResponseSchema.parse(JSON.parse(readyRes.body)).recorded).toBe(
         true,
       );
-      return { hostKey, relayKey, host: afterEnrol };
+      return { hostKey, relayKey, host: afterEnrol, bootstrapToken: host.bootstrapToken! };
+    };
+
+    const setupPooledHomeAndHost = async (ip = "10.40.0.10") => {
+      await acquireLease(true);
+      const { accountId, computer } = await provisionComputer(1);
+      const claimed = await bootAndClaimComputer(computer, accountId);
+      const hosts = await getDesiredHosts();
+      expect(hosts).toHaveLength(1);
+      const hostId = hosts[0]!.id;
+      const enrolled = await enrolAndReadyHost(hostId, ip);
+      const homeKeys = makeHomeKeys("tk-1");
+      const regRes = await app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: signRegistration(
+          computer.id,
+          now.toISOString(),
+          homeKeys,
+          claimed.hostKey.privateKey,
+        ),
+      });
+      expect(regRes.statusCode).toBe(200);
+      const desiredSlots = await getDesiredSlots();
+      expect(desiredSlots).toHaveLength(1);
+      return {
+        accountId,
+        computer,
+        claimed,
+        hostId,
+        enrolled,
+        homeKeys,
+        slot: desiredSlots[0]!,
+      };
     };
 
     return {
@@ -552,30 +657,77 @@ integration("Browser pool Account service", () => {
       acquireLease,
       provisionComputer,
       bootAndClaimComputer,
+      getDesiredHosts,
+      getDesiredSlots,
+      openHostBootWindow,
       enrolAndReadyHost,
+      setupPooledHomeAndHost,
     };
   }
 
-  it("keeps pooling completely off when OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST is unset (S8)", async () => {
-    const h = await buildHarness(undefined);
+  // --- Config & S8 (pooling unset) ---
+
+  it("refuses a pool configuration where slotsPerHost * profileMib exceeds usable durable disk capacity", () => {
+    expect(() =>
+      loadCloudComputerConfig({
+        ...makeEnv("250"),
+        OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB: "2048",
+        OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB: "500",
+      }),
+    ).toThrow(/exceed usable profile disk capacity/u);
+
+    const exact = loadCloudComputerConfig({
+      ...makeEnv("225"),
+      OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB: "2048",
+      OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB: "500",
+    });
+    expect(exact?.browserPool?.slotsPerHost).toBe(225);
+    expect(exact?.browserPool?.profileMib).toBe(2048);
+    expect(exact?.browserPool?.profileDiskSizeGb).toBe(500);
+  });
+
+  it("runs no pool SQL statement and wants no host when pooling is unset (S8)", async () => {
+    const executedSql: string[] = [];
+    const loggedPool = new Pool({
+      application_name: "opensteer-control-plane-sql-spy",
+      connectionString: url!,
+      max: 4,
+    });
+    const loggedDb = new Kysely<ControlPlaneDatabaseSchema>({
+      dialect: new PostgresDialect({ pool: loggedPool }),
+      plugins: [new CamelCasePlugin()],
+      log: (event) => {
+        if (event.level === "query") executedSql.push(event.query.sql);
+      },
+    });
+    const h = await buildHarness(undefined, loggedDb);
     try {
-      await h.acquireLease();
+      await h.acquireLease(false);
       const { accountId, computer } = await h.provisionComputer(1);
-      const { boot, hostCredential } = await h.bootAndClaimComputer(computer, accountId);
+      const { boot } = await h.bootAndClaimComputer(computer, accountId);
       expect(boot.browserPool).toBeUndefined();
 
-      const hosts = BrowserPoolHostDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolHostsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
+      expect(await h.getDesiredHosts()).toEqual([]);
+      expect(await h.getDesiredSlots()).toEqual([]);
+
+      await h.cloudStore.mutate(computer.id, "delete", accountId);
+
+      const poolStatements = executedSql.filter((statement) =>
+        /browser_pool|browser-pool/iu.test(statement),
       );
-      expect(hosts.hosts).toEqual([]);
+      expect(poolStatements).toEqual([]);
+    } finally {
+      await h.app.close();
+      await loggedDb.destroy();
+    }
+  });
+
+  it("returns 404 on both Home browser-pool routes for a non-pooled Cloud Computer", async () => {
+    const h = await buildHarness(undefined);
+    try {
+      await h.acquireLease(false);
+      const { accountId, computer } = await h.provisionComputer(1);
+      const { hostCredential, hostKey } = await h.bootAndClaimComputer(computer, accountId);
 
       const targetRes = await h.app.inject({
         method: "GET",
@@ -583,457 +735,1382 @@ integration("Browser pool Account service", () => {
         headers: { authorization: `Bearer ${hostCredential}` },
       });
       expect(targetRes.statusCode).toBe(404);
+
+      const regRes = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${hostCredential}` },
+        payload: signRegistration(
+          computer.id,
+          now.toISOString(),
+          makeHomeKeys(),
+          hostKey.privateKey,
+        ),
+      });
+      expect(regRes.statusCode).toBe(404);
     } finally {
       await h.app.close();
     }
   });
 
-  it("enforces W2 capacity/most-free placement, W3 enrolment, W4+S5 signed key registration, S4 egress pull, S6+S7 convergence, and W10 deletion", async () => {
+  // --- W2 placement, draining, concurrency, and T7 lock order ---
+
+  it("places slots onto the ready host with the most free slots and grows host count when full (W2)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease();
-      await h.cloudStore.addEgressEndpoint({
-        url: "https://egress-1.example.test:8443",
-        username: "u1",
-        password: "p1-secret-value",
-        publicAddress: "203.0.113.10",
-      });
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const host1Id = (await h.getDesiredHosts())[0]!.id;
+      await h.enrolAndReadyHost(host1Id, "10.40.0.10");
 
-      // 1. Provision first pooled Cloud Computer -> 1 pool host wanted (W2).
-      const c1 = await h.provisionComputer(1);
-      const claimed1 = await h.bootAndClaimComputer(c1.computer, c1.accountId);
-      expect(claimed1.boot.browserPool).toBe(true);
-      expect(claimed1.boot.egress).toBeUndefined();
+      await h.provisionComputer(2);
+      await h.provisionComputer(3);
+      const hosts = await h.getDesiredHosts();
+      expect(hosts).toHaveLength(2);
+      const host2Id = hosts.find((entry) => entry.id !== host1Id)!.id;
+      await h.enrolAndReadyHost(host2Id, "10.40.0.11");
 
-      // Plain unique constraint on computer_id in browser_pool_slots (S1).
-      await expect(
-        database
-          .insertInto("browserPoolSlots")
-          .values({
-            slotId: `bps_${randomUUID()}` as BrowserPoolSlotId,
-            computerId: c1.computer.id,
-            hostId: null,
-            term: 1,
-            appliedTerm: null,
-            appliedHostGeneration: null,
-            state: "active",
-            phase: "waiting_keys",
-            homeKey: null,
-            relayKey: null,
-            ticketKeyId: null,
-            ticketKeySpki: null,
-            keysRegisteredAt: null,
-            controlKey: null,
-            guestVcpus: 2,
-            guestMemoryMib: 2048,
-            profileMib: 2048,
-            pendingAgentWrites: "[]",
-            deletionRequestedAt: null,
-            slotErasedAt: null,
-            profileErasedAt: null,
-            credentialsErasedAt: null,
-            lastError: null,
-            createdAt: now,
-            updatedAt: now,
-            deletedAt: null,
-            tombstonedAt: null,
-          })
-          .execute(),
-      ).rejects.toThrow();
+      await h.getDesiredHosts();
+      const before = await database
+        .selectFrom("browserPoolSlots")
+        .select(["computerId", "hostId"])
+        .where("tombstonedAt", "is", null)
+        .execute();
+      const counts = new Map<string, number>();
+      for (const row of before) {
+        if (row.hostId) counts.set(row.hostId, (counts.get(row.hostId) ?? 0) + 1);
+      }
+      expect(counts.get(host1Id)).toBe(2);
+      expect(counts.get(host2Id)).toBe(1);
 
-      // Unregistered Home reads { status: "unregistered" }.
-      const unregRes = await h.app.inject({
-        method: "GET",
-        url: managedBrowserPoolTargetPath,
-        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-      });
-      expect(unregRes.statusCode).toBe(200);
-      expect(ManagedBrowserPoolTargetResponseSchema.parse(JSON.parse(unregRes.body))).toEqual({
-        status: "unregistered",
-      });
+      const c4 = await h.provisionComputer(4);
+      await h.getDesiredHosts();
+      const slot4 = await database
+        .selectFrom("browserPoolSlots")
+        .select(["hostId"])
+        .where("computerId", "=", c4.computer.id)
+        .executeTakeFirstOrThrow();
+      expect(slot4.hostId).toBe(host2Id);
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // S5: registration with wrong key signature or stale timestamp is refused even with valid bearer credential.
-      const slotKeys1 = {
-        homeKey: keyPairSpkiBase64().spki,
-        relayKey: keyPairSpkiBase64().spki,
-        ticketKey: { keyId: "tk-1", spki: keyPairSpkiBase64().spki },
-      };
-      const regDoc1 = {
-        purpose: "opensteer-managed-browser-pool-registration" as const,
-        documentVersion: 1 as const,
-        cloudComputerId: c1.computer.id,
-        issuedAt: now.toISOString(),
-        keys: slotKeys1,
-      };
-      const wrongKey = keyPairSpkiBase64();
-      const forgedRes = await h.app.inject({
-        method: "PUT",
-        url: managedBrowserPoolRegistrationPath,
-        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-        payload: {
-          document: regDoc1,
-          signature: sign(
-            null,
-            managedBrowserPoolRegistrationSigningBytes(regDoc1),
-            wrongKey.privateKey,
-          ).toString("base64url"),
-        },
-      });
-      expect(forgedRes.statusCode).toBe(401);
+  it("never places a new slot on a draining host", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const host1Id = (await h.getDesiredHosts())[0]!.id;
+      await h.enrolAndReadyHost(host1Id, "10.40.0.10");
+      await h.getDesiredHosts();
 
-      const staleDoc = { ...regDoc1, issuedAt: new Date(now.getTime() - 6 * 60_000).toISOString() };
-      const staleRes = await h.app.inject({
-        method: "PUT",
-        url: managedBrowserPoolRegistrationPath,
-        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-        payload: {
-          document: staleDoc,
-          signature: sign(
-            null,
-            managedBrowserPoolRegistrationSigningBytes(staleDoc),
-            claimed1.hostKey.privateKey,
-          ).toString("base64url"),
-        },
-      });
-      expect(staleRes.statusCode).toBe(401);
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-drain", host1Id]);
 
-      // Valid signed registration succeeds; while host isn't ready yet, returns { status: "preparing" } (W2).
-      const validSig1 = sign(
-        null,
-        managedBrowserPoolRegistrationSigningBytes(regDoc1),
-        claimed1.hostKey.privateKey,
-      ).toString("base64url");
-      const regRes = await h.app.inject({
-        method: "PUT",
-        url: managedBrowserPoolRegistrationPath,
-        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-        payload: { document: regDoc1, signature: validSig1 },
-      });
-      expect(regRes.statusCode).toBe(200);
-      expect(ManagedBrowserPoolTargetResponseSchema.parse(JSON.parse(regRes.body))).toEqual({
-        status: "preparing",
-      });
+      const c2 = await h.provisionComputer(2);
+      const hosts = await h.getDesiredHosts();
+      expect(hosts).toHaveLength(2);
+      const slot2 = await database
+        .selectFrom("browserPoolSlots")
+        .select(["hostId"])
+        .where("computerId", "=", c2.computer.id)
+        .executeTakeFirstOrThrow();
+      expect(slot2.hostId).toBeNull();
 
-      // 2. Host 1 appears in desired hosts, enrols (W3), and becomes ready.
-      const hosts1 = BrowserPoolHostDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolHostsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).hosts;
-      expect(hosts1).toHaveLength(1);
-      const host1Id = hosts1[0]!.id;
-      const host1BootToken = hosts1[0]!.bootstrapToken!;
+      const host2Id = hosts.find((entry) => entry.id !== host1Id)!.id;
+      await h.enrolAndReadyHost(host2Id, "10.40.0.11");
+      await h.getDesiredHosts();
+      const placed2 = await database
+        .selectFrom("browserPoolSlots")
+        .select(["hostId"])
+        .where("computerId", "=", c2.computer.id)
+        .executeTakeFirstOrThrow();
+      expect(placed2.hostId).toBe(host2Id);
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // Enrol and ready Host 1; test idempotent boot-complete replay and mismatch rejection.
-      const enrolled1 = await h.enrolAndReadyHost(host1Id, "10.40.0.10");
-      const replayEnrol = await h.app.inject({
+  it("serializes two Cloud Computers racing for the last free slot without oversubscribing a host", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const host1Id = (await h.getDesiredHosts())[0]!.id;
+      await h.enrolAndReadyHost(host1Id, "10.40.0.10");
+      await h.getDesiredHosts();
+
+      const c2 = await h.provisionComputer(2);
+      const c3 = await h.provisionComputer(3);
+      await Promise.all([
+        h.getDesiredHosts(),
+        h.getDesiredHosts(),
+        h.getDesiredSlots(),
+        h.getDesiredSlots(),
+      ]);
+
+      const slots = await database
+        .selectFrom("browserPoolSlots")
+        .select(["computerId", "hostId"])
+        .where("tombstonedAt", "is", null)
+        .execute();
+      const onHost1 = slots.filter((row) => row.hostId === host1Id);
+      const unplaced = slots.filter((row) => row.hostId === null);
+      expect(onHost1).toHaveLength(2);
+      expect(unplaced).toHaveLength(1);
+      expect([c2.computer.id, c3.computer.id]).toContain(unplaced[0]!.computerId);
+      expect(await h.getDesiredHosts()).toHaveLength(2);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("preserves declared lock order in #reconcileCapacity when syncing externally deleted Cloud Computers (T7)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, slot } = await h.setupPooledHomeAndHost();
+      // Simulate an external Cloud Computer deletion outside #refreshSubscription (e.g. org offboard).
+      await sql`
+        update cloud_computers set state = 'deleted', deleted_at = now() where id = ${computer.id}
+      `.execute(database);
+
+      // Under OPENSTEER_LOCK_ORDER_MODE=enforce this must sync the slot to deleting without
+      // ever locking browser_pool_slots before browser_pool_hosts.
+      await h.getDesiredHosts();
+      const updated = await database
+        .selectFrom("browserPoolSlots")
+        .select(["state", "phase"])
+        .where("slotId", "=", slot.slotId)
+        .executeTakeFirstOrThrow();
+      expect(updated).toEqual({ state: "deleting", phase: "deleting" });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- W3 enrolment token guards ---
+
+  it("refuses pool host enrolment when the bootstrap token belongs to another host", async () => {
+    const h = await buildHarness("1");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      await h.provisionComputer(2);
+      const hosts = await h.getDesiredHosts();
+      expect(hosts).toHaveLength(2);
+      const hostA = await h.openHostBootWindow(hosts[0]!.id, "10.40.0.10");
+      const hostB = await h.openHostBootWindow(hosts[1]!.id, "10.40.0.11");
+
+      const res = await h.app.inject({
         method: "POST",
-        url: browserPoolHostBootCompletePath(host1Id),
+        url: browserPoolHostBootCompletePath(hostB.id),
         payload: {
-          generation: 1,
-          bootstrapToken: host1BootToken,
-          hostKey: enrolled1.hostKey.spki,
-          relayKey: enrolled1.relayKey.spki,
-        },
-      });
-      expect(replayEnrol.statusCode).toBe(200);
-      const badReplay = await h.app.inject({
-        method: "POST",
-        url: browserPoolHostBootCompletePath(host1Id),
-        payload: {
-          generation: 1,
-          bootstrapToken: host1BootToken,
+          generation: hostB.generation,
+          bootstrapToken: hostA.bootstrapToken,
           hostKey: keyPairSpkiBase64().spki,
-          relayKey: enrolled1.relayKey.spki,
+          relayKey: keyPairSpkiBase64().spki,
         },
       });
-      expect(badReplay.statusCode).toBe(401);
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // 3. Slot 1 is now placed on Host 1 and served in desiredSlots; provisioner journals + reports ready.
-      const slots1 = BrowserPoolSlotDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolSlotsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).slots;
-      expect(slots1).toHaveLength(1);
-      const slot1 = slots1[0]!;
-      expect(slot1.hostId).toBe(host1Id);
-      expect(slot1.term).toBe(1);
-      expect(slot1.keys).toEqual(slotKeys1);
+  it("refuses pool host enrolment when the generation does not match the host", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const hostId = (await h.getDesiredHosts())[0]!.id;
+      const host = await h.openHostBootWindow(hostId, "10.40.0.10");
 
-      const writeToken = randomUUID();
-      const beginRes = await h.app.inject({
+      const wrongGen = await h.app.inject({
         method: "POST",
-        url: browserPoolSlotCheckPath(slot1.slotId),
-        headers: h.leaseHeaders,
+        url: browserPoolHostBootCompletePath(host.id),
         payload: {
-          operation: "begin-agent-write",
-          revision: slot1.revision,
-          write: { token: writeToken, kind: "create", term: 1, hostId: host1Id },
+          generation: host.generation + 1,
+          bootstrapToken: host.bootstrapToken,
+          hostKey: keyPairSpkiBase64().spki,
+          relayKey: keyPairSpkiBase64().spki,
         },
       });
-      expect(CloudComputerCheckResponseSchema.parse(JSON.parse(beginRes.body)).allowed).toBe(true);
-      await h.app.inject({
-        method: "POST",
-        url: browserPoolSlotCheckPath(slot1.slotId),
-        headers: h.leaseHeaders,
-        payload: { operation: "finish-agent-write", token: writeToken },
-      });
+      expect(wrongGen.statusCode).toBe(401);
 
-      const controlKey1 = keyPairSpkiBase64().spki;
-      const reportSlotRes = await h.app.inject({
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", host.id]);
+      await h.openHostBootWindow(host.id, "10.40.0.12");
+      const staleGen = await h.app.inject({
         method: "POST",
-        url: browserPoolSlotStatusPath(slot1.slotId),
-        headers: h.leaseHeaders,
+        url: browserPoolHostBootCompletePath(host.id),
         payload: {
-          slotId: slot1.slotId,
-          revision: slot1.revision,
-          term: 1,
-          phase: "ready",
-          controlKey: controlKey1,
-          slotErased: false,
-          profileErased: false,
-          credentialsErased: false,
-          lastError: null,
+          generation: 1,
+          bootstrapToken: host.bootstrapToken,
+          hostKey: keyPairSpkiBase64().spki,
+          relayKey: keyPairSpkiBase64().spki,
         },
       });
-      expect(reportSlotRes.statusCode).toBe(200);
+      expect(staleGen.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // Home reads its ready target (W4).
-      const readyTarget = ManagedBrowserPoolTargetResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: managedBrowserPoolTargetPath,
-              headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-            })
-          ).body,
-        ),
+  it("refuses pool host enrolment when the bootstrap token has expired", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const hostId = (await h.getDesiredHosts())[0]!.id;
+      const host = await h.openHostBootWindow(hostId, "10.40.0.10");
+
+      now = new Date(now.getTime() + 21 * 60_000);
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostBootCompletePath(host.id),
+        payload: {
+          generation: host.generation,
+          bootstrapToken: host.bootstrapToken,
+          hostKey: keyPairSpkiBase64().spki,
+          relayKey: keyPairSpkiBase64().spki,
+        },
+      });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("makes pool host enrolment idempotent when replayed with the same keys", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const hostId = (await h.getDesiredHosts())[0]!.id;
+      const { host, hostKey, relayKey, bootstrapToken } = await h.enrolAndReadyHost(
+        hostId,
+        "10.40.0.10",
       );
-      expect(readyTarget).toEqual({
-        status: "ready",
-        target: {
-          kind: "managed-pool",
-          agentUrl: "http://10.40.0.10:7310",
-          slotId: slot1.slotId,
-          term: 1,
-          agentKey: controlKey1,
-          hostKey: enrolled1.hostKey.spki,
-          relay: { host: "10.40.0.10", port: 7312, relayHostKey: enrolled1.relayKey.spki },
-        },
-      });
 
-      // 4. S4: Pool host pulls slot 1's exclusive egress credentials signed by enrolled host key.
-      const egressNonce = "AAAAAAAAAAAAAAAAAAAAAA";
-      const egressFields = {
-        hostId: host1Id,
-        slotId: slot1.slotId,
-        issuedAt: now.toISOString(),
-        nonce: egressNonce,
-      };
-      const egressSig = sign(
-        null,
-        browserPoolHostSlotEgressSigningBytes(egressFields),
-        enrolled1.hostKey.privateKey,
-      ).toString("base64");
-      const egressPayload = { v: 1, ...egressFields, signature: egressSig };
-      const egressRes = await h.app.inject({
+      const replay = await h.app.inject({
         method: "POST",
-        url: browserPoolHostSlotEgressPath(host1Id),
-        payload: egressPayload,
-      });
-      expect(egressRes.statusCode).toBe(200);
-      expect(CloudComputerEgressResponseSchema.parse(JSON.parse(egressRes.body))).toEqual({
-        egress: {
-          url: "https://egress-1.example.test:8443",
-          username: "u1",
-          password: "p1-secret-value",
-        },
-      });
-
-      // S4: uniform refusal across failure modes (stale timestamp, wrong key, unknown slot).
-      const staleFields = {
-        ...egressFields,
-        issuedAt: new Date(now.getTime() - 6 * 60_000).toISOString(),
-      };
-      const staleEgressRes = await h.app.inject({
-        method: "POST",
-        url: browserPoolHostSlotEgressPath(host1Id),
+        url: browserPoolHostBootCompletePath(host.id),
         payload: {
-          v: 1,
-          ...staleFields,
-          signature: sign(
-            null,
-            browserPoolHostSlotEgressSigningBytes(staleFields),
-            enrolled1.hostKey.privateKey,
-          ).toString("base64"),
+          generation: host.generation,
+          bootstrapToken,
+          hostKey: hostKey.spki,
+          relayKey: relayKey.spki,
         },
       });
-      const unknownSlotFields = {
-        ...egressFields,
-        slotId: `bps_${randomUUID()}` as BrowserPoolSlotId,
-      };
-      const unknownSlotRes = await h.app.inject({
+      expect(replay.statusCode).toBe(200);
+      expect(BrowserPoolHostBootCompleteResponseSchema.parse(JSON.parse(replay.body))).toEqual({
+        completed: true,
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses pool host enrolment when replayed with different keys (single-use)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const hostId = (await h.getDesiredHosts())[0]!.id;
+      const { host, hostKey, bootstrapToken } = await h.enrolAndReadyHost(hostId, "10.40.0.10");
+
+      const replayDifferent = await h.app.inject({
         method: "POST",
-        url: browserPoolHostSlotEgressPath(host1Id),
+        url: browserPoolHostBootCompletePath(host.id),
         payload: {
-          v: 1,
-          ...unknownSlotFields,
-          signature: sign(
-            null,
-            browserPoolHostSlotEgressSigningBytes(unknownSlotFields),
-            enrolled1.hostKey.privateKey,
-          ).toString("base64"),
+          generation: host.generation,
+          bootstrapToken,
+          hostKey: keyPairSpkiBase64().spki,
+          relayKey: keyPairSpkiBase64().spki,
         },
       });
-      expect(staleEgressRes.statusCode).toBe(401);
-      expect(unknownSlotRes.statusCode).toBe(401);
-      expect(JSON.parse(staleEgressRes.body)).toEqual(JSON.parse(unknownSlotRes.body));
+      expect(replayDifferent.statusCode).toBe(401);
 
-      // 5. W5: Rotating keys raises term and moves status back to preparing until applied.
-      const slotKeys2 = {
-        homeKey: keyPairSpkiBase64().spki,
-        relayKey: keyPairSpkiBase64().spki,
-        ticketKey: { keyId: "tk-2", spki: keyPairSpkiBase64().spki },
-      };
-      const regDoc2 = { ...regDoc1, keys: slotKeys2 };
-      const rotRes = await h.app.inject({
-        method: "PUT",
-        url: managedBrowserPoolRegistrationPath,
-        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-        payload: {
-          document: regDoc2,
-          signature: sign(
-            null,
-            managedBrowserPoolRegistrationSigningBytes(regDoc2),
-            claimed1.hostKey.privateKey,
-          ).toString("base64url"),
-        },
-      });
-      expect(ManagedBrowserPoolTargetResponseSchema.parse(JSON.parse(rotRes.body))).toEqual({
-        status: "preparing",
-      });
-      const updatedSlot = BrowserPoolSlotDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolSlotsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).slots[0]!;
-      expect(updatedSlot.term).toBe(2);
-      expect(updatedSlot.phase).toBe("updating_keys");
+      const row = await database
+        .selectFrom("browserPoolHosts")
+        .select(["hostPublicKey"])
+        .where("id", "=", hostId)
+        .executeTakeFirstOrThrow();
+      expect(row.hostPublicKey).toBe(hostKey.spki);
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // S6: bump-term raises term monotonically from 2 to 3.
-      const bumpRes = await h.app.inject({
-        method: "POST",
-        url: browserPoolSlotBumpTermPath(slot1.slotId),
-        headers: h.leaseHeaders,
-        payload: { revision: updatedSlot.revision, expectedTerm: 2 },
-      });
-      expect(bumpRes.statusCode).toBe(200);
-      const bumped = BrowserPoolSlotBumpTermResponseSchema.parse(JSON.parse(bumpRes.body));
-      expect(bumped).toMatchObject({ bumped: true, term: 3 });
+  // --- T8 unenrolled host auto-replacement ---
 
-      await h.app.inject({
-        method: "POST",
-        url: browserPoolSlotStatusPath(slot1.slotId),
-        headers: h.leaseHeaders,
-        payload: {
-          slotId: slot1.slotId,
-          revision: bumped.revision!,
-          term: 3,
-          phase: "ready",
-          controlKey: controlKey1,
-          slotErased: false,
-          profileErased: false,
-          credentialsErased: false,
-          lastError: null,
-        },
-      });
+  it("allows replacing an unenrolled host up to twice and refuses auto-replacement once enrolled or after two retries (T8)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      const hostId = (await h.getDesiredHosts())[0]!.id;
 
-      // 6. S6 + S7 + W1: Replacing host 1 bumps host generation, keeps profile disk, refuses old host key on egress,
-      // puts target back in preparing until reconciler bumps slot term and re-creates on gen 2, then serves new host keys/IP.
-      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", host1Id]);
-      // Old host key is now refused on S4 egress pull while replacement is not enrolled!
-      const oldHostEgress = await h.app.inject({
-        method: "POST",
-        url: browserPoolHostSlotEgressPath(host1Id),
-        payload: egressPayload,
-      });
-      expect(oldHostEgress.statusCode).toBe(401);
-
-      const enrolled2 = await h.enrolAndReadyHost(host1Id, "10.40.0.20");
-      expect(enrolled2.host.generation).toBe(2);
-      expect(enrolled2.host.profileDiskName).toBe(enrolled1.host.profileDiskName);
-      expect(enrolled2.host.profileDiskRef).toBe(enrolled1.host.profileDiskRef);
-
-      // Before slot is re-created on generation 2 (S6 settled), Home reads preparing.
-      const preparingAfterReplace = ManagedBrowserPoolTargetResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: managedBrowserPoolTargetPath,
-              headers: { authorization: `Bearer ${claimed1.hostCredential}` },
-            })
-          ).body,
-        ),
-      );
-      expect(preparingAfterReplace).toEqual({ status: "preparing" });
-
-      // Reconciler sees slot absent on new host gen 2, bumps term (3 -> 4), creates slot, reports ready.
-      const slotAfterReplace = BrowserPoolSlotDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolSlotsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).slots[0]!;
-      expect(slotAfterReplace.hostGeneration).toBe(2);
-      expect(slotAfterReplace.appliedHostGeneration).toBe(1);
-      const bumpAfterReplace = BrowserPoolSlotBumpTermResponseSchema.parse(
+      // Retry 1: gen 1 -> gen 2.
+      let host = (await h.getDesiredHosts())[0]!;
+      const r1 = BrowserPoolHostReplaceUnreadyResponseSchema.parse(
         JSON.parse(
           (
             await h.app.inject({
               method: "POST",
-              url: browserPoolSlotBumpTermPath(slot1.slotId),
+              url: browserPoolHostReplaceUnreadyPath(hostId),
               headers: h.leaseHeaders,
-              payload: { revision: slotAfterReplace.revision, expectedTerm: 3 },
+              payload: { revision: host.revision, generation: host.generation },
             })
           ).body,
         ),
       );
-      expect(bumpAfterReplace).toMatchObject({ bumped: true, term: 4 });
-      const controlKey2 = keyPairSpkiBase64().spki;
-      const readyGen2Res = await h.app.inject({
+      expect(r1).toMatchObject({ replaced: true, generation: 2 });
+
+      // Retry 2: gen 2 -> gen 3.
+      host = (await h.getDesiredHosts())[0]!;
+      const r2 = BrowserPoolHostReplaceUnreadyResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolHostReplaceUnreadyPath(hostId),
+              headers: h.leaseHeaders,
+              payload: { revision: host.revision, generation: host.generation },
+            })
+          ).body,
+        ),
+      );
+      expect(r2).toMatchObject({ replaced: true, generation: 3 });
+
+      // Retry 3: cap of 2 reached -> refused.
+      host = (await h.getDesiredHosts())[0]!;
+      const r3 = BrowserPoolHostReplaceUnreadyResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolHostReplaceUnreadyPath(hostId),
+              headers: h.leaseHeaders,
+              payload: { revision: host.revision, generation: host.generation },
+            })
+          ).body,
+        ),
+      );
+      expect(r3).toEqual({ replaced: false });
+
+      // An enrolled host can NEVER be auto-replaced even if autoReplaceCount === 0.
+      await h.enrolAndReadyHost(hostId, "10.40.0.10");
+      await sql`
+        update browser_pool_hosts set auto_replace_count = 0 where id = ${hostId}
+      `.execute(database);
+      host = (await h.getDesiredHosts())[0]!;
+      const enrolledAttempt = BrowserPoolHostReplaceUnreadyResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolHostReplaceUnreadyPath(hostId),
+              headers: h.leaseHeaders,
+              payload: { revision: host.revision, generation: host.generation },
+            })
+          ).body,
+        ),
+      );
+      expect(enrolledAttempt).toEqual({ replaced: false });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- S4 + T9 slot-egress pull guards ---
+
+  it("refuses slot-egress for another host's slot with the uniform refusal", async () => {
+    const h = await buildHarness("1");
+    try {
+      await h.acquireLease(true);
+      await h.provisionComputer(1);
+      await h.provisionComputer(2);
+      const hosts = await h.getDesiredHosts();
+      const host1 = await h.enrolAndReadyHost(hosts[0]!.id, "10.40.0.10");
+      await h.enrolAndReadyHost(hosts[1]!.id, "10.40.0.11");
+      await h.getDesiredHosts();
+      const slots = await database
+        .selectFrom("browserPoolSlots")
+        .select(["slotId", "hostId"])
+        .execute();
+      const slotOnHost2 = slots.find((s) => s.hostId === hosts[1]!.id)!;
+
+      const res = await h.app.inject({
         method: "POST",
-        url: browserPoolSlotStatusPath(slot1.slotId),
+        url: browserPoolHostSlotEgressPath(hosts[0]!.id),
+        payload: signSlotEgress(
+          hosts[0]!.id,
+          slotOnHost2.slotId,
+          now.toISOString(),
+          host1.hostKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses slot-egress for an unenrolled host with the uniform refusal", async () => {
+    const h = await buildHarness("2");
+    try {
+      // A host with a placed slot whose replacement has not enrolled yet (enrolledAt/hostPublicKey are null).
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses slot-egress signed with an old generation's host key with the uniform refusal", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      const oldGen1Key = enrolled.hostKey.privateKey;
+
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+      await h.enrolAndReadyHost(hostId, "10.40.0.12");
+
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(hostId, slot.slotId, now.toISOString(), oldGen1Key),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses slot-egress outside the five-minute timestamp window with the uniform refusal", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      const staleTs = new Date(now.getTime() - 6 * 60_000).toISOString();
+
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(hostId, slot.slotId, staleTs, enrolled.hostKey.privateKey),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses slot-egress for a deleting Cloud Computer with the uniform refusal", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { accountId, computer, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      await h.cloudStore.mutate(computer.id, "delete", accountId);
+
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses slot-egress for a suspended Cloud Computer or a deleting slot with the uniform refusal", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      await h.cloudStore.mutate(computer.id, "operator-suspend", undefined, "Abuse investigation");
+
+      const suspendedRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+        ),
+      });
+      expect(suspendedRes.statusCode).toBe(401);
+      expect(JSON.parse(suspendedRes.body)).toEqual(uniformEgressRefusal);
+
+      // Unsuspend computer, but mark slot deleting -> still refused identically.
+      await h.cloudStore.mutate(computer.id, "operator-unsuspend");
+      await database
+        .updateTable("browserPoolSlots")
+        .set({ state: "deleting", phase: "deleting" })
+        .where("slotId", "=", slot.slotId)
+        .execute();
+      const deletingSlotRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 4).toString("base64url"),
+        ),
+      });
+      expect(deletingSlotRes.statusCode).toBe(401);
+      expect(JSON.parse(deletingSlotRes.body)).toEqual(uniformEgressRefusal);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("returns exact {} when no egress endpoint is assigned, exact {egress} when available, and hides egress password from the pooled Home (S4+T9)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, claimed, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+
+      const emptyRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+        ),
+      });
+      expect(emptyRes.statusCode).toBe(200);
+      const emptyBody = JSON.parse(emptyRes.body) as Record<string, unknown>;
+      expect(Object.keys(emptyBody)).toEqual([]);
+      expect(CloudComputerEgressResponseSchema.parse(emptyBody)).toEqual({});
+
+      await h.cloudStore.addEgressEndpoint({
+        url: "https://egress.example.test:8443",
+        username: "egress-user",
+        password: "egress-password",
+        publicAddress: "198.51.100.10",
+      });
+      const assignedRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 2).toString("base64url"),
+        ),
+      });
+      expect(assignedRes.statusCode).toBe(200);
+      const assignedBody = JSON.parse(assignedRes.body) as Record<string, unknown>;
+      expect(Object.keys(assignedBody)).toEqual(["egress"]);
+      expect(CloudComputerEgressResponseSchema.parse(assignedBody)).toEqual({
+        egress: {
+          url: "https://egress.example.test:8443",
+          username: "egress-user",
+          password: "egress-password",
+        },
+      });
+
+      // T9: The pooled Cloud Computer's own Home must NOT receive the egress password on GET /egress.
+      const basicAuth =
+        "Basic " +
+        Buffer.from(
+          `${claimed.boot.managedHome!.oidc.clientId}:${claimed.boot.managedHome!.oidc.clientSecret}`,
+        ).toString("base64");
+      const homeEgressRes = await h.app.inject({
+        method: "GET",
+        url: `/v1/cloud-computers/${encodeURIComponent(computer.id)}/egress`,
+        headers: { authorization: basicAuth },
+      });
+      expect(homeEgressRes.statusCode).toBe(200);
+      expect(JSON.parse(homeEgressRes.body)).toEqual({});
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("rate-limits slot-egress per host and slot so one host can fetch egress for many slots at boot and cold-start a slot repeatedly while refusing a flood (T9)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+
+      // 35 distinct slot IDs on the same host within the same minute must NOT trigger 429.
+      for (let i = 0; i < 35; i++) {
+        const fakeSlot = `bps_${randomUUID()}` as BrowserPoolSlotId;
+        const res = await h.app.inject({
+          method: "POST",
+          url: browserPoolHostSlotEgressPath(hostId),
+          payload: signSlotEgress(
+            hostId,
+            fakeSlot,
+            now.toISOString(),
+            enrolled.hostKey.privateKey,
+            Buffer.alloc(16, i + 1).toString("base64url"),
+          ),
+        });
+        // Refused as unknown slot (401), never 429 rate_limited.
+        expect(res.statusCode).toBe(401);
+      }
+
+      // Cold-starting the same (hostId, slotId) up to the 30/min limit all succeed (200)...
+      for (let i = 0; i < 30; i++) {
+        const res = await h.app.inject({
+          method: "POST",
+          url: browserPoolHostSlotEgressPath(hostId),
+          payload: signSlotEgress(
+            hostId,
+            slot.slotId,
+            now.toISOString(),
+            enrolled.hostKey.privateKey,
+            Buffer.alloc(16, i + 40).toString("base64url"),
+          ),
+        });
+        expect(res.statusCode).toBe(200);
+      }
+      // ...and a 31st request in the same minute is refused as a flood (429).
+      const flood = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 99).toString("base64url"),
+        ),
+      });
+      expect(flood.statusCode).toBe(429);
+      expect(flood.headers["retry-after"]).toBe("60");
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps repeated cold-start slot-egress calls idempotent with no second assignment, reflects reassignment, and answers {} only when unassigned", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      const ep1Id = await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-one.example.test:8443",
+        username: "user-one",
+        password: "password-one",
+        publicAddress: "198.51.100.11",
+      });
+      const ep2Id = await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-two.example.test:8443",
+        username: "user-two",
+        password: "password-two",
+        publicAddress: "198.51.100.12",
+      });
+
+      const first = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 1).toString("base64url"),
+        ),
+      });
+      expect(first.statusCode).toBe(200);
+      const firstBody = CloudComputerEgressResponseSchema.parse(JSON.parse(first.body));
+      expect(firstBody.egress).toBeDefined();
+      expect(CloudComputerEgressSchema.parse(firstBody.egress)).toEqual(firstBody.egress);
+
+      // Second and third cold-start calls return the exact same credentials and do NOT assign the second free endpoint.
+      for (let i = 2; i <= 3; i++) {
+        const repeat = await h.app.inject({
+          method: "POST",
+          url: browserPoolHostSlotEgressPath(hostId),
+          payload: signSlotEgress(
+            hostId,
+            slot.slotId,
+            now.toISOString(),
+            enrolled.hostKey.privateKey,
+            Buffer.alloc(16, i).toString("base64url"),
+          ),
+        });
+        expect(repeat.statusCode).toBe(200);
+        expect(JSON.parse(repeat.body)).toEqual(firstBody);
+      }
+
+      const endpointsAfterRepeats = await database
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select(["id", "computerId"])
+        .where("id", "in", [ep1Id, ep2Id])
+        .execute();
+      const assignedRows = endpointsAfterRepeats.filter((row) => row.computerId === computer.id);
+      const freeRows = endpointsAfterRepeats.filter((row) => row.computerId === null);
+      expect(assignedRows).toHaveLength(1);
+      expect(freeRows).toHaveLength(1);
+
+      // Reassigning the endpoint takes effect on the next cold start.
+      const originalId = assignedRows[0]!.id;
+      const replacementId = freeRows[0]!.id;
+      await database
+        .updateTable("cloudComputerEgressEndpoints")
+        .set({ computerId: null, needsRotation: true })
+        .where("id", "=", originalId)
+        .execute();
+      const reassigned = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 4).toString("base64url"),
+        ),
+      });
+      expect(reassigned.statusCode).toBe(200);
+      const reassignedBody = CloudComputerEgressResponseSchema.parse(JSON.parse(reassigned.body));
+      expect(reassignedBody.egress?.url).not.toBe(firstBody.egress?.url);
+
+      // When no endpoint is assigned and none is free, the route answers exact {}.
+      await database
+        .updateTable("cloudComputerEgressEndpoints")
+        .set({ computerId: null, needsRotation: true })
+        .where("id", "=", replacementId)
+        .execute();
+      const unassigned = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+          Buffer.alloc(16, 5).toString("base64url"),
+        ),
+      });
+      expect(unassigned.statusCode).toBe(200);
+      expect(JSON.parse(unassigned.body)).toEqual({});
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("rejects invalid egress endpoints on add (port 0, whitespace-only values, over-long address) and guarantees slot-egress answers pass CloudComputerEgressSchema", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: "https://egress.example.test:0",
+          username: "user",
+          password: "secret-password",
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: "https://egress.example.test:8443",
+          username: "   ",
+          password: "secret-password",
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: "https://egress.example.test:8443",
+          username: "user",
+          password: "   	  ",
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+
+      await expect(
+        h.cloudStore.addEgressEndpoint({
+          url: `https://${"a".repeat(2050)}.example.test:8443`,
+          username: "user",
+          password: "secret-password",
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+
+      await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-valid.example.test:8443/",
+        username: "valid-user",
+        password: "valid-password",
+        publicAddress: "198.51.100.19",
+      });
+      const res = await h.app.inject({
+        method: "POST",
+        url: browserPoolHostSlotEgressPath(hostId),
+        payload: signSlotEgress(
+          hostId,
+          slot.slotId,
+          now.toISOString(),
+          enrolled.hostKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(200);
+      const parsed = CloudComputerEgressResponseSchema.parse(JSON.parse(res.body));
+      expect(CloudComputerEgressSchema.parse(parsed.egress)).toEqual({
+        url: "https://egress-valid.example.test:8443",
+        username: "valid-user",
+        password: "valid-password",
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- W4 + S5 + T4 Home key registration guards ---
+
+  it("refuses Home key registration without a signature", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      const { accountId, computer } = await h.provisionComputer(1);
+      const { hostCredential } = await h.bootAndClaimComputer(computer, accountId);
+
+      const res = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${hostCredential}` },
+        payload: {
+          document: {
+            purpose: "opensteer-managed-browser-pool-registration",
+            documentVersion: 1,
+            cloudComputerId: computer.id,
+            issuedAt: now.toISOString(),
+            keys: makeHomeKeys(),
+          },
+        },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses Home key registration signed by another key than the Home's pinned key", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      const { accountId, computer } = await h.provisionComputer(1);
+      const { hostCredential } = await h.bootAndClaimComputer(computer, accountId);
+      const attackerKey = keyPairSpkiBase64();
+
+      const res = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${hostCredential}` },
+        payload: signRegistration(
+          computer.id,
+          now.toISOString(),
+          makeHomeKeys(),
+          attackerKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses Home key registration naming another Cloud Computer", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      const c1 = await h.provisionComputer(1);
+      const c2 = await h.provisionComputer(2);
+      const claimed1 = await h.bootAndClaimComputer(c1.computer, c1.accountId);
+
+      const res = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed1.hostCredential}` },
+        payload: signRegistration(
+          c2.computer.id,
+          now.toISOString(),
+          makeHomeKeys(),
+          claimed1.hostKey.privateKey,
+        ),
+      });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses Home key registration older than five minutes", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      const { accountId, computer } = await h.provisionComputer(1);
+      const { hostCredential, hostKey } = await h.bootAndClaimComputer(computer, accountId);
+      const expiredTs = new Date(now.getTime() - 6 * 60_000).toISOString();
+
+      const res = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${hostCredential}` },
+        payload: signRegistration(computer.id, expiredTs, makeHomeKeys(), hostKey.privateKey),
+      });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps Home key registration idempotent on replay within five minutes without bumping term", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, claimed, homeKeys, slot } = await h.setupPooledHomeAndHost();
+      const firstIssuedAt = now.toISOString();
+      expect(slot.term).toBe(1);
+
+      // Byte-identical replay 60s later -> idempotent, no term bump.
+      now = new Date(now.getTime() + 60_000);
+      const exactReplay = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: signRegistration(computer.id, firstIssuedAt, homeKeys, claimed.hostKey.privateKey),
+      });
+      expect(exactReplay.statusCode).toBe(200);
+      expect((await h.getDesiredSlots())[0]!.term).toBe(1);
+
+      // Newer timestamp with identical keys -> still idempotent, no term bump.
+      const newerReplay = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: signRegistration(
+          computer.id,
+          now.toISOString(),
+          homeKeys,
+          claimed.hostKey.privateKey,
+        ),
+      });
+      expect(newerReplay.statusCode).toBe(200);
+      expect((await h.getDesiredSlots())[0]!.term).toBe(1);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses an older or same-timestamp non-identical Home key registration to prevent replay downgrade (T4)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, claimed, homeKeys: keysA } = await h.setupPooledHomeAndHost();
+      const tsA = now.toISOString();
+      const docA = signRegistration(computer.id, tsA, keysA, claimed.hostKey.privateKey);
+
+      // Register newer keys B at tsB = tsA + 10s -> succeeds and raises term to 2.
+      now = new Date(now.getTime() + 10_000);
+      const tsB = now.toISOString();
+      const keysB = makeHomeKeys("tk-2");
+      const docB = signRegistration(computer.id, tsB, keysB, claimed.hostKey.privateKey);
+      const rotRes = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: docB,
+      });
+      expect(rotRes.statusCode).toBe(200);
+      expect((await h.getDesiredSlots())[0]!.term).toBe(2);
+
+      // Replaying older signed docA (still inside 5-minute window!) must be refused (401),
+      // leaving keysB in place and term at 2.
+      const replayOld = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: docA,
+      });
+      expect(replayOld.statusCode).toBe(401);
+      const slotAfterOld = (await h.getDesiredSlots())[0]!;
+      expect(slotAfterOld.term).toBe(2);
+      expect(slotAfterOld.keys?.homeKey).toBe(keysB.homeKey);
+
+      // Different keys at the exact same timestamp tsB must also be refused (401).
+      const keysC = makeHomeKeys("tk-3");
+      const sameTsDifferent = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: signRegistration(computer.id, tsB, keysC, claimed.hostKey.privateKey),
+      });
+      expect(sameTsDifferent.statusCode).toBe(401);
+      expect((await h.getDesiredSlots())[0]!.term).toBe(2);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("raises slot term once when Home registers changed keys and returns preparing until applied", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer, claimed, slot } = await h.setupPooledHomeAndHost();
+      const controlKey1 = keyPairSpkiBase64().spki;
+      const ready1 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
         headers: h.leaseHeaders,
         payload: {
-          slotId: slot1.slotId,
-          revision: bumpAfterReplace.revision!,
-          term: 4,
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: 1,
+          phase: "ready",
+          controlKey: controlKey1,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(ready1.statusCode).toBe(200);
+
+      now = new Date(now.getTime() + 5_000);
+      const rotated = makeHomeKeys("tk-2");
+      const rotRes = await h.app.inject({
+        method: "PUT",
+        url: managedBrowserPoolRegistrationPath,
+        headers: { authorization: `Bearer ${claimed.hostCredential}` },
+        payload: signRegistration(
+          computer.id,
+          now.toISOString(),
+          rotated,
+          claimed.hostKey.privateKey,
+        ),
+      });
+      expect(rotRes.statusCode).toBe(200);
+      expect(ManagedBrowserPoolTargetResponseSchema.parse(JSON.parse(rotRes.body))).toEqual({
+        status: "preparing",
+      });
+
+      const afterRot = (await h.getDesiredSlots())[0]!;
+      expect(afterRot.term).toBe(2);
+
+      const ready2 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: afterRot.revision,
+          term: 2,
+          phase: "ready",
+          controlKey: controlKey1,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(ready2.body)).recorded).toBe(true);
+      const target = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(target.status).toBe("ready");
+      expect(target.target?.term).toBe(2);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- Monotonic term & bump-term compare-and-set ---
+
+  it("never lowers or skips a slot term across bump-term, check-slot, and status reports", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { slot } = await h.setupPooledHomeAndHost();
+
+      // Wrong expectedTerm (skipped) refused.
+      expect(
+        BrowserPoolSlotBumpTermResponseSchema.parse(
+          JSON.parse(
+            (
+              await h.app.inject({
+                method: "POST",
+                url: browserPoolSlotBumpTermPath(slot.slotId),
+                headers: h.leaseHeaders,
+                payload: { revision: slot.revision, expectedTerm: 2 },
+              })
+            ).body,
+          ),
+        ),
+      ).toEqual({ bumped: false });
+
+      // Stale revision refused.
+      expect(
+        BrowserPoolSlotBumpTermResponseSchema.parse(
+          JSON.parse(
+            (
+              await h.app.inject({
+                method: "POST",
+                url: browserPoolSlotBumpTermPath(slot.slotId),
+                headers: h.leaseHeaders,
+                payload: { revision: slot.revision + 99, expectedTerm: 1 },
+              })
+            ).body,
+          ),
+        ),
+      ).toEqual({ bumped: false });
+
+      // Pending agent write blocks bump-term.
+      const pendingToken = randomUUID();
+      await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotCheckPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          operation: "begin-agent-write",
+          revision: slot.revision,
+          write: { token: pendingToken, kind: "create", term: 1, hostId: slot.hostId },
+        },
+      });
+      expect(
+        BrowserPoolSlotBumpTermResponseSchema.parse(
+          JSON.parse(
+            (
+              await h.app.inject({
+                method: "POST",
+                url: browserPoolSlotBumpTermPath(slot.slotId),
+                headers: h.leaseHeaders,
+                payload: { revision: slot.revision, expectedTerm: 1 },
+              })
+            ).body,
+          ),
+        ),
+      ).toEqual({ bumped: false });
+      await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotCheckPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: { operation: "finish-agent-write", token: pendingToken },
+      });
+
+      // Valid bump raises term strictly by +1 (1 -> 2).
+      const bumped = BrowserPoolSlotBumpTermResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotBumpTermPath(slot.slotId),
+              headers: h.leaseHeaders,
+              payload: { revision: slot.revision, expectedTerm: 1 },
+            })
+          ).body,
+        ),
+      );
+      expect(bumped).toEqual({ bumped: true, term: 2, revision: slot.revision + 1 });
+
+      // Lower expectedTerm refused.
+      expect(
+        BrowserPoolSlotBumpTermResponseSchema.parse(
+          JSON.parse(
+            (
+              await h.app.inject({
+                method: "POST",
+                url: browserPoolSlotBumpTermPath(slot.slotId),
+                headers: h.leaseHeaders,
+                payload: { revision: bumped.revision!, expectedTerm: 1 },
+              })
+            ).body,
+          ),
+        ),
+      ).toEqual({ bumped: false });
+
+      // Status reports and begin-agent-write with lowered (1) or skipped (3) term refused.
+      for (const badTerm of [1, 3]) {
+        const res = await h.app.inject({
+          method: "POST",
+          url: browserPoolSlotStatusPath(slot.slotId),
+          headers: h.leaseHeaders,
+          payload: {
+            slotId: slot.slotId,
+            hostGeneration: 1,
+            revision: bumped.revision!,
+            term: badTerm,
+            phase: "ready",
+            controlKey: keyPairSpkiBase64().spki,
+            slotErased: false,
+            profileErased: false,
+            credentialsErased: false,
+            lastError: null,
+          },
+        });
+        expect(CloudComputerReportResponseSchema.parse(JSON.parse(res.body)).recorded).toBe(false);
+
+        const checkRes = await h.app.inject({
+          method: "POST",
+          url: browserPoolSlotCheckPath(slot.slotId),
+          headers: h.leaseHeaders,
+          payload: {
+            operation: "begin-agent-write",
+            revision: bumped.revision!,
+            write: { token: randomUUID(), kind: "create", term: badTerm, hostId: slot.hostId },
+          },
+        });
+        expect(CloudComputerCheckResponseSchema.parse(JSON.parse(checkRes.body)).allowed).toBe(
+          false,
+        );
+      }
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  // --- T5 stale hostGeneration on slot report + S6/S7 convergence ---
+
+  it("refuses a slot status report whose hostGeneration does not match the host's current generation (T5)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { claimed, hostId, slot } = await h.setupPooledHomeAndHost();
+      // Host is replaced and enrols at generation 2 while a delayed gen-1 ready report arrives.
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+      await h.enrolAndReadyHost(hostId, "10.40.0.12");
+
+      const staleGenReport = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: 1,
+          phase: "ready",
+          controlKey: keyPairSpkiBase64().spki,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(
+        CloudComputerReportResponseSchema.parse(JSON.parse(staleGenReport.body)).recorded,
+      ).toBe(false);
+
+      // Target must stay preparing (never publish a mixed gen-1 controlKey + gen-2 hostKey).
+      const target = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(target).toEqual({ status: "preparing" });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("converges Home target across pool host replacement with bumped term and new host keys (S6+S7)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { claimed, hostId, slot } = await h.setupPooledHomeAndHost();
+      expect(claimed.boot.browserPool).toBe(true);
+      expect(claimed.boot.egress).toBeUndefined();
+
+      const controlKey1 = keyPairSpkiBase64().spki;
+      await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: 1,
+          phase: "ready",
+          controlKey: controlKey1,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+      const duringReplace = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(duringReplace).toEqual({ status: "preparing" });
+
+      const gen2 = await h.enrolAndReadyHost(hostId, "10.40.0.12");
+      const slotAfterReplace = (await h.getDesiredSlots())[0]!;
+      expect(slotAfterReplace.hostGeneration).toBe(2);
+
+      const bumped = BrowserPoolSlotBumpTermResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotBumpTermPath(slot.slotId),
+              headers: h.leaseHeaders,
+              payload: {
+                revision: slotAfterReplace.revision,
+                expectedTerm: slotAfterReplace.term,
+              },
+            })
+          ).body,
+        ),
+      );
+      expect(bumped).toEqual({ bumped: true, term: 2, revision: slotAfterReplace.revision + 1 });
+
+      const controlKey2 = keyPairSpkiBase64().spki;
+      await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 2,
+          revision: bumped.revision!,
+          term: 2,
           phase: "ready",
           controlKey: controlKey2,
           slotErased: false,
@@ -1042,52 +2119,64 @@ integration("Browser pool Account service", () => {
           lastError: null,
         },
       });
-      expect(readyGen2Res.statusCode).toBe(200);
 
-      const replacedTarget = ManagedBrowserPoolTargetResponseSchema.parse(
+      const converged = ManagedBrowserPoolTargetResponseSchema.parse(
         JSON.parse(
           (
             await h.app.inject({
               method: "GET",
               url: managedBrowserPoolTargetPath,
-              headers: { authorization: `Bearer ${claimed1.hostCredential}` },
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
             })
           ).body,
         ),
       );
-      expect(replacedTarget).toEqual({
+      expect(converged).toEqual({
         status: "ready",
         target: {
           kind: "managed-pool",
-          agentUrl: "http://10.40.0.20:7310",
-          slotId: slot1.slotId,
-          term: 4,
+          agentUrl: "http://10.40.0.12:7310",
+          slotId: slot.slotId,
+          term: 2,
           agentKey: controlKey2,
-          hostKey: enrolled2.hostKey.spki,
-          relay: { host: "10.40.0.20", port: 7312, relayHostKey: enrolled2.relayKey.spki },
+          hostKey: gen2.hostKey.spki,
+          relay: {
+            host: "10.40.0.12",
+            port: 7312,
+            relayHostKey: gen2.relayKey.spki,
+          },
         },
       });
+    } finally {
+      await h.app.close();
+    }
+  });
 
-      // 7. W10: Cannot delete a host while it still holds a slot.
+  // --- W10 + T1 accumulated deletion evidence ---
+
+  it("settles slot and Cloud Computer deletion when erased, profileErased, and credentialsErased accumulate across separate reports (W10+T1)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { accountId, computer, hostId, slot } = await h.setupPooledHomeAndHost();
+
       await expect(
-        runCloudComputerOperator(h.cloudStore, ["pool-host-delete", host1Id]),
+        runCloudComputerOperator(h.cloudStore, ["pool-host-delete", hostId]),
       ).rejects.toMatchObject({ code: "conflict" });
 
-      // 8. W10: Deleting Cloud Computer 1 transitions its slot to deleting; VM destroyed alone does NOT tombstone computer.
-      await h.cloudStore.mutate(c1.computer.id, "delete", c1.accountId);
+      await h.cloudStore.mutate(computer.id, "delete", accountId);
       const compAfterDelete = await database
         .selectFrom("cloudComputers")
         .select(["state", "revision", "generation"])
-        .where("id", "=", c1.computer.id)
+        .where("id", "=", computer.id)
         .executeTakeFirstOrThrow();
       expect(compAfterDelete.state).toBe("deleted");
 
       await h.app.inject({
         method: "POST",
-        url: cloudComputerStatusPath(c1.computer.id),
-        headers: leaseHeaders(h.leaseHeaders),
+        url: cloudComputerStatusPath(computer.id),
+        headers: h.leaseHeaders,
         payload: {
-          id: c1.computer.id,
+          id: computer.id,
           generation: compAfterDelete.generation,
           revision: compAfterDelete.revision,
           phase: "deleted",
@@ -1098,142 +2187,175 @@ integration("Browser pool Account service", () => {
           lastError: null,
         },
       });
-      const beforeSlotErase = await database
-        .selectFrom("cloudComputers")
-        .select(["phase", "vmDestroyedAt", "browserSlotErasedAt", "tombstonedAt"])
-        .where("id", "=", c1.computer.id)
-        .executeTakeFirstOrThrow();
-      expect(beforeSlotErase.vmDestroyedAt).not.toBeNull();
-      expect(beforeSlotErase.browserSlotErasedAt).toBeNull();
-      expect(beforeSlotErase.tombstonedAt).toBeNull();
 
-      // Reconciler sees slot1 in state=deleting, confirms both slotErased and profileErased -> computer tombstones.
-      const deletingSlots = BrowserPoolSlotDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolSlotsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).slots;
-      expect(deletingSlots[0]?.state).toBe("deleting");
-      const eraseRes = await h.app.inject({
+      const beforeSlotErased = await database
+        .selectFrom("cloudComputers")
+        .select(["vmDestroyedAt", "backupsUnreadableAt", "browserSlotErasedAt", "tombstonedAt"])
+        .where("id", "=", computer.id)
+        .executeTakeFirstOrThrow();
+      expect(beforeSlotErased.vmDestroyedAt).not.toBeNull();
+      expect(beforeSlotErased.backupsUnreadableAt).not.toBeNull();
+      expect(beforeSlotErased.browserSlotErasedAt).toBeNull();
+      expect(beforeSlotErased.tombstonedAt).toBeNull();
+
+      const deletingSlot = (await h.getDesiredSlots())[0]!;
+      expect(deletingSlot.state).toBe("deleting");
+
+      // Premature phase:"deleted" with only 2 of 3 bits is refused.
+      for (const partial of [
+        { slotErased: false, profileErased: true, credentialsErased: true },
+        { slotErased: true, profileErased: false, credentialsErased: true },
+        { slotErased: true, profileErased: true, credentialsErased: false },
+      ]) {
+        const res = await h.app.inject({
+          method: "POST",
+          url: browserPoolSlotStatusPath(slot.slotId),
+          headers: h.leaseHeaders,
+          payload: {
+            slotId: slot.slotId,
+            hostGeneration: 1,
+            revision: deletingSlot.revision,
+            term: deletingSlot.term,
+            phase: "deleted",
+            controlKey: null,
+            ...partial,
+            lastError: null,
+          },
+        });
+        expect(res.statusCode).toBe(200);
+        expect(CloudComputerReportResponseSchema.parse(JSON.parse(res.body)).recorded).toBe(false);
+      }
+
+      // T1: Evidence arrives across 3 separate reports:
+      // Report 1 records slotErased only (phase: "deleting").
+      const r1 = await h.app.inject({
         method: "POST",
-        url: browserPoolSlotStatusPath(slot1.slotId),
+        url: browserPoolSlotStatusPath(slot.slotId),
         headers: h.leaseHeaders,
         payload: {
-          slotId: slot1.slotId,
-          revision: deletingSlots[0]!.revision,
-          term: deletingSlots[0]!.term,
-          phase: "deleted",
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: deletingSlot.revision,
+          term: deletingSlot.term,
+          phase: "deleting",
           controlKey: null,
           slotErased: true,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(r1.body)).recorded).toBe(true);
+
+      // Report 2 records profileErased only (still missing credentialsErased -> premature deleted refused).
+      const r2 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: deletingSlot.revision,
+          term: deletingSlot.term,
+          phase: "deleting",
+          controlKey: null,
+          slotErased: false,
           profileErased: true,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(r2.body)).recorded).toBe(true);
+
+      const stillMissingCreds = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: deletingSlot.revision,
+          term: deletingSlot.term,
+          phase: "deleted",
+          controlKey: null,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(
+        CloudComputerReportResponseSchema.parse(JSON.parse(stillMissingCreds.body)).recorded,
+      ).toBe(false);
+
+      // Report 3 carries ONLY credentialsErased:true (with slotErased/profileErased already accumulated) -> settles!
+      const r3 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: deletingSlot.revision,
+          term: deletingSlot.term,
+          phase: "deleted",
+          controlKey: null,
+          slotErased: false,
+          profileErased: false,
           credentialsErased: true,
           lastError: null,
         },
       });
-      expect(eraseRes.statusCode).toBe(200);
+      expect(CloudComputerReportResponseSchema.parse(JSON.parse(r3.body)).recorded).toBe(true);
 
-      const afterSlotErase = await database
+      const afterSlotErased = await database
         .selectFrom("cloudComputers")
-        .select(["phase", "browserSlotErasedAt", "tombstonedAt"])
-        .where("id", "=", c1.computer.id)
+        .select(["browserSlotErasedAt", "tombstonedAt", "phase"])
+        .where("id", "=", computer.id)
         .executeTakeFirstOrThrow();
-      expect(afterSlotErase.browserSlotErasedAt).not.toBeNull();
-      expect(afterSlotErase.phase).toBe("deleted");
-      expect(afterSlotErase.tombstonedAt).not.toBeNull();
+      expect(afterSlotErased.browserSlotErasedAt).not.toBeNull();
+      expect(afterSlotErased.tombstonedAt).not.toBeNull();
+      expect(afterSlotErased.phase).toBe("deleted");
 
-      // Now Host 1 holds no live slots -> pool-host-delete succeeds!
-      const deletedHost = await runCloudComputerOperator(h.cloudStore, [
-        "pool-host-delete",
-        host1Id,
-      ]);
-      expect(deletedHost).toMatchObject({ id: host1Id, state: "deleted" });
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-delete", hostId]);
+      const deletingHost = (await h.getDesiredHosts()).find((entry) => entry.id === hostId)!;
+      expect(deletingHost.state).toBe("deleted");
     } finally {
       await h.app.close();
     }
   });
 
-  it("refuses a pool configuration where slotsPerHost * profileMib exceeds usable durable disk capacity", () => {
-    // 10 GiB disk with 10% filesystem overhead reserved => 9216 MiB usable.
-    // 5 slots * 2048 MiB = 10240 MiB > 9216 MiB -> refused; 4 slots * 2048 MiB = 8192 MiB -> accepted.
-    expect(() =>
-      loadCloudComputerConfig({
-        ...makeEnv("5"),
-        OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB: "2048",
-        OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB: "10",
-      }),
-    ).toThrow(/exceed usable profile disk capacity/u);
+  // --- T9 operator warning when pooling on without pool-configured provisioner ---
 
-    const ok = loadCloudComputerConfig({
-      ...makeEnv("4"),
-      OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB: "2048",
-      OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB: "10",
-    });
-    expect(ok?.browserPool).toMatchObject({
-      slotsPerHost: 4,
-      profileMib: 2048,
-      profileDiskSizeGb: 10,
-    });
-  });
-
-  it("places slots onto the ready host with the most free slots and grows host count when full (W2)", async () => {
+  it("warns in operator pool commands when pooling is enabled in Account while the active provisioner lacks a pool key (T9)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease();
-      const c1 = await h.provisionComputer(1);
-      const c2 = await h.provisionComputer(2);
-      const c3 = await h.provisionComputer(3);
-      for (const c of [c1, c2, c3]) await h.bootAndClaimComputer(c.computer, c.accountId);
+      await h.acquireLease(false);
+      await h.provisionComputer(1);
+      await h.getDesiredHosts();
 
-      // 3 pooled computers with slotsPerHost=2 -> 2 pool hosts wanted.
-      const hosts = BrowserPoolHostDesiredResponseSchema.parse(
-        JSON.parse(
-          (
-            await h.app.inject({
-              method: "GET",
-              url: browserPoolHostsDesiredPath,
-              headers: h.leaseHeaders,
-            })
-          ).body,
-        ),
-      ).hosts;
-      expect(hosts).toHaveLength(2);
-      await h.enrolAndReadyHost(hosts[0]!.id, "10.40.0.10");
-      await h.enrolAndReadyHost(hosts[1]!.id, "10.40.0.11");
+      const hostsView = (await runCloudComputerOperator(h.cloudStore, ["pool-host-list"])) as {
+        hosts: unknown[];
+        warning?: string;
+      };
+      expect(hostsView.hosts).toHaveLength(1);
+      expect(hostsView.warning).toContain("OPENSTEER_POOL_PROVISIONER_KEY");
 
-      // Trigger placement by querying desiredSlots; 3 slots across 2 hosts -> 2 on one, 1 on the other (most-free).
-      await h.app.inject({
-        method: "GET",
-        url: browserPoolSlotsDesiredPath,
-        headers: h.leaseHeaders,
-      });
-      const placed = await database
-        .selectFrom("browserPoolSlots")
-        .select(["hostId"])
-        .where("hostId", "is not", null)
-        .execute();
-      expect(placed).toHaveLength(3);
-      const counts = new Map<string, number>();
-      for (const row of placed) counts.set(row.hostId!, (counts.get(row.hostId!) ?? 0) + 1);
-      expect([...counts.values()].sort()).toEqual([1, 2]);
-      expect(
-        (
-          await sql<{ n: string }>`select count(*)::text as n from browser_pool_hosts`.execute(
-            database,
-          )
-        ).rows[0]?.n,
-      ).toBe("2");
+      const slotsView = (await runCloudComputerOperator(h.cloudStore, ["pool-slot-list"])) as {
+        slots: unknown[];
+        warning?: string;
+      };
+      expect(slotsView.warning).toContain("OPENSTEER_POOL_PROVISIONER_KEY");
+
+      // Once a pool-configured provisioner acquires the lease, the warning disappears.
+      await h.acquireLease(true);
+      const cleanHostsView = (await runCloudComputerOperator(h.cloudStore, ["pool-host-list"])) as {
+        hosts: unknown[];
+        warning?: string;
+      };
+      expect(cleanHostsView.warning).toBeUndefined();
     } finally {
       await h.app.close();
     }
   });
 });
-
-function leaseHeaders(headers: Record<string, string>) {
-  return headers;
-}

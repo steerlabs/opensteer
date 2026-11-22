@@ -91,7 +91,6 @@ describe("Google Compute pool host provider", () => {
     const createSpec: CreatePoolHostVm = {
       id: poolHostId,
       generation: 1,
-      region: "us-central1-a",
       machineType: "n2-standard-8",
       image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
       bootDiskSizeGb: 40,
@@ -200,6 +199,7 @@ describe("Google Compute pool host provider", () => {
         homeCidr: "10.40.0.0/20",
         provisionerCidr: "10.50.0.0/24",
         profileDiskDevice: "/dev/disk/by-id/google-opensteer-profiles",
+        firstAttach: false,
         agentPort: 7310,
         adminPort: 7311,
         relayPort: 7312,
@@ -209,6 +209,7 @@ describe("Google Compute pool host provider", () => {
     expect(userData.startsWith("#cloud-config\n")).toBe(true);
     expect(userData).toContain("opensteer-bootstrap-ready");
     expect(userData).toContain("/dev/disk/by-id/google-opensteer-profiles");
+    expect(userData).toContain('\\"firstAttach\\":false');
     expect(userData).toContain(provisionerKeySpki);
 
     const baseEnv = {
@@ -238,9 +239,7 @@ describe("Google Compute pool host provider", () => {
         homeCidr: "10.40.0.0/20",
         provisionerCidr: "10.50.0.0/24",
         localSsdCount: 2,
-        agentPort: 7310,
         adminPort: 7311,
-        relayPort: 7312,
       });
     }
   });

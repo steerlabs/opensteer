@@ -112,6 +112,7 @@ export class ComputeFake {
   token = "test-metadata-access-token";
   expiresIn = 100;
   nextInsert: "lost" | "late" | "failure" | "quota" | undefined;
+  nextDiskInsert: "lost" | "late" | undefined;
   nextAddressInsert: "quota" | undefined;
   keepOperationsRunning = false;
   rejectMetadata = false;
@@ -398,23 +399,26 @@ export class ComputeFake {
     }
     const body = req.body as { name: string; sizeGb: string; type: string; labels?: Labels };
     if (this.disks.has(body.name)) return json({}, 409);
+    const behavior = this.nextDiskInsert;
+    this.nextDiskInsert = undefined;
     const id = String(++this.#nextDiskId);
-    return json(
-      this.#start(
-        req,
-        zonePath,
-        () => {
-          this.disks.set(body.name, {
-            id,
-            name: body.name,
-            sizeGb: body.sizeGb,
-            type: body.type,
-            labels: body.labels ?? {},
-          });
-        },
-        { targetId: id, operationType: "insert" },
-      ),
+    const operation = this.#start(
+      req,
+      zonePath,
+      () => {
+        this.disks.set(body.name, {
+          id,
+          name: body.name,
+          sizeGb: body.sizeGb,
+          type: body.type,
+          labels: body.labels ?? {},
+        });
+      },
+      { targetId: id, operationType: "insert" },
     );
+    if (behavior === "lost") this.complete(`${zonePath}/operations/${operation.name}`);
+    if (behavior === "lost" || behavior === "late") throw new Error("lost Compute disk reply");
+    return json(operation);
   }
 
   #instanceRequest(req: RecordedRequest) {
