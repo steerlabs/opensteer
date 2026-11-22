@@ -23,6 +23,15 @@ import {
   type CloudComputerPreparationStep,
   CloudComputerIdSchema,
   CloudComputerSnapshotSchema,
+  type BrowserPoolHostBootCompleteRequest,
+  type BrowserPoolHostBootRequest,
+  type BrowserPoolHostCheck,
+  type BrowserPoolHostId,
+  type BrowserPoolHostReport,
+  type BrowserPoolSlotBumpTermRequest,
+  type BrowserPoolSlotCheck,
+  type BrowserPoolSlotId,
+  type BrowserPoolSlotReport,
   type CloudComputerBackupReport,
   type CloudComputerBootCompleteRequest,
   type CloudComputerCheck,
@@ -32,13 +41,15 @@ import {
   type CloudComputerId,
   type CloudComputerReport,
   type CloudComputerView,
+  type ManagedBrowserPoolRegistrationRequest,
   type WorkAssignmentId,
   type WorkHomeMarker,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
+import { BrowserPoolStore } from "./pool-store.js";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import { z } from "zod";
-import { DeploymentIdSchema, HostKeyFingerprintSchema } from "@opensteer/core";
+import { DeploymentIdSchema, HostKeyFingerprintSchema, type DeploymentId } from "@opensteer/core";
 import type { HostDiscoveryEnvelope } from "@opensteer/deployment-authority";
 import {
   sql,
@@ -133,12 +144,21 @@ export class CloudComputerStore {
   readonly #db: Database;
   readonly #options: StoreOptions;
   readonly #now: () => Date;
+  readonly #pool: BrowserPoolStore;
   #offerValid = false;
 
   constructor(database: Database, options: StoreOptions) {
     this.#db = database;
     this.#options = options;
     this.#now = options.now ?? (() => new Date());
+    this.#pool = new BrowserPoolStore({
+      db: database,
+      config: options.config,
+      cipher: options.cipher,
+      now: this.#now,
+      assignEgress: (tx, computerId) => this.#assignEgress(tx, computerId),
+      egressCredentials: (endpoint) => this.#egressCredentials(endpoint),
+    });
   }
 
   get plan() {
@@ -829,6 +849,7 @@ export class CloudComputerStore {
         restoreSnapshot: null,
         deletionRequestedAt: null,
         ipv6Enabled: config.ipv6Enabled,
+        browserMode: config.browserPool ? "pool" : "local",
         readinessStartedAt: now,
         phase: "provisioning",
         providerServerId: null,
@@ -847,6 +868,9 @@ export class CloudComputerStore {
         tombstonedAt: null,
       })
       .executeTakeFirst();
+    if (config.browserPool) {
+      await this.#pool.createSlotForComputer(tx, paid.id, now);
+    }
   }
 
   /**
@@ -884,6 +908,7 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
+      await this.#pool.markComputerDeleted(tx, row.id, now);
       return;
     }
     const status =
@@ -1481,22 +1506,28 @@ export class CloudComputerStore {
     await this.#db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom("cloudComputers")
-        .select(["vmDestroyedAt", "backupsUnreadableAt", "backupKeyProject"])
+        .select([
+          "vmDestroyedAt",
+          "backupsUnreadableAt",
+          "backupKeyProject",
+          "browserMode",
+          "browserSlotErasedAt",
+        ])
         .where("id", "=", id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row?.vmDestroyedAt || row.backupsUnreadableAt) return;
       await this.#vault(row.backupKeyProject ?? undefined).destroy(id);
       const now = this.#now();
+      const settled = row.browserMode !== "pool" || row.browserSlotErasedAt !== null;
       await tx
         .updateTable("cloudComputers")
         .where("id", "=", id)
         .set({
-          phase: "deleted",
           backupKeyVersion: null,
           backupsUnreadableAt: now,
-          tombstonedAt: now,
           updatedAt: now,
+          ...(settled ? { phase: "deleted", tombstonedAt: now } : {}),
         })
         .executeTakeFirstOrThrow();
     });
@@ -1649,7 +1680,8 @@ export class CloudComputerStore {
           .set(credentials)
           .executeTakeFirstOrThrow();
       }
-      const endpoint = await this.#assignEgress(tx, id);
+      const pooled = row.browserMode === "pool";
+      const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
       const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
       const backup = await tx
@@ -1697,6 +1729,7 @@ export class CloudComputerStore {
         ...(this.#options.config.releaseManifestUrl
           ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
           : {}),
+        ...(pooled ? { browserPool: true } : {}),
         ...(endpoint ? { egress: this.#egressCredentials(endpoint) } : {}),
         backup: {
           endpoint: backupEndpoint,
@@ -2924,6 +2957,85 @@ export class CloudComputerStore {
       .where("retired", "=", false)
       .orderBy("id")
       .execute();
+  }
+
+  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number) {
+    return this.#pool.desiredHosts(after, limit);
+  }
+
+  checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck) {
+    return this.#pool.checkPoolHost(id, check);
+  }
+
+  reportPoolHost(report: BrowserPoolHostReport) {
+    return this.#pool.reportPoolHost(report);
+  }
+
+  bootPoolHost(id: BrowserPoolHostId, input: BrowserPoolHostBootRequest) {
+    return this.#pool.bootPoolHost(id, input);
+  }
+
+  bootCompletePoolHost(id: BrowserPoolHostId, input: BrowserPoolHostBootCompleteRequest) {
+    return this.#pool.bootCompletePoolHost(id, input);
+  }
+
+  egressForPoolHost(hostId: string, body: unknown) {
+    return this.#pool.egressForPoolHost(hostId, body);
+  }
+
+  desiredPoolSlots(after?: BrowserPoolSlotId, limit?: number) {
+    return this.#pool.desiredSlots(after, limit);
+  }
+
+  checkPoolSlot(slotId: BrowserPoolSlotId, check: BrowserPoolSlotCheck) {
+    return this.#pool.checkPoolSlot(slotId, check);
+  }
+
+  bumpPoolSlotTerm(slotId: BrowserPoolSlotId, input: BrowserPoolSlotBumpTermRequest) {
+    return this.#pool.bumpPoolSlotTerm(slotId, input);
+  }
+
+  reportPoolSlot(report: BrowserPoolSlotReport) {
+    return this.#pool.reportPoolSlot(report);
+  }
+
+  registerHomeBrowserPoolKeys(
+    deploymentId: DeploymentId,
+    input: ManagedBrowserPoolRegistrationRequest,
+  ) {
+    return this.#pool.registerHomeBrowserPoolKeys(deploymentId, input);
+  }
+
+  browserPoolTargetForHome(deploymentId: DeploymentId) {
+    return this.#pool.browserPoolTargetForHome(deploymentId);
+  }
+
+  operatorListPoolHosts() {
+    return this.#pool.operatorListHosts();
+  }
+
+  operatorShowPoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorShowHost(id);
+  }
+
+  operatorDrainPoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorDrainHost(id);
+  }
+
+  operatorReplacePoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorReplaceHost(id);
+  }
+
+  operatorDeletePoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorDeleteHost(id);
+  }
+
+  operatorListPoolSlots() {
+    return this.#pool.operatorListSlots();
+  }
+
+  operatorShowPoolSlot(slotId: BrowserPoolSlotId) {
+    return this.#pool.operatorShowSlot(slotId);
   }
 }
 

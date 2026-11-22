@@ -20,6 +20,10 @@ import type {
   CloudComputerStripeEventTable,
   CloudComputerTable,
 } from "../cloud-computers/tables.js";
+import type {
+  BrowserPoolHostTable,
+  BrowserPoolSlotTable,
+} from "../cloud-computers/pool-tables.js";
 import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { DeploymentLifecycle } from "@opensteer/core";
 import type {
@@ -584,6 +588,8 @@ export interface ControlPlaneDatabaseSchema {
   workAuditRecords: WorkAuditRecordTable;
   workAuditBatches: WorkAuditBatchTable;
   cloudComputers: CloudComputerTable;
+  browserPoolHosts: BrowserPoolHostTable;
+  browserPoolSlots: BrowserPoolSlotTable;
   cloudComputerBackupTargets: CloudComputerBackupTargetTable;
   cloudComputerBackupNamespaces: CloudComputerBackupNamespaceTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;
