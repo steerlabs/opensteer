@@ -795,26 +795,32 @@ export class AgentSessionService {
       // execution began. Both writes apply only to the row in the state they name.
       // The hand-off may commit while this runs (its write waits on the row, then lands before
       // the refusal's): the row is read again after each write until it has an outcome.
+      // Each write is the one the row's current state and revision name (the operation may have
+      // been reviewed again meanwhile); after the third, the row is read once more.
       reservation.onForcedEnd?.(async () => {
+        const unsettled = (state: string | undefined) =>
+          state === "handed-off" ||
+          state === "admitted" ||
+          state === "pending" ||
+          state === "approved";
         for (let attempt = 0; attempt < 3; attempt++) {
           const current = await readAgentOperation(this.#store.database, row.id);
-          if (current?.state === "handed-off")
+          if (!current || !unsettled(current.state)) return;
+          if (current.state === "handed-off")
             await refuseUnsentHandedOffAgentOperation(
               this.#store.database,
               row.id,
               "This browser restarted before anything was sent.",
               "changed",
             );
-          else if (
-            current &&
-            (current.state === "admitted" ||
-              current.state === "pending" ||
-              current.state === "approved")
-          )
-            await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
-          else return;
+          else
+            await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision);
         }
-        // Still without an outcome after three writes: the restart must not go on to Stop.
+        const last = await readAgentOperation(this.#store.database, row.id);
+        if (!last || !unsettled(last.state)) return;
+        // Still without an outcome: the restart does not go on to Stop. Its hold ends when the
+        // holder's own work ends (its operation's deadline), when a later turn's settlement
+        // writes, or at a removal.
         throw new Error("The pooled operation's outcome could not be recorded.");
       });
       // A restart or a removal asks every holder to stop: the work ends and records its outcome.

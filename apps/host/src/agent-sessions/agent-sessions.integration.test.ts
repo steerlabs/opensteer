@@ -709,6 +709,88 @@ describeStore("an external agent's direct work through sessions", (it) => {
     gate.set({ hold: null });
   });
 
+  it("settles a holder whose operation was reviewed again while it waited, with its current revision", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-settle-revised");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-settle-revised", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          // The operation is reviewed again under a newer grant while its holder waits: the
+          // review commits after the hand-off and the restart's settlement both read it.
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            await tx
+              .updateTable("agentOperations")
+              .set({ grantRevision: sql`grant_revision + 1` })
+              .where("id", "=", id)
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
+        },
+      }),
+    });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    void call.catch(() => undefined);
+    const waiting = async () =>
+      Number(
+        (
+          await sql<{ count: string }>`
+            select count(*)::text as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+          `.execute(database)
+        ).rows[0]?.count ?? 0,
+      );
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
+    gate.set({ hold: "restart" });
+    const settled = gate.settleHolders();
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
+    unlock.resolve();
+    await holder;
+    await settled;
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
+    await call;
+    gate.set({ hold: null });
+  });
+
   it("records a fake background model's allow decision before executing an Auto effect", async ({
     storeFixture,
   }) => {
