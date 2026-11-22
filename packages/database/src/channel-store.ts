@@ -140,13 +140,6 @@ export function channelRetryDelayMs(attempts: number, retryAfterMs: number | nul
   return Math.round(base * (0.8 + Math.random() * 0.4));
 }
 
-export class ChannelIngressDeferredError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ChannelIngressDeferredError";
-  }
-}
-
 export class ChannelStore {
   readonly #database: Kysely<DatabaseSchema>;
 
@@ -887,17 +880,13 @@ export class ChannelStore {
   }
 
   /**
-   * Give up on a leased event, and say so in the same transaction. Marking it
-   * ignored and telling the person are one write for the same reason adoption's
-   * own declines are: a crash between the two would leave somebody who wrote to
-   * the bot with silence and a row that says the matter is closed.
+   * Give up on a leased event. Nothing is said in the chat: a message that starts no work gets
+   * no answer.
    */
   async markIngressIgnored(
     id: ChannelIngressId,
     claimToken: string,
     reason: string,
-    /** Always null: nothing is said in a chat about a message that starts no work. */
-    notice: null = null,
   ): Promise<void> {
     await commitPersonalMutation(this.#database, async (transaction) => {
       const result = await transaction
@@ -916,7 +905,6 @@ export class ChannelStore {
         .where("claimTokenHash", "=", digest(claimToken))
         .executeTakeFirst();
       if (result.numUpdatedRows !== 1n) throw staleClaim("ingress");
-      void notice;
     });
   }
 

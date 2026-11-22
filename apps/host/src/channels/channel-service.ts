@@ -661,7 +661,7 @@ export class ChannelService {
       caller = await resolve();
     } catch (error) {
       if (!(error instanceof OpensteerError)) throw error;
-      await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message, null);
+      await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message);
       return;
     }
     const tools = this.#bridgeTools();

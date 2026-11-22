@@ -136,6 +136,14 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
       const [task] = await f.tasks();
       const [run] = await f.runsOf(task!.id);
       expect(await lineagePersonalContext(storeFixture.database, run!.connectionId)).toBe(false);
+      // The task never had a personal session, not even for a moment before its first Run.
+      expect(
+        await storeFixture.database
+          .selectFrom("providerSessions")
+          .select(["personalContext", "active"])
+          .where("threadId", "=", task!.id)
+          .execute(),
+      ).toEqual([{ personalContext: false, active: true }]);
       // A message nobody addressed to the bot in a thread it never joined starts nothing.
       expect(
         await f.send({ eventId: "a2", trigger: "conversation-followup", threadId: "999.000" }),

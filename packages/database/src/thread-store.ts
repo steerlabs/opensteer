@@ -137,6 +137,7 @@ import {
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
+import { lineagePersonalContext } from "./resource-access.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -1164,7 +1165,10 @@ export async function createThreadInTransaction(
     icon: input.icon ?? null,
     iconSource: input.icon ? "chosen" : "provisional",
   });
-  await ensureSelectedProviderSession(transaction, thread);
+  // Work in a lineage without the person's personal context never has a personal session.
+  await ensureSelectedProviderSession(transaction, thread, {
+    personalContext: await lineagePersonalContext(transaction, originConnectionId),
+  });
   if (purpose === "voice")
     await transaction
       .updateTable("personalSettings")
