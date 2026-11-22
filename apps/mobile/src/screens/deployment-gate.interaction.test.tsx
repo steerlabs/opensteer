@@ -42,6 +42,7 @@ vi.mock("./use-deployment-update.js", () => ({ useDeploymentUpdate: () => null }
 vi.mock("./deployment-update.js", () => ({ deploymentUpdateRows: () => [] }));
 
 const { DeploymentGate } = await import("./deployment-gate.js");
+const { deploymentsTitle } = await import("./deployments-title.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -52,10 +53,10 @@ afterEach(() => {
 
 /*
  * A Home a route names that is no longer in this phone's list: it is said in a person's words,
- * and the way back is named as the list is titled, "Computers".
+ * and the way back is named by the list's own title, wherever that title is set.
  */
 describe("a Home that is no longer in this phone's list", () => {
-  it("says so in a person's words and goes back to Computers", async () => {
+  it("says so in a person's words and goes back to the list by its own title", async () => {
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
@@ -67,9 +68,9 @@ describe("a Home that is no longer in this phone's list", () => {
     expect(text).toContain("This Home is no longer here");
     expect(text).not.toMatch(/deployment/iu);
     const back = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Computers",
+      (button) => button.textContent === deploymentsTitle,
     );
-    if (!back) throw new Error(`No way back to Computers: ${text}`);
+    if (!back) throw new Error(`No way back to ${deploymentsTitle}: ${text}`);
     await act(async () => back.click());
     expect(navigation.reset).toHaveBeenCalledOnce();
   });

@@ -82,6 +82,7 @@ import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
+import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -612,7 +613,7 @@ export function DeploymentsScreen(): ReactNode {
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
     if (switching) return;
-    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : "Computers" });
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : deploymentsTitle });
   }, [navigation, switching, welcome]);
 
   const enterAddress = useCallback(() => {
