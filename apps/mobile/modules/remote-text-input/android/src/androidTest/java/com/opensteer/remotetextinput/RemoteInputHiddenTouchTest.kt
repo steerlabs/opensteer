@@ -5,6 +5,8 @@ import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -28,6 +30,7 @@ class RemoteInputHiddenTouchTest {
       val connection = view.onCreateInputConnection(EditorInfo())!!
       connection.commitText("helloab", 1)
       drain()
+      val beforeTaps = packets.size
       val now = SystemClock.uptimeMillis()
       for (tap in 0 until 2) {
         val at = now + tap * 120L
@@ -36,9 +39,13 @@ class RemoteInputHiddenTouchTest {
       }
       assertEquals(view.text.length, view.selectionStart)
       assertEquals(view.selectionStart, view.selectionEnd)
+      assertEquals(0, packets.drop(beforeTaps).count { (it["event"] as Map<*, *>)["type"] == "selection" })
       connection.commitText("!", 1)
       drain()
       assertEquals("helloab!", view.text.toString())
+      assertFalse(view.isSuggestionsEnabled)
+      assertTrue(view.onTextContextMenuItem(android.R.id.selectAll))
+      assertEquals(view.selectionStart, view.selectionEnd)
     }
   }
 }

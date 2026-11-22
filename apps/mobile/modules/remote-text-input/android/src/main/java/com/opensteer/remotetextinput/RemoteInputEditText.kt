@@ -267,8 +267,13 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     }
     return true
   }
+  /** No suggestions popup on a tap in text nobody sees; the keyboard's own autocorrect stays. */
+  override fun isSuggestionsEnabled(): Boolean = false
   override fun onTextContextMenuItem(id: Int): Boolean {
     when (id) {
+      // Nothing selects in the hidden field, whether a menu or a Ctrl or Meta shortcut asks:
+      // the page's own selectAll is reached through the reducer's binding instead.
+      android.R.id.selectAll -> return true
       android.R.id.copy -> { gate.notify(mapOf("type" to "copy")); return true }
       android.R.id.cut -> { gate.notify(mapOf("type" to "cut")); return true }
       android.R.id.paste, android.R.id.pasteAsPlainText -> { gate.enqueue { paste() }; return true }

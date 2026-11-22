@@ -98,4 +98,25 @@ class RemoteInputGateTest {
     assertEquals(listOf("helloab", 0, 7), listOf(events[0]["value"], events[0]["start"], events[0]["end"]))
     assertEquals("!", text.toString())
   }
+
+  // The review's sequence B: "hello" settled, "a" and "b" waiting, then a tap on the hidden field.
+  // RemoteInputEditText hands the tap only to RemoteInputTouch, which focuses and does nothing
+  // else: no selection event is queued, no cursor moves, and the burst lands as typed.
+  @Test fun aTapInTheMiddleOfABurstReportsNothingAndMovesNothing() {
+    for (c in "hello") type(c.toString())
+    events.clear()
+    commitText("a")
+    commitText("b")
+    val touch = RemoteInputTouch(longPressMs = 500, slop = 8f)
+    val outcomes = listOf(
+      touch.onTouch(RemoteInputTouch.Action.DOWN, 0, 10f, 10f),
+      touch.onTouch(RemoteInputTouch.Action.UP, 60, 10f, 10f),
+    )
+    // What the view does with each outcome: FOCUS asks for focus and the keyboard, nothing more.
+    assertEquals(listOf(null, RemoteInputTouch.Outcome.FOCUS), outcomes)
+    answerAll()
+    assertEquals(emptyList<Any?>(), events.filter { it["type"] == "selection" })
+    assertEquals("helloab", text.toString())
+    assertEquals(7, cursor)
+  }
 }
