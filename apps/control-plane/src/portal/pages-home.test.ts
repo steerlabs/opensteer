@@ -12,16 +12,54 @@ const base = {
 
 describe("the Account portal's home", () => {
   it("offers a Cloud Computer and organizations to someone with no Opensteer yet, and with one", () => {
-    for (const rows of [[], ['<li class="place">Studio</li>']]) {
-      const body = portalHomeBody({
-        ...base,
-        rows,
-        cloudComputerHref: "/cloud-computer",
-        organizationsHref: "/organizations",
-      });
-      expect(body).toContain(`href="/cloud-computer">${escapeHtml(cloudWords("cloud.title"))}</a>`);
-      expect(body).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
-    }
+    const empty = portalHomeBody({
+      ...base,
+      rows: [],
+      cloudComputerHref: "/cloud-computer",
+      organizationsHref: "/organizations",
+    });
+    expect(empty).toContain(`href="/cloud-computer">On an Opensteer Cloud Computer</a>`);
+    expect(empty).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
+    const listed = portalHomeBody({
+      ...base,
+      rows: ['<li class="place">Studio</li>'],
+      cloudComputerHref: "/cloud-computer",
+      organizationsHref: "/organizations",
+    });
+    expect(listed).toContain(`href="/cloud-computer">${escapeHtml(cloudWords("cloud.title"))}</a>`);
+    expect(listed).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
+  });
+
+  it("asks where an account's first Opensteer should live, with the price checkout sells", () => {
+    const plan = {
+      name: "Cloud Computer",
+      currency: "usd",
+      amountMinor: 2000,
+      interval: "month" as const,
+    };
+    const body = portalHomeBody({
+      ...base,
+      rows: [],
+      cloudComputerHref: "/cloud-computer",
+      cloudOffer: plan,
+    });
+    expect(body).toContain("Where should your Opensteer live?");
+    expect(body).toContain(`href="https://example.com/download">On your Mac</a>`);
+    expect(body).toContain("Free. Works while your Mac is awake.");
+    expect(body).toContain("$20.00 a month. Always on.");
+    expect(body).not.toContain("Set up Opensteer");
+    // Nothing for sale: no price, and still what a Cloud Computer is.
+    const closed = portalHomeBody({ ...base, rows: [], cloudComputerHref: "/cloud-computer" });
+    expect(closed).toContain(`<span class="place__note">Always on.</span>`);
+    expect(closed).not.toContain("$");
+  });
+
+  it("lists one Opensteer rather than opening it, so the account's own page stays reachable", () => {
+    const body = portalHomeBody({ ...base, rows: ['<li class="place">Studio</li>'] });
+    expect(body).toContain("Your Opensteers");
+    expect(body).toContain("Sign out");
+    expect(body).not.toContain("http-equiv");
+    expect(body).not.toContain("location.");
   });
 
   it("offers neither where this Account service has neither", () => {

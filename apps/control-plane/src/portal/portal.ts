@@ -226,6 +226,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         ),
         signOutAction: portalSignOutPath,
         cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
+        cloudOffer: dependencies.cloudComputers?.offer ?? null,
         organizationsHref: dependencies.organizations ? organizationsPortalPath : null,
       }),
       fonts,
