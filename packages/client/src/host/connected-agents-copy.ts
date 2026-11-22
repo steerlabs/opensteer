@@ -63,7 +63,7 @@ export const connectedAgentsCopy = {
   "consent.browser.shareWarning":
     "{agent} can use every site you’re signed in to in {profile}, as you. A new profile starts signed out.",
   "consent.browser.pickerFooter":
-    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it. A page it works in can replace what is on the clipboard.",
   "consent.browser.device.online": "{device} · Online",
   "consent.browser.device.offline": "{device} · Offline",
   "consent.browser.device.unknown": "Not opened on a device yet",

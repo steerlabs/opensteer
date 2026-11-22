@@ -452,7 +452,8 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
     const previous = path.join(kit.run, "clipboard-page.json");
     await runFile(kit.inputHelper, ["clipboard-save", String(process.pid), previous]);
     // A fixture value, never what was on the clipboard before.
-    await clipboard.writeText(`fixture-${randomUUID()}`);
+    const fixture = `fixture-${randomUUID()}`;
+    await clipboard.writeText(fixture);
     const changeCount = async () =>
       z
         .object({ changeCount: z.number() })
@@ -461,24 +462,25 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
             (await runFile(kit.inputHelper, ["clipboard-count", String(process.pid)])).stdout,
           ),
         ).changeCount;
-    const writes = {
+    const probes = {
+      readText: `navigator.clipboard.readText().then((text) => "read:" + text, (error) => "refused:" + error.name)`,
       writeText: `navigator.clipboard.writeText("opensteer-page-write").then(() => "written", (error) => "refused:" + error.name)`,
       execCommand: `(() => { const field = document.createElement("textarea"); field.value = "opensteer-page-copy"; document.body.append(field); field.select(); const copied = document.execCommand("copy"); field.remove(); return copied; })()`,
     };
-    /** Each page write under an agent's gesture, and whether the Mac's pasteboard moved. */
+    /** Each page request under an agent's gesture, and whether the Mac's pasteboard moved. */
     const measure = async (cdp: Awaited<ReturnType<typeof kit.agentCdp>>) => {
-      const moved: Record<string, { answer: unknown; moved: boolean }> = {};
-      for (const [name, expression] of Object.entries(writes)) {
+      const seen: Record<string, { answer: unknown; moved: boolean }> = {};
+      for (const [name, expression] of Object.entries(probes)) {
         const before = await changeCount();
-        const answer = await cdp.send("Runtime.evaluate", {
+        const reply = (await cdp.send("Runtime.evaluate", {
           expression,
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
-        });
-        moved[name] = { answer, moved: (await changeCount()) !== before };
+        })) as { result?: { value?: unknown } };
+        seen[name] = { answer: reply.result?.value, moved: (await changeCount()) !== before };
       }
-      return moved;
+      return seen;
     };
     try {
       // An agent-driven tab in the background, focus emulated as an agent can.
@@ -494,11 +496,23 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       // The tab the person's window shows, with real focus.
       assert(kit.pageContents().isFocused());
       const fromPerson = await measure(await kit.agentCdp());
-      kit.artifacts.event("clipboard.page-writes", { fromBackground, fromPerson });
-      for (const [name, { moved }] of Object.entries(fromBackground))
-        assert(!moved, `A background tab's ${name} reached the Mac's clipboard`);
-      for (const [name, { moved }] of Object.entries(fromPerson))
-        assert(moved, `The person's focused tab's ${name} did not reach the Mac's clipboard`);
+      kit.artifacts.event("clipboard.page-requests", { fromBackground, fromPerson });
+      for (const [tab, seen] of [
+        ["background", fromBackground],
+        ["person's", fromPerson],
+      ] as const) {
+        // No page an agent works in reads the clipboard.
+        assert.match(String(seen.readText!.answer), /^refused:/u, `${tab} tab read the clipboard`);
+        assert(!String(seen.readText!.answer).includes(fixture));
+        // The asynchronous clipboard API writes nothing, in either tab.
+        assert.match(String(seen.writeText!.answer), /^refused:/u, `${tab} tab's writeText`);
+        assert(!seen.writeText!.moved, `${tab} tab's writeText reached the Mac's clipboard`);
+        // A known limit, recorded, not a wish: under an agent's gesture execCommand('copy')
+        // replaces what is on the Mac's clipboard (Blink allows it on user activation alone and
+        // Electron has no per-tab control). The consent says so; if Electron ever stops it,
+        // this fails and that sentence is revisited.
+        assert(seen.execCommand!.moved, `${tab} tab's execCommand('copy') no longer writes`);
+      }
     } finally {
       await runFile(kit.inputHelper, ["clipboard-restore", String(process.pid), previous]);
     }

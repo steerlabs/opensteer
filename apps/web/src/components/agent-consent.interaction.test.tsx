@@ -168,7 +168,7 @@ describe("agent consent with grants", () => {
     expect(detail(container, "Shopping")).toBe("MacBook Pro · Online");
     // A filled password is readable in the page, so the footer never says the agent "can't see" it.
     expect(container.textContent).toContain(
-      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it. A page it works in can replace what is on the clipboard.",
     );
     const keepOn = container.querySelector('[aria-label="Keep it on"]')!;
     expect([...keepOn.querySelectorAll("button")].map((button) => button.textContent)).toEqual([

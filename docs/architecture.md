@@ -339,9 +339,15 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
 
 Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
 sends only the CDP methods a standard client may, reads a shared Chrome tab's own cookies only, and
-cannot read the clipboard or change a browser permission; a page it operates can replace what is on
-the clipboard, as any page can when it is clicked. On a Linux Home or a Cloud Computer what a page writes goes to
-that browser's own clipboard; no person's clipboard is there.
+cannot read the clipboard or change a browser permission. A page any agent works in can replace what
+is on the clipboard, through `document.execCommand('copy')` under the agent's gesture (and, for your
+own agents, the copy chord): Blink allows that write on user activation alone, and Electron offers no
+per-tab control over it, so it cannot be limited to the tab the person is using without a change in
+Electron or Chromium. On a Mac that is the Mac's clipboard; on a Linux Home or a Cloud Computer it is
+that browser's own clipboard (where `navigator.clipboard.writeText` writes it too), and no
+person's clipboard is there. No agent can read the clipboard through a page: `navigator.clipboard`
+reads and writes are refused to every page of the Mac's browser, reads are refused to every page of
+a Linux Home's, and no agent can grant a clipboard permission.
 
 See [browser-sessions.md](browser-sessions.md).
 

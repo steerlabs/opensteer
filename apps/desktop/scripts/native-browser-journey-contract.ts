@@ -10,7 +10,7 @@ export const journeySteps: Record<string, string> = {
   clipboardConnected:
     "A connected agent's paste, copy, cut and permission grants never reach the Mac's clipboard or devices",
   clipboardPage:
-    "Page script writes the Mac's clipboard only from the tab the person's focused window shows",
+    "No page an agent works in reads the Mac's clipboard; execCommand('copy') still writes it",
   editing: "Person AppKit editing chords",
   find: "Find and Escape",
   fullscreen: "Contained HTML fullscreen and Escape",
