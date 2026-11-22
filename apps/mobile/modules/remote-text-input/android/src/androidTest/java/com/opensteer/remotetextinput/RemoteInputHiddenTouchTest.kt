@@ -126,6 +126,20 @@ class RemoteInputHiddenTouchTest {
       connection.commitText("!", 1)
       drain()
       assertEquals("hel!loab", view.text.toString())
+      // CT9: a text change outside the gate (accessibility set-text) keeps its text and its
+      // caret together, and is reported as the edit it is.
+      val beforeSet = packets.size
+      assertTrue(view.performAccessibilityAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "typed")
+      }))
+      drain()
+      assertEquals("typed", view.text.toString())
+      assertEquals(5, view.selectionStart)
+      assertTrue(packets.drop(beforeSet).any { (it["event"] as Map<*, *>)["type"] == "input" })
+      view.performAccessibilityAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "hel!loab")
+      })
+      drain()
       // Undo and redo, from a menu or an input method, are the far page's chords; the hidden
       // text does not change.
       val beforeUndo = packets.size

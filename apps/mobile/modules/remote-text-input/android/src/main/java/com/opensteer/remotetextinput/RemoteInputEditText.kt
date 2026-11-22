@@ -47,6 +47,8 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var composingEnd = -1
   private var contextId: String? = null
   private val selection = RemoteInputSelection()
+  /** A text change outside the gate is under way: its caret is part of it. */
+  private var outsideEdit = false
   private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
   private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
   var deliver: ((Map<String, Any?>) -> Unit)?
@@ -61,10 +63,15 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
     gate.apply = { instruction -> applyInstruction(instruction) }
     addTextChangedListener(object : TextWatcher {
-      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+      // A text change outside the gate (an accessibility set-text, a multi-character key) is
+      // reported as the edit it is: its own caret goes with it, never undone half.
+      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+        if (initialized && !mutating && !gate.inTurn) outsideEdit = true
+      }
       override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
       override fun afterTextChanged(s: Editable?) {
         if (!mutating) gate.notify(mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()))
+        outsideEdit = false
       }
     })
     onFocusChangeListener = View.OnFocusChangeListener { _, focused -> if (!focused) gate.notify(mapOf("type" to "blur")) }
@@ -199,7 +206,7 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun onSelectionChanged(start: Int, end: Int) {
     super.onSelectionChanged(start, end)
     if (!initialized) return
-    when (selection.changed(start, end, gate.inTurn, mutating)) {
+    when (selection.changed(start, end, gate.inTurn || outsideEdit, mutating)) {
       RemoteInputSelection.Outcome.REPORT -> gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
       RemoteInputSelection.Outcome.QUIET -> {}
       RemoteInputSelection.Outcome.UNDO -> {
