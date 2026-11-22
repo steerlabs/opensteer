@@ -453,5 +453,42 @@ import UIKit
     window.isHidden = true
     #endif
   }
+
+  // Found by the random sequences (second generator, seed 81): a space typed as the input method
+  // commits, before the commit's turn, was named insertFromComposition when it was typed and
+  // taken for the composition's own tail; the far side never got it. A keystroke is named when its
+  // turn comes, as the field then stands.
+  func testAKeystrokeTypedAsTheCompositionCommitsIsNamedForItsTurn() {
+    let field = Field()
+    field.view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+    field.answerAll()
+    let before = field.packets.count
+    // The input method updates the composition, commits it and types a space, all before any
+    // answer: the commit and the space wait behind the update.
+    field.view.setMarkedText("日", selectedRange: NSRange(location: 1, length: 0))
+    field.view.unmarkText()
+    field.view.insertText(" ")
+    field.answerAll()
+    let inputs = field.packets[before...].compactMap { $0["event"] as? [String: Any] }.filter { $0["type"] as? String == "beforeinput" }
+    XCTAssertEqual(inputs.compactMap { $0["inputType"] as? String }, ["insertCompositionText", "insertText"])
+    XCTAssertEqual(field.view.text, "日 ")
+  }
+
+  // Found by the random sequences (second generator, seed 2195): the caret moved while a
+  // Backspace inside a composition waited; the deletion was recorded at the moved caret instead
+  // of the marked text it deleted, and the next keystroke landed inside an emoji.
+  func testACompositionDeletionIsRecordedWhereItsCharactersWentWhateverTheCaret() {
+    let field = Field(settled: "👩‍💻")
+    field.view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+    field.answerAll()
+    field.view.deleteBackward()
+    field.view.insertText("👩‍💻")
+    field.select(NSRange(location: 5, length: 0))
+    field.view.insertText("א")
+    field.answerAll()
+    let text = field.view.text ?? ""
+    XCTAssertEqual(text, "👩‍💻👩‍💻א")
+    XCTAssertEqual(text.utf16.count, (text as NSString).length)
+  }
 }
 #endif

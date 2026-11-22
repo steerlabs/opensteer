@@ -46,7 +46,8 @@ final class RemoteInputEditsCasesTests: XCTestCase {
         } else if let asked = step["composedCount"] as? [String: Any] {
           XCTAssertEqual(RemoteInputEdits.composedCount(in: asked["text"] as! String, range: range(asked["range"])), (step["is"] as! NSNumber).intValue, name)
         } else if let asked = step["deletedStart"] as? [String: Any] {
-          XCTAssertEqual(RemoteInputEdits.deletedStart(selection: range(asked["selection"]), removed: (asked["removed"] as! NSNumber).intValue), (step["is"] as! NSNumber).intValue, name)
+          let marked = asked["marked"] == nil ? nil : range(asked["marked"])
+          XCTAssertEqual(RemoteInputEdits.deletedStart(selection: range(asked["selection"]), marked: marked, removed: (asked["removed"] as! NSNumber).intValue), (step["is"] as! NSNumber).intValue, name)
         } else {
           XCTFail("\(name): unknown step \(step)")
         }

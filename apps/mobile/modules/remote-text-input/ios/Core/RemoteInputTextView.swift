@@ -128,8 +128,11 @@ import UniformTypeIdentifiers
     let target = range(chosen)
     if selectedRange != target { selectedRange = target }
   }
-  private func change(_ inputType: String, data: String?, typed: RemoteInputEdits.Place? = nil, _ action: @escaping () -> Void) {
+  /// `inputType` is named when the edit's turn comes, as the field then stands: a keystroke typed
+  /// as a composition commits is a plain insertion by the time it is applied.
+  private func change(_ namedType: @escaping @autoclosure () -> String, data: String?, typed: RemoteInputEdits.Place? = nil, _ action: @escaping () -> Void) {
     gate.enqueue {
+      let inputType = namedType()
       self.gate.event(["type": "beforeinput", "inputType": inputType, "data": data as Any? ?? NSNull()]) {
         let wasComposing = self.markedTextRange != nil
         self.mutating = true
@@ -152,7 +155,7 @@ import UniformTypeIdentifiers
   public override func insertText(_ text: String) {
     if mutating { super.insertText(text); return }
     let typed = place(selectedRange)
-    change(markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text, typed: typed) {
+    change(self.markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text, typed: typed) {
       self.edit(self.select(typed)) { super.insertText(text) }
     }
   }
@@ -179,10 +182,11 @@ import UniformTypeIdentifiers
       _ = self.select(typed)
       // Inside a composition the marked text is not what goes: the character before the caret is.
       let selection = self.selectedRange
+      let marked = self.markedRange
       let before = self.length
       super.deleteBackward()
       let removed = before - self.length
-      self.edits.record(start: RemoteInputEdits.deletedStart(selection: selection, removed: removed), removed: removed, inserted: 0)
+      self.edits.record(start: RemoteInputEdits.deletedStart(selection: selection, marked: marked, removed: removed), removed: removed, inserted: 0)
     }
   }
   public override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {

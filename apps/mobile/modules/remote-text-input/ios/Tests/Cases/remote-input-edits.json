@@ -461,6 +461,30 @@
             "removed": 0
           },
           "is": 0
+        },
+        {
+          "deletedStart": {
+            "selection": [5, 0],
+            "marked": [5, 1],
+            "removed": 1
+          },
+          "is": 5
+        },
+        {
+          "deletedStart": {
+            "selection": [0, 0],
+            "marked": [2, 3],
+            "removed": 1
+          },
+          "is": 4
+        },
+        {
+          "deletedStart": {
+            "selection": [9, 0],
+            "marked": [2, 3],
+            "removed": 3
+          },
+          "is": 2
         }
       ]
     },

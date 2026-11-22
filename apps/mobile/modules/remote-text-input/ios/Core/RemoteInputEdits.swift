@@ -111,8 +111,11 @@ struct RemoteInputEdits {
   }
   /// Where deleteBackward's deletion began: the selection it deleted, or as much just before the
   /// caret (inside a composition too, where the marked text is not what went).
-  static func deletedStart(selection: NSRange, removed: Int) -> Int {
-    selection.length > 0 ? selection.location : max(0, selection.location - removed)
+  /// With marked text the deletion is at the end of the marked text, wherever the caret was moved
+  /// while it waited: the person's caret is not where an input method's Backspace deletes.
+  static func deletedStart(selection: NSRange, marked: NSRange? = nil, removed: Int) -> Int {
+    if let marked { return max(marked.location, marked.location + marked.length - removed) }
+    return selection.length > 0 ? selection.location : max(0, selection.location - removed)
   }
 
   /// Where the deletion of a selection UIKit named is now, in `text`. Pressed twice while the

@@ -113,7 +113,8 @@ export class Edits {
     const at = this.current(caret, text.length).start;
     return at > 0 ? { start: characterAt(text, at - 1).start, end: at } : { start: at, end: at };
   }
-  static deletedStart(selection: Span, removed: number): number {
+  static deletedStart(selection: Span, removed: number, marked: Span | null = null): number {
+    if (marked) return Math.max(marked.start, marked.end - removed);
     return selection.end > selection.start
       ? selection.start
       : Math.max(0, selection.start - removed);
@@ -270,8 +271,14 @@ export class NativeField {
     const chosen = this.edits.chosenAfter(typed);
     if (chosen) this.selection = this.range(chosen);
   }
-  private change(inputType: string, data: string | null, typed: Place | null, action: () => void) {
-    this.enqueue(() =>
+  private change(
+    named: string | (() => string),
+    data: string | null,
+    typed: Place | null,
+    action: () => void,
+  ) {
+    this.enqueue(() => {
+      const inputType = typeof named === "string" ? named : named();
       this.event({ type: "beforeinput", inputType, data }, () => {
         const wasComposing = this.marked !== null;
         this.mutating = true;
@@ -288,19 +295,17 @@ export class NativeField {
         if (wasComposing && !composing)
           this.notify({ type: "compositionend", data: data ?? "", proxy });
         this.notify({ type: "input", inputType, composing, proxy });
-      }),
-    );
+      });
+    });
   }
 
   // What UIKit calls, naming places in the text as it stands at that moment.
 
   insertText(text: string) {
     const typed = this.place(this.selection);
-    const inputType = this.marked
-      ? "insertFromComposition"
-      : text === "\n"
-        ? "insertLineBreak"
-        : "insertText";
+    // Named when its turn comes, as the field then stands (RemoteInputTextView.change).
+    const inputType = () =>
+      this.marked ? "insertFromComposition" : text === "\n" ? "insertLineBreak" : "insertText";
     this.change(inputType, text, typed, () => {
       this.replace(this.select(typed), text);
       this.marked = null;
@@ -353,6 +358,7 @@ export class NativeField {
     this.change("deleteContentBackward", null, typed, () => {
       this.select(typed);
       const selection = { ...this.selection };
+      const marked = this.marked ? { ...this.marked } : null;
       const before = this.text.length;
       // UITextView without an input method: the marked text, the selection, or the composed
       // character before the caret.
@@ -367,7 +373,7 @@ export class NativeField {
       this.marked = null;
       this.selection = { start: target.start, end: target.start };
       const removed = before - this.text.length;
-      this.edits.record(Edits.deletedStart(selection, removed), removed, 0);
+      this.edits.record(Edits.deletedStart(selection, removed, marked), removed, 0);
     });
   }
   setMarkedText(text: string) {
@@ -385,6 +391,28 @@ export class NativeField {
       this.marked = null;
       this.ownSelection = { ...this.selection };
       this.notify({ type: "compositionend", data, proxy: this.snapshot() });
+    });
+  }
+  /**
+   * RemoteInputTextView.configure with a new context: the composition ends under the old one,
+   * then the field is cleared for the new one, each in its turn.
+   */
+  configure(contextId: string | null) {
+    this.enqueue(() => {
+      if (contextId === this.contextId) return;
+      if (this.marked) {
+        const data = this.text.slice(this.marked.start, this.marked.end);
+        this.marked = null;
+        this.notify({ type: "compositionend", data, proxy: this.snapshot() });
+      }
+      this.enqueue(() => {
+        this.contextId = contextId;
+        this.mutating = true;
+        this.replace({ start: 0, end: this.text.length }, "");
+        this.selection = { start: 0, end: 0 };
+        this.ownSelection = { ...this.selection };
+        this.mutating = false;
+      });
     });
   }
   paste(text: string) {
@@ -424,6 +452,8 @@ export class FarField {
   /** Told the new context after a refusal, as the page publishes it. */
   onRotate: ((contextId: string) => void) | null = null;
   refused: EditingOperation[] = [];
+  /** Refused because the text did not match its before and after: always a fault upstream. */
+  mismatched: EditingOperation[] = [];
   /** Every operation the field was sent, in order. */
   sent: EditingOperation[] = [];
   private rotations = 0;
@@ -465,6 +495,7 @@ export class FarField {
             this.value.slice(range.start, this.caret) !== before ||
             this.value.slice(this.caret, range.end) !== after)
         ) {
+          this.mismatched.push(operation);
           this.refuse(operation);
           return true;
         }

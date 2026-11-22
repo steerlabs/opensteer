@@ -20,7 +20,7 @@ type Step =
   | { isBackspace: { named: Pair; selection: Pair; text: string }; is: boolean }
   | { deletesSelection: { named: Pair; selection: Pair }; is: boolean }
   | { composedCount: { text: string; range: Pair }; is: number }
-  | { deletedStart: { selection: Pair; removed: number }; is: number };
+  | { deletedStart: { selection: Pair; marked?: Pair; removed: number }; is: number };
 
 const file = JSON.parse(
   readFileSync(new URL("../ios/Tests/Cases/remote-input-edits.json", import.meta.url), "utf8"),
@@ -78,7 +78,11 @@ describe("RemoteInputEdits' shared cases, in the port", () => {
           );
         else if ("deletedStart" in step)
           expect(
-            Edits.deletedStart(span(step.deletedStart.selection), step.deletedStart.removed),
+            Edits.deletedStart(
+              span(step.deletedStart.selection),
+              step.deletedStart.removed,
+              step.deletedStart.marked ? span(step.deletedStart.marked) : null,
+            ),
           ).toBe(step.is);
         else throw new Error(`Unknown step ${JSON.stringify(step)}`);
       }
