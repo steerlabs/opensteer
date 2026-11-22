@@ -743,7 +743,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
 );
 
 it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
-  "keeps a connection's browser_use to the standard lists, with every helper working; the person's own as before",
+  "runs the Browser Harness page and locator helpers as a connected agent, in real Chromium",
   async () => {
     const { first, database, scripts, origin, profile } = await browserUseHome();
     const connections = new AgentConnectionStore(database);
@@ -810,6 +810,58 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         await step("waitForTimeout", () => page.waitForTimeout(10));
         await step("screenshot", () => page.screenshot());
         await step("ariaSnapshot", () => page.ariaSnapshot());
+        await step("close", () => page.close());
+        return "outcome:" + encodeURIComponent(JSON.stringify(failed)) + ":end";
+      `,
+    });
+    const helperText = JSON.stringify(helpers.content);
+    const helperFailures = JSON.parse(
+      decodeURIComponent(
+        /outcome:([^:"\\]*):end/u.exec(helperText)?.[1] ?? "%5B%22no%20outcome%22%5D",
+      ),
+    ) as string[];
+    expect(helperFailures, helperText.slice(0, 2000)).toEqual([]);
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "runs the Browser Harness input and page-detail helpers as a connected agent, in real Chromium",
+  async () => {
+    const { first, database, scripts, origin, profile } = await browserUseHome();
+    const connections = new AgentConnectionStore(database);
+    // A connected agent's own browser_use: every helper works, and nothing outside the lists goes out.
+    const direct = await connections.create({
+      userId: first.userId,
+      label: "Direct",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      }),
+    });
+    expect(await connections.activate(direct.id, randomUUID())).toBe(true);
+    const { session } = await beginAgentSession(database, {
+      userId: first.userId,
+      agentConnectionId: direct.id,
+    });
+    const agent = { agentBindingId: `session:${session.id}`, ownerId: first.userId };
+    const helpers = await scripts.runBrowserScript({
+      authority: agent,
+      contextKey: "connected-helpers",
+      code: `
+        const failed = [];
+        const step = async (name, run) => {
+          try { await run(); } catch (error) { failed.push(name + ": " + String(error && error.message)); }
+        };
+        const page = await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });
+        await step("goto", () => page.goto(${JSON.stringify(`${origin}/helpers`)}));
+        await step("waitForLoad", () => page.waitForLoad());
+        await step("waitForURL", () => page.waitForURL(${JSON.stringify(`${origin}/helpers`)}));
+        await step("url/title", async () => { if (!(await page.url()).endsWith("/helpers") || (await page.title()) !== "Helpers") throw new Error("wrong page"); });
         await step("keyboard.press", () => page.keyboard.press("Tab"));
         await step("keyboard.type", async () => { await page.locator("#name").click(); await page.keyboard.type("bc"); });
         await step("keyboard.insertText", () => page.keyboard.insertText("d"));
@@ -847,43 +899,89 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       ),
     ) as string[];
     expect(helperFailures, helperText.slice(0, 2000)).toEqual([]);
+  },
+);
 
-    // And on a page of its own, nothing outside the lists reaches the browser, nested or not.
-    const refusals = await scripts.runBrowserScript({
-      authority: agent,
-      contextKey: "connected-refusals",
-      code: `
-        const page = await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });
-        await page.goto(${JSON.stringify(origin)});
-        const refused = [];
-        const attempt = async (name, run) => {
-          try { await run(); refused.push(name + ": performed"); }
-          catch (error) { refused.push(name + ": " + String(error && error.message)); }
-        };
-        await attempt("Storage.clearDataForOrigin", () => page.cdp("Storage.clearDataForOrigin", { origin: ${JSON.stringify(origin)}, storageTypes: "all" }));
-        await attempt("ServiceWorker.unregister", () => page.cdp("ServiceWorker.unregister", { scopeURL: ${JSON.stringify(`${origin}/`)} }));
-        await attempt("Page.crash", () => page.cdp("Page.crash", {}));
-        await attempt("Page.close", () => page.cdp("Page.close", {}));
-        await attempt("nested", () => page.cdp("Target.sendMessageToTarget", { sessionId: "child", message: JSON.stringify({ id: 1, method: "Page.crash", params: {} }) }));
-        const alive = await page.js("document.title");
-        return "outcome:" + encodeURIComponent(JSON.stringify({ refused, alive })) + ":end";
-      `,
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "keeps a connection's browser_use to the standard lists; the person's own as before",
+  async () => {
+    const { first, database, scripts, origin, profile } = await browserUseHome();
+    const connections = new AgentConnectionStore(database);
+    // A connected agent's own browser_use: every helper works, and nothing outside the lists goes out.
+    const direct = await connections.create({
+      userId: first.userId,
+      label: "Direct",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      }),
     });
-    const refusalText = JSON.stringify(refusals.content);
-    const refusal = JSON.parse(
-      decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(refusalText)![1]!),
-    ) as { refused: string[]; alive: string };
-    expect(refusal.refused).toEqual([
+    expect(await connections.activate(direct.id, randomUUID())).toBe(true);
+    const { session } = await beginAgentSession(database, {
+      userId: first.userId,
+      agentConnectionId: direct.id,
+    });
+    const agent = { agentBindingId: `session:${session.id}`, ownerId: first.userId };
+    // And on a page of its own, nothing outside the lists reaches the browser, nested or not.
+    const refusalsOf = async (contextKey: string, attempts: string) => {
+      const result = await scripts.runBrowserScript({
+        authority: agent,
+        contextKey,
+        code: `
+          globalThis.page ??= await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });
+          if (!(await page.url()).startsWith(${JSON.stringify(origin)})) await page.goto(${JSON.stringify(origin)});
+          const refused = [];
+          const attempt = async (name, run) => {
+            try { await run(); refused.push(name + ": performed"); }
+            catch (error) { refused.push(name + ": " + String(error && error.message)); }
+          };
+          ${attempts}
+          const alive = await page.js("document.title");
+          return "outcome:" + encodeURIComponent(JSON.stringify({ refused, alive })) + ":end";
+        `,
+      });
+      const outcome = JSON.parse(
+        decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(JSON.stringify(result.content))![1]!),
+      ) as { refused: string[]; alive: string };
+      expect(outcome.alive).toBe("Home browser fixture");
+      return outcome.refused;
+    };
+    const outsideMessage = (name: string, method = name) =>
       expect.stringMatching(
-        /^Storage\.clearDataForOrigin: .*Storage\.clearDataForOrigin is not available to a connected agent\./u,
+        new RegExp(
+          `^${name.replaceAll(".", "\\.")}: .*${method.replaceAll(".", "\\.")} is not available to a connected agent\\.`,
+          "u",
+        ),
+      );
+    // Storage and workers the profile's other pages use, first: nothing of them reaches the page.
+    expect(
+      await refusalsOf(
+        "connected-refusals",
+        `
+          await attempt("Storage.clearDataForOrigin", () => page.cdp("Storage.clearDataForOrigin", { origin: ${JSON.stringify(origin)}, storageTypes: "all" }));
+          await attempt("ServiceWorker.unregister", () => page.cdp("ServiceWorker.unregister", { scopeURL: ${JSON.stringify(`${origin}/`)} }));
+          await attempt("nested", () => page.cdp("Target.sendMessageToTarget", { sessionId: "child", message: JSON.stringify({ id: 1, method: "Page.crash", params: {} }) }));
+        `,
       ),
-      expect.stringMatching(
-        /^ServiceWorker\.unregister: .*ServiceWorker\.unregister is not available to a connected agent\./u,
-      ),
-      expect.stringMatching(/^Page\.crash: .*Page\.crash is not available to a connected agent\./u),
-      expect.stringMatching(/^Page\.close: .*Page\.close is not available to a connected agent\./u),
-      expect.stringMatching(/^nested: .*Page\.crash is not available to a connected agent\./u),
+    ).toEqual([
+      outsideMessage("Storage.clearDataForOrigin"),
+      outsideMessage("ServiceWorker.unregister"),
+      outsideMessage("nested", "Page.crash"),
     ]);
-    expect(refusal.alive).toBe("Home browser fixture");
+    // Then the page itself: it is neither crashed nor closed.
+    expect(
+      await refusalsOf(
+        "connected-refusals",
+        `
+          await attempt("Page.crash", () => page.cdp("Page.crash", {}));
+          await attempt("Page.close", () => page.cdp("Page.close", {}));
+        `,
+      ),
+    ).toEqual([outsideMessage("Page.crash"), outsideMessage("Page.close")]);
   },
 );
