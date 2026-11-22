@@ -1,6 +1,6 @@
 import { createId, SequenceSchema, type ThreadId } from "@opensteer/core";
 import {
-  migrateToLatest,
+  migrationProvider,
   readAgentThreadActivity,
   readAgentThreadRecent,
   readThreadWaitSnapshot,
@@ -137,11 +137,11 @@ it("keeps a Home that used teams working: its old rows read without error and ev
       waiting: waiting.message.id,
     });
 
-    // The Home's start runs this release's migrations over that database.
-    await sql`delete from kysely_migration where name='0051_needs_you_counts_requests'`.execute(
-      store.database,
-    );
-    await migrateToLatest(store.database);
+    // This release's migration for it runs over that database, as on a Home that last ran the
+    // release before. Later migrations already ran on this one, so it is run as itself rather
+    // than by forgetting it and migrating again.
+    const migrations = await migrationProvider().getMigrations();
+    await migrations["0051_needs_you_counts_requests"]!.up(store.database as never);
 
     // What a client reads at startup.
     const shell = data(await host.api["personal.shell.get"]({}));
