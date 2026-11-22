@@ -55,3 +55,18 @@ describe("the words a person reads for a failed call to a Home", () => {
     ).toBe(fallback);
   });
 });
+
+describe("the screens' own words for a refusal they could not read", () => {
+  const report = new HostClientRequestError({
+    code: "bad_request",
+    message: "Request is invalid: access.route: Active mode needs a route",
+    provenance: "host",
+    reason: "invalid-request",
+    status: 400,
+  });
+
+  it("remote access never shows a validator's report", async () => {
+    const { remoteAccessFailureMessage } = await import("./remote-access.js");
+    expect(remoteAccessFailureMessage(report)).not.toContain("Request is invalid");
+  });
+});
