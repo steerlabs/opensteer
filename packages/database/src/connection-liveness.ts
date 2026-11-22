@@ -13,7 +13,11 @@ export function liveConnection(now: Date = new Date()): RawBuilder<boolean> {
     (agent_connections.bridge_account_id is null
       and agent_connections.token_hash is not null
       and agent_connections.expires_at > ${now}::timestamptz)
-    or (agent_connections.bridge_account_id is not null and exists (
+    or (agent_connections.bridge_account_id is not null
+      -- A bridge can only ask your agents to work: without tasks it is not live.
+      and (agent_connections."grant"->>'scope' = 'everything'
+        or coalesce((agent_connections."grant"->>'tasks')::boolean, false))
+      and exists (
       select 1 from channel_accounts bridge_account
       join integration_connections bridge_channel
         on bridge_channel.id = bridge_account.connection_id
@@ -22,9 +26,20 @@ export function liveConnection(now: Date = new Date()): RawBuilder<boolean> {
       where bridge_account.id = agent_connections.bridge_account_id
         and bridge_account.status = 'connected'
         and bridge_channel.status in ('pending', 'connected', 'needs-attention')
+        and bridge_channel.owner_user_id = agent_connections.user_id
         and (bridge_channel.transport_kind <> 'computer' or (
           bridge_source.status is not null and bridge_source.status <> 'revoked'
-          and bridge_source.computer_access = 'read-write'))))))`;
+          and bridge_source.computer_access = 'read-write'
+          and bridge_source.owner_user_id = bridge_channel.owner_user_id
+          -- The app connection's Mac is the computer the transport runs on.
+          and exists (
+            select 1 from device_drivers bridge_driver
+            join devices bridge_device on bridge_device.id = bridge_driver.device_id
+            join runners bridge_runner on bridge_runner.id = bridge_driver.runner_id
+            where bridge_driver.device_id = coalesce(bridge_source.device_id, bridge_source.runner_id)
+              and bridge_driver.role = 'self' and bridge_driver.detached_at is null
+              and bridge_device.removed_at is null and bridge_runner.revoked_at is null
+              and bridge_runner.id = bridge_channel.runner_id)))))))`;
 }
 
 /** An unexpired MCP connection, or any bridge: what expiry maintenance may look at. */
@@ -51,7 +66,11 @@ export function connectionActive(
  * account only suspends it (it has no authority while paused) and is not an end.
  */
 export const bridgeAccountEnded = sql<boolean>`(agent_connections.bridge_account_id is not null
-  and agent_connections.revoked_at is null and not exists (
+  and agent_connections.revoked_at is null and (
+    -- A grant (or an organization's policy) that took tasks away ends it, with evidence.
+    not (agent_connections."grant"->>'scope' = 'everything'
+      or coalesce((agent_connections."grant"->>'tasks')::boolean, false))
+    or not exists (
     select 1 from channel_accounts bridge_account
     join integration_connections bridge_channel
       on bridge_channel.id = bridge_account.connection_id
@@ -62,4 +81,4 @@ export const bridgeAccountEnded = sql<boolean>`(agent_connections.bridge_account
       and bridge_channel.status <> 'revoked'
       and (bridge_channel.transport_kind <> 'computer' or (
         bridge_source.status is not null and bridge_source.status <> 'revoked'
-        and bridge_source.computer_access = 'read-write'))))`;
+        and bridge_source.computer_access = 'read-write')))))`;

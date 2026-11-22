@@ -138,6 +138,7 @@ export async function readLiveAgentConnectionRow(
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
       "bridgeSenders",
+      "bridgeAccountId",
     ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)

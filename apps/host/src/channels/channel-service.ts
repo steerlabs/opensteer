@@ -645,13 +645,16 @@ export class ChannelService {
       claimToken: claim.claimToken,
     });
     if (decision.kind !== "work") return;
-    const chat = { conversationId: decision.conversationId, sender: decision.sender };
+    const chat = {
+      conversationId: decision.conversationId,
+      revision: decision.grantRevision,
+      sender: decision.sender,
+    };
     const resolve = () =>
       resolveBridgeCaller(this.#store, {
         ownerUserId: decision.ownerUserId,
         bridgeId: decision.bridgeId,
         chat,
-        expectedRevision: decision.grantRevision,
       });
     let caller;
     try {

@@ -1,6 +1,6 @@
 import { createChannelId } from "@opensteer/channel-core";
-import { ThreadIdSchema, type AgentGrant } from "@opensteer/core";
-import { AgentConnectionStore } from "@opensteer/database";
+import { createId, ThreadIdSchema, type AgentGrant } from "@opensteer/core";
+import { AgentConnectionStore, upsertChannelIdentity } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import { describe, expect, it } from "vitest";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
@@ -22,6 +22,19 @@ async function bridgeFixture(suffix: string) {
     senders: "owner",
     accessMode: "approval-required",
     grant: tasksOnly,
+  });
+  // "Me" on the account, as sending the link code makes it.
+  await storeFixture.database.transaction().execute(async (tx) => {
+    const identity = await upsertChannelIdentity(tx, {
+      accountId: configured.account.id,
+      displayName: "Tim",
+      externalUserId: "U-OWNER",
+    });
+    await tx
+      .updateTable("channelIdentities")
+      .set({ linkedUserId: fixture.userId, status: "linked" })
+      .where("id", "=", identity.id)
+      .execute();
   });
   const conversation = async (bridgeId: string, external: string) => {
     const id = createChannelId("conversation");
@@ -60,7 +73,8 @@ describe("a bridge asks your own agents to work through the task tools' own entr
         bridgeId: f.bridge.id,
         chat: {
           conversationId: f.conversationId,
-          sender: { displayName: "Tim", owner: true },
+          revision: f.bridge.grantRevision!,
+          sender: { displayName: "Tim", externalUserId: "U-OWNER" },
         },
       });
       const created = (await f.call(
@@ -108,7 +122,8 @@ describe("a bridge asks your own agents to work through the task tools' own entr
     try {
       const stranger = {
         conversationId: f.conversationId,
-        sender: { displayName: "Someone else", owner: false },
+        revision: f.bridge.grantRevision!,
+        sender: { displayName: "Someone else", externalUserId: "U-STRANGER" },
       };
       // Only me: someone else's message is never admitted as this bridge.
       await expect(
@@ -122,7 +137,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
       const owner = await resolveBridgeCaller(f.storeFixture.store, {
         ownerUserId: f.fixture.userId,
         bridgeId: f.bridge.id,
-        chat: { ...stranger, sender: { displayName: "Tim", owner: true } },
+        chat: { ...stranger, sender: { displayName: "Tim", externalUserId: "U-OWNER" } },
       });
       await expect(
         f.call({ ...owner, chat: stranger }, "opensteer_task_create", { message: "Hi" }, "k1"),
@@ -139,7 +154,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
       const foreign = await f.conversation(other.id, "C-other");
       await expect(
         f.call(
-          { ...owner, chat: { conversationId: foreign, sender: owner.chat!.sender } },
+          { ...owner, chat: { ...owner.chat!, conversationId: foreign } },
           "opensteer_task_create",
           { message: "Hi" },
           "k2",
@@ -154,6 +169,59 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           "k3",
         ),
       ).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      await f.storeFixture.close();
+    }
+  });
+
+  it("asks the one bridge admission at every layer: caller, inbox and hand-off", async () => {
+    const f = await bridgeFixture("bridge-one-rule");
+    try {
+      const owner = {
+        conversationId: f.conversationId,
+        revision: f.bridge.grantRevision!,
+        sender: { displayName: "Tim", externalUserId: "U-OWNER" },
+      };
+      // The caller reads who wrote from the linked identities, never from what it is told.
+      await expect(
+        resolveBridgeCaller(f.storeFixture.store, {
+          ownerUserId: f.fixture.userId,
+          bridgeId: f.bridge.id,
+          chat: {
+            ...owner,
+            sender: { displayName: "Eve", externalUserId: "U-STRANGER", owner: true },
+          } as never,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      // The inbox refuses a message admitted under an earlier revision of the bridge.
+      const caller = await resolveBridgeCaller(f.storeFixture.store, {
+        ownerUserId: f.fixture.userId,
+        bridgeId: f.bridge.id,
+        chat: owner,
+      });
+      await new AgentConnectionStore(f.storeFixture.database).update(f.fixture.userId, {
+        connectionId: f.bridge.id,
+        expectedRevision: f.bridge.grantRevision!,
+        accessMode: "auto",
+      });
+      await expect(
+        f.call(caller, "opensteer_task_create", { message: "Hi" }, "stale-revision"),
+      ).rejects.toMatchObject({ code: "forbidden", message: "Connected agent source is invalid" });
+      // A paused account hands nothing off: the hand-off reads the same liveness.
+      await f.storeFixture.database
+        .updateTable("channelAccounts")
+        .set({ status: "paused" })
+        .where("id", "=", f.configured.account.id)
+        .execute();
+      await expect(
+        f.storeFixture.store.recordConnectionRunHandoff({
+          runId: createId("run"),
+          bindingGeneration: 1,
+          connectionId: f.bridge.id,
+          grantRevision: f.bridge.grantRevision! + 1,
+          mode: "approval-required",
+        }),
+      ).rejects.toThrow("The agent connection changed before this Run could be sent");
     } finally {
       await f.storeFixture.close();
     }

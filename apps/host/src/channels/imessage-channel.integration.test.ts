@@ -260,10 +260,11 @@ integration("iMessage channel", () => {
       expect(messages.polls[0]?.after).toEqual({ guid: "G40", rowId: 40 });
       expect(await ingressCount()).toBe(0);
 
-      // "Me" is whoever sends, from their own phone, the code Opensteer shows the person.
-      // Nothing is said back in Messages; Opensteer shows who is linked.
+      // "Me" is whoever sends, from their own phone, the code Opensteer shows the person, and
+      // one handle at a time: linking another unlinks the first. Nothing is said back in
+      // Messages; Opensteer shows who is linked.
       const sendsBeforeLinking = messages.sends.length;
-      for (const handle of [ownerPhone, "OWNER@example.com"]) {
+      for (const handle of ["OWNER@example.com", ownerPhone]) {
         const { code } = await startBridgeOwnerLink(host.store.database, {
           userId: host.ownerId,
           accountId,
@@ -280,7 +281,7 @@ integration("iMessage channel", () => {
         .execute();
       expect(linked).toEqual([
         { externalUserId: ownerPhone, linkedUserId: host.ownerId },
-        { externalUserId: ownerEmail, linkedUserId: host.ownerId },
+        { externalUserId: ownerEmail, linkedUserId: null },
       ]);
       // The bridge for direct messages, on the consent a connected agent gets.
       const bridge = await new AgentConnectionStore(host.store.database).createBridge({
@@ -292,7 +293,8 @@ integration("iMessage channel", () => {
       });
       record("linked by code, bridge made", { bridge: bridge.id, linked });
 
-      // 5 and 6. The owner, however their handle is written, gets their reply.
+      // 5 and 6. The owner, from the handle they linked, gets their reply; the handle they
+      // linked before, however it is written, is nobody now.
       const phoneReply = await converse(caller, messages, {
         from: ownerPhone,
         reply: "Three meetings, the first at nine.",
@@ -305,14 +307,11 @@ integration("iMessage channel", () => {
         to: ownerPhone,
       });
       await expectSentDelivery(phoneReply.send.key);
-      const emailReply = await converse(caller, messages, {
-        from: "OWNER@example.com",
-        reply: "Done.",
-        text: "Remind me to call Sam",
-      });
-      expect(emailReply.send).toMatchObject({ text: "Done.", to: ownerEmail });
-      await expectSentDelivery(emailReply.send.key);
-      record("owner answered", { email: emailReply.send, phone: phoneReply.send });
+      const sendsBeforeEmail = messages.sends.length;
+      const fromEmail = messages.receive("OWNER@example.com", "Remind me to call Sam");
+      await waitForCondition(async () => (await ingressStatus(fromEmail.guid)) === "ignored");
+      expect(messages.sends.length).toBe(sendsBeforeEmail);
+      record("owner answered", { phone: phoneReply.send, unlinkedEmail: "ignored" });
 
       // A long code answer must survive the real delivery queue, adapter,
       // bridge schema and per-part receipts without losing code or exceeding

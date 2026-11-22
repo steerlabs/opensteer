@@ -40,7 +40,11 @@ describeStore("answers leave the Home only through a bridge's Disconnect set", (
       source: {
         kind: "connection",
         connectionId: bridge.bridge.id,
-        chat: { conversationId, sender: { displayName: "Tim", owner: true } },
+        chat: {
+          conversationId,
+          revision: bridge.bridge.grantRevision!,
+          sender: { displayName: "Tim", externalUserId: bridge.owner },
+        },
       },
       policy: "queue",
       idempotencyKey: "disconnect-message",

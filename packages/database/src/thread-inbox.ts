@@ -2,6 +2,7 @@ import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { liveConnection } from "./connection-liveness.js";
+import { admitBridgeSender } from "./bridge-admission.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
   republishPendingRequestsShowing,
@@ -2349,7 +2350,8 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
           ? {
               chat: {
                 conversationId: source.chat.conversationId,
-                sender: { displayName: "", owner: source.chat.sender.owner },
+                revision: source.chat.revision,
+                sender: { displayName: "", externalUserId: source.chat.sender.externalUserId },
               },
             }
           : {}),
@@ -2835,7 +2837,9 @@ export async function enqueueThreadInputInTransaction(
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
-      (request.source.kind === "connection" && request.source.chat?.sender.owner === true) ||
+      // A chat message that is a conversation with the person (their own direct messages to a
+      // bridge only they may speak to: conversationalReply checks which).
+      (request.source.kind === "connection" && request.source.chat !== undefined) ||
       Boolean(activeRun?.voiceSessionId));
   // A Run whose turn ended while its background work runs on takes the next
   // message from its own requester, on the same engine and model, as a new
@@ -3214,12 +3218,20 @@ async function resolveThreadInputFacts(
         message: "Connected agent source is invalid",
       });
     const chat = source.chat;
-    // Chat facts only from the bridge itself, for a conversation it covers, from a sender its
-    // rule admits: read under the same live connection as everything else here.
+    // Chat facts only from the bridge itself, for a conversation it covers, from a sender it
+    // admits under the revision the message was admitted under: the one bridge admission. The
+    // task is already locked here, so the bridge row is read, not locked (lock order).
+    const admitted = chat
+      ? await admitBridgeSender(transaction, {
+          ownerUserId: input.requestedBy,
+          bridgeId: connection.id,
+          externalUserId: chat.sender.externalUserId,
+          expectedRevision: chat.revision,
+        })
+      : null;
     if (
       chat &&
-      (connection.bridgeAccountId === null ||
-        (!chat.sender.owner && connection.bridgeSenders !== "anyone") ||
+      (admitted?.kind !== "admitted" ||
         !(await transaction
           .selectFrom("bridgeConversations")
           .select("id")
@@ -3233,7 +3245,7 @@ async function resolveThreadInputFacts(
       });
     const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
     const owner =
-      chat?.sender.owner === true
+      admitted?.kind === "admitted" && admitted.owner
         ? await transaction
             .selectFrom("principals")
             .select("displayName")

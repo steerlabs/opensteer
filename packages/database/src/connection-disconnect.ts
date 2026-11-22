@@ -26,7 +26,7 @@ import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
-import { bridgeAccountEnded, connectionActive } from "./connection-liveness.js";
+import { bridgeAccountEnded, connectionActive, liveConnection } from "./connection-liveness.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -724,17 +724,15 @@ export async function recordConnectionRunHandoff(
   },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
+    // The one liveness test: a bridge whose account was paused or removed hands nothing off.
     const connection = await tx
       .selectFrom("agentConnections")
-      .select(["grantRevision", "revokedAt", "expiresAt", "bridgeAccountId"])
+      .select("grantRevision")
       .where("id", "=", input.connectionId)
+      .where(liveConnection())
       .forShare()
       .executeTakeFirst();
-    if (
-      !connection ||
-      !connectionActive(connection, new Date()) ||
-      connection.grantRevision !== input.grantRevision
-    )
+    if (!connection || connection.grantRevision !== input.grantRevision)
       throw new Error("The agent connection changed before this Run could be sent");
     const witness = {
       admittedGrantRevision: input.grantRevision,

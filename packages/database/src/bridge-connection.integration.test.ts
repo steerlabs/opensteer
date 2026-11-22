@@ -275,3 +275,106 @@ describeStore("work from a bridge anyone may speak to has no personal context", 
     expect(await lineagePersonalContext(database, `mcn_${randomUUID()}`)).toBe(false);
   });
 });
+
+describeStore("the ingress asks the one bridge admission before it writes anything", (it) => {
+  it("applies the organization's policy, and links nobody on an account that is not connected", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("ingress-policy");
+    const { database } = storeFixture;
+    const conversations = () =>
+      database
+        .selectFrom("bridgeConversations")
+        .select("id")
+        .where("bridgeId", "=", bridge.bridge.id)
+        .execute();
+    // A work Home whose policy does not allow tasks: the message is refused at admission,
+    // before any conversation is written for it.
+    const { WorkHomeStore } = await import("./work-home.js");
+    await new WorkHomeStore(database).initialize(
+      {
+        organizationId: `org_${randomUUID()}` as never,
+        organizationName: "Workshop",
+        assignmentId: `was_${randomUUID()}` as never,
+      },
+      bridge.fixture.deploymentId,
+    );
+    const { decision } = await bridge.decide({ eventId: "policy-1" });
+    expect(decision).toMatchObject({ kind: "ignored" });
+    expect(await conversations()).toEqual([]);
+  });
+
+  it("redeems a link code only for a connected account", async ({ storeFixture }) => {
+    const bridge = await storeFixture.createBridgeFixture("link-paused", { linkOwner: false });
+    const { startBridgeOwnerLink } = await import("./bridge-ingress.js");
+    const { code } = await startBridgeOwnerLink(storeFixture.database, {
+      userId: bridge.fixture.userId,
+      accountId: bridge.configured.account.id,
+    });
+    // The code arrived while connected; by the time it is read, the account is paused.
+    const claimed = await bridge.claim({ eventId: "link-1", text: code });
+    await storeFixture.database
+      .updateTable("channelAccounts")
+      .set({ status: "paused" })
+      .where("id", "=", bridge.configured.account.id)
+      .execute();
+    const { decideBridgeIngress } = await import("./bridge-ingress.js");
+    const decision = await decideBridgeIngress(storeFixture.database, {
+      ingressId: claimed.id,
+      claimToken: claimed.claimToken,
+    });
+    expect(decision).not.toEqual({ kind: "linked" });
+    expect(
+      await storeFixture.database
+        .selectFrom("channelIdentities")
+        .select("id")
+        .where("accountId", "=", bridge.configured.account.id)
+        .where("status", "=", "linked")
+        .execute(),
+    ).toEqual([]);
+  });
+});
+
+describeStore('"me" is one identity on an account at a time', (it) => {
+  it("unlinks the earlier one when the person links another", async ({ storeFixture }) => {
+    const bridge = await storeFixture.createBridgeFixture("relink");
+    const { declineBridgeIngress, startBridgeOwnerLink } = await import("./bridge-ingress.js");
+    /** Decide one message, and let the chat go on as the Host's ingress would after it. */
+    const decideAndSettle = async (input: Parameters<typeof bridge.decide>[0]) => {
+      const { claimed, decision } = await bridge.decide(input);
+      if (decision.kind === "work")
+        await declineBridgeIngress(storeFixture.database, {
+          ingressId: claimed.id,
+          claimToken: claimed.claimToken,
+          conversationId: decision.conversationId,
+          reason: "settled by the test",
+        });
+      return decision;
+    };
+    expect(await decideAndSettle({ eventId: "before" })).toMatchObject({ kind: "work" });
+    // The person moves to a new account on the same workspace and sends a new code from it.
+    const { code } = await startBridgeOwnerLink(storeFixture.database, {
+      userId: bridge.fixture.userId,
+      accountId: bridge.configured.account.id,
+    });
+    expect(
+      await decideAndSettle({ eventId: "relink", text: code, externalUserId: "U-NEW" }),
+    ).toEqual({ kind: "linked" });
+    // What the person sees as "me" is what is accepted as "me": the old account is not.
+    expect(
+      await storeFixture.database
+        .selectFrom("channelIdentities")
+        .select("externalUserId")
+        .where("accountId", "=", bridge.configured.account.id)
+        .where("status", "=", "linked")
+        .execute(),
+    ).toEqual([{ externalUserId: "U-NEW" }]);
+    expect(await decideAndSettle({ eventId: "old" })).toMatchObject({
+      kind: "ignored",
+      reason: "Only the person may message this bridge",
+    });
+    expect(await decideAndSettle({ eventId: "new", externalUserId: "U-NEW" })).toMatchObject({
+      kind: "work",
+    });
+  });
+});

@@ -1,4 +1,5 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
+import { liveConnection } from "./connection-liveness.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -1780,8 +1781,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where("agentConnections.revokedAt", "is", null)
-        .where("agentConnections.expiresAt", ">", new Date())
+        .where(liveConnection())
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3469,8 +3469,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where("agentConnections.revokedAt", "is", null)
-      .where("agentConnections.expiresAt", ">", new Date())
+      .where(liveConnection())
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)

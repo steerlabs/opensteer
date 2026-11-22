@@ -11,7 +11,7 @@ import { sha256Base64Url } from "@opensteer/core/crypto";
 import { OpensteerError, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { channelSourceAllows, enqueueChannelConversationStatus } from "./channel-deliveries.js";
-import { liveConnection } from "./connection-liveness.js";
+import { admitBridgeSender } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -31,7 +31,7 @@ export type BridgeIngressDecision =
       readonly grantRevision: number;
       readonly conversationId: ChannelConversationId;
       readonly taskId: ThreadId | null;
-      readonly sender: { readonly displayName: string; readonly owner: boolean };
+      readonly sender: { readonly displayName: string; readonly externalUserId: string };
       readonly text: string;
     };
 
@@ -174,7 +174,7 @@ export async function decideBridgeIngress(
 
     const admitted = await admitChatMessage(tx, ingress.accountId, event);
     if (admitted.kind === "refused") return ignore(admitted.reason);
-    const { bridge, conversation, owner } = admitted;
+    const { bridge, conversation } = admitted;
     // Too old to act on: the person who may speak hears that, and may send it again.
     if (input.stale) {
       await enqueueChannelConversationStatus(tx, {
@@ -207,7 +207,7 @@ export async function decideBridgeIngress(
       grantRevision: bridge.grantRevision,
       conversationId: conversation.id,
       taskId: open ? task.id : null,
-      sender: { displayName: event.actor.displayName, owner },
+      sender: { displayName: event.actor.displayName, externalUserId: event.actor.externalUserId },
       text,
     };
   });
@@ -250,29 +250,33 @@ async function admitChatMessage(
 ): Promise<ChatAdmission> {
   const covered =
     event.conversation.type === "dm" ? null : event.conversation.externalConversationId;
-  const bridge = await tx
+  // Which bridge covers it is a lookup; whether it is live and the sender may speak is the
+  // one bridge admission.
+  const candidate = await tx
     .selectFrom("agentConnections")
-    .select(["id", "userId", "grantRevision", "bridgeSenders"])
+    .select(["id", "userId"])
     .where("bridgeAccountId", "=", accountId)
     .$call((query) =>
       covered === null
         ? query.where("bridgeConversationId", "is", null)
         : query.where("bridgeConversationId", "=", covered),
     )
-    .where(liveConnection())
-    .forShare("agentConnections")
+    .where("revokedAt", "is", null)
     .executeTakeFirst();
-  if (!bridge?.bridgeSenders)
-    return { kind: "refused", reason: "No bridge covers this conversation" };
-  const identity = await tx
-    .selectFrom("channelIdentities")
-    .select(["linkedUserId", "status"])
-    .where("accountId", "=", accountId)
-    .where("externalUserId", "=", event.actor.externalUserId)
-    .executeTakeFirst();
-  const owner = identity?.status === "linked" && identity.linkedUserId === bridge.userId;
-  if (!owner && bridge.bridgeSenders !== "anyone")
-    return { kind: "refused", reason: "Only the person may message this bridge" };
+  if (!candidate) return { kind: "refused", reason: "No bridge covers this conversation" };
+  const admission = await admitBridgeSender(tx, {
+    ownerUserId: candidate.userId,
+    bridgeId: candidate.id,
+    externalUserId: event.actor.externalUserId,
+    lock: true,
+  });
+  if (admission.kind === "refused") return admission;
+  const owner = admission.owner;
+  const bridge = {
+    id: admission.connection.agentConnectionId,
+    userId: candidate.userId,
+    grantRevision: admission.connection.grantRevision,
+  };
   const keys = {
     bridgeId: bridge.id,
     externalScopeId: event.conversation.externalScopeId,
@@ -422,6 +426,21 @@ async function redeemLinkCode(
   code: string,
   event: NormalizedChannelEvent,
 ): Promise<boolean> {
+  // Only a connected account links "me": a code that waited while it was paused or removed
+  // links nothing.
+  const connected = await tx
+    .selectFrom("channelAccounts")
+    .innerJoin(
+      "integrationConnections",
+      "integrationConnections.id",
+      "channelAccounts.connectionId",
+    )
+    .select("channelAccounts.id")
+    .where("channelAccounts.id", "=", accountId)
+    .where("channelAccounts.status", "=", "connected")
+    .where("integrationConnections.status", "in", ["pending", "connected", "needs-attention"])
+    .executeTakeFirst();
+  if (!connected) return false;
   const pending = await tx
     .selectFrom("bridgeLinkCodes")
     .select(["id", "userId"])
@@ -431,12 +450,34 @@ async function redeemLinkCode(
     .where("expiresAt", ">", new Date())
     .executeTakeFirst();
   if (!pending) return false;
+  // Every identity this touches, in one ordered lock: the sender's and any linked to the person.
+  await tx
+    .selectFrom("channelIdentities")
+    .select("id")
+    .where("accountId", "=", accountId)
+    .where((eb) =>
+      eb.or([
+        eb("linkedUserId", "=", pending.userId),
+        eb("externalUserId", "=", event.actor.externalUserId),
+      ]),
+    )
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
   const identity = await upsertChannelIdentity(tx, {
     accountId,
     displayName: event.actor.displayName,
     externalUserId: event.actor.externalUserId,
   });
   if (identity.linkedUserId && identity.linkedUserId !== pending.userId) return false;
+  // "Me" is one identity on an account at a time: linking this one unlinks any other.
+  await tx
+    .updateTable("channelIdentities")
+    .set({ linkedUserId: null, status: "unlinked", updatedAt: new Date() })
+    .where("accountId", "=", accountId)
+    .where("linkedUserId", "=", pending.userId)
+    .where("id", "!=", identity.id)
+    .execute();
   await tx
     .updateTable("channelIdentities")
     .set({ linkedUserId: pending.userId, status: "linked", updatedAt: new Date() })

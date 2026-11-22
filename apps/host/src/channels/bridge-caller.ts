@@ -1,44 +1,38 @@
 import { OpensteerError, type UserId } from "@opensteer/core";
-import type { BridgeChatSource, OpensteerStore } from "@opensteer/database";
+import { admitBridgeSender, type BridgeChatSource, type OpensteerStore } from "@opensteer/database";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 
 /**
- * A messaging bridge calling the task tools from inside the Home. It has no bearer: each resolve
- * reads the bridge's live row (grant, mode, policy and who may speak, in one statement through
- * `admitExecution`), and refuses when the sender's rule no longer admits this message or the
- * revision moved since the message was admitted (any change of who may speak raises it).
+ * A messaging bridge calling the task tools from inside the Home. It has no bearer: each
+ * resolve asks the one bridge admission (the live row with grant, mode, policy and sender rule
+ * in one statement, then who wrote), under the revision the message was admitted under.
  */
 export async function resolveBridgeCaller(
-  store: Pick<OpensteerStore, "admitExecution">,
+  store: Pick<OpensteerStore, "database">,
   input: {
     readonly ownerUserId: UserId;
     readonly bridgeId: string;
     readonly chat: BridgeChatSource;
-    readonly expectedRevision?: number;
   },
 ): Promise<ConnectionCaller> {
-  const admitted = await store.admitExecution({
+  const admitted = await admitBridgeSender(store.database, {
     ownerUserId: input.ownerUserId,
-    subject: { kind: "connection", agentConnectionId: input.bridgeId },
+    bridgeId: input.bridgeId,
+    externalUserId: input.chat.sender.externalUserId,
+    expectedRevision: input.chat.revision,
   });
-  const connection = admitted.agentConnection;
-  if (
-    !connection ||
-    connection.bridgeSenders === undefined ||
-    connection.bridgeSenders === null ||
-    (!input.chat.sender.owner && connection.bridgeSenders !== "anyone") ||
-    (input.expectedRevision !== undefined && connection.grantRevision !== input.expectedRevision)
-  )
+  if (admitted.kind === "refused")
     throw new OpensteerError({
       code: "forbidden",
       message: "This chat may no longer ask your agents to work.",
     });
+  const connection = admitted.connection;
   return {
     kind: "connection",
     key: `connection:${connection.agentConnectionId}`,
     connectionId: connection.agentConnectionId,
     userId: input.ownerUserId,
-    accessMode: admitted.mode,
+    accessMode: connection.accessMode,
     grant: connection.grant,
     grantRevision: connection.grantRevision,
     agentConnection: connection,

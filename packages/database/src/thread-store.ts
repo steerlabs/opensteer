@@ -178,7 +178,10 @@ export interface ThreadUpdateResult {
  */
 export interface BridgeChatSource {
   readonly conversationId: string;
-  readonly sender: { readonly displayName: string; readonly owner: boolean };
+  /** The bridge's revision when the message was admitted; any other is refused. */
+  readonly revision: number;
+  /** Who wrote it on the provider: whether that is the person is read, never claimed. */
+  readonly sender: { readonly displayName: string; readonly externalUserId: string };
 }
 export type ThreadInputSource =
   | {
