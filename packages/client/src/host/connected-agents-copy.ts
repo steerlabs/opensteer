@@ -217,6 +217,7 @@ export const connectedAgentsCopy = {
   "messaging.status.paused": "Paused",
   "messaging.status.needs-attention": "Needs attention",
   "messaging.status.revoked": "Removed",
+  "messaging.status.unknown": "Not known to this app",
   "messaging.pause": "Pause",
   "messaging.resume": "Resume",
   "messaging.check": "Check again",
@@ -225,6 +226,7 @@ export const connectedAgentsCopy = {
   "messaging.remove.title": "Remove {account}?",
   "messaging.remove.body":
     "Every chat on it ends, and nothing sent there gives your agents work again. Replies that may already have been sent can’t be taken back.",
+  "messaging.pausedNoteUnknown": "Paused: its chats hold their replies until you resume it.",
   "messaging.pausedNote": "Paused: its chats hold their replies until you resume it. {sent}",
   "messaging.me.title": "You on {provider}",
   "messaging.me.linked": "{identity} is you. Only messages from it give your chats work.",

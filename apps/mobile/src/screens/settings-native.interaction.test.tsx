@@ -124,6 +124,24 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
         updatedAt: now,
       },
     ],
+    connections: [
+      {
+        capabilities: [],
+        connectionMethod: "api-key",
+        createdAt: now,
+        displayName: "Team bot",
+        externalIdentityId: null,
+        externalTenantId: null,
+        id: connectionId,
+        ownerUserId: host.getSnapshot().user!.id,
+        provider: "slack",
+        status: "connected",
+        statusDetail: null,
+        statusReason: null,
+        transportKind: "socket",
+        updatedAt: now,
+      },
+    ],
   });
   const check = vi.fn(async () => ({
     ok: true,
@@ -155,6 +173,7 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
     status: "paused",
   });
   data.accounts[0]!.status = "paused";
+  data.connections[0]!.status = "paused";
   await press("Refresh");
   // Paused Slack: what becomes of what is sent meanwhile, in the Home's words for Slack.
   expect(row("Paused").kind).toBe("status");
@@ -171,6 +190,18 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
     status: "connected",
     connectionId,
   });
+  // Back, the Home says it is connecting first: the phone says so too, as the web does.
+  data.accounts[0]!.status = "connected";
+  data.connections[0]!.status = "pending";
+  await press("Refresh");
+  expect(row("Connecting").kind).toBe("status");
+  // Needs attention: what the connection reports, and Fix setup, for a provider app's tokens.
+  data.connections[0]!.status = "needs-attention";
+  data.connections[0]!.statusDetail = "Slack says the token was revoked.";
+  await press("Refresh");
+  expect(row("Needs attention").kind).toBe("status");
+  expect(row("Slack says the token was revoked.").kind).toBe("text");
+  expect(rows().some((candidate) => candidate.label === "Pause")).toBe(false);
   await press("Link my account");
   expect(commands.at(-1)).toMatchObject({ type: "channel.me.link", accountId });
   const { Alert } = await import("react-native");
@@ -239,6 +270,10 @@ it.each(["ios", "android"])(
       ),
     ).toBe(true);
     expect(row("Needs attention").kind).toBe("status");
+    // What the connection reports, and Fix setup only where the Home accepts it: the provider
+    // app that needs attention, never a computer's Messages, never a healthy account.
+    expect(row("Slack says the token was revoked.").kind).toBe("text");
+    expect(rows().filter((candidate) => candidate.label === "Fix setup")).toHaveLength(1);
     const me = rows().find((candidate) => candidate.label === "You on Slack");
     expect(me && "detail" in me ? me.detail : null).toBe(
       "Tim is you. Only messages from it give your chats work. Linking another account replaces Tim as you.",

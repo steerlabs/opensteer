@@ -5,6 +5,7 @@ import {
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
+  messagingAccountView,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
@@ -285,49 +286,49 @@ function Messaging({
       const providerLabel = manifest?.label ?? account.provider;
       const me = data.me?.find((row) => row.accountId === account.id) ?? null;
       const code = shownCode?.accountId === account.id ? shownCode : null;
+      // The account's connection, as the web reads it: its status, what it reports, and what the
+      // Home accepts for it.
+      const connection = data.connections.find((row) => row.id === account.connectionId);
+      const view = connection ? messagingAccountView(connection, manifest) : null;
       const rows: NativeSettingsRow[] = [
         {
           key: "status",
           kind: "status",
-          tone: account.status === "connected" ? "good" : "attention",
-          label: statusWords(account.status),
+          tone: view?.tone ?? "attention",
+          label: view?.label ?? agentWords("messaging.status.unknown"),
         },
-        ...(account.status === "paused"
-          ? [
-              text(
-                "paused",
-                agentWords("messaging.pausedNote", {
-                  sent: agentWords(
-                    manifest?.pausedMessages === "kept" ? "chat.paused.kept" : "chat.paused.lost",
-                  ),
-                }),
-              ),
-            ]
-          : []),
+        ...(view?.detail ? [text("detail", view.detail)] : []),
+        ...(view?.pausedNote ? [text("paused", view.pausedNote)] : []),
         button("check", agentWords("messaging.check"), () =>
           checkConnection(account.connectionId, account.id),
         ),
-        button("repair", agentWords("messaging.fix"), () => {
-          setCredentials({});
-          setProvider(account.provider);
-          setRepair(account.connectionId);
-        }),
-        button(
-          "pause",
-          account.status === "paused"
-            ? agentWords("messaging.resume")
-            : agentWords("messaging.pause"),
-          () =>
-            dispatch(
-              {
-                type: "channel.connection.status.set",
-                connectionId: account.connectionId,
-                status: account.status === "paused" ? "connected" : "paused",
-                idempotencyKey: mutationIdempotencyKey("channel-status"),
-              },
-              account.id,
-            ),
-        ),
+        ...(view?.canFix
+          ? [
+              button("repair", agentWords("messaging.fix"), () => {
+                setCredentials({});
+                setProvider(account.provider);
+                setRepair(account.connectionId);
+              }),
+            ]
+          : []),
+        ...(view?.canPause || view?.canResume
+          ? [
+              button(
+                "pause",
+                view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause"),
+                () =>
+                  dispatch(
+                    {
+                      type: "channel.connection.status.set",
+                      connectionId: account.connectionId,
+                      status: view.canResume ? "connected" : "paused",
+                      idempotencyKey: mutationIdempotencyKey("channel-status"),
+                    },
+                    account.id,
+                  ),
+              ),
+            ]
+          : []),
         {
           key: "me",
           kind: "text",
@@ -475,10 +476,4 @@ function changeSettled(data: Dashboard, command: ClientCommandInput): boolean | 
     default:
       return null;
   }
-}
-
-function statusWords(status: string): string {
-  const known = ["connected", "pending", "paused", "needs-attention", "revoked"] as const;
-  const id = known.find((candidate) => candidate === status);
-  return id ? agentWords(`messaging.status.${id}`) : status;
 }
