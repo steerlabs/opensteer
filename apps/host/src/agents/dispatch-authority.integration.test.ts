@@ -281,6 +281,49 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).toEqual({ status: "running" });
   });
 
+  it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-paused");
+    const { database, store } = storeFixture;
+    // The fixture's task is the chat's: its next Run works for the bridge.
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "dispatch-paused",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    const claimed = await store.claimCommand(queued.command.id, "dispatch-paused");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the Run's command");
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    const sent: RunnerCommand[] = [];
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      sent,
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    // Nothing is sent, and the Run is tried again later rather than failed.
+    expect(sent).toEqual([]);
+    expect(failure).toBeInstanceOf(CommandDispatchError);
+    expect((failure as CommandDispatchError).disposition).toBe("retry");
+  });
+
   it("ends a connected Run locally when revoke wins before its handoff stamp", async ({
     storeFixture,
   }) => {

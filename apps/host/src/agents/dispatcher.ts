@@ -448,7 +448,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ownerUserId: command.requestedBy,
             subject: { kind: "binding", bindingId: `run:${context.run.id}` },
           })
-    ).catch((error: unknown) => {
+    ).catch(async (error: unknown) => {
+      // A chat that is only paused holds its Run until it is back; only an end fails it.
+      if (
+        runConnectionId !== null &&
+        (await this.#store.connectionWaiting(command.requestedBy, runConnectionId))
+      )
+        throw new CommandDispatchError("Its chat is paused; this waits until it is back.", "retry");
       throw new CommandDispatchError(
         error instanceof OpensteerError ? error.message : "This task's access ended.",
         "failed",
