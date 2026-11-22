@@ -92,7 +92,7 @@ export type AdministrationCommand =
   | Extract<
       HostApiCommand,
       {
-        type: "browser.site.remove" | "channel.binding.revoke" | "channel.connection.status.set";
+        type: "browser.site.remove" | "channel.connection.status.set";
       }
     >
   | Parameters<typeof executeDeviceAdministration>[2];
@@ -311,8 +311,6 @@ export class AdministrationService {
           type: command.type,
         };
       }
-      case "channel.binding.revoke":
-        throw new OpensteerError({ code: "not_found", message: "That route no longer exists." });
       case "channel.connection.status.set":
         await dependencies.channels.service.setConnectionStatus(
           command.connectionId,

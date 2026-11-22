@@ -16,6 +16,9 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
       add column bridge_senders text check (bridge_senders in ('owner', 'anyone')),
       add column bridge_from_binding_id text,
       add column bridge_notice text check (bridge_notice in ('converted', 'converted-without-channels')),
+      add column bridge_conversation_name text,
+      add column bridge_ended_by text check (bridge_ended_by in ('you', 'organization', 'account',
+        'computer', 'work-home')),
       add constraint agent_connections_bridge check (
         -- A bridge says who may speak. A sender rule without an account is only the ended row
         -- that ties the messages from before the update to "anyone".

@@ -594,10 +594,6 @@ const mockInstalledApps: readonly ComputerAppIdentity[] = [
   { bundleId: "com.apple.systempreferences", displayName: "System Settings", teamId: null },
 ];
 
-type CommandInputOf<Type extends HostApiCommandInput["type"]> = Extract<
-  HostApiCommandInput,
-  { readonly type: Type }
->;
 type ParsedCommandOf<Type extends HostApiCommand["type"]> = Extract<
   HostApiCommand,
   { readonly type: Type }
@@ -3485,26 +3481,20 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "channel.connection.create":
       await client.createChannelConnection({
-        accessPolicy: command.accessPolicy,
         credentials: command.credentials,
         provider: command.provider,
         routingMode: command.routingMode,
         deploymentId: client.getSnapshot().deploymentId!,
       });
       return unsupportedMockRpc();
-    case "channel.binding.create":
-      await client.createChannelBinding(command);
-      return unsupportedMockRpc();
-    case "channel.binding.update":
-    case "channel.access.review":
+    case "channel.chat.create":
     case "channel.connection.computer.create":
       return unsupportedMockRpc();
-    case "channel.binding.revoke":
-      await client.revokeChannelBinding(command.bindingId);
-      return rpcSuccess({ type: command.type });
-    case "channel.identity.link":
+    case "channel.me.link":
+      // A preview shows the code the person would send; the mock Host links nobody.
       return rpcSuccess({
-        ...(await client.linkChannelIdentity(command.code)),
+        code: "MOCKCODE",
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         type: command.type,
       });
     case "channel.connection.credentials.replace":
@@ -10912,9 +10902,7 @@ class MockHostState {
 
   async loadChannels() {
     return {
-      accessGrants: [],
       accounts: [],
-      bindings: [],
       connections: [],
       deliveriesNeedingAttention: 0,
       providers: [...channelProviderCatalog],
@@ -11004,22 +10992,6 @@ class MockHostState {
     _connectionId: string,
   ): Promise<import("@opensteer/channel-core").ChannelConnectionInspection> {
     throw new Error("The mock Host does not persist channel connections.");
-  }
-
-  async createChannelBinding(
-    _input: Omit<CommandInputOf<"channel.binding.create">, "idempotencyKey" | "type">,
-  ): Promise<CommandOutputOf<"channel.binding.create">["binding"]> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async revokeChannelBinding(_bindingId: string): Promise<void> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async linkChannelIdentity(
-    _code: string,
-  ): Promise<Omit<CommandOutputOf<"channel.identity.link">, "type">> {
-    throw new Error("The mock Host does not persist channel identities.");
   }
 
   async setChannelConnectionStatus(

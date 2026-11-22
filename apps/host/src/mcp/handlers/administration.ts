@@ -42,7 +42,6 @@ function command(value: Record<string, unknown>): AdministrationCommand {
   if (
     isAdministrationCommand(parsed) ||
     parsed.type === "browser.site.remove" ||
-    parsed.type === "channel.binding.revoke" ||
     parsed.type === "channel.connection.status.set"
   )
     return parsed;

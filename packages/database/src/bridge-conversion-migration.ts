@@ -19,7 +19,9 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
       select coalesce((
         select p.state <> 'active' or not coalesce((p.policy->>'allowTasks')::boolean, false)
         from work_home_policy p where p.singleton
-      ), false) as refused;
+      ), false) as refused,
+      coalesce((select p.state <> 'active' from work_home_policy p where p.singleton), false)
+        as closing;
 
     -- "Me" is one identity on an account. The image before this one let a person link several
     -- (a phone number and an email address): the most recently used stays linked, the others
@@ -126,7 +128,7 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
       expires_at, revoked_at, "grant", grant_revision, consent_version,
       cleanup_reason, cleanup_requested_at,
       bridge_account_id, bridge_conversation_id, bridge_senders, bridge_from_binding_id,
-      bridge_notice)
+      bridge_notice, bridge_conversation_name, bridge_ended_by)
     select 'mcn_' || gen_random_uuid(), plan.created_by,
       left(case when plan.conversation_name is null then provider_label
         else provider_label || ' · ' || plan.conversation_name end, 120),
@@ -136,7 +138,10 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
       '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 1, 2,
       case when policy.refused or plan.ended then 'revoked' end,
       case when policy.refused or plan.ended then now() end,
-      plan.account_id, plan.conversation_id, 'owner', plan.binding_id, plan.notice
+      plan.account_id, plan.conversation_id, 'owner', plan.binding_id, plan.notice,
+      plan.conversation_name,
+      case when policy.refused then
+        case when policy.closing then 'work-home' else 'organization' end end
     from bridge_conversion_plan plan
     cross join bridge_conversion_policy policy
     cross join lateral (select case plan.provider when 'slack' then 'Slack'

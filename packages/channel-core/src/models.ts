@@ -423,20 +423,25 @@ export const ChannelDeliverySchema = z.strictObject({
 });
 export type ChannelDelivery = z.infer<typeof ChannelDeliverySchema>;
 
+/** Who "me" is on a chat account: the one identity linked to the person. */
+export const ChannelAccountMeSchema = z.strictObject({
+  accountId: ChannelAccountIdSchema,
+  displayName: z.string().trim().min(1).max(160),
+  externalUserId: ExternalIdSchema,
+});
 export const ChannelDashboardSchema = z.strictObject({
-  accessGrants: z.array(ChannelAccessGrantSchema).max(10_000),
   accounts: z.array(ChannelAccountSchema).max(500),
-  bindings: z.array(ChannelBindingSchema).max(2_000),
   connections: z.array(IntegrationConnectionSchema).max(500),
   deliveriesNeedingAttention: z.number().int().nonnegative(),
+  /** Who "me" is on each account that has one linked. */
+  me: z.array(ChannelAccountMeSchema).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export const ChannelDashboardViewSchema = z.object({
   ...ChannelDashboardSchema.shape,
-  accessGrants: z.array(ChannelAccessGrantViewSchema).max(10_000),
   accounts: z.array(ChannelAccountViewSchema).max(500),
-  bindings: z.array(ChannelBindingViewSchema).max(2_000),
   connections: z.array(IntegrationConnectionViewSchema).max(500),
+  me: z.array(z.object(ChannelAccountMeSchema.shape)).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export type ChannelDashboard = z.infer<typeof ChannelDashboardSchema>;

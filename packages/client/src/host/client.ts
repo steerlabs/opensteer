@@ -7,11 +7,7 @@ import type { TabsClient } from "./tabs-contract.js";
 import type { AnsweredQuestion } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
-import type {
-  ChannelAccessPolicy,
-  ChannelAccount,
-  IntegrationConnection,
-} from "@opensteer/channel-core";
+import type { ChannelAccount, IntegrationConnection } from "@opensteer/channel-core";
 import type {
   ArtifactContentPart,
   AssignmentSummary,
@@ -1034,7 +1030,6 @@ export interface ResolveRequestInput {
 }
 
 export interface CreateChannelConnectionInput {
-  accessPolicy: ChannelAccessPolicy;
   credentials: Readonly<Record<string, string>>;
   provider: string;
   routingMode: "dedicated" | "shared";

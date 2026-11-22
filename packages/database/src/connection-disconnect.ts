@@ -27,7 +27,12 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
-import { chatEndedUnrevoked, connectionActive, liveConnection } from "./connection-liveness.js";
+import {
+  chatEndReason,
+  chatEndedUnrevoked,
+  connectionActive,
+  liveConnection,
+} from "./connection-liveness.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -358,6 +363,8 @@ export async function requestExpiredCleanups(
             cleanupReason: "revoked",
             cleanupRequestedAt: now,
             cleanupCompletedAt: null,
+            // Why it ended, from the facts that ended it, read now.
+            bridgeEndedBy: chatEndReason(tx),
           })
           .where("id", "=", row.id)
           .execute();

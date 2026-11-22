@@ -200,12 +200,26 @@ export class ChannelStore {
         .where("bridgeDeliveries.status", "in", ["unknown", "dead"])
         .executeTakeFirstOrThrow(),
     ]);
+    // Who "me" is on each of the person's accounts: the one identity linked to them.
+    const me = accounts.length
+      ? await this.#database
+          .selectFrom("channelIdentities")
+          .select(["accountId", "displayName", "externalUserId"])
+          .where(
+            "accountId",
+            "in",
+            accounts.map(({ id }) => id),
+          )
+          .where("status", "=", "linked")
+          .where("linkedUserId", "=", ownerUserId)
+          .orderBy("accountId")
+          .execute()
+      : [];
     return ChannelDashboardSchema.parse({
-      // Routes and approvals are gone: what a chat may do is its bridge, listed with the
+      // Routes and approvals are gone: what a chat may do is its connection, listed with the
       // connected agents. The rows the previous image wrote are never read again.
-      accessGrants: [],
       accounts: accounts.map(channelAccountFromRow),
-      bindings: [],
+      me,
       connections: connections.map((connection) =>
         integrationConnectionFromRow(
           connection,

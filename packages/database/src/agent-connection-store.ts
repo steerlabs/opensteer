@@ -39,13 +39,14 @@ import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
 import {
+  chatEndReason,
   chatEndedUnrevoked,
   connectionState,
   bridgeStoredExpiry,
   connectionActive,
   expiresByTime,
 } from "./connection-liveness.js";
-import type { BridgeSenders } from "./schema.js";
+import type { BridgeEndedBy, BridgeSenders } from "./schema.js";
 import { channelProviderCatalog, type ChannelAccountId } from "@opensteer/channel-core";
 
 interface AgentConnectionEdit {
@@ -69,7 +70,12 @@ export interface BridgeConsent {
 }
 
 export type WorkPolicyConnectionChange = { readonly userId: UserId } & (
-  | { readonly kind: "revoke"; readonly connectionId: string }
+  | {
+      readonly kind: "revoke";
+      readonly connectionId: string;
+      /** Why, for a chat: the organization's policy, or its work Home closing. */
+      readonly endedBy?: BridgeEndedBy;
+    }
   | ({ readonly kind: "update" } & AgentConnectionEdit)
 );
 
@@ -189,6 +195,7 @@ export class AgentConnectionStore {
           bridgeAccountId: input.accountId,
           bridgeConversationId: input.conversation?.id ?? null,
           bridgeSenders: input.senders,
+          bridgeConversationName: input.conversation?.name ?? null,
         })
         .returningAll()
         .executeTakeFirstOrThrow()
@@ -200,7 +207,7 @@ export class AgentConnectionStore {
           )
             throw new OpensteerError({
               code: "conflict",
-              message: "Another bridge already answers this conversation.",
+              message: "Another chat already answers in this conversation.",
             });
           throw error;
         });
@@ -384,9 +391,15 @@ export class AgentConnectionStore {
       .$if(options.includeRevoked === true, (query) => query.where("removedAt", "is", null))
       .orderBy("createdAt", "desc")
       .execute();
+    const facts = await chatFacts(
+      this.database,
+      rows.filter((row) => row.bridgeAccountId !== null).map((row) => row.id),
+    );
     // Derived from the durable cleanup record and what its lineage still holds.
     return Promise.all(
       rows.map(async ({ connectionState: chatState, ...row }) => {
+        const view = (input: Selectable<AgentConnectionTable>, state: AgentConnectionState) =>
+          connectionView(input, state, facts.get(row.id));
         const chat = row.bridgeAccountId !== null;
         // A chat reads as what it is: live is active, waiting is paused, ended is stopping until
         // nothing in its lineage is outstanding, then stopped. It never reads as active once it
@@ -452,7 +465,10 @@ export class AgentConnectionStore {
       )) {
         const changed =
           change.kind === "revoke"
-            ? await store.revoke(change.userId, change.connectionId, { routes: "later" })
+            ? await store.revoke(change.userId, change.connectionId, {
+                routes: "later",
+                endedBy: change.endedBy ?? "organization",
+              })
             : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
         if (changed) changedIds.push(change.connectionId);
         if (changed && change.kind === "revoke") revokedIds.push(change.connectionId);
@@ -559,7 +575,7 @@ export class AgentConnectionStore {
   async revoke(
     userId: UserId,
     id: string,
-    options: { readonly routes?: "now" | "later" } = {},
+    options: { readonly routes?: "now" | "later"; readonly endedBy?: BridgeEndedBy } = {},
   ): Promise<boolean> {
     return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
@@ -582,6 +598,9 @@ export class AgentConnectionStore {
           cleanupReason: "revoked",
           cleanupRequestedAt: this.now(),
           cleanupCompletedAt: null,
+          // A chat remembers why it ended; the person disconnecting it is the default.
+          bridgeEndedBy: sql<BridgeEndedBy | null>`case when bridge_account_id is not null
+            then ${options.endedBy ?? "you"} end`,
         })
         .where("id", "=", row.id)
         .execute();
@@ -643,7 +662,102 @@ export class AgentConnectionStore {
     });
   }
 }
+/** What a person reads about a chat beside its row: where, who "me" is, why it is paused or ended. */
+interface ChatFacts {
+  readonly accountName: string;
+  readonly channelConnectionId: string;
+  readonly me: { readonly displayName: string; readonly externalUserId: string } | null;
+  readonly pausedBy: "you" | "needs-attention";
+  readonly pauseDetail: string | null;
+  readonly endedBy: BridgeEndedBy;
+  readonly unknownReplies: number;
+  readonly tasks: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly running: boolean;
+  }[];
+}
+
+/** The chat facts of the listed chats, in one statement; none is read for a connected agent. */
+async function chatFacts(
+  database: Kysely<DatabaseSchema>,
+  chatIds: readonly string[],
+): Promise<ReadonlyMap<string, ChatFacts>> {
+  if (chatIds.length === 0) return new Map();
+  const rows = await database
+    .selectFrom("agentConnections")
+    .innerJoin("channelAccounts", "channelAccounts.id", "agentConnections.bridgeAccountId")
+    .innerJoin(
+      "integrationConnections",
+      "integrationConnections.id",
+      "channelAccounts.connectionId",
+    )
+    .select([
+      "agentConnections.id",
+      "agentConnections.bridgeEndedBy",
+      "channelAccounts.displayName",
+      "channelAccounts.handle",
+      "channelAccounts.status as accountStatus",
+      "channelAccounts.connectionId",
+      "integrationConnections.statusDetail",
+      chatEndReason(database).as("endReason"),
+      sql<string | null>`(select me.display_name from channel_identities me
+        where me.account_id = channel_accounts.id and me.status = 'linked'
+          and me.linked_user_id = agent_connections.user_id limit 1)`.as("meName"),
+      sql<string | null>`(select me.external_user_id from channel_identities me
+        where me.account_id = channel_accounts.id and me.status = 'linked'
+          and me.linked_user_id = agent_connections.user_id limit 1)`.as("meId"),
+      sql<number>`(select count(*)::integer from bridge_deliveries unknown
+        where unknown.bridge_id = agent_connections.id and unknown.status = 'unknown')`.as(
+        "unknownReplies",
+      ),
+    ])
+    .where("agentConnections.id", "in", chatIds)
+    .execute();
+  // Each chat's most recent tasks, newest first.
+  const tasks = await database
+    .selectFrom("threads")
+    .select(["id", "title", "status", "originConnectionId"])
+    .where("originConnectionId", "in", chatIds)
+    .where("removedAt", "is", null)
+    .where("parentThreadId", "is", null)
+    .orderBy("updatedAt", "desc")
+    .limit(5 * chatIds.length)
+    .execute();
+  const tasksOf = (id: string) =>
+    tasks
+      .filter((task) => task.originConnectionId === id)
+      .slice(0, 5)
+      .map((task) => ({ id: task.id, title: task.title, running: task.status === "running" }));
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      {
+        accountName: (row.handle ?? row.displayName).slice(0, 160),
+        channelConnectionId: row.connectionId,
+        me:
+          row.meName !== null && row.meId !== null
+            ? { displayName: row.meName.slice(0, 160), externalUserId: row.meId }
+            : null,
+        pausedBy: row.accountStatus === "needs-attention" ? "needs-attention" : "you",
+        pauseDetail: row.accountStatus === "needs-attention" ? row.statusDetail : null,
+        endedBy: row.bridgeEndedBy ?? row.endReason,
+        unknownReplies: row.unknownReplies,
+        tasks: tasksOf(row.id),
+      },
+    ]),
+  );
+}
+
 function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState): AgentConnection {
+  return connectionView(row, state, undefined);
+}
+
+function connectionView(
+  row: Selectable<AgentConnectionTable>,
+  state: AgentConnectionState,
+  chat: ChatFacts | undefined,
+): AgentConnection {
   let redirectOrigin: string | null = null;
   try {
     redirectOrigin = row.redirectUri ? new URL(row.redirectUri).origin : null;
@@ -689,6 +803,20 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
             conversationId: row.bridgeConversationId,
             senders: row.bridgeSenders,
             ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
+            conversationName: row.bridgeConversationName,
+            ...(chat
+              ? {
+                  accountName: chat.accountName,
+                  channelConnectionId: chat.channelConnectionId,
+                  me: chat.me,
+                  unknownReplies: chat.unknownReplies,
+                  tasks: [...chat.tasks],
+                  ...(state === "paused"
+                    ? { pausedBy: chat.pausedBy, pauseDetail: chat.pauseDetail }
+                    : {}),
+                  ...(state === "stopping" || state === "stopped" ? { endedBy: chat.endedBy } : {}),
+                }
+              : {}),
           },
         }
       : {}),

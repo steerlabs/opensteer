@@ -1,6 +1,7 @@
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
+  ChannelAccountIdSchema,
   ChannelDeliveryIdSchema,
   ChannelProviderSchema,
   IntegrationConnectionIdSchema,
@@ -11,6 +12,7 @@ import {
   type ChannelProviderManifest,
 } from "@opensteer/channel-core";
 import {
+  AgentConnectionStore,
   ChannelStore,
   declineBridgeIngress,
   decideBridgeIngress,
@@ -22,9 +24,12 @@ import {
   OpensteerError,
   ThreadIdSchema,
   RunnerIdSchema,
+  type AgentGrant,
   type RunnerId,
+  type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
+import type { AgentConnection } from "@opensteer/protocol";
 import type {} from "@opensteer/orchestration";
 import {
   ClaimChannelDeliveryResultSchema,
@@ -416,6 +421,33 @@ export class ChannelService {
    */
   startOwnerLink(accountId: string, userId: UserId) {
     return startBridgeOwnerLink(this.#store.database, { accountId, userId });
+  }
+
+  /**
+   * A chat on one of the person's chat accounts, made on its consent, and returned as it is
+   * listed with the connected agents.
+   */
+  async createChat(input: {
+    readonly userId: UserId;
+    readonly accountId: string;
+    readonly conversation: { readonly id: string; readonly name: string } | null;
+    readonly senders: "owner" | "anyone";
+    readonly accessMode: ThreadAccessMode;
+    readonly grant: AgentGrant;
+  }): Promise<AgentConnection> {
+    const connections = new AgentConnectionStore(this.#store.database);
+    const made = await connections.createBridge({
+      userId: input.userId,
+      accountId: ChannelAccountIdSchema.parse(input.accountId),
+      ...(input.conversation ? { conversation: input.conversation } : {}),
+      senders: input.senders,
+      accessMode: input.accessMode,
+      grant: input.grant,
+    });
+    this.#onChanged();
+    return (
+      (await connections.list(input.userId)).find((connection) => connection.id === made.id) ?? made
+    );
   }
 
   async resolveRuntimeConnection(

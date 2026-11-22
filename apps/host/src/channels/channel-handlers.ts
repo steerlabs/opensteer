@@ -61,17 +61,26 @@ export async function handleChannelCommand(
         ownerUserId: userId,
       });
       return { type: command.type };
-    // Routes, approvals and link codes in the chat are gone: a bridge is created on its consent
-    // and edited as a connection. These commands leave the wire with this change's next step.
-    case "channel.binding.create":
-    case "channel.binding.update":
-    case "channel.access.review":
-    case "channel.binding.revoke":
-    case "channel.identity.link":
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Update Opensteer to change Messaging.",
-      });
+    // A chat is made on its consent and is then a connection like any other: what it may reach
+    // and how freely are edited as a connection's, and who may speak never changes.
+    case "channel.chat.create":
+      return {
+        connection: await channels.createChat({
+          userId,
+          accountId: command.accountId,
+          conversation: command.conversation,
+          senders: command.senders,
+          accessMode: command.accessMode,
+          grant: command.grant,
+        }),
+        type: command.type,
+      };
+    // "Me" is linked by a code the person sends from their own account; nothing is said in
+    // the chat, and linking another identity replaces the one before.
+    case "channel.me.link": {
+      const { code, expiresAt } = await channels.startOwnerLink(command.accountId, userId);
+      return { code, expiresAt: expiresAt.toISOString(), type: command.type };
+    }
     case "channel.connection.status.set":
       await channels.setConnectionStatus(command.connectionId, userId, command.status);
       return { type: command.type };

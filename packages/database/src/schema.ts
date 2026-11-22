@@ -1970,10 +1970,15 @@ export interface AgentConnectionTable {
   bridgeFromBindingId: Generated<string | null>;
   /** A one-time notice the person has not dismissed yet. */
   bridgeNotice: Generated<BridgeNotice | null>;
+  /** The channel's name, for a bridge that covers one channel. */
+  bridgeConversationName: Generated<string | null>;
+  /** Why the bridge ended, recorded when it was revoked. */
+  bridgeEndedBy: Generated<BridgeEndedBy | null>;
 }
 
 export type BridgeSenders = "owner" | "anyone";
 export type BridgeNotice = "converted" | "converted-without-channels";
+export type BridgeEndedBy = "you" | "organization" | "account" | "computer" | "work-home";
 
 export interface BridgeConversationTable {
   id: ChannelConversationId;
