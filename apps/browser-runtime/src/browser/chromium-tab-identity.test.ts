@@ -214,7 +214,10 @@ it("carries each tab's Home id in Chromium's own tab group title through discard
   }
   const twice = victims[0]!;
   const twiceNow = (await profileTabs(first.lifecycle)).find((t) => t.identity === twice.identity)!;
-  expect(await first.lifecycle.activateByTabId(twiceNow.tabId)).toBe(true);
+  expect(await first.lifecycle.activateByTabId(twiceNow.tabId)).toMatchObject({
+    ok: true,
+    tabId: twiceNow.tabId,
+  });
   await vi.waitFor(
     async () => {
       const row = (await profileTabs(first.lifecycle)).find((t) => t.identity === twice.identity);
@@ -242,7 +245,10 @@ it("carries each tab's Home id in Chromium's own tab group title through discard
   const sameTabs = restored.filter((tab) => tab.url === url(1, "same"));
   expect(sameTabs.length).toBe(tabCount / 10);
   const probe = sameTabs[3]!;
-  expect(await second.lifecycle.activateByTabId(probe.tabId)).toBe(true);
+  expect(await second.lifecycle.activateByTabId(probe.tabId)).toMatchObject({
+    ok: true,
+    tabId: probe.tabId,
+  });
   const probePage = await vi.waitFor(
     async () => {
       for (const page of second.context.pages()) {
@@ -374,7 +380,10 @@ it("keeps a named tab's history, history state and form field through discard an
   );
   const result: Record<string, unknown> = {};
   for (const row of tabs) {
-    expect(await second.lifecycle.activateByTabId(row.tabId)).toBe(true);
+    expect(await second.lifecycle.activateByTabId(row.tabId)).toMatchObject({
+      ok: true,
+      tabId: row.tabId,
+    });
     const page = await vi.waitFor(
       async () => {
         const found = second.context

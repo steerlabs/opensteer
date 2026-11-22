@@ -1450,9 +1450,10 @@ class PlaywrightContextHandle implements BrowserContext {
     void this.classify(page).catch(() => undefined);
   }
 
-  /** The one publication of a page with provenance; a page being closed is never published. */
+  /** The one publication of a page with provenance. */
   private publish(page: Page, announce: boolean): boolean {
-    if (this.closed || page.isClosed() || this.ending.has(page)) return false;
+    // A page that closed itself is still handed off, so its end is seen; one we close is not.
+    if (this.closed || this.ending.has(page)) return false;
     this.identifyingPages.delete(page);
     this.hiddenPages.delete(page);
     if (this.published.has(page)) return true;
