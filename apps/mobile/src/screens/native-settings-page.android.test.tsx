@@ -96,11 +96,12 @@ it("offers the full label for each Android choice and dispatches the selected va
   }
 });
 
-// A clickable row is one node to TalkBack: Compose merges what is inside it, and a merged node
-// with a description is spoken as that description alone. So the row says itself whole, and none
-// of its lines has a description of its own (an address line's would be all that is spoken). A
-// row that does nothing is not merged: each line is its own, the address heard plainly.
-it("has TalkBack hear a row with an address whole, and the address as it is", async () => {
+// A Material 3 ListItem is one node to TalkBack whether or not it can be pressed: Compose merges
+// what is inside it, and a merged node with a description is spoken as that description alone.
+// So every row that holds an address says itself whole, and none of its lines has a description
+// of its own (an address line's would be all that is heard). A button of the row's own, its "…"
+// menu, keeps its own name and its own stop. Unverified until TalkBack reads it on a device.
+it("has TalkBack hear every row with an address whole, its own button apart", async () => {
   const element = document.createElement("div");
   const root = createRoot(element);
   try {
@@ -121,11 +122,36 @@ it("has TalkBack hear a row with an address whole, and the address as it is", as
                   onPress: vi.fn(),
                 },
                 {
+                  addressIn: "label",
+                  detail: "Opensteer account",
+                  key: "email",
+                  kind: "text",
+                  label: "person@fixture.invalid",
+                },
+                {
                   addressIn: "detail",
                   detail: "https://studio.tailnet.ts.net",
-                  key: "home",
-                  kind: "text",
-                  label: "This Home",
+                  key: "remote",
+                  kind: "status",
+                  label: "Reachable",
+                  steps: [{ label: "Tunnel", state: "done" }],
+                  tone: "good",
+                },
+                {
+                  addressIn: "label",
+                  key: "origin",
+                  kind: "status",
+                  label: "https://home.tailnet.ts.net",
+                  tone: "neutral",
+                },
+                {
+                  actions: [{ label: "Remove", onPress: vi.fn() }],
+                  addressIn: "detail",
+                  detail: "mac.tailnet.ts.net",
+                  key: "computer",
+                  kind: "button",
+                  label: "Studio Mac",
+                  onPress: vi.fn(),
                 },
               ],
             },
@@ -133,17 +159,32 @@ it("has TalkBack hear a row with an address whole, and the address as it is", as
         />,
       ),
     );
-    const row = [...element.querySelectorAll("button")].find((button) =>
-      button.textContent?.startsWith("Signed in as"),
-    )!;
-    expect(row.getAttribute("aria-label")).toBe("Signed in as, person@fixture.invalid");
-    expect(row.querySelectorAll("[aria-label]")).toHaveLength(0);
-    // The address as drawn, with the characters that hold it whole taken out.
-    const still = [...element.querySelectorAll("span")].find((span) =>
-      span.textContent?.replace(/[\u2060\u200B]/gu, "").includes("studio"),
-    )!;
-    expect(still.getAttribute("aria-label")).toBe("https://studio.tailnet.ts.net");
-    expect(still.closest("button")).toBeNull();
+    const drawn = (text: string | null) => (text ?? "").replace(/[\u2060\u200B]/gu, "");
+    /** The row node TalkBack focuses: the outermost element whose words begin as given. */
+    const row = (start: string) =>
+      [...element.querySelectorAll("button, div")].find(
+        (node) =>
+          drawn(node.textContent).startsWith(start) &&
+          !drawn(node.parentElement?.textContent ?? "").startsWith(start),
+      )!;
+    const heard = (node: Element) => [
+      node.getAttribute("aria-label"),
+      ...[...node.querySelectorAll("[aria-label]")].map((inner) =>
+        inner.getAttribute("aria-label"),
+      ),
+    ];
+    expect(heard(row("Signed in as"))).toEqual(["Signed in as, person@fixture.invalid"]);
+    expect(heard(row("person@fixture.invalid"))).toEqual([
+      "person@fixture.invalid, Opensteer account",
+    ]);
+    expect(heard(row("Reachable"))).toEqual([
+      "Reachable, https://studio.tailnet.ts.net, Tunnel, done",
+    ]);
+    expect(heard(row("https://home.tailnet.ts.net"))).toEqual(["https://home.tailnet.ts.net"]);
+    expect(heard(row("Studio Mac"))).toEqual([
+      "Studio Mac, mac.tailnet.ts.net",
+      "More actions for Studio Mac",
+    ]);
   } finally {
     act(() => root.unmount());
   }

@@ -248,19 +248,11 @@ export function UnknownToggleRow(props: {
 /** A name and the line under it, optionally opening or doing something. */
 /**
  * A line of a row as drawn: an email address, a host or a URL in the characters that keep it whole
- * (`address-text.tsx`), read aloud as it is; anything else as it is. In a row TalkBack hears as
- * one (`merged`), the row says it, so the line says nothing of its own.
+ * (`address-text.tsx`); anything else as it is. Every row that holds one is a ListItem, which
+ * TalkBack hears as one node, so the row says the line, plainly, and the line says nothing itself.
  */
-function drawnLine(
-  value: string,
-  address: boolean,
-  merged = false,
-): { readonly modifiers: ReturnType<typeof semantics>[]; readonly text: string } {
-  if (!address) return { modifiers: [], text: value };
-  return {
-    modifiers: merged ? [] : [semantics({ contentDescription: value })],
-    text: addressWords(value),
-  };
+function drawnLine(value: string, address: boolean): string {
+  return address ? addressWords(value) : value;
 }
 
 export function LinkRow(props: {
@@ -278,14 +270,13 @@ export function LinkRow(props: {
   readonly trailing?: ReactNode;
 }): ReactNode {
   const enabled = props.onPress && props.disabled !== true;
-  // A clickable row is one node to TalkBack: Compose merges its lines, and a merged node with a
-  // description is spoken as that alone. A row with an address says itself whole, as written, and
-  // its lines have none of their own (the address line's would be all that is heard).
-  const merged = Boolean(enabled) && props.addressIn !== undefined;
-  const title = drawnLine(props.title, props.addressIn === "title", merged);
-  const detail = props.detail
-    ? drawnLine(props.detail, props.addressIn === "detail", merged)
-    : null;
+  // A ListItem is one node to TalkBack, pressable or not: Compose merges its lines, and a merged
+  // node with a description is spoken as that alone. A row with an address says itself whole, as
+  // written, and its lines have none of their own (the address line's would be all that is heard).
+  // A button of its own in `trailing` (MenuRow's "…") is a node apart, with its own name.
+  const merged = props.addressIn !== undefined;
+  const title = drawnLine(props.title, props.addressIn === "title");
+  const detail = props.detail ? drawnLine(props.detail, props.addressIn === "detail") : null;
   const spoken = [
     props.title,
     props.detail,
@@ -296,14 +287,10 @@ export function LinkRow(props: {
   return (
     <ListItem
       colors={rowColors}
-      modifiers={
-        enabled
-          ? [
-              clickable(props.onPress!),
-              ...(merged ? [semantics({ contentDescription: spoken })] : []),
-            ]
-          : []
-      }
+      modifiers={[
+        ...(enabled ? [clickable(props.onPress!)] : []),
+        ...(merged ? [semantics({ contentDescription: spoken })] : []),
+      ]}
     >
       <ListItem.HeadlineContent>
         <Text
@@ -314,19 +301,13 @@ export function LinkRow(props: {
                 ? color.red
                 : color.text
           }
-          modifiers={title.modifiers}
         >
-          {title.text}
+          {title}
         </Text>
       </ListItem.HeadlineContent>
       {detail ? (
         <ListItem.SupportingContent>
-          <Text
-            color={props.detailTone === "attention" ? color.amber : color.muted}
-            modifiers={detail.modifiers}
-          >
-            {detail.text}
-          </Text>
+          <Text color={props.detailTone === "attention" ? color.amber : color.muted}>{detail}</Text>
         </ListItem.SupportingContent>
       ) : null}
       {props.lead ? <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent> : null}
@@ -683,14 +664,25 @@ export function StatusRow(props: {
   readonly tone: NativeSettingsTone;
 }): ReactNode {
   const hasSupport = props.detail !== undefined || (props.steps?.length ?? 0) > 0;
+  // As LinkRow: the row, one node to TalkBack, says itself whole, steps and all.
+  const spoken = [
+    props.label,
+    props.detail,
+    ...(props.steps ?? []).map((step) => `${step.label}, ${stepWord[step.state]}`),
+  ]
+    .filter((line): line is string => typeof line === "string" && line !== "")
+    .join(", ");
   return (
-    <ListItem colors={rowColors}>
+    <ListItem
+      colors={rowColors}
+      modifiers={props.addressIn === undefined ? [] : [semantics({ contentDescription: spoken })]}
+    >
       <ListItem.LeadingContent>
         <Box modifiers={[size(10, 10), clip(Shapes.Circle), background(toneColor[props.tone])]} />
       </ListItem.LeadingContent>
       <ListItem.HeadlineContent>
         <Text color={color.text} style={{ fontWeight: "600" }}>
-          {props.label}
+          {drawnLine(props.label, props.addressIn === "label")}
         </Text>
       </ListItem.HeadlineContent>
       {hasSupport ? (
@@ -701,12 +693,8 @@ export function StatusRow(props: {
               : (() => {
                   const detail = drawnLine(props.detail, props.addressIn === "detail");
                   return (
-                    <Text
-                      color={color.textSoft}
-                      modifiers={detail.modifiers}
-                      style={{ fontFamily: "monospace", fontSize: 13 }}
-                    >
-                      {detail.text}
+                    <Text color={color.textSoft} style={{ fontFamily: "monospace", fontSize: 13 }}>
+                      {detail}
                     </Text>
                   );
                 })()}
@@ -719,6 +707,14 @@ export function StatusRow(props: {
     </ListItem>
   );
 }
+
+/** A step's state in words: its mark is a glyph, and the row says it aloud. */
+const stepWord: Record<NativeSettingsStep["state"], string> = {
+  current: "under way",
+  done: "done",
+  failed: "failed",
+  pending: "not yet",
+};
 
 function Step({ step }: { readonly step: NativeSettingsStep }): ReactNode {
   return (
