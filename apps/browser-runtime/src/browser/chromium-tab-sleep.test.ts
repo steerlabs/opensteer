@@ -677,7 +677,7 @@ it("still sleeps and wakes by address without marking unrestorable when the help
   await live2.cdp.send("Page.navigate", { url: url2 });
   await waitLoaded(live2.cdp, "/article");
 
-  const discardSpy = vi.spyOn(lifecycle, "discardAndName").mockResolvedValue(null);
+  const discardSpy = vi.spyOn(lifecycle, "nameAndDiscard").mockResolvedValue(null);
   expect(await ledger.sleep(s2.id, () => null)).toBe(true);
   expect(ledger.stateOf(s2.id)).toBe("suspended");
   discardSpy.mockRestore();
@@ -715,10 +715,10 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
   await waitLoaded(liveA.cdp, "/article");
   await evalValue(liveA.cdp, "window.scrollTo(0, 1750)");
 
-  const origDiscard = lifecycle.discardAndName.bind(lifecycle);
+  const origDiscard = lifecycle.nameAndDiscard.bind(lifecycle);
   const releaseReply = Promise.withResolvers<void>();
   const discardSpyA = vi
-    .spyOn(lifecycle, "discardAndName")
+    .spyOn(lifecycle, "nameAndDiscard")
     .mockImplementation(async (tabId, name) => {
       const newId = await origDiscard(tabId, name);
       await releaseReply.promise;
@@ -761,7 +761,7 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
   await evalValue(liveB.cdp, "window.scrollTo(0, 2350)");
 
   const discardSpyB = vi
-    .spyOn(lifecycle, "discardAndName")
+    .spyOn(lifecycle, "nameAndDiscard")
     .mockImplementation(async (tabId, name) => {
       await origDiscard(tabId, name);
       throw new Error("Opensteer tab lifecycle helper call timed out.");

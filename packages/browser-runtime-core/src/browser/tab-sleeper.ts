@@ -454,6 +454,11 @@ export class TabSleeper {
     }
   }
 
+  /** A page arrived that no open of ours made (a popup, a new-tab link): it grows as it loads. */
+  notePageArrived(): void {
+    this.lastOpenAt = Date.now();
+  }
+
   private async admitOpen(
     measure: () => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>,
   ): Promise<void> {

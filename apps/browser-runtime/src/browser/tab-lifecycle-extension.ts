@@ -88,13 +88,16 @@ globalThis.__opensteer = {
     await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
     return true;
   },
-  // Sleep in one call (L2): Chromium discards the tab first, then the tab Chromium returns is
-  // named, so a reply lost after the discard still leaves the tab findable by its name.
-  async discardAndName(tabId, name) {
+  // Sleep in one call (Q2): the tab is named first and discarded second, so no discarded tab is
+  // ever left without a name. Chromium keeps the group through the discard, also when the
+  // discard gives the tab a new id; the id it answers is the tab's from then on.
+  async nameAndDiscard(tabId, name) {
+    const tab = await chrome.tabs.get(tabId);
+    if (typeof tab.groupId === "number" && tab.groupId >= 0) await chrome.tabs.ungroup(tabId);
+    const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
     const updated = await chrome.tabs.discard(tabId);
     if (!updated?.discarded || typeof updated.id !== "number") return { ok: false, newTabId: null };
-    const groupId = await chrome.tabs.group({ tabIds: [updated.id] });
-    await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
     return { ok: true, newTabId: updated.id };
   },
   async unnameTab(tabId) {
@@ -445,17 +448,17 @@ export class ChromiumTabLifecycleBridge {
     return raw === true;
   }
 
-  /** Discards a tab, then names the tab Chromium returns; its id afterwards, or null. */
-  async discardAndName(tabId: number, name: string): Promise<number | null> {
+  /** Names a tab, then discards it; its id afterwards, or null. */
+  async nameAndDiscard(tabId: number, name: string): Promise<number | null> {
     const raw = await this.callWorker(
       (worker) =>
         worker.evaluate(
           ([id, title]) =>
             (
               globalThis as unknown as {
-                __opensteer: { discardAndName(tabId: number, name: string): Promise<unknown> };
+                __opensteer: { nameAndDiscard(tabId: number, name: string): Promise<unknown> };
               }
-            ).__opensteer.discardAndName(id, title),
+            ).__opensteer.nameAndDiscard(id, title),
           [tabId, name] as const,
         ),
       "change",

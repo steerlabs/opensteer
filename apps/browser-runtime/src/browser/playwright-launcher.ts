@@ -1209,6 +1209,9 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly context: PlaywrightBrowserContext;
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
+  private readonly handles = new WeakMap<Page, PlaywrightPageHandle>();
+  /** Pages being looked up by name: a child of one is handed off after its opener (Q1). */
+  private readonly classifying = new WeakMap<Page, Promise<void>>();
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
   private readonly handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   /** Closes one page target through the browser's own debugger, around Playwright. */
@@ -1242,11 +1245,7 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly identifyingPages = new WeakSet<Page>();
   /** The name a hidden page was seen with, so its tab's removal closes it first. */
   private readonly pageTitles = new WeakMap<Page, string>();
-  /** `newPage` calls in flight; a page they create is published by their answer. */
-  private readonly openingPages = new Set<Promise<Page>>();
   private readonly laneTails = new Map<string, Promise<void>>();
-  /** Discard-and-name calls in flight: until each is answered, its tab may be discarded unnamed. */
-  private discarding = 0;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1285,27 +1284,40 @@ class PlaywrightContextHandle implements BrowserContext {
   private arrive(page: Page): void {
     if (this.isHiddenPage(page) || this.published.has(page) || this.ending.has(page)) return;
     const handle = this.wrap(page);
-    // Its opener as Playwright recorded it, also when that page has closed since (M1).
+    // Q1: its opener as Playwright recorded it, also when that page has closed since or is still
+    // being looked up; its session is resolved when this page is handed off.
     const known = (page as unknown as { _opener?: Page | null })._opener;
-    if (known && known !== this.privatePage && this.published.has(known))
-      handle.openerHandle ??= this.wrap(known);
+    if (known && known !== this.privatePage) handle.openerHandle ??= this.wrap(known);
     if (!this.nativeProfile || !this.lifecycle || this.sleeping.size === 0) {
       this.handOutOrdinary(page);
       return;
     }
     this.identifyingPages.add(page);
-    void this.classify(page).catch(() => this.settleUnknown(page));
+    const classified = this.classify(page).catch(() => this.settleUnknown(page));
+    this.classifying.set(page, classified);
   }
 
   /**
-   * Hands an ordinary page off as the base does, with its opener read from Playwright's own
-   * record, at once: a page that has already closed itself is still handed off, so its end is seen.
+   * Hands an ordinary page off as the base does, at once: a page that has already closed itself
+   * is still handed off, so its end is seen. A child of a page still being looked up by name is
+   * handed off after that page, so its opener's session is known by then (Q1).
    */
   private handOutOrdinary(page: Page): void {
     if (this.closed || this.ending.has(page) || this.published.has(page)) return;
+    const handle = this.wrap(page);
+    const opener = handle.openerHandle?.rawPage;
+    const pending =
+      opener && this.identifyingPages.has(opener) ? this.classifying.get(opener) : null;
+    if (pending) {
+      this.identifyingPages.add(page);
+      void pending.finally(() => {
+        if (!this.identifyingPages.delete(page)) return;
+        this.handOutOrdinary(page);
+      });
+      return;
+    }
     this.identifyingPages.delete(page);
     this.published.add(page);
-    const handle = this.wrap(page);
     for (const listener of this.handOffs) listener(handle, handle.openerHandle);
     for (const listener of this.pageListeners) listener(handle);
   }
@@ -1345,16 +1357,19 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * While some tab is asleep, an arriving page's tab is looked up by its name, after any open of
-   * the runtime's own settled (its answer publishes its page). A sleep name decides; no name is
-   * an ordinary page; a name that cannot be read within the bound is settled as unknown.
+   * While some tab is asleep, an arriving page's tab is looked up by its name. A sleep name
+   * decides; no name is an ordinary page; a name that cannot be read within the bound is settled
+   * as unknown.
    */
   private async classify(page: Page): Promise<void> {
-    const taken = () => this.closed || page.isClosed() || !this.identifyingPages.has(page);
-    if (this.openingPages.size > 0) await Promise.allSettled(this.openingPages);
+    // Q3: it starts at arrival. The runtime's own new page carries no sleep name, so it is
+    // published as ordinary here or by its open's answer, whichever comes first.
+    const taken = () => this.closed || !this.identifyingPages.has(page);
     const deadline = performance.now() + arrivalIdentifyMs;
     for (let attempt = 0; ; attempt++) {
       if (taken()) return;
+      // A page that closed while it was looked up is handed off, so its end is seen.
+      if (page.isClosed()) return this.handOutOrdinary(page);
       const targetId = await lookupTargetId(this.context, page, deadline);
       const rows = targetId && !taken() ? await this.read(deadline) : null;
       if (taken()) return;
@@ -1475,10 +1490,9 @@ class PlaywrightContextHandle implements BrowserContext {
   /**
    * K6, on the tab's lane: a sleeping tab is removed only on evidence, a read that agrees with
    * itself in which no tab carries its name and none has its id or target, after a remove
-   * resolved when it was never named. M3: Opensteer alone discards and names in the same call, so
-   * a discarded tab with no name is nobody's; every such tab is removed too, and the sleep counts
-   * as removed only when none is left (never while another tab's discard is in flight). Its
-   * hidden pages close first; `many` is not removed by name.
+   * resolved when it was never named. It removes only its own tab (Q2): the one carrying its
+   * name, or the one its own discard returned. Its hidden pages close first; `many` is not
+   * removed by name.
    */
   private async removeSleeping(record: SleepingTab, attempts: number): Promise<boolean> {
     const lifecycle = this.lifecycle;
@@ -1486,23 +1500,11 @@ class PlaywrightContextHandle implements BrowserContext {
     const deadline = performance.now() + attempts * nameTargetMs;
     const ours = (row: ChromiumTabEntry) =>
       row.tabId === record.tabId || (record.targetId !== null && row.targetId === record.targetId);
-    const nobodys = (row: ChromiumTabEntry) => row.discarded && !row.identity;
     const gone = (rows: readonly ChromiumTabEntry[] | null) =>
       rows !== null &&
       findNamed(rows, record.title).kind === "none" &&
       !rows.some(ours) &&
-      (record.named || record.removeAsked) &&
-      this.discarding === 0 &&
-      !rows.some(nobodys);
-    const remove = async (tab: ChromiumTabEntry) => {
-      let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
-      if (!resolved && tab.targetId && this.closeTarget)
-        resolved = await this.closeTarget(tab.targetId).then(
-          () => true,
-          () => false,
-        );
-      return resolved;
-    };
+      (record.named || record.removeAsked);
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (this.closed) return false;
       for (const page of this.context.pages())
@@ -1511,12 +1513,17 @@ class PlaywrightContextHandle implements BrowserContext {
       const rows = await this.read(deadline);
       if (this.closed) return false;
       if (gone(rows)) return true;
-      if (rows) {
-        const named = findNamed(rows, record.title);
-        const tab =
-          named.kind === "one" ? named.row : named.kind === "none" ? rows.find(ours) : undefined;
-        if (tab && (await remove(tab))) record.removeAsked = true;
-        if (this.discarding === 0) for (const orphan of rows.filter(nobodys)) await remove(orphan);
+      const named = rows ? findNamed(rows, record.title) : null;
+      const tab =
+        named?.kind === "one" ? named.row : named?.kind === "none" ? rows!.find(ours) : undefined;
+      if (tab) {
+        let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
+        if (!resolved && tab.targetId && this.closeTarget)
+          resolved = await this.closeTarget(tab.targetId).then(
+            () => true,
+            () => false,
+          );
+        if (resolved) record.removeAsked = true;
         if (gone(await this.read(deadline))) return true;
       }
       if (attempt < attempts - 1) await delay(40);
@@ -1671,22 +1678,29 @@ class PlaywrightContextHandle implements BrowserContext {
         if (row.active) await this.activatePrivateAnchor();
         await this.freezeBeforeDiscard(page);
         await detachBounded();
-        // L2 in one helper call: discard first, then name the tab Chromium returns. Asked, it may
-        // be named even when the answer is lost, so the name must be gone too for a removal.
+        // Q2, in one helper call: the tab is named first and discarded second, so Opensteer never
+        // makes a discarded tab without a name (the name survives the discard, also when the
+        // discard gives the tab a new id: seen on real Chromium). Asked, it may be named even
+        // when the answer is lost, so the name must be gone too for a removal.
         record.named = true;
-        this.discarding++;
-        const asleepId = await lifecycle
-          .discardAndName(row.tabId, record.title)
-          .catch(() => null)
-          .finally(() => this.discarding--);
+        const asleepId = await lifecycle.nameAndDiscard(row.tabId, record.title).catch(() => null);
         if (asleepId !== null) record.tabId = asleepId;
-        const check = await this.read(deadline);
-        const named = check ? findNamed(check, record.title) : null;
-        if (named?.kind === "one" && named.row.discarded && !this.closed) {
+        const asleep = async () => {
+          const check = await this.read(deadline);
+          const named = check ? findNamed(check, record.title) : null;
+          if (named?.kind !== "one" || this.closed) return named;
           record.tabId = named.row.tabId;
           record.targetId = named.row.targetId;
-          return;
+          return named;
+        };
+        let named = await asleep();
+        if (named?.kind === "one" && !named.row.discarded && !page.isClosed()) {
+          // Named and still awake (the helper stopped between the two): the discard is asked
+          // once more of that one tab.
+          await lifecycle.discardByTabId(named.row.tabId).catch(() => null);
+          named = await asleep();
         }
+        if (named?.kind === "one" && named.row.discarded) return;
         // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
         // page still open proves the tab was not discarded, so closing it closes the tab.
         if (!page.isClosed() && (await this.closePageWithEvidence(page, deadline)))
@@ -1856,19 +1870,14 @@ class PlaywrightContextHandle implements BrowserContext {
     const opening = withTimeout(this.context.newPage(), openPageMs, {
       timeoutError: () => new Error("Opening a page timed out."),
     });
-    this.openingPages.add(opening);
-    try {
-      const page = await opening;
-      if (signal?.aborted) {
-        // Abandoned while it opened: nobody takes it, so it is closed here.
-        void this.closePageWithEvidence(page);
-        throw notWanted();
-      }
-      if (!this.publish(page, true)) throw new Error("The new page closed.");
-      return page;
-    } finally {
-      this.openingPages.delete(opening);
+    const page = await opening;
+    if (signal?.aborted) {
+      // Abandoned while it opened: nobody takes it, so it is closed here.
+      void this.closePageWithEvidence(page);
+      throw notWanted();
     }
+    if (!this.publish(page, true)) throw new Error("The new page closed.");
+    return page;
   }
 
   async createPage(options?: {
@@ -1916,10 +1925,16 @@ class PlaywrightContextHandle implements BrowserContext {
     return this.context.isClosed();
   }
 
+  /**
+   * The one handle of a page, also after it closed (Q1): a child names its opener by Playwright's
+   * record of it, so that opener's handle, and through it its session, stays findable while the
+   * child lives. Held weakly by the raw page, so nothing is kept alive by it.
+   */
   wrap(page: Page): PlaywrightPageHandle {
-    let handle = this.pagesByPlaywrightPage.get(page);
+    let handle = this.pagesByPlaywrightPage.get(page) ?? this.handles.get(page);
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
+      this.handles.set(page, handle);
       this.pagesByPlaywrightPage.set(page, handle);
       page.once("close", () => this.pagesByPlaywrightPage.delete(page));
     }

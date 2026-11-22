@@ -237,6 +237,39 @@ it("names a tab after Chromium discarded it: no page arrives while it sleeps, it
   );
 }, 60_000);
 
+it("keeps a group title given before the discard through it, also when the discard gives the tab a new id, and finds the tab by it (Q2)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-name-then-discard-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const outcomes: unknown[] = [];
+  for (let round = 0; round < 3; round++) {
+    const page = await running.context.newPage();
+    await page.goto(url(round + 1, `name-first=${round}`));
+    await page.evaluate(() => sessionStorage.setItem("mark", "kept"));
+    const targetId = (
+      (await (await running.context.newCDPSession(page)).send("Target.getTargetInfo")) as {
+        targetInfo: { targetId: string };
+      }
+    ).targetInfo.targetId;
+    const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
+    const name = `opensteer-sleep:q2-${round}`;
+    await running.helper.bringToFront();
+    expect(await running.lifecycle.nameTab(row.tabId, name)).toBe(true);
+    const asleepId = await running.lifecycle.discardByTabId(row.tabId);
+    const carriers = (await running.lifecycle.inventory()).filter((t) => t.identity === name);
+    expect(carriers).toHaveLength(1);
+    expect(carriers[0]).toMatchObject({ tabId: asleepId, discarded: true });
+    const arrived = running.context.waitForEvent("page");
+    await running.lifecycle.activateByTabId(carriers[0]!.tabId);
+    const woken = await arrived;
+    await woken.waitForLoadState();
+    expect(await woken.evaluate(() => sessionStorage.getItem("mark"))).toBe("kept");
+    outcomes.push({ before: row.tabId, after: asleepId, idReplaced: asleepId !== row.tabId });
+  }
+  process.stdout.write(`${JSON.stringify({ event: "q2.name-then-discard", outcomes })}\n`);
+}, 90_000);
+
 it("reports no opener for a woken tab that another page opened (M1)", async () => {
   const url = await fixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-m1-probe-"));
@@ -260,7 +293,7 @@ it("reports no opener for a woken tab that another page opened (M1)", async () =
   ).targetInfo;
   const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId.targetId)!;
   await running.helper.bringToFront();
-  const asleep = await running.lifecycle.discardAndName(row.tabId, "opensteer-sleep:m1");
+  const asleep = await running.lifecycle.nameAndDiscard(row.tabId, "opensteer-sleep:m1");
   const arrived = running.context.waitForEvent("page");
   await running.lifecycle.activateByTabId(asleep!);
   const woken = await arrived;

@@ -1652,7 +1652,10 @@ describe("native Chromium profiles", () => {
       launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       const handedOff: string[] = [];
       launched.context.handOff((p) => handedOff.push(p.url()));
-      const hiddenOpener = { isClosed: () => false } as unknown as Page;
+      const hiddenOpener = Object.assign(new EventEmitter(), {
+        url: () => "https://gone-opener.test/",
+        isClosed: () => true,
+      }) as unknown as Page;
       const popup = {
         url: () => "https://popup-f4.test/",
         isClosed: () => false,
@@ -1745,13 +1748,12 @@ async function nativeCloseFixture(
     on: vi.fn(),
     close: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
-  // The helper's one sleep call, made of the two it is built from (mocked separately here).
-  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "discardAndName").mockImplementation(
+  // The helper's one sleep call, made of the two it is built from (mocked separately here):
+  // named first, discarded second (Q2).
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameAndDiscard").mockImplementation(
     async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
-      const asleep = await this.discardByTabId(tabId);
-      if (asleep === null) return null;
-      await this.nameTab(asleep, title);
-      return asleep;
+      if (!(await this.nameTab(tabId, title))) return null;
+      return this.discardByTabId(tabId);
     },
   );
   vi.spyOn(chromium, "launchPersistentContext").mockResolvedValue(

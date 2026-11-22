@@ -162,13 +162,12 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
       state.tabs = state.tabs.filter((t) => t.tabId !== tabId);
       return state.tabs.length < before;
     });
-  // The helper's one sleep call, made of the two it is built from (mocked separately here).
-  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "discardAndName").mockImplementation(
+  // The helper's one sleep call, made of the two it is built from (mocked separately here):
+  // named first, discarded second (Q2).
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameAndDiscard").mockImplementation(
     async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
-      const asleep = await this.discardByTabId(tabId);
-      if (asleep === null) return null;
-      await this.nameTab(asleep, title);
-      return asleep;
+      if (!(await this.nameTab(tabId, title))) return null;
+      return this.discardByTabId(tabId);
     },
   );
   const activate = vi.spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId");
@@ -227,12 +226,12 @@ interface ContextInternals {
 const tokenOf = (token: unknown) => (token as { tokenId: string }).tokenId;
 const titleOf = (token: unknown) => `opensteer-sleep:${tokenOf(token)}`;
 
-it("names a tab only after Chromium discarded it, wakes it by that name, and removes the name (L2)", async () => {
+it("names a tab first and discards it second, wakes it by that name, and removes the name (Q2)", async () => {
   const f = await launchWith();
   const { token } = await f.sleepOne(10);
   expect(f.state.tabs).toMatchObject([{ tabId: 11, discarded: true, identity: titleOf(token) }]);
-  expect(f.spies.discard.mock.invocationCallOrder[0]).toBeLessThan(
-    f.spies.name.mock.invocationCallOrder[0]!,
+  expect(f.spies.name.mock.invocationCallOrder[0]).toBeLessThan(
+    f.spies.discard.mock.invocationCallOrder[0]!,
   );
   const woken = fakePage("target-10", "https://tab-10.test/");
   f.spies.activate.mockImplementation(async (tabId) => {
@@ -489,38 +488,90 @@ it("takes a woken page, its ownership and its publication before the name is rem
   expect((page as unknown as { rawPage: Page }).rawPage).toBe(woken);
 });
 
-it("removes a discarded tab left with no name when the worker stops between discard and name, and reports the sleep removed only after (M3)", async () => {
+it("leaves a tab named and awake when the worker stops between name and discard, asks the discard again, and the tab sleeps and wakes normally, then sleeps normally next time (Q2)", async () => {
   const f = await launchWith();
-  // The worker discards (a new id and a new target, as on real Chromium) and stops before naming.
-  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "discardAndName").mockImplementation(
-    async (tabId) => {
-      f.state.tabs = f.state.tabs.map((t) =>
-        t.tabId === tabId
-          ? {
-              ...t,
-              tabId: tabId + 7,
-              targetId: "target-replaced",
-              discarded: true,
-              status: "unloaded",
-            }
-          : t,
-      );
+  // The worker names the tab and stops before it discards.
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameAndDiscard").mockImplementationOnce(
+    async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
+      await this.nameTab(tabId, title);
       throw new Error("Opensteer tab lifecycle helper call timed out.");
     },
   );
-  let refuse = true;
-  f.spies.remove.mockImplementation(async (tabId) => {
-    if (refuse) return false;
-    const before = f.state.tabs.length;
-    f.state.tabs = f.state.tabs.filter((t) => t.tabId !== tabId);
-    return f.state.tabs.length < before;
-  });
   const { token } = await f.sleepOne(90);
-  expect(f.state.tabs).toMatchObject([{ tabId: 97, discarded: true }]);
-  expect(f.state.tabs[0]!.identity ?? null).toBeNull();
-  await expect(f.launched.context.releaseRestore!(token)).resolves.toBe(false);
-  expect(f.internals.sleeping.has(tokenOf(token))).toBe(true);
-  refuse = false;
-  await expect(f.launched.context.releaseRestore!(token)).resolves.toBe(true);
-  expect(f.state.tabs).toEqual([]);
+  // Asleep under its name after the one more discard; nothing was removed.
+  expect(f.state.tabs).toMatchObject([{ tabId: 91, discarded: true, identity: titleOf(token) }]);
+  expect(f.spies.remove).not.toHaveBeenCalled();
+  const woken = fakePage("target-90", "https://tab-90.test/");
+  f.spies.activate.mockImplementation(async (tabId) => {
+    f.state.tabs = f.state.tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
+    queueMicrotask(() => f.arrive(woken));
+    return { ok: true, tabId, discarded: false };
+  });
+  const page = await f.launched.context.createPage({ restore: token });
+  expect((page as unknown as { rawPage: Page }).rawPage).toBe(woken);
+  expect(f.state.tabs[0]!.identity).toBeNull();
+  // Its next sleep is an ordinary one.
+  const next = await page.captureRestore!();
+  await page.close({ reason: "slept" });
+  expect(f.state.tabs).toMatchObject([{ discarded: true, identity: titleOf(next) }]);
+  expect(f.internals.sleeping.has(tokenOf(next))).toBe(true);
+});
+
+it("closing a sleeping tab while another tab is being put to sleep removes nothing but the closed tab (Q2)", async () => {
+  const f = await launchWith();
+  const { token: x } = await f.sleepOne(100);
+  // Tab y is named; its discard waits while x is closed and removed.
+  const held = Promise.withResolvers<void>();
+  const helperStep = Promise.withResolvers<void>();
+  vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameAndDiscard").mockImplementationOnce(
+    async function (this: ChromiumTabLifecycleBridge, tabId: number, title: string) {
+      await this.nameTab(tabId, title);
+      helperStep.resolve();
+      await held.promise;
+      return this.discardByTabId(tabId);
+    },
+  );
+  const sleepingY = f.sleepOne(200);
+  await helperStep.promise;
+  await expect(f.launched.context.releaseRestore!(x)).resolves.toBe(true);
+  held.resolve();
+  const { token: y } = await sleepingY;
+  expect(f.spies.remove.mock.calls.map(([tabId]) => tabId)).toEqual([101]);
+  expect(f.state.tabs).toMatchObject([{ tabId: 201, discarded: true, identity: titleOf(y) }]);
+});
+
+it("hands off a popup that arrives while an unrelated new tab is still opening, without waiting for it (Q3)", async () => {
+  const f = await launchWith();
+  await f.sleepOne(400);
+  const opening = Promise.withResolvers<Page>();
+  f.spies.newPage.mockImplementationOnce(() => opening.promise);
+  const calls = f.spies.newPage.mock.calls.length;
+  const unrelated = f.launched.context.createPage();
+  void unrelated.catch(() => undefined);
+  // The unrelated open is in flight, waiting on Chromium.
+  await vi.waitFor(() => expect(f.spies.newPage.mock.calls.length).toBe(calls + 1));
+  const popup = fakePage("target-401", "https://tab-401.test/");
+  f.state.tabs = [...f.state.tabs, row(401)];
+  f.arrive(popup);
+  await vi.waitFor(() => expect(f.handedOff).toContain(popup), { timeout: 1_000, interval: 10 });
+  opening.resolve(fakePage("target-402", "about:blank"));
+  await unrelated;
+});
+
+it("hands off a popup that closes while its name is being read, so its end is delivered (Q3)", async () => {
+  const f = await launchWith();
+  await f.sleepOne(410);
+  const held = Promise.withResolvers<void>();
+  const read = f.spies.read.getMockImplementation()!;
+  f.spies.read.mockImplementationOnce(async () => {
+    await held.promise;
+    return read();
+  });
+  const popup = fakePage("target-411", "https://tab-411.test/");
+  f.state.tabs = [...f.state.tabs, row(411)];
+  f.arrive(popup);
+  await vi.waitFor(() => expect(f.spies.read).toHaveBeenCalled());
+  popup.markClosed();
+  held.resolve();
+  await vi.waitFor(() => expect(f.handedOff).toContain(popup), { timeout: 3_000, interval: 10 });
 });

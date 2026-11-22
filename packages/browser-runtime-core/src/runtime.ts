@@ -1734,9 +1734,12 @@ export class BrowserRuntime implements NativePresentationSource {
         };
         host = launchedHost;
         browser.onClose(onBrowserClose);
-        // The pressure rule also runs as each page is created, not only on its timer (C9).
-        if (this.launcher.memoryPressure)
+        // The pressure rule also runs as each page is created, not only on its timer (C9), and a
+        // page Chromium opened (a popup, a new-tab link) counts as new growth like one we open (Q4).
+        if (this.launcher.memoryPressure) {
           browser.context.beforeCreatePage = () => this.sleeper.beforePageOpen();
+          browser.context.onPage(() => this.sleeper.notePageArrived());
+        }
         this.hosts.set(hostKey, host);
         createdHost = true;
         await wait(Promise.resolve(browser.profile?.ready()));

@@ -19,6 +19,7 @@ type Listener<T extends unknown[]> = (...args: T) => void;
 /** One start of the helper's service worker against a fake `chrome`, as Chromium starts it. */
 function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
   const groups = new Map<number, { id: number; title: string }>();
+  const calls: string[] = [];
   let nextGroup = 1;
   const created: Listener<[FakeTab]>[] = [];
   const replaced: Listener<[number, number]>[] = [];
@@ -31,6 +32,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
         get: async (tabId: number) => ({ ...tabs.find((tab) => tab.id === tabId)! }),
         // A discard gives the tab a new id, as Chromium does.
         discard: async (tabId: number) => {
+          calls.push("discard");
           const tab = tabs.find((candidate) => candidate.id === tabId)!;
           Object.assign(tab, { id: tabId + 1, discarded: true, status: "unloaded" });
           return { ...tab };
@@ -41,6 +43,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
           return { ...tab };
         },
         group: async ({ tabIds }: { tabIds: number[] }) => {
+          calls.push("group");
           const id = nextGroup++;
           groups.set(id, { id, title: "" });
           for (const tabId of tabIds) tabs.find((tab) => tab.id === tabId)!.groupId = id;
@@ -69,7 +72,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
       rows: Array<{ tabId: number; identity: string | null; discarded: boolean }>;
     }>;
     nameTab(tabId: number, name: string): Promise<boolean>;
-    discardAndName(tabId: number, name: string): Promise<{ ok: boolean; newTabId: number | null }>;
+    nameAndDiscard(tabId: number, name: string): Promise<{ ok: boolean; newTabId: number | null }>;
     unnameTab(tabId: number): Promise<boolean>;
   };
   const open = (tab: FakeTab) => {
@@ -80,7 +83,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
     tabs.find((tab) => tab.id === from)!.id = to;
     for (const listener of replaced) listener(to, from);
   };
-  return { api, open, replace, options };
+  return { api, open, replace, options, calls };
 }
 
 const settle = async () => {
@@ -115,10 +118,14 @@ describe("tab lifecycle helper", () => {
     expect((await api.inventory()).rows.map((row) => row.identity)).toEqual([null, null]);
   });
 
-  it("discards a tab, then names the tab Chromium returns, in one call (L2)", async () => {
+  it("names a tab first and discards it second, in one call, and the name stays with the tab Chromium returns (Q2)", async () => {
     const tabs = [tab(30)];
-    const { api } = startWorker(tabs);
-    expect(await api.discardAndName(30, "opensteer-sleep:c")).toEqual({ ok: true, newTabId: 31 });
+    const { api, calls } = startWorker(tabs);
+    expect(await api.nameAndDiscard(30, "opensteer-sleep:c")).toEqual({ ok: true, newTabId: 31 });
+    expect(calls.filter((call) => call === "group" || call === "discard")).toEqual([
+      "group",
+      "discard",
+    ]);
     expect((await api.inventory()).rows).toMatchObject([
       { tabId: 31, discarded: true, identity: "opensteer-sleep:c" },
     ]);

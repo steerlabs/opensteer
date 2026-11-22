@@ -352,7 +352,9 @@ helper extension that is never visible to tab lists, session CDP or connected ag
 with confirmation and bounded retries when the tab closes or its session ends. When the browser
 itself restarts (a Home update, a crash, a cold start), each tab reopens at its address: what was
 typed and not sent, its scroll position and its back history are not kept across that restart;
-sign-ins are kept, since they live in the profile. The launcher deletes the last session's
+sign-ins are kept, since they live in the profile, except that a sign-in made in the last half
+minute before the browser is killed may not be (Chromium writes its cookies to disk on its own
+timer). The launcher deletes the last session's
 records in the profile directory it owns before launch, and refuses a launch that finds a page. On a
 Cloud Computer the browser pool keeps the exact state through idle time, so a restart is the rare
 case there.

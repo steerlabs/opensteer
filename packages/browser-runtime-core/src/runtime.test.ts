@@ -116,6 +116,11 @@ describe("BrowserRuntime", () => {
           await context.beforeCreatePage!();
           expect(pressure).toHaveBeenCalled();
         }
+        // A page Chromium opened marks the growth window too, where pressure is read (Q4).
+        const sleeper = (runtime as unknown as { sleeper: { lastOpenAt: number } }).sleeper;
+        sleeper.lastOpenAt = Number.NEGATIVE_INFINITY;
+        context.addPage(new FakePage({ url: "https://popup.test/" }));
+        expect(Number.isFinite(sleeper.lastOpenAt)).toBe(linux);
       } finally {
         await runtime.shutdown();
       }
