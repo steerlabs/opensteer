@@ -10,14 +10,26 @@ pnpm test:vm -- --mobile env OPENSTEER_CHROME_R0_REPEAT=5 bash scripts/test-maco
 ```
 
 Journey names are in [journey-command.sh](../../../../apps/desktop/scripts/journey-command.sh); with
-none named, all defaults run (`mac-owner` only when named). Cached jobs still pay boot, staging and
-export, so select related flows in one invocation. Set `OPENSTEER_CHROME_R0_REPEAT=5` after a typing
-or input change; host `PersonKeyOrderTests` stay the deterministic guard.
+none named, all defaults run (`mac-owner` and `first-run` only when named). Cached jobs still pay
+boot, staging and export, so select related flows in one invocation. Set
+`OPENSTEER_CHROME_R0_REPEAT=5` after a typing or input change; host `PersonKeyOrderTests` stay the
+deterministic guard.
 `OPENSTEER_VM_DISPLAY=1600x1100pt` gives the guest a 2x display on a Retina host; `native-browser`
 then runs at 2x, which is the density its capture steps need to show a page shrinking.
 `--inputs /absolute/directory`, before `--revision`, adds a read-only share at
 `/Volumes/My Shared Files/inputs`; it must be a real path without symlinks or `:`, and files are
 copied to guest APFS before modification.
+
+**First run.** `pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh first-run` drives the
+Mac app's first run against the real account service code on a PostgreSQL of its own: Sign in
+(the account's App Review form, a test account in that database), "Where should your Opensteer
+live?", On this Mac, setup, "Connect your phone". It runs twice, `settled` (setup moves on once
+the Home is ready) and `racing` (each step at once, so the turn-on meets the Home still being set
+up). Only the tunnel provider (`MemoryConnectProvider`), the browser and macOS's `open-url`
+hand-off stand in ([journey.ts](../../../../tests/first-run/journey.ts)). A pass is the Home in
+the account and the phone step's helper sentence, never "Couldn't add …" or "Another deployment
+access operation is already running"; `first-run/<trial>/verdict.json` records the count of
+`initialize-failed`. A real tunnel a phone outside can reach stays unverified.
 
 **Run records.** Inspect the printed `~/.local/state/opensteer/vm-runs/<run-id>` record, phase logs
 and guest artifacts, and confirm the selected cases passed and the clone was deleted. After an
