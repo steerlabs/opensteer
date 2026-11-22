@@ -752,11 +752,9 @@ describe("a person's caret moves and selections in the native field", () => {
       } else if (choice < 0.73) {
         composing = false;
         await run.unmarkText();
-      } else if (choice < 0.75 && !harness.remote?.composition) {
-        // Not while the far field's composition is open: a rotation then leaves Blink's
-        // composition open and the next keystroke replaces it, the open fault held by
-        // tests/editing-far-model.test.ts ("keeps the composed text when a keystroke follows a
-        // refusal during a composition").
+      } else if (choice < 0.75) {
+        // Also while the far field's composition is open: the composing context ends, and its
+        // composition is closed as its own before the new context's first operation (CS1).
         rotations += 1;
         await run.rotate(
           `00000000-0000-4000-9000-${String(seed * 100 + rotations).padStart(12, "0")}`,

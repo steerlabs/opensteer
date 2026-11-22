@@ -32,6 +32,8 @@ const bindingReport = z.object({
 });
 const prepared = z.object({
   ok: z.boolean(),
+  /** Whether the page's own composition events say the field is composing. */
+  composing: z.boolean().optional(),
   reason: z.string().optional(),
   replacementStart: z.number().optional(),
   replacementEnd: z.number().optional(),
@@ -180,7 +182,16 @@ export class PageEditingObserver {
   #focused: { context: number; frame: string; fieldId: string; selectionRevision: number } | null =
     null;
   #context: EditingContext = { contextId: randomUUID(), field: null, caret: null };
-  #composition = false;
+  /**
+   * The open composition's context: who composed it, so the context that ends with it open
+   * closes it as its own act, attributed to it, before another context's operation is prepared.
+   * Whether the field is composing is the page's (its composition events), never assumed.
+   */
+  #composer: {
+    contextId: string;
+    producer: string | undefined;
+    admitted?: (() => void) | undefined;
+  } | null = null;
   #script: string | null = null;
   #closed = false;
   #generation = 0;
@@ -315,10 +326,12 @@ export class PageEditingObserver {
     edit: EditingComposition | EditingTextEdit,
     composition: boolean,
     admitted?: () => void,
+    producer?: string,
   ): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.edit(edit, composition, admitted);
+    if (this.#activeChild) return this.#activeChild.edit(edit, composition, admitted, producer);
     const focus = this.#focused;
     if (!focus || edit.contextId !== this.#context.contextId) return this.#stale();
+    await this.#close(focus, edit.contextId, producer);
     const generation = this.#generation;
     const response = await this.#cdp
       .send<{
@@ -326,7 +339,7 @@ export class PageEditingObserver {
         exceptionDetails?: { text?: string; exception?: { className?: string } };
       }>("Runtime.evaluate", {
         contextId: focus.context,
-        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", composing: this.#composition, deleting: !composition && edit.text.length === 0 })})`,
+        expression: `globalThis.editingOwner?.prepare(${JSON.stringify({ fieldId: focus.fieldId, revision: focus.selectionRevision, before: edit.before ?? "", after: edit.after ?? "", deleting: !composition && edit.text.length === 0 })})`,
         returnByValue: true,
         silent: true,
       })
@@ -361,7 +374,8 @@ export class PageEditingObserver {
                 replacementEnd: parsed.data.replacementEnd,
               }),
         });
-        this.#composition = edit.text.length > 0;
+        this.#composer =
+          edit.text.length > 0 ? { contextId: edit.contextId, producer, admitted } : null;
       } else {
         if (
           parsed.data.replacementStart !== undefined &&
@@ -378,7 +392,7 @@ export class PageEditingObserver {
         // An edit replaces an open composition: an empty one removes it, as the empty
         // composition of a cancel does. A Backspace would delete one of its characters and
         // commit the rest.
-        else if (this.#composition)
+        else if (parsed.data.composing)
           await this.#cdp.send("Input.imeSetComposition", {
             text: "",
             selectionStart: 0,
@@ -392,7 +406,7 @@ export class PageEditingObserver {
             windowsVirtualKeyCode: 8,
             commands: ["deleteBackward"],
           });
-        this.#composition = false;
+        this.#composer = null;
       }
       return true;
     } finally {
@@ -400,8 +414,10 @@ export class PageEditingObserver {
     }
   }
 
-  async input<T>(action: () => Promise<T>): Promise<T> {
-    if (this.#activeChild) return this.#activeChild.input(action);
+  async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
+    if (this.#activeChild) return this.#activeChild.input(action, producer);
+    const focus = this.#focused;
+    if (focus) await this.#close(focus, this.#context.contextId, producer);
     const context = this.#focused?.context;
     if (context === undefined) return action();
     await this.#cdp.send("Runtime.evaluate", {
@@ -426,9 +442,37 @@ export class PageEditingObserver {
       .catch(() => undefined);
   }
 
+  /**
+   * Ends a composition another context left open, as that context's closing act: exactly the
+   * marked text the page holds is committed, nothing added, attributed to the context that
+   * composed it. The page's own input bracket keeps its selection revision, so the operation
+   * prepared next reads the selection the close left. A composition the page ended itself
+   * (focus left) sends nothing.
+   */
+  async #close(
+    focus: { context: number },
+    contextId: string,
+    producer: string | undefined,
+  ): Promise<void> {
+    const composer = this.#composer;
+    if (!composer || (composer.contextId === contextId && composer.producer === producer)) return;
+    this.#composer = null;
+    const response = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: focus.context,
+        expression: "globalThis.editingOwner?.composition()",
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const text = response?.result?.value;
+    if (typeof text !== "string" || text.length === 0) return;
+    composer.admitted?.();
+    await this.input(() => this.#cdp.send("Input.insertText", { text })).catch(() => undefined);
+  }
+
   #stale(): false {
     this.#generation++;
-    this.#composition = false;
     this.#context = { ...this.#context, contextId: randomUUID() };
     this.#publish(this.#context);
     this.refresh();
@@ -438,7 +482,7 @@ export class PageEditingObserver {
   #clear = (): void => {
     this.#generation++;
     this.#focused = null;
-    this.#composition = false;
+    this.#composer = null;
     if (!this.#activeChild) {
       this.#context = { contextId: randomUUID(), field: null, caret: null };
       this.#publish(this.#context);
@@ -518,10 +562,7 @@ export class PageEditingObserver {
       this.#focused?.context !== parsed.data.executionContextId ||
       this.#focused?.fieldId !== fieldId ||
       this.#focused?.selectionRevision !== selectionRevision;
-    if (changed) {
-      this.#generation++;
-      this.#composition = false;
-    }
+    if (changed) this.#generation++;
     this.#focused = { context: parsed.data.executionContextId, frame, fieldId, selectionRevision };
     const contextId = changed ? randomUUID() : this.#context.contextId;
     this.#context = { contextId, field, caret: this.#context.caret };
@@ -799,7 +840,9 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     mirrorSuffix = null,
     mirrorMarker = null,
     observedEditContext = null,
-    stopEditContext = () => {};
+    stopEditContext = () => {},
+    // The field composing, by its own composition events: the element and the marked text.
+    composing = null;
   const on = (target, type, fn, options = true) => {
     target.addEventListener(type, fn, options);
     listeners.push(() => target.removeEventListener(type, fn, options));
@@ -1136,9 +1179,21 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
             "compositionstart",
             "compositionend",
           ];
-        for (const event of events) context.addEventListener(event, schedule);
+        const track = (event) => {
+          if (event.type === "compositionstart") composing = { element, text: "" };
+          if (event.type === "compositionend") composing = null;
+          // During a composition each textupdate replaces the composition with its text.
+          if (event.type === "textupdate" && composing?.element === element) composing.text = event.text;
+        };
+        for (const event of events) {
+          context.addEventListener(event, schedule);
+          context.addEventListener(event, track);
+        }
         stopEditContext = () => {
-          for (const event of events) context.removeEventListener(event, schedule);
+          for (const event of events) {
+            context.removeEventListener(event, schedule);
+            context.removeEventListener(event, track);
+          }
         };
       } else stopEditContext = () => {};
     }
@@ -1198,7 +1253,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       return { ok: false, reason: "focus-changed" };
     syncSelection();
     if (selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
-    if (request.composing) return accept();
+    if (composing && composing.element === element) return accept({ ok: true, composing: true });
     const before = request.before,
       after = request.after,
       rangeEdit = !!(before.length || after.length);
@@ -1283,7 +1338,14 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     "resize",
   ])
     on(event === "resize" ? window : document, event, () => {syncSelection();schedule();});
+  on(document, "compositionstart", () => {
+    composing = { element: active(), text: "" };
+  });
+  on(document, "compositionupdate", (event) => {
+    if (composing) composing.text = event.data ?? "";
+  });
   on(document, "compositionend", () => {
+    composing = null;
     if (!ownInput) selectionRevision++;
     schedule();
   });
@@ -1351,6 +1413,8 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       schedule();
     },
     prepare,
+    /** The marked text of the active field's open composition, or null. */
+    composition: () => (composing && composing.element === active() ? composing.text : null),
     stop: () => {
       personBindings.clear();
       saveFields = new WeakMap();

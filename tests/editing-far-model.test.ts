@@ -34,8 +34,14 @@ afterAll(async () => {
   await browser?.close();
 });
 
+/** What the Home sent as text, and to whom it attributed input, in order. */
+const record: string[] = [];
 function handle(session: CDPSession): CdpSession {
-  const send = session.send.bind(session) as unknown as CdpSession["send"];
+  const raw = session.send.bind(session) as unknown as CdpSession["send"];
+  const send = ((method: string, params?: Record<string, unknown>) => {
+    if (method === "Input.insertText") record.push(`text ${String(params?.text)}`);
+    return raw(method as never, params as never);
+  }) as CdpSession["send"];
   return {
     send,
     on: (event, listener) => session.on(event as never, listener as never),
@@ -156,14 +162,19 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
    * Sends one operation to the real page as the controller does: text, composition, command, or
    * a paste (its bytes installed in the browser's clipboard, then the paste command).
    */
-  const send = async (operation: EditingOperation) => {
-    if (operation.kind === "edit") return observer.edit(operation.edit, false);
-    if (operation.kind === "compose") return observer.edit(operation.composition, true);
+  const send = async (operation: EditingOperation, producer = "A") => {
+    // The controller's admitted: input from here on is this producer's.
+    const admitted = () => record.push(`attributed ${producer}`);
+    if (operation.kind === "edit") return observer.edit(operation.edit, false, admitted, producer);
+    if (operation.kind === "compose")
+      return observer.edit(operation.composition, true, admitted, producer);
     if (operation.kind === "paste") {
       const scope = await clipboard.open({} as BrowserPage, operation.items);
       try {
-        await observer.input(() =>
-          cdp.send("Input.dispatchKeyEvent", editingCommandParameters("paste", process.platform)),
+        await observer.input(
+          () =>
+            cdp.send("Input.dispatchKeyEvent", editingCommandParameters("paste", process.platform)),
+          producer,
         );
       } finally {
         await scope.close();
@@ -171,11 +182,13 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
       return true;
     }
     if (operation.kind === "command")
-      await observer.input(() =>
-        cdp.send(
-          "Input.dispatchKeyEvent",
-          editingCommandParameters(operation.command, process.platform),
-        ),
+      await observer.input(
+        () =>
+          cdp.send(
+            "Input.dispatchKeyEvent",
+            editingCommandParameters(operation.command, process.platform),
+          ),
+        producer,
       );
     return true;
   };
@@ -277,21 +290,137 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
   });
 
   /*
-   * Open (CR4's new find): a refusal while a composition is open clears the observer's composing
-   * flag but leaves Blink's composition open, so the next keystroke, under the new context,
-   * replaces the composed text the person saw committed. Closing Blink's composition at the
-   * refusal would be trusted input for a refused operation, which the controller's passkey
-   * attribution forbids (controller.test.ts, "attributes composition before a ceremony"): the
-   * fix is the lead's decision. This states what a person should get, and fails until then.
+   * CS1: a composition belongs to the context that started it. A refusal does not end it (the
+   * page's composition events say whether the field composes); the next operation, of the new
+   * context, finds it open, and the old context closes it first: exactly its marked text,
+   * committed and attributed to the context that composed it. The new operation then goes in
+   * after it, attributed to its own producer.
    */
-  it.fails(
-    "keeps the composed text when a keystroke follows a refusal during a composition",
-    async () => {
-      await seed(page, kind, "", 0);
-      await settle();
-      const contextId = observer.context.contextId!;
-      expect(
-        await send({
+  it("keeps the composed text when a keystroke follows a refusal during a composition", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    record.length = 0;
+    const far = new FarField();
+    far.contextId = observer.context.contextId;
+    const contextId = observer.context.contextId!;
+    const compose: EditingOperation = {
+      kind: "compose",
+      composition: {
+        contextId,
+        text: "日本",
+        selectionStart: 2,
+        selectionEnd: 2,
+        before: "",
+        after: "",
+      },
+    };
+    far.take(compose, "A");
+    expect(await send(compose, "A")).toBe(true);
+    const stale: EditingOperation = {
+      kind: "edit",
+      edit: { contextId: crypto.randomUUID(), text: "x", before: "", after: "" },
+    };
+    far.take(stale, "A");
+    expect(await send(stale, "A")).toBe(false);
+    await settle();
+    far.contextId = observer.context.contextId;
+    const keystroke: EditingOperation = {
+      kind: "edit",
+      edit: { contextId: observer.context.contextId!, text: "x", before: "", after: "" },
+    };
+    far.take(keystroke, "B");
+    expect(await send(keystroke, "B")).toBe(true);
+    const real = await read(page, kind);
+    expect(real.value).toBe("日本x");
+    expect({ value: far.value, caret: far.caret }).toEqual({
+      value: real.value,
+      caret: real.caret,
+    });
+    // The record: 日本 under the context that composed it, x under the next one; the refused
+    // edit sent nothing.
+    expect(record).toEqual(["attributed A", "attributed A", "text 日本", "attributed B", "text x"]);
+    expect(far.closed).toEqual([{ contextId, producer: "A", text: "日本" }]);
+  });
+
+  // CS1: another viewer taking the input while a composition is open ends the composing
+  // context too: the composer's text is closed as theirs, then the other viewer's edit goes in.
+  it("closes a composition as its composer's when another viewer's operation comes", async () => {
+    await seed(page, kind, "a", 1);
+    await settle();
+    record.length = 0;
+    const contextId = observer.context.contextId!;
+    expect(
+      await send(
+        {
+          kind: "compose",
+          composition: {
+            contextId,
+            text: "に",
+            selectionStart: 1,
+            selectionEnd: 1,
+            before: "",
+            after: "",
+          },
+        },
+        "A",
+      ),
+    ).toBe(true);
+    expect(await send({ kind: "command", command: "moveBackward" }, "B")).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "aに", caret: 1, collapsed: true });
+    expect(record).toEqual(["attributed A", "attributed A", "text に"]);
+  });
+
+  // CS1: a refusal inside the context while composing. The page moved the selection under an
+  // open composition (Blink keeps the composition open), so the next update is refused for the
+  // changed selection; the composition stays the composer's. The person keeps what they
+  // composed where they composed it, and their next keystroke goes in after it, where the
+  // close leaves the caret.
+  it("keeps the composition through a refusal for a selection the page moved", async () => {
+    await seed(page, kind, "ab", 2);
+    await settle();
+    record.length = 0;
+    const contextId = observer.context.contextId!;
+    const composition = (text: string) =>
+      ({
+        kind: "compose",
+        composition: { contextId, text, selectionStart: text.length, selectionEnd: text.length },
+      }) as const;
+    expect(await send(composition("日本"), "A")).toBe(true);
+    await page.evaluate((kind) => {
+      const element = document.getElementById("f")!;
+      if (kind === "textarea") (element as HTMLTextAreaElement).setSelectionRange(0, 0);
+      else {
+        const range = document.createRange();
+        range.setStart(element.firstChild!, 0);
+        range.collapse(true);
+        getSelection()!.removeAllRanges();
+        getSelection()!.addRange(range);
+      }
+    }, kind);
+    expect(await send(composition("日本語"), "A")).toBe(false);
+    await settle();
+    expect(
+      await send(
+        {
+          kind: "edit",
+          edit: { contextId: observer.context.contextId!, text: "x", before: "", after: "" },
+        },
+        "A",
+      ),
+    ).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "ab日本x", caret: 5, collapsed: true });
+    expect(record).toEqual(["attributed A", "attributed A", "text 日本", "attributed A", "text x"]);
+  });
+
+  // CS1: where the page itself moves on (focus leaves the field), Blink ends the composition by
+  // itself, keeping its text; the Home sends nothing for it.
+  it("sends nothing for a composition the page ended itself when focus left", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    const contextId = observer.context.contextId!;
+    expect(
+      await send(
+        {
           kind: "compose",
           composition: {
             contextId,
@@ -301,24 +430,35 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             before: "",
             after: "",
           },
-        }),
-      ).toBe(true);
-      expect(
-        await send({
-          kind: "edit",
-          edit: { contextId: crypto.randomUUID(), text: "x", before: "", after: "" },
-        }),
-      ).toBe(false);
-      await settle();
-      expect(
-        await send({
+        },
+        "A",
+      ),
+    ).toBe(true);
+    record.length = 0;
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+    );
+    expect(
+      await page.evaluate(
+        () =>
+          document.getElementById("f")!.textContent ||
+          (document.getElementById("f") as HTMLTextAreaElement).value,
+      ),
+    ).toBe("日本");
+    await page.focus("#f");
+    await settle();
+    expect(
+      await send(
+        {
           kind: "edit",
           edit: { contextId: observer.context.contextId!, text: "x", before: "", after: "" },
-        }),
-      ).toBe(true);
-      expect((await read(page, kind)).value).toBe("日本x");
-    },
-  );
+        },
+        "B",
+      ),
+    ).toBe(true);
+    expect(record).toEqual(["attributed B", "text x"]);
+  });
 
   const totals = {
     operations: 0,
@@ -332,7 +472,8 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     cancels: 0,
     pastes: 0,
     stale: 0,
-    orphaned: 0,
+    viewers: 0,
+    closes: 0,
   };
   for (let chunk = 1; chunk <= seeds; chunk += 20) {
     const last = Math.min(chunk + 19, seeds);
@@ -355,6 +496,8 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         far.value = initial;
         far.caret = caret;
         far.contextId = observer.context.contextId;
+        /** Who sends: another viewer taking the input ends the composing context. */
+        let producer = "A";
         /** Contexts the page has left: an operation under one is refused by both. */
         const old: string[] = [];
         const steps: string[] = [`seed ${JSON.stringify(initial)} at ${caret}`];
@@ -399,16 +542,23 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
               };
               label = "cancel";
               totals.cancels += 1;
-            } else if (choice < 0.9 && far.composing) {
+            } else if (choice < 0.85) {
               operation = { kind: "edit", edit: { contextId, text: "", before: "", after: "" } };
               label = "empty edit";
               totals.edits += 1;
-            } else if (choice < 0.9) {
-              // A refusal left Blink's composition open while the observer forgot it: an empty
-              // edit then is a Backspace inside an orphaned composition. That state is the open
-              // fault reported with this test; it is not generated.
-              totals.orphaned += 1;
-              continue;
+            } else if (choice < 0.92) {
+              // Another viewer takes the input while the composition is open: the composing
+              // context ends, and closes its composition before the other viewer's operation.
+              producer = producer === "A" ? "B" : "A";
+              operation =
+                next() < 0.5
+                  ? {
+                      kind: "edit",
+                      edit: { contextId, text: pick(alphabet), before: "", after: "" },
+                    }
+                  : { kind: "command", command: pick(commands) };
+              label = `viewer ${producer}`;
+              totals.viewers += 1;
             } else {
               operation = {
                 kind: "compose",
@@ -476,8 +626,8 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
             )}`,
           );
           const refusedBefore = far.refused.length;
-          far.take(operation);
-          const real = await send(operation);
+          far.take(operation, producer);
+          const real = await send(operation, producer);
           const modelRefused = far.refused.length > refusedBefore;
           totals.operations += 1;
           if (!real) {
@@ -504,11 +654,12 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
               after: "",
             },
           };
-          far.take(commit);
-          expect(await send(commit)).toBe(true);
+          far.take(commit, producer);
+          expect(await send(commit, producer)).toBe(true);
           const page_ = await read(page, kind);
           expect(page_.value, `${kind} seed ${current}: final commit`).toBe(far.value);
         }
+        totals.closes += far.closed.length;
         totals.sequences += 1;
       }
     });

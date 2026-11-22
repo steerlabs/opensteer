@@ -1961,6 +1961,7 @@ export class BrowserController {
             message.type === "input.compose" ? message.composition : message.edit,
             message.type === "input.compose",
             () => this.recordPasskeyInput(message, active.surface.id),
+            message.producerId,
           ))
         )
           this.editingCounters.stale = (this.editingCounters.stale ?? 0) + 1;
@@ -1981,7 +1982,7 @@ export class BrowserController {
             "Input.dispatchKeyEvent",
             editingCommandParameters(message.command, this.platform),
           );
-        });
+        }, message.producerId);
         return;
       }
       const outcome = (result: "refused" | "pasted" | "empty" | "too-large") =>
@@ -2013,7 +2014,7 @@ export class BrowserController {
               "Input.dispatchKeyEvent",
               editingCommandParameters(command, this.platform),
             );
-          }),
+          }, message.producerId),
         );
         if (command === "paste") await outcome("pasted");
         else
@@ -2207,7 +2208,8 @@ export class BrowserController {
           ...resolved,
         });
       };
-      if (this.editing) await (await this.editingObserver(active.surface.id)).input(dispatch);
+      if (this.editing)
+        await (await this.editingObserver(active.surface.id)).input(dispatch, message.producerId);
       else await dispatch();
       if (message.action === "up") {
         keys.delete(message.code);
