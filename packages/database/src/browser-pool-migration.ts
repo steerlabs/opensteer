@@ -69,6 +69,18 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       on browser_pool_document_losses (owner_id, surface_id) where noticed_at is null
   `.execute(database);
   await sql`
+    create table browser_pool_targets (
+      cloud_computer_id text primary key,
+      attempt_keys jsonb,
+      attempt_issued_at timestamptz,
+      registered_keys jsonb,
+      status text not null default 'unregistered'
+        check (status in ('unregistered', 'preparing', 'ready', 'failed')),
+      target jsonb,
+      updated_at timestamptz not null default now()
+    )
+  `.execute(database);
+  await sql`
     create table browser_pool_relays (
       id uuid primary key,
       runner_id text not null,

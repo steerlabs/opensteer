@@ -942,3 +942,90 @@ export async function settleBrowserPoolRelay(database: Kysely<DatabaseSchema>, i
     .where("id", "=", id)
     .execute(databaseOperationOptions());
 }
+
+// ---- A pooled Cloud Computer's target --------------------------------------------------------
+
+export type BrowserPoolTargetRow = Selectable<DatabaseSchema["browserPoolTargets"]>;
+
+/** What the Home last recorded of its registration and target; undefined before the first. */
+export async function readBrowserPoolTarget(
+  database: Kysely<DatabaseSchema>,
+  cloudComputerId: string,
+): Promise<BrowserPoolTargetRow | undefined> {
+  return database
+    .selectFrom("browserPoolTargets")
+    .selectAll()
+    .where("cloudComputerId", "=", cloudComputerId)
+    .executeTakeFirst(databaseOperationOptions());
+}
+
+/** Written before a registration leaves the Home: until its answer is read, it is open. */
+export async function recordBrowserPoolRegistrationAttempt(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly cloudComputerId: string;
+    readonly keys: Readonly<Record<string, unknown>>;
+    readonly issuedAt: Date;
+  },
+): Promise<void> {
+  const keys = input.keys;
+  await database
+    .insertInto("browserPoolTargets")
+    .values({
+      cloudComputerId: input.cloudComputerId,
+      attemptKeys: keys,
+      attemptIssuedAt: input.issuedAt,
+      status: "unregistered",
+    })
+    .onConflict((conflict) =>
+      conflict
+        .column("cloudComputerId")
+        .doUpdateSet({ attemptKeys: keys, attemptIssuedAt: input.issuedAt, updatedAt: new Date() }),
+    )
+    .execute(databaseOperationOptions());
+}
+
+/**
+ * What the account answered: a registration's (its keys are then the registered ones, and the
+ * attempt is closed) or a read of the target (an open attempt stays open: only its own answer, or
+ * a read that shows it was not received, settles it).
+ */
+export async function recordBrowserPoolTargetAnswer(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly cloudComputerId: string;
+    readonly status: BrowserPoolTargetRow["status"];
+    readonly target: Readonly<Record<string, unknown>> | null;
+    /** The registration this answers: its keys are registered now. */
+    readonly registered?: Readonly<Record<string, unknown>>;
+    /** A read that shows nothing registered: an open attempt was not received. */
+    readonly attemptUnreceived?: boolean;
+  },
+): Promise<void> {
+  const settle = input.registered !== undefined || input.attemptUnreceived === true;
+  const row = await readBrowserPoolTarget(database, input.cloudComputerId);
+  // Objects are sent as JSON by the driver (only arrays need the cast).
+  const values = {
+    cloudComputerId: input.cloudComputerId,
+    status: input.status,
+    target: input.target,
+    registeredKeys: input.registered ?? row?.registeredKeys ?? null,
+    attemptKeys: settle ? null : (row?.attemptKeys ?? null),
+    attemptIssuedAt: settle ? null : (row?.attemptIssuedAt ?? null),
+    updatedAt: new Date(),
+  };
+  await database
+    .insertInto("browserPoolTargets")
+    .values(values)
+    .onConflict((conflict) =>
+      conflict.column("cloudComputerId").doUpdateSet({
+        status: values.status,
+        target: values.target,
+        registeredKeys: values.registeredKeys,
+        attemptKeys: values.attemptKeys,
+        attemptIssuedAt: values.attemptIssuedAt,
+        updatedAt: values.updatedAt,
+      }),
+    )
+    .execute(databaseOperationOptions());
+}

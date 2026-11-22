@@ -2305,6 +2305,18 @@ export interface DatabaseSchema {
     lostAt: Generated<Timestamp>;
     noticedAt: Timestamp | null;
   };
+  /** A pooled Cloud Computer's Home: its key registration's attempt and the target it read. */
+  browserPoolTargets: {
+    cloudComputerId: string;
+    /** The public halves of a registration sent and not yet answered; cleared when answered. */
+    attemptKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    attemptIssuedAt: Timestamp | null;
+    /** The public halves the account answered a registration for. */
+    registeredKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    status: "unregistered" | "preparing" | "ready" | "failed";
+    target: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    updatedAt: Timestamp;
+  };
   browserPoolRelays: {
     id: string;
     runnerId: RunnerId;
